@@ -107,8 +107,9 @@ const registry = (versions: string[], costs: Costs = {}, bunFloor?: string) => (
 
 function fleetChild(state: {
   busy: boolean; resumes?: boolean; held?: Promise<void>; resumeHeld?: Promise<void>; scripts?: number; afterLook?: () => void;
+  operator?: { reason?: string; fromLook: number };
 }) {
-  const child = { quiesced: false, waits: [] as number[] };
+  const child = { quiesced: false, waits: [] as number[], looks: 0 };
   const fleet: SwitchFleet = {
     runningChildren: () => [{ name: 'kid' }],
     requestSwitch: async (_name, request: SwitchRequest) => {
@@ -120,10 +121,14 @@ function fleetChild(state: {
       }
       child.quiesced = true;
       child.waits.push(request.waitMs);
+      child.looks += 1;
       await state.held;
       state.afterLook?.();
+      const operator = state.operator !== undefined && child.looks >= state.operator.fromLook
+        ? { operatorHold: state.operator.reason === undefined ? {} : { reason: state.operator.reason } } : {};
       return { ok: true, data: {
         answered: true, drained: !state.busy, activeTurnAgents: state.busy ? ['kid-agent'] : [], backgroundScripts: state.scripts ?? 0,
+        ...operator,
       } };
     },
   };
@@ -382,7 +387,7 @@ test('a stop with nothing armed, or the switch\'s own stop, keeps nothing for th
   expect(existsSync(installPaths(root).armedDropped)).toBe(false);
 });
 
-test('a dropped arm whose record can\'t be written is a line to log, and a record the next start can\'t read says nothing', async () => {
+test('a dropped arm whose record can\'t be written is a line to log, and a record the next start can\'t read is a line in its log and nothing in check', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
   await host.armed({ action: 'restart', version: '0.15.0' });
@@ -394,9 +399,45 @@ test('a dropped arm whose record can\'t be written is a line to log, and a recor
     chmodSync(root, 0o700);
   }
   expect(line).toMatch(/is dropped by this stop, and the record of that for the next start couldn't be written: /);
-  writeFileSync(installPaths(root).armedDropped, '{"to": "0.15.0", "why": "sideways"');
-  expect(residentHost({ root }).update.status().armedDropped).toBeNull();
-  expect(existsSync(installPaths(root).armedDropped)).toBe(false);
+  for (const garbled of ['{"to": "0.15.0", "why": "sideways"', '{"to": "0.15.0", "why": "sideways"}']) {
+    writeFileSync(installPaths(root).armedDropped, garbled);
+    const logged: string[] = [];
+    expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
+    expect(existsSync(installPaths(root).armedDropped)).toBe(false);
+    expect(logged.filter((said) => said.includes(installPaths(root).armedDropped))).toHaveLength(1);
+  }
+  mkdirSync(installPaths(root).armedDropped);
+  const logged: string[] = [];
+  expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
+  expect(logged.filter((said) => said.includes(installPaths(root).armedDropped))).toHaveLength(1);
+});
+
+test('a dropped arm\'s record the next start can\'t remove is still reported, and its log says a later start may report it again', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  host.update.recordStop('SIGTERM');
+  const logged: string[] = [];
+  chmodSync(root, 0o500);
+  let next: ReturnType<typeof residentHost>;
+  try {
+    next = residentHost({ root, log: (said) => { logged.push(said); } });
+  } finally {
+    chmodSync(root, 0o700);
+  }
+  expect(next.update.status().armedDropped).toMatchObject({ to: '0.15.0', reason: 'the host stopped first (SIGTERM).' });
+  expect(existsSync(installPaths(root).armedDropped)).toBe(true);
+  expect(logged.filter((said) => said.includes(installPaths(root).armedDropped))).toHaveLength(1);
+});
+
+test('an arm asked for once the host has begun stopping is refused, and nothing is armed', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root, stopping: () => true });
+  const answer = await host.call({ action: 'restart' });
+  expect(answer.success).toBe(false);
+  expect(text(answer)).toStartWith('Nothing was armed: ');
+  expect(text(answer)).toContain('stopping');
+  expect(host.update.armedSwitch()).toBeNull();
 });
 
 test('when a try finds a turn still going, without waiting for it, nothing switches, serving resumes, nobody is asked, and a later quiet moment goes ahead', async () => {
@@ -501,6 +542,7 @@ test('a child that doesn\'t take its resume after a try is named, in the try\'s 
   const check = text(await host.call({ action: 'check' }));
   for (const said of [answer, check]) {
     expect(said).toContain('Ending the switch\'s quiesce didn\'t reach every host');
+    expect(said).not.toContain('so the switch\'s quiesce ended');
     expect(said).toContain('kid');
   }
   expect(check).toContain('An operator\'s connectome update restart resume ends it');
@@ -611,7 +653,7 @@ test('a try dropped after quiescing names, in check, a child that didn\'t take i
   expect(check).toContain('Ending the switch\'s quiesce didn\'t reach every host: kid');
 });
 
-test('an operator who quiesces this host during a try keeps their hold: the try ends its own quiesce, stays armed and says why', async () => {
+test('an operator who quiesces this host after the children\'s look, before the switch\'s own quiesce, keeps their hold: the try ends its own quiesce, stays armed and says why', async () => {
   const { root } = installRunning0141(['0.15.0']);
   let host: ReturnType<typeof residentHost> | undefined;
   const { fleet, child } = fleetChild({ busy: false, afterLook: () => { void host!.fw.quiesce({ reason: 'maintenance' }); } });
@@ -626,6 +668,23 @@ test('an operator who quiesces this host during a try keeps their hold: the try 
   expect(host.update.armedSwitch()).not.toBeNull();
   expect(text(await host.call({ action: 'check' }))).toContain('quiesced by its operator (maintenance)');
 });
+
+for (const [fromLook, when] of [[1, 'at the children\'s look'], [2, 'at the switch\'s own quiesce']] as const) {
+  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, it stays armed, and check names the child's hold`, async () => {
+    const { root } = installRunning0141(['0.15.0']);
+    const { fleet } = fleetChild({ busy: false, operator: { reason: 'maintenance', fromLook } });
+    const host = residentHost({ root, fleet });
+    await host.armed();
+    expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+    expect(readMark(root)).toBeNull();
+    expect(host.stops).toEqual([]);
+    expect(host.serving()).toBe(true);
+    expect(host.update.armedSwitch()).not.toBeNull();
+    const check = text(await host.call({ action: 'check' }));
+    expect(check).toContain('kid');
+    expect(check).toContain('quiesced by its operator (maintenance)');
+  });
+}
 
 test('an armed Go back whose release is damaged by its quiet moment is dropped, saying why', async () => {
   const { root, dataDir } = installRunning0141();

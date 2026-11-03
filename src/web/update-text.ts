@@ -36,7 +36,7 @@ export type SwitchOutcome =
  *  child's name. A host that can't be counted, such as a child that didn't
  *  answer or a host serving again, says why. */
 export type HostQuiet =
-  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number }
+  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number; operatorHold?: { reason?: string } }
   | { host: string; answered: false; why: string };
 
 export interface RestartState {

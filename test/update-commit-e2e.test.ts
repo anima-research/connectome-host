@@ -68,6 +68,7 @@ function startHost(
   if (root !== null) env.CONNECTOME_INSTALL_ROOT = root;
   else delete env.CONNECTOME_INSTALL_ROOT;
   delete env.NO_UPDATE_NOTIFIER;
+  if (more.CONNECTOME_SUPERVISED === undefined) delete env.CONNECTOME_SUPERVISED;
   const host = spawn('bun', [...preloads.flatMap((preload) => ['--preload', preload]), index, recipe, '--headless'], {
     cwd: dir,
     env,
@@ -471,7 +472,7 @@ describe("a host's update, on a real start", () => {
       "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
       refusal,
       "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
-      "Stopping to switch to 9.9.10: once it has stopped, start the host again, and that start does it.",
+      "Stopping to switch to 9.9.10: the host's next start does it, which a service set up for updates makes by itself.",
     ]);
   }, 60_000);
 

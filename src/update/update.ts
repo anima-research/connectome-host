@@ -1,9 +1,9 @@
-import { readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { SUPERVISED_ENV } from '../cli/service.js';
 import {
-  ContractError, installPaths, isSwitchQuiesce, readCurrent, readJournal, releaseDir, unsyncedText, writeMark,
+  ContractError, installPaths, isSwitchQuiesce, readCurrent, readJournal, releaseDir, unsyncedText, writeMark, writeTextAtomic,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
@@ -123,7 +123,7 @@ export class HostUpdate {
   configure(setup: UpdateSetup): void {
     this.setup = setup;
     this.serviceLine = (setup.env ?? process.env)[SUPERVISED_ENV] === '1';
-    this.armedDropped = setup.here === null ? null : takeDroppedArm(installPaths(setup.here.root).armedDropped);
+    this.armedDropped = setup.here === null ? null : takeDroppedArm(installPaths(setup.here.root).armedDropped, (line) => { this.log(line); });
   }
 
   recordStop(reason: string): string | null {
@@ -133,7 +133,7 @@ export class HostUpdate {
     const { to, why, keepData, since } = armed;
     const dropped = { to, why, keepData, since, at: this.now().toISOString(), reason: `the host stopped first (${reason}).` };
     try {
-      writeFileSync(installPaths(here.root).armedDropped, `${JSON.stringify(dropped)}\n`);
+      writeTextAtomic(installPaths(here.root).armedDropped, `${JSON.stringify(dropped)}\n`);
     } catch (error) {
       return `${armedName(armed)} armed at ${since} is dropped by this stop, and the record of that for the next start ` +
         `couldn't be written: ${said(error)}`;
@@ -391,6 +391,8 @@ export class HostUpdate {
       if ((fleet?.runningChildren().length ?? 0) > 0) {
         const children = await lookAtChildren(fleet, armed.to);
         if (setup.host.framework() !== framework) return await this.callOff(SESSION_CHANGED);
+        const childHeld = childHold(children);
+        if (childHeld !== null) return await this.endAndStayArmed(children, childHeld);
         if (!children.every(settled)) {
           return await this.endAndStayArmed(children, operatorHold(framework.getHostModeStatus()));
         }
@@ -420,6 +422,7 @@ export class HostUpdate {
   private armRefusal(ways: UpdateWays): string | null {
     if (this.need().here === null) return NO_INSTALL_OF_ITS_OWN;
     if (this.stopper === null) return NO_STOP;
+    if (this.stopper.stopping?.() === true) return STOPPING_NOW;
     if (!this.stopper.supervised) return IN_A_TERMINAL;
     if (!this.serviceLine) return NO_SERVICE;
     if (this.armed !== null) {
@@ -447,7 +450,7 @@ export class HostUpdate {
       ...(holding.some((h) => h.answered && h.drained && h.backgroundScripts > 0) ? ['scripts were running outside any turn'] : []),
     ];
     const what = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held.at(-1)}` : held[0] ?? 'this host had work in flight again';
-    const waited = (hold ?? `${what}, so the switch's quiesce ended.`) + leftQuiesced(ended, true);
+    const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true);
     return this.stayArmed(waited, hold !== null ? [] : holding);
   }
 
@@ -659,7 +662,7 @@ export class HostUpdate {
     }
     if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED);
     if (armedQuiet !== undefined) {
-      const hold = operatorHold(framework.getHostModeStatus());
+      const hold = operatorHold(framework.getHostModeStatus()) ?? childHold(quiet.hosts);
       if (hold !== null) return this.endAndStayArmed(quiet.hosts, hold);
       return quiet.drained && quiet.hosts.every(settled) && armedQuiet() ? this.markAndStop() : this.endAndStayArmed(quiet.hosts);
     }
@@ -685,9 +688,11 @@ export class HostUpdate {
     if (this.trying) this.armed = null;
     const stopper = this.stopper!;
     const going = restart.why === 'go-back' ? `go back to ${restart.to}` : `switch to ${restart.to}`;
-    const farewell = (stopper.supervised && this.serviceLine
-      ? `Stopping to ${going}. The service starts the host again by itself, and that start does it.`
-      : `Stopping to ${going}: once it has stopped, start the host again, and that start does it.`) +
+    const farewell = (!stopper.supervised
+      ? `Stopping to ${going}: once it has stopped, start the host again, and that start does it.`
+      : this.serviceLine
+        ? `Stopping to ${going}. The service starts the host again by itself, and that start does it.`
+        : `Stopping to ${going}: the host's next start does it, which a service set up for updates makes by itself.`) +
       (unsynced !== null ? ` ${unsyncedText(unsynced)}` : '');
     stopper.stop(`update: ${going}`, farewell);
     return done(farewell);
@@ -741,7 +746,14 @@ const NO_SERVICE = 'Nothing was armed: nothing shows that a service starts this 
 const NO_STOP = 'Nothing was armed: this host has no stop a restart can use, as in a batch run, which ends on its own. ' +
   ASK_AGAIN;
 const STOPPING_FIRST = 'the host began stopping for another reason first.';
+const STOPPING_NOW = 'Nothing was armed: this host is stopping, so a restart armed now could never begin. Ask again once ' +
+  'it has started again.';
 const settled = (host: HostQuiet): boolean => host.answered && host.drained && host.backgroundScripts === 0;
+const childHold = (hosts: HostQuiet[]): string | null => {
+  const held = hosts.flatMap((h) => h.answered && h.operatorHold !== undefined
+    ? [`fleet child ${h.host} is quiesced by its operator${h.operatorHold.reason ? ` (${h.operatorHold.reason})` : ''}`] : []);
+  return held.length === 0 ? null : `${held.join('; ')}.`;
+};
 const operatorHold = (status: { quiesced: boolean; reason?: string }): string | null =>
   status.quiesced && !isSwitchQuiesce(status.reason)
     ? `this host is quiesced by its operator${status.reason ? ` (${status.reason})` : ''}.`
@@ -753,26 +765,35 @@ const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: bo
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';
 
-function takeDroppedArm(path: string): UpdateStatus['armedDropped'] {
+function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus['armedDropped'] {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be read, so check can't say ` +
+        `whether one was: ${said(error)}`);
+    }
     return null;
   }
   try {
     unlinkSync(path);
-  } catch {}
-  let read: Record<string, unknown>;
+  } catch (error) {
+    log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be removed, so a later start ` +
+      `may say the same again: ${said(error)}`);
+  }
+  let read: Record<string, unknown> | null = null;
   try {
     read = JSON.parse(text);
-  } catch {
-    return null;
-  }
+  } catch {}
   const { to, why, keepData, since, at, reason } = read ?? {};
-  return typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
-    typeof since === 'string' && typeof at === 'string' && typeof reason === 'string'
-    ? { to, why, keepData, since, at, reason } : null;
+  if (typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
+    typeof since === 'string' && typeof at === 'string' && typeof reason === 'string') {
+    return { to, why, keepData, since, at, reason };
+  }
+  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped, so check can't say whether ` +
+    'one was.');
+  return null;
 }
 
 export const hostUpdate = new HostUpdate();
