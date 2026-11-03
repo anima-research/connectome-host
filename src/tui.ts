@@ -650,14 +650,25 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   let currentStreamBlockType: StreamBlockType = 'text';
+  /** The block the line being streamed draws, what that block says so far
+   *  (in full while a collapsed thinking line shows only its size), and
+   *  what the line shows. */
+  let currentStreamKind: 'text' | 'thinking' = 'text';
+  let currentStreamSaid = '';
+  let currentStreamShown = '';
 
   let thinkingCollapsed = false;
   let thinkingCollapsedChars = 0;
 
+  function showStream(text: string) {
+    currentStreamShown = text;
+    if (currentStreamText) currentStreamText.content = text;
+  }
+
   function finalizeCollapsedThinking() {
     if (!thinkingCollapsed) return;
     if (currentStreamText && currentStreamBlockType === 'thinking') {
-      currentStreamText.content = `${THINKING_PREFIX}(thought, ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok)`;
+      showStream(`${THINKING_PREFIX}(thought, ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok)`);
     }
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
@@ -666,6 +677,9 @@ export async function runTui(app: AppContext): Promise<void> {
   function beginStream() {
     currentStreamBuffer = '';
     currentStreamBlockType = 'text';
+    currentStreamKind = 'text';
+    currentStreamSaid = '';
+    currentStreamShown = '';
     currentStreamText = new TextRenderable(renderer, {
       id: `stream-${++messageCounter}`,
       content: '',
@@ -683,20 +697,25 @@ export async function runTui(app: AppContext): Promise<void> {
       currentStreamBlockType = blockType;
       return;
     }
+    keepStreamedLine();
     currentStreamBuffer = '';
     currentStreamBlockType = blockType;
+    currentStreamKind = blockType;
+    currentStreamSaid = '';
     if (blockType === 'thinking') {
       if (!verboseChat) {
         thinkingCollapsed = true;
         thinkingCollapsedChars = 0;
       }
       currentStreamBuffer = thinkingCollapsed ? `${THINKING_PREFIX}thinking…` : THINKING_PREFIX;
+      currentStreamShown = currentStreamBuffer;
       currentStreamText = new TextRenderable(renderer, {
         id: `stream-thinking-${++messageCounter}`,
         content: currentStreamBuffer,
         fg: THINKING_DIM,
       });
     } else {
+      currentStreamShown = '';
       currentStreamText = new TextRenderable(renderer, {
         id: `stream-${++messageCounter}`,
         content: '',
@@ -709,21 +728,32 @@ export async function runTui(app: AppContext): Promise<void> {
 
   function streamToken(text: string) {
     if (!currentStreamText) return;
+    currentStreamSaid += text;
     if (thinkingCollapsed && currentStreamBlockType === 'thinking') {
       thinkingCollapsedChars += text.length;
-      currentStreamText.content = `${THINKING_PREFIX}thinking… ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok`;
+      showStream(`${THINKING_PREFIX}thinking… ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok`);
       return;
     }
     currentStreamBuffer += text;
-    currentStreamText.content = currentStreamBuffer;
+    showStream(currentStreamBuffer);
   }
 
   function endStream() {
     finalizeCollapsedThinking();
+    keepStreamedLine();
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
     currentStreamBlockType = 'text';
+    currentStreamKind = 'text';
+    currentStreamSaid = '';
+    currentStreamShown = '';
+  }
+
+  /** Keep the line just streamed, for remarkHistory to link to its row. */
+  function keepStreamedLine() {
+    if (!currentStreamText || !currentStreamSaid.trim()) return;
+    keepLine(currentStreamText, currentStreamKind, currentStreamSaid, currentStreamShown, currentStreamKind === 'thinking' ? THINKING_DIM : WHITE);
   }
 
   const HISTORY_REPLAY_MAX = 50;
@@ -736,6 +766,20 @@ export async function runTui(app: AppContext): Promise<void> {
   let recordLines: RecordLine[] = [];
   /** How many of the record's rows the session history read: a row past them was stored after it was drawn. */
   let historyRead = 0;
+  /** A line drawn as it was streamed or sent, before its row was stored: a
+   *  block of a root turn's reply (its text or its thinking), or the
+   *  operator's message. `said` is what the row holds for it, `shown` and
+   *  `color` how the line draws it. remarkHistory links it to its row. */
+  interface StreamedLine { line: TextRenderable; kind: 'text' | 'thinking' | 'you'; said: string; shown: string; color: string }
+  let streamedLines: StreamedLine[] = [];
+  /** Rows stored after the history was drawn whose lines /clear or the
+   *  scrollback cap took down: an undo doesn't draw them again. */
+  let clearedRows = new Set<string>();
+
+  function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string) {
+    streamedLines.push({ line, kind, said, shown, color });
+    if (streamedLines.length > SCROLLBACK_CAP) streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
+  }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
   function undoneIn(cm: { windowStatusOf?: (id: string) => string }): (id: string) => boolean {
@@ -784,6 +828,8 @@ export async function runTui(app: AppContext): Promise<void> {
   function loadSessionHistory() {
     recordLines = [];
     historyRead = 0;
+    streamedLines = [];
+    clearedRows = new Set();
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -805,20 +851,57 @@ export async function runTui(app: AppContext): Promise<void> {
     addLine(`── end history ──`, DIM_GRAY);
   }
 
+  /** The streamed lines of a row stored after the history was drawn, each
+   *  the first one not linked yet whose kind and words are a block of the
+   *  row's (its text or its thinking, or the operator's message), taken out
+   *  of streamedLines. */
+  function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
+    const taken: StreamedLine[] = [];
+    for (const block of msg.content) {
+      const said = block.type === 'text' ? (block as { text?: string }).text
+        : block.type === 'thinking' ? (block as { thinking?: string }).thinking
+        : undefined;
+      if (!said?.trim()) continue;
+      const kind = block.type === 'thinking' ? 'thinking' : msg.participant === 'user' ? 'you' : 'text';
+      const at = streamedLines.findIndex((l) => l.kind === kind && l.said.trim() === said.trim());
+      if (at >= 0) taken.push(...streamedLines.splice(at, 1));
+    }
+    return taken;
+  }
+
   /** Mark the history's lines again in place, as an undo or a redo on the
    *  root agent's window (window:undone) has left each row in it or out, and
-   *  leave every other line as it is. An undone row the history has no line
-   *  for, one stored after it was drawn (a turn of this session, whose lines
-   *  were streamed), is drawn below, marked, and taken down again once a
-   *  redo puts it back in the window. */
+   *  leave every other line as it is. A row stored after the history was
+   *  drawn (a turn of this session) has the lines streamed for it, its
+   *  reply's and the operator's message, marked in place, once linked to it
+   *  by their words. An undone one with no such line is drawn below,
+   *  marked, and taken down again once a redo puts it back in the window.
+   *  A row whose lines /clear or the scrollback cap took down isn't drawn
+   *  again. */
   function remarkHistory() {
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
     const undone = undoneIn(cm);
+    const stored = cm.getAllMessages().slice(historyRead);
+    const linked = new Set(recordLines.map((record) => record.id));
+    for (const msg of stored) {
+      if (streamedLines.length === 0) break;
+      if (linked.has(msg.id) || clearedRows.has(msg.id)) continue;
+      const lines = takeStreamedLines(msg);
+      if (lines.length === 0) continue;
+      linked.add(msg.id);
+      if (lines.some((l) => l.line.isDestroyed)) clearedRows.add(msg.id);
+      for (const l of lines) {
+        if (!l.line.isDestroyed) recordLines.push({ line: l.line, id: msg.id, text: l.shown, color: l.color, appended: false });
+      }
+    }
     const kept: RecordLine[] = [];
     for (const record of recordLines) {
-      if (record.line.isDestroyed) continue;
+      if (record.line.isDestroyed) {
+        clearedRows.add(record.id);
+        continue;
+      }
       const out = undone(record.id);
       if (record.appended && !out) {
         scrollBox.remove(record.line.id);
@@ -831,8 +914,8 @@ export async function runTui(app: AppContext): Promise<void> {
     }
     recordLines = kept;
     const drawn = new Set(kept.map((record) => record.id));
-    for (const msg of cm.getAllMessages().slice(historyRead)) {
-      if (!drawn.has(msg.id) && undone(msg.id)) drawRow(msg, true, true);
+    for (const msg of stored) {
+      if (!drawn.has(msg.id) && !clearedRows.has(msg.id) && undone(msg.id)) drawRow(msg, true, true);
     }
   }
 
@@ -842,6 +925,8 @@ export async function runTui(app: AppContext): Promise<void> {
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
+    currentStreamSaid = '';
+    currentStreamShown = '';
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
 
@@ -2513,7 +2598,9 @@ export async function runTui(app: AppContext): Promise<void> {
         });
         return;
       }
-      addEvent(`You: ${raw}`, GREEN);
+      const shown = `${hhmm()} You: ${raw}`;
+      const echo = addLine(shown, GREEN);
+      if (echo) keepLine(echo, 'you', text, shown, GREEN);
       const agent = app.framework.getAgent(rootAgentName);
       const agentBusy = agent && (agent.state.status === 'streaming' || agent.state.status === 'inferring' || agent.state.status === 'waiting_for_tools');
       state.status = agentBusy ? 'queued' : 'thinking';

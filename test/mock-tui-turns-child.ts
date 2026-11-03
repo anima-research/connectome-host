@@ -158,6 +158,14 @@ async function step(name: string): Promise<void> {
   process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts] })}\n`);
 }
 
+/** A reply of the root agent's, streamed in `parts` and completed. */
+async function streamed(...parts: string[]): Promise<void> {
+  first.send('inference:started');
+  for (const content of parts) first.send('inference:tokens', { content, blockType: 'text' });
+  first.send('inference:completed');
+  await until(async () => (await frame()).includes(parts.join('')), 'the reply');
+}
+
 async function command(text: string): Promise<void> {
   await mockInput.typeText(text);
   mockInput.pressEnter();
@@ -464,23 +472,53 @@ async function play(): Promise<void> {
     // A line that isn't the history's: the operator's message, sent here.
     await command('and the fifth?');
     await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
-    // A row stored after the history was drawn, as a turn of this session's is.
-    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] });
+    // A turn of this session's: its reply streamed after the history was
+    // drawn, and its rows stored.
+    await streamed('a fifth ', 'ledger');
+    history.push(
+      { id: 'u2', participant: 'user', content: [{ type: 'text', text: 'and the fifth?' }] },
+      { id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] },
+    );
+    // A row stored after the history was drawn that the TUI drew no line for.
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a sixth ledger' }] });
     // An undo on the agent's window: the history marks its rows.
-    undoneRows.add('a1');
-    undoneRows.add('a2');
-    first.send('window:undone', { retracted: 2 });
+    for (const id of ['a1', 'u2', 'a2', 'a3']) undoneRows.add(id);
+    first.send('window:undone', { retracted: 4 });
     await until(async () => (await frame()).includes('(undone) three ledgers'), 'the mark');
     await step('undone');
     // A redo puts the rows back.
     undoneRows.clear();
-    first.send('window:undone', { retracted: 0, represented: 2 });
+    first.send('window:undone', { retracted: 0, represented: 4 });
     await until(async () => !(await frame()).includes('(undone)'), 'the mark to go');
     await step('redone');
     // Another agent's window isn't the history's.
     undoneRows.add('a1');
     first.send('window:undone', { agentName: 'other', retracted: 1 });
     await step('another agent');
+    // Rows whose lines /clear took down: a2's and a3's, marked by an undo,
+    // and a5's, streamed and never marked.
+    undoneRows.clear();
+    await streamed('an eighth ledger');
+    history.push({ id: 'a5', participant: 'agent', content: [{ type: 'text', text: 'an eighth ledger' }] });
+    undoneRows.add('a2');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a sixth ledger'), 'the mark');
+    await command('/clear');
+    await until(async () => !(await frame()).includes('ledger'), 'the display to clear');
+    // Another undo while they are out of the window: a row the TUI drew no
+    // line for is drawn, marked, and the cleared ones aren't drawn again.
+    history.push({ id: 'a4', participant: 'agent', content: [{ type: 'text', text: 'a seventh ledger' }] });
+    undoneRows.add('a4');
+    undoneRows.add('a5');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a seventh ledger'), 'the mark');
+    await step('cleared, undone');
+    // A redo of that row, and the cleared ones still aren't drawn.
+    undoneRows.delete('a4');
+    first.send('window:undone', { retracted: 0, represented: 1 });
+    await until(async () => !(await frame()).includes('a seventh ledger'), 'the mark to go');
+    await step('cleared, redone');
   } else {
     throw new Error(`unknown scenario ${scenario}`);
   }

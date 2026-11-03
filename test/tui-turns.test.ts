@@ -291,14 +291,32 @@ describe("the TUI's history after an undo", () => {
       expect(times(frameAt(at), 'three ledgers')).toBe(1);
       expect(frameAt(at).indexOf('three ledgers')).toBeLessThan(frameAt(at).indexOf('You: and the fifth?'));
     }
-    // A row stored after the history was drawn is drawn below it while undone, and taken down at the redo.
+    // A turn streamed after the history was drawn: its reply and the
+    // operator's message are marked where they were drawn, not drawn again.
+    expect(times(frameAt('undone'), 'a fifth ledger')).toBe(1);
     expect(frameAt('undone')).toContain('(undone) a fifth ledger');
     expect(frameAt('undone').indexOf('(undone) a fifth ledger')).toBeGreaterThan(frameAt('undone').indexOf('You: and the fifth?'));
-    expect(frameAt('redone')).not.toContain('a fifth ledger');
+    expect(times(frameAt('undone'), 'You: and the fifth?')).toBe(1);
+    expect(frameAt('undone')).toMatch(/\(undone\) \d\d:\d\d You: and the fifth\?/);
+    // A row stored after the history was drawn that the TUI drew no line
+    // for is drawn below while undone, and taken down at the redo.
+    expect(frameAt('undone').indexOf('(undone) a sixth ledger')).toBeGreaterThan(frameAt('undone').indexOf('(undone) a fifth ledger'));
+    expect(times(frameAt('redone'), 'a fifth ledger')).toBe(1);
+    expect(frameAt('redone')).not.toContain('a sixth ledger');
     expect(frameAt('redone')).toContain('three ledgers');
     expect(frameAt('redone')).toContain('💭 tally them first');
     expect(frameAt('redone')).not.toContain('(undone)');
     expect(frameAt('another agent')).not.toContain('(undone)');
+    // A row whose lines /clear took down isn't drawn again by a later undo
+    // or redo while it stays out of the window, marked by an undo before the
+    // clear or never marked.
+    for (const at of ['cleared, undone', 'cleared, redone']) {
+      expect(frameAt(at)).not.toContain('a fifth ledger');
+      expect(frameAt(at)).not.toContain('a sixth ledger');
+      expect(frameAt(at)).not.toContain('an eighth ledger');
+    }
+    expect(frameAt('cleared, undone')).toContain('(undone) a seventh ledger');
+    expect(frameAt('cleared, redone')).not.toContain('ledger');
   }, 40000);
 });
 
