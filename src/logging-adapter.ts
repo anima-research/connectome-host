@@ -820,10 +820,11 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     const copySha256 = run?.kinds.get(kind);
     if (copySha256 !== undefined) {
       const note = omitted('this lineage has failed with this kind of error (its type, or for an untyped error its name, '
-        + 'with its HTTP status when it has one) since a call on it last succeeded, with no hour between its failures, and an earlier error '
-        + 'record in this log, whose requestSha256 is copySha256, has in full the first request of this kind that the log kept '
+        + 'with its HTTP status when it has one) since a call on it last succeeded, with no more than an hour between its '
+        + 'failures, and an earlier error record in this log, whose requestSha256 is copySha256, has in full the first '
+        + 'request of this kind that the log kept '
         + `since it began following this run (it follows the runs of the ${FAILING_RUNS_REMEMBERED} lineages whose runs began `
-        + 'latest), unless the file was rotated since');
+        + 'latest), unless the file was rotated, truncated or removed since');
       return { fields: { ...note.fields, rawRequestOmitted: { ...note.fields.rawRequestOmitted, copySha256 } } };
     }
     if (bytes > this.failedCopyRoomNow()) {

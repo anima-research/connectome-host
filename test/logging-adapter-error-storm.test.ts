@@ -49,7 +49,7 @@ function failWith(err: unknown, raw: unknown = BIG): void {
 
 const sha = (raw: unknown) => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
 /** What a repeat's note says its copy is. */
-const FOLLOWED = 'has in full the first request of this kind that the log kept since it began following this run (it follows the runs of the 256 lineages whose runs began latest)';
+const FOLLOWED = 'has in full the first request of this kind that the log kept since it began following this run (it follows the runs of the 256 lineages whose runs began latest), unless the file was rotated, truncated or removed since';
 /** A request of its own cache lineage: the system text is part of the lineage. */
 const ofLineage = (name: string, content = 'x') => ({ model: 'claude-fable-5', system: [{ type: 'text', text: name }], messages: [{ role: 'user', content }] });
 const newAdapter = () => new LoggingAnthropicAdapter({ apiKey: 'test-key' }, logPath, () => ({ enabled: false, budgetTokens: 0 }));
@@ -119,7 +119,7 @@ test('a storm across turns is one run: each turn adds a message, and only the fi
   for (const [n, rec] of records.slice(1).entries()) {
     expect(rec.rawRequest).toBeUndefined();
     expect(rec.requestSha256).toBe(sha(turns[n + 1]));
-    expect(rec.rawRequestOmitted).toMatchObject({ reason: expect.stringContaining('failed with this kind of error (its type, or for an untyped error its name, with its HTTP status when it has one) since a call on it last succeeded, with no hour between its failures') });
+    expect(rec.rawRequestOmitted).toMatchObject({ reason: expect.stringContaining('failed with this kind of error (its type, or for an untyped error its name, with its HTTP status when it has one) since a call on it last succeeded, with no more than an hour between its failures') });
   }
   // One copy of a ~200 KB request, and nineteen notes.
   expect(readFileSync(logPath).length).toBeLessThan(2 * JSON.stringify(BIG).length);
