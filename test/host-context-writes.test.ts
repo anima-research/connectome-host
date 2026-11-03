@@ -12,8 +12,8 @@
  * - /newtopic's transition is the agent's own row, presented as it is
  *   written, so the head window starts at a row the window holds, and
  *   never stored while a turn of the agent is alive: /newtopic is refused
- *   then, and a bare /newtopic whose summary a turn started during stores
- *   nothing and gives the summary back;
+ *   then, and a bare /newtopic during whose summary a turn started, or rows
+ *   entered the agent's window, stores nothing and gives the summary back;
  * - a subagent's seed rows (its orientation and task, or a fork's copy of
  *   its parent's context) are the child's own rows, in its window once its
  *   run takes it on;
@@ -197,12 +197,20 @@ describe('/newtopic', () => {
   });
 });
 
-// A bare /newtopic's summary is an LLM call, and the agent can start a turn
-// during it, or the branch or the strategy can change (J-H3). It is stored
-// only if, once written, none of that happened; otherwise nothing is stored,
-// and the answer gives the summary back for /newtopic <text>. The strategy's
-// summary is replaced by one that waits on a gate and reads the context it
-// is given.
+// A bare /newtopic's summary is an LLM call, and while it is written the
+// agent can start a turn (or start and end one), another /newtopic can
+// store its transition, or the branch or the strategy can change (J-H3).
+// It is stored only if, once written, none of that happened; otherwise
+// nothing is stored, and the answer is one of two:
+// - a turn alive, rows that entered the agent's window, a session switch or
+//   the host's stop: the answer gives the summary back, for
+//   /newtopic <text>;
+// - a branch or strategy change: context-manager refuses the summary, so
+//   there is none to give back, and the answer says it couldn't be written.
+// The strategy's summary is replaced by one that waits on a gate and reads
+// the context it is given; each test checks the summary was asked for
+// before it changes anything, so the change is one made while the summary
+// is written.
 describe('a bare /newtopic', () => {
   const SUMMARY = 'The ledger work is done; next is the release.';
 
@@ -251,9 +259,10 @@ describe('a bare /newtopic', () => {
   });
 
   test("whose summary a turn started during stores nothing, the turn's requests go without it, and its answer gives the summary back", async () => {
-    const { h, app, releaseSummary } = await bare('newtopic-bare-turn-');
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-turn-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       // A turn starts while the summary is written, and waits in a tool call.
       h.adapter.script('clerk', { wait: 'g' }, { text: 'after the tool' });
       h.framework.nudgeAgent('clerk', 'test');
@@ -274,10 +283,67 @@ describe('a bare /newtopic', () => {
     }
   });
 
-  test("when the strategy changed while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
-    const { h, app, releaseSummary } = await bare('newtopic-bare-strategy-');
+  test("whose summary a whole turn ran during stores nothing, and its answer gives the summary back", async () => {
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-whole-turn-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
+      // A turn starts and ends while the summary is written: clerk is idle
+      // with no turn alive again once it is.
+      await h.turn('clerk');
+      releaseSummary();
+      expect(texts(await result.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
+      expect(summarized).toHaveLength(1);
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('pending when a /newtopic with its text is stored, stores nothing, and its answer gives the summary back', async () => {
+    const { h, app, strategy, summarized, releaseSummary } = await bare('newtopic-bare-explicit-');
+    try {
+      const pending = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
+      const explicit = handleCommand('/newtopic Moving on to the release.', app);
+      expect(texts(await explicit.asyncWork!)).toEqual(['Topic reset. Transition summary:', 'Moving on to the release.']);
+      const row = h.rowWith('clerk', '[Topic Transition]')!;
+      releaseSummary();
+      expect(texts(await pending.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
+      expect(summarized).toHaveLength(1);
+      const transitions = h.framework.getAgent('clerk')!.getContextManager().getAllMessages()
+        .filter((m) => textOf(m).startsWith('[Topic Transition]'));
+      expect(transitions.map((m) => m.id)).toEqual([row.id]);
+      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('given twice, stores the summary the first one wrote once, and the second gives its summary back', async () => {
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-twice-');
+    try {
+      const first = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
+      const second = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(2);
+      releaseSummary();
+      expect(texts(await first.asyncWork!)).toEqual(['Topic reset. Transition summary:', SUMMARY]);
+      expect(texts(await second.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
+      expect(summarized).toHaveLength(2);
+      const transitions = h.framework.getAgent('clerk')!.getContextManager().getAllMessages()
+        .filter((m) => textOf(m).startsWith('[Topic Transition]'));
+      expect(transitions).toHaveLength(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("when the strategy changed while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-strategy-');
+    try {
+      const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       const cm = h.framework.getAgent('clerk')!.getContextManager();
       await cm.setStrategy(new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }));
       releaseSummary();
@@ -296,9 +362,10 @@ describe('a bare /newtopic', () => {
   });
 
   test("when only the branch moved while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
-    const { h, app, releaseSummary } = await bare('newtopic-bare-branch-');
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-branch-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       const cm = h.framework.getAgent('clerk')!.getContextManager();
       const strategyBefore = cm.getStrategy();
       const side = cm.branchAt(h.rowWith('clerk', 'clerk reply 1')!.id, 'side');
@@ -445,9 +512,18 @@ describe("a subagent's result or failure whose launcher has ended", () => {
       expect(audienceOf(forPrimary.metadata)).toEqual({ audience: ['clerk'] });
       expect(h.inWindow('clerk', forPrimary.id)).toBe(true);
       expect(h.inWindow('mira', forPrimary.id)).toBe(false);
-      // Nobody is woken: no request is asked for, and none is sent.
+      // Nobody is woken: no request is asked for, the framework holds no
+      // turn of either agent and no request waiting to start, and none is
+      // sent. The wait is a backstop for a request still on its way.
+      const waiting = () => {
+        const { activeTurnAgents, gatedRequests, parkedAdmissions } = h.framework.getHostModeStatus();
+        return { activeTurnAgents, gatedRequests, parkedAdmissions };
+      };
+      const none = { activeTurnAgents: [], gatedRequests: 0, parkedAdmissions: 0 };
+      expect(waiting()).toEqual(none);
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(woken).toEqual([]);
+      expect(waiting()).toEqual(none);
       expect({ clerk: h.adapter.callsFor('clerk'), mira: h.adapter.callsFor('mira') }).toEqual(calls);
       // Each one's next request carries its own rows and not the other's.
       await h.turn('clerk');

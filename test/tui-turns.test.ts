@@ -280,20 +280,56 @@ describe("the TUI's history after an undo", () => {
     // The undone row's thinking is marked with its text.
     expect(frameAt('undone')).toContain('(undone) 💭 tally them first');
     expect(frameAt('undone')).not.toContain('(undone) You: count the ledgers');
-    // Lines that aren't the history's stay: the start's, and the operator's message.
+    // Lines that aren't the history's stay: the start's, and the operator's
+    // message. The history's lines are marked where they are, above the
+    // operator's message, not drawn again below it.
     for (const at of ['undone', 'redone']) {
       expect(frameAt(at)).toContain('tui-turns-test. Type /help for commands.');
       expect(frameAt(at)).toContain('You: and the fifth?');
+      expect(times(frameAt(at), '── session history')).toBe(1);
       expect(times(frameAt(at), '── end history ──')).toBe(1);
+      expect(times(frameAt(at), 'three ledgers')).toBe(1);
+      expect(frameAt(at).indexOf('three ledgers')).toBeLessThan(frameAt(at).indexOf('You: and the fifth?'));
     }
-    // A row stored after the history was drawn is drawn below it while undone, and taken down at the redo.
+    // A turn streamed after the history was drawn: its reply and the
+    // operator's message are marked where they were drawn, not drawn again.
+    expect(times(frameAt('undone'), 'a fifth ledger')).toBe(1);
     expect(frameAt('undone')).toContain('(undone) a fifth ledger');
     expect(frameAt('undone').indexOf('(undone) a fifth ledger')).toBeGreaterThan(frameAt('undone').indexOf('You: and the fifth?'));
-    expect(frameAt('redone')).not.toContain('a fifth ledger');
+    expect(times(frameAt('undone'), 'You: and the fifth?')).toBe(1);
+    expect(frameAt('undone')).toMatch(/\(undone\) \d\d:\d\d You: and the fifth\?/);
+    // A row stored after the history was drawn that the TUI drew no line
+    // for is drawn below while undone, and taken down at the redo.
+    expect(frameAt('undone').indexOf('(undone) a sixth ledger')).toBeGreaterThan(frameAt('undone').indexOf('(undone) a fifth ledger'));
+    expect(times(frameAt('redone'), 'a fifth ledger')).toBe(1);
+    expect(frameAt('redone')).not.toContain('a sixth ledger');
     expect(frameAt('redone')).toContain('three ledgers');
     expect(frameAt('redone')).toContain('💭 tally them first');
     expect(frameAt('redone')).not.toContain('(undone)');
     expect(frameAt('another agent')).not.toContain('(undone)');
+    // A row whose lines /clear took down isn't drawn again by a later undo
+    // or redo while it stays out of the window, marked by an undo before the
+    // clear or never marked.
+    for (const at of ['cleared, undone', 'cleared, redone']) {
+      expect(frameAt(at)).not.toContain('a fifth ledger');
+      expect(frameAt(at)).not.toContain('a sixth ledger');
+      expect(frameAt(at)).not.toContain('an eighth ledger');
+    }
+    expect(frameAt('cleared, undone')).toContain('(undone) a seventh ledger');
+    expect(frameAt('cleared, redone')).not.toContain('ledger');
+  }, 40000);
+});
+
+describe("the TUI's branch moves, through runTui", () => {
+  // agent-framework's switchBranch and rollbackToMessage trace nothing: the
+  // command's follow-up saying the branch changed is what tells the TUI.
+  test("a command whose follow-up says the branch changed draws the history of the branch the store is on", async () => {
+    const switched = (await play('async-branch')).get('switched');
+    if (!switched) throw new Error('missing async-branch frame');
+    expect(switched.frame).toContain('the side branch reply');
+    expect(switched.frame).not.toContain('three ledgers');
+    expect(times(switched.frame, '── session history')).toBe(1);
+    expect(switched.frame.indexOf('the side branch reply')).toBeLessThan(switched.frame.indexOf('Switched to branch side.'));
   }, 40000);
 });
 

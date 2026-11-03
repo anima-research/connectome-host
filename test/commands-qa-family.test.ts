@@ -328,6 +328,8 @@ describe('/newtopic cut short by a stop', () => {
       const { cm, app, text } = makeStubWorld('idle');
       Object.assign(cm, {
         getStrategy: () => ({}),
+        windowMode: () => 'presented',
+        indexLength: () => 0,
         generateTransitionSummary: async () => {
           if (stopping) app.stopping = true;
           throw new Error(CROSSED);
