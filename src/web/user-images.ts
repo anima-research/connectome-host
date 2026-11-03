@@ -40,10 +40,11 @@ const MANY_IMAGES_SIDE_PX = 2000;
 
 /**
  * How many images a recipe's strategy keeps live at once, or `undefined` when
- * nothing caps the count: `passthrough` keeps every image, `maxLiveImages: 0`
- * turns the count limit off, and a strategy an extension registers is read
- * the same way, since the host can't know its window. The autobiographical
- * and frontdesk strategies default to context-manager's own default (6).
+ * the recipe sets no count of its own: `passthrough` keeps every image,
+ * `maxLiveImages: 0` keeps up to context-manager's image ceiling, and a
+ * strategy an extension registers is read the same way, since the host can't
+ * know its window. The autobiographical and frontdesk strategies default to
+ * context-manager's own default (6).
  */
 export function liveImageWindow(strategy: RecipeStrategy | undefined): number | undefined {
   const type = strategy?.type ?? 'autobiographical';
@@ -64,7 +65,7 @@ export function takesUserImages(strategy: RecipeStrategy | undefined): boolean {
 /**
  * The base64 a recipe's strategy keeps live across its images, where the
  * recipe sets it (`maxLiveImageBytes`); `undefined` leaves context-manager's
- * default, 20 MiB at 0.14.0, which is above what one message may carry
+ * default, 20 MiB at 0.24.0, which is above what one message may carry
  * anyway. Read for the strategies `liveImageWindow` reads.
  */
 export function liveImageBytes(strategy: RecipeStrategy | undefined): number | undefined {
@@ -76,8 +77,9 @@ export function liveImageBytes(strategy: RecipeStrategy | undefined): number | u
 
 /**
  * The limits this host checks composer images against, from what its recipe
- * keeps live: how many images (`undefined`: no limit, as under passthrough or
- * `maxLiveImages: 0`) and how much of their base64 (`undefined`: the default).
+ * keeps live: how many images (`undefined`: no count of the recipe's own, as
+ * under passthrough or `maxLiveImages: 0`, which keeps up to context-manager's
+ * image ceiling) and how much of their base64 (`undefined`: the default).
  * A message takes no more images than the window keeps by count, and no more
  * base64 than it keeps by bytes, since images past either are stripped before
  * they reach the model. When more than 20 images can be live, each side is
