@@ -1783,15 +1783,17 @@ export class WebUiModule implements Module {
                   + 'only as placeholders. Whoever runs this host can raise it';
               } else if (past(checked.blocks) && checked.blocks.every((image) => past([image, ...text]))) {
                 message = `message not sent: ${together}, and so does the text with any one of them. `
-                  + `Send at most ${fitting([])} at once first, then the text in a message of its own, `
-                  + 'then attach the rest again';
+                  + `Send at most ${fitting([])} at once first; once the agent has answered, the text in a message of `
+                  + `its own; then attach the rest again, at most ${fitting([])} at a time, `
+                  + 'each once the agent has answered';
               } else if (past(checked.blocks)) {
                 message = `message not sent: ${together}, where they could reach the model only as placeholders. `
-                  + `Send at most ${fitting(text)} ${text.length > 0 ? 'with this text' : 'at once'}; `
-                  + 'attach the rest again after it, in a message of their own';
+                  + `Send at most ${fitting(text)} ${text.length > 0 ? 'with this text' : 'at once'}; then attach the `
+                  + `rest again, at most ${fitting([])} at a time, each once the agent has answered`;
               } else {
                 message = 'message not sent: with this much text, its images could be dropped before the model sees '
-                  + 'them. Send the images in a message of their own first, then the text';
+                  + 'them. Send the images in a message of their own first, then the text once the agent has answered '
+                  + 'them';
               }
               this.send(client, {
                 type: 'error',

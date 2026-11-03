@@ -136,14 +136,17 @@ reach the model only as a placeholder. When a single image would come that
 near on its own, the refusal says the depth leaves too little room for an
 image, which whoever runs the host can raise; when the text leaves no room
 for even one image, or the text takes it there, it asks for the images
-first, in a message of their own, then the text; when the number of its
-images does, it says how many fit, with the text if there is any, and asks
-for the rest to be attached again after, in a message of their own; and when
-both do, it says how many fit on their own, sent first, with the text after
-in a message of its own, and the rest attached again after that. Sent after
-the images, the text can be read once they have gone to placeholders, with
-the model's own reply to them before it: the images first is the order the
-composer can follow without losing them, since it sends every attachment
+first, in a message of their own, then the text once the agent has answered
+them; when the number of its images does, it says how many fit, with the
+text if there is any, and asks for the rest to be attached again after, at
+most as many as fit alone at a time; and when both do, it says how many fit
+on their own, sent first, with the text after in a message of its own, and
+the rest attached again after that, as many at a time. Each later part waits
+for the agent's answer to the part before, since a part stored before the
+agent next compiles counts toward the depth of the images ahead of it. Sent
+after the images, the text can be read once they have gone to placeholders,
+with the model's own reply to them before it: the images first is the order
+the composer can follow without losing them, since it sends every attachment
 with its draft. The line is the context manager's own token estimate of the
 message, as it stores it, at the calibration of the agent's last compile,
 and the host refuses past 90% of the depth. It is an estimate at send time:
