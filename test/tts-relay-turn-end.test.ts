@@ -136,15 +136,22 @@ describe('what the relay is given to voice', () => {
   test("each message the agent published, as a whole text block on its channel; none of what the model wrote", async () => {
     const { received, emit } = await harness();
     emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:content_block', phase: 'block_start', blockType: 'thinking', blockIndex: 0, channelId: CHANNEL });
     emit({ type: 'inference:tokens', content: 'Weighing the route.', blockType: 'thinking', blockIndex: 0, channelId: CHANNEL });
+    emit({ type: 'inference:content_block', phase: 'block_complete', blockType: 'thinking', blockIndex: 0, channelId: CHANNEL });
+    emit({ type: 'inference:content_block', phase: 'block_start', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
     emit({ type: 'inference:tokens', content: 'An aside for no one. ', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
     emit({ type: 'inference:tokens', content: '>> The ferry leaves at noon.', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
     emit({ type: 'inference:content_block', phase: 'block_complete', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
-    const published = { serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1' };
-    emit({ type: 'inference:published', ...published, index: 0, text: 'The ferry leaves at noon.', messageId: 'm1' });
-    emit({ type: 'inference:published', ...published, index: 1, text: '\n\nTake the coast road.', messageId: 'm2' });
+    const publish = (channelId: string, index: number, text: string) =>
+      emit({ type: 'inference:published', serverId: 'discord', channelId, inferenceId: 'i1', index, text, messageId: `m${index}` });
+    publish(CHANNEL, 0, 'The ferry leaves at noon.');
+    publish('discord:guild:456', 1, 'Take the coast road.');
+    // agent-framework 0.32.0 can send a turn's publish after its inference:completed.
     emit({ type: 'inference:completed' });
-    await waitFor(() => received.some((m) => m.type === 'activation_end'), 'the turn\'s end');
+    publish(CHANNEL, 2, '\n\n');
+    publish(CHANNEL, 3, '\n\nOr wait for the bus.');
+    await waitFor(() => received.filter((m) => m.type === 'block_complete').length === 3, 'the third message');
 
     const all = JSON.stringify(received);
     for (const unpublished of ['Weighing', 'An aside', '>>']) expect(all).not.toContain(unpublished);
@@ -153,14 +160,15 @@ describe('what the relay is given to voice', () => {
       'block_start', 'chunk', 'block_complete',
       'block_start', 'chunk', 'block_complete',
       'activation_end',
+      'block_start', 'chunk', 'block_complete',
     ]);
     const blocks = received.filter((m) => m.blockType !== undefined);
-    expect(blocks.every((m) => m.blockType === 'text' && m.channelId === '123')).toBe(true);
-    expect(blocks.filter((m) => m.type === 'chunk').map((m) => [m.text, m.visible])).toEqual([
-      ['The ferry leaves at noon.', true], ['Take the coast road.', true],
+    expect(blocks.every((m) => m.blockType === 'text')).toBe(true);
+    expect(blocks.filter((m) => m.type === 'chunk').map((m) => [m.channelId, m.text, m.visible])).toEqual([
+      ['123', 'The ferry leaves at noon.', true], ['456', 'Take the coast road.', true], ['123', 'Or wait for the bus.', true],
     ]);
-    expect(blocks.filter((m) => m.type === 'block_complete').map((m) => m.content)).toEqual([
-      'The ferry leaves at noon.', 'Take the coast road.',
+    expect(blocks.filter((m) => m.type === 'block_complete').map((m) => [m.channelId, m.content])).toEqual([
+      ['123', 'The ferry leaves at noon.'], ['456', 'Take the coast road.'], ['123', 'Or wait for the bus.'],
     ]);
   }, 30_000);
 });
