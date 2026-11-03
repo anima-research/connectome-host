@@ -163,12 +163,28 @@ interface PublishedMessage {
 }
 
 const PUBLISHED_RING_MAX = 32;
-/** How many channels' last voiced agent is kept (voicedIn), the oldest let go first. */
+/** How many channels' voiced agents are kept (voicedIn), the oldest let go first. */
 const VOICED_CHANNELS_MAX = 32;
+/** How many of the heard words' characters a published message must start with. */
+const HEARD_PROBE_CHARS = 80;
+
+/** The agents whose activations were announced in a channel since its last
+ *  interruption, in the order they were first announced, and whether it has
+ *  had one. */
+interface VoicedInChannel {
+  agents: Set<string>;
+  interrupted: boolean;
+}
 
 function rawChannelId(mcplId: string): string {
   const ix = mcplId.lastIndexOf(':');
   return ix === -1 ? mcplId : mcplId.slice(ix + 1);
+}
+
+function commonPrefixLength(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[n] === b[n]) n++;
+  return n;
 }
 
 function traceChannelId(event: unknown): string | undefined {
@@ -186,10 +202,11 @@ export class TtsRelayModule implements Module {
   private offTrace: (() => void) | null = null;
 
   private activations = new Map<string, ActivationState>();
-  /** The agent whose activation was last announced in each raw channel: the
-   *  relay voices a turn's chunks after the turn has ended, so an
-   *  interruption can come once its activation is gone. */
-  private voicedIn = new Map<string, string>();
+  /** The agents whose activations were announced in each raw channel since
+   *  its last interruption: the relay voices a turn's chunks after the turn
+   *  has ended, so an interruption can come once its activation is gone, and
+   *  while another agent's has started. */
+  private voicedIn = new Map<string, VoicedInChannel>();
   private published: PublishedMessage[] = [];
 
   constructor(private readonly config: TtsRelayModuleConfig) {}
@@ -259,14 +276,20 @@ export class TtsRelayModule implements Module {
     }
     if (!st.announced && st.rawChannelId) {
       st.announced = true;
-      this.voicedIn.delete(st.rawChannelId);
-      this.voicedIn.set(st.rawChannelId, agentName);
-      if (this.voicedIn.size > VOICED_CHANNELS_MAX) this.voicedIn.delete(this.voicedIn.keys().next().value!);
+      const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), interrupted: false };
+      voiced.agents.add(agentName);
+      this.keepVoiced(st.rawChannelId, voiced);
       this.client?.emit('activation_start', {
         channelId: st.rawChannelId,
         ...this.identity(agentName),
       });
     }
+  }
+
+  private keepVoiced(rawChannel: string, voiced: VoicedInChannel): void {
+    this.voicedIn.delete(rawChannel);
+    this.voicedIn.set(rawChannel, voiced);
+    if (this.voicedIn.size > VOICED_CHANNELS_MAX) this.voicedIn.delete(this.voicedIn.keys().next().value!);
   }
 
   private endActivation(agentName: string, reason: 'complete' | 'abort' | 'error'): void {
@@ -366,7 +389,10 @@ export class TtsRelayModule implements Module {
       `[tts-relay] interruption in ${ev.channelId} (${ev.reason}): ${ev.spokenText.length} chars voiced`,
     );
 
-    const target = this.findInterruptedMessage(ev);
+    const matched = this.publishesHeard(ev);
+    const target = this.interruptedMessage(ev, matched);
+    const speaker = this.speakerOf(ev, matched);
+    this.keepVoiced(ev.channelId, { agents: new Set(), interrupted: true });
     let edited = false;
 
     if (target?.messageId && ev.spokenText.trim().length > 0) {
@@ -391,7 +417,6 @@ export class TtsRelayModule implements Module {
     // slot, an untargeted note would be shown to every one of them, so one
     // whose speaker can't be named isn't written.
     if (this.config.notifyOnInterruption !== false) {
-      const speaker = this.speakerOf(ev, target);
       if ('why' in speaker) {
         console.error(`[tts-relay] the interruption in ${ev.channelId} is told to no agent: ${speaker.why}`);
         return;
@@ -404,38 +429,61 @@ export class TtsRelayModule implements Module {
   }
 
   /** The agent an interruption cut off, or why none can be named. It is the
-   *  one whose published message the interruption was matched to; with none
-   *  matched, the one voicing in the interruption's channel: the agent whose
-   *  activation there is live, or, with none live, the one whose activation
-   *  was last announced there (the relay voices a turn after it ends). Two
-   *  live activations in the channel name none, and so does an agent that
-   *  is no longer registered. */
-  private speakerOf(ev: InterruptionEvent, target: PublishedMessage | null): { agent: string } | { why: string } {
+   *  author of the published messages the heard words start (`matched`);
+   *  with none matched, the one voiced in the interruption's channel: the
+   *  agent whose activation there is live or was announced there since the
+   *  channel's last interruption (the relay voices a turn after it ends).
+   *  Matched messages by more than one agent name none, as do two or more
+   *  agents voiced in the channel, and so does an agent that is no longer
+   *  registered. */
+  private speakerOf(ev: InterruptionEvent, matched: PublishedMessage[]): { agent: string } | { why: string } {
     const registered = new Set(this.ctx?.getAgents().map((agent) => agent.name) ?? []);
     const named = (agent: string, as: string): { agent: string } | { why: string } =>
       registered.has(agent) ? { agent } : { why: `${agent}, ${as}, is no longer registered` };
-    if (target) return named(target.agentName, 'whose published message it was matched to');
+    if (matched.length > 0) {
+      const authors = [...new Set([...matched].reverse().map((r) => r.agentName))];
+      if (authors.length > 1) return { why: `the heard words start messages published by ${authors.join(', ')}` };
+      return named(authors[0]!, 'whose published message it was matched to');
+    }
     const live = [...this.activations]
       .filter(([, st]) => st.announced && st.rawChannelId === ev.channelId)
       .map(([agent]) => agent);
-    if (live.length > 1) return { why: `no published message matched it, and ${live.join(', ')} are each voicing in that channel` };
-    const voiced = live[0] ?? this.voicedIn.get(ev.channelId);
-    if (voiced === undefined) return { why: 'no published message matched it, and no agent was voiced in that channel' };
-    return named(voiced, live.length === 1 ? 'voicing in that channel' : 'the last voiced in that channel');
+    const since = this.voicedIn.get(ev.channelId);
+    const voiced = [...new Set([...(since?.agents ?? []), ...live])];
+    const where = `in that channel${since?.interrupted ? ' since its previous interruption' : ''}`;
+    if (voiced.length > 1) return { why: `no published message matched it, and ${voiced.join(', ')} were each voiced ${where}` };
+    if (voiced.length === 0) return { why: `no published message matched it, and no agent was voiced ${where}` };
+    return named(voiced[0]!, live.length === 1 ? 'voicing in that channel' : `voiced ${where}`);
   }
 
-  /** The latest message published in the interruption's channel whose text
-   *  the heard words start, or none. A publish the words don't start is not
-   *  taken: it would be edited to words it never said, and its author told
-   *  of an interruption that cut off another agent. */
-  private findInterruptedMessage(ev: InterruptionEvent): PublishedMessage | null {
+  /** The messages published in the interruption's channel whose text starts
+   *  with the heard words' first HEARD_PROBE_CHARS characters, newest first.
+   *  A publish they don't start is not taken: it would be edited to words it
+   *  never said, and its author told of an interruption that cut off another
+   *  agent. */
+  private publishesHeard(ev: InterruptionEvent): PublishedMessage[] {
     const spoken = collapseWs(ev.spokenText);
-    if (spoken.length === 0) return null;
-    const probe = spoken.slice(0, 80);
+    if (spoken.length === 0) return [];
+    const probe = spoken.slice(0, HEARD_PROBE_CHARS);
+    const matched: PublishedMessage[] = [];
     for (let i = this.published.length - 1; i >= 0; i--) {
       const r = this.published[i]!;
-      if (r.rawChannelId === ev.channelId && collapseWs(r.text).startsWith(probe)) return r;
+      if (r.rawChannelId === ev.channelId && collapseWs(r.text).startsWith(probe)) matched.push(r);
     }
-    return null;
+    return matched;
+  }
+
+  /** Of `matched` (newest first), the one whose text shares the longest
+   *  opening with the whole of the heard words, the newest of those that
+   *  share as much; none when nothing matched. */
+  private interruptedMessage(ev: InterruptionEvent, matched: PublishedMessage[]): PublishedMessage | null {
+    const spoken = collapseWs(ev.spokenText);
+    let best: PublishedMessage | null = null;
+    let bestShared = -1;
+    for (const r of matched) {
+      const shared = commonPrefixLength(collapseWs(r.text), spoken);
+      if (shared > bestShared) { best = r; bestShared = shared; }
+    }
+    return best;
   }
 }
