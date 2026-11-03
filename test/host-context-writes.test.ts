@@ -259,9 +259,10 @@ describe('a bare /newtopic', () => {
   });
 
   test("whose summary a turn started during stores nothing, the turn's requests go without it, and its answer gives the summary back", async () => {
-    const { h, app, releaseSummary } = await bare('newtopic-bare-turn-');
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-turn-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       // A turn starts while the summary is written, and waits in a tool call.
       h.adapter.script('clerk', { wait: 'g' }, { text: 'after the tool' });
       h.framework.nudgeAgent('clerk', 'test');
@@ -286,6 +287,7 @@ describe('a bare /newtopic', () => {
     const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-whole-turn-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       // A turn starts and ends while the summary is written: clerk is idle
       // with no turn alive again once it is.
       await h.turn('clerk');
@@ -302,6 +304,7 @@ describe('a bare /newtopic', () => {
     const { h, app, strategy, summarized, releaseSummary } = await bare('newtopic-bare-explicit-');
     try {
       const pending = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       const explicit = handleCommand('/newtopic Moving on to the release.', app);
       expect(texts(await explicit.asyncWork!)).toEqual(['Topic reset. Transition summary:', 'Moving on to the release.']);
       const row = h.rowWith('clerk', '[Topic Transition]')!;
@@ -321,7 +324,9 @@ describe('a bare /newtopic', () => {
     const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-twice-');
     try {
       const first = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       const second = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(2);
       releaseSummary();
       expect(texts(await first.asyncWork!)).toEqual(['Topic reset. Transition summary:', SUMMARY]);
       expect(texts(await second.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
@@ -335,9 +340,10 @@ describe('a bare /newtopic', () => {
   });
 
   test("when the strategy changed while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
-    const { h, app, releaseSummary } = await bare('newtopic-bare-strategy-');
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-strategy-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       const cm = h.framework.getAgent('clerk')!.getContextManager();
       await cm.setStrategy(new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }));
       releaseSummary();
@@ -356,9 +362,10 @@ describe('a bare /newtopic', () => {
   });
 
   test("when only the branch moved while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
-    const { h, app, releaseSummary } = await bare('newtopic-bare-branch-');
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-branch-');
     try {
       const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
       const cm = h.framework.getAgent('clerk')!.getContextManager();
       const strategyBefore = cm.getStrategy();
       const side = cm.branchAt(h.rowWith('clerk', 'clerk reply 1')!.id, 'side');
