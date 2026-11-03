@@ -2687,7 +2687,7 @@ export class WebUiModule implements Module {
     if (!app) return;
     try {
       const sessionId = sharedServer!.app!.frameworkSessionId;
-      const snap = buildPinsSnapshot(app, resolveAgent(app, agentName));
+      const snap = buildPinsSnapshot(app, resolveAgent(app, agentName), { withCandidates: true });
       this.send(client, { type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch (err) {
       this.send(client, {
@@ -2726,7 +2726,7 @@ export class WebUiModule implements Module {
     if (!app) return;
     try {
       const sessionId = sharedServer!.app!.frameworkSessionId;
-      const snap = buildPinsSnapshot(app, agentName);
+      const snap = buildPinsSnapshot(app, agentName, { withCandidates: true });
       this.broadcast({ type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch { }
   }

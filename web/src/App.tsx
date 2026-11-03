@@ -12,7 +12,7 @@ import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow, type McplLiveRow, type ToolClassRow } from './Mcpl';
 import { SettingsPanel, type SettingsState } from './Settings';
 import { DryContext, type DryContextData } from './DryContext';
-import { PinsPanel, type PinsState, type PinCandidate } from './Pins';
+import { PinsPanel, type PinsState } from './Pins';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
@@ -1607,14 +1607,10 @@ export function App() {
                   loaded={pinsLoaded()}
                   state={pinsState()}
                   agent={pinsState()?.agent}
-                  candidates={panelScope() === 'local'
-                    ? messages
-                        // A row an undo took out of the window: a pin on it would hold nothing.
-                        .filter((m) => m.index !== undefined && m.id && !m.undone)
-                        .map<PinCandidate>((m) => ({
-                          id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
-                        }))
-                    : pinsState()?.candidates ?? []}
+                  // The server's list for every scope: it leaves out the rows
+                  // a pin on would hold nothing (an undone row, another
+                  // resident's), which the transcript doesn't tell apart.
+                  candidates={pinsState()?.candidates ?? []}
                   onRefresh={refreshPins}
                   onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
                   onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}

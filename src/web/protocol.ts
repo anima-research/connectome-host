@@ -559,10 +559,10 @@ export interface PinsListMessage {
   levelHonored: boolean;
   /** Deepest fold level currently present, so the UI can bound level inputs. */
   deepestLevel?: number;
-  /** Recent pinnable messages (REAL store ids) from the scoped process.
-   *  Shipped for fleet-child scopes, where the SPA has no message window of
-   *  its own to build a picker from; local scope keeps using the client-side
-   *  candidate list. */
+  /** Recent pinnable messages (REAL store ids) from the scoped process, the
+   *  local one's as well as a fleet child's: the record's last 200 rows,
+   *  less a row out of the agent's window as undone and a row whose audience
+   *  stamp leaves the agent out (another resident's on a shared store). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
 }
 
@@ -959,9 +959,9 @@ export interface McplSetEnvMessage {
   env: Record<string, string>;
 }
 
-/** Pull the agent's protected ranges. Response is a `pins-list` envelope.
- *  With a fleet-child `scope` the child also ships picker `candidates`
- *  (recent real store ids) since the SPA has no window into its store. */
+/** Pull the agent's protected ranges. Response is a `pins-list` envelope,
+ *  with picker `candidates` (recent real store ids) for the local scope and
+ *  a fleet-child `scope` alike. */
 export interface RequestPinsMessage {
   type: 'request-pins';
   /** Fleet child name, or 'local'/undefined for the parent process. */

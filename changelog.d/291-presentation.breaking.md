@@ -52,8 +52,10 @@
     its lines in place and draws an undone row it has no line for below
     them until a redo puts it back), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again at each undo or redo. The pin picker leaves
-    undone rows out.
+    pins) read the window again at each undo or redo. The local pin picker
+    lists the host's candidates, the record's last 200 rows, as a fleet
+    child's does, where it listed the rows the transcript had loaded; it
+    leaves out undone rows and rows stamped for other residents only.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,

@@ -1,4 +1,4 @@
-import type { AgentFramework } from '@animalabs/agent-framework';
+import { audienceOf, type AgentFramework } from '@animalabs/agent-framework';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
 import { recipeModel, resolveProvider, type Recipe } from '../recipe.js';
@@ -539,7 +539,12 @@ export function buildPinsSnapshot(
 /**
  * A row an undo took out of the agent's window (agent-framework #291,
  * windowStatusOf 'undone') isn't a pin candidate: the fold plan a pin
- * constrains is the window's, so a pin on it would hold nothing.
+ * constrains is the window's, so a pin on it would hold nothing. Nor is a
+ * row whose audience stamp leaves the agent out (another resident's row on
+ * a shared store, or one a tune-out held from every resident), which never
+ * enters that window. A row with no stamp (stored before it existed) and a
+ * stored arrival the agent's window doesn't hold yet (status 'out'), which
+ * enters it at the agent's next turn, are candidates.
  */
 function buildPinCandidates(
   app: PanelAppRef,
@@ -551,7 +556,7 @@ function buildPinCandidates(
       getMessageCount?: () => number;
       getMessageWindow?: (
         offset: number, limit: number, opts?: { resolveBlobs?: boolean },
-      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown }>; startIndex: number };
+      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown }>; startIndex: number };
       windowStatusOf?: (id: string) => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
@@ -564,6 +569,8 @@ function buildPinCandidates(
     win.messages.forEach((m, i) => {
       if (!m.id) return;
       if (cm.windowStatusOf?.(String(m.id)) === 'undone') return;
+      const stamp = audienceOf(m.metadata);
+      if (stamp && !stamp.audience.includes(agentName)) return;
       let text = '';
       if (Array.isArray(m.content)) {
         for (const b of m.content as Array<Record<string, unknown>>) {
