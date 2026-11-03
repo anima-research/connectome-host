@@ -100,7 +100,13 @@
   on `undo:completed` or `redo:completed` listens for `window:undone`.
   `/history`, `/find` and `/branches` read the context of the agent the
   commands act for, as `/branchto` does, where they read the first
-  registered agent's. **Unchanged:** `/checkpoint`;
+  registered agent's. A checkpoint saves the record's position, its last
+  row, an undone one included, as it did. `/undo` leaves that row the
+  record's last, so after `/undo` a `/restore` to a checkpoint at the undone
+  turn's last row, with no row stored since, says it is already there and
+  moves nothing (`/redo` puts the turn back); once a row is stored after the
+  checkpoint, a `/restore` to it rolls back with that turn in the window, a
+  checkpoint taken after `/undo` included. **Unchanged:**
   `/checkout`, `/restore` and `/branchto` are still refused while any agent
   sharing the store is mid-turn, the subconscious included, as the 0.16.0
   entry for #264 has it, and `/newtopic` while the agent the command acts

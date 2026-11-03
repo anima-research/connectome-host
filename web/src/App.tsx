@@ -2379,7 +2379,7 @@ const COMMANDS: CommandHint[] = [
   { name: '/budget', blurb: 'show or set stream token budget' },
   { name: '/branches', blurb: 'list Chronicle branches' },
   { name: '/checkout', blurb: 'switch to named branch' },
-  { name: '/checkpoint', blurb: 'save current state as named checkpoint' },
+  { name: '/checkpoint', blurb: "save the record's position (its last row, an undone one included)" },
   { name: '/restore', blurb: 'roll back to checkpoint, or to its branch head' },
   { name: '/undo', blurb: "take the agent's last turn out of its window" },
   { name: '/redo', blurb: 'put the undone turn back in its window' },
