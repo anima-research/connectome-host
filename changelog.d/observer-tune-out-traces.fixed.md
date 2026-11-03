@@ -6,3 +6,7 @@
   server's id, the offer's digest, a count of rules or the names of the
   rules accepted, and the policy or the decision, never text. The host's
   trace table had no entry for them, so they went to full clients only.
+  A client with the `messages` scope also receives `message:lost` (the
+  presentation release of agent-framework #844: a write a surgery's hold
+  kept whose store threw at the release, named by its agent and the
+  write's external id, never its text), as it receives `message:removed`.

@@ -478,6 +478,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   // The conversation and its turns.
   'message:added': MESSAGES,
   'message:removed': MESSAGES,
+  'message:lost': MESSAGES,
   'inference:started': MESSAGES,
   'inference:turn_ended': MESSAGES,
   // The messages injected into a turn.
