@@ -100,6 +100,15 @@ describe('composer images over the WebSocket', () => {
     c.ws.close();
   });
 
+  test("a send whose images aren't well formed is refused naming its corrId", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    c.ws.send(JSON.stringify({ type: 'user-message', content: 'look', corrId: 'c-bad', images: [{ mediaType: 'image/png' }] }));
+    const error = await c.until(() => c.frames.find((f) => f.type === 'error'), 'the refusal');
+    expect(error).toEqual({ type: 'error', corrId: 'c-bad', message: 'unknown message shape' });
+    c.ws.close();
+  });
+
   test("a process trace reaches clients without its images' base64", async () => {
     const c = await connect();
     await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');

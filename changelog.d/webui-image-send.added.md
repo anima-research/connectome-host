@@ -23,4 +23,8 @@
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.
+  The host now refuses, as an unknown message shape, a `user-message` frame
+  whose `corrId` isn't a string, or whose `images` isn't an array of
+  `{ mediaType, data }` strings; it took such a frame's text before. The
+  refusal names the frame's `corrId` when that is a string.
   See `docs/webui-live-surgery.md`.

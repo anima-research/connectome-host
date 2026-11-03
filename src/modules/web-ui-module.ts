@@ -1711,7 +1711,9 @@ export class WebUiModule implements Module {
       return;
     }
     if (!isClientMessage(parsed)) {
-      this.send(client, { type: 'error', message: 'unknown message shape' });
+      const frame = parsed as { type?: unknown; corrId?: unknown } | null;
+      const corrId = frame?.type === 'user-message' && typeof frame.corrId === 'string' ? frame.corrId : undefined;
+      this.send(client, { type: 'error', ...(corrId !== undefined ? { corrId } : {}), message: 'unknown message shape' });
       return;
     }
 
