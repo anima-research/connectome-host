@@ -61,9 +61,10 @@
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo took out (dimmed, and `(undone)` in the TUI, which marks
-    its lines in place and draws below them an undone row stored since it
-    loaded the history that it has no line for, until a redo puts it
-    back), and the Web
+    its lines in place, a reply it streamed and a message sent from it
+    included, and draws below them an undone row stored since it loaded
+    the history that it has no line for, until a redo puts it back, but
+    not one whose lines `/clear` took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again at each undo, redo or shed. The local pin picker
     lists the host's candidates, the record's last 200 rows, as a fleet
@@ -107,7 +108,8 @@
   row, an undone one included, as it did. `/undo` leaves that row the
   record's last, so after `/undo` a `/restore` to a checkpoint at the undone
   turn's last row, with no row stored since, says it is already there and
-  moves nothing (`/redo` puts the turn back); once a row is stored after the
+  moves nothing (and names `/redo` where a redo exists: a shed marks rows
+  undone and keeps none); once a row is stored after the
   checkpoint, a `/restore` to it rolls back with that turn in the window, a
   checkpoint taken after `/undo` included. **Unchanged:**
   `/checkout`, `/restore` and `/branchto` are still refused while any agent
