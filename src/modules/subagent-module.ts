@@ -402,7 +402,7 @@ export function undeliveredLaunchParts(
 const FALLBACK_SUBAGENT_MODEL = 'claude-haiku-4-5-20251001';
 const NO_PARENT_SYSTEM_PROMPT = 'You are a research assistant.';
 
-type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled';
+type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
 
 /** What each prose-routing mode does with a stream's plain text, as
  *  agent-framework documents the mode (AgentConfig.proseRouting). As terse
@@ -415,6 +415,9 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
   hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
     'a leading ">>>destination" envelope routes that text to the destination it names instead',
   disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
+  // A subagent is an ephemeral run, which agent-framework routes as locus
+  // mode whatever its parent's lock: it has no lock of its own.
+  locked: 'plain text is published to the channel the framework infers for each turn, if there is one',
 };
 
 function proseRoutingEffect(mode: ProseRouting, shownHelp: boolean): string {
