@@ -1738,7 +1738,7 @@ export class WebUiModule implements Module {
             this.send(client, {
               type: 'error',
               ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
-              message: "message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request",
+              message: "message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request. Remove them to send the text",
             });
             return;
           }
@@ -3006,7 +3006,7 @@ export class WebUiModule implements Module {
       },
       childTrees,
       features: this.hostFeatures(),
-      userImageLimits: this.imageLimits(),
+      ...(takesUserImages(sharedServer?.app?.recipe.agent.strategy) ? { userImageLimits: this.imageLimits() } : {}),
       ...(hostMode ? { hostMode } : {}),
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0

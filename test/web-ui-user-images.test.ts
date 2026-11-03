@@ -222,10 +222,11 @@ describe('composer images over the WebSocket', () => {
       const c = await connect();
       const welcome = await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
       expect(welcome.features).not.toContain('user-images');
+      expect(welcome.userImageLimits).toBeUndefined();
       c.ws.close();
       const sent = await send({ content: 'look', images: [{ mediaType: 'image/png', data: FIX.png }] });
       expect(sent.pushed).toBeUndefined();
-      expect(sent.error).toBe("message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request");
+      expect(sent.error).toBe("message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request. Remove them to send the text");
       expect((await send({ content: 'just text' })).pushed).toBeDefined();
     } finally {
       delete agent.strategy;
