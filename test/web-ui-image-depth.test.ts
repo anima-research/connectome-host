@@ -15,10 +15,10 @@ const REFUSAL = 'message not sent: with this much text, its images could be drop
   + 'Send the images in a message of their own, or shorten the text';
 const TOGETHER = "these images together come within 10% of this host's image depth, the recipe's imageStripDepthTokens, "
   + 'or past it';
-const IMAGES_REFUSAL = `message not sent: ${TOGETHER}, where they could reach the model only as placeholders. `
-  + 'Send fewer images at once';
-const BOTH_REFUSAL = `message not sent: ${TOGETHER}, and so does the text with any one of them. `
-  + 'Send fewer images at once, and the text in a message of its own or shorter';
+const IMAGES_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, where they could reach the model only as `
+  + `placeholders. Send at most ${fit} with this text`;
+const BOTH_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, and so does the text with any one of them. `
+  + `Send at most ${fit} at once, and the text in a message of its own or shorter`;
 const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
   + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as placeholders. '
   + 'Whoever runs this host can raise it';
@@ -159,12 +159,14 @@ describe("a send whose images the strategy would strip at once", () => {
       .toEqual({ type: 'error', corrId: 'c-one-text', message: DEPTH_REFUSAL });
   });
 
-  test('asks for fewer images when it is their number that passes the line', async () => {
+  test('says how many images fit when it is their number that passes the line', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
     expect((await send({ content: '', images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL });
+      .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL('2 images') });
+    expect((await send({ content: 'a'.repeat(1_000), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-short' })).error)
+      .toEqual({ type: 'error', corrId: 'c-together-short', message: IMAGES_REFUSAL('2 images') });
     expect((await send({ content: 'a'.repeat(5_500), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-text' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL });
+      .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL('1 image') });
   });
 
   test('asks about the text alone when the images together are under the line, even if the text leaves no room for one', async () => {
@@ -176,7 +178,7 @@ describe("a send whose images the strategy would strip at once", () => {
   test('asks for both when the images together pass the line and the text leaves no room for even one', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
     expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-both' })).error)
-      .toEqual({ type: 'error', corrId: 'c-both', message: BOTH_REFUSAL });
+      .toEqual({ type: 'error', corrId: 'c-both', message: BOTH_REFUSAL('2 images') });
   });
 
   test('is refused for its text when the images alone are under the line', async () => {

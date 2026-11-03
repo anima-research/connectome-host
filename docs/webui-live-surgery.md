@@ -137,7 +137,8 @@ that near on its own, the refusal says the depth leaves too little room for
 an image, which whoever runs the host can raise; when the text leaves no
 room for even one image, or the text takes it there, it asks for the images
 in a message of their own or a shorter text; when the number of its images
-does, it asks for fewer images at once; and when both do, it asks for both.
+does, it says how many fit with the text; and when both do, it says how many
+fit on their own, with the text apart or shorter.
 The line is the context
 manager's own token estimate of the message, as it stores it, at the
 calibration of the agent's last compile, and the host refuses past 90% of

@@ -1771,6 +1771,11 @@ export class WebUiModule implements Module {
               const text = (content as ContentBlock[]).filter((block) => block.type === 'text');
               const together = "these images together come within 10% of this host's image depth, the recipe's "
                 + 'imageStripDepthTokens, or past it';
+              const fitting = (beside: ContentBlock[]): string => {
+                let n = 1;
+                while (n < checked.blocks.length && !past([...checked.blocks.slice(0, n + 1), ...beside])) n++;
+                return n === 1 ? '1 image' : `${n} images`;
+              };
               let message: string;
               if (checked.blocks.every((image) => past([image]))) {
                 message = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too "
@@ -1778,10 +1783,10 @@ export class WebUiModule implements Module {
                   + 'only as placeholders. Whoever runs this host can raise it';
               } else if (past(checked.blocks) && checked.blocks.every((image) => past([image, ...text]))) {
                 message = `message not sent: ${together}, and so does the text with any one of them. `
-                  + 'Send fewer images at once, and the text in a message of its own or shorter';
+                  + `Send at most ${fitting([])} at once, and the text in a message of its own or shorter`;
               } else if (past(checked.blocks)) {
                 message = `message not sent: ${together}, where they could reach the model only as placeholders. `
-                  + 'Send fewer images at once';
+                  + `Send at most ${fitting(text)} with this text`;
               } else {
                 message = 'message not sent: with this much text, its images could be dropped before the model sees '
                   + 'them. Send the images in a message of their own, or shorten the text';
