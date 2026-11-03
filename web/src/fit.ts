@@ -64,6 +64,6 @@ export const ANIMATED_REDRAWN_NOTE = 'an animation, redrawn as one still frame';
 /** Why an image couldn't be fitted, for the composer's notice. */
 export function noFitReason(name: string, fit: { tooBig: boolean }, limits: UserImageLimits): string {
   return fit.tooBig
-    ? `${name} is still over ${base64Chars(limits.maxBase64Chars)} after shrinking`
+    ? `${name} is still over ${base64Chars(limits.maxBase64Chars)} after shrinking; crop it, or attach a smaller copy`
     : `${name} couldn't be redrawn to fit: the browser drew no image at any size tried`;
 }

@@ -94,14 +94,16 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   const sniffed = sniffImageType(bytes);
   if (sniffed) {
     const damage = imageDamage(bytes, sniffed);
-    if (damage) throw new Error(`${name} ${damage}`);
+    if (damage) throw new Error(`${name} ${damage}; attach a whole copy`);
   }
   const animated = sniffed !== undefined && isAnimated(bytes, sniffed);
   let img: HTMLImageElement;
   try {
     img = await loadImage(file);
   } catch {
-    throw new Error(`${name} can't be read as an image`);
+    throw new Error(sniffed
+      ? `${name} can't be drawn, so its data may be damaged; attach another copy`
+      : `${name} isn't in a format this browser can read; convert it to PNG or JPEG`);
   }
   const width = img.naturalWidth;
   const height = img.naturalHeight;

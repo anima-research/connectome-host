@@ -75,7 +75,7 @@ describe('the notes', () => {
 
   test('a limit is given in base64 characters, exactly', () => {
     expect(base64Chars(USER_IMAGE_LIMITS.maxTotalBase64Chars)).toBe('12,582,912 characters of base64');
-    expect(noFitReason('cat.png', { tooBig: true }, USER_IMAGE_LIMITS)).toBe('cat.png is still over 5,000,000 characters of base64 after shrinking');
+    expect(noFitReason('cat.png', { tooBig: true }, USER_IMAGE_LIMITS)).toBe('cat.png is still over 5,000,000 characters of base64 after shrinking; crop it, or attach a smaller copy');
     expect(noFitReason('cat.png', { tooBig: false }, USER_IMAGE_LIMITS))
       .toBe("cat.png couldn't be redrawn to fit: the browser drew no image at any size tried");
   });

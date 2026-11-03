@@ -784,6 +784,17 @@ describe('images', () => {
     }, { init: HOLD_FILE_READS });
   });
 
+  test("a file the browser can't read, and one cut short, aren't attached, and each note says what to do", async () => {
+    await withComposer(async (c) => {
+      await attach(c, [
+        { name: 'photo.heic', buffer: Buffer.from('not an image the browser can draw') },
+        { name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) },
+      ]);
+      await c.page.getByText("photo.heic isn't in a format this browser can read; convert it to PNG or JPEG").waitFor();
+      await c.page.getByText('cut.png is cut short: the file ends before the image does; attach a whole copy').waitFor();
+    });
+  });
+
   test('an image is fitted to the side the welcome advertises, its thumbnail says so, and the fitted image is what is sent', async () => {
     await withComposer(async (c) => {
       await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
