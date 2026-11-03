@@ -15,7 +15,8 @@ import { hostNoteMetadata } from '../speaker.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { hostUpdate, type HostUpdate, type UpdateAnswer } from '../update/update.js';
 import {
-  QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, goBackLines, inShellWords, statusLines, toolWays,
+  ARMED_RETRY, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, goBackLines, inAgentWords, inShellWords, statusLines,
+  toolWays,
 } from '../web/update-text.js';
 import {
   SELF_RESTART_EXIT_CODE,
@@ -38,6 +39,7 @@ export interface LifecycleModuleConfig {
   selfUpdate?: boolean;
   update?: HostUpdate;
   headless: boolean;
+  installCommand?: string;
 }
 
 function readHostVersion(): string | undefined {
@@ -77,9 +79,9 @@ const UPDATE_DESCRIPTION =
   '- install: installs the newest release beside the one you run, which runs on. It answers once the install has ' +
   'begun; check shows when it is done.\n' +
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment, once ' +
-  QUIET_MOMENT + ', however long that takes, so it cuts no turn and asks nobody: your turn ends as it would. The host then ' +
-  'stops, and its service starts it again on the new release. If the host stops for any other reason first, ' +
-  'nothing stays armed, and from its next start check says the restart didn\'t go ahead, with that stop as the ' +
+  QUIET_MOMENT + ', however long that takes, so it cuts no turn and asks nobody: your turn ends as it would. ' +
+  ARMED_RETRY + ' The host then stops, and its service starts it again on the new release. If the host stops for ' +
+  'any other reason first, nothing stays armed, and from its next start check says the restart didn\'t go ahead, with that stop as the ' +
   'reason, though a crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An ' +
   'operator\'s own Restart or Go back also takes its place. Until the host next starts, or until you arm another, ' +
   'check says when one didn\'t go ahead for another reason, and why.\n' +
@@ -95,15 +97,13 @@ const UPDATE_DESCRIPTION =
   'refuse, say why, and arm nothing. After a restart nothing tells you it happened: check says what you run now ' +
   'and how the switch went. ';
 
-const PERSON_HEADLESS =
+const personHeadless = (command: string): string =>
   'The person who runs your install can\'t call this tool, so never give them its name or an action of it to type. ' +
   'This host runs headless, so their own command for each is typed in a shell, as the user your host runs as: check ' +
-  'is `connectome update check`, install is `connectome update install`, restart is `connectome update restart`, ' +
-  'and back is `connectome update back`, then `connectome update back keep` or `connectome update back restore`. If ' +
-  'their shell doesn\'t find `connectome`, or finds another install\'s, they type the install\'s own path to it, as ' +
-  'setup printed it. Their ' +
-  'restart and back begin at once, without waiting for a quiet moment: new turns are held, turns in progress get up ' +
-  'to 2 min to end, and if any don\'t, their command says who is still busy and how to wait longer, stop now or call ' +
+  `is \`${command} update check\`, install is \`${command} update install\`, restart is \`${command} update restart\`, ` +
+  `and back is \`${command} update back\`, then \`${command} update back keep\` or \`${command} update back restore\`. ` +
+  'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, turns in progress ' +
+  'get up to 2 min to end, and if any don\'t, their command says who is still busy and how to wait longer, stop now or call ' +
   'it off. notes and cancel have no command of theirs: check gives them a link to the notes, and only your cancel ' +
   'disarms a restart or Go back you armed, though their own restart or back goes ahead in its place.';
 
@@ -118,10 +118,10 @@ const PERSON_IN_A_TERMINAL =
   'theirs: check gives them a link to the notes, and only your cancel disarms a restart or Go back you armed, ' +
   'though their own restart or back goes ahead in its place.';
 
-function updateTool(headless: boolean): ToolDefinition {
+function updateTool(headless: boolean, command: string): ToolDefinition {
   return {
     name: 'update',
-    description: UPDATE_DESCRIPTION + (headless ? PERSON_HEADLESS : PERSON_IN_A_TERMINAL),
+    description: UPDATE_DESCRIPTION + (headless ? personHeadless(command) : PERSON_IN_A_TERMINAL),
     inputSchema: {
       type: 'object',
       properties: {
@@ -147,6 +147,7 @@ export class LifecycleModule implements Module {
   private readonly selfUpdate: boolean;
   private readonly update: HostUpdate;
   private readonly headless: boolean;
+  private readonly command: string;
 
   constructor(config: LifecycleModuleConfig) {
     this.dataDir = config.dataDir;
@@ -159,6 +160,7 @@ export class LifecycleModule implements Module {
     this.selfUpdate = config.selfUpdate ?? false;
     this.update = config.update ?? hostUpdate;
     this.headless = config.headless;
+    this.command = config.installCommand ?? 'connectome';
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -177,7 +179,7 @@ export class LifecycleModule implements Module {
   getTools(): ToolDefinition[] {
     return [
       ...(this.selfRestart ? [this.restartTool()] : []),
-      ...(this.selfUpdate ? [updateTool(this.headless)] : []),
+      ...(this.selfUpdate ? [updateTool(this.headless, this.command)] : []),
     ];
   }
 
@@ -268,7 +270,7 @@ export class LifecycleModule implements Module {
         success: false,
         isError: true,
         error: `Nothing was armed: ${armedName(update, false)} is armed since ${this.when(update.since)}, and it restarts ` +
-          `the host at its first quiet moment. ${TOOL_CANCEL} disarms it, if you'd rather restart without it.`,
+          `the host at a quiet moment. ${TOOL_CANCEL} disarms it, if you'd rather restart without it.`,
       };
     }
 
@@ -352,7 +354,7 @@ export class LifecycleModule implements Module {
         const status = this.update.status();
         const pending = this.state.armedRequest();
         answer = { done: status.check?.ok !== false, lines: [
-          ...statusLines(status, toolWays(this.headless)), ...(pending === null ? [] : [capital(plainRestart(pending))]),
+          ...statusLines(status, toolWays(this.headless, this.command)), ...(pending === null ? [] : [capital(plainRestart(pending))]),
           ...this.update.notesPointer(status.installed),
         ] };
         break;
@@ -364,13 +366,14 @@ export class LifecycleModule implements Module {
         answer = await this.update.startInstall(TOOL_WAYS.check);
         break;
       case 'restart':
-        answer = selfRestartPending() ?? this.update.armRestart(by, version);
+        answer = selfRestartPending() ?? this.update.armRestart(by, version, toolWays(this.headless, this.command));
         break;
       case 'back':
         answer = input.data === undefined
           ? { done: false, lines: ['Nothing was armed: back needs `data`, keep or restore.',
-            ...goBackLines(this.update.status(), toolWays(this.headless))] }
-          : selfRestartPending() ?? this.update.armGoBack(input.data === 'keep', by, version);
+            ...goBackLines(this.update.status(), toolWays(this.headless, this.command))] }
+          : selfRestartPending() ??
+            this.update.armGoBack(input.data === 'keep', by, version, toolWays(this.headless, this.command));
         break;
       case 'cancel': {
         const armed = this.update.armedSwitch() !== null;
@@ -380,8 +383,8 @@ export class LifecycleModule implements Module {
         break;
       }
     }
-    const said = answer.lines.join('\n');
-    const text = this.headless && input.action !== 'notes' ? inShellWords(said, 'connectome') : said;
+    const said = inAgentWords(answer.lines.join('\n'));
+    const text = this.headless && input.action !== 'notes' ? inShellWords(said, this.command) : said;
     return answer.done ? { success: true, data: text } : refuse(text);
   }
 

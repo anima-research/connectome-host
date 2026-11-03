@@ -97,9 +97,12 @@ function heldManager(status = 0) {
 }
 
 type Costs = Record<string, { breaking: boolean; cacheWrite: boolean }>;
-const registry = (versions: string[], costs: Costs = {}) => (async () => new Response(JSON.stringify({
+const registry = (versions: string[], costs: Costs = {}, bunFloor?: string) => (async () => new Response(JSON.stringify({
   name: '@animalabs/connectome-host',
-  versions: Object.fromEntries(versions.map((v) => [v, { connectomeRelease: costs[v] ?? { breaking: false, cacheWrite: false } }])),
+  versions: Object.fromEntries(versions.map((v) => [v, {
+    connectomeRelease: costs[v] ?? { breaking: false, cacheWrite: false },
+    ...(bunFloor !== undefined && v !== '0.14.1' ? { engines: { bun: bunFloor } } : {}),
+  }])),
 }))) as unknown as typeof fetch;
 
 function fleetChild(state: {
@@ -132,7 +135,7 @@ function residentHost(options: {
   mode?: 'service' | 'terminal'; versions?: string[]; costs?: Costs; installOps?: InstallOps;
   grants?: { selfRestart?: boolean; selfUpdate?: boolean }; state?: SelfRestartState; fleet?: SwitchFleet;
   clock?: { now: number }; retryMs?: number; stopping?: () => boolean; noStop?: boolean; registryDown?: boolean;
-  log?: (line: string) => void;
+  log?: (line: string) => void; installCommand?: string; bunFloor?: string;
 }) {
   const stops: string[] = [];
   const holders = [...(options.holders ?? [])];
@@ -150,7 +153,7 @@ function residentHost(options: {
     bun: '1.4.4',
     fetchManifest: options.registryDown
       ? (async () => { throw new Error('the registry is unreachable'); }) as unknown as typeof fetch
-      : registry(options.versions ?? ['0.14.1', '0.15.0'], options.costs),
+      : registry(options.versions ?? ['0.14.1', '0.15.0'], options.costs, options.bunFloor),
     ...(options.installOps ? { installOps: options.installOps } : {}),
     now: () => new Date(options.clock?.now ?? Date.parse('2026-10-26T20:00:00.000Z')),
     log: options.log ?? (() => {}),
@@ -167,6 +170,7 @@ function residentHost(options: {
     dataDir, update, now: () => new Date('2026-10-26T20:00:00.000Z'), hostVersion: '0.14.1',
     headless: (options.mode ?? 'service') === 'service',
     state: options.state ?? new SelfRestartState(), ...(options.grants ?? { selfUpdate: true }),
+    ...(options.installCommand !== undefined ? { installCommand: options.installCommand } : {}),
   });
   const call = (input: Record<string, unknown>, name = 'update'): Promise<ToolResult> =>
     module.handleToolCall({ id: `call-${Math.random()}`, name, input, callerAgentName: 'resident' });
@@ -186,6 +190,7 @@ const text = (result: ToolResult): string => String(result.success ? result.data
 const QUIET = 'first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, ' +
   'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child says ' +
   'nothing is going there, such as a turn or background script';
+const RETRY = 'A try that finds something still going waits at least a minute before the next.';
 const alwaysQuiet = () => true;
 
 async function until(done: () => boolean): Promise<void> {
@@ -230,9 +235,7 @@ test('on a headless host, the update tool says so, and names for each action the
     'never give them its name or an action of it to type. This host runs headless, so their own command for ' +
     'each is typed in a shell, as the user your host runs as: check is `connectome update check`, install is ' +
     '`connectome update install`, restart is `connectome update restart`, and back is `connectome update back`, ' +
-    'then `connectome update back keep` or `connectome update back restore`. If their shell doesn\'t find ' +
-    '`connectome`, or finds another install\'s, they type the install\'s own path to it, as setup printed it. Their ' +
-    'restart and back begin at ' +
+    'then `connectome update back keep` or `connectome update back restore`. Their restart and back begin at ' +
     'once, without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, ' +
     'and if any don\'t, their command says who is still busy and how to wait longer, stop now or call it off. ' +
     'notes and cancel have no command of theirs: check gives them a link to the notes, and only your cancel ' +
@@ -260,6 +263,46 @@ test('on a host run in a terminal, the update tool says so, and names for each a
   expect(description).not.toContain('connectome update check');
 });
 
+test('on a host started from an install, the update tool names the person\'s commands by the install\'s own command', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const typed = shellWord('/opt/x y/connectome');
+  const host = residentHost({ root, holders: ['alice'], installCommand: typed });
+  const description = host.module.getTools().find((tool) => tool.name === 'update')?.description.replace(/\s+/g, ' ') ?? '';
+  expect(description).toContain(`check is \`${typed} update check\`, install is \`${typed} update install\``);
+  expect(description).not.toContain('`connectome update');
+  expect(description).not.toContain('as setup printed it');
+  await host.update.restartToInstalled();
+  expect(text(await host.call({ action: 'check' }))).toContain(`the person's ${typed} update restart wait, the person's ` +
+    `${typed} update restart now or the person's ${typed} update restart resume.`);
+  await host.update.resume();
+});
+
+test('when the newest release needs a newer Bun, the update tool says the person who runs the host upgrades it, where /update says to', async () => {
+  const { root } = installRunning0141();
+  const host = residentHost({ root, bunFloor: '>=1.5.0' });
+  const install = await host.call({ action: 'install' });
+  expect(install.success).toBe(false);
+  expect(text(install)).toContain('0.15.0 needs Bun >=1.5.0, and this host runs on Bun 1.4.4, so nothing was installed. ' +
+    'Only the person who runs your host can upgrade its Bun (`bun upgrade`, or the package manager that installed it) ' +
+    'and start the host again; then lifecycle--update install can install it.');
+  expect(text(install)).not.toContain('Upgrade Bun');
+  expect(text(await host.call({ action: 'check' }))).toContain('0.15.0 needs Bun >=1.5.0: the person who runs your host ' +
+    'upgrades Bun first, and lifecycle--update install installs nothing until then.');
+  expect((await host.update.install()).lines.join('\n')).toContain('so nothing was installed. Upgrade Bun (`bun upgrade`, ' +
+    'or the package manager that installed it), start the host again, then Update.');
+});
+
+test('on a host with no install, the update tool says nothing the agent calls changes that, where /update tells the person how', async () => {
+  const host = residentHost({ root: null });
+  for (const input of [{ action: 'check' }, { action: 'notes' }, { action: 'install' }]) {
+    const said = text(await host.call(input));
+    expect(said).toContain('started through an install\'s entry point, so it can\'t update itself. Nothing you call ' +
+      'changes that: only the person who runs your host can, by making it an install with setup or by updating it by hand.');
+    expect(said).not.toContain('src/update/setup.ts');
+  }
+  expect((await host.update.install()).lines.join('\n')).toContain('src/update/setup.ts');
+});
+
 for (const [mode, typed] of [['service', 'connectome update restart'], ['terminal', '/update restart']] as const) {
   test(`check names an operator's waiting Restart's wait, now and resume as the person types them on a ${mode} host`, async () => {
     const { root } = installRunning0141(['0.15.0']);
@@ -276,15 +319,18 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   const host = residentHost({ root });
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(true);
-  for (const words of ['0.15.0', 'quiet', QUIET, 'cancel', 'check']) expect(text(answer)).toContain(words);
-  expect(host.module.getTools().find((tool) => tool.name === 'update')?.description.replace(/\s+/g, ' '))
-    .toContain(QUIET);
+  for (const words of ['0.15.0', 'quiet', QUIET, 'cancel', 'check', RETRY]) expect(text(answer)).toContain(words);
+  for (const words of [QUIET, RETRY]) {
+    expect(host.module.getTools().find((tool) => tool.name === 'update')?.description.replace(/\s+/g, ' '))
+      .toContain(words);
+  }
   expect(host.stops).toEqual([]);
   expect(readMark(root)).toBeNull();
   const check = text(await host.call({ action: 'check' }));
   expect(check).toContain('armed');
   expect(check).toContain('2026-10-26T20:00:00.000Z');
   expect(check).toContain(QUIET);
+  expect(check).toContain(RETRY);
 });
 
 test('restart or back naming another release than the one they would go to arms nothing, and says how to see and get it', async () => {
@@ -695,7 +741,8 @@ test('back needs the data kept or restored, and goes back the way it was asked',
     expect(text(missing)).toContain('keep');
     expect(text(missing)).toContain('restore');
     expect(text(missing).split('\n').at(-1)).toBe('Either way it begins at the host\'s first quiet moment, however long ' +
-      'that takes, so it cuts no turn and asks nobody.');
+      'that takes, so it cuts no turn and asks nobody. A try that finds something still going waits at least a ' +
+      'minute before the next.');
     expect(host.update.armedSwitch()).toBeNull();
     const arming = text(await host.call({ action: 'back', data }));
     expect(arming).toContain('if 0.14.0 has lifecycle--update; the person\'s connectome update check shows it either way.');
@@ -804,6 +851,7 @@ test('a restart of either kind waits alone: each refuses while the other is arme
   const plain = await host.call({ reason: 'pick up an edited recipe' }, 'restart');
   expect(plain.success).toBe(false);
   expect(text(plain)).toContain('a restart onto 0.15.0 is armed');
+  expect(text(plain)).toContain('it restarts the host at a quiet moment.');
   expect(state.isArmed()).toBe(false);
   expect(text(await host.call({ cancel: true }, 'restart'))).toContain('lifecycle--update cancel');
   expect(host.update.armedSwitch()).not.toBeNull();

@@ -42,7 +42,11 @@ export function installCommandText(): string {
 export function typedCommand(root: string, path: string | undefined = process.env.PATH): string {
   const own = join(root, INSTALL_COMMAND);
   const first = firstOnPath(INSTALL_COMMAND, path);
-  return first !== null && sameFile(first, own) ? INSTALL_COMMAND : shellWord(own);
+  return first !== null && sameFile(first, own) ? INSTALL_COMMAND : installCommandAt(root);
+}
+
+export function installCommandAt(root: string): string {
+  return shellWord(join(root, INSTALL_COMMAND));
 }
 
 function firstOnPath(name: string, path: string | undefined): string | null {

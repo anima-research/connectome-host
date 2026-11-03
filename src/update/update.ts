@@ -7,8 +7,8 @@ import {
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
-import { RELEASE_HOST, goBackOffer, shellWord } from './launcher.js';
-import { INSTALL_COMMAND } from '../cli/install-command.js';
+import { RELEASE_HOST, goBackOffer } from './launcher.js';
+import { installCommandAt } from '../cli/install-command.js';
 import {
   NOT_THE_SWITCHS, SERVING, lookAtChildren, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework,
   type SwitchFleet,
@@ -16,7 +16,7 @@ import {
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
 import {
-  COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, NOT_AN_INSTALL, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, busyLines, cliWays,
+  ARMED_RETRY, BUN_UPGRADE, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, NOT_AN_INSTALL, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, busyLines, cliWays,
   deprecatedLine,
   noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
@@ -193,7 +193,7 @@ export class HostUpdate {
         }
       }
       const ways = setup.here !== null && setup.headless === true
-        ? cliWays(shellWord(join(setup.here.root, INSTALL_COMMAND)))
+        ? cliWays(installCommandAt(setup.here.root))
         : COMMAND_WAYS;
       const lines = noticeLines(this.check, setup.running, setup.here !== null, ways, installed);
       for (const line of lines) this.log(`[update] ${line}`);
@@ -239,8 +239,7 @@ export class HostUpdate {
     if (check.bunFloorUnmet !== null) {
       this.installing = null;
       return { refusal: refused(`${check.candidate} needs Bun ${check.bunFloorUnmet}, and this host runs on Bun ${this.bun()}, ` +
-        'so nothing was installed. Upgrade Bun (`bun upgrade`, or the package manager that installed it), start the ' +
-        'host again, then Update.') };
+        `so nothing was installed. ${BUN_UPGRADE}`) };
     }
     const version = check.candidate;
     this.installing = version;
@@ -296,8 +295,8 @@ export class HostUpdate {
     return this.beginRestart({ to: offer.to, why: 'go-back', keepData });
   }
 
-  armRestart(by: string | null, expected?: string): UpdateAnswer {
-    const refusal = this.armRefusal();
+  armRestart(by: string | null, expected?: string, ways: UpdateWays = toolWays(this.need().headless === true)): UpdateAnswer {
+    const refusal = this.armRefusal(ways);
     if (refusal !== null) return refused(refusal);
     let to: string | null;
     try {
@@ -317,8 +316,10 @@ export class HostUpdate {
     return this.arm({ to, why: 'update', keepData: false }, by);
   }
 
-  armGoBack(keepData: boolean, by: string | null, expected?: string): UpdateAnswer {
-    const refusal = this.armRefusal();
+  armGoBack(
+    keepData: boolean, by: string | null, expected?: string, ways: UpdateWays = toolWays(this.need().headless === true),
+  ): UpdateAnswer {
+    const refusal = this.armRefusal(ways);
     if (refusal !== null) return refused(refusal);
     const here = this.need().here!;
     let offer: { to: string } | null;
@@ -407,7 +408,8 @@ export class HostUpdate {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
-      'however long that takes, so it cuts no turn and asks nobody. The host then stops, and its service starts it again on ' +
+      `however long that takes, so it cuts no turn and asks nobody. ${ARMED_RETRY} The host then stops, and its service ` +
+      'starts it again on ' +
       `${request.to}. If the host stops for another reason first, nothing stays armed. ` +
       `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${TOOL_WAYS.check} shows whether it committed or ` +
       'went back, and why' + (request.why === 'go-back'
@@ -415,7 +417,7 @@ export class HostUpdate {
         : '.'));
   }
 
-  private armRefusal(): string | null {
+  private armRefusal(ways: UpdateWays): string | null {
     if (this.need().here === null) return NO_INSTALL_OF_ITS_OWN;
     if (this.stopper === null) return NO_STOP;
     if (!this.stopper.supervised) return IN_A_TERMINAL;
@@ -428,7 +430,7 @@ export class HostUpdate {
       return `Nothing was armed: an install of ${this.installing} is under way. Ask again once ${TOOL_WAYS.check} shows ` +
         'it has ended.';
     }
-    const refusal = this.restartRefusal(toolWays(this.need().headless === true));
+    const refusal = this.restartRefusal(ways);
     return refusal === null ? null : `Nothing was armed: ${refusal.charAt(0).toLowerCase()}${refusal.slice(1)}`;
   }
 

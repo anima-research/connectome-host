@@ -1282,7 +1282,8 @@ export interface RecipeModules {
    * can check for, install, restart onto or go back from a release of its
    * own install, as `/update` does. A restart or Go back begins at the
    * host's first quiet moment, as `QUIET_MOMENT` in `src/web/update-text.ts`
-   * says, and is armed only on a host whose environment at its start holds
+   * says, though no sooner than a minute after a try that found something
+   * still going, and is armed only on a host whose environment at its start holds
    * `CONNECTOME_SUPERVISED=1`, which the service written by `connectome service
    * install` sets only if that service starts the host again when it exits
    * with 75 and when it exits with 1.
