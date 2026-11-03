@@ -971,7 +971,7 @@ function refusal(error: unknown): string {
   return `${remedy >= 0 ? line.slice(0, remedy) : line} ${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 }
 
-const REPAIR_SECTION = 'docs/DEPLOYMENTS.md\'s "Crossed summaries: auditing and repairing a store"';
+const REPAIR_SECTION = 'docs/DEPLOYMENTS.md\'s "Crossed summaries: auditing and repairing a store", in the host\'s package,';
 
 function oneLine(error: unknown): string {
   return flat(error instanceof Error ? error.message : String(error));

@@ -20,7 +20,7 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 
 ## A resident, from one line
 
-The machine the resident will live on needs [Bun](https://bun.sh/) 1.4.3 or
+The machine the resident will live on needs [Bun](https://bun.sh/) 1.4.4 or
 later, installed as its site says. Then, on that machine, in a new directory:
 
 ```bash
@@ -548,8 +548,9 @@ explicitly with `agent_settings` (in the agent's built-in `settings` toolset,
 or its tool list if its `allowedTools` doesn't permit both `toolsets--open`
 and `toolsets--act`) overrides it until reset, from the point where it was
 set. A model that doesn't take the effort level gets none, the
-model's default applies, and stderr says so once (`[reasoning-effort] <model>
-does not accept effort=<level> — not sent`). Compression calls are unaffected,
+model's default applies, and stderr says so once for each model and level,
+in a line beginning `[reasoning-effort] <model> does not accept
+effort=<level> — not sent`. Compression calls are unaffected,
 and other providers ignore the field: OpenAI recipes use
 `agent.responses.reasoningEffort`, below.
 

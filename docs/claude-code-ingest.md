@@ -52,7 +52,7 @@ Three structural facts matter:
 | Block | Round-trips? | Notes |
 |---|---|---|
 | `text` | Yes | identity |
-| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, whose thinking binds, a block is bound to the system text and tools it was minted under. On the first four the host sends the drop control on agent turns through the Anthropic API, and the provider sets such a block aside once the resident's differ from Claude Code's; an account that enforces the binding refuses the request without the control. Without the drop control, on the Mythos models or another provider, context-manager leaves the transcript's thinking out |
+| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, whose thinking binds, a block is bound to the system text and tools it was minted under. On the first four the host sends the drop control on agent turns through the Anthropic API, and the provider sets such a block aside once the resident's differ from Claude Code's; an account that enforces the binding refuses the request without the control. An account the host's start-up check finds still showing such a block gets no drop control (`DEPLOYMENTS.md`'s "Refusals and signed thinking"). Without the drop control, on the Mythos models or another provider, context-manager leaves the transcript's thinking out |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
 | `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
@@ -290,7 +290,9 @@ strategy config chunks its frontier under *that* config):
 
 The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage 4) give
 you 1–2 on a running instance; for a pre-boot check, run the host against a copy of
-`<agent>-cm` with `--headless` and a mock or real key, then hit the endpoints.
+`<agent>-cm` with `--headless` and a mock or real key, then hit the endpoints. That
+pre-boot check is an operator's: a setup agent never starts a host
+(`AGENT-ONBOARDING.md`'s "Going live"), so it checks after going live instead.
 `/debug/context/makeup` shows a count the API refused only by its status, such as
 `countSource: "count_tokens_failed_400"`, without the body. To read the body, send
 that request yourself: `buildContextMakeup` (`src/web/panel-data.ts`) builds it by

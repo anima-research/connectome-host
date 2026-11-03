@@ -154,4 +154,19 @@ describe('what the guide names ships, or is the install\'s own', () => {
       }
     }
   });
+
+  it('names, in the prose of a section that runs a shipped script, only options that script takes', () => {
+    let named = 0;
+    for (const piece of PIECES) {
+      const scripts = [...piece.text.replace(/\\\n\s*/g, ' ').matchAll(/bun <host>\/(scripts\/[\w.-]+)/g)].map((match) => match[1]!);
+      if (scripts.length === 0) continue;
+      const sources = scripts.map((script) => readFileSync(join(ROOT, script), 'utf-8'));
+      for (const [, option] of piece.text.matchAll(/`(--[a-z-]+)[^`]*`/g)) {
+        named++;
+        const taken = sources.some((source) => source.includes(`'${option}'`));
+        expect({ section: piece.heading, option, taken }).toEqual({ section: piece.heading, option, taken: true });
+      }
+    }
+    expect(named).toBeGreaterThan(0);
+  });
 });
