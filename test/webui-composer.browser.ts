@@ -656,6 +656,7 @@ describe('images', () => {
       const from = c.host.received.length;
       await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
       await c.page.getByText('reading 1 image').waitFor();
+      await c.box.fill('with the picture');
       await c.box.press('Enter');
       await c.page.getByText('still reading images; send again in a moment').waitFor();
       await releaseFileReads(c);
@@ -664,7 +665,7 @@ describe('images', () => {
       await c.box.press('Enter');
       const sends = () => c.host.received.slice(from).filter((f): f is UserMessageMessage => f.type === 'user-message');
       await until('the send after the read', () => sends().find((f) => f.images?.length === 1), (f) => f !== undefined);
-      expect(sends()).toHaveLength(1);
+      expect(sends().map((f) => [f.content, f.images?.length])).toEqual([['with the picture', 1]]);
     }, { init: HOLD_FILE_READS });
   });
 
@@ -674,6 +675,7 @@ describe('images', () => {
       const cut = 'cut.png is cut short: the file ends before the image does; attach a whole copy';
       const heic = "photo.heic isn't in a format this browser can read; convert it to PNG or JPEG";
       const reading = 'still reading images; send again in a moment';
+      await c.box.fill('after the reads');
       await attach(c, [{ name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
       await attach(c, [{ name: 'photo.heic', buffer: Buffer.from('not an image the browser can draw') }]);
       await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
@@ -683,16 +685,49 @@ describe('images', () => {
       await c.box.press('Enter');
       await c.page.getByText(reading).waitFor();
       expect(await c.page.getByText(cut).count()).toBe(1);
+      await attach(c, [{ name: 'second.png', buffer: DOT_PNG }]);
+      await c.page.getByText('reading 3 images').waitFor();
+      expect(await c.page.getByText(cut).count()).toBe(1);
       await releaseFileReads(c, 'photo.heic');
       await c.page.getByText(heic).waitFor();
       expect(await c.page.getByText(cut).count()).toBe(1);
-      await releaseFileReads(c, 'dot.png');
+      await releaseFileReads(c);
       await c.page.getByTitle(/^dot\.png/).waitFor();
+      await c.page.getByTitle(/^second\.png/).waitFor();
       await until('the reading note cleared', () => c.page.getByText(reading).count(), (n) => n === 0);
       expect(await c.page.getByText(cut).count()).toBe(1);
       expect(await c.page.getByText(heic).count()).toBe(1);
-      expect(c.host.received.slice(from).filter((f) => f.type === 'user-message')).toEqual([]);
+      await c.box.press('Enter');
+      const sends = () => c.host.received.slice(from).filter((f): f is UserMessageMessage => f.type === 'user-message');
+      await until('the send after the reads', () => sends().find((f) => f.images?.length === 2), (f) => f !== undefined);
+      expect(sends().map((f) => [f.content, f.images?.length])).toEqual([['after the reads', 2]]);
+      await until('the notes cleared by the send', () => c.page.getByText(cut).count(), (n) => n === 0);
+      expect(await c.page.getByText(heic).count()).toBe(0);
     }, { init: HOLD_FILE_READS });
+  });
+
+  test("a send's refusal, and removing an image, leave the notes about files not attached", async () => {
+    await withComposer(async (c) => {
+      const cut = 'cut.png is cut short: the file ends before the image does; attach a whole copy';
+      const slash = 'a slash command takes no images: remove them, or send the images as a message';
+      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }, { name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
+      await c.page.getByTitle(/^dot\.png/).waitFor();
+      await c.page.getByText(cut).waitFor();
+      await c.box.fill('/help');
+      await c.box.press('Enter');
+      await c.page.getByText(slash).waitFor();
+      expect(await c.page.getByText(cut).count()).toBe(1);
+      await c.page.getByTitle(/^dot\.png/).getByTitle('remove').click();
+      await until('the send note cleared', () => c.page.getByText(slash).count(), (n) => n === 0);
+      expect(await c.page.getByText(cut).count()).toBe(1);
+      await attach(c, [{ name: 'third.png', buffer: DOT_PNG }]);
+      await c.page.getByTitle(/^third\.png/).waitFor();
+      await c.box.press('Enter');
+      await c.page.getByText(slash).waitFor();
+      await c.box.fill('an ordinary message');
+      await attach(c, [{ name: 'second.png', buffer: DOT_PNG }]);
+      await until('the send note cleared by a new batch', () => c.page.getByText(slash).count(), (n) => n === 0);
+    });
   });
 
   test("a file the browser can't read, and one cut short, aren't attached, and each note says what to do", async () => {

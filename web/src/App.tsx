@@ -157,7 +157,8 @@ export function App() {
   const [draft, setDraft] = createSignal('');
   const [attachments, setAttachments] = createSignal<Attachment[]>([]);
   const [preparing, setPreparing] = createSignal(0);
-  const [attachNotice, setAttachNotice] = createSignal<string | null>(null);
+  const [fileNotes, setFileNotes] = createSignal<string[]>([]);
+  const [sendNote, setSendNote] = createSignal<string | null>(null);
   const [stillReading, setStillReading] = createSignal(false);
   const [dropActive, setDropActive] = createSignal(false);
   let fileInput: HTMLInputElement | undefined;
@@ -1233,7 +1234,8 @@ export function App() {
   const attachFiles = async (files: File[]): Promise<void> => {
     if (!canAttach() || files.length === 0) return;
     const L = imageLimits();
-    setAttachNotice(null);
+    setSendNote(null);
+    if (preparing() === 0) setFileNotes([]);
     const notes: string[] = [];
     const images = files.filter((f) => f.type.startsWith('image/'));
     if (images.length < files.length) notes.push(`${files.length - images.length} file(s) skipped: only images can be attached`);
@@ -1257,13 +1259,13 @@ export function App() {
       }
     }
     if (overCount > 0) notes.push(`${overCount} image(s) not attached: a message takes at most ${L.maxCount}`);
-    if (notes.length > 0) setAttachNotice((shown) => [shown, ...notes].filter((n) => n).join(' · '));
+    if (notes.length > 0) setFileNotes((shown) => [...shown, ...notes]);
     if (preparing() === 0) setStillReading(false);
   };
 
   const removeAttachment = (id: string): void => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
-    setAttachNotice(null);
+    setSendNote(null);
   };
 
   const submit = (): void => {
@@ -1275,21 +1277,22 @@ export function App() {
     }
     if (!text && images.length === 0) return;
     if (images.length > 0 && !canAttach()) {
-      setAttachNotice("this host doesn't take images now: remove them to send");
+      setSendNote("this host doesn't take images now: remove them to send");
       return;
     }
     if (images.length > 0 && text.startsWith('/')) {
-      setAttachNotice('a slash command takes no images: remove them, or send the images as a message');
+      setSendNote('a slash command takes no images: remove them, or send the images as a message');
       return;
     }
     if (images.length > 0 && parseRoute(text)) {
-      setAttachNotice("images can't be routed to a fleet child: remove them, or drop the @name");
+      setSendNote("images can't be routed to a fleet child: remove them, or drop the @name");
       return;
     }
     if (text === '/clear' || text.startsWith('/clear ')) {
       setDraft('');
       setAttachments([]);
-      setAttachNotice(null);
+      setFileNotes([]);
+      setSendNote(null);
       setMessages(produce((arr) => { arr.length = 0; }));
       setStreamLines([]);
       return;
@@ -1311,16 +1314,17 @@ export function App() {
     // be lost. One that's over stays here to shorten.
     const overLimit = frameLimitNote(frame);
     if (overLimit !== null) {
-      setAttachNotice(overLimit);
+      setSendNote(overLimit);
       return;
     }
     if (!wire.send(frame)) {
-      setAttachNotice('not connected to the host: the message is still here; send it again once the connection is back');
+      setSendNote('not connected to the host: the message is still here; send it again once the connection is back');
       return;
     }
     setDraft('');
     setAttachments([]);
-    setAttachNotice(null);
+    setFileNotes([]);
+    setSendNote(null);
     if (frame.type === 'command') return;
     if (route) {
       setMessages(produce((arr) => arr.push({
@@ -1361,7 +1365,7 @@ export function App() {
     if (restore) {
       setDraft(text);
       setAttachments(images);
-      setAttachNotice('not sent (see the error above); the message is back here');
+      setSendNote('not sent (see the error above); the message is back here');
     }
   };
 
@@ -1588,7 +1592,7 @@ export function App() {
             <AttachmentStrip
               attachments={attachments()}
               preparing={preparing()}
-              notice={[attachNotice(), stillReading() ? STILL_READING : null].filter((n) => n).join(' · ') || null}
+              notice={[...fileNotes(), sendNote(), stillReading() ? STILL_READING : null].filter((n) => n).join(' · ') || null}
               onRemove={removeAttachment}
             />
             <div class="flex gap-2">
