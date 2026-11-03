@@ -28,23 +28,16 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 /**
  * The most images a request may carry at the full side limit, by Anthropic's
  * vision docs: past it, every image in the request is held to 2000 px on a
- * side. Probes of the API on 2026-10-13 and 2026-10-19 found it not enforcing
- * this (21 and 101 images, one of them 2100 px, were accepted). The cap
- * follows the docs anyway: a stored image the API refuses fails every later
- * request until it leaves the live window, while the cap costs at most the
- * band between 2000 px and the size the models downscale to themselves.
+ * side.
  */
 const MANY_IMAGES = 20;
 /** The side the docs give for a request past `MANY_IMAGES`. */
 const MANY_IMAGES_SIDE_PX = 2000;
 
 /**
- * How many images a recipe's strategy keeps live at once, or `undefined` when
- * the recipe sets no count of its own: `passthrough` keeps every image,
- * `maxLiveImages: 0` keeps up to context-manager's image ceiling, and a
- * strategy an extension registers is read the same way, since the host can't
- * know its window. The autobiographical and frontdesk strategies default to
- * context-manager's own default (6).
+ * How many images a recipe's strategy keeps live at once, or `undefined` where
+ * the host knows no count: `passthrough`, `maxLiveImages: 0`, or a strategy an
+ * extension registers.
  */
 export function liveImageWindow(strategy: RecipeStrategy | undefined): number | undefined {
   const type = strategy?.type ?? 'autobiographical';
@@ -53,11 +46,7 @@ export function liveImageWindow(strategy: RecipeStrategy | undefined): number | 
   return typeof n === 'number' && n > 0 ? n : undefined;
 }
 
-/**
- * Whether this host takes composer images: not under `passthrough`, which
- * keeps every image in every request, so a few large ones would carry each
- * request past the most membrane sends (28 MiB) and fail every inference after.
- */
+/** Whether this host takes composer images: not under `passthrough`. */
 export function takesUserImages(strategy: RecipeStrategy | undefined): boolean {
   return (strategy?.type ?? 'autobiographical') !== 'passthrough';
 }
@@ -65,8 +54,8 @@ export function takesUserImages(strategy: RecipeStrategy | undefined): boolean {
 /**
  * The depth, in context-manager's token estimate, past which a recipe's
  * strategy replaces images with a placeholder (`imageStripDepthTokens`), or
- * `undefined` when there is none to check: 0 turns the depth off, and a
- * strategy an extension registers keeps a depth the host can't know.
+ * `undefined` where the host knows none: a depth of 0, `passthrough`, or a
+ * strategy an extension registers.
  */
 export function liveImageDepth(strategy: RecipeStrategy | undefined): number | undefined {
   const type = strategy?.type ?? 'autobiographical';
@@ -106,9 +95,7 @@ export function sendDepthTokens(content: ContentBlock[], strategy: IngressChunke
 
 /**
  * The base64 a recipe's strategy keeps live across its images, where the
- * recipe sets it (`maxLiveImageBytes`); `undefined` leaves context-manager's
- * default, 20 MiB at 0.24.0, which is above what one message may carry
- * anyway. Read for the strategies `liveImageWindow` reads.
+ * recipe sets it (`maxLiveImageBytes`) for a strategy `liveImageWindow` reads.
  */
 export function liveImageBytes(strategy: RecipeStrategy | undefined): number | undefined {
   const type = strategy?.type ?? 'autobiographical';
@@ -118,15 +105,9 @@ export function liveImageBytes(strategy: RecipeStrategy | undefined): number | u
 }
 
 /**
- * The limits this host checks composer images against, from what its recipe
- * keeps live: how many images (`undefined`: no count of the recipe's own, as
- * under passthrough or `maxLiveImages: 0`, which keeps up to context-manager's
- * image ceiling) and how much of their base64 (`undefined`: the default).
- * A message takes no more images than the window keeps by count, and no more
- * base64 than it keeps by bytes, since images past either are stripped before
- * they reach the model. When more than 20 images can be live, each side is
- * held to 2000 px, which every platform takes in a request that many images
- * ride in.
+ * The limits this host checks composer images against, from how many images
+ * its recipe keeps live and how much of their base64 (`undefined` for either:
+ * no limit of the recipe's own).
  */
 export function hostImageLimits(liveImages: number | undefined, liveBytes?: number): UserImageLimits {
   const L = USER_IMAGE_LIMITS;

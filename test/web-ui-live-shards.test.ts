@@ -1,9 +1,3 @@
-/**
- * The Web UI's live push of a long message, on the real context-manager:
- * it stores the message as a run of shards, one add each in one synchronous
- * loop, and the push sends the run as one entry, the same entry the welcome
- * gives after a reload.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,8 +11,6 @@ import {
 } from '../src/modules/web-ui-module.js';
 
 const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
-/** Barnaby-2576's probe text: 70,016 characters, past the 64 KiB a wire
- *  entry's text block carries. */
 const LONG = `long-echo-probe ${'c'.repeat(70_000)}`;
 
 type Frame = { type: string; entry?: Record<string, unknown>; [k: string]: unknown };
@@ -28,17 +20,11 @@ let port: number;
 let cm: ContextManager;
 let root: string;
 let app: unknown;
-/** Every frame the module sends, with the server-side client it went to, in
- *  the order the socket gets them: recorded once the module's own `send` has
- *  run, since that first sends any long message it was holding. */
 const sends: Array<{ client: unknown; frame: Frame }> = [];
-/** The listener the module gave the framework for its traces. */
 let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'webui-live-shards-'));
-  // adaptiveResolution is what turns on ingestion chunking; the host sets it
-  // for autobiographical and frontdesk unless a recipe opts out.
   const strategy = new AutobiographicalStrategy({
     compressionModel: 'claude-sonnet-4-5-20250929',
     autoTickOnNewMessage: false,
@@ -76,8 +62,6 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** An operator connection, once welcomed: its frames as they arrive, its
- *  welcome, and the server-side client the module sends to. */
 async function connect() {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
     headers: { origin: `http://127.0.0.1:${port}`, authorization: AUTH },
@@ -99,7 +83,6 @@ async function connect() {
   return { ws, welcome, client };
 }
 
-/** The entries the module has pushed to one client as message-appended. */
 function appendedTo(client: unknown): Array<Record<string, unknown>> {
   return sends.filter((s) => s.client === client && s.frame.type === 'message-appended').map((s) => s.frame.entry!);
 }
@@ -107,14 +90,12 @@ function appendedTo(client: unknown): Array<Record<string, unknown>> {
 describe('the live push of a long message', () => {
   test('its shards go out as one entry, once the loop is done, and it is the entry a reload gives', async () => {
     const c = await connect();
-    // A message ahead of it, so the run's first slot isn't the store's first.
     cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
     const before = cm.getMessageCount();
     expect(before).toBeGreaterThan(0);
     const already = appendedTo(c.client).length;
     cm.addMessage('user', [{ type: 'text', text: LONG }], { webuiCorrId: 'c-long' });
     expect(cm.getMessageCount() - before).toBeGreaterThan(1);
-    // Held while context-manager's loop runs: nothing has gone out yet.
     expect(appendedTo(c.client).slice(already)).toEqual([]);
     await Promise.resolve();
     const live = appendedTo(c.client).slice(already);
@@ -126,7 +107,6 @@ describe('the live push of a long message', () => {
     expect(blocks[0]!.truncated).toBe(true);
     expect(LONG.startsWith(blocks[0]!.text!)).toBe(true);
 
-    // A reload's welcome joins the same run into the same entry.
     const again = await connect();
     const messages = again.welcome.messages as Array<Record<string, unknown>>;
     expect(messages.at(-1)).toEqual(live[0]!);
@@ -172,8 +152,6 @@ describe('the live push of a long message', () => {
     const c = await connect();
     const before = cm.getMessageCount();
     const already = appendedTo(c.client).length;
-    // The same text gives the same group id: what tells the bodies apart is
-    // the shard index starting again (context-manager's continuesBody).
     cm.addMessage('user', [{ type: 'text', text: `twice ${LONG}` }], { webuiCorrId: 'c-one' });
     const between = cm.getMessageCount();
     cm.addMessage('user', [{ type: 'text', text: `twice ${LONG}` }], { webuiCorrId: 'c-two' });
@@ -188,8 +166,6 @@ describe('the live push of a long message', () => {
 
   test('a trace sent while a run is held goes out after the joined entry', async () => {
     const c = await connect();
-    // The framework emits inference:completed right after it stores an
-    // assistant turn, with no await between, so before the run's microtask.
     cm.addMessage('agent', [{ type: 'text', text: LONG }]);
     emitTrace!({ type: 'inference:completed', agentName: 'agent' });
     const mine = sends.filter((s) => s.client === c.client).map((s) => s.frame.type);
@@ -204,7 +180,6 @@ describe('the live push of a long message', () => {
 
   test("a scoped connection gets the joined entry as its scopes let it, or not at all", async () => {
     const c = await connect();
-    // Scopes as an observer's handshake would set them; the push filters them.
     const client = c.client as { scopes: Set<string> | null };
     try {
       client.scopes = new Set(['health']);
@@ -228,7 +203,6 @@ describe('the live push of a long message', () => {
     const from = sends.length;
     cm.addMessage('user', [{ type: 'text', text: LONG }]);
     webUiModule.setApp(app as never);
-    // The queued flush runs here, and must add nothing.
     await Promise.resolve();
     const deadline = performance.now() + 5000;
     while (!sends.slice(from).some((s) => s.client === c.client && s.frame.type === 'welcome')) {

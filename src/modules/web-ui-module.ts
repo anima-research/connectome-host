@@ -371,8 +371,7 @@ interface SharedServerState {
   treeAggregator: FleetTreeAggregator | null;
   fleetEventDetacher: (() => void) | null;
   messageListenerDetacher: (() => void) | null;
-  /** Sends the long message whose shards that listener is holding, if any.
-   *  `send` calls it before any frame, so entries keep the store's order. */
+  /** Sends the long message whose shards that listener is holding, if any. */
   flushHeldRun: (() => void) | null;
   childRecipeCache: Map<string, { name: string; description?: string; version?: string; agentModel?: string }>;
   autoStartRecords: Promise<void> | null;
@@ -575,18 +574,7 @@ export class WebUiModule implements Module {
           if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
         }
       };
-      // A long message is stored as a run of shards, one add each, which
-      // context-manager appends in one synchronous loop. The welcome joins a
-      // run into one entry (coalesceAndFlatten), so the live push holds the
-      // run and sends it joined the same way. It goes from a microtask queued
-      // at its first shard, which runs once the loop is done, or earlier,
-      // before any other frame this module sends (`send` flushes it first),
-      // so entries keep the store's order against traces too. Consecutive
-      // shards join one held run, and the flush splits it into bodies as the
-      // welcome does, by context-manager's `continuesBody`, since two
-      // ingestions of the same text share a group id. Were the appends ever
-      // to stop being synchronous, each shard would go out on its own, as
-      // before.
+      // context-manager appends a long message's shards in one synchronous loop.
       let run: { messages: MessageLike[]; startIndex: number } | null = null;
       const flushRun = (): void => {
         const held = run;
@@ -620,11 +608,6 @@ export class WebUiModule implements Module {
         }
       });
       ss.flushHeldRun = flushRun;
-      // A run still held when this listener is detached, at a stop or a
-      // session switch, goes out now, to the clients welcomed to the session
-      // it belongs to: after a stop they stay welcomed with no welcome to
-      // come, and at a switch their new welcome follows it. Its queued flush
-      // then finds nothing.
       ss.messageListenerDetacher = () => {
         detach();
         flushRun();
@@ -720,9 +703,6 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    // A child's traces carry content whole as the host's own do, so their
-    // image data goes as notes. An event JSON can't carry goes to no client,
-    // and the usage it brought still goes.
     const ended = streamEndedFor(event as unknown as { type: string; agentName?: unknown });
     this.broadcast({
       type: 'child-event',
@@ -807,9 +787,6 @@ export class WebUiModule implements Module {
     }
   }
 
-  /** `prepare` makes the frame that goes out, once, at the first client that
-   *  takes it, so a frame no client takes costs nothing; a null from it sends
-   *  the stand-in in its place. */
   private broadcast(
     frame: WebUiServerMessage,
     standIn?: WebUiServerMessage | null,
@@ -853,10 +830,6 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    // Traces can carry content whole: a process trace the module's event and
-    // responses, tool:result_dropped the dropped result. So a send's images
-    // would reach every client as base64 without withoutImageData. A trace
-    // JSON can't carry goes to no client.
     this.broadcast({
       type: 'trace',
       event: event as unknown as { type: string; [k: string]: unknown },
@@ -1475,10 +1448,6 @@ export class WebUiModule implements Module {
     return { via: 'webui', name: this.config.basicAuth?.username ?? 'operator' };
   }
 
-  /** The limits composer images are checked against here, from what this
-   *  host's recipe keeps live: how many images, and how much of their base64
-   *  (`hostImageLimits`). The welcome advertises them, so the composer fits
-   *  images to the same ones. */
   private imageLimits(): UserImageLimits {
     const strategy = sharedServer?.app?.recipe.agent.strategy;
     return hostImageLimits(liveImageWindow(strategy), liveImageBytes(strategy));
@@ -1809,8 +1778,6 @@ export class WebUiModule implements Module {
           type: 'external-message',
           source: 'tui',
           content,
-          // TuiModule stores the send's corrId with the message, and its entry
-          // carries it back, so the sending client adopts its own row by id.
           metadata: parsed.corrId !== undefined ? { corrId: parsed.corrId } : {},
           triggerInference: true,
         });
@@ -3052,7 +3019,6 @@ export class WebUiModule implements Module {
   }
 
   private send(client: ClientState, msg: WebUiServerMessage): void {
-    // A long message held for joining goes out before anything sent after it.
     sharedServer?.flushHeldRun?.();
     try {
       client.ws.send(JSON.stringify(msg));
@@ -3217,21 +3183,12 @@ interface BlockOrigin {
 
 /**
  * A trace payload as a client gets it, JSON.stringify's text read back, with
- * each image block's base64 data replaced by a note of its length. Undefined
- * when JSON.stringify has nothing to send: it throws for a cycle, a BigInt or
- * nesting past the engine's limit, as it did in send(), which dropped such a
- * frame, and gives nothing for a toJSON that gives nothing. Exported for its
- * test.
- *
- * The images are found in that copy, so each value is as the client gets it:
- * what a toJSON gives, a boxed primitive's value, a class instance's own keys.
- * The copy is this function's own, so the notes go into it in place, and the
- * walk reaches every value in it, an image's own fields included.
+ * each image block's base64 data replaced by a note of its length, or
+ * undefined when JSON.stringify has nothing to send.
  */
 export function withoutImageData(value: unknown): unknown {
   let sent: unknown;
   try {
-    // Parsing the undefined JSON.stringify gives for nothing to send throws too.
     sent = JSON.parse(JSON.stringify(value));
   } catch {
     return undefined;
@@ -3246,16 +3203,15 @@ export function withoutImageData(value: unknown): unknown {
   return sent;
 }
 
-/** A frame as `withoutImageData` gives it, or null where it gives nothing. */
 function frameWithoutImageData(frame: WebUiServerMessage): WebUiServerMessage | null {
   const sent = withoutImageData(frame);
   return sent === undefined ? null : sent as WebUiServerMessage;
 }
 
-/** Replace an image block's data with a note, in the copy: a content block's
- *  image ({ source: { data } }), a tool result's ({ data, mimeType }, as MCP
- *  and the framework shape it), or a generated image ({ type:
- *  'generated_image', data, mimeType }, as membrane shapes it). */
+/** The image shapes: a content block's ({ source: { data } }), a tool
+ *  result's ({ data, mimeType }, as MCP and the framework shape it), and a
+ *  generated image ({ type: 'generated_image', data, mimeType }, as membrane
+ *  shapes it). */
 function elideImageData(o: Record<string, unknown>): void {
   if (o.type !== 'image' && o.type !== 'generated_image') return;
   const source = o.source;
@@ -3411,7 +3367,6 @@ export function toWireEntry(
   if (msg.id) entry.id = msg.id;
   const ts = msg.timestamp instanceof Date ? msg.timestamp.getTime() : msg.timestamp;
   if (ts) entry.timestamp = ts;
-  // The WebUI send this user message came from, stored by TuiModule.
   const corrId = (msg.metadata as { webuiCorrId?: unknown } | null | undefined)?.webuiCorrId;
   if (participant === 'user' && typeof corrId === 'string' && corrId.length > 0) entry.corrId = corrId;
   return entry;
