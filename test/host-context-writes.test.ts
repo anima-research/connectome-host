@@ -12,8 +12,8 @@
  * - /newtopic's transition is the agent's own row, presented as it is
  *   written, so the head window starts at a row the window holds, and
  *   never stored while a turn of the agent is alive: /newtopic is refused
- *   then, and a bare /newtopic whose summary a turn started during stores
- *   nothing and gives the summary back;
+ *   then, and a bare /newtopic during whose summary a turn started, or rows
+ *   entered the agent's window, stores nothing and gives the summary back;
  * - a subagent's seed rows (its orientation and task, or a fork's copy of
  *   its parent's context) are the child's own rows, in its window once its
  *   run takes it on;
@@ -197,12 +197,20 @@ describe('/newtopic', () => {
   });
 });
 
-// A bare /newtopic's summary is an LLM call, and the agent can start a turn
-// during it, or the branch or the strategy can change (J-H3). It is stored
-// only if, once written, none of that happened; otherwise nothing is stored,
-// and the answer gives the summary back for /newtopic <text>. The strategy's
-// summary is replaced by one that waits on a gate and reads the context it
-// is given.
+// A bare /newtopic's summary is an LLM call, and while it is written the
+// agent can start a turn (or start and end one), another /newtopic can
+// store its transition, or the branch or the strategy can change (J-H3).
+// It is stored only if, once written, none of that happened; otherwise
+// nothing is stored, and the answer is one of two:
+// - a turn alive, rows that entered the agent's window, a session switch or
+//   the host's stop: the answer gives the summary back, for
+//   /newtopic <text>;
+// - a branch or strategy change: context-manager refuses the summary, so
+//   there is none to give back, and the answer says it couldn't be written.
+// The strategy's summary is replaced by one that waits on a gate and reads
+// the context it is given; each test checks the summary was asked for
+// before it changes anything, so the change is one made while the summary
+// is written.
 describe('a bare /newtopic', () => {
   const SUMMARY = 'The ledger work is done; next is the release.';
 
