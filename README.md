@@ -969,9 +969,10 @@ while any agent sharing the store is mid-turn, the subconscious included, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy
 changes meanwhile, the summary can't be written: it stores nothing, and its
-answer says why. If a turn of the agent starts, or the session is switched or
-the host stops, meanwhile, it stores nothing, and its answer gives the
-summary it wrote, to pass as `/newtopic <text>`.
+answer says why. If a turn of the agent starts, rows enter the agent's
+window (a whole turn, or another `/newtopic`'s transition), or the session is
+switched or the host stops, meanwhile, it stores nothing, and its answer
+gives the summary it wrote, to pass as `/newtopic <text>`.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the
