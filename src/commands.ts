@@ -1544,17 +1544,20 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
 
 /**
  * A bare /newtopic's transition (#291, J-H3): the strategy's summary of the
- * head window, an LLM call during which a turn of the agent can start, the
- * branch or the strategy can change, or the session can end. When the branch
- * moves or the strategy changes (the manager is re-initialized) while the
- * summary is written, context-manager's generateTransitionSummary() refuses
- * it, so there is no summary: nothing is stored, and the answer says why.
- * Once a summary is written, it is stored if no turn of the agent started,
- * the session wasn't switched, the host isn't stopping and the agent is
- * still registered with this context; otherwise nothing is stored, and the
- * answer gives the summary back, to store with /newtopic <text>. The check
- * of the branch and the strategy here is a backstop for a move after
- * context-manager's own check, and gives the summary back too.
+ * head window, an LLM call during which a turn of the agent can start, or
+ * start and end, another /newtopic can store its transition, the branch or
+ * the strategy can change, or the session can end. When the branch moves or
+ * the strategy changes (the manager is re-initialized) while the summary is
+ * written, context-manager's generateTransitionSummary() refuses it, so
+ * there is no summary: nothing is stored, and the answer says why. Once a
+ * summary is written, it is stored if no turn of the agent is alive, no row
+ * entered the agent's window (windowMark: a whole turn, or another
+ * /newtopic's transition, enters rows), the session wasn't switched, the
+ * host isn't stopping and the agent is still registered with this context;
+ * otherwise nothing is stored, and the answer gives the summary back, to
+ * store with /newtopic <text>. The check of the branch and the strategy here
+ * is a backstop for a move after context-manager's own check, and gives the
+ * summary back too.
  *
  * The summary is the one resetHeadWindow writes for itself: context-manager's
  * generateTransitionSummary() (0.25.0), which writes it from the manager's own
@@ -1564,6 +1567,7 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   const framework = app.framework;
   const strategy = cm.getStrategy();
   const branch = cm.currentBranch().id;
+  const window = windowMark(cm);
   let summary: string;
   try {
     summary = await cm.generateTransitionSummary();
@@ -1577,6 +1581,7 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
     : framework.getAgent(agentName)?.getContextManager() !== cm ? `${agentName} is no longer registered with this context`
     : cm.getStrategy() !== strategy || cm.currentBranch().id !== branch ? 'the branch or the strategy changed'
     : !idleWithNoTurn(framework, agentName) ? `a turn of ${agentName}'s started`
+    : windowMark(cm) !== window ? `rows entered ${agentName}'s window`
     : undefined;
   if (moved !== undefined) {
     throw new Error(
@@ -1585,6 +1590,13 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
     );
   }
   return storeTransition(cm, summary, metadata);
+}
+
+/** Where the agent's window stands: the ordinal its next presented row
+ *  takes (indexLength), and in legacy mode, where the window is the record,
+ *  how many rows the record holds. A row entering the window changes it. */
+function windowMark(cm: ContextManager): string {
+  return cm.windowMode() === 'legacy' ? `legacy ${cm.getMessageCount()}` : `presented ${cm.indexLength()}`;
 }
 
 /**

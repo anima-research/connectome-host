@@ -274,6 +274,58 @@ describe('a bare /newtopic', () => {
     }
   });
 
+  test("whose summary a whole turn ran during stores nothing, and its answer gives the summary back", async () => {
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-whole-turn-');
+    try {
+      const result = handleCommand('/newtopic', app);
+      // A turn starts and ends while the summary is written: clerk is idle
+      // with no turn alive again once it is.
+      await h.turn('clerk');
+      releaseSummary();
+      expect(texts(await result.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
+      expect(summarized).toHaveLength(1);
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('pending when a /newtopic with its text is stored, stores nothing, and its answer gives the summary back', async () => {
+    const { h, app, strategy, summarized, releaseSummary } = await bare('newtopic-bare-explicit-');
+    try {
+      const pending = handleCommand('/newtopic', app);
+      const explicit = handleCommand('/newtopic Moving on to the release.', app);
+      expect(texts(await explicit.asyncWork!)).toEqual(['Topic reset. Transition summary:', 'Moving on to the release.']);
+      const row = h.rowWith('clerk', '[Topic Transition]')!;
+      releaseSummary();
+      expect(texts(await pending.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
+      expect(summarized).toHaveLength(1);
+      const transitions = h.framework.getAgent('clerk')!.getContextManager().getAllMessages()
+        .filter((m) => textOf(m).startsWith('[Topic Transition]'));
+      expect(transitions.map((m) => m.id)).toEqual([row.id]);
+      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('given twice, stores the summary the first one wrote once, and the second gives its summary back', async () => {
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-twice-');
+    try {
+      const first = handleCommand('/newtopic', app);
+      const second = handleCommand('/newtopic', app);
+      releaseSummary();
+      expect(texts(await first.asyncWork!)).toEqual(['Topic reset. Transition summary:', SUMMARY]);
+      expect(texts(await second.asyncWork!)).toEqual(refusedWith("rows entered clerk's window"));
+      expect(summarized).toHaveLength(2);
+      const transitions = h.framework.getAgent('clerk')!.getContextManager().getAllMessages()
+        .filter((m) => textOf(m).startsWith('[Topic Transition]'));
+      expect(transitions).toHaveLength(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test("when the strategy changed while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
     const { h, app, releaseSummary } = await bare('newtopic-bare-strategy-');
     try {
