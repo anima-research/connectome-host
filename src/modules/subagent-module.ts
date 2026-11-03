@@ -3681,6 +3681,8 @@ export class SubagentModule implements Module {
     }
   }
 
+  // A row an undo or a shed took out of the window (`undone`) stays in the
+  // record, but the subagent isn't shown it, so it isn't the run's answer.
   private extractLastAssistantText(contextManager: ContextManager): string {
     try {
       const messages = contextManager.getAllMessages();
@@ -3688,6 +3690,7 @@ export class SubagentModule implements Module {
         const msg = messages[i];
         if (msg.participant === 'user' || msg.participant === 'User') continue;
         if (storedInjectionMarkOf(msg.metadata) !== undefined) continue;
+        if (contextManager.windowStatusOf?.(msg.id) === 'undone') continue;
         const texts = msg.content
           .filter((b: ContentBlock) => b.type === 'text')
           .map((b: ContentBlock) => (b as { type: 'text'; text: string }).text);
