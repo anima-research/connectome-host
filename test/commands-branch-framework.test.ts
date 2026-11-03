@@ -146,6 +146,75 @@ describe('/checkout, /branchto and /restore', () => {
   });
 });
 
+// A checkpoint saves the record's position, its last row, which an /undo
+// leaves in the record (#485 bot review findings 41 and 42): with no row
+// stored after it, a /restore to it is at it already, and moves nothing.
+describe('/checkpoint and /restore with the last row undone', () => {
+  test("say the checkpoint's last row is out of the agent's window as undone, and what puts it back", async () => {
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], prefix: 'cmd-checkpoint-undone-' });
+    try {
+      await h.turn('clerk');
+      await h.turn('clerk');
+      const clerk = h.framework.getAgent('clerk')!.getContextManager();
+      const store = h.framework.getStore();
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      const saved = (name: string) => `Checkpoint "${name}" saved at branch ${store.currentBranch().name} (head: ${store.currentBranch().head}).`;
+
+      // Taken with its last row in the window: nothing more to say.
+      const p = await run('/checkpoint p', app);
+      expect(p.all).toBe(saved('p'));
+      const last = clerk.getAllMessages().at(-1)!;
+
+      await run('/undo', app);
+      expect(clerk.windowStatusOf(last.id)).toBe('undone');
+      expect((await run('/restore p', app)).all).toBe(
+        `Already at checkpoint "p". Its last row is out of clerk's window as undone: /redo puts it back.`,
+      );
+      const q = await run('/checkpoint q', app);
+      expect(q.all).toBe([
+        saved('q'),
+        `  Its last row [${last.id}] is out of clerk's window as undone: /redo puts it back now, ` +
+          'and a /restore to "q" puts it back once rows are stored after it.',
+      ].join('\n'));
+
+      // Back in the window: at the checkpoint, nothing more to say.
+      await run('/redo', app);
+      expect((await run('/restore p', app)).all).toBe('Already at checkpoint "p".');
+
+      // Undone again, and rows stored after it: a /restore to it rolls the
+      // record back to it, and it is in the window again.
+      await run('/undo', app);
+      await h.turn('mira');
+      const restored = await run('/restore q', app);
+      expect(restored.follow!.branchChanged).toBe(true);
+      expect(clerk.getAllMessages().at(-1)!.id).toBe(last.id);
+      expect(clerk.windowStatusOf(last.id)).toBe('in');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('name no /redo when none is kept, as for a row a shed took out', async () => {
+    const h = await bootPresentedHost({ agents: ['clerk'], prefix: 'cmd-checkpoint-shed-' });
+    try {
+      await h.turn('clerk');
+      const clerk = h.framework.getAgent('clerk')!.getContextManager();
+      const last = clerk.getAllMessages().at(-1)!;
+      // A shed's retraction: undone, with no redo kept.
+      clerk.retractRows([last.id], { undone: true });
+      expect(h.framework.getUndoRedoState('clerk').canRedo).toBe(false);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      const s = await run('/checkpoint s', app);
+      expect(s.result.lines.map((l) => l.text).slice(1)).toEqual([
+        `  Its last row [${last.id}] is out of clerk's window as undone: a /restore to "s" puts it back once rows are stored after it.`,
+      ]);
+      expect((await run('/restore s', app)).all).toBe(`Already at checkpoint "s". Its last row is out of clerk's window as undone.`);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
 /** Nudge `agent` and wait for its request or its failure; the inference
  *  failures traced meanwhile, and whether a request was made. */
 async function served(h: PresentedHost, agent: string): Promise<{ requested: boolean; failures: string[] }> {

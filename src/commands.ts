@@ -3,7 +3,7 @@
  *   /undo          — Take the agent's last turn out of its window (the record keeps it)
  *   /redo          — Put the turn /undo took out back in the agent's window
  *   /nudge [agent] — Run inference on current context (no new events)
- *   /checkpoint N  — Save current position as named checkpoint
+ *   /checkpoint N  — Save the record's position (its last row, an undone one included) as named checkpoint
  *   /restore N     — Roll the record back to a checkpoint on a new branch, or switch to its branch's head
  *   /branches      — List all Chronicle branches
  *   /checkout N    — Switch to named branch
@@ -310,7 +310,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
           { text: '  /redo                  Put the turn /undo took out back in its window', style: 'system' },
           { text: '  /nudge [agent]         Run inference on current context (no new events)', style: 'system' },
           { text: '  /puppet <tool> [json]  Admin: execute a tool AS the agent, store the pair', style: 'system' },
-          { text: '  /checkpoint [name]     Save current state (no name: list checkpoints)', style: 'system' },
+          { text: '  /checkpoint [name]     Save the record\'s position (its last row, an undone one included; no name: list checkpoints)', style: 'system' },
           { text: '  /restore [name]        Roll back to a checkpoint on a new branch, or to its branch head (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
@@ -1189,15 +1189,36 @@ function handleCheckpoint(app: AppContext, name?: string): CommandResult {
     };
   }
 
-  const cm = commandAgent(app)?.getContextManager();
-  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
+  const agent = commandAgent(app);
+  const cm = agent?.getContextManager();
+  if (!agent || !cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
+  // The record's position: its last row, which an /undo leaves in the
+  // record, out of the agent's window.
   const branch = cm.currentBranch();
   const { messages } = cm.queryMessages({});
   const messageId = messages.length > 0 ? messages[messages.length - 1]!.id : undefined;
   app.branchState.checkpoints.set(name, { branchName: branch.name, messageId });
 
-  return { lines: [{ text: `Checkpoint "${name}" saved at branch ${branch.name} (head: ${branch.head}).`, style: 'system' }] };
+  const lines: Line[] = [{ text: `Checkpoint "${name}" saved at branch ${branch.name} (head: ${branch.head}).`, style: 'system' }];
+  if (messageId !== undefined && undoneRow(cm, messageId)) {
+    const redo = redoKept(app.framework, agent.name) ? '/redo puts it back now, and ' : '';
+    lines.push({
+      text: `  Its last row [${messageId}] is out of ${agent.name}'s window as undone: ${redo}a /restore to "${name}" puts it back once rows are stored after it.`,
+      style: 'system',
+    });
+  }
+  return { lines };
+}
+
+/** Whether the row is out of the agent's window as undone: an undo's, or a shed's. */
+function undoneRow(cm: ContextManager, id: string): boolean {
+  return typeof cm.windowStatusOf === 'function' && cm.windowStatusOf(id) === 'undone';
+}
+
+/** Whether the agent's /redo has an undo to put back now (a shed keeps none). */
+function redoKept(framework: AgentFramework, agentName: string): boolean {
+  return typeof framework.getUndoRedoState === 'function' && framework.getUndoRedoState(agentName).canRedo;
 }
 
 function handleRestore(app: AppContext, name?: string): CommandResult {
@@ -1228,13 +1249,18 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   // every agent sharing it idle (rollbackToMessage). Switching to the stored
   // branch name alone would land on its head, which by now may include
   // everything the user wanted to roll back. Checkpoints taken on an empty
-  // branch fall back to the head.
+  // branch fall back to the head. At the checkpoint's position, its last row
+  // the record's, nothing moves, though an /undo has taken that row out of
+  // the agent's window: the answer says so.
   if (point.messageId) {
     const { messages } = cm.queryMessages({});
     const atCheckpoint = messages.length > 0
       && messages[messages.length - 1]!.id === point.messageId;
     if (atCheckpoint) {
-      return { lines: [{ text: `Already at checkpoint "${name}".`, style: 'system' }] };
+      const text = undoneRow(cm, point.messageId)
+        ? `Already at checkpoint "${name}". Its last row is out of ${agent.name}'s window as undone${redoKept(app.framework, agent.name) ? ': /redo puts it back' : ''}.`
+        : `Already at checkpoint "${name}".`;
+      return { lines: [{ text, style: 'system' }] };
     }
   }
 
