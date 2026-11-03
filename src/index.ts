@@ -112,7 +112,7 @@ import {
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
-import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
+import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions, mergeHoldWarning } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
@@ -552,6 +552,9 @@ agents: [agentConfig],
 
   const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
   if (autoContinueWarning) console.warn(autoContinueWarning);
+  const primaryContext = framework.getAgent(agentName)?.getContextManager();
+  const holdWarning = primaryContext ? mergeHoldWarning(recipe, (id) => primaryContext.getSummary(id)) : null;
+  if (holdWarning) console.warn(holdWarning);
 
   {
     const alarmCapable = strategy as unknown as {

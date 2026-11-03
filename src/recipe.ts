@@ -121,7 +121,10 @@ export interface RecipeStrategy {
   targetChunkTokens?: number;
   mergeThreshold?: number;
   /** Context Manager: summaries never offered as merge sources by any scheduler
-   *  (operator holds, e.g. while a summary awaits review). */
+   *  (operator holds, e.g. while a summary awaits review). The ids name
+   *  summaries in the store of the agent this recipe starts; its subconscious
+   *  forks share them, its conversation forks aren't held, and a change takes
+   *  a restart. */
   mergeHoldSummaryIds?: string[];
   mergeMaxSourceSpanMessages?: number;
   summaryTargetTokens?: number;
