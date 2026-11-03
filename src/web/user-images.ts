@@ -17,7 +17,7 @@ import type { ContentBlock } from '@animalabs/agent-framework';
 import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG } from '@animalabs/context-manager';
 import type { RecipeStrategy } from '../recipe.js';
 import { USER_IMAGE_LIMITS, type UserImageLimits, type UserMessageImage } from './protocol.js';
-import { imageDamage, imageSize, sniffImageType } from './image-bytes.js';
+import { imageDamage, imageSize, isAnimated, sniffImageType } from './image-bytes.js';
 
 export type UserImageCheck =
   | { ok: true; blocks: ContentBlock[] }
@@ -102,9 +102,15 @@ export function hostImageLimits(liveImages: number | undefined, liveBytes?: numb
  * block's media type is the one its bytes show; a declared type that
  * disagrees (a JPEG saved as .png) is corrected rather than refused.
  */
+// OpenAI lists "non-animated GIF" among its image inputs, and says nothing of
+// animation in other formats:
+// https://developers.openai.com/api/docs/guides/images-vision?api-mode=responses
+const STILL_IMAGES_ONLY = new Set(['openai-responses', 'openai-codex']);
+
 export function userImageBlocks(
   images: ReadonlyArray<UserMessageImage>,
   L: UserImageLimits = USER_IMAGE_LIMITS,
+  provider?: string,
 ): UserImageCheck {
   if (images.length > L.maxCount) {
     return { ok: false, error: `${images.length} images attached; a message takes at most ${L.maxCount} here` };
@@ -147,6 +153,9 @@ export function userImageBlocks(
     }
     if (size.width === 0 || size.height === 0) {
       return { ok: false, error: `${which} is ${size.width}×${size.height}; an image needs a width and a height` };
+    }
+    if (provider !== undefined && STILL_IMAGES_ONLY.has(provider) && isAnimated(bytes, mediaType)) {
+      return { ok: false, error: `${which} is animated, and OpenAI's docs don't say ${provider} takes animated images; send a still image` };
     }
     if (size.width > L.maxSidePx || size.height > L.maxSidePx) {
       const why = L.maxSidePx < USER_IMAGE_LIMITS.maxSidePx

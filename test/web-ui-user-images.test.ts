@@ -23,7 +23,7 @@ const pushed: Array<Record<string, unknown>> = [];
 let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
 /** The bound app's recipe agent, which the module reads its image limits from
  *  at each welcome and each send. */
-const agent: { strategy?: Record<string, unknown> } = {};
+const agent: { strategy?: Record<string, unknown>; provider?: string } = {};
 
 beforeAll(async () => {
   webUiModule = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'admin', password: 'pw' } });
@@ -229,6 +229,22 @@ describe('composer images over the WebSocket', () => {
       expect((await send({ content: 'just text' })).pushed).toBeDefined();
     } finally {
       delete agent.strategy;
+    }
+  });
+
+  test('an openai-responses host refuses an animated image, and takes a still one', async () => {
+    agent.provider = 'openai-responses';
+    try {
+      const gif = (frames: number) => Buffer.from([
+        ...Buffer.from('GIF89a', 'latin1'), 1, 0, 1, 0, 0x00, 0, 0,
+        ...Array.from({ length: frames }, () => [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00]).flat(),
+        0x3b,
+      ]).toString('base64');
+      const refused = await send({ content: 'look', images: [{ mediaType: 'image/gif', data: gif(2) }] });
+      expect(refused.error).toBe("message not sent: the image is animated, and OpenAI's docs don't say openai-responses takes animated images; send a still image");
+      expect((await send({ content: 'look', images: [{ mediaType: 'image/gif', data: gif(1) }] })).pushed).toBeDefined();
+    } finally {
+      delete agent.provider;
     }
   });
 

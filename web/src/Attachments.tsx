@@ -6,7 +6,7 @@
 import { For, Show } from 'solid-js';
 import type { UserImageLimits } from '@conhost/web/protocol';
 import { imageDamage, isAnimated, sniffImageType } from '@conhost/web/image-bytes';
-import { ANIMATED_NOTE, ANIMATED_REDRAWN_NOTE, base64Length, fitByRedraw, fitNote, noFitReason } from './fit';
+import { ANIMATED_REDRAWN_NOTE, base64Length, fitByRedraw, fitNote, noFitReason } from './fit';
 
 export interface Attachment {
   id: string;
@@ -17,12 +17,8 @@ export interface Attachment {
   /** data: URL for the thumbnail and the sent message's own row. */
   dataUrl: string;
   /** What was done to fit it, when it was not sent as picked. */
-  adjusted?: 'shrunk' | 'converted';
-  /** An animation sent as picked: the model sees only its first frame,
-   *  though the thumbnail moves. */
-  animated?: boolean;
-  /** Says what `adjusted` or `animated` means, in words for the thumbnail's
-   *  tooltip. */
+  adjusted?: 'shrunk' | 'converted' | 'first frame';
+  /** Says what `adjusted` means, in words for the thumbnail's tooltip. */
   note?: string;
 }
 
@@ -109,7 +105,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   const height = img.naturalHeight;
   if (!width || !height) throw new Error(`${name} has no size to draw it at`);
 
-  if (sniffed && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(file.size) <= L.maxBase64Chars) {
+  if (sniffed && !animated && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(file.size) <= L.maxBase64Chars) {
     const dataUrl = await readDataUrl(file);
     const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
     return {
@@ -118,7 +114,6 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
       mediaType: sniffed,
       data,
       dataUrl: `data:${sniffed};base64,${data}`,
-      ...(animated ? { animated: true, note: ANIMATED_NOTE } : {}),
     };
   }
 
@@ -131,7 +126,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     mediaType: fit.blob.type,
     data: dataUrl.slice(dataUrl.indexOf(',') + 1),
     dataUrl,
-    adjusted: fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
+    adjusted: animated ? 'first frame' : fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
     // The bytes' own type where they have one, as the host reads them; the
     // browser's, from the file name, otherwise.
     note: animated
@@ -172,7 +167,7 @@ export function AttachmentStrip(props: {
               alt={a.name}
               class="block h-16 max-w-[8rem] object-contain rounded border border-neutral-800 bg-neutral-900"
             />
-            <Show when={a.adjusted ?? (a.animated ? 'first frame' : undefined)}>
+            <Show when={a.adjusted}>
               {(label) => (
                 <span class="absolute bottom-0.5 left-0.5 px-1 rounded bg-neutral-950/80 text-[9px] font-mono text-amber-300">{label()}</span>
               )}

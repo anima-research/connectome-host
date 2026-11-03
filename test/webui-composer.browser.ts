@@ -35,6 +35,7 @@ import {
   type WelcomeMessage,
   type WelcomeMessageEntry,
 } from '../src/web/protocol.js';
+import { isAnimated } from '../src/web/image-bytes.js';
 
 setDefaultTimeout(60_000);
 
@@ -862,13 +863,16 @@ describe('images', () => {
     }, { limits: { maxTotalBase64Chars: 6_000 } });
   });
 
-  test('an animated GIF attached as picked is marked first frame', async () => {
+  test('an animated GIF is sent as its first frame, still, and marked first frame', async () => {
     await withComposer(async (c) => {
       await c.page.locator('input[type="file"]').setInputFiles({ name: 'blink.gif', mimeType: 'image/gif', buffer: TWO_FRAME_GIF });
       const tile = c.page.getByTitle(/^blink\.gif/);
       await tile.waitFor();
-      expect(await tile.getAttribute('title')).toBe('blink.gif — animated: the model sees only its first frame');
+      expect(await tile.getAttribute('title')).toBe('blink.gif — converted from image/gif to image/webp; an animation, redrawn as one still frame');
       expect(await tile.getByText('first frame', { exact: true }).count()).toBe(1);
+      const frame = await send(c, 'blink');
+      expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
+      expect(isAnimated(Buffer.from(frame.images![0]!.data, 'base64'), 'image/webp')).toBe(false);
     });
   });
 });

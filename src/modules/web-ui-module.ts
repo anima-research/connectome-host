@@ -1769,7 +1769,7 @@ export class WebUiModule implements Module {
             });
             return;
           }
-          const checked = userImageBlocks(parsed.images, this.imageLimits());
+          const checked = userImageBlocks(parsed.images, this.imageLimits(), sharedServer?.app?.recipe.agent.provider);
           if (!checked.ok) {
             this.send(client, {
               type: 'error',

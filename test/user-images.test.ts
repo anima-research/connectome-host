@@ -243,6 +243,42 @@ describe('a whole image', () => {
   });
 });
 
+describe('animated images and the provider', () => {
+  const animatedWebp = (): Buffer => {
+    const b = Buffer.from(bytes('webpExtended'));
+    b[20]! |= 0x02;
+    return b;
+  };
+  const apng = (): Buffer => {
+    const png = bytes('png');
+    return Buffer.concat([png.subarray(0, 33), pngChunk('acTL', Buffer.from([0, 0, 0, 2, 0, 0, 0, 0])), png.subarray(33)]);
+  };
+  const animated = (): Array<[string, string, Buffer]> => [
+    ['a GIF', 'image/gif', gifOf(2)],
+    ['a WebP', 'image/webp', animatedWebp()],
+    ['an APNG', 'image/png', apng()],
+  ];
+
+  test('an animated GIF, WebP or APNG is refused on each OpenAI provider, and taken on anthropic', () => {
+    for (const [what, mediaType, b] of animated()) {
+      expect({ what, animated: isAnimated(b, mediaType) }).toEqual({ what, animated: true });
+      for (const provider of ['openai-responses', 'openai-codex']) {
+        expect({ what, provider, check: userImageBlocks([{ mediaType, data: b.toString('base64') }], USER_IMAGE_LIMITS, provider) }).toEqual({
+          what, provider,
+          check: { ok: false, error: `the image is animated, and OpenAI's docs don't say ${provider} takes animated images; send a still image` },
+        });
+      }
+      expect({ what, ok: userImageBlocks([{ mediaType, data: b.toString('base64') }], USER_IMAGE_LIMITS, 'anthropic').ok }).toEqual({ what, ok: true });
+    }
+  });
+
+  test('a still GIF is taken on every provider', () => {
+    for (const provider of [undefined, 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', 'bedrock', 'openai-compatible']) {
+      expect({ provider, ok: userImageBlocks([{ mediaType: 'image/gif', data: gifOf(1).toString('base64') }], USER_IMAGE_LIMITS, provider).ok }).toEqual({ provider, ok: true });
+    }
+  });
+});
+
 describe('an image whose parts are there but empty', () => {
   test('an empty IDAT, a GIF frame with no data and an empty ANMF are no image data', () => {
     const png = bytes('png');
