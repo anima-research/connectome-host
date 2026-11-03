@@ -175,17 +175,19 @@ export interface WelcomeMessageEntry {
   corrId?: string;
 }
 
-/** A framework TraceEvent as it was emitted, except that each base64 image's
- *  data is replaced by a note of its length. Clients typically pipe these into
- *  the same `AgentTreeReducer` the server uses. */
+/** A framework TraceEvent as it was emitted, except that the `data` of each
+ *  `image` or `generated_image` block, at its top level or in its `source`, is
+ *  replaced by a note of its length. Image data in any other shape, such as a
+ *  `data:` URL in a provider's raw item, goes as it is. Clients typically pipe
+ *  these into the same `AgentTreeReducer` the server uses. */
 export interface TraceMessage {
   type: 'trace';
   /** TraceEvent shape — discriminated by inner `type` field. */
   event: { type: string; [k: string]: unknown };
 }
 
-/** A child's WireEvent as it arrived, except that each base64 image's data
- *  is replaced by a note of its length, as in a TraceMessage. Scoped by child
+/** A child's WireEvent as it arrived, except that image blocks' data is
+ *  replaced by a note of its length, as in a TraceMessage. Scoped by child
  *  name so the client can route into the right reducer. */
 export interface ChildEventMessage {
   type: 'child-event';
