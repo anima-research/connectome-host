@@ -1786,7 +1786,7 @@ export class WebUiModule implements Module {
                   + `Send at most ${fitting([])} at once, and the text in a message of its own or shorter`;
               } else if (past(checked.blocks)) {
                 message = `message not sent: ${together}, where they could reach the model only as placeholders. `
-                  + `Send at most ${fitting(text)} with this text`;
+                  + `Send at most ${fitting(text)} ${text.length > 0 ? 'with this text' : 'at once'}`;
               } else {
                 message = 'message not sent: with this much text, its images could be dropped before the model sees '
                   + 'them. Send the images in a message of their own, or shorten the text';

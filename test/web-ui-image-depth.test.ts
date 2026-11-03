@@ -16,7 +16,7 @@ const REFUSAL = 'message not sent: with this much text, its images could be drop
 const TOGETHER = "these images together come within 10% of this host's image depth, the recipe's imageStripDepthTokens, "
   + 'or past it';
 const IMAGES_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, where they could reach the model only as `
-  + `placeholders. Send at most ${fit} with this text`;
+  + `placeholders. Send at most ${fit}`;
 const BOTH_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, and so does the text with any one of them. `
   + `Send at most ${fit} at once, and the text in a message of its own or shorter`;
 const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
@@ -162,11 +162,11 @@ describe("a send whose images the strategy would strip at once", () => {
   test('says how many images fit when it is their number that passes the line', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
     expect((await send({ content: '', images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL('2 images') });
+      .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL('2 images at once') });
     expect((await send({ content: 'a'.repeat(1_000), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-short' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together-short', message: IMAGES_REFUSAL('2 images') });
+      .toEqual({ type: 'error', corrId: 'c-together-short', message: IMAGES_REFUSAL('2 images with this text') });
     expect((await send({ content: 'a'.repeat(5_500), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-text' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL('1 image') });
+      .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL('1 image with this text') });
   });
 
   test('asks about the text alone when the images together are under the line, even if the text leaves no room for one', async () => {
