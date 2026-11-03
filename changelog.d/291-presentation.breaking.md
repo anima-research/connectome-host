@@ -30,7 +30,16 @@
     `switchBranch` to the checkpoint's branch head instead, and one at its
     checkpoint already moves nothing. Each is refused unless every agent
     sharing the store is idle, as before, and each takes every agent's
-    context to the branch it moves to. The operator log
+    context to the branch it moves to. While the command agent's own turn
+    is alive the host refuses it at once, as before (`/checkout refused: a
+    turn is in flight (…)`). While another agent's turn is, the host
+    refused it at once too; now the command answers with its progress line
+    (`Switching → branch …`, `Restoring to checkpoint …`, `Branching at
+    …`), then with agent-framework's refusal after `Checkout failed:`,
+    `Restore failed:` or `branchto failed:` (`Cannot … while … — every
+    agent sharing the store must be idle (quiesce the host first)`) and
+    `This command moved nothing. Try again once what it names has
+    finished.` The operator log
     records `/restore` and `/branchto` as `rollback`, `/checkout` and a
     `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
     `undo-turn` and `redo-turn`, each with the requester `host-console`.
@@ -95,4 +104,7 @@
   `/checkout`, `/restore` and `/branchto` are still refused while any agent
   sharing the store is mid-turn, the subconscious included, as the 0.16.0
   entry for #264 has it, and `/newtopic` while the agent the command acts
-  for is.
+  for is. A caller that reads or matches a branch command's answer gets,
+  for another agent's turn, the progress line and then agent-framework's
+  refusal (above), and the host's immediate `refused: a turn is in flight`
+  only for the command agent's own turn.
