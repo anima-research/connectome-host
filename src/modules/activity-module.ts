@@ -1,10 +1,6 @@
 /**
- * ActivityModule — surfaces agent composition activity (typing indicators)
- * to a configurable set of MCPL channels while inference is active.
- *
- * Recipe-seeded initial channels; agent can add/remove at runtime via tools.
- * State persists via Chronicle. Typing refresh is owned by the framework's
- * ChannelRegistry (~7s interval, matches Discord/Zulip expiry).
+ * agent-framework's ChannelRegistry refreshes a channel's typing indicator
+ * every 7 s while it shows.
  */
 
 import type {
@@ -33,26 +29,17 @@ interface ActivityState {
   channels: string[];
 }
 
-/** How much of a file's head the origin hint is read from. */
 const ORIGIN_HEAD_BYTES = 2048;
 
 /**
- * Parse a loose origin hint out of a file's top lines. Used when an inference
- * is triggered by a workspace file rather than an incoming channel message:
- * if the file's head declares the conversation it's replying to, we route the
- * typing indicator to that topic. Returns null if no hint is found.
- *
- * Recognized shapes:
+ * A workspace file's head can name the conversation it answers, and typing
+ * for an inference the file triggers shows there. Recognized shapes:
  *   - `origin: zulip#<channel>#<topic>`
  *   - `reply-to: zulip:<channel>/<topic>`
- *   - YAML frontmatter (delimited by leading `---` ... `---`) containing both
- *     `channel: <name>` and `topic: <name>` — matches the clerk's existing
- *     knowledge-request ticket convention. Loose `channel:`/`topic:` lines
- *     outside a frontmatter block are ignored to avoid mis-routing on prose
- *     files (e.g. README headings, mined artifacts quoting Zulip metadata).
- *
- * All platform hints currently resolve to `zulip:<channel>` — extend here when
- * another MCPL server wants in on origin-routing.
+ *   - YAML frontmatter (between leading `---` lines) holding both
+ *     `channel: <name>` and `topic: <name>`; `channel:` and `topic:` lines
+ *     outside a frontmatter block are ignored.
+ * Every hint names `zulip:<channel>`. Returns null if the head holds none.
  */
 function parseOriginHint(text: string): { channelId: string; topic: string } | null {
   const compact = text.match(/origin:\s*zulip#([^\s#]+)#(\S+)/i);
@@ -80,19 +67,11 @@ export class ActivityModule implements Module {
   private ctx: ModuleContext | null = null;
   private framework: AgentFramework | null = null;
   private channels = new Set<string>();
-  /** Whether a turn is under way, as far as typing shows it. One flag for
-   *  every agent: the framework itself clears every channel's typing when
-   *  any turn's stream reaches its end, so a turn's end, whoever's, is when
-   *  the channels stop showing it. */
+  /** One flag for every agent: agent-framework clears every channel's typing
+   *  when any turn's stream ends, unless it hands the turn to a successor. */
   private typingActive = false;
-  /** The framework's trace subscription, ended in stop(), as onTrace's
-   *  contract asks, and when setFramework replaces the framework. */
   private unsubscribeTrace: (() => void) | null = null;
 
-  /** Most recent metadata per channel, from incoming traffic or a person's
-   *  message addressed to the agent as a push. Handed back to the
-   *  originating server on each typing notification so routing hints (e.g.
-   *  Zulip topic) land where the conversation is active. */
   private lastMetadata = new Map<string, Record<string, unknown>>();
 
   constructor(private readonly config: ActivityModuleConfig = {}) {}
@@ -117,10 +96,6 @@ export class ActivityModule implements Module {
     this.framework = null;
   }
 
-  /** Called from the host after framework creation, like SubagentModule.
-   *  The host builds a module per framework; a framework handed over here
-   *  replaces any earlier one as stop() ends it: no more of its traces, and
-   *  no typing left on its channels. */
   setFramework(framework: AgentFramework): void {
     this.unsubscribeTrace?.();
     this.stopAllTyping();
@@ -128,13 +103,11 @@ export class ActivityModule implements Module {
     this.typingActive = false;
     this.unsubscribeTrace = framework.onTrace((event: TraceEvent) => {
       if (event.type === 'inference:started') {
-        // A silent wake's prose is suppressed. agent-framework's own Discord
-        // module shows no typing for one either.
+        // agent-framework suppresses a silent wake's prose, and its own Discord
+        // module shows no typing for one.
         if ((event as { silent?: unknown }).silent === true) return;
         this.onInferenceStarted();
       } else if (STREAM_END_TRACES.has(event.type)) {
-        // Any end, failed or aborted ones included: leaving the flag on
-        // would have show_in start "typing…" when no turn is under way.
         this.onInferenceEnded();
       }
     });
@@ -226,9 +199,6 @@ export class ActivityModule implements Module {
   }
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
-    // Track each channel's latest message routing hints, from channels/incoming
-    // or a counted push, so typing notifications can echo them back to the
-    // originating server.
     if (event.type === 'mcpl:channel-incoming') {
       const e = event as unknown as {
         channelId: string;
@@ -241,16 +211,10 @@ export class ActivityModule implements Module {
       }
       this.lastMetadata.set(e.channelId, merged);
     }
-    // A person's message addressed to the agent from a closed channel arrives
-    // as a push, with the server's routing hints in its origin (zulip_mcp's
-    // topic among them), as channels/incoming carries them in its metadata.
     else if (event.type === 'mcpl:push-event') {
       const pushed = addressedPush(event);
       if (pushed) this.lastMetadata.set(pushed.channelId, { ...pushed.origin });
     }
-    // Workspace-triggered inferences have no incoming-message metadata, so
-    // peek at the file's head for an origin hint and populate routing metadata
-    // if found. Best-effort; failures are silent.
     else if (event.type === 'workspace:created' || event.type === 'workspace:modified') {
       const e = event as unknown as { paths: string[] };
       await this.extractOriginFromFiles(e.paths);
@@ -264,21 +228,13 @@ export class ActivityModule implements Module {
 
     for (const mountPath of mountPaths) {
       try {
-        // readFileFromDisk refuses a file that is itself a link unless the
-        // mount follows links (and, from agent-framework's release with
-        // anima-research/agent-framework#468, one reached through a linked
-        // directory), reads a file only if its canonical path lies inside the
-        // mount, and is asked for no more than the head the hint needs.
         const { bytes } = await workspace.readFileFromDisk(mountPath, { maxBytes: ORIGIN_HEAD_BYTES });
         const origin = parseOriginHint(bytes.toString('utf8'));
         if (origin && this.channels.has(origin.channelId)) {
-          // Merge with any existing metadata so other keys (e.g. senderEmail)
-          // survive if the origin refresh is subsequent to an incoming message.
           const prior = this.lastMetadata.get(origin.channelId) ?? {};
           this.lastMetadata.set(origin.channelId, { ...prior, topic: origin.topic });
         }
       } catch {
-        // Unreadable, gone, or refused by the mount: silently skip.
       }
     }
   }

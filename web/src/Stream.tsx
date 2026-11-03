@@ -1,23 +1,9 @@
-/**
- * Stream pane — shows live events for a single tree node. The same panel is
- * used regardless of node kind; only the *source* of events differs (handled
- * upstream by App.tsx, which routes server messages through `formatStreamEvent`
- * (src/web/stream-lines.ts)
- * when they match the node's StreamSource).
- *
- * The pane is intentionally single-instance: clicking another node retargets
- * the panel rather than opening a second one. This mirrors the TUI's "peek
- * a node" UX, where focus is the unit of attention.
- */
-
 import { For, Show } from 'solid-js';
 import type { StreamLine } from '@conhost/web/stream-lines';
 
 
 export function StreamPanel(props: {
-  /** Display label of the focused node. */
   label: string;
-  /** Sub-label hint — e.g. "subagent" / "fleet child" / "agent in <child>". */
   scopeHint?: string;
   lines: StreamLine[];
   onClose(): void;

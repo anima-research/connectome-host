@@ -1,1 +1,0 @@
-- A fork with no parent stream (no caller, and no configured parent agent registered) started with an empty context: no task and no framing. It now starts with its intention and its orientation.

@@ -56,15 +56,8 @@ the house default; plain descriptive titles are accepted.
   explicitly labeled as such, with a severity verdict and itemized findings.
 - The reviewer will typically **run your branch** (typecheck, test suite,
   loading a recipe) and paste transcripts. Claims are checked, not trusted.
-- **Greptile** reviews only PRs labelled `greptile` (`.greptile/config.json`).
-  A scheduled workflow adds that label to each open, non-draft PR whose
-  additions plus deletions pass 400 lines, unless it carries `no-greptile`,
-  and the review starts when the label lands: within about half an hour of
-  the PR opening, passing 400 lines or being marked ready, and later when
-  GitHub's scheduler is busy. A smaller PR gets a Greptile review if a
-  maintainer adds the label. `no-greptile` skips the review. Removing
-  `greptile` from a PR past 400 lines doesn't skip it, since the next run
-  adds the label back.
+- **Greptile** doesn't review new PRs. It reviews only PRs labelled
+  `greptile` (`.greptile/config.json`), so don't add that label to a new PR.
 - Respond by pushing fix commits and replying per finding — "Addressed in
   `<sha>`" — rather than force-pushing a rewritten branch. A re-review then
   flips the verdict.
@@ -137,7 +130,23 @@ never do.
   (subsections emitted in `### Breaking` / `### Added` / `### Changed` /
   `### Fixed` order), deletes the consumed fragments, keeps a fresh empty
   `Unreleased` above, and refuses to release when there is nothing to
-  release; npm then commits and tags. `git push --follow-tags` triggers the
+  release. It also writes the release's own fields into `package.json` as
+  `connectomeRelease`, which npm's full manifest of the version (what
+  `npm view` reads) keeps. `breaking` is whether anything is breaking since
+  the last final release below it in the changelog: the new section, or any
+  section between them, has a Breaking subsection with anything in it, as
+  `npm version`'s check of a pending breaking entry reads one.
+  `cacheWrite` is whether an update from that last final release changes
+  what each resident's requests carry before its newest turn, so that each
+  one's next request writes its prompt cache in full. Give it as
+  `RELEASE_CACHE_WRITE=yes@<version>` or `no@<version>`, naming the version
+  being cut; any other value is refused, and a cut nobody measured leaves it
+  unset and records nothing of its cost. When the hook refuses, npm has
+  already written the new version into `package.json` and
+  `package-lock.json` and leaves it there, so restore both
+  (`git checkout package.json package-lock.json`) before running
+  `npm version` again.
+  Otherwise npm commits and tags. `git push --follow-tags` triggers the
   publish workflow, which refuses a tag with no matching changelog section,
   builds the Web UI and checks in a job of its own that the packed release,
   which carries it in `dist/web`, installs and runs on its own
@@ -162,9 +171,7 @@ never do.
   and bun's, stop there, in the publish job and by hand alike, unless
   scripts are off (`--ignore-scripts`, which skips the release holds
   too). The
-  root `postinstall` builds the Web UI only in a checkout, where `web/` is:
-  the package doesn't ship `web/`, so on a registry install it does
-  nothing. When the check fails on a tag, the
+  package has no install script, so a registry install runs nothing. When the check fails on a tag, the
   notes are out and npm isn't. Re-run the failed jobs first: a registry or
   network blip, or a timeout, passes then. If it fails the same way again,
   fix the break, which can be a dependency's new release, and release the
@@ -216,6 +223,7 @@ never do.
 
 ```bash
 bun install
+bun run build:web   # the Web UI, which nothing builds on install
 bun test            # test suite
 bunx tsc --noEmit   # typecheck the host's source (src/)
 (cd web && bunx tsc --noEmit)   # typecheck the web app
@@ -225,12 +233,15 @@ bun src/index.ts    # run (generic assistant)
 CI (`ci.yml`) runs on every pull request and every push to `main`, on ubuntu
 and macOS. Both install the root and the web app with a strict lockfile
 (`npm ci`), which fails when a lock doesn't match its `package.json` or
-lacks that platform's packages, and build the web app; the test suite runs
-on ubuntu only. A typecheck job checks the types of the host's source
-(`src/`; `test/` and `scripts/` aren't checked) and of the web app
-(`tsc --noEmit`), which nothing else does: bun runs TypeScript without
-checking its types, and `vite build` doesn't check them either. If you
-touched `web/`
+lacks that platform's packages, and build the web app. The test suite runs
+once, on ubuntu at the oldest Node and Bun the package supports (22.12.0 and
+1.4.3). Every other leg checks instead that the host starts there
+(`node scripts/host-starts.mjs`: `@opentui/core` loads with its native package
+for that platform, and the offline smoke run answers). A typecheck job
+checks the types of the host's source (`src/`; `test/` and `scripts/`
+aren't checked) and of the web app (`tsc --noEmit`), which nothing else
+does: bun runs TypeScript without checking its types, and `vite build`
+doesn't check them either. If you touched `web/`
 dependencies, regenerate the npm lock with `npm run relock:web`, so it
 carries both platforms' native binaries. It resolves every web dependency
 afresh, so review the lock's diff. Then regenerate `web/bun.lock` from it:

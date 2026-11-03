@@ -8,14 +8,6 @@ import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
 import { LoggingBedrockAdapter } from '../src/logging-bedrock-adapter.js';
 import { CallLedger, type ProviderCallRecord } from '../src/call-ledger.js';
 
-// The Anthropic and Bedrock writers keep their records' `error` shape
-// ({ name, message } for an Error, Anthropic's with `stack`), but bound its
-// text as the generic decorator does: a provider can echo the whole rejected
-// request in its error, beside the raw request the record already keeps. And
-// logging never changes what the caller gets: reading a hostile error, or a
-// request the summary can't read, neither replaces the provider's error nor
-// a successful response.
-
 const request: ProviderRequest = { messages: [], model: 'claude-opus-4-6', maxTokens: 16 };
 const dirs: string[] = [];
 const restores: Array<() => void> = [];
@@ -24,7 +16,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Makes the provider's own complete and stream throw `thrown`. */
 function failWith(base: { prototype: object }, thrown: unknown): void {
   const proto = base.prototype as Record<string, unknown>;
   const { complete, stream } = proto;
@@ -33,7 +24,6 @@ function failWith(base: { prototype: object }, thrown: unknown): void {
   restores.push(() => { proto.complete = complete; proto.stream = stream; });
 }
 
-/** Makes the provider's own complete and stream resolve to `response`. */
 function succeedWith(base: { prototype: object }, response: ProviderResponse): void {
   const proto = base.prototype as Record<string, unknown>;
   const { complete, stream } = proto;
@@ -49,9 +39,6 @@ type Adapter = {
   onProviderSuccess?: () => void;
 };
 
-/** Each writer, with a request its own summary throws on: Anthropic's reads
- *  the message count, and Bedrock's the last message's blocks. Anthropic's
- *  is built with the call ledger's observer, as index.ts builds it. */
 function writers(): Array<{ name: 'anthropic' | 'bedrock'; base: { prototype: object }; stack: boolean; hostile: ProviderRequest; make: (log: string, calls: ProviderCallRecord[]) => Adapter }> {
   return [
     {
@@ -71,8 +58,6 @@ function records(log: string): Array<Record<string, unknown>> {
   return readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
 }
 
-/** A fresh log, the writer's adapter on it, and what its observers hear.
- *  The log is named as index.ts names it, so a ledger can restore from it. */
 function setup(w: ReturnType<typeof writers>[number]) {
   const dir = mkdtempSync(join(tmpdir(), 'llm-native-errors-'));
   dirs.push(dir);
@@ -88,8 +73,6 @@ function setup(w: ReturnType<typeof writers>[number]) {
   return { dir, log, calls, errors, successes: () => successes, call };
 }
 
-/** The call ledger's rows for what its observer heard (live), and for the
- *  log after a restart (restored). */
 function ledgerRows(dir: string, calls: ProviderCallRecord[]) {
   const live = new CallLedger({ hydrate: false });
   for (const call of calls) live.record(call);
@@ -119,11 +102,9 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
         expect(record!.providerErrorCode).toBe('invalid_request');
         expect(record!.retryable).toBe(false);
         if (w.stack) {
-          // The stack doesn't repeat the message, so its frames survive whole.
           expect(error.stack).toStartWith('Error: [the message above]\n');
           expect(error.stack).toContain('    at ');
           expect(error.stack!.length).toBeLessThan(4_000);
-          // The ledger's live row reads the record's text, as a restored one does.
           expect(calls).toHaveLength(1);
           expect(calls[0]!.error).toBe(error.message);
         } else {
@@ -157,7 +138,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
         const [record] = records(log);
         expect(record!.error).toBe('[error could not be read]');
         if (w.name === 'anthropic') {
-          // The tap hears the value as thrown, and the ledger still gets the failed call.
           expect(errors).toHaveLength(1);
           expect(errors[0]).toBe(proxy);
           expect(calls).toHaveLength(1);
@@ -202,8 +182,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
         failWith(w.base, thrown);
         await expect(call(kind)).rejects.toBe(thrown);
         const [record] = records(log);
-        // An unreadable name is recorded as "Error", which the value is; an
-        // unreadable message is marked; the rest is left out.
         expect(record!.error).toEqual({ name: 'Error', message: '[message could not be read]' });
         for (const field of ['errorType', 'httpStatus', 'providerErrorCode', 'retryable', 'errorChars']) {
           expect(field in record!).toBe(false);
@@ -226,12 +204,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
     }
   }
 
-  // Nothing in a call's logging can replace the provider's error or its
-  // response: not the error's reading, and not the request's summary either.
-  // Anthropic's summary leaves out only the part it can't read, and the
-  // ledger's live row takes the summary's parts, so the row a restart restores
-  // from the record reads the same. Bedrock's summary, which no ledger reads,
-  // is all or nothing: a request it can't read makes the record minimal.
   for (const w of writers()) {
     for (const kind of ['complete', 'stream'] as const) {
       test(`${w.name} ${kind}: a failed call whose request the summary can't fully read is still recorded and observed`, async () => {
@@ -244,7 +216,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
           type: 'error', kind, error: { name: 'Error', message: 'overloaded' }, errorType: 'overloaded', retryable: true,
         });
         if (w.name === 'anthropic') {
-          // The message count can't be read, so the summary leaves it out; the rest stands.
           expect(record!.requestSummary).toEqual({ model: 'claude-opus-4-6', maxTokens: 16, tools: 0 });
           expect('summaryUnavailable' in record!).toBe(false);
           expect(errors).toHaveLength(1);
@@ -273,7 +244,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
         const [record] = records(log);
         expect(record).toMatchObject({ type: 'call', kind });
         if (w.name === 'anthropic') {
-          // The record keeps the response, and with it the call's usage and stop reason.
           expect(record!.requestSummary).toEqual({ model: 'claude-opus-4-6', maxTokens: 16, tools: 0 });
           expect(record!.rawResponse).toEqual({ stop_reason: 'end_turn', usage: { input_tokens: 3, output_tokens: 2 } });
           expect(successes()).toBe(1);
@@ -291,8 +261,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
   }
 
   for (const kind of ['complete', 'stream'] as const) {
-    // A failure is a failure whatever its text: the ledger used to read an
-    // empty one as a success, pricing the call and giving no ERROR.
     test(`anthropic ${kind}: a failure whose text is empty is an ERROR in the ledger, live and restored`, async () => {
       for (const thrown of [new Error(''), '']) {
         const { dir, log, calls, call } = setup(writers()[0]!);
@@ -309,9 +277,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
       }
     });
 
-    // The cache summary is read from the raw request the provider hands
-    // onRequest; one it can't read leaves the cache summary unknown, in the
-    // record and both rows, where the live row used to claim no cache flags.
     test(`anthropic ${kind}: a raw request whose cache summary can't be read costs only that summary`, async () => {
       const { dir, log, calls, call } = setup(writers()[0]!);
       const { proxy, revoke } = Proxy.revocable({}, {});
@@ -334,7 +299,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
       restores.push(() => { proto.complete = complete; proto.stream = stream; });
       await expect(call(kind)).resolves.toBe(response);
       const [record] = records(log);
-      // The lineage reads only the model, system and tools, so it's named still.
       expect(record!.requestSummary).toEqual({
         model: 'claude-opus-4-6', maxTokens: 16, messages: 0, tools: 0, lineage: cacheLineageKey({ model: 'claude-opus-4-6' }),
       });
@@ -345,8 +309,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
       expect(restored).toEqual(live);
     });
 
-    // A response that can't be read is the one record left to write minimal,
-    // and it costs the live row too, so the ledger has no row either way.
     test(`anthropic ${kind}: a successful call whose response can't be read is recorded minimal, with no ledger row`, async () => {
       const { dir, log, calls, successes, call } = setup(writers()[0]!);
       const response = { content: [], stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } } as Record<string, unknown>;
@@ -361,7 +323,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
     });
   }
 
-  // A failure's error fields are read once, for the record and the ledger alike.
   test('anthropic: a message that changes on each read is read once, and the record and the ledger agree', async () => {
     const { log, calls, call } = setup(writers()[0]!);
     const thrown = new Error('placeholder');
@@ -393,9 +354,6 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
     });
   }
 
-  // The stack's header is rewritten only when it is the error's own
-  // "Name: message" line; any other stack keeps its text, bounded like the
-  // message. Only the writer that records stacks reads one.
   test('anthropic: a real MembraneError echoing the request keeps its frames, not the echo', async () => {
     const { log } = setup(writers()[0]!);
     const thrown = new MembraneError({

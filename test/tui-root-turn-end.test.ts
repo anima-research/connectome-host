@@ -1,16 +1,9 @@
-/**
- * The TUI's status line at the end of the root agent's stream (rootTurnEnd):
- * every stream end returns it from "thinking", a turn a tool ended included,
- * an end that follows an end adds nothing, and a failure always shows.
- * rootTurnStep moves the flag that says a turn is showing. Escape's gate and
- * line are pinned here too; test/tui-turns.test.ts runs runTui itself.
- */
 import { describe, expect, test } from 'bun:test';
-import { escapeActs, escapeLine, peekEndLine, rootTurnEnd, rootTurnStep } from '../src/tui.js';
+import { escapeActs, escapeLine, formatWireEvent, peekEndColor, peekEndLine, rootTurnEnd, rootTurnStep } from '../src/tui.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 
 describe('rootTurnEnd', () => {
-  test('every stream end ends a turn that is showing', () => {
+  test('every stream end gives a turn that is showing something to show', () => {
     for (const type of STREAM_END_TRACES) {
       expect(rootTurnEnd({ type, error: 'x' }, true)).not.toBeNull();
     }
@@ -21,9 +14,9 @@ describe('rootTurnEnd', () => {
     expect(rootTurnEnd({ type: 'inference:turn_ended' }, true)).toEqual({ status: 'idle', background: 'show' });
   });
 
-  test('a failure shows its error', () => {
+  test("a failed attempt shows its error and leaves the turn going, cutting a backgrounded turn's output back to the attempt's start", () => {
     expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, true)).toEqual({
-      status: 'error', background: 'drop', line: { text: 'Error: overloaded', tone: 'error' },
+      status: 'attempt-failed', background: 'cut', line: { text: 'Error: overloaded', tone: 'error' },
     });
   });
 
@@ -40,23 +33,19 @@ describe('rootTurnEnd', () => {
   });
 
   test('an exhausted stream that nothing ended before shows as a failure, with the framework\'s words', () => {
-    // agent-framework 0.22.3 sends it alone, as "Stream aborted: <reason>",
-    // for a stream aborted for a reason other than a stop, which it doesn't
-    // treat as deliberate; a stop ends with `aborted`.
+    // agent-framework sends inference:exhausted alone, as "Stream aborted: <reason>",
+    // for a stream aborted other than by a stop, which ends with `aborted`.
     expect(rootTurnEnd({ type: 'inference:exhausted', error: 'Stream aborted: timeout' }, true)).toEqual({
       status: 'error', background: 'drop', line: { text: '(turn ended: Stream aborted: timeout)', tone: 'error' },
     });
   });
 
-  test('an end while no turn is showing adds nothing, but a failure', () => {
-    // `exhausted` after `failed` or `aborted`, or after the TUI's own interrupt.
+  test('an end while no turn is showing adds nothing, but a failed attempt', () => {
     for (const type of STREAM_END_TRACES) {
       if (type !== 'inference:failed') expect(rootTurnEnd({ type, error: 'x' }, false)).toBeNull();
     }
-    // agent-framework sends a failure only for an attempt it started, so it's
-    // the end of a turn whose start the TUI didn't follow: it shows.
     expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, false)).toEqual({
-      status: 'error', background: 'drop', line: { text: 'Error: overloaded', tone: 'error' },
+      status: 'attempt-failed', background: 'cut', line: { text: 'Error: overloaded', tone: 'error' },
     });
   });
 
@@ -68,18 +57,34 @@ describe('rootTurnEnd', () => {
 });
 
 describe('rootTurnStep', () => {
-  test('a start shows a turn, and its first end ends it, once', () => {
+  test('a failed attempt leaves the turn showing, and the end that follows ends it, once', () => {
     let step = rootTurnStep(false, { type: 'inference:started' });
     expect(step).toEqual({ showing: true, end: null });
     step = rootTurnStep(step.showing, { type: 'inference:failed', error: 'overloaded' });
-    expect(step.showing).toBe(false);
-    expect(step.end?.line?.text).toBe('Error: overloaded');
+    expect(step.showing).toBe(true);
+    expect(step.end?.status).toBe('attempt-failed');
     step = rootTurnStep(step.showing, { type: 'inference:exhausted', error: 'overloaded' });
+    expect(step.showing).toBe(false);
+    expect(step.end?.status).toBe('error');
+    step = rootTurnStep(step.showing, { type: 'inference:aborted' });
     expect(step).toEqual({ showing: false, end: null });
   });
 
-  test('each of the five ends ends a turn that is showing', () => {
-    for (const type of ['inference:completed', 'inference:turn_ended', 'inference:aborted', 'inference:failed', 'inference:exhausted']) {
+  test('a stop after a failed attempt ends the turn idle', () => {
+    const failed = rootTurnStep(true, { type: 'inference:failed', error: 'held' });
+    expect(rootTurnStep(failed.showing, { type: 'inference:aborted', reason: 'shutdown' }).end).toEqual({
+      status: 'idle', background: 'drop', line: { text: '(turn aborted: shutdown)', tone: 'note' },
+    });
+  });
+
+  test('a failed attempt the TUI saw no start for shows the turn, so its end shows', () => {
+    const failed = rootTurnStep(false, { type: 'inference:failed', error: 'held' });
+    expect(failed.showing).toBe(true);
+    expect(rootTurnStep(failed.showing, { type: 'inference:exhausted', error: 'held' }).end?.status).toBe('error');
+  });
+
+  test('each of the four turn ends ends a turn that is showing', () => {
+    for (const type of ['inference:completed', 'inference:turn_ended', 'inference:aborted', 'inference:exhausted']) {
       const step = rootTurnStep(true, { type, error: 'x' });
       expect(step.showing).toBe(false);
       expect(step.end).not.toBeNull();
@@ -107,6 +112,31 @@ describe('rootTurnStep', () => {
         expect(rootTurnStep(showing, { type })).toEqual({ showing, end: null });
       }
     }
+  });
+});
+
+describe("a fleet child's peek log", () => {
+  test("shows each of a stream's ends but its completion as a subagent's peek does, a lone exhausted as a failure with its error", () => {
+    const ends = [
+      { type: 'inference:turn_ended' },
+      { type: 'inference:aborted', reason: 'user' },
+      { type: 'inference:failed', error: 'overloaded' },
+      { type: 'inference:exhausted', error: 'Stream aborted: timeout' },
+    ];
+    for (const end of ends) {
+      const line = peekEndLine(end)!;
+      expect(formatWireEvent(end as never)).toEqual({ text: line.text, color: peekEndColor(line.tone) });
+    }
+    expect(formatWireEvent({ type: 'inference:exhausted', error: 'Stream aborted: timeout' } as never)).toEqual({
+      text: '✗ turn ended: Stream aborted: timeout', color: '#cc0000',
+    });
+    expect(formatWireEvent({ type: 'inference:completed' } as never)).toEqual({ text: '─ inference completed ─', color: '#555555' });
+  });
+
+  test('a peek shows a failure in red, a stop in yellow and a turn a tool ended in grey', () => {
+    expect(peekEndColor('error')).toBe('#cc0000');
+    expect(peekEndColor('warn')).toBe('#cccc00');
+    expect(peekEndColor('dim')).toBe('#555555');
   });
 });
 
@@ -151,7 +181,6 @@ describe('escapeActs', () => {
 
   test('on an error, only while the follower has the root\'s turn running, whatever set the error', () => {
     expect(escapeActs('error', true)).toBe(true);
-    // An error shown with no turn running stands.
     expect(escapeActs('error', false)).toBe(false);
   });
 });

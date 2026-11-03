@@ -1,11 +1,3 @@
-/**
- * A DEFAULT_RECIPE resident (kv-unified, 300k budget) that saved a lower
- * budget restarts. On agent-framework 0.22.1 the boot restore applied the
- * saved budget as a paced decrease, which kv-unified refuses
- * ("Gradual context-window transitions require ... kv-stable"), and the
- * error escaped AgentFramework.create(). 0.22.2 keeps a setting it can't
- * apply at boot instead of throwing.
- */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

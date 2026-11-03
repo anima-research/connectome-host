@@ -1,21 +1,7 @@
 /**
- * Two compiles the subagent module makes for no request of their own are dry
- * runs: a peek's compile of a stream's context, and a fork's compile of its
- * parent's context, from which the fork's seed is built. A dry compile gives
- * what a real compile would, and commits no fold resolutions or chunk records,
- * queues no compression and leaves what the next compile and its observers
- * read (context-manager's SelectOptions.dryRun), though it still releases a
- * compression hold past its deadline, as any compile does.
- *
- * Each launch's check of its stream's first context stays a real compile: a
- * dry compile returns an over-budget plan where a real one refuses it, and the
- * check exists to refuse a first context the stream can't use before the run
- * starts.
- *
- * The fork and spawn cases wrap the context managers' compile to record
- * whether each call was dry and what it returned, and run the real
- * runEphemeralToCompletion against the mock provider, so the request a stream
- * sends is the provider's. The peek case reads a stand-in context manager.
+ * context-manager's dry compile (SelectOptions.dryRun) commits nothing a later
+ * compile or an observer reads, though it releases a compression hold past its
+ * deadline, and it returns an over-budget plan where a real compile refuses it.
  */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -28,7 +14,6 @@ import { SubagentModule } from '../src/modules/subagent-module.js';
 
 type Compiled = { messages: Array<{ content: unknown }> };
 type Compile = (budget?: unknown, injections?: unknown, opts?: { dryRun?: boolean }) => Promise<Compiled>;
-/** One compile a context manager made: whose, whether it was dry, and its text. */
 interface Seen { who: string; dry: boolean; text: string }
 
 function textOf(content: unknown): string {
@@ -41,7 +26,6 @@ function textOf(content: unknown): string {
   }).join('\n');
 }
 
-/** Records each compile `cm` makes into `seen`, as `who`. */
 function record(cm: { compile: Compile }, who: string, seen: Seen[]): void {
   const original = cm.compile.bind(cm);
   cm.compile = async (budget, injections, opts) => {
@@ -65,7 +49,6 @@ async function harness() {
   framework.start();
 
   const seen: Seen[] = [];
-  // Each stream's context manager, as the framework creates it for the module.
   const fw = framework as unknown as { createEphemeralAgent(config: unknown): Promise<{ contextManager: { compile: Compile } }> };
   const create = fw.createEphemeralAgent.bind(framework);
   fw.createEphemeralAgent = async (config: unknown) => {
@@ -100,7 +83,6 @@ describe("a peek's and a fork's read of another context are dry; launch checks a
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_probe', input));
       expect(res.success).toBe(true);
 
-      // The parent's context was read once, dry, and what it gave reached the stream.
       const parents = h.seen.filter((s) => s.who === 'parent');
       expect(parents.map((s) => s.dry)).toEqual([true]);
       expect(parents[0]!.text).toContain('the ledger total is 4,212');
@@ -108,7 +90,6 @@ describe("a peek's and a fork's read of another context are dry; launch checks a
       expect(request).toBeDefined();
       expect(JSON.stringify(request)).toContain('the ledger total is 4,212');
 
-      // The stream's launch check, its first compile, was a real one.
       const streams = h.seen.filter((s) => s.who === 'stream');
       expect(streams[0]!.dry).toBe(false);
     } finally {

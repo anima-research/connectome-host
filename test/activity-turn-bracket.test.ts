@@ -1,11 +1,3 @@
-/**
- * ActivityModule's turn flag: set at `inference:started`, cleared at any
- * event that ends a turn (`inference:completed`, `inference:turn_ended`,
- * `inference:aborted`, `inference:failed` or `inference:exhausted`). The flag
- * is what `show_in` reads to start typing in a channel mid-turn. A silent
- * start doesn't set it, and the module stops listening to a framework's
- * traces when it stops or is handed a new framework.
- */
 import { describe, expect, test } from 'bun:test';
 import type { ModuleContext, ToolCall, TraceEvent } from '@animalabs/agent-framework';
 import { ActivityModule } from '../src/modules/activity-module.js';
@@ -63,7 +55,6 @@ describe('the turn flag', () => {
     fw.emit('inference:started', { silent: true });
     await showIn('zulip:later');
     expect(typing).toEqual([]);
-    // The same module does show a turn that isn't silent.
     fw.emit('inference:started');
     expect(typing).toEqual(['start:zulip:ops', 'start:zulip:later']);
   });
@@ -92,7 +83,6 @@ describe('the turn flag', () => {
     module.setFramework(next.framework as never);
     expect(fw.listening()).toBe(0);
     expect(next.listening()).toBe(1);
-    // The old framework's channels stop showing the turn it had under way.
     expect(typing).toEqual(['start:zulip:ops', 'stop:zulip:ops']);
     await showIn('zulip:later');
     expect(nextTyping).toEqual([]);

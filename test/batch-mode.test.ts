@@ -1,12 +1,6 @@
-/**
- * Batch mode (stdin not a TTY, no --headless): the host runs each stdin line,
- * then stops the framework, closing every MCPL server. These tests pin that
- * the teardown is announced, on the console and in each server's
- * mcpl-stderr log, and that the process exits once the run is done.
- */
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,11 +9,14 @@ import {
   batchModeStartNotice,
   batchTeardownNotice,
   batchWebUiNotice,
+  batchEchoLine,
   BATCH_MCPL_LOG_NOTE,
 } from '../src/batch-mode.js';
+import { PIPED_TURN_CAP_MS } from '../src/piped-turns.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
+const EXIT_WELL_INSIDE_TURN_CAP_MS = PIPED_TURN_CAP_MS / 4;
 
 describe('batch-mode notices', () => {
   test('the start notice says the run ends at EOF and names --headless', () => {
@@ -46,6 +43,27 @@ describe('batch-mode notices', () => {
     expect(webUiHttpUrl('localhost', 0)).toBe('http://localhost:0');
   });
 
+  test("the echo hides an /auth line's words after a subcommand it knows, or from the first word it doesn't, and shows every other line as it came", () => {
+    expect(batchEchoLine('/auth token sk-ant-oat01-secret')).toBe('/auth token <hidden>');
+    expect(batchEchoLine('  /auth TOKEN  two words  ')).toBe('/auth TOKEN <hidden>');
+    expect(batchEchoLine('/AUTH token sk-ant-oat01-secret')).toBe('/AUTH token <hidden>');
+    expect(batchEchoLine('/auth\ttoken\tsk-ant-oat01-secret')).toBe('/auth token <hidden>');
+    expect(batchEchoLine('/ auth token sk-ant-oat01-secret')).toBe('/auth token <hidden>');
+    expect(batchEchoLine('/auth recheck now')).toBe('/auth recheck <hidden>');
+    expect(batchEchoLine('/auth set-token sk-ant-oat01-secret')).toBe('/auth <hidden>');
+    expect(batchEchoLine('/auth sk-ant-oat01-secret')).toBe('/auth <hidden>');
+    expect(batchEchoLine('/AUTH set-token sk-ant-oat01-secret')).toBe('/AUTH <hidden>');
+    expect(batchEchoLine('/authtoken sk-ant-oat01-secret')).toBe('/authtoken <hidden>');
+    expect(batchEchoLine('/auth-token sk-ant-oat01-secret')).toBe('/auth-token <hidden>');
+    expect(batchEchoLine('/authx token abc')).toBe('/authx token <hidden>');
+    expect(batchEchoLine('/auth login now')).toBe('/auth login <hidden>');
+    expect(batchEchoLine('/auth refresh now')).toBe('/auth refresh <hidden>');
+    expect(batchEchoLine('/auth status now')).toBe('/auth status <hidden>');
+    for (const line of ['/auth', '/auth token', '/auth token   ', '/auth status', '/auth login', '/auth refresh', '/AUTH Recheck', '/authtoken', 'a message about /auth token abc', '  a message  ', 'xauth token abc', '/help']) {
+      expect(batchEchoLine(line)).toBe(line);
+    }
+  });
+
   test('the webui notice gives the URL and how to exit', () => {
     const line = batchWebUiNotice('http://127.0.0.1:7340');
     expect(line).toContain('http://127.0.0.1:7340');
@@ -54,7 +72,6 @@ describe('batch-mode notices', () => {
   });
 });
 
-// A stdio server that answers just enough of the handshake to connect.
 const FAKE_SERVER = `
 import { createInterface } from 'node:readline';
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
@@ -80,11 +97,31 @@ afterAll(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
-function setup(webui: boolean): { dir: string; recipePath: string } {
+const HOLD_FIRST_STOP = `
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+let made = 0;
+export function register(api, config) {
+  api.registerModule(() => { const generation = ++made; return {
+    name: 'stop-hold',
+    getTools() { return []; },
+    async start() { writeFileSync(join(config.marks, 'started-' + generation), ''); },
+    async stop() {
+      writeFileSync(join(config.marks, 'stopping-' + generation), '');
+      while (generation === 1 && !existsSync(join(config.marks, 'stop-go'))) await new Promise((r) => setTimeout(r, 10));
+    },
+    async handleToolCall() { return { success: false, error: 'no tools' }; },
+    async onProcess() { return {}; },
+  }; });
+}
+`;
+
+function setup(webui: boolean, holdFirstStop = false): { dir: string; recipePath: string } {
   const dir = mkdtempSync(join(tmpdir(), 'chost-batch-'));
   tmpDirs.push(dir);
   const serverPath = join(dir, 'fake-mcpl.mjs');
   writeFileSync(serverPath, FAKE_SERVER);
+  if (holdFirstStop) writeFileSync(join(dir, 'stop-hold.ts'), HOLD_FIRST_STOP);
   const recipe = {
     name: 'Batch Test',
     agent: { name: 'agent', provider: 'mock', systemPrompt: 'batch test' },
@@ -93,6 +130,7 @@ function setup(webui: boolean): { dir: string; recipePath: string } {
       ...(webui ? { webui: { host: '127.0.0.1', port: 0 } } : {}),
     },
     mcpServers: { fake: { command: process.execPath, args: [serverPath] } },
+    ...(holdFirstStop ? { extensions: { hold: { kind: 'module', path: join(dir, 'stop-hold.ts'), config: { marks: dir } } } } : {}),
   };
   const recipePath = join(dir, 'recipe.json');
   writeFileSync(recipePath, JSON.stringify(recipe));
@@ -101,14 +139,13 @@ function setup(webui: boolean): { dir: string; recipePath: string } {
 
 function startBatch(dir: string, recipePath: string, input: string) {
   const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
-    // cwd=dir keeps the developer's own mcpl-servers.json out of the run.
     cwd: dir,
     env: { ...process.env, DATA_DIR: join(dir, 'data') },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
   child.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf-8'); });
-  child.stderr!.on('data', () => { /* drain */ });
+  child.stderr!.on('data', () => { });
   child.stdin!.end(input);
   // 'close', not 'exit': only then have the stdio pipes delivered everything.
   const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
@@ -141,12 +178,10 @@ describe('batch mode end to end', () => {
   test('announces the MCPL teardown and exits once the input is done', async () => {
     const { dir, recipePath } = setup(false);
     const run = startBatch(dir, recipePath, 'hello\n');
-    // The inference wait's 120 s safety timer used to outlive the reply and
-    // hold the process open for two minutes after `Done.`.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
       run.exited,
-      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), 30_000); }),
+      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), EXIT_WELL_INSIDE_TURN_CAP_MS); }),
     ]).finally(() => clearTimeout(timer));
     if (outcome === 'still running') {
       run.child.kill('SIGKILL');
@@ -165,7 +200,6 @@ describe('batch mode end to end', () => {
     expect(teardown).toBeGreaterThan(done);
     expect(out).not.toContain('webui stays up');
 
-    // The server's own log states the cause ahead of the close it explains.
     const log = findFile(join(dir, 'data'), join('mcpl-stderr', 'fake.log'));
     expect(log).not.toBeNull();
     const text = readFileSync(log!, 'utf-8');
@@ -175,15 +209,30 @@ describe('batch mode end to end', () => {
     expect(closed).toBeGreaterThan(note);
   }, 60_000);
 
+  test("a /auth token line is echoed without its credential", async () => {
+    const { dir, recipePath } = setup(false);
+    const run = startBatch(dir, recipePath, '/auth token sk-ant-oat01-batch-echo-secret\n');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      run.exited,
+      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), EXIT_WELL_INSIDE_TURN_CAP_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    if (outcome === 'still running') {
+      run.child.kill('SIGKILL');
+      await run.exited;
+    }
+    expect(outcome).toBe(0);
+    const out = run.out();
+    expect(out).toContain('> /auth token <hidden>');
+    expect(out).not.toContain('batch-echo-secret');
+  }, 60_000);
+
   test('after a session switch, a line waits for the new session\'s turn rather than the cap', async () => {
     const { dir, recipePath } = setup(false);
     const run = startBatch(dir, recipePath, 'first line\n/session new\nsecond line\n');
     let exitCode: number | null | undefined;
     void run.exited.then((code) => { exitCode = code; });
     try {
-      // Boot and the first line take what they take. Then the second line's
-      // turn is an echo, so its wait ends far inside the 120 s cap, unless it
-      // waits for the cap itself.
       await waitFor(() => run.out().includes('> second line'), 120_000, '`> second line`');
       await waitFor(() => run.out().includes('Done.'), 90_000, '`Done.` inside the 120 s cap');
       await waitFor(() => exitCode !== undefined, 30_000, 'the batch run to exit');
@@ -196,8 +245,6 @@ describe('batch mode end to end', () => {
     expect(exitCode).toBe(0);
     const out = run.out();
     expect(out).toContain('Session switched.');
-    // The mock answers each line with `[Echo] …`, so the new session's turn
-    // printed its answer after `> second line`, and before `Done.`.
     const second = out.slice(out.indexOf('> second line'), out.indexOf('Done.'));
     expect(second).toContain('[Echo]');
   }, 260_000);
@@ -211,11 +258,47 @@ describe('batch mode end to end', () => {
       expect(url).toBeDefined();
       expect(run.out()).toContain(batchWebUiNotice(url!));
       expect(run.out()).toContain(batchTeardownNotice(['fake']));
-      // What the notice promises: the server answers, the agent data doesn't.
       expect((await fetch(`${url}/healthz`)).status).toBe(503);
     } finally {
       run.child.kill('SIGKILL');
       await run.exited;
+    }
+  }, 60_000);
+
+  test('a session switch the webui asked for, still stopping the old framework when the input ends, starts no framework, and the webui is told the switch didn\'t finish', async () => {
+    const { dir, recipePath } = setup(true, true);
+    const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
+      cwd: dir, env: { ...process.env, DATA_DIR: join(dir, 'data') }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf-8'); });
+    child.stderr!.on('data', () => { });
+    const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
+    try {
+      await waitFor(() => /\[webui\] listening on http/.test(stdout), 30_000, 'the webui');
+      const url = /\[webui\] listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(stdout)![1]!;
+      const ws = new WebSocket(`${url.replace(/^http/, 'ws')}/ws`);
+      const messages: Array<Record<string, unknown>> = [];
+      ws.onmessage = (event) => { messages.push(JSON.parse(String(event.data))); };
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => resolve();
+        ws.onerror = () => reject(new Error('the webui socket failed'));
+      });
+      await waitFor(() => messages.some((m) => m.type === 'welcome'), 30_000, 'the webui\'s welcome');
+      ws.send(JSON.stringify({ type: 'command', command: '/session new later', corrId: 'w1' }));
+      await waitFor(() => existsSync(join(dir, 'stopping-1')), 30_000, 'the switch\'s stop of the first framework');
+      child.stdin!.end('');
+      await waitFor(() => stdout.includes('Done.'), 30_000, 'the batch\'s end');
+      writeFileSync(join(dir, 'stop-go'), '');
+      const answered = (m: Record<string, unknown>) => m.type === 'error' && m.corrId === 'w1';
+      await waitFor(() => messages.some(answered) || existsSync(join(dir, 'started-2')), 30_000, 'the switch\'s answer or a second framework');
+      expect(existsSync(join(dir, 'started-2'))).toBe(false);
+      expect(String(messages.find(answered)!.message))
+        .toStartWith('The host began to stop during the session switch, so the switch didn\'t finish; the next start opens session later [');
+      ws.close();
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
     }
   }, 60_000);
 });

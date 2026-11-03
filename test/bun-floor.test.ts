@@ -3,11 +3,23 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { bunFloorWarning } from '../src/bun-floor.js';
+import { bunBelowFloor, bunFloorWarning } from '../src/bun-floor.js';
 import { HOST_PACKAGE_JSON, checkBunFloor } from '../src/bun-floor-check.js';
 
 const engines = { node: '>=22.12.0', bun: '>=1.4.3' };
 const warned = (bun: string) => bunFloorWarning(engines, bun, '0.10.2') !== null;
+
+describe("whether a Bun is below a release's floor, as Update reads it", () => {
+  test('is true below it, false at or above it, and null for a floor or a Bun it can\'t read', () => {
+    expect(bunBelowFloor('>=1.4.3', '1.4.2')).toBe(true);
+    expect(bunBelowFloor('>=1.4.3', '1.4.3-canary.1')).toBe(true);
+    expect(bunBelowFloor('>=1.4.3', '1.4.3')).toBe(false);
+    expect(bunBelowFloor('>=1.4.3', '1.5.0-canary.1')).toBe(false);
+    expect(bunBelowFloor('^1.4.3', '1.0.0')).toBeNull();
+    expect(bunBelowFloor(null, '1.0.0')).toBeNull();
+    expect(bunBelowFloor('>=1.4.3', undefined)).toBeNull();
+  });
+});
 
 describe('the start-up warning for a Bun below the floor', () => {
   test('a Bun below the floor is named, with the floor and who acts', () => {
@@ -58,9 +70,6 @@ describe('the start-up warning for a Bun below the floor', () => {
   });
 });
 
-/** What follows the whitespace and whole comments `src` starts with. A `//`
- *  comment runs to its line's end, and a block comment to the first `*\/`
- *  after it opens, so a comment can't take in the code after it. */
 function afterLeadingComments(src: string): string {
   let rest = src;
   for (;;) {
@@ -91,7 +100,6 @@ describe('the check at start', () => {
     const notice = checkBunFloor(pkg, (line) => lines.push(line));
     expect(lines).toEqual([notice!]);
     expect(notice).toStartWith(`[host] connectome-host 9.9.9 needs Bun >=99.0.0 (engines.bun in its package.json), and this is Bun ${process.versions.bun}.`);
-    // A version that isn't a string isn't named.
     const odd = checkBunFloor(pkgAt('odd.json', JSON.stringify({ version: 5, engines: { bun: '>=99.0.0' } })), () => {});
     expect(odd).toStartWith('[host] connectome-host needs Bun >=99.0.0');
   });
@@ -108,9 +116,6 @@ describe('the check at start', () => {
 });
 
 describe('a TUI start', () => {
-  // test/mock-tui-bun-floor-child.ts gives the check the Bun version it's
-  // given before it loads, and starts runTui with a saved session longer than
-  // its view. Its own watchdog ends a hang at 20 s; this kills it at 25.
   async function startTui(bun: string) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bun-floor-tui-')));
     const child = Bun.spawn([process.execPath, join(import.meta.dir, 'mock-tui-bun-floor-child.ts'), bun], {
@@ -136,15 +141,9 @@ describe('a TUI start', () => {
   test("under a Bun below the floor: the warning once as the check loads, and in the TUI's view below the history", async () => {
     const pkg = hostPackage();
     const expected = bunFloorWarning(pkg.engines, '1.3.14', pkg.version);
-    // What this test needs: Bun 1.3.14 below the host's floor.
     expect(expected).not.toBeNull();
     const { warnings, lines } = await startTui('1.3.14');
-    // The check's own call at load, with its defaults: the host's
-    // package.json, and console.warn to stderr.
     expect(warnings).toEqual([expected!]);
-    // The view keeps to its bottom: the history's start is out of sight,
-    // its last message and its end are in it, and the warning, wrapped,
-    // comes right after.
     expect(lines.join('\n')).not.toContain('history 01');
     expect(lines.some((line) => line.startsWith('history 50'))).toBe(true);
     const end = lines.findIndex((line) => line.startsWith(END));
@@ -157,7 +156,6 @@ describe('a TUI start', () => {
     const floor = /^>=(\d+\.\d+\.\d+)$/.exec(hostPackage().engines.bun)![1]!;
     const { warnings, lines } = await startTui(floor);
     expect(warnings).toEqual([]);
-    // The history's end is the view's last line, right above the status bar.
     const end = lines.findIndex((line) => line.startsWith(END));
     expect(end).toBeGreaterThanOrEqual(0);
     expect(lines[end + 1]).toContain('idle]');

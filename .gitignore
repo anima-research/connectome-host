@@ -7,6 +7,9 @@ data/
 .env
 .zuliprc
 mcpl-servers.json
+# The agent overlays, the host's and a fleet child's, which can hold tokens.
+mcpl-servers.agent.json
+mcpl-servers.agent.child.json
 my-recipe.json
 # Runtime queue artifacts produced by a running miner — never source code.
 # (A stray `git add -A` once published one to a public branch; this is the

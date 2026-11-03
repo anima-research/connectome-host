@@ -87,17 +87,21 @@ three, and in practice is how headless residents are operated.
    then a default.
 6. **Build Membrane** with the right formatter (native, Anthropic-XML prefill,
    or OpenAI Responses), retry policy and caching defaults.
-7. **`createFramework()`** — load recipe extensions, build the module list,
+7. **`createFramework()`** — take the recipe extensions `main()` loaded
+   (a trial's store audit builds its strategies from the same ones), build
+   the module list,
    merge MCP servers, build the memory strategy and agent config, then
    `AgentFramework.create()` with the gate, provider hold, code execution,
-   conversations and subconscious configuration. Post-create hooks bind the
+   conversations and subconscious configuration, and the recipe's
+   maintenance interval. Post-create hooks bind the
    history module, wire the compression-quarantine alarm to ops alerts, and
    hand the framework to modules that need it.
 8. **Start** the framework, the session auto-namer, per-server MCPL stderr
    logs, and the chosen runtime.
 
 **Switching sessions** (`/session switch`) stops the framework and runs
-`createFramework()` again against the new store, reusing the same Membrane,
+`createFramework()` again against the new store, which loads the recipe's
+extensions again once the framework before has stopped, reusing the same Membrane,
 adapter, settings, ledger, quota meter and agent name. The WebUI's HTTP/WS
 server is a process-level singleton and survives the switch.
 
@@ -119,12 +123,15 @@ A recipe is JSON; the full key set is typed and validated in
   snapshot as its value, so keep secrets out of those two fields. Other state
   in the data dir can hold secrets too — the identity key, and fleet
   children's resolved `env` (#162).
-- **Validation checks values, not spelling.** Bad values, impossible
+- **Validation checks values, and spelling in part.** Bad values, impossible
   combinations (e.g. an instructions path on a mount that can't be written)
-  and partial policies are rejected at load, naming the key. Unrecognized keys
-  are generally not rejected (a few blocks, such as `subconscious`, the
-  object form of `modules.history`, and `modules.workspace` and its mounts,
-  refuse unknown fields), so a misspelled key is silently ignored.
+  and partial policies are rejected at load, naming the key. An unrecognized
+  key at the top level or in `agent`, `agent.mock`, `agent.strategy.kvUnified`
+  and its `policy`, or `modules` is warned about, naming it, and the load
+  goes on. Some blocks, such as `subconscious`, the object form of
+  `modules.history`, `agent.retry`, `agent.clock`, and `modules.workspace`
+  and its mounts, refuse unknown fields. Others, such as `agent.thinking`,
+  don't check their keys, so a misspelled one there is silently ignored.
 - **Paths.** Fleet child recipes resolve relative to the parent recipe file;
   runtime paths (data dirs, workspace mounts) resolve against the CWD.
 - **Extensions.** `extensions` maps names to local modules that register
@@ -176,9 +183,15 @@ conditions are required so the headers can never reach a vendor endpoint.
   L1…L8 memory — just enough to fit the context budget, by a solver that
   weighs budget fit, cache cost and continuity. Memories are written by the agent's own model
   (`compressionModel` defaults to `agent.model`) in the agent's own voice
-  (`summaryParticipant` defaults to `agent.name`). Host defaults:
-  `contextBudgetTokens` 300000, `headWindowTokens` 4000,
-  `recentWindowTokens` 40% of the budget (120000 at the default),
+  (`summaryParticipant` defaults to the agent's name; the label before each
+  summary is context-manager's default unless a recipe sets
+  `summaryContextLabel`). Host defaults:
+  `contextBudgetTokens` 300000, or, on a model the host knows a window for (on
+  Anthropic's API) with a `maxTokens` that is unset or a positive number, the
+  smaller of 300000 and the window less the system prompt and 32000 for the tools,
+  `headWindowTokens` 4000, `recentWindowTokens` 40% of the budget (120000 at
+  300000), or 40% of the budget less `maxTokens` where the head and 40% of the
+  budget wouldn't fit beside `maxTokens` with context-manager's over-budget grace,
   `maxMessageTokens` 10000. Without a `kvUnified` block the host supplies its
   standard one (`standardKvUnifiedConfig`), with cache prices matched to the
   provider, `cacheTtl` and model; a written block must be complete, set
@@ -189,7 +202,8 @@ conditions are required so the headers can never reach a vendor endpoint.
   `imageStripDepthTokens` and `maxLiveImageBytes` and their ceilings
   `imageCeiling` and `imageByteCeiling` (context-manager defaults 6, 30000,
   20 MiB, 500 and 24 MiB). Zero turns the depth limit or a ceiling off, and
-  lets the count or the bytes grow to its ceiling. In the live window the
+  lets the count or the bytes grow to its ceiling, which also bounds a
+  larger value. In the live window the
   limits and the ceilings count top-level images only, not images nested in
   tool results, generated images, or what agent-framework adds within a
   turn. A compression prompt counts every image against the ceilings.
@@ -229,13 +243,16 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 | `FleetModule` | `fleet` | off | `fleet--launch/list/status/send/command/peek/kill/restart/relay/await`: supervises headless children. |
 | `ActivityModule` | `activity` | off | `activity--show_in/hide_in`: typing indicators. |
 | `McplAdminModule` | `mcplAdmin` | off | `mcpl_list/deploy/restart/unload`: the agent manages its own MCPL servers. |
+| `LifecycleModule` | `selfRestart` | off | `lifecycle--restart`: the agent restarts its own host once its turn ends; headless only, exit code 75 for the supervisor, cooldown between restarts (`src/self-restart.ts`). |
 | `IdentityModule` | `identity` | off | The agent's own archipelago identity key; exchanges key-proofs for access tokens so credentials never enter the agent's context. |
 | `WebUiModule` + `ObserversModule` | `webui` | off | Browser console (below); `observers--get/grant/revoke` let the agent manage who may watch. |
 | `TtsRelayModule` | `ttsRelay` | off | Streams live generation to a TTS relay; trims posted messages when a voice client is interrupted. |
 
 Framework features configured by top-level recipe keys rather than modules:
 `conversations` (per-channel conversation forks from a dormant trunk agent),
-`subconscious` (a secondary agent with `tune_out`), `codeExecution`.
+`subconscious` (a secondary agent with `tune_out`), `codeExecution`,
+`maintenanceIntervalMs` (how often the context maintenance pass runs; 0 turns
+it off).
 
 ## MCPL servers
 
@@ -254,8 +271,9 @@ Framework features configured by top-level recipe keys rather than modules:
   (`src/tool-lifecycle-config.ts`) and the server's own `_meta`. Off by
   default; needs agent-framework ≥ 0.20 (anima-research/agent-framework#199),
   which this host requires. See the README.
-- **Agent overlay.** `mcpl-servers.agent.json` holds servers the agent deployed
-  for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
+- **Agent overlay.** `mcpl-servers.agent.json` (a fleet child's own is
+  `mcpl-servers.agent.child.json` in its data directory) holds servers the
+  agent deployed for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
   suppress servers the agent unloaded. The overlay can never grant
   `enabledCapabilities`, `toolLifecycle`, `inheritEnv` or
   `allowHostCommands`: the boot leaves them out of every overlay entry.
@@ -355,7 +373,9 @@ Under `$DATA_DIR` (default `./data`):
 | `lessons.json` | Lesson store (shared by every session in the data dir). |
 | `observers.json`, `identity-key.pem` | WebUI observer grants; identity keypair. |
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
+| `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |
 | `tui-error.log` | TUI-mode stderr. |
+| `readline-error.log` | Readline-mode stderr, on a terminal. |
 
 Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json`,
 `sleep-privileged.json`, `logs/failures.log`, the default workspace mounts
@@ -403,8 +423,8 @@ Claude Code transcripts are ingested by the procedure in
 ## Runtime and dependencies
 
 - **Bun** runs the host (OpenTUI's native core requires it; Bun also loads
-  `.env`). **Node/npm** builds the WebUI in a checkout (`postinstall` /
-  `bun run build:web`); the npm package carries it built.
+  `.env`). **Node/npm** builds the WebUI in a clone (`bun run build:web`);
+  the npm package carries it built.
 - `@animalabs/agent-framework`, `context-manager`, `membrane` and
   `chronicle` come from npm; chronicle ships prebuilt native binaries, so no
   Rust toolchain is needed unless you build it from source. For working on the

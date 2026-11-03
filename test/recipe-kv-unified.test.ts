@@ -56,9 +56,7 @@ describe('kv-unified recipe plumbing', () => {
     expect(strategy.config.kvUnified).toEqual(config());
   });
 
-  test('rejects selecting kv-unified without a complete policy', () => {
-    // An omitted block is allowed (the host supplies its standard one); a
-    // written block must be complete, with no per-field merging.
+  test('takes kv-unified with its kvUnified block left out, and rejects a block written incomplete', () => {
     const missing = recipe() as ReturnType<typeof recipe>;
     delete (missing.agent.strategy as { kvUnified?: unknown }).kvUnified;
     expect(() => validateRecipe(missing)).not.toThrow();
@@ -132,6 +130,40 @@ describe('kv-unified recipe plumbing', () => {
     for (const value of [null, 0, 1, 'true', {}, []]) {
       expect(() => validateRecipe(recipe({ ...config(), hysteresisCertificate: value })))
         .toThrow(/hysteresisCertificate must be a boolean/);
+    }
+  });
+
+  test('forwards the context-manager 0.17 keys and rejects values it would read as something else (#346)', () => {
+    const withKeys = {
+      ...config(),
+      policy: { ...config().policy, ageBandSteps: 0 },
+      engine: 'dag' as const,
+      latentDemandMode: 'individual' as const,
+    };
+    const built = buildFrameworkStrategy(validateRecipe(recipe(withKeys)), 'model', 'UTC') as unknown as {
+      config: { kvUnified: RecipeKvUnifiedConfig };
+    };
+    expect(built.config.kvUnified).toEqual(withKeys);
+    for (const steps of [0, 4, 64]) {
+      expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, ageBandSteps: steps } }))).not.toThrow();
+    }
+    for (const engine of ['auto', 'subtree', 'dag']) {
+      expect(() => validateRecipe(recipe({ ...config(), engine }))).not.toThrow();
+    }
+    for (const latentDemandMode of ['individual', 'joint']) {
+      expect(() => validateRecipe(recipe({ ...config(), latentDemandMode }))).not.toThrow();
+    }
+
+    for (const steps of [-1, 65, 1.5, Number.NaN, '4', null]) {
+      expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, ageBandSteps: steps } })))
+        .toThrow(/ageBandSteps must be an integer from 0 to 64/);
+    }
+    for (const engine of ['leaf', 'DAG', 'subtree ', null, 0]) {
+      expect(() => validateRecipe(recipe({ ...config(), engine }))).toThrow(/engine must be "auto", "subtree" or "dag"/);
+    }
+    for (const mode of ['joint ', 'Joint', 'both', null, true]) {
+      expect(() => validateRecipe(recipe({ ...config(), latentDemandMode: mode })))
+        .toThrow(/latentDemandMode must be "individual" or "joint"/);
     }
   });
 

@@ -5,8 +5,8 @@ Usage:  connectome-doctor [INSTALL_DIR] [UNIT]
         connectome-doctor ~/mythos-cm mythos-agent.service
 
 Prints a pipeline ladder: the last-seen timestamp at every stage an inbound
-event passes through. The first stage whose timestamp lags its upstream is
-where events are dying.
+event passes through (for delivery, the agent log's last write). The first
+stage whose timestamp lags its upstream is where events are dying.
 
   discord event -> mcpl forward -> chronicle ingest (gate verdict)
   -> inference (llm-call) -> routeSpeech delivery
@@ -45,7 +45,6 @@ def sh(cmd, timeout=15):
 
 
 def age(ts):
-    """Humanize seconds-since-epoch -> '3m ago' / 'never'."""
     if ts is None:
         return "never"
     d = NOW - ts
@@ -89,19 +88,14 @@ def tail_bytes(path, n):
 
 
 def last_matching_line(path, pattern, chunk=2_000_000):
-    """Last line matching regex `pattern`, scanning only the file tail."""
     data = tail_bytes(path, chunk).decode("utf-8", "replace")
     matches = [ln for ln in data.splitlines() if re.search(pattern, ln)]
     return matches[-1] if matches else None
 
 
-# ---------------------------------------------------------------------------
-# 0. Arguments / discovery
-# ---------------------------------------------------------------------------
 install_dir = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "~/mythos-cm")
 unit = sys.argv[2] if len(sys.argv) > 2 else None
 if unit is None:
-    # Guess: <name>-agent.service from install dir like ~/mythos-cm
     base = os.path.basename(install_dir.rstrip("/")).replace("-cm", "")
     unit = f"{base}-agent.service"
 
@@ -111,9 +105,6 @@ logs_dir = os.path.join(install_dir, "logs")
 print(f"connectome-doctor — {install_dir}  ({unit})")
 print("=" * 72)
 
-# ---------------------------------------------------------------------------
-# 1. Service
-# ---------------------------------------------------------------------------
 props = {}
 for line in sh(
     f"systemctl --user show {unit} -p ActiveState -p SubState -p NRestarts "
@@ -138,9 +129,6 @@ if active not in ("active", "running"):
 if start_ts and NOW - start_ts < 300:
     warn(f"service started only {age(start_ts)} — recent restart/crash?")
 
-# ---------------------------------------------------------------------------
-# 2. Disk
-# ---------------------------------------------------------------------------
 df = sh("df -h / | tail -1").split()
 if len(df) >= 5:
     pct = int(df[4].rstrip("%"))
@@ -149,9 +137,6 @@ if len(df) >= 5:
     if pct >= 88:
         warn(f"disk at {pct}% — agents corrupt stores when writes fail (see 2026-07-02)")
 
-# ---------------------------------------------------------------------------
-# 3. Journal staleness + real log location
-# ---------------------------------------------------------------------------
 jlast = sh(f"journalctl --user -u {unit} -q --no-pager -n 1 -o short-unix 2>/dev/null | tail -1")
 jts = None
 m = re.match(r"^(\d+)\.\d+", jlast)
@@ -169,12 +154,8 @@ print(f"journal    : last entry {age(jts)}" + (f"  {C_DIM}(stdout/err -> {agent_
 if jts is None or (start_ts and jts < start_ts):
     warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}")
 
-# ---------------------------------------------------------------------------
-# 4. Pipeline ladder
-# ---------------------------------------------------------------------------
-stages = []  # (name, ts, detail)
+stages = []
 
-# 4a. discord-mcpl: last gateway event seen / forwarded / dropped
 dbg = os.path.join(data_dir, "discord-mcpl-debug.log")
 enter_ts = fwd_ts = None
 enter_detail = fwd_detail = ""
@@ -202,7 +183,6 @@ if os.path.exists(dbg):
 stages.append(("discord event seen", enter_ts, enter_detail))
 stages.append(("mcpl forward to host", fwd_ts, fwd_detail))
 
-# 4b. chronicle ingest: last "messages" append in records.log (byte-encoded!)
 rec_ts = None
 rec_detail = ""
 records = None
@@ -219,7 +199,6 @@ if records:
         last_msg = mm
     if last_msg:
         rec_ts = int(last_msg.group(1)) / 1_000_000  # store stamps in microseconds
-        # decode the byte-array payload to recover metadata (triggered flag etc.)
         arr = re.search(r"\[([0-9,]{40,})\]", last_msg.group(0))
         if arr:
             try:
@@ -231,15 +210,13 @@ if records:
                               + (f"  #{cm.group(1)}" if cm else "")
                               + (f"  by {pm.group(1)}" if pm else ""))
                 if trig:
-                    rec_detail = rec_detail  # noted below vs inference lag
+                    rec_detail = rec_detail
                 globals()["_last_ingest_triggered"] = trig
             except Exception:
                 pass
 stages.append(("chronicle ingest (+gate)", rec_ts, rec_detail))
 
-# 4c. inference: newest llm-calls file, last model call's stop_reason
 def err_text(err):
-    """An llm-calls error as text: a { name, message, ... } object or a string."""
     if isinstance(err, dict):
         return str(err.get("message") or err.get("name") or "")
     return "" if err is None else str(err)
@@ -247,10 +224,10 @@ def err_text(err):
 
 llm_ts = None
 llm_detail = ""
-turn_ts = None          # the agent's last turn (a stream call) in the window
-llm_window_from = None  # the oldest row's time, when the window holds no turn
-llm_written_at = None   # the newest file's last write
-llm_unsure = False      # an unreadable or incomplete row may be a turn after the ingest
+turn_ts = None
+llm_window_from = None
+llm_written_at = None
+llm_unsure = False
 LLM_WINDOW = 30_000_000
 llm_files = sorted(
     (f for f in os.listdir(data_dir) if f.startswith("llm-calls.")),
@@ -261,18 +238,12 @@ if llm_files:
     size = os.path.getsize(newest)
     llm_written_at = os.path.getmtime(newest)
     where = "the newest file's last 30 MB" if size > LLM_WINDOW + 1 else "the newest file"
-    # The file's tail, split at newlines only: splitlines() also splits at
-    # U+2028, U+2029 and U+0085, which JSON.stringify leaves unescaped inside
-    # a row. One byte more than the window is read, so where the window cuts
-    # a file, the first piece holds the part of a row that began before the
-    # window (all of a row that began one byte before it), or nothing when
-    # the window begins at a row, and is dropped either way.
+    # Split at newlines only: splitlines() also splits at U+2028, U+2029 and
+    # U+0085, which JSON.stringify leaves unescaped inside a row.
     raw = tail_bytes(newest, LLM_WINDOW + 1).decode("utf-8", "replace")
     lines = raw.split("\n")
     if size > LLM_WINDOW + 1:
         lines = lines[1:]
-    # A last row with no newline after it is being written now, or was cut
-    # off when its process stopped; it counts as a row only if it parses.
     last = lines.pop() if lines else ""
     incomplete = False
     if last.strip():
@@ -281,14 +252,9 @@ if llm_files:
             lines.append(last)
         except Exception:
             incomplete = True
-    call = None        # the newest model call: the row reported
+    call = None
     pokes = 0
-    unreadable = 0     # rows since the last turn that couldn't be parsed
-    # Rows are written in time order, so an unreadable row newer than a row
-    # from before the ingest could be a turn after it; an older one couldn't.
-    # No row is newer than the file's last write, so in a file last written
-    # before the ingest none could be; the last row, incomplete, was written
-    # at that last write.
+    unreadable = 0
     before_ingest = rec_ts is not None and llm_written_at < rec_ts - 120
     llm_unsure = incomplete and not before_ingest
     for ln in reversed(lines):
@@ -305,10 +271,6 @@ if llm_files:
         if rec_ts is not None and r_ts is not None and r_ts < rec_ts - 120:
             before_ingest = True
         llm_window_from = r_ts or llm_window_from
-        # Cache keepalive pokes write rows here too, while the agent is idle,
-        # so neither the file's mtime nor its last row says when it last
-        # inferred: report the newest row that isn't a poke, at its own time,
-        # and go on past other calls to the agent's last turn.
         if r.get("kind") == "keepalive":
             pokes += 1
             continue
@@ -340,7 +302,6 @@ if llm_files:
         llm_detail += f"  {C_YEL}last row incomplete (being written, or cut off){C_OFF}"
 stages.append(("inference (llm call)", llm_ts, llm_detail))
 
-# 4d. delivery: last routeSpeech in agent log
 del_ts = None
 del_detail = ""
 if os.path.exists(agent_log):
@@ -371,17 +332,6 @@ for name, ts, detail in stages:
     if ts:
         prev_ts = ts
 
-# triggered ingest but no turn recorded since -> the tonight signature.
-# The turn is what follows an ingest; a compression call is not one. Logging
-# is best-effort, so this says what was recorded, not that the model never
-# ran. With no llm-calls file no turn was recorded. With one, an unreadable
-# or incomplete row that may be newer than the ingest might be the turn.
-# With no turn in the window, none was recorded after the ingest only if
-# the window reaches back past it: the oldest row read bounds it, and with no
-# readable row at all, the file's last write. A file's name gives when its
-# process started it, not that the file still holds every row since: their
-# retention, rotation and shipping belong to the host box's llm-logs sync
-# job (src/logging-provider-wrapper.ts).
 NO_TURN = "NO turn was recorded after it"
 no_turn_after = turn_ts is None or (rec_ts is not None and turn_ts < rec_ts - 120)
 window_from = llm_window_from if llm_window_from is not None else llm_written_at
@@ -392,9 +342,6 @@ if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not 
          "dying between the gate and the model (check inference policy drops / "
          "budget failures / [diagnostics] dump below)")
 
-# ---------------------------------------------------------------------------
-# 5. Recent failures (agent.log + failures.log)
-# ---------------------------------------------------------------------------
 print()
 fail_lines = []
 for path in (agent_log, os.path.join(logs_dir, "failures.log")):
@@ -412,9 +359,6 @@ if fail_lines:
 else:
     print(f"recent failures: {C_GRN}none found{C_OFF} in {agent_log}")
 
-# ---------------------------------------------------------------------------
-# 6. Live gate dump (SIGUSR2)
-# ---------------------------------------------------------------------------
 if pid not in ("0", "", None) and active in ("active", "running"):
     before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
     sh(f"kill -USR2 {pid} 2>/dev/null")
@@ -438,8 +382,6 @@ if pid not in ("0", "", None) and active in ("active", "running"):
             if g.get("sleepUntil", 0) > NOW * 1000:
                 warn(f"agent is ASLEEP until {hhmm(g['sleepUntil']/1000)}")
             if d.get("activeStreams"):
-                # a turn is running right now — the "no turn recorded"
-                # heuristic is premature; the model is just still thinking.
                 WARNINGS[:] = [w for w in WARNINGS if NO_TURN not in w]
                 print(f"  {C_GRN}turn in-flight for: {', '.join(d['activeStreams'])}{C_OFF}")
         except Exception:
@@ -448,9 +390,6 @@ if pid not in ("0", "", None) and active in ("active", "running"):
         print(f"live gate dump: {C_DIM}no [diagnostics] response to SIGUSR2 "
               f"(framework predates the diagnostics patch?){C_OFF}")
 
-# ---------------------------------------------------------------------------
-# 7. Verdict
-# ---------------------------------------------------------------------------
 print()
 if WARNINGS:
     print(f"{C_YEL}=== findings ==={C_OFF}")

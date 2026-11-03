@@ -25,6 +25,7 @@ An AI research agent that can:
 git clone https://github.com/anima-research/connectome-host.git
 cd connectome-host
 bun install        # npm install also works
+bun run build:web  # the Web UI
 ```
 
 ## Step 2: Set up your data sources

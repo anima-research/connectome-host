@@ -1,18 +1,3 @@
-/**
- * Empirical test for the async-subagent timeout claim in commit 2169410.
- *
- * Schema text (since that commit) claims:
- *   "Sync tasks default to 600s (auto-detaches to background).
- *    Async tasks have no default timeout."
- *
- * Rather than routing through a mock LLM (the plain text it emits leaves the
- * ephemeral agent stuck in `streaming` state because `subagent--return` is
- * never called, so `runEphemeralToCompletion` only resolves on a fallback
- * event), we stub `runEphemeralToCompletion` directly with a promise that
- * just sleeps for `subagentRunMs`. That's the smallest faithful surrogate for
- * "the subagent's LLM call is long-running" and it keeps the test focused on
- * SubagentModule's timeout wiring.
- */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +7,7 @@ import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
-async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number }) {
+async function makeHarness(opts: { maxExecutionMs: number }) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-timeout-'));
   const adapter = new MockAdapter({ defaultResponse: 'ok' });
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
@@ -32,7 +17,7 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
     defaultModel: 'mock',
     defaultMaxTokens: 256,
     maxExecutionMs: opts.maxExecutionMs,
-    maxRetries: 0, // don't let retries mask the timeout result
+    maxRetries: 0,
   });
   const framework = await AgentFramework.create({
     storePath: join(tmpDir, 'store'),
@@ -46,10 +31,6 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
     modules: [subagent as unknown as Module],
   });
 
-  // Stub runEphemeralToCompletion: pretend the subagent's LLM work takes
-  // `subagentRunMs` to finish, then resolves like a normal completion.
-  // This isolates SubagentModule's timeout wiring from the agent state
-  // machine / membrane streaming machinery.
   const fw = framework as unknown as {
     runEphemeralToCompletion: (
       agent: unknown,
@@ -57,16 +38,20 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
     ) => Promise<{ speech: string; toolCallsCount: number }>;
     agents: Map<string, unknown>;
   };
+  const held: Array<() => void> = [];
+  let released = false;
   fw.runEphemeralToCompletion = (agent: unknown) => {
-    // Register ephemeral agent into the framework's agents map the way the
-    // real implementation does, so any downstream dispatch still works.
+    // agent-framework's runEphemeralToCompletion registers the agent in its
+    // agents map while it runs.
     const a = agent as { name: string };
     fw.agents.set(a.name, agent);
     return new Promise((resolve) => {
-      setTimeout(() => {
+      const end = () => {
         fw.agents.delete(a.name);
         resolve({ speech: 'ok', toolCallsCount: 0 });
-      }, opts.subagentRunMs);
+      };
+      if (released) end();
+      else held.push(end);
     });
   };
 
@@ -76,9 +61,10 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
   return {
     framework,
     subagent,
+    release: () => { released = true; for (const end of held.splice(0)) end(); },
     cleanup: async () => {
-      try { await framework.stop(); } catch { /* noop */ }
-      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+      try { await framework.stop(); } catch { }
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
     },
   };
 }
@@ -96,13 +82,6 @@ type InternalSubagent = SubagentModule & {
   asyncHandles: Map<string, { promise: Promise<unknown> }>;
 };
 
-/**
- * Harness variant focused on the maxTokens cascade.
- *
- * Intercepts `createEphemeralAgent` so we can observe what budget the module
- * actually asked for, and short-circuits `runEphemeralToCompletion` so the
- * promise settles immediately — we only care about the ephemeral config.
- */
 async function makeBudgetHarness(opts: {
   parentMaxTokens: number;
   moduleDefaultMaxTokens?: number;
@@ -162,38 +141,39 @@ async function makeBudgetHarness(opts: {
     subagent,
     captured,
     cleanup: async () => {
-      try { await framework.stop(); } catch { /* noop */ }
-      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+      try { await framework.stop(); } catch { }
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
     },
   };
 }
 
 describe('SubagentModule timeout behaviour (async vs sync default)', () => {
   test('ASYNC spawn, no explicit timeoutMs, subagent runs longer than maxExecutionMs', async () => {
-    const MAX_EXEC = 1_000;
-    const SUBAGENT_WORK = 3_000;
-    const { subagent, cleanup } = await makeHarness({
-      maxExecutionMs: MAX_EXEC,
-      subagentRunMs: SUBAGENT_WORK,
-    });
+    const MAX_EXEC = 200;
+    const RELEASE_AT = 1_000;
+    const { subagent, release, cleanup } = await makeHarness({ maxExecutionMs: MAX_EXEC });
     try {
       const t0 = Date.now();
       const ack = await subagent.handleToolCall(makeToolCall('spawn', {
         name: 'async-slowpoke',
         systemPrompt: 'you are a test subagent',
         task: 'reply',
-        // sync: false (default), timeoutMs: undefined
       }));
       expect(ack.success).toBe(true);
       const ackElapsed = Date.now() - t0;
-      expect(ackElapsed).toBeLessThan(500); // truly returned early
+      expect(ackElapsed).toBeLessThan(500);
       const ackText = typeof ack.data === 'string' ? ack.data : JSON.stringify(ack.data);
       expect(ackText).toMatch(/background/i);
 
       const handles = (subagent as unknown as InternalSubagent).asyncHandles;
       const handle = handles.get('async-slowpoke');
       expect(handle).toBeDefined();
+      let settledBeforeRelease = false;
+      handle!.promise.then(() => { settledBeforeRelease = true; }, () => { settledBeforeRelease = true; });
 
+      await Bun.sleep(RELEASE_AT - (Date.now() - t0));
+      expect(settledBeforeRelease).toBe(false);
+      release();
       const settled = await handle!.promise.then(
         r => ({ ok: true as const, r }),
         e => ({ ok: false as const, e: e as Error }),
@@ -205,23 +185,15 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
         (settled.ok ? '' : `err=${settled.e.message}`),
       );
 
-      // Schema claim: "Async tasks have no default timeout."
-      // If the claim holds → settled.ok === true, elapsed ≈ SUBAGENT_WORK (~3s).
-      // If the claim is wrong → settled.ok === false, err "… its time limit of 1 s ran out …".
       expect(settled.ok).toBe(true);
-      expect(elapsed).toBeGreaterThanOrEqual(SUBAGENT_WORK - 200);
     } finally {
       await cleanup();
     }
   }, 15_000);
 
   test('SYNC spawn, no explicit timeoutMs: moves to the background at maxExecutionMs, and the run goes on', async () => {
-    const MAX_EXEC = 1_000;
-    const SUBAGENT_WORK = 3_000;
-    const { subagent, cleanup } = await makeHarness({
-      maxExecutionMs: MAX_EXEC,
-      subagentRunMs: SUBAGENT_WORK,
-    });
+    const MAX_EXEC = 200;
+    const { subagent, release, cleanup } = await makeHarness({ maxExecutionMs: MAX_EXEC });
     try {
       const t0 = Date.now();
       const res = await subagent.handleToolCall(makeToolCall('spawn', {
@@ -237,15 +209,13 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
         `error=${res.error ?? '—'}`,
       );
 
-      // The schema's promise: a sync task still running at its timeoutMs,
-      // which defaults to maxExecutionMs, moves to the background, and its
-      // run goes on to deliver its result. (Before, maxExecutionMs was a
-      // hard limit here, and the call answered "timed out".)
       expect(res.success).toBe(true);
       expect(String(res.data)).toContain('moved to background');
-      expect(elapsed).toBeLessThan(SUBAGENT_WORK);
+      expect(elapsed).toBeGreaterThanOrEqual(MAX_EXEC - 2);
+      expect(elapsed).toBeLessThan(MAX_EXEC + 2_000);
       const handle = (subagent as unknown as { asyncHandles: Map<string, { promise: Promise<{ summary: string }> }> })
         .asyncHandles.get('sync-slowpoke')!;
+      release();
       expect((await handle.promise).summary).toBe('ok');
     } finally {
       await cleanup();
@@ -253,13 +223,7 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
   }, 10_000);
 
   test('SYNC spawn WITH explicit timeoutMs shorter than work: moves to the background, and the run goes on', async () => {
-    // A sync task's timeoutMs is only when it moves to the background; a
-    // sync run has no hard limit. (Before, the same value armed a hard limit
-    // too, which raced the move at the same moment.)
-    const { subagent, cleanup } = await makeHarness({
-      maxExecutionMs: 60_000, // large, so input.timeoutMs is what matters
-      subagentRunMs: 3_000,
-    });
+    const { subagent, release, cleanup } = await makeHarness({ maxExecutionMs: 60_000 });
     try {
       const t0 = Date.now();
       const res = await subagent.handleToolCall(makeToolCall('spawn', {
@@ -277,10 +241,11 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
       );
       expect(res.success).toBe(true);
       expect(String(res.data)).toContain('moved to background');
+      expect(elapsed).toBeGreaterThanOrEqual(500 - 2);
       expect(elapsed).toBeLessThan(2_500);
-      // Wait for the run's own result, so shutdown doesn't race its delivery.
       const handle = (subagent as unknown as { asyncHandles: Map<string, { promise: Promise<{ summary: string }> }> })
         .asyncHandles.get('sync-explicit')!;
+      release();
       expect((await handle.promise).summary).toBe('ok');
     } finally {
       await cleanup();
@@ -292,7 +257,6 @@ describe('SubagentModule maxTokens cascade', () => {
   test('SPAWN inherits parent.maxTokens when no per-call and no module default', async () => {
     const { subagent, captured, cleanup } = await makeBudgetHarness({
       parentMaxTokens: 12_345,
-      // moduleDefaultMaxTokens intentionally omitted
     });
     try {
       const res = await subagent.handleToolCall(makeToolCall('spawn', {
@@ -333,7 +297,6 @@ describe('SubagentModule maxTokens cascade', () => {
       moduleDefaultMaxTokens: 8_000,
     });
     try {
-      // spawn side
       const resSpawn = await subagent.handleToolCall(makeToolCall('spawn', {
         name: 'override-spawn',
         systemPrompt: 'sp',
@@ -343,7 +306,6 @@ describe('SubagentModule maxTokens cascade', () => {
       }));
       expect(resSpawn.success).toBe(true);
 
-      // fork side
       const resFork = await subagent.handleToolCall(makeToolCall('fork', {
         name: 'override-fork',
         task: 'reply',
