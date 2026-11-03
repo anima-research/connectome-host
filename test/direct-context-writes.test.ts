@@ -15,14 +15,33 @@
  * below names with why each is safe where it is.
  *
  * A module's write that names no agent (`ctx.addMessage` without
- * `forAgent`) is stamped for every agent that takes untargeted inbound in
+ * `forAgent`, or an EventResponse's `addMessages` whose inference request
+ * names none) is stamped for every agent that takes untargeted inbound in
  * the slot it lands in: on a residents' host, every resident. So each such
- * write is listed too, as a row meant for every one of them; a row about
- * one agent's work names that agent.
+ * write is listed too, as a row meant for every one of them (each
+ * EventResponse's `addMessages` is listed, with whom its request names); a
+ * row about one agent's work names that agent. A `forAgent` under a
+ * conditional (`?:`) is listed as well: the row names no agent when the
+ * condition fails.
  *
  * The scan reads each source file under src/ as Bun transpiles it, so
- * comments and types are gone, and finds every call of a context manager's
- * writing or branch-moving methods by its receiver.
+ * comments and types are gone, with the text of its string literals,
+ * templates and regular expressions blanked. It finds every call of a
+ * context manager's writing or branch-moving methods by its receiver, every
+ * mention of one of those methods that isn't a call (`cm.addMessage.bind(cm)`:
+ * what is done with it isn't read), every call or other mention of
+ * storeOwnRow, by its name or an alias it is imported as, and every mention
+ * of `addMessages`.
+ *
+ * The scan goes by names, not by what they hold (#485 review, 32). A
+ * receiver named `ctx` is taken as a module's context and one named
+ * `framework` as the framework, whatever they are bound to: a context
+ * manager held in a variable named `ctx` passes as a module's context, and
+ * a branch moved through another object named `framework` passes as the
+ * framework's. A target `{ forAgent: name }` is taken as naming an agent
+ * whatever `name` holds. A method reached by destructuring
+ * (`const { addMessage } = cm`) or by a computed name (`cm['addMessage']`)
+ * isn't found. Such a write is left to review.
  */
 import { describe, test, expect } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -37,12 +56,13 @@ const WRITERS = [
   'addMessage', 'editMessage', 'removeMessage', 'removeMessages', 'resetHeadWindow', 'presentRows', 'retractRows',
   'branchAt', 'switchBranch', 'fork', 'derive',
 ];
-/** A writer's call by its receiver: a name, its members, and calls in it
+/** A writer's receiver: a name, its members, and calls in it
  *  (`getAgent(name).getContextManager()`), one level of parentheses deep. */
-const CALL = new RegExp(
-  `([A-Za-z_$][\\w$]*(?:\\??\\.[A-Za-z_$][\\w$]*|\\([^()]*\\))*)\\??\\.(${WRITERS.join('|')})\\(`,
-  'g',
-);
+const RECEIVER = '([A-Za-z_$][\\w$]*(?:\\??\\.[A-Za-z_$][\\w$]*|\\([^()]*\\))*)';
+/** A writer's call by its receiver, an optional call (`?.(`) among them. */
+const CALL = new RegExp(`${RECEIVER}\\??\\.(${WRITERS.join('|')})(?:\\?\\.)?\\(`, 'g');
+/** A writer's mention by its receiver that isn't a call. */
+const MENTION = new RegExp(`${RECEIVER}\\??\\.(${WRITERS.join('|')})(?![\\w$])(?!\\s*(?:\\?\\.)?\\()`, 'g');
 
 /** A module's context writes through the framework; so do the framework's own branch moves. */
 function throughTheFramework(receiver: string, method: string): boolean {
@@ -52,25 +72,125 @@ function throughTheFramework(receiver: string, method: string): boolean {
   return false;
 }
 
-/** The argument text of the call whose opening parenthesis ends at `from`:
- *  up to its closing parenthesis, strings skipped whole. */
+const KEYWORDS_BEFORE_AN_EXPRESSION = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
+]);
+
+/** `code` with the text of each string literal, template and regular
+ *  expression blanked, each character a space (line breaks kept), so a
+ *  call's shape inside one isn't found; a template's `${…}` stays code. */
+function blankLiterals(code: string): string {
+  const out = code.split('');
+  const blank = (from: number, to: number) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '; };
+  // A `/` opens a regular expression where an expression can start: after an
+  // operator or punctuation, or a keyword such as `return`; after a name, a
+  // number, `)` or `]` it divides.
+  const opensRegExp = (at: number): boolean => {
+    let k = at - 1;
+    while (k >= 0 && /\s/.test(code[k]!)) k--;
+    if (k < 0) return true;
+    if (code[k] === ')' || code[k] === ']') return false;
+    if (!/[\w$]/.test(code[k]!)) return true;
+    let from = k;
+    while (from > 0 && /[\w$]/.test(code[from - 1]!)) from--;
+    return KEYWORDS_BEFORE_AN_EXPRESSION.has(code.slice(from, k + 1));
+  };
+  const quoted = (at: number): number => {
+    let k = at + 1;
+    while (k < code.length && code[k] !== code[at]) k += code[k] === '\\' ? 2 : 1;
+    blank(at + 1, k);
+    return k + 1;
+  };
+  const regExp = (at: number): number => {
+    let k = at + 1;
+    let inClass = false;
+    while (k < code.length && code[k] !== '\n' && (inClass || code[k] !== '/')) {
+      if (code[k] === '[') inClass = true;
+      else if (code[k] === ']') inClass = false;
+      k += code[k] === '\\' ? 2 : 1;
+    }
+    blank(at + 1, k);
+    return k + 1;
+  };
+  const template = (at: number): number => {
+    let k = at + 1;
+    while (k < code.length && code[k] !== '`') {
+      if (code[k] === '$' && code[k + 1] === '{') { k = codeFrom(k + 2, true); continue; }
+      const step = code[k] === '\\' ? 2 : 1;
+      blank(k, k + step);
+      k += step;
+    }
+    return k + 1;
+  };
+  /** Past the code from `at`: to the end, or (`inner`) past the `}` that closes a template's `${`. */
+  function codeFrom(at: number, inner: boolean): number {
+    let depth = 0;
+    let k = at;
+    while (k < code.length) {
+      const c = code[k]!;
+      if (c === '"' || c === "'") k = quoted(k);
+      else if (c === '`') k = template(k);
+      else if (c === '/' && code[k + 1] === '*') k = code.includes('*/', k + 2) ? code.indexOf('*/', k + 2) + 2 : code.length;
+      else if (c === '/' && code[k + 1] === '/') k = code.includes('\n', k) ? code.indexOf('\n', k) : code.length;
+      else if (c === '/' && opensRegExp(k)) k = regExp(k);
+      else {
+        if (c === '{') depth++;
+        else if (c === '}' && inner && depth-- === 0) return k + 1;
+        k++;
+      }
+    }
+    return k;
+  }
+  codeFrom(0, false);
+  return out.join('');
+}
+
+const TRANSPILERS = { ts: new Bun.Transpiler({ loader: 'ts' }), tsx: new Bun.Transpiler({ loader: 'tsx' }) };
+
+/** A source file as the scan reads it: transpiled, its literals blanked. */
+function prepared(source: string, loader: 'ts' | 'tsx' = 'ts'): string {
+  return blankLiterals(TRANSPILERS[loader].transformSync(source));
+}
+
+/** The argument text of the call whose opening parenthesis ends at `from`,
+ *  in code whose literals are blanked: up to its closing parenthesis. */
 function argumentsAt(code: string, from: number): string {
   let depth = 1;
   for (let i = from; i < code.length; i++) {
-    const c = code[i]!;
-    if (c === '"' || c === "'" || c === '`') {
-      for (i++; i < code.length && code[i] !== c; i++) if (code[i] === '\\') i++;
-      continue;
-    }
-    if (c === '(') depth++;
-    else if (c === ')' && --depth === 0) return code.slice(from, i);
+    if (code[i] === '(') depth++;
+    else if (code[i] === ')' && --depth === 0) return code.slice(from, i);
   }
   return code.slice(from);
 }
 
-/** A module context's addMessage that names no agent for its row. */
-const untargeted = (receiver: string, method: string, args: string): boolean =>
-  method === 'addMessage' && /(^|\.)ctx$/.test(receiver.replace(/\?/g, '')) && !/\bforAgent\b/.test(args);
+/** A call's arguments, split at their top-level commas. */
+function topLevelArguments(args: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < args.length; i++) {
+    const c = args[i]!;
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    else if (c === ',' && depth === 0) { parts.push(args.slice(from, i)); from = i + 1; }
+  }
+  parts.push(args.slice(from));
+  return parts;
+}
+
+/** Whom a module context's addMessage names for its row, read from its
+ *  arguments: no agent (`none`) without a `forAgent`; `conditional` when the
+ *  argument that holds it holds a `?:`, so the row names no agent when the
+ *  condition fails; otherwise `named`. */
+function targetOf(args: string): 'named' | 'none' | 'conditional' {
+  const target = topLevelArguments(args).find((arg) => /\bforAgent\b/.test(arg));
+  if (target === undefined) return 'none';
+  return /(?<!\?)\?(?![.?])/.test(target) ? 'conditional' : 'named';
+}
+
+/** A module context's addMessage, which the framework stamps for whom its target names. */
+const contextAdd = (receiver: string, method: string): boolean =>
+  method === 'addMessage' && /(^|\.)ctx$/.test(receiver.replace(/\?/g, ''));
 
 /** The writes the host makes past the framework, and its untargeted writes through it, each counted, with why it is safe. */
 const ALLOWED: Array<{ file: string; call: string; count: number; why: string }> = [
@@ -95,6 +215,21 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
     call: 'ctx.addMessage (untargeted)',
     count: 1,
     why: 'The note after a self-restart, saying who asked, when, why and when the host came back: meant for every resident.',
+  },
+  {
+    file: 'src/modules/tui-module.ts',
+    call: 'EventResponse.addMessages',
+    count: 1,
+    why: "An external message (one sent over IPC, or typed into the TUI). agent-framework stamps it for the agents its " +
+      "inference request names (the event's targetAgents), and for every resident when it names none or requests " +
+      'no inference: no host sender names one.',
+  },
+  {
+    file: 'src/modules/subscription-gc-module.ts',
+    call: 'EventResponse.addMessages',
+    count: 1,
+    why: "The note that subscription-gc closed a channel after more ambient traffic there than its limit. The count is " +
+      "kept per channel, not per agent: meant for every resident.",
   },
   {
     file: 'src/modules/subagent-module.ts',
@@ -123,21 +258,40 @@ function sources(dir: string): string[] {
   });
 }
 
-/** Every call of a writer past the framework, and of storeOwnRow, by file and call, counted. */
-function scan(): Map<string, number> {
-  const transpilers = { ts: new Bun.Transpiler({ loader: 'ts' }), tsx: new Bun.Transpiler({ loader: 'tsx' }) };
-  const found = new Map<string, number>();
+/** In one prepared file, every call and other mention of a writer past the
+ *  framework, every untargeted or conditionally targeted write through it,
+ *  every call and other mention of storeOwnRow (by its name or an alias it
+ *  is imported as), and every mention of `addMessages`, counted into `found`. */
+function scanCode(file: string, code: string, found: Map<string, number>): void {
   const count = (key: string) => found.set(key, (found.get(key) ?? 0) + 1);
+  for (const match of code.matchAll(CALL)) {
+    const [, receiver, method] = match;
+    const call = `${receiver!.replace(/\?/g, '')}.${method}`;
+    if (!throughTheFramework(receiver!, method!)) count(`${file} ${call}`);
+    else if (contextAdd(receiver!, method!)) {
+      const target = targetOf(argumentsAt(code, match.index! + match[0].length));
+      if (target === 'none') count(`${file} ${call} (untargeted)`);
+      else if (target === 'conditional') count(`${file} ${call} (target in a conditional)`);
+    }
+  }
+  for (const [, receiver, method] of code.matchAll(MENTION)) count(`${file} ${receiver!.replace(/\?/g, '')}.${method} (not a call)`);
+  const imports = [...code.matchAll(/\b(?:import|export)\s*\{[^}]*\}/g)];
+  const aliases = imports.flatMap((m) => [...m[0].matchAll(/\bstoreOwnRow\s+as\s+([A-Za-z_$][\w$]*)/g)].map((a) => a[1]!));
+  const inImport = (at: number) => imports.some((m) => at >= m.index! && at < m.index! + m[0].length);
+  const own = new RegExp(`(?<![\\w$])(?:[A-Za-z_$][\\w$]*\\??\\.)?(?:${['storeOwnRow', ...aliases].join('|')})(?![\\w$])(\\s*(?:\\?\\.)?\\()?`, 'g');
+  for (const match of code.matchAll(own)) {
+    if (inImport(match.index!)) continue;
+    count(match[1] !== undefined ? `${file} storeOwnRow` : `${file} storeOwnRow (not a call)`);
+  }
+  for (const _ of code.matchAll(/(?<![\w$])addMessages(?![\w$])/g)) count(`${file} EventResponse.addMessages`);
+}
+
+/** scanCode over every source file under src/. */
+function scan(): Map<string, number> {
+  const found = new Map<string, number>();
   for (const path of sources(SRC)) {
     const file = relative(ROOT, path).split('\\').join('/');
-    const code = transpilers[path.endsWith('.tsx') ? 'tsx' : 'ts'].transformSync(readFileSync(path, 'utf8'));
-    for (const match of code.matchAll(CALL)) {
-      const [, receiver, method] = match;
-      const call = `${receiver!.replace(/\?/g, '')}.${method}`;
-      if (!throughTheFramework(receiver!, method!)) count(`${file} ${call}`);
-      else if (untargeted(receiver!, method!, argumentsAt(code, match.index! + match[0].length))) count(`${file} ${call} (untargeted)`);
-    }
-    for (const _ of code.matchAll(/(?<![\w$.])storeOwnRow\(/g)) count(`${file} storeOwnRow`);
+    scanCode(file, prepared(readFileSync(path, 'utf8'), path.endsWith('.tsx') ? 'tsx' : 'ts'), found);
   }
   return found;
 }
@@ -150,24 +304,25 @@ describe('direct context writes', () => {
     expect(Object.fromEntries(found)).toEqual(Object.fromEntries(listed));
   });
 
-  test("the scan tells a module context's write that names its agent from one that names none", () => {
-    const transpiler = new Bun.Transpiler({ loader: 'ts' });
-    const code = transpiler.transformSync([
-      'export class C { m(ctx: any, name: string, note: string) {',
+  test("the scan tells a module context's write that names its agent from one that names none, or names one only on a condition", () => {
+    const code = prepared([
+      'export class C { m(ctx: any, name: string, note: string, ok: boolean) {',
       "this.ctx?.addMessage('user', [{ type: 'text', text: `[x] (${name}) done` }]);",
       "this.ctx.addMessage('user', [{ type: 'text', text: note }], undefined, { forAgent: name });",
       "ctx.addMessage('user', [], {}, name ? { forAgent: name } : undefined);",
+      "ctx.addMessage('user', [], {}, { ...(ok ? { forAgent: name } : {}) });",
       "ctx.addMessage('user', [{ type: 'text', text: 'a ) in a string' }]);",
+      "ctx.addMessage('user', [{ type: 'text', text: 'not { forAgent: name }' }]);",
+      "ctx.addMessage('user', [{ type: 'text', text: ok ? 'yes' : 'no' }], {}, { forAgent: name ?? 'clerk' });",
       '} }',
     ].join('\n'));
-    const calls = [...code.matchAll(CALL)].map((match) => untargeted(match[1]!, match[2]!, argumentsAt(code, match.index! + match[0].length)));
-    expect(calls).toEqual([true, false, false, true]);
+    const calls = [...code.matchAll(CALL)].map((match) => targetOf(argumentsAt(code, match.index! + match[0].length)));
+    expect(calls).toEqual(['none', 'named', 'conditional', 'conditional', 'none', 'none', 'named']);
   });
 
   test('the scan finds a direct write and a branch move by their receivers, and passes a module context and the framework', () => {
-    const transpiler = new Bun.Transpiler({ loader: 'ts' });
     // Inside a method, as the host's module code is, so `this` stays `this`.
-    const code = transpiler.transformSync([
+    const code = prepared([
       'export class C { m(agent: any, ctx: any, cm: any, app: any, id: string) {',
       "agent?.getContextManager().addMessage('user', []);",
       "app.framework.getAgent(id)?.getContextManager().addMessage('user', []);",
@@ -177,7 +332,9 @@ describe('direct context writes', () => {
       "cm.branchAt(id, 'b');",
       "void app.framework.switchBranch('b');",
       "void cm.switchBranch('b');",
+      "cm.retractRows?.([id], { undone: true });",
       '// cm.addMessage in a comment',
+      "console.log('cm.addMessage(', \"ctx.removeMessage(id)\", `cm.fork(${id})`, /cm\\.branchAt\\(/);",
       'f(cm, id);',
       '} }',
     ].join('\n'));
@@ -194,6 +351,41 @@ describe('direct context writes', () => {
       { call: 'cm.branchAt', through: false },
       { call: 'app.framework.switchBranch', through: true },
       { call: 'cm.switchBranch', through: false },
+      { call: 'cm.retractRows', through: false },
     ]);
+  });
+
+  test("the scan counts a writer's mention that isn't a call, storeOwnRow under an alias, and an EventResponse's addMessages", () => {
+    const code = prepared([
+      "import { storeOwnRow as stamp } from '@animalabs/agent-framework';",
+      'export class C { m(agent: any, cm: any, ctx: any) {',
+      "const write = cm.addMessage.bind(cm); write('user', []);",
+      "const send = ctx.addMessage; send('user', []);",
+      "stamp(agent, 'user', []);",
+      'const later = stamp;',
+      "console.log('storeOwnRow(agent)', 'addMessages');",
+      "return { addMessages: [{ participant: 'user', content: [] }] };",
+      '} }',
+    ].join('\n'));
+    const found = new Map<string, number>();
+    scanCode('f.ts', code, found);
+    expect(Object.fromEntries(found)).toEqual({
+      'f.ts cm.addMessage (not a call)': 1,
+      'f.ts ctx.addMessage (not a call)': 1,
+      'f.ts storeOwnRow': 1,
+      'f.ts storeOwnRow (not a call)': 1,
+      'f.ts EventResponse.addMessages': 1,
+    });
+  });
+
+  test('blanking literals keeps code in a template and after a division', () => {
+    const code = prepared([
+      'export function f(cm: any, a: number, b: number, id: string) {',
+      'const half = a / b; const re = /["\\/]/g;',
+      "return `${cm.addMessage('user', [])} and ${half / 2}` + 'x' + re.source + cm.fork(id);",
+      '}',
+    ].join('\n'));
+    expect([...code.matchAll(CALL)].map(([, receiver, method]) => `${receiver}.${method}`)).toEqual(['cm.addMessage', 'cm.fork']);
+    expect(code).not.toContain('"\\/');
   });
 });
