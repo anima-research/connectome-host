@@ -181,8 +181,12 @@ describe('what an interruption may edit', () => {
     const { trace, interrupt, edited } = relayOnTraces();
     trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
     trace({ type: 'mcpl:speech-routed', conversationId: 'fable', channelId: 'g:42', text: 'Going to sleep for an hour.', messageId: 'm-sleep' });
-    await interrupt('Going to sleep');
+    const logged = await logOf(() => interrupt('Going to sleep'));
     expect(edited()).toEqual([]);
+    expect(logged).toContain('no published message matched the interruption');
+    // The published message was kept: heard words that start it edit it.
+    await interrupt('The ferry leaves');
+    expect(edited()).toEqual(['m-prose']);
   });
 
   test('the published message whose text the heard words start is edited, though a later one was published', async () => {
@@ -196,8 +200,9 @@ describe('what an interruption may edit', () => {
   test('with only routed announcements in the channel, nothing is edited', async () => {
     const { trace, interrupt, edited } = relayOnTraces();
     trace({ type: 'mcpl:speech-routed', conversationId: 'fable', channelId: 'g:42', text: 'Going to sleep for an hour.', messageId: 'm-sleep' });
-    await interrupt('Going to sleep');
+    const logged = await logOf(() => interrupt('Going to sleep'));
     expect(edited()).toEqual([]);
+    expect(logged).toContain('no published message matched the interruption');
   });
 });
 
@@ -221,8 +226,9 @@ describe('heard words that start no published message', () => {
     const { trace, interrupt, edited, notes } = relayOnTraces(['mira']);
     trace(published);
     trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
-    await interrupt('Over the hills and far away');
+    const logged = await logOf(() => interrupt('Over the hills and far away'));
     expect(edited()).toEqual([]);
+    expect(logged).toContain('no published message matched the interruption');
     expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
   });
 
