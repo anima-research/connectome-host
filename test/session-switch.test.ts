@@ -1,8 +1,11 @@
 import { expect, test } from 'bun:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createBranchState, handleCommand } from '../src/commands.js';
+import { SessionManager } from '../src/session-manager.js';
 import { switchSessionSteps } from '../src/session-switch.js';
 
-/** A switch's steps, recording each in order. `during` runs inside a step,
- *  as a stop that begins while the step is under way. */
 function recorder(opts: { during?: Partial<Record<'stopOld' | 'make', () => void>>; nextStop?: () => Promise<void>; makeFails?: boolean } = {}) {
   const calls: string[] = [];
   const next = {
@@ -53,7 +56,7 @@ test('a stop that begins while the new framework is made stops it and the Web UI
   expect(calls).toEqual(['stopOld', 'make', 'next.stop', 'stopServer']);
 });
 
-test('when stopping the made framework fails, the server still closes, and the failure reaches the caller', async () => {
+test('when stopping the made framework fails, the server still closes, the failure reaches the caller, and the switch logs it', async () => {
   const app: { stopping?: boolean } = {};
   const { calls, steps } = recorder({
     during: { make: () => { app.stopping = true; } },
@@ -62,7 +65,6 @@ test('when stopping the made framework fails, the server still closes, and the f
   const lines: string[] = [];
   await expect(switchSessionSteps(app, steps, (line) => lines.push(line))).rejects.toThrow('injected stop failure');
   expect(calls).toEqual(['stopOld', 'make', 'next.stop', 'stopServer']);
-  // Once stopping, nothing draws the switch's failure, so the switch logs it.
   expect(lines).toEqual([expect.stringContaining('stopping the framework the switch had made failed: injected stop failure')]);
 });
 
@@ -75,12 +77,71 @@ test('a making that fails once the stop has begun closes the Web UI server, and 
   expect(lines).toEqual([expect.stringContaining("making the switched-to session's framework failed: injected make failure")]);
 });
 
-test('a making that fails with the host running closes nothing, and the failure reaches the caller', async () => {
+test('a making that fails with the host running closes nothing, and the failure reaches the caller, with nothing logged by the switch', async () => {
   const app: { stopping?: boolean } = {};
   const { calls, steps } = recorder({ makeFails: true });
   const lines: string[] = [];
   await expect(switchSessionSteps(app, steps, (line) => lines.push(line))).rejects.toThrow('injected make failure');
   expect(calls).toEqual(['stopOld', 'make']);
-  // The caller draws it, so the switch logs nothing.
   expect(lines).toEqual([]);
+});
+
+test('a switch asked for while another is under way is refused, saying how to go on, and starts nothing', async () => {
+  const app: { switching?: boolean } = {};
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const first = recorder();
+  const firstSwitch = switchSessionSteps(app, { ...first.steps, stopOld: async () => { first.calls.push('stopOld'); await held; } });
+  const second = recorder();
+  await expect(switchSessionSteps(app, second.steps))
+    .rejects.toThrow("a session switch is under way, so this one isn't started; try again once it has finished");
+  expect(second.calls).toEqual([]);
+  release();
+  await firstSwitch;
+  expect(first.calls).toEqual(['stopOld', 'make', 'install']);
+});
+
+test('a switch after one whose making failed, or one the host\'s stop ended, isn\'t refused', async () => {
+  const app: { stopping?: boolean; switching?: boolean } = {};
+  await expect(switchSessionSteps(app, recorder({ makeFails: true }).steps)).rejects.toThrow('injected make failure');
+  const after = recorder();
+  await switchSessionSteps(app, after.steps);
+  expect(after.calls).toEqual(['stopOld', 'make', 'install']);
+  await switchSessionSteps(app, recorder({ during: { make: () => { app.stopping = true; } } }).steps);
+  app.stopping = false;
+  const again = recorder();
+  await switchSessionSteps(app, again.steps);
+  expect(again.calls).toEqual(['stopOld', 'make', 'install']);
+});
+
+test('a switch whose old framework\'s stop, install or server close throws doesn\'t refuse the next switch', async () => {
+  const app: { stopping?: boolean; switching?: boolean } = {};
+  const failing = (step: 'stopOld' | 'install' | 'stopServer') => {
+    const { steps } = recorder({ during: { make: () => { if (step === 'stopServer') app.stopping = true; } }, makeFails: step === 'stopServer' });
+    return { ...steps, [step]: async () => { throw new Error(`injected ${step} failure`); } };
+  };
+  for (const step of ['stopOld', 'install', 'stopServer'] as const) {
+    app.stopping = false;
+    await expect(switchSessionSteps(app, failing(step), () => {})).rejects.toThrow(`injected ${step} failure`);
+    app.stopping = false;
+    const next = recorder();
+    await switchSessionSteps(app, next.steps);
+    expect(next.calls).toEqual(['stopOld', 'make', 'install']);
+  }
+});
+
+test('/session new and /session switch during a switch are refused before any session is made or made active', () => {
+  const sessions = new SessionManager(mkdtempSync(join(tmpdir(), 'session-switch-')));
+  const running = sessions.createSession('running');
+  const other = sessions.createSession('other');
+  sessions.setActiveSession(running.id);
+  const app = { switching: true, sessionManager: sessions, branchState: createBranchState() } as unknown as Parameters<typeof handleCommand>[1];
+  const refusal = "A session switch is under way, so this one isn't started; try again once it has finished.";
+  for (const line of ['/session new later', `/session switch ${other.id}`]) {
+    const answer = handleCommand(line, app);
+    expect(answer.lines.map((l) => l.text)).toEqual([refusal]);
+    expect(answer.switchToSessionId).toBeUndefined();
+  }
+  expect(sessions.listSessions().map((s) => s.name).sort()).toEqual(['other', 'running']);
+  expect(sessions.getActiveSession()?.id).toBe(running.id);
 });

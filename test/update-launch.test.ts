@@ -1,9 +1,3 @@
-/**
- * A start from end to end: the entry point setup writes, the launcher of the
- * release `current` names, and the launcher becoming the host of the release
- * it decides on by process.execve. Each release here holds this repository's own update
- * modules and a stand-in host that writes down how it was started.
- */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,9 +14,6 @@ let data: string;
 let root: string;
 let marker: string;
 
-/** A host package at `hostDir`: this repository's update modules, and a
- *  host that writes its version, arguments, install root, working directory
- *  and process id to $MARKER. */
 function hostPackage(hostDir: string, version: string): void {
   mkdirSync(join(hostDir, 'src', 'update'), { recursive: true });
   writeFileSync(join(hostDir, 'package.json'), JSON.stringify({ name: '@animalabs/connectome-host', version }));
@@ -53,7 +44,6 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
-/** Start the service as its unit would: the entry point, from the install. */
 function start(...args: string[]): { exitCode: number; pid: number; stderr: string } {
   const run = Bun.spawnSync([process.execPath, join(root, ENTRY_POINT), ...args], {
     cwd: install,
@@ -120,11 +110,9 @@ describe('a start, end to end', () => {
   test("after a committed switch each start names the shell's Go back, which asks the next start for it, and that start goes back", () => {
     hostPackage(join(releaseDir(root, '0.11.0'), RELEASE_HOST), '0.11.0');
     writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm1', at: '2026-10-20T00:00:00Z', to: '0.11.0', why: 'update' } satisfies Mark);
-    // A trial's start names no Go back: the shell's would be refused while a trial is under way.
     const trial = start();
     expect(trial.exitCode).toBe(0);
     expect(trial.stderr).not.toContain('--go-back');
-    // The stand-in host doesn't commit, so the test does as the real one would.
     moveCurrent(root, '0.11.0');
     appendJournal(root, { at: '2026-10-20T00:01:00Z', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
     const named = start();

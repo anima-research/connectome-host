@@ -1,13 +1,3 @@
-/**
- * Context panel — two figures from GET /debug/context/makeup (transparent:
- * previewActivation + count_tokens, no inference or writes of its own): the exact
- * token count of the next request as a preview builds it, from the stored
- * history without what modules add at each turn, and the segment breakdown of the
- * agent's last live compile, which the autobiographical strategy records:
- * head window, raw middle, summaries by level (L1/L2/L3), and the recent
- * verbatim tail — as a proportional bar plus a per-segment table.
- */
-
 import { createEffect, createSignal, on, onCleanup, onMount, For, Show } from 'solid-js';
 import { contextPageView } from './composition-text';
 
@@ -22,13 +12,8 @@ interface Stats {
 }
 interface Makeup {
   agent: string;
-  /** The render stats of the agent's last live compile: null until one has
-   *  run since its context was loaded, or where its strategy keeps none. */
   stats: Stats | null;
-  /** Whether the agent's strategy keeps render stats at all. */
   statsKept?: boolean;
-  /** The next request's exact token count, from a preview, or null where it
-   *  wasn't counted, as `countSource` says. */
   exactTotalTokens: number | null;
   countModel: string;
   countSource: string;
@@ -104,8 +89,6 @@ export function ContextPanel(props: { scope?: string }) {
   const [err, setErr] = createSignal<string | null>(null);
   const [coverageErr, setCoverageErr] = createSignal<string | null>(null);
 
-  /** Fleet-child scopes route through the host's ?scope= proxy; the child's
-   *  primary agent answers. Local scope needs no params. */
   const query = () => props.scope && props.scope !== 'local'
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
@@ -122,7 +105,7 @@ export function ContextPanel(props: { scope?: string }) {
       }
       const j = (await res.json()) as Makeup;
       if (j.error) throw new Error(j.error);
-      if (props.scope !== scopeAtStart) return; // scope switched mid-flight
+      if (props.scope !== scopeAtStart) return;
       setData(j);
     } catch (e) {
       if (props.scope !== scopeAtStart) return;
@@ -158,9 +141,6 @@ export function ContextPanel(props: { scope?: string }) {
     void loadCoverage();
   };
 
-  // Initial load AND scope-switch refetch: the effect re-runs whenever the
-  // shared scope selector changes, clearing the previous scope's data so a
-  // slow child never renders under the wrong header.
   createEffect(on(() => props.scope, () => {
     setData(null);
     setCoverage(null);
@@ -174,9 +154,6 @@ export function ContextPanel(props: { scope?: string }) {
     onCleanup(() => window.clearInterval(timer));
   });
 
-  // What the page shows of the response (contextPageView): the next
-  // request's count or why there's none, and the composition or the line in
-  // its place.
   const view = () => {
     const d = data();
     return d ? contextPageView(d) : null;
@@ -332,8 +309,6 @@ export function ContextPanel(props: { scope?: string }) {
 
       <Show when={!data() && !err()}><div class="text-neutral-500">loading…</div></Show>
 
-      {/* The next request, as a preview builds it, counted exactly, or why
-          it wasn't counted. */}
       <Show when={counted()}>
         {(count) => (
           <div>
@@ -347,8 +322,6 @@ export function ContextPanel(props: { scope?: string }) {
         {(reason) => <div class="text-neutral-500">next request: {reason()}</div>}
       </Show>
 
-      {/* The last live compile's render stats, or which of the two reasons
-          there are none. */}
       <Show when={compositionLine()}>
         {(line) => <div class="text-neutral-500">{line()}</div>}
       </Show>
@@ -358,7 +331,6 @@ export function ContextPanel(props: { scope?: string }) {
           last live compile: {fmt(compositionStats()!.total.messages)} msgs · est {fmt(estTotal())} tokens
         </div>
 
-        {/* proportional bar */}
         <div class="flex h-4 w-full overflow-hidden rounded border border-neutral-800">
           <For each={rows()}>
             {(r) => (
@@ -370,7 +342,6 @@ export function ContextPanel(props: { scope?: string }) {
           </For>
         </div>
 
-        {/* per-segment table */}
         <table class="w-full">
           <thead>
             <tr class="text-neutral-500 text-left">

@@ -1,7 +1,3 @@
-/**
- * Schema-validation tests for modules.fleet and the triumvirate.json recipe.
- * Pure JSON-in / validator-out tests — no subprocess needed.
- */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';

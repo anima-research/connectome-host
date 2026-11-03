@@ -1,27 +1,3 @@
-/**
- * Postmortem 2026-05-28 F3: reaper's guard does not cover the
- * "request in flight, awaiting first token" window.
- *
- * Today's reap guard is `!live.currentStream && pendingToolCalls.length === 0`.
- * At inference:started and inference:stream_resumed, both are cleared. The
- * agent then sits with the guard open while the next LLM request is on the
- * wire. With Opus on 100–165K-token contexts under rate-limited MCP tools,
- * single-round TTFT routinely exceeds 30s, and the periodic reaper executes
- * mid-request even though the agent is genuinely progressing.
- *
- * Forensic signature in production: every reaped scout's last message in the
- * Chronicle store is an unconsumed `tool_result` — i.e., tool results came
- * back, stream_resumed cleared the guards, the next request was dispatched,
- * the reaper struck before the first token.
- *
- * Tests:
- *   1) reaper does NOT cancel an entry with `requestInFlightSince` set, even
- *      when lastActivityAt is older than the threshold.
- *   2) reaper DOES cancel a genuinely silent entry (control — proves the
- *      threshold path is still alive).
- *   3) Lifecycle: trace events set/clear `requestInFlightSince` on the live
- *      subagent state via the module's onTrace handler.
- */
 import { describe, test, expect } from 'bun:test';
 import {
   SubagentModule,
@@ -37,8 +13,6 @@ interface FakeLiveState {
   currentStream: string;
   pendingToolCalls: Array<{ name: string; input?: unknown }>;
   activeCallIds: Set<string>;
-  /** Populated when an inference request has been dispatched but no token
-   *  has arrived yet. The reaper must treat this as a protected state. */
   requestInFlightSince?: number;
 }
 
@@ -86,8 +60,6 @@ function installSubagent(
   return { live, entry };
 }
 
-/** Captures the trace handler that SubagentModule.setFramework registers, so
- *  the lifecycle test can fire events without spinning up the full framework. */
 function makeTraceCapturingFramework(): {
   framework: { onTrace: (cb: (e: TraceEvent) => void) => void };
   fire: (event: TraceEvent) => void;
@@ -108,19 +80,13 @@ function makeTraceCapturingFramework(): {
 
 describe('SubagentModule reaper — F3 request-in-flight protection', () => {
   test('reaper does NOT cancel an agent with a request in flight', () => {
-    // Postmortem scenario: stream_resumed fired, currentStream + pendingToolCalls
-    // cleared, the next LLM round is on the wire. lastActivityAt is frozen at
-    // the moment of stream_resumed dispatch. TTFT is 45s — pre-fix the reaper
-    // would strike mid-request because all of (!currentStream, no pending tools,
-    // silentMs > threshold) hold. With the in-flight guard, the agent is left
-    // alone.
     const now = Date.now();
     const mod = new SubagentModule({ provider: 'mock' });
     const { entry } = installSubagent(mod, {
       displayName: 'opus-in-flight',
       startedAt: now - 5 * 60_000,
-      lastActivityAt: now - 3 * 60_000,        // well past any threshold
-      requestInFlightSince: now - 3 * 60_000,  // request dispatched, no token yet
+      lastActivityAt: now - 3 * 60_000,
+      requestInFlightSince: now - 3 * 60_000,
     });
 
     const reclaimed = (mod as unknown as { reclaimZombieSlots: () => number })
@@ -131,10 +97,6 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
   });
 
   test('reaper DOES cancel a genuinely silent agent (control)', () => {
-    // Same staleness, but no request in flight — this is the "stuck" case the
-    // reaper exists to clean up. 5 min silence exceeds both the pre- and
-    // post-fix thresholds, so this test stays valid if the threshold is
-    // tuned in either direction.
     const now = Date.now();
     const mod = new SubagentModule({ provider: 'mock' });
     const { entry } = installSubagent(mod, {
@@ -147,17 +109,10 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
       .reclaimZombieSlots();
 
     expect(reclaimed).toBe(1);
-    // Postmortem 2026-05-28 P1 #4: zombie-reaped subagents land in
-    // 'cancelled' (terminal-but-benign), not 'failed'. Aligns the
-    // SubagentModule's terminal state with the reducer's split between
-    // genuine faults (inference:failed) and benign cancels.
     expect(entry.status).toBe('cancelled');
   });
 
   test('peek.isZombie also respects requestInFlightSince', async () => {
-    // The peek surface drives the orchestrator's perception. Postmortem F2 was
-    // about dual clocks; F3 is the same shape: a healthy in-flight agent must
-    // not report isZombie=true.
     const now = Date.now();
     const mod = new SubagentModule({ provider: 'mock' });
     installSubagent(mod, {
@@ -182,8 +137,6 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
     expect(live.requestInFlightSince).toBeUndefined();
 
     const fake = makeTraceCapturingFramework();
-    // setFramework registers the onTrace handler. Cast: our fake satisfies the
-    // surface SubagentModule uses at registration time.
     mod.setFramework(fake.framework as never);
 
     fake.fire({ type: 'inference:started', agentName: 'fw-lc', timestamp: Date.now() } as never);
@@ -209,8 +162,8 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
   });
 
   test('lifecycle: inference:stream_resumed sets requestInFlightSince again', () => {
-    // After a tool round, the framework emits stream_resumed and dispatches a
-    // new request. This is the gap the postmortem traced reaps to.
+    // After a tool round, agent-framework emits stream_resumed and sends the
+    // next request.
     const now = Date.now();
     const mod = new SubagentModule({ provider: 'mock' });
     const { live } = installSubagent(mod, {

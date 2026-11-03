@@ -1,10 +1,3 @@
-/**
- * The recipe's codeExecution block against agent-framework 0.24's JavaScript
- * runner: the Python runner's settings are refused at recipe load with what
- * to set instead, as the framework refuses them at create(), and the
- * runner's numeric settings are whole numbers of 0 or more. A block that
- * isn't on has nothing else read, as in the framework.
- */
 import { describe, expect, test } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 

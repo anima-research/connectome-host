@@ -1,16 +1,3 @@
-/**
- * A real host started as an install's entry point starts it: from one of the
- * install's releases, with CONNECTOME_INSTALL_ROOT naming the install. It
- * commits its release, keeps the children file its launcher reads, and
- * records a fleet child in its store from the child's spawn, synced, so a
- * parent killed then leaves the record. A root none of whose releases holds
- * it is refused before the host writes anything. A host and fleet child the
- * switch quiesced before their stop boot quiesced, and the start ends the
- * switch's quiesce, and only the switch's. A host's update reads the
- * registry at start, and a headless host's /update restart quiesces it,
- * writes the mark and exits 75; a batch run reads no registry on its own,
- * and prints a command's follow-up before it stops.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -30,7 +17,6 @@ import { hostModeRecord, writeHostModeRecord } from './host-mode-record.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// No MCP servers, workspace or optional modules: the host starts offline.
 const RECIPE = {
   name: 'Update commit',
   agent: { name: 'commit', systemPrompt: 'never asked to infer in this test' },
@@ -40,21 +26,18 @@ const RECIPE = {
 const dirs: string[] = [];
 const hosts: ChildProcess[] = [];
 
-/** The pids a host's children file lists, and the pid its child's own pid
- *  file holds, which a child writes as it starts and removes as it stops. */
 function childPids(dir: string): number[] {
   const pids: unknown[] = [];
   try {
     pids.push(...(readRecord<ChildrenFile>(childrenFilePath(join(dir, 'data')), 'children file')?.children ?? []).map((c) => c.pid));
-  } catch { /* unreadable: the pid file still says */ }
+  } catch { }
   try {
     pids.push(Number(readFileSync(join(dir, 'data', 'kid', 'headless.pid'), 'utf8').trim()));
-  } catch { /* none */ }
+  } catch { }
   return pids.filter((pid): pid is number => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0);
 }
 
 afterEach(async () => {
-  // A host stopped with SIGTERM stops its fleet's children as it stops.
   for (const host of hosts.splice(0)) {
     if (host.exitCode !== null || host.signalCode !== null) continue;
     const exited = new Promise<void>((done) => host.once('exit', () => done()));
@@ -63,25 +46,20 @@ afterEach(async () => {
     host.kill('SIGKILL');
     await exited;
   }
-  // A child runs detached, so one its parent couldn't stop, such as after a
-  // SIGKILL, is stopped here, by every pid the children file lists and the
-  // one its pid file holds.
+  // Children run detached, so one its parent couldn't stop, as after a SIGKILL,
+  // outlives it.
   for (const dir of dirs.splice(0)) {
     for (const pid of childPids(dir)) {
-      try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(pid, 'SIGKILL'); } catch { }
     }
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-/** Start a host on `index`, as an install's entry point does when `root` is
- *  given, and otherwise as a host started on its own. With `kid`, the host
- *  is the fleet child's recipe on its data directory, started on its own.
- *  `more` adds to its environment. */
 function startHost(
   dir: string, index: string, root: string | null, modules: Record<string, unknown> = {}, recipeFields: Record<string, unknown> = {},
-  kid = false, more: Record<string, string> = {},
-): { host: ChildProcess; stderr: () => string; exit: Promise<number | null> } {
+  kid = false, more: Record<string, string> = {}, preloads: string[] = [],
+): { host: ChildProcess; stderr: () => string; stdout: () => string; exit: Promise<number | null> } {
   const recipe = kid ? join(dir, 'kid.json') : join(dir, 'recipe.json');
   if (!kid) writeFileSync(recipe, JSON.stringify({ ...RECIPE, ...recipeFields, modules: { ...RECIPE.modules, ...modules } }));
   const env: Record<string, string | undefined> = {
@@ -89,20 +67,20 @@ function startHost(
   };
   if (root !== null) env.CONNECTOME_INSTALL_ROOT = root;
   else delete env.CONNECTOME_INSTALL_ROOT;
-  // The notice's other off switch, which a developer's shell may export.
   delete env.NO_UPDATE_NOTIFIER;
-  const host = spawn('bun', [index, recipe, '--headless'], {
-    // cwd is the temp dir, so the default MCPL config path can't pick up a real one.
+  const host = spawn('bun', [...preloads.flatMap((preload) => ['--preload', preload]), index, recipe, '--headless'], {
     cwd: dir,
     env,
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   hosts.push(host);
   let err = '';
+  let out = '';
   host.stderr!.on('data', (chunk) => { err += String(chunk); });
-  // 'close' comes once the host has exited and its stderr is all read.
+  host.stdout!.on('data', (chunk) => { out += String(chunk); });
+  // 'close' comes once the host has exited and its stdio is all read.
   const exit = new Promise<number | null>((done) => host.once('close', (code) => done(code)));
-  return { host, stderr: () => err, exit };
+  return { host, stderr: () => err, stdout: () => out, exit };
 }
 
 async function until(check: () => boolean, ms: number, label: string): Promise<void> {
@@ -113,9 +91,33 @@ async function until(check: () => boolean, ms: number, label: string): Promise<v
   }
 }
 
-/** An install whose `current` names 9.9.8, beside a 9.9.9 that is this
- *  checkout, as setup's link to an install would be, and a recipe for a
- *  fleet child. */
+function lineAfter(text: string, start: string): string {
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => line.startsWith(start));
+  expect(at).toBeGreaterThanOrEqual(0);
+  return lines[at + 1] ?? '';
+}
+
+function workingServer(dir: string): string {
+  const server = join(dir, 'working-mcpl.mjs');
+  writeFileSync(server, [
+    "import { createInterface } from 'node:readline';",
+    "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');",
+    "createInterface({ input: process.stdin }).on('line', (line) => {",
+    '  let msg; try { msg = JSON.parse(line); } catch { return; }',
+    '  if (msg.id === undefined || msg.method === undefined) return;',
+    "  if (msg.method === 'initialize') {",
+    "    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'working', version: '0.0.0' } } });",
+    "  } else if (msg.method === 'tools/list') {",
+    "    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });",
+    '  } else {',
+    "    send({ jsonrpc: '2.0', id: msg.id, result: {} });",
+    '  }',
+    '});',
+  ].join('\n'));
+  return server;
+}
+
 function install(): { dir: string; root: string; index: string; fleet: Record<string, unknown> } {
   const dir = mkdtempSync(join(tmpdir(), 'update-commit-e2e-'));
   dirs.push(dir);
@@ -131,9 +133,6 @@ function install(): { dir: string; root: string; index: string; fleet: Record<st
   };
 }
 
-/** As the install's launcher leaves it for a switch's trial from 9.9.8 to
- *  9.9.9: a copy of the data directory, with its label, and the journal's
- *  `trial-start` line. A release `current` doesn't name starts only so. */
 function onTrial(dir: string, root: string): void {
   const { copy } = installPaths(root);
   const dataDir = join(dir, 'data');
@@ -144,10 +143,6 @@ function onTrial(dir: string, root: string): void {
   appendJournal(root, { at, step: 'trial-start', from: '9.9.8', to: '9.9.9', outcome: 'ok', mark: 'm-1' });
 }
 
-/** Ask a host over its socket what a fleet asks of its child for a switch
- *  (src/update/quiesce.ts), and wait for its answer. The connection first
- *  narrows its events to `lifecycle`, as a fleet's subscription can, and the
- *  answer comes all the same. */
 async function askSwitch(socketPath: string, request: SwitchRequest): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string }> {
   const socket = await connectWhenAccepting(socketPath);
   socket.setEncoding('utf8');
@@ -173,10 +168,6 @@ async function askSwitch(socketPath: string, request: SwitchRequest): Promise<{ 
   }
 }
 
-/** As the last start before a switch leaves them: the install's host and its
- *  fleet child, each served on its own and stopped, quiesced either as the
- *  switch's request quiesces a host, for a switch to 9.9.9, or as an
- *  operator's quiesce leaves agent-framework's record, under `operator`. */
 async function quiesceAndStop(dir: string, index: string, operator?: string): Promise<void> {
   for (const kid of [false, true]) {
     const dataDir = kid ? join(dir, 'data', 'kid') : join(dir, 'data');
@@ -196,7 +187,6 @@ async function quiesceAndStop(dir: string, index: string, operator?: string): Pr
   }
 }
 
-/** The children file's entry for the fleet child, if it lists one. */
 function kidIn(dir: string): ChildrenFile['children'][number] | undefined {
   return readRecord<ChildrenFile>(childrenFilePath(join(dir, 'data')), 'children file')?.children.find((c) => c.name === 'kid');
 }
@@ -210,10 +200,6 @@ describe('a host started from an install', () => {
     await until(() => existsSync(socketPath), 15_000, 'the host serves its socket');
     expect(readCurrent(root)).toBe('9.9.9');
 
-    // The child launches once the parent's agents have started, and serves
-    // its own socket once it has started too. The journal holds the parent's
-    // commit only; that the child gets no install root is the fleet's unit
-    // test's (fleet-children-file.test.ts).
     await until(() => typeof kidIn(dir)?.pid === 'number', 20_000, 'the children file lists the running child');
     expect(kidIn(dir)!.dataDir).toBe(join(dir, 'data', 'kid'));
     await until(() => existsSync(join(dir, 'data', 'kid', 'ipc.sock')), 20_000, 'the child serves its socket');
@@ -226,7 +212,6 @@ describe('a host started from an install', () => {
     socket.write(JSON.stringify({ type: 'shutdown' }) + '\n');
     expect(await exit).toBe(0);
     socket.destroy();
-    // The parent stopped its child before it exited, and the file says so.
     expect(kidIn(dir)!.pid).toBeNull();
     expect(readCurrent(root)).toBe('9.9.9');
   }, 60_000);
@@ -252,31 +237,14 @@ describe('a host started from an install', () => {
   test('a trial whose MCPL server connects commits, so a working server reads as connected when the commit runs', async () => {
     const { dir, root, index } = install();
     onTrial(dir, root);
-    // A stdio server that answers just enough of the handshake to connect.
-    const server = join(dir, 'working-mcpl.mjs');
-    writeFileSync(server, [
-      "import { createInterface } from 'node:readline';",
-      "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');",
-      "createInterface({ input: process.stdin }).on('line', (line) => {",
-      '  let msg; try { msg = JSON.parse(line); } catch { return; }',
-      '  if (msg.id === undefined || msg.method === undefined) return;',
-      "  if (msg.method === 'initialize') {",
-      "    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'working', version: '0.0.0' } } });",
-      "  } else if (msg.method === 'tools/list') {",
-      "    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });",
-      '  } else {',
-      "    send({ jsonrpc: '2.0', id: msg.id, result: {} });",
-      '  }',
-      '});',
-    ].join('\n'));
+    const server = workingServer(dir);
     const { host, stderr, exit } = startHost(dir, index, root, {}, { mcpServers: { working: { command: process.execPath, args: [server] } } });
-    // The journal's line comes just after the move.
     await until(() => readJournal(root).some(({ step }) => step === 'commit'), 30_000, `the trial commits (stderr: ${stderr().slice(-1500)})`);
     expect(readCurrent(root)).toBe('9.9.9');
-    expect(stderr()).not.toContain("couldn't connect the MCPL server");
+    expect(stderr()).not.toContain("wasn't connected when this release went to commit");
     expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start', 'commit']);
-    // Committed, it keeps no trial log: headless's SIGTERM ends it through process.exit, which runs exit handlers.
-    // Its handlers go on just after its socket listens, so a SIGTERM before then would end it with none run.
+    // process.exit runs 'exit' listeners, and a signal nothing handles runs none,
+    // so the SIGTERM waits until the host's handlers are on.
     const log = join(dir, 'data', 'headless.log');
     await until(() => existsSync(log) && readFileSync(log, 'utf-8').includes('socket listening at'), 30_000, 'headless listens');
     host.kill('SIGTERM');
@@ -290,16 +258,43 @@ describe('a host started from an install', () => {
     const server = join(dir, 'no-such-server');
     const { stderr, exit } = startHost(dir, index, root, {}, { mcpServers: { lost: { command: server } } });
     expect(await exit).toBe(1);
-    expect(stderr()).toContain("This release couldn't connect the MCPL server lost, so it starts none of its agents, and the next start goes back to 9.9.8: ");
+    expect(stderr()).toContain("The MCPL server lost wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 9.9.8: ");
     expect(readCurrent(root)).toBe('9.9.8');
     expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start']);
-    // What it wrote as it ended is kept for the release that falls back, readable by this user alone.
     const log = readRecord<TrialLog>(installPaths(root).trialLog, 'trial log');
     expect(log).toMatchObject({ v: 1, release: '9.9.9', mark: 'm-1' });
     expect(log!.lines.length).toBeGreaterThan(0);
     expect(log!.lines.length).toBeLessThanOrEqual(TRIAL_LOG_LINES);
-    expect(log!.lines.some((line) => line.startsWith("Fatal error: Error: This release couldn't connect the MCPL server lost"))).toBe(true);
+    expect(log!.lines.some((line) => line.startsWith("The MCPL server lost wasn't connected when this release went to commit"))).toBe(true);
+    expect(log!.lines.filter((line) => line.startsWith('Fatal error') || /^\s+at /.test(line))).toEqual([]);
+    expect(stderr()).not.toContain('Fatal error');
+    expect(lineAfter(stderr(), "The MCPL server lost wasn't connected")).not.toMatch(/^\s+at /);
     expect(statSync(installPaths(root).trialLog).mode & 0o777).toBe(0o600);
+  }, 60_000);
+
+  test("a trial commits with a server the release before hadn't connected either when it stopped, and says so", async () => {
+    const { dir, root, index } = install();
+    onTrial(dir, root);
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm-1', to: '9.9.9', why: 'update', at: new Date().toISOString(), connected: [] });
+    const { host, stderr, stdout, exit } = startHost(dir, index, root, {}, { mcpServers: { lost: { command: join(dir, 'no-such-server') } } });
+    await until(() => readJournal(root).some(({ step }) => step === 'commit'), 30_000, `the trial commits (stderr: ${stderr().slice(-1500)})`);
+    expect(readCurrent(root)).toBe('9.9.9');
+    const passed = "[update] The MCPL server lost isn't connected, and 9.9.8 hadn't connected it when it stopped either, so it doesn't hold this release's commit.";
+    await until(() => stdout().includes(passed), 30_000, `the start names the server that didn't hold it (stdout: ${stdout().slice(-1500)})`);
+    const log = join(dir, 'data', 'headless.log');
+    await until(() => existsSync(log) && readFileSync(log, 'utf-8').includes('socket listening at'), 30_000, 'headless listens');
+    host.kill('SIGTERM');
+    expect(await exit).toBe(0);
+  }, 60_000);
+
+  test('an install with no current stops the start with a plain line too', async () => {
+    const { dir, root, index } = install();
+    rmSync(installPaths(root).current);
+    const { stderr, exit } = startHost(dir, index, root);
+    expect(await exit).toBe(1);
+    expect(stderr()).toContain(`The install at ${root} has no \`current\` to say which release it runs on, so this host starts none of its agents. Run setup again.`);
+    expect(stderr()).not.toContain('Fatal error');
+    expect(lineAfter(stderr(), `The install at ${root} has no`)).not.toMatch(/^\s+at /);
   }, 60_000);
 
   test('a host started on its own keeps no children file, though its fleet starts a child', async () => {
@@ -314,7 +309,7 @@ describe('a host started from an install', () => {
     expect(existsSync(childrenFilePath(join(dir, 'data')))).toBe(false);
   }, 60_000);
 
-  test('a root none of whose releases holds it is refused before anything is written', async () => {
+  test('a root none of whose releases holds it is refused with a plain line before anything is written', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'update-commit-e2e-'));
     dirs.push(dir);
     const root = join(dir, 'install');
@@ -323,15 +318,14 @@ describe('a host started from an install', () => {
     const { stderr, exit } = startHost(dir, join(REPO_ROOT, 'src', 'index.ts'), root);
     expect(await exit).toBe(1);
     expect(stderr()).toContain(`CONNECTOME_INSTALL_ROOT names the install at ${root}, but none of its releases holds this host`);
+    expect(stderr()).not.toContain('Fatal error');
+    expect(lineAfter(stderr(), 'CONNECTOME_INSTALL_ROOT names the install at')).not.toMatch(/^\s+at /);
     expect(existsSync(join(dir, 'data'))).toBe(false);
     expect(readCurrent(root)).toBeNull();
   }, 30_000);
 });
 
 describe('a host the switch quiesced before its stop', () => {
-  /** Start the trial with its fleet child, and stop it once the child serves
-   *  its socket, which it does only after its own start has resumed or not,
-   *  and after the parent's has, since the parent launches it after that. */
   async function startTrial(dir: string, root: string, index: string, fleet: Record<string, unknown>): Promise<string> {
     onTrial(dir, root);
     const { stderr, exit } = startHost(dir, index, root, fleet);
@@ -406,10 +400,8 @@ describe("a host's update, on a real start", () => {
       await until(() => said.some((line) => line.startsWith('To take it:')), 15_000, '/update answers');
       expect(said).toContain(`connectome-host 99.0.0 is out; this host runs ${running}.`);
       expect(said).toContain('Notes: https://github.com/anima-research/connectome-host/blob/v99.0.0/CHANGELOG.md');
-      // Seen at start, the release isn't logged again, though /update read the registry again.
       expect(asked).toHaveLength(2);
       expect(stderr().split('is out; this host runs').length).toBe(2);
-      // The health snapshot, which /healthz and a fleet parent read, carries it too.
       socket.write(JSON.stringify({ type: 'panel-request', op: 'health', corrId: 'h1' }) + '\n');
       await until(() => health !== null, 15_000, 'the health snapshot answers');
       expect(health!.update).toMatchObject({
@@ -422,25 +414,65 @@ describe("a host's update, on a real start", () => {
     }
   }, 60_000);
 
-  test('/update restart quiesces a headless host, writes the mark and exits 75, for the next start to switch', async () => {
+  test('/update restart quiesces a headless host, writes the mark with the MCPL servers it had connected, and exits 75, for the next start to switch', async () => {
     const { dir, root, index } = install();
     moveCurrent(root, '9.9.9');
-    // A newer release in place, as Update leaves one.
     const placed = join(root, 'releases', '9.9.10', 'node_modules', '@animalabs', 'connectome-host');
     mkdirSync(join(placed, 'src', 'update'), { recursive: true });
     writeFileSync(join(placed, 'package.json'), JSON.stringify({ version: '9.9.10' }));
     writeFileSync(join(placed, 'src', 'index.ts'), '');
     writeFileSync(join(placed, 'src', 'update', 'launcher.ts'), '');
-    const { stderr, exit } = startHost(dir, index, root);
+    const servers = { working: { command: process.execPath, args: [workingServer(dir)] }, lost: { command: join(dir, 'no-such-server') } };
+    const { stderr, exit } = startHost(dir, index, root, {}, { mcpServers: servers });
     const socketPath = join(dir, 'data', 'ipc.sock');
     await until(() => existsSync(socketPath), 20_000, `the host serves its socket (stderr: ${stderr().slice(-1500)})`);
     const socket = await connectWhenAccepting(socketPath);
     socket.write(JSON.stringify({ type: 'command', command: '/update restart' }) + '\n');
     expect(await exit).toBe(75);
     socket.destroy();
-    expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update' });
+    expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update', connected: ['working'] });
     expect(hostModeRecord(join(dir, 'data'))).toMatchObject({ quiesced: true, reason: switchQuiesceReason('9.9.10') });
     expect(readCurrent(root)).toBe('9.9.9');
+  }, 60_000);
+
+  test("a Restart the Web UI sends, naming its release, brings the page the farewell, which the host sent before it exited 75", async () => {
+    const { dir, root, index } = install();
+    moveCurrent(root, '9.9.9');
+    const placed = join(root, 'releases', '9.9.10', 'node_modules', '@animalabs', 'connectome-host');
+    mkdirSync(join(placed, 'src', 'update'), { recursive: true });
+    writeFileSync(join(placed, 'package.json'), JSON.stringify({ version: '9.9.10' }));
+    writeFileSync(join(placed, 'src', 'index.ts'), '');
+    writeFileSync(join(placed, 'src', 'update', 'launcher.ts'), '');
+    const { stderr, stdout, exit } = startHost(
+      dir, index, root, { webui: { host: '127.0.0.1', port: 0 } }, {}, false, {}, [join(REPO_ROOT, 'test', 'held-socket-listen.ts')],
+    );
+    const listening = /\[webui\] listening on http:\/\/127\.0\.0\.1:(\d+)/;
+    await until(() => listening.test(stdout()), 30_000, `the host says where its Web UI listens (stderr: ${stderr().slice(-1500)})`);
+    const port = Number(listening.exec(stdout())![1]);
+    const frames: Array<{ type?: string; lines?: Array<{ text: string }> }> = [];
+    let closed = false;
+    const page = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    page.onmessage = (event) => { frames.push(JSON.parse(String(event.data))); };
+    page.onclose = () => { closed = true; };
+    await until(() => frames.some((frame) => frame.type === 'welcome'), 15_000, 'the Web UI welcomes the page');
+    page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.11' }));
+    const refusal = 'The release installed to restart onto is now 9.9.10, not 9.9.11, so nothing is restarting. Look at what ' +
+      '9.9.10 costs, then ask again.';
+    const answers = () => frames.filter((frame) => frame.type === 'command-result').flatMap((frame) => frame.lines!.map((l) => l.text));
+    await until(() => answers().length >= 2, 15_000, "the answer to the page's first restart");
+    expect(answers()).toEqual(['Restarting unless refused: turns in progress get up to 2 min to end…', refusal]);
+    expect(closed).toBe(false);
+    page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.10' }));
+    expect(await exit).toBe(75);
+    // The page's socket closes when the host's process exits, so no frame comes
+    // after the close.
+    await until(() => closed, 5_000, 'the page sees its connection close');
+    expect(answers()).toEqual([
+      'Restarting unless refused: turns in progress get up to 2 min to end…',
+      refusal,
+      'Restarting unless refused: turns in progress get up to 2 min to end…',
+      "Stopping to switch to 9.9.10: the host's next start does it, which a service set up for updates makes by itself.",
+    ]);
   }, 60_000);
 
   // Readline mode needs a terminal, which util-linux's `script` gives it; macOS's
@@ -470,7 +502,6 @@ describe("a host's update, on a real start", () => {
       const exit = new Promise<number | null>((done) => host.once('close', (code) => done(code)));
       await until(() => out.includes('connectome-host (readline mode)'), 30_000, `readline mode starts (output: ${out.slice(-1500)})`);
       host.stdin!.write('/update restart\r');
-      // Its Web UI's server would keep the process, and with it the install's lock, if the stop left it up.
       expect(await exit).toBe(0);
       expect(out).toContain('Stopping to switch to 9.9.10: once it has stopped, start the host again, and that start does it.');
       expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update' });
@@ -485,14 +516,12 @@ describe('a slash command in batch mode', () => {
     const recipe = join(dir, 'recipe.json');
     writeFileSync(recipe, JSON.stringify(RECIPE));
     const asked: string[] = [];
-    // It answers after a moment, so /update's follow-up comes later than its first line.
     const registry = Bun.serve({ port: 0, fetch: async (request) => {
       asked.push(request.url);
       await Bun.sleep(300);
       return Response.json({ versions: {} });
     } });
     try {
-      // The notice's reads turned on, as a host's would be: a batch run still doesn't make them.
       const env: Record<string, string | undefined> = {
         ...process.env, ANTHROPIC_API_KEY: 'sk-test-update-commit', DATA_DIR: join(dir, 'data'),
         CONNECTOME_UPDATE_CHECK: '1', npm_config_registry: `http://127.0.0.1:${registry.port}`,
@@ -508,18 +537,14 @@ describe('a slash command in batch mode', () => {
       const lines = out.split('\n');
       const at = (start: string) => lines.findIndex((line) => line.startsWith(start));
       const last = (start: string) => lines.findLastIndex((line) => line.startsWith(start));
-      // /update's answer waits on its read of the registry, and comes before the next line.
       expect(at('No newer release is offered')).toBeGreaterThan(at('> /update'));
       expect(at('> /update bogus')).toBeGreaterThan(at('No newer release is offered'));
       expect(at('Usage: /update')).toBeGreaterThan(at('> /update bogus'));
       expect(at('> /update install')).toBeGreaterThan(at('Usage: /update'));
-      // Not an install, so Update's answer, its follow-up, is the refusal, and
-      // it comes before the batch's end though no line of input follows it.
       expect(at('Reading the registry, then installing')).toBeGreaterThan(at('> /update install'));
       expect(last("This host wasn't started through an install's entry point")).toBeGreaterThan(at('Reading the registry, then installing'));
       expect(at('Done.')).toBeGreaterThan(last("This host wasn't started through an install's entry point"));
       expect(code).toBe(0);
-      // /update's own read, and none on its own.
       expect(asked).toHaveLength(1);
     } finally {
       registry.stop(true);

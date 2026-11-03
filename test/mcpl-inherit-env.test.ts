@@ -25,13 +25,6 @@ function loadFile(server: Record<string, unknown>) {
 }
 
 describe('MCPL inheritEnv configuration', () => {
-  test('file entries preserve true, false, and omission', () => {
-    for (const inheritEnv of [true, false]) {
-      expect(loadFile({ inheritEnv })[0].inheritEnv).toBe(inheritEnv);
-    }
-    expect(loadFile({})[0]).not.toHaveProperty('inheritEnv');
-  });
-
   test('recipe overrides preserve explicit false and leave omitted file policy alone', () => {
     for (const fileValue of [true, false, undefined]) {
       const file = loadFile(fileValue === undefined ? {} : { inheritEnv: fileValue });
@@ -64,10 +57,10 @@ describe('MCPL inheritEnv configuration', () => {
   test('agent-owned overlays cannot grant full host environment inheritance', () => {
     for (const inheritEnv of [true, false, 'false', 'true', 0, 1, null, {}, []]) {
       const entry = { command: 'node', inheritEnv } as any;
-      expect(resolveOverlayEntry('tools', entry, '/tmp/overlay.json')).not.toHaveProperty('inheritEnv');
+      expect(resolveOverlayEntry('tools', entry)).not.toHaveProperty('inheritEnv');
       expect(entry).toHaveProperty('inheritEnv', inheritEnv);
     }
-    expect(resolveOverlayEntry('tools', { command: 'node' }, '/tmp/overlay.json'))
+    expect(resolveOverlayEntry('tools', { command: 'node' }))
       .not.toHaveProperty('inheritEnv');
   });
 

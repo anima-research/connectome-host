@@ -1,12 +1,3 @@
-/**
- * FleetModule.requestPanel — the promise-based panel-op verb the WebUI's
- * fleet-scope routing rides on (WS panels and the HTTP ?scope= proxy).
- *
- * Uses the mock headless child, which answers panel-request with:
- *   op 'hang' → nothing (the timeout path, or the closed-connection path)
- *   op 'fail' → {ok:false, error, status:418} (error passthrough)
- *   others    → {ok:true, data:{op, echo:params}}
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -44,8 +35,8 @@ describe('FleetModule.requestPanel', () => {
   });
 
   afterAll(async () => {
-    try { await fleet.stop(); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { await fleet.stop(); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('round-trips op + params and resolves the child data', async () => {
@@ -54,7 +45,7 @@ describe('FleetModule.requestPanel', () => {
     expect(result.data).toEqual({ op: 'settings', echo: { agent: 'clerk' } });
   });
 
-  test('concurrent requests correlate independently', async () => {
+  test('concurrent requests correlate independently, and once answered neither waits on the connection\'s close', async () => {
     const [a, b] = await Promise.all([
       fleet.requestPanel('panelkid', 'health', { n: 1 }),
       fleet.requestPanel('panelkid', 'pins', { n: 2 }),
@@ -63,7 +54,6 @@ describe('FleetModule.requestPanel', () => {
     expect((a.data as { op: string }).op).toBe('health');
     expect(b.ok).toBe(true);
     expect((b.data as { op: string }).op).toBe('pins');
-    // Answered, neither waits on the connection's close any longer.
     const socket = fleet.getChildren().get('panelkid')!.socket!;
     const waiting = (fleet as unknown as { waitingOn: WeakMap<object, Set<unknown>> }).waitingOn.get(socket);
     expect(waiting?.size).toBe(0);
@@ -106,7 +96,7 @@ describe('FleetModule.requestPanel', () => {
 });
 
 describe("the children a switch's quiesce reaches", () => {
-  test("are those that may be running: one that has exited isn't asked, and one whose connection has closed is, and says why it can't answer", async () => {
+  test("are those that may be running: one that has exited isn't asked, and one whose connection has closed is asked once this host has connected to it again", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fkm-switch-reach-'));
     const fleet = makeFleet();
     try {
@@ -116,26 +106,18 @@ describe("the children a switch's quiesce reaches", () => {
       }
       expect(fleet.runningChildren()).toEqual([{ name: 'up' }, { name: 'gone' }]);
       await fleet.handleToolCall({ id: 'kill-gone', name: 'kill', input: { name: 'gone' } });
-      // Its entry stays, with the status it ended with.
       expect(fleet.getChildren().get('gone')?.status).toBe('exited');
       expect(fleet.runningChildren()).toEqual([{ name: 'up' }]);
-      // Of the four statuses, starting and ready may be running; crashed and
-      // exited can't be.
       const gone = fleet.getChildren().get('gone') as { status: string };
       for (const [status, listed] of [['starting', true], ['crashed', false], ['ready', true], ['exited', false]] as const) {
         gone.status = status;
         expect(fleet.runningChildren().some((c) => c.name === 'gone'), status).toBe(listed);
       }
-      // The requests waiting on a child are answered as soon as its
-      // connection closes, rather than when their wait is up, through one
-      // listener on the connection however many there are.
       const up = fleet.getChildren().get('up')!;
       const socket = up.socket!;
       const listeners = socket.listenerCount('close');
       const pending = Array.from({ length: 12 }, () => fleet.requestPanel('up', 'hang', undefined, 20_000));
       expect(socket.listenerCount('close')).toBe(listeners + 1);
-      // A ready child whose connection closes, its exit not yet seen, may be
-      // mid-turn: the switch asks it, and hears why it can't answer.
       socket.destroy();
       for (const answer of await Promise.all(pending)) {
         expect(answer).toEqual({
@@ -145,13 +127,12 @@ describe("the children a switch's quiesce reaches", () => {
           status: 502,
         });
       }
-      await new Promise<void>((done) => { const poll = setInterval(() => { if (up.socket === null) { clearInterval(poll); done(); } }, 5); });
+      await new Promise<void>((done) => { const poll = setInterval(() => { if (up.socket !== null && up.socket !== socket) { clearInterval(poll); done(); } }, 5); });
       expect(fleet.runningChildren()).toEqual([{ name: 'up' }]);
       const answer = await fleet.requestSwitch('up', { op: 'quiesce', to: '9.9.9', waitMs: 0 }, 5_000);
-      expect(answer).toMatchObject({ ok: false, status: 502 });
-      expect(answer.error).toContain("child 'up' is ready, but its connection to this host has closed and its exit hasn't been seen yet");
+      expect(answer).toMatchObject({ ok: true, data: { drained: false, echo: { op: 'quiesce', to: '9.9.9', waitMs: 0 } } });
     } finally {
-      try { await fleet.stop(); } catch { /* noop */ }
+      try { await fleet.stop(); } catch { }
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);

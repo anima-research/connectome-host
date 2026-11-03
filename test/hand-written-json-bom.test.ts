@@ -1,11 +1,3 @@
-/**
- * A JSON file a person writes or edits by hand, saved by an editor with a
- * leading UTF-8 byte order mark (U+FEFF), reads as the same file without
- * it, through each loader that reads one: the recipe, the MCPL servers
- * file and the agent overlay, with their saves, the Anthropic credentials
- * file, with its write-back, and the observer grants. Without the skip,
- * `JSON.parse` refuses the mark on Bun and Node alike.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +14,6 @@ const BOM = '\uFEFF';
 const dirs: string[] = [];
 afterEach(() => { while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true }); });
 
-/** A path in a fresh directory, with `value`'s JSON written there after a byte order mark. */
 function marked(name: string, value: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'hand-written-json-'));
   dirs.push(dir);
@@ -36,7 +27,6 @@ describe('parseHandWrittenJson', () => {
     expect(parseHandWrittenJson(`${BOM}{"a":1}`)).toEqual({ a: 1 });
     expect(parseHandWrittenJson('{"a":1}')).toEqual({ a: 1 });
     expect(() => parseHandWrittenJson(`${BOM}${BOM}{"a":1}`)).toThrow(SyntaxError);
-    // A mark anywhere but first is the text's own, as JSON.parse reads it.
     expect(parseHandWrittenJson(`{"a":"${BOM}"}`)).toEqual({ a: BOM });
     expect(() => parseHandWrittenJson(` ${BOM}{"a":1}`)).toThrow(SyntaxError);
   });
@@ -80,7 +70,6 @@ describe('a loader reads its file saved with a byte order mark', () => {
     const path = join(dir, 'creds.json');
     writeFileSync(path, JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 5 } }));
     const creds = new AnthropicOAuthCredentials({ credentialsFile: path });
-    // The operator re-saves the file in an editor that writes a mark, adding a key.
     writeFileSync(path, BOM + JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 5, scopes: ['user:inference'] }, note: 'kept' }));
     creds.setToken('pasted');
     const written = readFileSync(path, 'utf-8');
@@ -151,7 +140,6 @@ describe('a running Web UI and a grants file saved with the mark', () => {
     registry.start();
     try {
       expect(registry.grants().map((g) => g.label)).toEqual(['x', 'z']);
-      // The operator removes x and their editor saves the file with a mark.
       writeFileSync(path, BOM + JSON.stringify({ observers: [grant('Z', 'z')] }, null, 2));
       later(path, 5);
       (registry as unknown as { check(): void }).check();
@@ -163,7 +151,7 @@ describe('a running Web UI and a grants file saved with the mark', () => {
 });
 
 describe("a recipe or credentials file that isn't JSON", () => {
-  // A value left unquoted, which the parser's message would quote.
+  // A value left unquoted, which JSON.parse's message would quote.
   const SECRET = 's3cretTokenValue';
   const unquoted = (dir: string, name: string, text: string): string => {
     const path = join(dir, name);

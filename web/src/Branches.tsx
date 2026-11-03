@@ -1,14 +1,3 @@
-/**
- * Branch panel — Chronicle branch lineage as a navigable tree.
- *
- * Opens from the header's branch chip into the same middle panel slot the
- * stream/usage views use. Rows are indented by fork ancestry (parentId +
- * branchPoint from Chronicle's branch records); the current branch is
- * highlighted, and checkout routes through the existing `/checkout` command
- * so undo/redo bookkeeping and workspace re-materialization stay on the one
- * audited path. Read-only for key-authenticated observers.
- */
-
 import { createMemo, For, Show } from 'solid-js';
 import type { BranchRow, OperatorLogEntryWire } from '@conhost/web/protocol';
 import { OperatorLogList } from './Surgery';
@@ -18,9 +7,6 @@ interface TreeRow {
   depth: number;
 }
 
-/** Fold the flat branch list into depth-first display order. Children sort
- *  by fork point (earliest first), then creation time. Orphans (parentId
- *  pointing at a pruned branch) surface as roots rather than vanishing. */
 function toTreeRows(branches: BranchRow[]): TreeRow[] {
   const byId = new Map(branches.map((b) => [b.id, b]));
   const children = new Map<string, BranchRow[]>();
@@ -37,8 +23,6 @@ function toTreeRows(branches: BranchRow[]): TreeRow[] {
   const byFork = (a: BranchRow, b: BranchRow): number =>
     (a.branchPoint ?? 0) - (b.branchPoint ?? 0) || a.created - b.created;
   const out: TreeRow[] = [];
-  // Healthy Chronicle lineage is a DAG, but this view must not hang the
-  // page on a corrupt store — guard against parentId cycles.
   const seen = new Set<string>();
   const visit = (b: BranchRow, depth: number): void => {
     if (seen.has(b.id)) return;
@@ -62,19 +46,16 @@ export function BranchPanel(props: {
   branches: BranchRow[];
   currentId: string | null;
   loading: boolean;
-  /** True for key-authenticated observers — checkout affordances hidden. */
   readOnly: boolean;
   onCheckout(name: string): void;
   onRefresh(): void;
   onClose(): void;
-  /** Durable operator-actions record; null when the host does not keep one. */
   operatorLog?: OperatorLogEntryWire[] | null;
   operatorLogPath?: string;
   operatorLogLoading?: boolean;
   onRefreshLog?(): void;
 }) {
   const rows = createMemo(() => toTreeRows(props.branches));
-  /** Branch names created by live surgery / undo carry their purpose as a prefix. */
   const kindOf = (name: string): string | null => {
     const prefix = name.split('/')[0];
     return prefix === 'rollback' || prefix === 'suppress' || prefix === 'undo' || prefix === 'undo-msgs'
@@ -87,8 +68,6 @@ export function BranchPanel(props: {
         <span class="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">branches</span>
         <span class="text-neutral-500 text-xs">{props.branches.length || ''}</span>
         <div class="ml-auto flex gap-1">
-          {/* Not disabled while loading: a server-side listing error leaves
-              `loading` latched, and re-clicking is the recovery path. */}
           <button
             type="button"
             class="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded text-xs"

@@ -8,12 +8,14 @@
  *
  * It copies the install's code into the install root as its first release,
  * points `current` at the release, records the data directory the install
- * serves and any state kept outside it, which each update copies with it, and writes the entry
- * point, in that order, so a record always has a `current`. It then checks
- * that the service restarts the host when it exits with 75, as a switch's
- * restart does, and with 1, as a trial that ends before its commit does.
- * Nothing it does touches a running host: the service starts through the
- * entry point once its unit runs it.
+ * serves and any state kept outside it, which each update copies with it,
+ * and writes the entry point and, beside it, the install's own command,
+ * `connectome`. It then checks that each systemd service it finds running
+ * from this directory restarts the host when it exits with 75, as a
+ * switch's restart does, and with 1, as a trial that ends before its commit
+ * does, and where it finds none, or can't ask systemd, it says what the
+ * service needs. Nothing it does touches a running host: the
+ * service starts through the entry point once its unit runs it.
  *
  * Run again, it finishes whatever a run cut off left undone, and changes
  * nothing an earlier run finished: the release `current` names stays. With
@@ -22,22 +24,23 @@
  */
 import {
   existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync,
-  writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ContractError, ENTRY_POINT, RESTART_EXIT_CODE, installPaths, moveCurrent, readCurrent, readJournal, readRecord,
-  realOrResolved, releaseDir, writeJsonAtomic,
+  ContractError, ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, RESTART_EXIT_CODE, WRITE_RECORD_AGAIN, installPaths, moveCurrent,
+  copyShows, readCurrent, readJournal,
+  readRecord, realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic,
   type InstallRecord, type JournalLine,
 } from './contract.js';
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
+import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder } from './launcher.js';
+import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 
 export { ENTRY_POINT };
 
-/** What setup copies of the install as a release. */
 const RELEASE_FILES = ['package.json', 'package-lock.json', 'bun.lock', 'bun.lockb', 'node_modules'];
 
 export function entryPointText(): string {
@@ -66,8 +69,11 @@ export function entryPointText(): string {
   ].join('\n');
 }
 
-/** This package's own directory, and the install that holds it in its
- *  node_modules, or null for a package not installed there, such as a clone. */
+function setupCommand(install: string, dataDir: string, root: string): string {
+  return `cd ${shellWord(install)} && DATA_DIR=${shellWord(dataDir)} bun --no-env-file ` +
+    `${join('node_modules', PACKAGE, 'src', 'update', 'setup.ts')} --root ${shellWord(root)}`;
+}
+
 export function installHolding(hostRoot: string): string | null {
   let dir = hostRoot;
   while (dirname(dir) !== dir) {
@@ -77,13 +83,13 @@ export function installHolding(hostRoot: string): string | null {
   return null;
 }
 
-/** Each link in `install`'s node_modules that a release copied from it
- *  wouldn't hold the target of: one to an absolute path, or one that leads
- *  out of what setup copies. Each is named by its path in the install and
- *  the target as written. */
+function notInstalled(hostRoot: string): string {
+  return `This connectome-host (${hostRoot}) isn't installed in a node_modules. Setup makes an npm install update ` +
+    'itself; a clone keeps the hand procedure in docs/DEPLOYMENTS.md.';
+}
+
 export function linksOutside(install: string): string[] {
   const modules = join(install, 'node_modules');
-  // Each as written and as the filesystem resolves it.
   const roots = [modules, realOrResolved(modules)];
   const copied = RELEASE_FILES.flatMap((name) => [join(install, name), realOrResolved(join(install, name))]);
   const found: string[] = [];
@@ -95,13 +101,10 @@ export function linksOutside(install: string): string[] {
         walk(path);
       } else if (stat.isSymbolicLink()) {
         const target = readlinkSync(path);
-        // Where it leads through every link on the way, or for one that
-        // leads nowhere, where it points.
         let at = resolve(dirname(path), target);
         try {
           at = realpathSync(path);
         } catch {
-          // A dangling link: judged by where it points.
         }
         if (isAbsolute(target) || !(roots.some((top) => isUnder(at, top)) || copied.includes(at))) {
           found.push(`${relative(install, path)} links to ${target}`);
@@ -113,34 +116,21 @@ export function linksOutside(install: string): string[] {
   return found.sort();
 }
 
-/** A service unit run from the directory setup runs in, and whether systemd
- *  restarts the host it runs both when the host exits with RESTART_EXIT_CODE,
- *  as a switch's restart does, and when it exits with 1, as a trial that
- *  ends before its commit does, so its fallback runs. */
 export interface ServiceUnit {
   id: string;
-  /** The settings that decide it, as systemd shows them. */
   settings: string;
   restarts: boolean;
 }
 
-/** What setup learns of the service units: see systemdUnits. */
 export interface ServiceUnits {
   found: ServiceUnit[];
   unasked: string[];
   unresolved: string[];
-  /** Units that set no working directory, when setup's is their manager's
-   *  default, where they run. */
   defaulted: string[];
 }
 
-/** The exit statuses an update needs the service to restart on: a switch's,
- *  and a failed trial's. */
 const RESTART_ON = [String(RESTART_EXIT_CODE), '1'];
 
-/** The home `file`, /etc/passwd, gives the user `name`, or null where it
- *  names none or can't be read, as for a user another source of accounts
- *  serves. */
 export function passwdHome(name: string, file = '/etc/passwd'): string | null {
   try {
     const line = readFileSync(file, 'utf-8').split('\n').map((entry) => entry.split(':')).find((f) => f[0] === name);
@@ -150,17 +140,12 @@ export function passwdHome(name: string, file = '/etc/passwd'): string | null {
   }
 }
 
-/** What systemd's user and system managers say of their service units: those
- *  run from `cwd`, which manager couldn't be asked, and the units whose
- *  working directory this user can't resolve, such as one under /root or
- *  /var/lib/private, which may or may not be `cwd` reached another way. A
- *  unit that sets none runs in its manager's default, which `systemctl show`
- *  gives as the user's home marked `!` for the user manager, and as nothing
- *  for the system's, whose default is /. Most units in a home are others',
- *  so one there is `defaulted` rather than found when `cwd` is that default.
+/** A systemd unit that sets no working directory runs in its manager's
+ *  default, which `systemctl show` gives as the user's home marked `!` for
+ *  the user manager, and as nothing for the system's, whose default is /.
  *  One that sets ~ runs in its user's home: this user's for the user
- *  manager, and for the system's, its User='s, root's when it names none,
- *  as `homeOf` finds it. Only units systemd has loaded are seen. */
+ *  manager, and for the system's, its User='s, root's when it names none.
+ *  Only units systemd has loaded are seen. */
 export function systemdUnits(cwd: string, run = (args: string[]) =>
   Bun.spawnSync(['systemctl', ...args], { stdout: 'pipe', stderr: 'pipe' }), home = homedir(),
 homeOf = passwdHome): ServiceUnits {
@@ -169,8 +154,6 @@ homeOf = passwdHome): ServiceUnits {
   const unresolved: string[] = [];
   const defaulted: string[] = [];
   const here = realOrResolved(cwd);
-  // The home as a path to compare, so one given with a trailing slash or
-  // through a link still matches what systemctl shows.
   const realOrNull = (path: string) => {
     try {
       return realOrResolved(path);
@@ -227,9 +210,7 @@ homeOf = passwdHome): ServiceUnits {
       const restart = fields.get('Restart') || 'no';
       const statusesOf = (key: string) => (fields.get(key) ?? '').split(/\s+/).filter(Boolean);
       // systemd's rules for an exit with `code`: a prevented status never
-      // restarts, and a forced one restarts whatever Restart= says. A status
-      // in both is read as prevented, the side on which a wrong answer costs
-      // an edit rather than a stopped host.
+      // restarts, and a forced one restarts whatever Restart= says.
       const restartsOn = (code: string) => {
         if (statusesOf('RestartPreventExitStatus').includes(code)) return false;
         if (statusesOf('RestartForceExitStatus').includes(code)) return true;
@@ -249,29 +230,20 @@ homeOf = passwdHome): ServiceUnits {
 }
 
 export interface SetupOptions {
-  /** The directory the service runs the host in. */
   cwd: string;
-  /** The data directory a host started there serves. */
   dataDir: string;
   root: string;
-  /** State kept outside the data directory, which each update copies with it, or null to keep what
-   *  an earlier run recorded. */
   extraState: string[] | null;
-  /** This package's directory. */
   hostRoot: string;
   say(line: string): void;
-  /** The service units run from a directory (systemdUnits). */
   units(cwd: string): ServiceUnits;
 }
 
-/** Whether `root` holds nothing, or nothing but what setup itself writes, as
- *  a run cut off before its install record leaves it. Setup makes its
- *  releases directory first, so a root without one holds nothing of setup's. */
 function setupsOwn(root: string): boolean {
   if (!existsSync(root)) return true;
   const names = readdirSync(root);
   if (names.length === 0) return true;
-  const own = new Set(['releases', 'install.json.tmp', 'current', 'current.tmp', ENTRY_POINT, `${ENTRY_POINT}.tmp`]);
+  const own = new Set(['releases', 'install.json.tmp', 'current', 'current.tmp']);
   if (!names.includes('releases') || !names.every((name) => own.has(name))) return false;
   const releases = installPaths(root).releases;
   return readdirSync(releases).every((name) => name.endsWith('.tmp') || existsSync(join(releases, name, HOST_ENTRY)));
@@ -281,23 +253,35 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** What to do about `error`, met looking at a path: what `permission` says
- *  for one a permission causes, which permissions mend; for any other, such
- *  as a file where a directory should be or a loop of links, the path itself
- *  is what's wrong. */
 function lookAdvice(error: unknown, permission: string): string {
   const code = (error as NodeJS.ErrnoException).code;
   return code === 'EACCES' || code === 'EPERM' ? `${permission}, and run setup again.`
     : 'Repair what that path runs through, and run setup again.';
 }
 
-/** `path` as a shell reads it, quoted when it holds anything but plain characters. */
 function shellWord(path: string): string {
   return /^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, "'\\''")}'`;
 }
 
-/** Set an install up, or finish a setup a run cut off, or record its extra
- *  state again. */
+/** The release `current` names, read from its link alone, so a link whose release is gone still says it: only a
+ *  target of the form `releases/<version>`, which is how a switch writes it. */
+function linkedRelease(current: string): string | null {
+  let target: string;
+  try {
+    target = readlinkSync(current);
+  } catch {
+    return null;
+  }
+  const match = /^releases\/([^/]+)$/.exec(target);
+  return match === null || match[1] === '.' || match[1] === '..' ? null : match[1];
+}
+
+/** The end of setup's refusals of a record: what this run did and was given, then how to put the record right. */
+function recordAgain(dataDir: string): string {
+  return `Setup has changed nothing. It was given the data directory ${dataDir}, which belongs in the record only if ` +
+    `its host was started with it. ${WRITE_RECORD_AGAIN}`;
+}
+
 export function setup(options: SetupOptions): void {
   const { say } = options;
   const root = resolve(options.root);
@@ -334,9 +318,6 @@ export function setup(options: SetupOptions): void {
     }
   }
 
-  const writeAgain = `Write it again as {"v": 1, "dataDir": ${JSON.stringify(dataDir)}, "extraState": []}, listing in ` +
-    'extraState the paths it listed, where they can still be read, and any other state kept outside the data ' +
-    'directory, and run setup again.';
   let existing: InstallRecord | null;
   try {
     existing = readRecord<InstallRecord>(paths.install, 'install record');
@@ -345,27 +326,110 @@ export function setup(options: SetupOptions): void {
       throw new ContractError(`The install record at ${paths.install} can't be read: ${errorText(error)}. Make it a ` +
         'file this user can read, and run setup again.');
     }
-    // One of another version is a release's that reads it; this one doesn't.
     let version: unknown;
     try {
       version = (JSON.parse(readFileSync(paths.install, 'utf-8')) as { v?: unknown } | null)?.v;
     } catch {
-      // Its content can't be read: the advice below is for it.
     }
     if (version !== undefined && version !== 1) throw error;
-    throw new ContractError(`${error.message.replace(/\.+$/, '')}. ${writeAgain}`);
+    throw new ContractError(`${error.message.replace(/\.+$/, '')}. ${recordAgain(dataDir)}`);
   }
-  if (existing !== null && typeof existing.dataDir !== 'string') {
-    throw new ContractError(`The install record at ${paths.install} names no data directory this release can read. ${writeAgain}`);
+  if (existing !== null && (typeof existing.dataDir !== 'string' || existing.dataDir === '')) {
+    throw new ContractError(`The install record at ${paths.install} names no data directory this release can read. ${recordAgain(dataDir)}`);
   }
-  // Setup makes its releases directory first and the entry point after the
-  // record, and writes no journal line, which only the launcher, started by
-  // the entry point, writes. So in a root of setup's, either there with no
-  // record is an install that ran: its record is gone.
-  if (existing === null && existsSync(paths.releases) &&
-    (existsSync(paths.journal) || existsSync(join(root, ENTRY_POINT)))) {
-    throw new ContractError(`The install at ${root} has ${existsSync(paths.journal) ? 'a journal' : 'its entry point'} ` +
-      `and no record at ${paths.install}, so its record is gone, and with it the extra state it listed. ${writeAgain}`);
+  const writtenAfterRecord: [string, string][] = [
+    [paths.journal, `${basename(paths.journal)}, its update journal,`],
+    ...[ENTRY_POINT, INSTALL_COMMAND, `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`].map((name): [string, string] =>
+      [join(root, name), `${name}, which setup writes only after the record,`]),
+  ];
+  const shown = existing !== null ? undefined : writtenAfterRecord.find(([path]) => exists(path))?.[1];
+  if (shown !== undefined && exists(paths.releases)) {
+    throw new ContractError(`The install at ${root} has ${shown} and no record at ${paths.install}, so its record ` +
+      'is gone. The record is what\'s gone: it named the data directory the install serves and the places of state ' +
+      `kept outside it that each update copies, and setup hasn't touched those. ${recordAgain(dataDir)}`);
+  }
+  if (shown !== undefined) {
+    const seen = `${root} has ${shown} but no record at ${paths.install} and no ${paths.releases}, so setup can't tell ` +
+      'whether it made it, and it can\'t put an install back in place without its releases. Setup has changed ' +
+      `nothing, and the data directory it was given, ${dataDir}, is outside it.`;
+    const stopped = (account: string): ContractError =>
+      new ContractError(`${seen} ${account} If setup didn't make it, choose another --root.`);
+    let lines: JournalLine[] = [];
+    let unread: string | null = null;
+    try {
+      lines = readJournal(root);
+    } catch (error) {
+      unread = errorText(error).replace(/\.+$/, '');
+    }
+    const journalThere = lstatSync(paths.journal, { throwIfNoEntry: false }) !== undefined;
+    const end = lines.at(-1);
+    const committed = end !== undefined && end.step === 'commit' && end.outcome === 'ok' ? end.to : null;
+    const linked = linkedRelease(paths.current);
+    const named = linked === null ? 'It has no current that names a release.' : `Its current names ${linked}.`;
+    const backUp = 'and a fresh install starts with no journal to finish one from. Don\'t start any release on that ' +
+      `data, and don't move ${root} aside and run setup again. If you have ${paths.releases} in a backup, put it back: ` +
+      'setup then takes the root for an install whose record is gone, and says how to write the record back.';
+    if (unread !== null) {
+      throw stopped(`${named} Its journal can't be read (${unread}), so setup can't tell from it whether an update or a ` +
+        `Go back stopped part-way, ${backUp}`);
+    }
+    if (journalThere && end === undefined) {
+      throw stopped(`${named} Setup reads no whole line in its journal, so it can't tell from it whether an update or ` +
+        `a Go back stopped part-way, ${backUp}`);
+    }
+    if (end !== undefined && committed === null) {
+      throw stopped(`${named} Its journal's last line, a ${end.step} (${end.outcome}), isn't an ok commit, so setup ` +
+        `can't tell from it whether an update or a Go back stopped part-way, ${backUp}`);
+    }
+    const there = lstatSync(paths.current, { throwIfNoEntry: false });
+    const pointAt = (release: string): string => {
+      const ln = `${shellWord(join('releases', release))} ${shellWord(paths.current)}`;
+      return there === undefined ? `point current at it with \`ln -s ${ln}\``
+        : there.isSymbolicLink() ? `point current at it with \`ln -sfn ${ln}\``
+        : `move ${paths.current} aside, and point current at it with \`ln -s ${ln}\``;
+    };
+    const afresh = 'and run setup again as before: it then says how to make the install afresh from exactly that ' +
+      'release.';
+    const install = installHolding(realpathSync(options.hostRoot));
+    const hold = (known: string, release: string): string => 'Until you know which release did, and that no update ' +
+      'or Go back stopped part-way on it, don\'t start any release on that data, and don\'t move ' + root + ' aside and ' +
+      'run setup again. ' + (install === null ? notInstalled(options.hostRoot)
+        : `If setup made it and you know${known}, ${pointAt(release)} ${afresh}`);
+    if (linked !== null && committed !== null && linked !== committed) {
+      throw stopped(`Its current names ${linked}, and its journal's last line, an ok commit, names ${committed}, so ` +
+        `setup can't tell which release its data last committed on. ${hold(` it's ${committed}`, committed)}`);
+    }
+    const last = linked ?? committed;
+    if (last === null) {
+      throw stopped(`${named} Nothing setup can read names the release its data last committed on. ` +
+        hold(' which', '<that release>'));
+    }
+    if (install === null) throw stopped(notInstalled(options.hostRoot));
+    const ifMade = journalThere ? 'If setup made it' : 'It has no journal: an install has none until an update or a ' +
+      'Go back is first asked of it, and a journal can be lost with the record, so its absence doesn\'t show whether ' +
+      'one ran on that data. If one did, ' +
+      `don't start any release on that data, and don't move ${root} aside and run setup again, until you know that ` +
+      'its current names the release that last committed on it and that none stopped part-way. If setup made it, ' +
+      'and none ran or you know that';
+    const version = (JSON.parse(readFileSync(join(options.hostRoot, 'package.json'), 'utf-8')) as { version: string }).version;
+    const pkg = shellWord(`@animalabs/connectome-host@${last}`);
+    const exactly = last === version ? ', the release that last committed on its data and the one setup here installs: '
+      : `, the release that last committed on its data, and setup here installs ${version}: install exactly ${last} in ` +
+        `${install} first, with \`cd ${shellWord(install)} && npm install ${pkg}\` or \`cd ${shellWord(install)} && bun ` +
+        `--no-env-file add ${pkg}\`, as docs/DEPLOYMENTS.md does, so that ` +
+        `the setup below is ${last}'s own, since any other release would start on that data with no copy of it ` +
+        'behind; then ';
+    const setupThere = setupCommand(install, dataDir, root);
+    const names = linked === null ? `${named} ${ifMade}, its journal's last line, an ok commit, names ${last}`
+      : `${ifMade}, its current names ${last}`;
+    throw new ContractError(`${seen} ${names}${exactly}stop its service, move ${root} ` +
+      `aside, keeping it until the new install runs, and run \`${setupThere}\`, with DATA_DIR the data directory its ` +
+      `host was started with if that isn't ${dataDir}, and --extra-state PATH added for each place of state kept ` +
+      'outside the data directory that\'s there now: setup then makes the install afresh there, serving that data ' +
+      'directory, with no journal or copy, so with no Go back, and starting the service again starts the new install, ' +
+      `since its path is the same. Those places: a setup run that finished printed them after "${EXTRA_STATE_LINE}", ` +
+      `and the moved root's copy/copy.json, if it has updated, ${copyShows('which aren\'t given')} If setup didn't make ` +
+      'it, choose another --root.');
   }
   const link = `\`ln -sfn ${shellWord(join('releases', '<that release>'))} ${shellWord(paths.current)}\``;
   const current = (): string | null => {
@@ -374,8 +438,7 @@ export function setup(options: SetupOptions): void {
       if (name !== null) releaseDir(root, name);
       return name;
     } catch (error) {
-      // readlink's EINVAL: it's there, and not a link. A ContractError: a link
-      // whose last part isn't a release's name. Anything else is its own.
+      // readlink's EINVAL: it's there, and not a link.
       const isLink = error instanceof ContractError;
       if (!isLink && (error as NodeJS.ErrnoException).code !== 'EINVAL') {
         throw new ContractError(`${paths.current} can't be looked at: ${errorText(error)}. ` +
@@ -401,30 +464,19 @@ export function setup(options: SetupOptions): void {
   }
   if (existing !== null && current() === null) {
     const lines = readJournal(root);
-    // Each line names the release current named when it was written: a
-    // commit's or a fallback's `to`, any other's `from`. The last line's is
-    // the latest known.
+    const currentWhenWritten = (line: JournalLine) =>
+      (line.step === 'commit' && line.outcome === 'ok') || line.step === 'fallback' ? line.to : line.from;
     const last = lines.at(-1);
-    const committed = last === undefined ? null
-      : (last.step === 'commit' && last.outcome === 'ok') || last.step === 'fallback' ? last.to : last.from;
-    // A trial after the last commit line may have committed with no line of
-    // its own, since a commit moves current first, while every line after it
-    // was written with current naming its release. Its own fallback rules it
-    // out: a fallback runs only while current names another release, which
-    // its line's `to` names, and after one that failed, nothing starts.
+    const committed = last === undefined ? null : currentWhenWritten(last);
     let at = -1;
     lines.forEach((line, i) => { if (line.step === 'commit' && line.outcome === 'ok') at = i; });
-    const before = (line: JournalLine) => line.step === 'fallback' ? line.to : line.from;
-    const trials = lines.slice(at + 1).filter((line, i, after) => line.step === 'trial-start' && line.outcome === 'ok' &&
-      after.slice(i + 1).every((l) => before(l) === line.to));
-    const maybe = [...new Set(trials.map((line) => line.to))].filter((release) => release !== committed);
+    const mayHaveCommitted = lines.slice(at + 1).filter((line, i, after) => line.step === 'trial-start' &&
+      line.outcome === 'ok' && after.slice(i + 1).every((l) => currentWhenWritten(l) === line.to));
+    const maybe = [...new Set(mayHaveCommitted.map((line) => line.to))].filter((release) => release !== committed);
     let named: string;
     if (committed !== null) {
       named = `${committed}, which the journal's last line leaves it naming`;
     } else {
-      // With no line, no update has run: what releases/ holds is setup's
-      // release, unless it's gone, and any the host installed for a request
-      // still to come.
       let releases: string[];
       try {
         releases = readdirSync(paths.releases).filter((name) => !name.endsWith('.tmp')).sort();
@@ -454,7 +506,7 @@ export function setup(options: SetupOptions): void {
       `${shellWord(paths.current)}\`, and run setup again.`);
   }
   if (existing === null && !setupsOwn(root)) {
-    throw new ContractError(`${root} isn't empty, and holds no install record, so it isn't an install setup made. ` +
+    throw new ContractError(`${root} isn't empty, and holds no install record, so setup doesn't take it for an install it made. ` +
       'Choose another --root.');
   }
   const extraState = given ?? recorded ?? [];
@@ -482,10 +534,7 @@ export function setup(options: SetupOptions): void {
     }
   }
   const install = installHolding(realpathSync(options.hostRoot));
-  if (install === null) {
-    throw new ContractError(`This connectome-host (${options.hostRoot}) isn't installed in a node_modules. Setup makes an npm ` +
-      'install update itself; a clone keeps the hand procedure in docs/DEPLOYMENTS.md.');
-  }
+  if (install === null) throw new ContractError(notInstalled(options.hostRoot));
   const inside = RELEASE_FILES.map((name) => join(install, name)).find((path) => isUnder(rootReal, realOrResolved(path)));
   if (inside !== undefined) {
     throw new ContractError(`The install root ${rootReal} is inside ${inside}, which setup copies as the release, so the copy ` +
@@ -499,8 +548,6 @@ export function setup(options: SetupOptions): void {
   }
   const version = (JSON.parse(readFileSync(join(options.hostRoot, 'package.json'), 'utf-8')) as { version: string }).version;
   const release = releaseDir(root, version);
-  // A first run, or one finishing a run cut off before its record: the
-  // release, then current, then the record, so a record always has a current.
   const settingUp = existing === null;
   if (settingUp && current() === null) {
     if (!existsSync(release)) {
@@ -526,15 +573,9 @@ export function setup(options: SetupOptions): void {
     // sync may not have happened, and the record must not outlive it.
     syncPath(root);
   }
-  // The entry point loads the launcher through current, and the launcher
-  // starts the host of releases/<the release current names>: a current that
-  // leads anywhere else, or a release with no host, would start nothing, or
-  // the wrong thing.
   const running = current();
   if (running !== null) {
     const release = releaseDir(root, running);
-    // Followed through any link, as the launcher's start does: a link to
-    // nothing is no host.
     let host = true;
     try {
       statSync(join(release, HOST_ENTRY));
@@ -555,7 +596,6 @@ export function setup(options: SetupOptions): void {
     try {
       leads = realpathSync(paths.current);
     } catch (error) {
-      // A link to nothing leads nowhere; any other error is its own.
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'EACCES' || code === 'EPERM') {
         throw new ContractError(`${paths.current} can't be followed: ${errorText(error)}. Give this user search on ` +
@@ -574,21 +614,31 @@ export function setup(options: SetupOptions): void {
   }
   writeJsonAtomic(paths.install, { v: 1, dataDir: existing?.dataDir ?? dataDir, extraState } satisfies InstallRecord);
   const entry = join(root, ENTRY_POINT);
-  writeFileSync(`${entry}.tmp`, entryPointText());
-  syncPath(`${entry}.tmp`);
-  renameSync(`${entry}.tmp`, entry);
-  syncPath(root);
+  writeTextAtomic(entry, entryPointText());
+  const command = writeInstallCommand(root);
 
   if (settingUp) {
     say(`Set up ${root} as the install of ${readCurrent(root)} that serves ${dataDir}.`);
   } else {
     say(`The install at ${root} serves ${existing?.dataDir ?? dataDir} and runs ${readCurrent(root)}, as before.`);
   }
-  say(`State kept outside the data directory, which each update copies with it: ${extraState.join(', ') || 'none recorded ' +
-    '(pass --extra-state PATH for each place of it, such as an MCPL server\'s state, and for those already recorded too, ' +
-    'since a run given any records only those)'}.`);
+  const served = existing?.dataDir ?? dataDir;
+  say(`${EXTRA_STATE_LINE}: an update copies the data directory, ${served}, and outside it only the places listed ` +
+    'here, beside those it finds itself (mcpl-servers.json, the agent overlay and its fleet children\'s data ' +
+    'directories):');
+  for (const place of extraState.length > 0 ? extraState : ['none']) say(`  ${place}`);
+  say(`${LIST_A_PLACE}, such as an MCPL server's state, run setup again with every place, the ones listed here too: ` +
+    `\`${setupCommand(install, served, root)}${extraState.map((place) => ` --extra-state ${shellWord(place)}`).join('')} ` +
+    '--extra-state <another place>`, one --extra-state for each. It can run while the service runs: it leaves the ' +
+    'running host as it is, and the next update copies the places it records.');
   say(`The service starts the host with \`${shellWord(process.execPath)} ${shellWord(entry)}\`, followed by the arguments ` +
     `it gives the host${settingUp ? ' now; set that, and restart it' : ''}.`);
+  say(`This install's own command is ${command.path}.`);
+  if (command.pathLine !== null) {
+    say('To type it as `connectome` from anywhere, put its directory on your PATH, and in ~/.bashrc (or your ' +
+      'shell\'s own file) to keep it there:');
+    say(`  ${command.pathLine}`);
+  }
   const units = options.units(options.cwd);
   const needed = `The service must restart the host when it exits with ${RESTART_EXIT_CODE}, as a switch's restart does, ` +
     'and with 1, as a trial that ends before its commit does, so its fallback runs: under systemd, each of the two ' +

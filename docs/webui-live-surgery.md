@@ -70,7 +70,10 @@ line per operator mutation:
 `at, kind, agent, requester{via,name}, note, params, result | error`. Kinds:
 `rollback`, `suppress`, `hide`, `undo-turn`, `redo-turn`, `unstick`, `nudge`,
 `settings-update`, `settings-reset`, `settings-cancel-transition`,
-`quiesce`, `resume`. Refusals are logged too (with `error`). The branch
+`quiesce`, `resume`. Refusals are logged too (with `error`), except a
+change refused before it reaches its handler: one sent during a session
+switch, or one chosen in a session other than the one whose framework is
+open. The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.
@@ -81,11 +84,16 @@ cannot mutate, so they only appear for read requests that fail).
 
 ## Wire additions
 
-Client → server: `rollback {messageId, agent?, note?}`, `suppress
-{messageIds, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
+Client → server: `rollback {messageId, sessionId, agent?, note?}`, `suppress
+{messageIds, sessionId, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
 `request-host-mode`, `request-operator-log {limit?}`.
 Server → client: `surgery-result`, `host-mode`, `operator-log`;
-`welcome.features`, `welcome.hostMode`. After a successful surgery the
+`welcome.features`, `welcome.hostMode`. `sessionId` is the session whose
+messages the operator chose from, as the server stamped it on them: the
+welcome's `session` for the transcript, and the `/debug/context` answer's
+`sessionId` for the Context view, each the session whose framework produced
+them. A rollback or suppress chosen in a session other than the one whose
+framework is open is answered `ok: false`, saying nothing changed. After a successful surgery the
 server does what `/checkout` does: `branch-changed` to every client whose
 scopes hold `messages`, and a fresh welcome for every client, as its scopes
 allow.

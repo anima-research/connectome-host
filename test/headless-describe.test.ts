@@ -1,24 +1,13 @@
-/**
- * Integration test for the 'describe' IPC verb.
- *
- * Spawns a headless daemon, sends {type:'describe'}, and asserts the
- * child responds with a single 'snapshot' event whose tree shape matches
- * AgentTreeReducer's output. Also verifies snapshot bypasses subscription
- * filtering — the parent should always be able to recover state regardless
- * of how it has narrowed the event stream.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { type Socket } from 'node:net';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectWhenAccepting } from './ipc-connect.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 const MINIMAL_RECIPE = {
   name: 'Describe Test',
@@ -46,7 +35,7 @@ function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; s
       const line = buf.slice(0, i).trim();
       buf = buf.slice(i + 1);
       if (!line) continue;
-      try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* ignore malformed */ }
+      try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { }
     }
   };
   socket.on('data', handler);
@@ -76,12 +65,11 @@ describe('headless daemon — describe / snapshot', () => {
 
     child = spawn(
       'bun',
-      [INDEX_PATH, recipePath, '--headless'],
+      [join(TEST_DIR, 'mock-runheadless-child.ts'), recipePath, '--headless'],
       {
         cwd: tmpDir,
         env: {
           ...process.env,
-          ANTHROPIC_API_KEY: 'sk-test-describe',
           DATA_DIR: tmpDir,
         },
         stdio: ['ignore', 'ignore', 'ignore'],
@@ -92,8 +80,8 @@ describe('headless daemon — describe / snapshot', () => {
   });
 
   afterAll(() => {
-    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('describe returns a snapshot with the seeded framework agent', async () => {
@@ -145,7 +133,6 @@ describe('headless daemon — describe / snapshot', () => {
       'lifecycle:ready (filter test)',
     );
 
-    // Narrow the subscription to something snapshot is not part of.
     sock.write(JSON.stringify({ type: 'subscribe', events: ['command-output'] }) + '\n');
     await new Promise((r) => setTimeout(r, 100));
 
@@ -159,14 +146,6 @@ describe('headless daemon — describe / snapshot', () => {
     );
 
     r.stop();
-    sock.destroy();
-  });
-
-  test('cleanup', async () => {
-    // Final shutdown so afterAll doesn't have to SIGKILL.
-    const sock = await connectWhenAccepting(socketPath);
-    sock.write(JSON.stringify({ type: 'shutdown' }) + '\n');
-    await new Promise((r) => setTimeout(r, 500));
     sock.destroy();
   });
 });

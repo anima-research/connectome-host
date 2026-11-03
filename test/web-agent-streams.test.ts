@@ -1,11 +1,3 @@
-/**
- * Where the Web UI page shows each agent's stream (src/web/agent-streams.ts):
- * the main view's streaming message follows the conversation agent alone and
- * ends at every stream end, a turn a tool ended included, while the quiesce
- * re-pull runs at any agent's end. Each other agent's stream has a panel of
- * its own, the host's other framework agents' included. What a page builds
- * from frames follows its grant: the tree, and a tool call's state.
- */
 import { describe, expect, test } from 'bun:test';
 import {
   applyStreamEnded, applyTrace, conversationAgentOf, pickStreamSource, streamEventFor, toolCallState, treesShownFor,
@@ -53,8 +45,6 @@ describe('the main view', () => {
     });
   }
 
-  // The frame an observer without the scopes a stream-end trace needs gets
-  // in its place (src/modules/web-ui-observers.ts, streamEndedFor).
   test('a stream-ended frame ends the stream as its trace would: the conversation agent\'s message, another agent\'s re-pull only, and one naming no agent the view\'s', () => {
     const { calls, hooks } = recorder();
     applyStreamEnded('clerk', hooks, 'clerk');
@@ -121,15 +111,12 @@ describe('the panel for an agent\'s node', () => {
     expect(streamEventFor({ kind: 'child-event-all', childName: 'other' }, child)).toBeNull();
   });
 
-  // What a client without the scopes of a host agent's stream-end trace
-  // gets in its place (streamEndedFor), so the panel's last line shows.
   test("a stream-ended frame is its agent's panel's, as the stream-end trace would be", () => {
     const ended = { type: 'stream-ended', agentName: 'clerk-subconscious' };
     expect(streamEventFor({ kind: 'trace-agent', agentName: 'clerk-subconscious' }, ended)).toEqual(ended);
     expect(streamEventFor({ kind: 'trace-agent', agentName: 'clerk' }, ended)).toBeNull();
     expect(streamEventFor({ kind: 'child-event-all', childName: 'miner' }, ended)).toBeNull();
     expect(streamEventFor({ kind: 'peek', scope: 'research' }, ended)).toBeNull();
-    // A child's comes as a child-event, which its panels take like any other.
     const child = { type: 'child-event', childName: 'miner', event: { type: 'stream-ended', agentName: 'clerk' } };
     expect(streamEventFor({ kind: 'child-event-agent', childName: 'miner', agentName: 'clerk' }, child)).toBe(child.event);
   });

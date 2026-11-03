@@ -2,21 +2,11 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { handleCommand, createBranchState } from '../src/commands.js';
 import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
-
-// Regression tests for the QA-reported command family:
-// - first-token argument parsing truncated multi-word names on
-//   /checkpoint, /restore, /checkout, /session switch, /session delete
-//   (while /session rename accepted them — making renamed sessions
-//   unreachable by name);
-// - /session delete executed irreversibly with no confirmation;
-// - /mcp add on an existing server silently wiped its env vars;
-// - head-moving commands ran while a generation was in flight, letting
-//   the streaming reply commit onto the wrong branch (orphaned nodes);
-// - /budget displayed small values as "0k" (50 → "0k") while rejecting 0.
+import { clearAccountBindings, recordAccountBinding } from '../src/logging-adapter.js';
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
-function makeStubWorld(agentStatus: string | undefined = 'idle') {
+function makeStubWorld(agentStatus: string | null = 'idle') {
   const messagesByBranch = new Map<string, StubMessage[]>([['main', []]]);
   let currentName = 'main';
   let msgCounter = 0;
@@ -40,7 +30,7 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
 
   const agent = {
     name: 'stub-agent',
-    ...(agentStatus !== undefined ? { state: { status: agentStatus } } : {}),
+    ...(agentStatus !== null ? { state: { status: agentStatus } } : {}),
     getContextManager: () => cm,
   };
 
@@ -55,6 +45,8 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
+      getStore: () => ({ currentBranch: () => cm.currentBranch() }),
+      switchBranch: (name: string) => cm.switchBranch(name),
     },
     sessionManager: {
       listSessions: () => sessions,
@@ -152,7 +144,7 @@ describe('in-flight guard on head-moving commands', () => {
   });
 
   test('agents without state (stubs) are treated as idle', () => {
-    const { app, addMessage, text } = makeStubWorld(undefined);
+    const { app, addMessage, text } = makeStubWorld(null);
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
     expect(text(r)).toContain('Undoing');
@@ -202,11 +194,55 @@ describe('/budget honest display', () => {
     const r = handleCommand('/budget', app);
     expect(r.lines.map(l => l.text).join('\n')).toContain('a: 50 (last: 12');
   });
+
+  test("an agent whose thinking binds and whose window is set is told apart: the budget doesn't break its stream", () => {
+    const agent = (name: string, model: string, physicalWindowTokens?: number) => ({
+      name, model, physicalWindowTokens, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
+    });
+    const app = {
+      framework: {
+        getAgent: () => undefined,
+        getAllAgents: () => [
+          agent('bound', 'claude-opus-5-5', 1_000_000),
+          agent('unbound', 'claude-opus-4-8', 1_000_000),
+          agent('nowindow', 'claude-opus-5-5'),
+        ],
+        getAllModules: () => [],
+      },
+      branchState: createBranchState(),
+    } as any;
+    const listed = handleCommand('/budget', app).lines.map(l => l.text);
+    expect(listed.find(l => l.startsWith('  bound:'))).toContain("its stream doesn't break at this budget mid-turn: for its size, only before a request its 1.0M window can't hold");
+    for (const name of ['unbound', 'nowindow']) {
+      expect(listed.find(l => l.startsWith(`  ${name}:`))).not.toContain("doesn't break");
+    }
+    const set = handleCommand('/budget 200k', app).lines.map(l => l.text);
+    expect(set[0]).toBe('Stream budget set to 200.0k tokens for all agents.');
+    expect(set[1]).toContain("doesn't break the stream mid-turn for bound, whose thinking binds and whose window is set");
+    expect(set).toHaveLength(2);
+  });
+  test("on an account found to show thinking whose earlier conversation changed, the budget breaks a binding model's stream as any other", () => {
+    recordAccountBinding('claude-opus-5-5', 'shows');
+    try {
+      const app = {
+        framework: {
+          getAgent: () => undefined,
+          getAllAgents: () => [{
+            name: 'bound', model: 'claude-opus-5-5', physicalWindowTokens: 1_000_000, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
+          }],
+          getAllModules: () => [],
+        },
+        branchState: createBranchState(),
+      } as any;
+      expect(handleCommand('/budget', app).lines.map(l => l.text).find(l => l.startsWith('  bound:'))).not.toContain("doesn't break");
+      expect(handleCommand('/budget 200k', app).lines.map(l => l.text)).toEqual(['Stream budget set to 200.0k tokens for all agents.']);
+    } finally {
+      clearAccountBindings();
+    }
+  });
 });
 
 describe('/mcp add preserves env on overwrite', () => {
-  // handleMcp* read/write DEFAULT_CONFIG_PATH (cwd/mcpl-servers.json, which
-  // is gitignored). Skip rather than clobber if a real config exists.
   const hadFile = existsSync(DEFAULT_CONFIG_PATH);
   const original = hadFile ? readFileSync(DEFAULT_CONFIG_PATH, 'utf-8') : null;
 
@@ -235,5 +271,24 @@ describe('/mcp add preserves env on overwrite', () => {
     const saved = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8')).mcplServers;
     expect(saved.argtest.command).toBe('ls');
     expect(saved.argtest.args).toBeUndefined();
+  });
+});
+
+describe('/newtopic cut short by a stop', () => {
+  const CROSSED = 'Transition summary crossed a branch generation; reinitialize before retrying';
+  test('a reset that fails while the host is stopping says so and gives what the reset said; one that fails otherwise gives the failure', async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        resetHeadWindow: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${CROSSED}`
+        : `Topic reset failed: ${CROSSED}`);
+    }
   });
 });

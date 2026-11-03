@@ -1,16 +1,6 @@
-/**
- * Standard-recipe memory defaults (buildFrameworkStrategy).
- *
- * A recipe that omits strategy tuning must get the standard shape:
- * autobiographical + adaptiveResolution + kv-unified folding with the standard
- * block (cache prices matched to provider / cacheTtl / model) + a tail of 40%
- * of the budget + same-model compression + summaries voiced as the agent
- * itself. Explicit recipe values always win. DEFAULT_RECIPE leaves all of it
- * to these defaults, has an empty system prompt, and must not enable the
- * opt-in modules (subagents/lessons/retrieval).
- */
 import { describe, expect, test } from 'bun:test';
-import { buildFrameworkStrategy, standardKvUnifiedConfig } from '../src/framework-strategy.js';
+import { defaultTokenEstimator } from '@animalabs/context-manager';
+import { buildFrameworkStrategy, standardKvUnifiedConfig, strategyMessageCap } from '../src/framework-strategy.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { DEFAULT_RECIPE, validateRecipe } from '../src/recipe.js';
 
@@ -46,24 +36,18 @@ describe('standard-recipe memory defaults', () => {
       const block = standardKvUnifiedConfig(recipe(agent), model);
       return [block.policy.cacheReadPrice, block.policy.cacheWritePrice];
     };
-    // 1-hour cache (the default TTL): writes 2x; reads by model
     expect(prices({}, 'claude-opus-4-6')).toEqual([0.1, 2]);
     expect(prices({}, 'claude-opus-5-5')).toEqual([0.05, 2]);
     expect(prices({}, 'claude-fable-5-1')).toEqual([0.025, 2]);
     expect(prices({ cacheTtl: '5m' }, 'claude-opus-4-6')).toEqual([0.1, 1.25]);
-    // Bedrock has only the 5-minute cache, whatever the recipe asks for
     expect(prices({ provider: 'bedrock', cacheTtl: '1h' }, 'global.anthropic.claude-opus-4-6')).toEqual([0.1, 1.25]);
-    // OpenAI API: writes 1.25x on the GPT-5.6 / GPT-6 families, no premium on older models
     expect(prices({ provider: 'openai-responses' }, 'gpt-5.6-sol')).toEqual([0.1, 1.25]);
     expect(prices({ provider: 'openai-responses' }, 'gpt-6.1-sol')).toEqual([0.05, 1.25]);
     expect(prices({ provider: 'openai-responses' }, 'gpt-4o')).toEqual([0.5, 1]);
-    // Codex credit billing: no cache-write charge on any model
     expect(prices({ provider: 'openai-codex' }, 'gpt-5.6-sol')).toEqual([0.1, 1]);
     expect(prices({ provider: 'openai-codex' }, 'gpt-6.1-sol')).toEqual([0.05, 1]);
-    // Caching off: no cache prices at all, so no layout is preferred for savings never received
     expect(prices({ promptCaching: false }, 'claude-opus-4-6')).toEqual([1, 1]);
     expect(prices({ promptCaching: false, provider: 'openai-codex' }, 'gpt-5.6-sol')).toEqual([1, 1]);
-    // Bedrock's own gate: a model without caching there
     expect(prices({ provider: 'bedrock' }, 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')).toEqual([1, 1]);
   });
 
@@ -109,15 +93,18 @@ describe('standard-recipe memory defaults', () => {
     expect(tail({ contextBudgetTokens: 160_000 })).toBe(64_000);
     expect(tail({ contextBudgetTokens: 600_000 })).toBe(240_000);
     expect(tail({ strategy: { type: 'autobiographical', recentWindowTokens: 30_000 } })).toBe(30_000);
+    const haiku = recipe({ maxTokens: 16_000 });
+    const budget = buildFrameworkAgentConfig(haiku, 'agent', 'claude-haiku-4-5', buildFrameworkStrategy(haiku, 'claude-haiku-4-5', 'UTC')).contextBudgetTokens as number;
+    expect(budget).toBe(200_000 - 32_000 - defaultTokenEstimator('sys'));
+    expect(configView(buildFrameworkStrategy(haiku, 'claude-haiku-4-5', 'UTC')).recentWindowTokens).toBe(Math.round(budget * 0.4));
   });
 
-  test('budget defaults to 300k; maxStreamTokens follows it only when the budget is defaulted too', () => {
+  test('on a model with no window row the budget defaults to 300k; maxStreamTokens follows it only when the budget is defaulted too', () => {
     const agentConfig = (agent: Record<string, unknown>) => {
       const r = recipe(agent);
       return buildFrameworkAgentConfig(r, 'agent', 'some-model', buildFrameworkStrategy(r, 'some-model', 'UTC'));
     };
     expect(agentConfig({})).toMatchObject({ contextBudgetTokens: 300_000, maxStreamTokens: 320_000 });
-    // An explicit budget may be a 200k-window model: the stream keeps the historical 150k.
     expect(agentConfig({ contextBudgetTokens: 195_000 })).toMatchObject({ contextBudgetTokens: 195_000, maxStreamTokens: 150_000 });
     expect(agentConfig({ maxStreamTokens: 90_000 })).toMatchObject({ contextBudgetTokens: 300_000, maxStreamTokens: 90_000 });
   });
@@ -204,6 +191,32 @@ describe('standard-recipe memory defaults', () => {
     expect(configView(omitted).productionBudgetTokens).toBeUndefined();
   });
 
+  test('literal thinking-wrapper compression recovery is explicit opt-in and passed through', () => {
+    const configured = buildFrameworkStrategy(
+      recipe({
+        name: 'Mira',
+        strategy: { type: 'autobiographical', recoverLiteralThinkingWrappedCompression: true },
+      }),
+      'claude-3-opus-20240229',
+      'America/Los_Angeles',
+    );
+    expect(configView(configured).recoverLiteralThinkingWrappedCompression).toBe(true);
+
+    const omitted = buildFrameworkStrategy(
+      recipe({ name: 'Mira', strategy: { type: 'autobiographical' } }),
+      'claude-3-opus-20240229',
+      'America/Los_Angeles',
+    );
+    expect(configView(omitted).recoverLiteralThinkingWrappedCompression).toBeUndefined();
+
+    for (const bad of ['false', 1, 'no', null]) {
+      expect(() => recipe({
+        name: 'Mira',
+        strategy: { type: 'autobiographical', recoverLiteralThinkingWrappedCompression: bad as never },
+      })).toThrow('recoverLiteralThinkingWrappedCompression must be a boolean');
+    }
+  });
+
   test('explicit recipe values override the defaults', () => {
     const strategy = buildFrameworkStrategy(
       recipe({
@@ -236,13 +249,21 @@ describe('standard-recipe memory defaults', () => {
     expect(config.kvUnified).toBeUndefined();
   });
 
-  test("without an agent name the summary voice falls back to the library's 'Claude' default", () => {
-    const strategy = buildFrameworkStrategy(
-      recipe(),
-      'some-model',
-      'America/Los_Angeles',
-    );
-    expect(configView(strategy).summaryParticipant).toBe('Claude');
+  test("the host sets no summary label of its own, so context-manager's default stands; a recipe's label is passed through", () => {
+    const built = (agent: Record<string, unknown>) =>
+      configView(buildFrameworkStrategy(recipe(agent), 'some-model', 'America/Los_Angeles')).summaryContextLabel;
+    const libraryDefault = 'What do you remember from earlier?';
+    expect(built({ name: 'Mira' })).toBe(libraryDefault);
+    expect(built({})).toBe(libraryDefault);
+    expect(built({ name: 'Mira', strategy: { type: 'frontdesk' } })).toBe(libraryDefault);
+    expect(built({ name: 'Mira', strategy: { type: 'autobiographical', summaryContextLabel: 'Earlier:' } })).toBe('Earlier:');
+  });
+
+  test('without agent.name, summaries are voiced by the name the agent runs under, not the library\'s "Claude"', () => {
+    const strategy = buildFrameworkStrategy(recipe(), 'some-model', 'America/Los_Angeles', undefined, 'agent');
+    expect(configView(strategy).summaryParticipant).toBe('agent');
+    const named = buildFrameworkStrategy(recipe({ name: 'Mira' }), 'some-model', 'America/Los_Angeles', undefined, 'Mira');
+    expect(configView(named).summaryParticipant).toBe('Mira');
   });
 
   test('DEFAULT_RECIPE does not enable the opt-in modules', () => {
@@ -278,7 +299,7 @@ describe('carrierPolicy passthrough', () => {
       );
       expect(configView(strategy).carrierPolicy).toBe(value);
     }
-    // Omission resolves to Context Manager's own default ('full'), not to a host guess.
+    // context-manager's own default carrierPolicy is 'full'.
     const omitted = buildFrameworkStrategy(recipe({ name: 'Mira' }), 'some-model', 'America/Los_Angeles');
     expect(configView(omitted).carrierPolicy).toBe('full');
   });
@@ -288,6 +309,24 @@ describe('carrierPolicy passthrough', () => {
       expect(() => recipe({ name: 'Mira', strategy: { type: 'autobiographical', carrierPolicy: bad } }))
         .toThrow(/carrierPolicy/);
     }
+  });
+});
+
+describe('the per-message cap retrieval fits under', () => {
+  test('is the one the strategy applies, 10,000 unless the recipe sets it, and none for passthrough', () => {
+    const autobiographical = recipe();
+    expect(strategyMessageCap(autobiographical)).toBe(10_000);
+    expect(configView(buildFrameworkStrategy(autobiographical, 'some-model', 'UTC')).maxMessageTokens).toBe(10_000);
+    const set = recipe({ strategy: { type: 'frontdesk', maxMessageTokens: 4_000 } });
+    expect(strategyMessageCap(set)).toBe(4_000);
+    expect(configView(buildFrameworkStrategy(set, 'some-model', 'UTC')).maxMessageTokens).toBe(4_000);
+    expect(strategyMessageCap(recipe({ strategy: { type: 'passthrough' } }))).toBeUndefined();
+  });
+
+  test('for an extension strategy, is the recipe\'s value it is told, and none when the recipe sets none', () => {
+    const extension = (strategy: Record<string, unknown>) => ({ name: 'x', agent: { systemPrompt: 'sys', strategy } }) as never;
+    expect(strategyMessageCap(extension({ type: 'my-strategy', maxMessageTokens: 3_000 }))).toBe(3_000);
+    expect(strategyMessageCap(extension({ type: 'my-strategy' }))).toBeUndefined();
   });
 });
 

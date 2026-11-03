@@ -1,11 +1,3 @@
-/**
- * Tests for recipe.agent.cacheKeepalive validation.
- *
- * The load-bearing case is `refreshAfterMinutes >= the cache TTL`: such a
- * keepalive always fires AFTER the entry has expired, so every poke pays a full
- * 2x cache write instead of a 0.1x read — while still looking like a healthy
- * successful call. That must fail at recipe-load time, not on a bill.
- */
 import { describe, test, expect } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 
@@ -21,7 +13,7 @@ function recipeWith(cacheKeepalive?: unknown, cacheTtl?: unknown) {
 }
 
 describe('recipe agent.cacheKeepalive validation', () => {
-  test('omitting it is valid — keepalive is on by default', () => {
+  test('omitting it is valid, and leaves it unset', () => {
     expect(validateRecipe(recipeWith()).agent.cacheKeepalive).toBeUndefined();
   });
 

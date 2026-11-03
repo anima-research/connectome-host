@@ -171,9 +171,7 @@ never do.
   and bun's, stop there, in the publish job and by hand alike, unless
   scripts are off (`--ignore-scripts`, which skips the release holds
   too). The
-  root `postinstall` builds the Web UI only in a checkout, where `web/` is:
-  the package doesn't ship `web/`, so on a registry install it does
-  nothing. When the check fails on a tag, the
+  package has no install script, so a registry install runs nothing. When the check fails on a tag, the
   notes are out and npm isn't. Re-run the failed jobs first: a registry or
   network blip, or a timeout, passes then. If it fails the same way again,
   fix the break, which can be a dependency's new release, and release the
@@ -225,6 +223,7 @@ never do.
 
 ```bash
 bun install
+bun run build:web   # the Web UI, which nothing builds on install
 bun test            # test suite
 bunx tsc --noEmit   # typecheck the host's source (src/)
 (cd web && bunx tsc --noEmit)   # typecheck the web app
@@ -234,12 +233,15 @@ bun src/index.ts    # run (generic assistant)
 CI (`ci.yml`) runs on every pull request and every push to `main`, on ubuntu
 and macOS. Both install the root and the web app with a strict lockfile
 (`npm ci`), which fails when a lock doesn't match its `package.json` or
-lacks that platform's packages, and build the web app; the test suite runs
-on ubuntu only. A typecheck job checks the types of the host's source
-(`src/`; `test/` and `scripts/` aren't checked) and of the web app
-(`tsc --noEmit`), which nothing else does: bun runs TypeScript without
-checking its types, and `vite build` doesn't check them either. If you
-touched `web/`
+lacks that platform's packages, and build the web app. The test suite runs
+once, on ubuntu at the oldest Node and Bun the package supports (22.12.0 and
+1.4.3). Every other leg checks instead that the host starts there
+(`node scripts/host-starts.mjs`: `@opentui/core` loads with its native package
+for that platform, and the offline smoke run answers). A typecheck job
+checks the types of the host's source (`src/`; `test/` and `scripts/`
+aren't checked) and of the web app (`tsc --noEmit`), which nothing else
+does: bun runs TypeScript without checking its types, and `vite build`
+doesn't check them either. If you touched `web/`
 dependencies, regenerate the npm lock with `npm run relock:web`, so it
 carries both platforms' native binaries. It resolves every web dependency
 afresh, so review the lock's diff. Then regenerate `web/bun.lock` from it:

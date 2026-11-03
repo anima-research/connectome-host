@@ -1,24 +1,3 @@
-/**
- * Tests for unresolved recipe persistence: the `.recipe.json` snapshot in
- * $DATA_DIR must never contain substituted secrets.
- *
- * Motivating finding (external recipe review against a production VM):
- * loadRecipe substituted every `${VAR}` — including access tokens — into the
- * recipe, and resolveRecipe then serialised the RESOLVED recipe to
- * $DATA_DIR/.recipe.json, a directory deployments bind-mount and back up.
- *
- * Contract under test:
- *   - loadRecipeDetailed returns the resolved recipe for the runtime AND a
- *     `persistable` pre-substitution form; saveRecipe writes the latter, so
- *     the on-disk snapshot keeps `${VAR}` literals, never the secret values.
- *   - loadSavedRecipe re-runs substitution against the CURRENT environment
- *     (secret rotation takes effect on restart), hard-failing when a
- *     required var has gone missing.
- *   - Legacy snapshots (saved fully resolved by older versions, no marker)
- *     still load verbatim — including ones with a literal `${...}` in prose.
- *   - The snapshot file is chmod'd 0600 even when overwriting a legacy file.
- *   - A URL systemPrompt is persisted as the URL and re-fetched on resume.
- */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, chmodSync, symlinkSync, lstatSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,7 +32,7 @@ describe('unresolved recipe persistence', () => {
   afterEach(() => {
     process.env = originalEnv;
     globalThis.fetch = originalFetch;
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   function writeSecretRecipe(): void {
@@ -124,9 +103,7 @@ describe('unresolved recipe persistence', () => {
     const path = join(dataDir, '.recipe.json');
     expect(statSync(path).mode & 0o777).toBe(0o600);
 
-    // Legacy deployments have a world-readable resolved snapshot; an
-    // overwrite must tighten it even though writeFileSync's mode only
-    // applies at creation.
+    // writeFileSync's mode applies only when it creates the file.
     chmodSync(path, 0o644);
     expect(statSync(path).mode & 0o777).toBe(0o644);
     saveRecipe(dataDir, persistable);
@@ -197,7 +174,6 @@ describe('unresolved recipe persistence', () => {
 
   describe('legacy resolved snapshots (no marker)', () => {
     test('load verbatim with no substitution', async () => {
-      // Simulate an older host's save: fully resolved, no marker.
       const legacy = {
         name: 'Legacy',
         agent: { systemPrompt: 'resolved prompt' },
@@ -228,8 +204,6 @@ describe('unresolved recipe persistence', () => {
     });
 
     test('one that no longer validates throws, naming why, rather than resuming the default recipe', async () => {
-      // An older host dropped a mount key it didn't read; this one refuses it
-      // (#275). Returning null here would start DEFAULT_RECIPE in its place.
       const legacy = {
         name: 'Legacy Mounts',
         agent: { systemPrompt: 'resolved prompt' },
@@ -246,11 +220,9 @@ describe('unresolved recipe persistence', () => {
   });
 
   describe('a saved recipe that can\'t be used', () => {
-    // Each would start DEFAULT_RECIPE in the resumed agent's place if it
-    // returned null, so each throws, saying why.
     test('a file that is there but is not a JSON object throws, saying what it holds', async () => {
       const cases: Array<[string, RegExp]> = [
-        // Only that it isn't JSON: the parser's message can quote the text.
+        // JSON.parse's message can quote the text.
         ['', /^it isn't JSON$/],
         ['{"name": "Torn", "agent', /^it isn't JSON$/],
         ['{not json', /^it isn't JSON$/],
@@ -283,8 +255,6 @@ describe('unresolved recipe persistence', () => {
       symlinkSync(join(dataDir, 'gone.json'), path);
       await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it can't be read \(ENOENT\)$/);
       rmSync(path);
-      // A link to itself can't be looked through: no directory is told, and
-      // nothing throws from the look.
       symlinkSync(path, path);
       expect(savedRecipeDirectory(dataDir)).toBeNull();
       await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it can't be read \(ELOOP\)$/);
@@ -292,8 +262,6 @@ describe('unresolved recipe persistence', () => {
       expect(await loadSavedRecipe(dataDir)).toBeNull();
     });
 
-    // Root reads any directory, so this case needs another user: for it, the
-    // read fails with EACCES rather than EISDIR.
     test.skipIf(process.getuid?.() === 0)("a directory at the path that its owner can't read is still a directory", async () => {
       const path = join(dataDir, '.recipe.json');
       mkdirSync(dataDir, { recursive: true });
@@ -306,7 +274,6 @@ describe('unresolved recipe persistence', () => {
       }
     });
 
-    // Root reads any file, so this case needs another user.
     test.skipIf(process.getuid?.() === 0)("a file at the path that its owner can't read throws, naming why", async () => {
       const path = join(dataDir, '.recipe.json');
       mkdirSync(dataDir, { recursive: true });
@@ -344,7 +311,7 @@ describe('unresolved recipe persistence', () => {
       clearSavedRecipe(dataDir);
       expect(gone()).toBe(true);
       expect(lstatSync(targetDir).isDirectory()).toBe(true);
-      clearSavedRecipe(dataDir);   // nothing there
+      clearSavedRecipe(dataDir);
       mkdirSync(path);
       expect(() => clearSavedRecipe(dataDir)).toThrow(/directory/);
       expect(lstatSync(path).isDirectory()).toBe(true);

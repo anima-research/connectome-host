@@ -1,8 +1,4 @@
 /**
- * A load's repair of an agent's summaries, in the words its keeper reads: the
- * host's ops alert (index.ts), and the Web UI's Health tab, which imports it
- * as `@conhost/web/load-repair-alert`.
- *
  * context-manager repairs an agent's summary state each time it loads it, and
  * that repair can drop summaries: ones whose sources or range can't be read,
  * or whose links to other summaries are broken, with the summaries above
@@ -31,9 +27,7 @@ export interface LoadRepairDroppedSummary {
 
 /**
  * The report context-manager makes for a load whose repair dropped a summary
- * holding text, as its `LoadRepairReport` gives it. Declared here as well, as
- * the quarantine status is, so a context-manager without the report leaves
- * the host's alert unwired rather than failing its build.
+ * holding text, as its `LoadRepairReport` gives it.
  */
 export interface LoadRepairReport {
   namespace: string;
@@ -50,15 +44,12 @@ export interface LoadRepairReport {
   emptyDropped: number;
 }
 
-/** The ops alert's kind for a load repair. */
 export const LOAD_REPAIR_KIND = 'memory-load-repair';
 
-/** At most this many spans are named for a level before "and N more spans". */
 const SPANS_NAMED_PER_LEVEL = 3;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-/** A stored time as a number, or undefined where it isn't one a Date reads. */
 function timeOf(iso: string | null | undefined): number | undefined {
   if (typeof iso !== 'string') return undefined;
   const ms = Date.parse(iso);
@@ -75,23 +66,16 @@ const clock = (ms: number): string => {
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 };
 
-/** A span of time in UTC: "2026-10-03 14:02–16:40 UTC" within a day, otherwise
- *  "2026-10-01 09:10 – 2026-10-05 22:01 UTC". */
 function spanText(start: number, end: number): string {
-  // Within one minute, as the words show it, a span is that minute.
   if (day(start) === day(end) && clock(start) === clock(end)) return `${day(start)} ${clock(start)} UTC`;
   if (day(start) === day(end)) return `${day(start)} ${clock(start)}–${clock(end)} UTC`;
   return `${day(start)} ${clock(start)} – ${day(end)} ${clock(end)} UTC`;
 }
 
-/** "A", "A and B", "A, B and C". */
 function listText(items: readonly string[]): string {
   return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}` : items.join('');
 }
 
-/** What one level's dropped summaries covered: the spans that can be named,
- *  by time where their messages have times and by message ids otherwise, and
- *  how many ranges couldn't be read. */
 interface LevelSpans {
   named: string[];
   unread: number;
@@ -108,7 +92,6 @@ function levelSpans(drops: readonly LoadRepairDroppedSummary[]): LevelSpans {
     if (first !== undefined && last !== undefined) timed.push(first <= last ? [first, last] : [last, first]);
     else byIds.push(range.first === range.last ? `message ${range.first}` : `messages ${range.first} to ${range.last}`);
   }
-  // Spans that overlap or touch are one span of the agent's memory.
   timed.sort((a, b) => a[0] - b[0]);
   const merged: Array<[number, number]> = [];
   for (const [start, end] of timed) {
@@ -119,8 +102,6 @@ function levelSpans(drops: readonly LoadRepairDroppedSummary[]): LevelSpans {
   return { named: [...merged.map(([start, end]) => spanText(start, end)), ...new Set(byIds)], unread };
 }
 
-/** A level's spans as the words name them: at most three, then how many more,
- *  then how many couldn't be read. */
 function spansText({ named, unread }: LevelSpans): string {
   const shown = named.slice(0, SPANS_NAMED_PER_LEVEL);
   const more = named.length - shown.length;
@@ -129,7 +110,6 @@ function spansText({ named, unread }: LevelSpans): string {
   return listText(shown);
 }
 
-/** "level 1", "levels 2–3", "levels 1, 3 and 5". */
 function levelsText(levels: number[]): string {
   if (levels.length === 1) return `level ${levels[0]}`;
   const consecutive = levels.every((level, i) => i === 0 || level === levels[i - 1]! + 1);
@@ -137,14 +117,6 @@ function levelsText(levels: number[]): string {
   return `levels ${listText(levels.map(String))}`;
 }
 
-/**
- * What changed, merged per level: each level's spans, then the level, with
- * levels whose spans are all the same joined, so one damaged summary and the
- * summaries above it read as one memory changing at several levels rather
- * than several memories lost. A level with a range that couldn't be read is
- * never joined, since its spans can't be shown to be the same. Summaries
- * whose level couldn't be read come last.
- */
 export function loadRepairSpans(report: Pick<LoadRepairReport, 'dropped'>): string {
   const byLevel = new Map<number | null, LoadRepairDroppedSummary[]>();
   for (const drop of report.dropped) {
@@ -164,32 +136,21 @@ export function loadRepairSpans(report: Pick<LoadRepairReport, 'dropped'>): stri
   const parts = [...groups.values()].map(({ spans, levels: joined }) => `${spansText(spans)} at ${levelsText(joined)}`);
   const unreadLevel = byLevel.get(null);
   if (unreadLevel) parts.push(`${spansText(levelSpans(unreadLevel))} at a level that couldn't be read`);
-  // Once any part holds "and" (several spans, or several levels joined),
-  // parts are set apart with semicolons.
   if (parts.some((part) => part.includes(' and '))) return parts.join('; ');
   return listText(parts);
 }
 
-/** How much summary text left what renders. */
 function tokensText(report: Pick<LoadRepairReport, 'dropped' | 'droppedTokens'>): string {
   const unread = report.dropped.filter((drop) => typeof drop.tokens !== 'number' || !Number.isFinite(drop.tokens)).length;
   const n = report.droppedTokens;
-  // Where some sizes couldn't be read and the rest add up to none (every one
-  // unread included), "at least 0" would say nothing.
   if (unread > 0 && n === 0) return "summaries whose total size couldn't be read";
   const tokens = `${n.toLocaleString('en-US')} ${n === 1 ? 'token' : 'tokens'} of summary text`;
   return unread > 0 ? `summaries holding at least ${tokens}` : `summaries holding ${tokens}`;
 }
 
-/** What the agent may be told was removed: "some of your summaries from
- *  between Oct 1 and Oct 5 (UTC) were removed." where every dropped
- *  summary's messages have times; "…were removed, among them ones from
- *  between … (UTC)." where only some do; and no days where none do. */
 function removedText(report: Pick<LoadRepairReport, 'dropped'>): string {
   const times: number[] = [];
   let untimed = 0;
-  // Times only from summaries whose messages both have one, as the keeper's
-  // spans take them, so the agent's days and the keeper's spans agree.
   for (const drop of report.dropped) {
     const first = timeOf(drop.sourceRange?.firstAt), last = timeOf(drop.sourceRange?.lastAt);
     if (first === undefined || last === undefined) untimed++;
@@ -207,27 +168,21 @@ function removedText(report: Pick<LoadRepairReport, 'dropped'>): string {
   const sameYear = first.getUTCFullYear() === last.getUTCFullYear();
   const name = (d: Date) => `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}${sameYear ? '' : `, ${d.getUTCFullYear()}`}`;
   const days = day(min) === day(max) ? name(first) : `between ${name(first)} and ${name(last)}`;
-  // UTC days, as the keeper's spans are: the agent may read days in its own
-  // time zone.
   return untimed === 0
     ? `some of your summaries from ${days} (UTC) were removed.`
     : `some of your summaries were removed, among them ones from ${days} (UTC).`;
 }
 
-/** Where the old summaries are, and how to read them back: from a copy taken
- *  while the host is stopped. Chronicle's open takes an exclusive lock, so a
- *  running host's store can't be opened beside it, and whether a copy taken
- *  while the host runs reads older sequences consistently isn't known. */
+/** Chronicle's open takes an exclusive lock, so a running host's store
+ *  can't be opened beside it: the old summaries are read back from a copy
+ *  taken while the host is stopped. */
 export function loadRepairReadBack(report: Pick<LoadRepairReport, 'branch' | 'stateId' | 'sequenceBefore'>, storePath?: string): string {
   const store = storePath ? `a copy of ${storePath}` : "a copy of the agent's store";
-  // An observer without the ops scope gets the report with its branch
-  // emptied (HEALTH_STRINGS), so the line names no branch then.
   const branch = report.branch === '' ? 'switch to the branch the repair ran on, which /healthz shows an observer with the ops scope' : `switchBranch(${JSON.stringify(report.branch)})`;
   return `The old summaries are still in the store's history: in ${store} taken while the host is stopped, open it with Chronicle's JsStore.open({ path }), `
     + `${branch}, then getStateJsonAt(${JSON.stringify(report.stateId)}, ${report.sequenceBefore}).`;
 }
 
-/** The report's first two sentences: what changed, and what the agent sees now. */
 function loadRepairHeadline(report: LoadRepairReport, agent: string): string {
   const spans = loadRepairSpans(report);
   return `${agent}'s memory changed at load: context-manager's load repair dropped ${tokensText(report)}${spans ? `, covering ${spans}` : ''}. `
@@ -235,14 +190,6 @@ function loadRepairHeadline(report: LoadRepairReport, agent: string): string {
     + 'compression covers them again.';
 }
 
-/**
- * The keeper's words for one report, a sentence or two each: what changed and
- * what the agent sees now; whether to worry; where the old summaries are; and
- * words the keeper could pass on to the agent: what was removed, then that
- * its messages weren't. The Health tab shows them as they are, without the
- * store's path, which the host's panel doesn't have; the ops alert adds where
- * to read the rest.
- */
 export function loadRepairLines(report: LoadRepairReport, agent: string, storePath?: string): string[] {
   return [
     loadRepairHeadline(report, agent),
@@ -255,21 +202,12 @@ export function loadRepairLines(report: LoadRepairReport, agent: string, storePa
   ];
 }
 
-/** Where to read the rest of a running host's alert: the Health tab and
- *  /healthz hold the latest report a strategy made, which a later load in the
- *  same session (a branch switch, or state taken up from the store) can
- *  replace. */
 const HOST_POINTER = 'The message is in failures.log; the Health tab shows the latest repair, and /healthz its full report.';
 
-/** Where to read the rest of the alert a host on trial sends for a repair its
- *  store audit caused: no strategy of the host's made that report, so the
- *  Health tab and /healthz never hold it. */
 export const AUDIT_POINTER = "The message is in failures.log and among the update's audit lines.";
 
-/** What the host sends through the framework's ops-alert channel for one
- *  load-repair report: its message in the keeper's words, ending with where
- *  to read the rest (`pointer`), since agent-framework's webhook keeps only a
- *  long message's start and end, and the report's fields as its data. */
+/** agent-framework's webhook keeps only a long message's start and end, so
+ *  the message ends with where to read the rest (`pointer`). */
 export function loadRepairAlert(
   report: LoadRepairReport, agent: string, storePath?: string, pointer: string = HOST_POINTER,
 ): { kind: string; message: string; data: Record<string, unknown> } {
@@ -284,14 +222,6 @@ export function loadRepairAlert(
   };
 }
 
-/**
- * Send each load-repair report a strategy makes through the framework's
- * ops-alert channel: its message in the keeper's words, under the agent's
- * name, with the store's path in the read-back line. Duck-typed on both
- * sides, as the quarantine alarm is, so a context-manager that doesn't
- * report load repairs, or a framework without notifyOps, leaves it unwired.
- * Returns whether it was wired.
- */
 export function wireLoadRepairAlert(
   strategy: unknown,
   framework: unknown,

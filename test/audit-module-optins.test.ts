@@ -1,11 +1,3 @@
-/**
- * Tests for the report-only module opt-in audit (Sol's #32 closure gate,
- * step 3). The contract under test: explicit enables are surfaced for an
- * operator decision, omissions are explained as the defaults flip working,
- * resolved .recipe.json snapshots are pointers rather than findings, and
- * nothing is ever modified.
- */
-
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -59,7 +51,6 @@ describe('auditRecipe', () => {
   test('flags retrieval-without-lessons as inert after upgrade', () => {
     const a = auditRecipe({ name: 'r', agent: AGENT, modules: { retrieval: true } }, 'r.json');
     expect(a.inertRetrieval).toBe(true);
-    // With lessons enabled the combination is coherent, not inert.
     const ok = auditRecipe({ name: 'r', agent: AGENT, modules: { retrieval: true, lessons: true } }, 'r.json');
     expect(ok.inertRetrieval).toBe(false);
   });
@@ -84,7 +75,6 @@ describe('auditRecipe', () => {
       parentPath,
     );
 
-    // The https child is skipped; the relative one resolves beside the parent.
     expect(a.childRecipePaths).toHaveLength(1);
     const [childPath] = a.childRecipePaths;
     expect(isAbsolute(childPath)).toBe(true);
@@ -106,7 +96,6 @@ describe('auditPaths', () => {
         modules: { lessons: true, fleet: { children: [{ recipe: '../elsewhere/child.json' }] } },
       }),
     );
-    // Child lives OUTSIDE the scanned dir — reachable only by following the reference.
     mkdirSync(join(dir, 'elsewhere'));
     const childPath = join(dir, 'elsewhere', 'child.json');
     writeFileSync(childPath, JSON.stringify({ name: 'child', agent: AGENT, modules: { retrieval: true } }));
@@ -117,7 +106,6 @@ describe('auditPaths', () => {
     const { audits, unreadable } = auditPaths([recipesDir]);
     expect(unreadable).toEqual([]);
     expect(audits.map((a) => a.recipeName).sort()).toEqual(['child', 'parent']);
-    // Report-only, literally: nothing was rewritten.
     expect(statSync(join(recipesDir, 'parent.json')).mtimeMs).toBe(before);
     expect(readFileSync(childPath, 'utf-8')).toContain('"retrieval":true');
   });
@@ -163,11 +151,9 @@ describe('renderReport', () => {
     expect(renderReport([clean]).needsDecision).toBe(0);
 
     const enabled = auditRecipe({ name: 'e', agent: AGENT, modules: { lessons: true, retrieval: true } }, 'e.json');
-    // two explicit enables, no inert-retrieval (lessons present)
     expect(renderReport([enabled]).needsDecision).toBe(2);
 
     const inert = auditRecipe({ name: 'i', agent: AGENT, modules: { retrieval: true } }, 'i.json');
-    // one explicit enable + one inert-retrieval warning
     expect(renderReport([inert]).needsDecision).toBe(2);
   });
 

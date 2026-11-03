@@ -4,13 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { startFramework } from '../src/start-framework.js';
-import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason } from '../src/update/contract.js';
+import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason, writeMark } from '../src/update/contract.js';
 
-type Servers = Array<{ id: string; connected: boolean }>;
+type Servers = Array<{ id: string; connected: boolean; closedTab?: boolean }>;
 
-/** A framework as startFramework uses one: `order` records what it starts,
- *  when its stop or its resume, which each take a moment, has finished, how
- *  either fails, and what it tells the operator. */
 function framework(order: string[], options: {
   fleet?: FleetModule; servers?: Servers; atStart?: () => void; stopFails?: true; quiesceReason?: string; resumeFails?: true;
 } = {}) {
@@ -31,7 +28,6 @@ function framework(order: string[], options: {
       if (options.stopFails) throw new Error('the stop failed');
       order.push('framework stopped');
     },
-    // The framework finds a module by its own name, so the fake answers to the fleet's.
     getModule: (name: string) => (options.fleet && name === options.fleet.name ? options.fleet : null),
     listMcplServers: () => options.servers ?? [],
   } as unknown as Parameters<typeof startFramework>[0];
@@ -111,9 +107,39 @@ describe('startFramework, for a host an install started', () => {
     const order: string[] = [];
     const servers = [{ id: 'discord', connected: false }, { id: 'heartbeat', connected: true }];
     await expect(startFramework(framework(order, { fleet: watchedFleet(order), servers }), { root, release: '0.11.0' }))
-      .rejects.toThrow("This release couldn't connect the MCPL server discord, so it starts none of its agents, and the next start goes back to 0.10.2: ");
+      .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
     expect(order).toEqual(['framework stopped']);
     expect(readCurrent(root)).toBe('0.10.2');
+  });
+
+  test('a start on trial whose only unconnected server is a closed tab commits', async () => {
+    const order: string[] = [];
+    const servers = [{ id: 'games', connected: false, closedTab: true }, { id: 'heartbeat', connected: true }];
+    await startFramework(framework(order, { servers }), { root, release: '0.11.0' });
+    expect(order).toEqual(['framework starts its agents']);
+    expect(readCurrent(root)).toBe('0.11.0');
+  });
+
+  test('a start on trial with a closed tab and a server that failed to connect refuses, naming only the failed one', async () => {
+    const order: string[] = [];
+    const servers = [{ id: 'games', connected: false, closedTab: true }, { id: 'discord', connected: false, closedTab: false }];
+    await expect(startFramework(framework(order, { servers }), { root, release: '0.11.0' }))
+      .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
+    expect(readCurrent(root)).toBe('0.10.2');
+  });
+
+  test("a server the request recorded that the trial isn't configured with doesn't hold the commit", async () => {
+    writeMark(root, { to: '0.11.0', why: 'go-back', connected: ['heartbeat', 'gone'] });
+    const order: string[] = [];
+    const servers = [{ id: 'heartbeat', connected: true }, { id: 'discord', connected: false }];
+    const logged = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await startFramework(framework(order, { servers }), { root, release: '0.11.0' });
+    } finally {
+      logged.mockRestore();
+    }
+    expect(order).toEqual(['framework starts its agents']);
+    expect(readCurrent(root)).toBe('0.11.0');
   });
 
   test('a start on the release already current writes nothing, whatever its servers did', async () => {
@@ -126,8 +152,8 @@ describe('startFramework, for a host an install started', () => {
 
   test("a commit that can't be recorded stops the framework, starts nothing and says why", async () => {
     const order: string[] = [];
-    // Where the move's temporary link goes, a directory with something in it,
-    // which stops the move for root as for anyone.
+    // A directory with something in it where the move's temporary link goes
+    // stops the move, for root as for anyone.
     mkdirSync(join(`${installPaths(root).current}.tmp`, 'in-the-way'), { recursive: true });
     await expect(startFramework(framework(order, { fleet: watchedFleet(order) }), { root, release: '0.11.0' })).rejects.toThrow(
       `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents started, ` +
@@ -143,7 +169,7 @@ describe('startFramework, for a host an install started', () => {
     const log = spyOn(console, 'error').mockImplementation((line) => { logged.push(String(line)); });
     try {
       await expect(startFramework(framework(order, { servers: [{ id: 'discord', connected: false }], stopFails: true }), { root, release: '0.11.0' }))
-        .rejects.toThrow("This release couldn't connect the MCPL server discord");
+        .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit");
     } finally {
       log.mockRestore();
     }

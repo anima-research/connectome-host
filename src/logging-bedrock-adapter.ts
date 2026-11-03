@@ -1,26 +1,19 @@
 // BedrockAdapter wrapper that appends each LLM call's request summary, stop
 // reason, and any error to the same `llm-calls.<iso>.jsonl` file the
-// Anthropic path uses. Purpose-built during the Aria bring-up (2026-07-21)
-// when a 0-token assistant turn proved undiagnosable: the bedrock transport
-// had no wire visibility at all.
-//
-// Kept deliberately lighter than LoggingAnthropicAdapter: request summaries
-// always include tool NAMES (were tools attached at all? — the question that
-// motivated this file), message/system sizes, and the stop sequences; the
-// full raw request is retained only on errors. Responses log stop_reason,
-// usage, and content-block shape (type + size per block) on every call.
+// Anthropic path uses. Request summaries always include tool NAMES,
+// message/system sizes, and the stop sequences; the full raw request is
+// retained only on errors. Responses log stop_reason, usage, and
+// content-block shape (type + size per block) on every call.
 //
 // Each line: { type: 'call'|'error', kind: 'complete'|'stream', timestamp,
 //   durationMs, requestSummary, response?, rawRequest?, error?, errorType?,
 //   httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
 // A failure's `error` is { name, message } with its text bounded, or a
-// non-Error's text (logging-error-fields.ts). A record whose request or
-// response couldn't be summarized keeps only the head fields and, for a
-// failure, the error (summaryUnavailable: true). Every line, newline
-// included, stays within the shared 16 MiB UTF-8 cap (logging-record.ts):
-// an oversized or unserializable record drops the raw request first, then
-// its summaries (`truncated` says what was dropped). Logging never changes
-// what the caller gets: it runs after the provider call, outside its try.
+// non-Error's text. A record whose request or response couldn't be
+// summarized keeps only the head fields and, for a failure, the error
+// (summaryUnavailable: true). Every line, newline included, stays within the
+// shared 16 MiB UTF-8 cap: an oversized or unserializable record drops the
+// raw request first, then its summaries (`truncated` says what was dropped).
 
 import { BedrockAdapter } from '@animalabs/membrane';
 import type {
@@ -87,18 +80,9 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
     try {
       appendFileSync(this.logPath, serializeRecord(record));
     } catch {
-      // Logging must never break inference.
     }
   }
 
-  /**
-   * Record one call's outcome. A call failed exactly when `outcome` carries
-   * `error`, whatever its value: a rejection with undefined is a failure too.
-   * A record whose request or response can't be summarized is written
-   * minimal instead (`summaryUnavailable: true`), with its timing and, for a
-   * failure, the bounded error, so the call still has a record. Nothing here
-   * can replace the provider's response or its error.
-   */
   private recordCall(
     kind: 'complete' | 'stream',
     request: ProviderRequest,
@@ -123,7 +107,6 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
       }
       this.log(record);
     } catch {
-      // Logging must never break inference, nor change what it returns or throws.
     }
   }
 
@@ -144,7 +127,6 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
       this.recordCall('complete', request, started, rawRequest, { error });
       throw error;
     }
-    // Outside the try: a logging failure can't be taken for the provider's.
     this.recordCall('complete', request, started, rawRequest, { response });
     return response;
   }
@@ -167,7 +149,6 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
       this.recordCall('stream', request, started, rawRequest, { error });
       throw error;
     }
-    // Outside the try: a logging failure can't be taken for the provider's.
     this.recordCall('stream', request, started, rawRequest, { response });
     return response;
   }

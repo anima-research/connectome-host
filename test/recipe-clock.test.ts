@@ -31,14 +31,9 @@ describe('clock recipe wiring', () => {
     const reloaded = validateRecipe(JSON.parse(JSON.stringify(minutes)));
     expect(buildFrameworkAgentConfig(reloaded, 'c', 'm', { kind: 's' } as never).clock).toEqual({ intervalMinutes: 10 });
 
-    // The other readings the framework accepts: minutes asked for at a whole-minute
-    // interval, and a whole-minute interval given in seconds.
     for (const clock of [
       { intervalMinutes: 10, precision: 'minutes' }, { intervalSeconds: 120 },
-      // Seconds asked for at a whole-minute interval, the one precision that
-      // isn't its interval's default.
       { intervalMinutes: 10, precision: 'seconds' },
-      // A day, the longest interval, given either way.
       { intervalMinutes: 1440 }, { intervalSeconds: 86_400 },
     ]) {
       expect(buildFrameworkAgentConfig(validateRecipe(base(clock)), 'a', 'm', { kind: 's' } as never).clock).toEqual(clock);
@@ -47,11 +42,9 @@ describe('clock recipe wiring', () => {
 
   test('refuses a clock the framework would refuse at boot, at recipe validation, naming the recipe key', () => {
     const cases: Array<[unknown, string]> = [
-      // true is no clock: a recipe names an interval, or false for none.
       [true, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got true.'],
       [10, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got 10.'],
       [null, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got null.'],
-      // A string or an array would otherwise reach the key check, which would name "0" as a key.
       ['10', 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got "10".'],
       [[10], 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got [10].'],
       [{ interval: 10 }, 'Recipe agent.clock has unknown key "interval"; it takes intervalMinutes, intervalSeconds and precision.'],

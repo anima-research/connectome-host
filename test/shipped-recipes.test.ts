@@ -14,7 +14,6 @@ for (const file of ['webui-test.json', 'webui-fleet-test.json']) {
   test(`${file} starts an unauthenticated loopback WebUI`, async () => {
     const recipe = validateRecipe(readRecipe(file));
     const config = recipe.modules?.webui;
-    // Use the shipped host/auth settings unchanged. Port 0 avoids test races.
     const mod = new WebUiModule({ ...(typeof config === 'object' ? config : {}), port: 0 });
     try {
       await mod.start({} as ModuleContext);
@@ -39,8 +38,6 @@ test('fleet parent and its shipped child have distinct fixed WebUI ports', () =>
 test('clerk channel instructions use live wake tools and a valid persistent rule', () => {
   const clerk = readRecipe('clerk.json');
   const prompt = validateRecipe(clerk).agent.systemPrompt;
-  // The host assembles wake tools only when modules.wake enables its gate.
-  // A standalone EventGate probe must not hide a disabled shipped module.
   expect(clerk.modules.wake).toHaveProperty('policies');
   const channelInstructions = prompt.slice(prompt.indexOf('## Channel Management'), prompt.indexOf('## Subagents'));
   expect(channelInstructions).toContain('wake_add_rule');
@@ -76,7 +73,6 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
     const gate = createGate();
     const event = { content: 'offline example', eventType: 'mcpl:channel-incoming', serverId: 'zulip', channelId: 'zulip:foo' };
     expect(gate.evaluate(event).trigger).toBe(false);
-    // This is the validator/mutator used by the installed wake_add_rule tool.
     gate.addPolicy(rule);
     expect(gate.evaluate(event).trigger).toBe(true);
     expect(JSON.parse(readFileSync(configPath, 'utf8')).policies).toContainEqual(rule);
@@ -84,7 +80,6 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
     expect(gate.evaluate(event).trigger).toBe(false);
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual(clerk.modules.wake);
 
-    // Boot reconciliation restores shipped names, but not runtime-only rules.
     expect(gate.removePolicy('tracker-channel')).toBe(true);
     expect(JSON.parse(readFileSync(configPath, 'utf8')).policies.some((p: { name: string }) => p.name === 'tracker-channel')).toBe(false);
     const restarted = createGate();
@@ -97,12 +92,12 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
 });
 
 test('shipped prompts name MCPL server tools as the model sees them', () => {
-  // The host sets no toolPrefix, so a server's tools reach the model as
-  // `mcpl--<id>--<tool>`. Ids: every server a shipped recipe configures, plus
-  // the optional ones the setup guides tell operators to add.
+  // With no toolPrefix, agent-framework names a server's tools
+  // `mcpl--<id>--<tool>`.
   const files = readdirSync(new URL('../recipes/', import.meta.url)).filter((f) => f.endsWith('.json'));
   const recipes = files.map((file) => ({ file, recipe: readRecipe(file) }));
-  const ids = new Set(['syncntn', 'scribe']);
+  const serversTheSetupGuidesAdd = ['syncntn', 'scribe'];
+  const ids = new Set(serversTheSetupGuidesAdd);
   for (const { recipe } of recipes) {
     for (const [id, server] of Object.entries(recipe.mcpServers ?? {})) {
       if (!(server as { toolPrefix?: string }).toolPrefix) ids.add(id);

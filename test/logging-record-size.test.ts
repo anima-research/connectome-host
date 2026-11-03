@@ -25,9 +25,8 @@ function emit(make: (p: string) => unknown, record: object) {
   const parsed = JSON.parse(bytes.toString('utf8'));
   return { bytes, parsed };
 }
-// A failing assertion prints what it received, and these records hold values
-// of up to 16 MiB. So the tests assert presence as a boolean, compare large
-// values by identity, and compare whole objects only by their small fields.
+// A failing assertion prints what it received, so with values of up to
+// 16 MiB the tests compare presence as a boolean and large values by identity.
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
 const fields = (record: Record<string, unknown>, keys: readonly string[]) =>
   Object.fromEntries(keys.filter((key) => has(record, key)).map((key) => [key, record[key]]));
@@ -71,13 +70,11 @@ for (const [name, make] of Object.entries(factories)) {
   });
 }
 
-/** The line serializeRecord gives, its byte length and its parsed record. */
 function line(record: Record<string, unknown>) {
   const text = serializeRecord(record);
   expect(text.endsWith('\n')).toBe(true);
   return { bytes: Buffer.byteLength(text, 'utf8'), parsed: JSON.parse(text) as Record<string, any> };
 }
-/** A successful call's raw response: what the call ledger and the doctor read. */
 const response = { stop_reason: 'end_turn', usage: { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 5_000, cache_creation_input_tokens: 0 } };
 const call = { type: 'call', provider: 'unit-test', kind: 'stream', timestamp: '2026-10-19T00:00:00.000Z', durationMs: 3, requestSummary: { model: 'unit-test', messages: 2 } };
 const BIG = 'x'.repeat(CAP + 1);
@@ -93,9 +90,8 @@ describe('serializeRecord drops parts in order, each step checked against the ca
     const over = line({ ...base, rawRequest: 'x'.repeat(room + 1) });
     expect(has(over.parsed, 'rawRequest')).toBe(false);
     expect(over.parsed.truncated).toBe('raw bodies dropped (record exceeded size guard)');
-    // Two-byte characters bring a line of half as many UTF-16 units to the
-    // cap's bytes before its newline, so only the byte count, newline
-    // included, can tell it doesn't fit.
+    // é is two bytes in UTF-8 and one UTF-16 unit, so this line reaches the cap
+    // in bytes at half as many units: only a byte count sees it doesn't fit.
     const twoByte = 'é'.repeat(Math.floor((room + 1) / 2)) + 'x'.repeat((room + 1) % 2);
     const multiByte = line({ ...base, rawRequest: twoByte });
     expect(has(multiByte.parsed, 'rawRequest')).toBe(false);
@@ -103,8 +99,6 @@ describe('serializeRecord drops parts in order, each step checked against the ca
   });
 
   test('a multi-byte record under the cap is counted by its bytes and written whole', () => {
-    // 6,000,000 two-byte characters: 12 MB of UTF-8, over what a count of
-    // UTF-16 units alone could clear, under the cap.
     const record = { ...call, rawRequest: 'é'.repeat(6_000_000) };
     const { bytes, parsed } = line(record);
     expect(bytes).toBeLessThan(CAP);

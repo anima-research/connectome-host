@@ -1,15 +1,9 @@
 /**
- * The warning a host prints at start when the Bun running it is below the
- * floor its package.json declares (`engines.bun`). Below that floor the host
+ * Below the floor the host's package.json declares (`engines.bun`), the host
  * can fail in ways that don't name Bun, such as an EFAULT from a filesystem
- * call, so the warning names it first. It warns rather than refuses, and
- * nothing else depends on it.
- *
- * The floor is read only in the form the host's package.json gives it,
- * `>=X.Y.Z` (its test checks that it does), and the running version is
- * compared with it by its release numbers. A prerelease, such as a canary,
- * comes before its own release: so a prerelease of the floor's release is
- * below the floor, and one of a later release isn't. Pure, for its test.
+ * call. A prerelease, such as a canary, comes before its own release: so a
+ * prerelease of the floor's release is below the floor, and one of a later
+ * release isn't.
  */
 const FLOOR = /^\s*>=\s*(\d+)\.(\d+)\.(\d+)\s*$/;
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
@@ -19,9 +13,6 @@ export function bunFloorWarning(engines: unknown, bun: string | undefined, hostV
   return bunBelowFloor(declared, bun) === true ? warning((declared as string).trim(), bun!, hostVersion) : null;
 }
 
-/** Whether `bun` is below the floor `declared` (an `engines.bun`), by the
- *  rule above: null when either can't be read in that form. Update reads a
- *  release's floor this way before installing it (src/update/update.ts). */
 export function bunBelowFloor(declared: unknown, bun: string | undefined): boolean | null {
   const floor = typeof declared === 'string' ? FLOOR.exec(declared) : null;
   const running = VERSION.exec(bun ?? '');

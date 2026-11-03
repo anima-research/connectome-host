@@ -1,12 +1,7 @@
 /**
- * Stops the current session's framework before a session switch.
- *
- * From agent-framework 0.23.0, `stop()` rejects after its whole teardown
+ * agent-framework's `stop()` rejects after its whole teardown
  * when an MCP server's child couldn't be confirmed exited, naming each such
- * child and its server. The framework is stopped either way, so the switch
- * goes on and the rejection is logged. Letting it end the switch would leave
- * the old framework stopped and no new one started, with the agent gone
- * until the host restarts.
+ * child and its server.
  */
 export async function stopForSessionSwitch(
   framework: { stop(): Promise<void> },

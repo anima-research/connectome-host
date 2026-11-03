@@ -1,14 +1,6 @@
 /**
- * The context curve page (/curve) and the retrieval trace page
- * (/debug/retrieval/view) are HTML held in template literals, which the web
- * UI serves as they are. A template literal takes the backslash escapes and
- * the ${} in its text: the \' that broke the curve page (#246) reached the
- * browser as a bare apostrophe, so its script didn't parse. A script that
- * doesn't parse never runs, and since a parse error never reaches the page's
- * own error line, the page stays on its loading line while the host logs
- * nothing. An escape that still parses, such as a regex's \s, would change a
- * script silently. So each page's text must be its template exactly as
- * written, and its inline script must parse.
+ * A template literal takes the backslash escapes and the ${} in its text, and a
+ * script that doesn't parse never runs.
  */
 import { readFileSync } from 'node:fs';
 import { Script } from 'node:vm';
@@ -24,12 +16,9 @@ const PAGES = [
 const moduleSource = (file: string): string =>
   readFileSync(new URL(`../src/modules/${file}`, import.meta.url), 'utf8');
 
-/** The text of the template literal `name` is exported as, as its module's
- *  source writes it: from the backtick after the export to the next one. Its
- *  line endings become \n, as a template literal's do, so a checkout with
- *  CRLF endings reads the same. */
+/** A template literal's line endings become \n, whatever the source's. */
 function templateText(source: string, name: string): string {
-  const text = source.replace(/\r\n?/g, '\n');
+  const text = '\n' + source.replace(/\r\n?/g, '\n');
   const declaration = `\nexport const ${name} = \``;
   const at = text.indexOf(declaration);
   if (at === -1) throw new Error(`no line starts with: export const ${name} = \``);
@@ -37,10 +26,8 @@ function templateText(source: string, name: string): string {
   return text.slice(open, text.indexOf('`', open));
 }
 
-/** The body of each inline script: one with no src attribute, since a
- *  browser ignores the body of a script with a src, even a bare or empty one.
- *  As in a browser, a script ends at `</script` followed by whitespace, `/`
- *  or `>`. */
+/** A browser ignores the body of a script with a src, even a bare or empty one,
+ *  and ends a script at `</script` followed by whitespace, `/` or `>`. */
 function inlineScripts(html: string): string[] {
   return [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script[\s/>]/gi)]
     .filter((match) => !/(?:^|\s)src(?=[\s=/]|$)/i.test(match[1]))
@@ -58,9 +45,8 @@ describe('pages served from a string', () => {
       expect(scripts.length).toBeGreaterThan(0);
       for (const script of scripts) {
         expect(script.trim()).not.toBe('');
-        // node:vm's Script parses its source as a classic script, as a
-        // browser does, when it's constructed, without running it: under
-        // Bun 1.4.3, as under Node. (Bun 1.3.14's didn't parse until it ran.)
+        // node:vm's Script parses its source as a classic script when it's
+        // constructed, without running it.
         expect(() => new Script(script)).not.toThrow();
       }
     });

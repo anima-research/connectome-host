@@ -1,38 +1,7 @@
 /**
- * TtsRelayModule — streams the agent's live generation to a melodeus-tts-relay
- * server so voice clients (Melodeus, the iOS app) can speak it as it's born.
- *
- * Pure trace-bus tap (docs/observability.md spirit: traces are the outbound
- * wire, they never drive agent logic). The module subscribes to the framework's
- * existing streaming traces and re-emits the relay's bot-side protocol
- * (melodeus-tts-relay/PROTOCOL.md) over one outbound WebSocket:
- *
- *   inference:started                  → activation_start
- *   inference:tokens                   → chunk        (visible = blockType 'text')
- *   inference:content_block            → block_start / block_complete
- *   inference:completed / :turn_ended  → activation_end reason 'complete'
- *   inference:aborted                  → activation_end reason 'abort'
- *   inference:failed / :exhausted      → activation_end reason 'error'
- *
- * Channel tagging rides the turn-frozen locus the framework already stamps on
- * those traces (`channelId`, the MCPL composite id). The relay speaks raw
- * Discord snowflakes, so the composite's last segment is what goes on the wire.
- * `block_complete.content` is reconstructed here by accumulating that block's
- * chunks — the trace deliberately doesn't duplicate block content.
- *
- * Interruptions (the one inbound message): a voice client reports the words
- * actually voiced before the user spoke over them. Unlike ChapterX — which
- * aborts the in-flight stream and substitutes spokenText as the completion —
- * connectome posts prose at tool-round boundaries, so the message is usually
- * already on Discord. We therefore EDIT it down to the voiced words (matching
- * the interruption against the messages recent `inference:published` traces
- * report, each with its channelId + messageId + text) via the discord MCPL's
- * edit_message tool, and drop a note into the agent's context so she knows
- * she was cut off — the next turn shouldn't believe the full paragraph
- * landed.
- *
- * Nothing here touches the host loop: remove the recipe block and the tap is
- * gone. No tools are exposed to the agent (v1).
+ * Speaks the bot side of melodeus-tts-relay's protocol (its PROTOCOL.md)
+ * over one outbound WebSocket. The relay takes raw Discord channel ids, so
+ * the MCPL composite id's last segment goes on the wire.
  */
 
 import type {
@@ -47,34 +16,18 @@ import type {
   TraceEvent,
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
+import { hostNoteMetadata } from '../speaker.js';
 
 export interface TtsRelayModuleConfig {
-  /** Relay bot endpoint, e.g. "ws://localhost:8800/bot". */
   url: string;
-  /** Shared secret for the relay's /bot auth (BOT_TOKENS). `${VAR}` it. */
   token: string;
-  /** Relay-side bot identifier. Defaults to the agent's name at first trace. */
   botId?: string;
-  /** Discord user id to stamp on stream events (voice-config mapping key on
-   *  the client side). Defaults to botId. */
   userId?: string;
-  /** Display name stamped on stream events. Defaults to the agent's name. */
   username?: string;
-  /** MCPL server id owning edit_message for interruption edits. Default 'discord'. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption truncates a posted message.
-   *  Default true. */
   notifyOnInterruption?: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Relay wire types (bot side of melodeus-tts-relay/PROTOCOL.md)
-// ---------------------------------------------------------------------------
 
 type BlockType = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
@@ -85,13 +38,6 @@ interface InterruptionEvent {
   timestamp: number;
 }
 
-/**
- * Minimal WebSocket client for the relay's /bot endpoint. Ported from
- * chatperx/src/tts/relay-client.ts, WHATWG-ified (Bun's global WebSocket —
- * no `ws` dependency). Auto-reconnects except after an auth failure; every
- * send is fire-and-forget and drops silently while disconnected (the relay
- * spec's own semantics: no queueing).
- */
 class RelayBotClient {
   private ws: WebSocket | null = null;
   private authenticated = false;
@@ -116,7 +62,7 @@ class RelayBotClient {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.authenticated = false;
     if (this.ws) {
-      try { this.ws.close(1000, 'module stopping'); } catch { /* already closed */ }
+      try { this.ws.close(1000, 'module stopping'); } catch { }
       this.ws = null;
     }
   }
@@ -129,7 +75,6 @@ class RelayBotClient {
     this.onInterruptionHandler = handler;
   }
 
-  /** Send a typed relay message; botId + timestamp are stamped here. */
   emit(type: string, payload: Record<string, unknown>): void {
     if (!this.isConnected()) return;
     try {
@@ -164,10 +109,9 @@ class RelayBotClient {
           console.error(`[tts-relay] authenticated with ${this.url} as ${this.botId}`);
           break;
         case 'auth_error':
-          // Bad token won't heal by retrying — stop, loudly.
           console.error(`[tts-relay] AUTH FAILED (${msg.error}) — relay tap disabled until restart`);
           this.shouldReconnect = false;
-          try { ws.close(); } catch { /* noop */ }
+          try { ws.close(); } catch { }
           break;
         case 'interruption':
           this.onInterruptionHandler?.({
@@ -178,7 +122,7 @@ class RelayBotClient {
           });
           break;
         default:
-          break; // unknown relay message — ignore
+          break;
       }
     };
 
@@ -188,7 +132,7 @@ class RelayBotClient {
     };
 
     ws.onerror = () => {
-      // onclose follows and owns the reconnect; nothing to do here.
+      // close follows, and onclose reconnects.
     };
   }
 
@@ -201,24 +145,13 @@ class RelayBotClient {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Module
-// ---------------------------------------------------------------------------
-
-/** Per-agent state for the activation currently streaming. */
 interface ActivationState {
-  /** MCPL composite channel id from the traces (e.g. discord:guild:123). */
   mcplChannelId?: string;
-  /** Raw surface id sent to the relay (last composite segment). */
   rawChannelId?: string;
-  /** Whether activation_start has been emitted for this turn. */
   announced: boolean;
-  /** Accumulated text per blockIndex, for block_complete.content. */
   blocks: Map<number, string>;
 }
 
-/** A message the agent's prose recently published: the edit target for an
- *  interruption. */
 interface PublishedMessage {
   rawChannelId: string;
   mcplChannelId: string;
@@ -229,14 +162,11 @@ interface PublishedMessage {
 
 const PUBLISHED_RING_MAX = 32;
 
-/** `discord:<guild>:<id>` / `portal:<id>` / raw → the raw surface id. */
 function rawChannelId(mcplId: string): string {
   const ix = mcplId.lastIndexOf(':');
   return ix === -1 ? mcplId : mcplId.slice(ix + 1);
 }
 
-/** Channel-bound inference traces carry `channelId` at runtime, but the
- *  framework's TraceEvent union doesn't declare it — read it through a cast. */
 function traceChannelId(event: unknown): string | undefined {
   const v = (event as { channelId?: unknown }).channelId;
   return typeof v === 'string' ? v : undefined;
@@ -253,7 +183,6 @@ export class TtsRelayModule implements Module {
 
   private activations = new Map<string, ActivationState>();
   private published: PublishedMessage[] = [];
-  /** Resolved lazily from the first trace when config omits botId/username. */
   private agentName: string | null = null;
 
   constructor(private readonly config: TtsRelayModuleConfig) {}
@@ -275,7 +204,6 @@ export class TtsRelayModule implements Module {
     this.client.connect();
 
     this.offTrace = ctx.onTrace((event) => {
-      // A trace listener must never throw into the framework's emit path.
       try { this.onTraceEvent(event); }
       catch (err) { console.error('[tts-relay] trace handler error:', err); }
     });
@@ -301,10 +229,6 @@ export class TtsRelayModule implements Module {
     return {};
   }
 
-  // -------------------------------------------------------------------------
-  // Trace → relay
-  // -------------------------------------------------------------------------
-
   private identity(agentName: string): { userId: string; username: string } {
     this.agentName ??= agentName;
     const username = this.config.username ?? agentName;
@@ -321,7 +245,6 @@ export class TtsRelayModule implements Module {
     return st;
   }
 
-  /** Adopt a channel from a trace and emit activation_start once we have one. */
   private adoptChannel(st: ActivationState, agentName: string, mcplChannelId?: string): void {
     if (mcplChannelId && !st.mcplChannelId) {
       st.mcplChannelId = mcplChannelId;
@@ -350,11 +273,8 @@ export class TtsRelayModule implements Module {
   private onTraceEvent(event: TraceEvent): void {
     switch (event.type) {
       case 'inference:published': {
-        // Remember what the agent's prose posted where, so an interruption
-        // can find its edit target: each published message, with the id its
-        // server returned. `mcpl:speech-routed` also reports publishes that
-        // aren't this prose, such as the `sleep` tool's announcement and a
-        // subconscious's `speak_in_channel`, which no interruption edits.
+        // mcpl:speech-routed also reports publishes that aren't this prose, so the
+        // edit targets come from inference:published.
         this.published.push({
           rawChannelId: rawChannelId(event.channelId),
           mcplChannelId: event.channelId,
@@ -369,8 +289,7 @@ export class TtsRelayModule implements Module {
       }
 
       case 'inference:started': {
-        // A context-budget restart re-emits inference:started mid-turn; the
-        // existing activation (announced or not) simply carries on.
+        // A context-budget restart emits inference:started again mid-turn.
         const st = this.activation(event.agentName);
         this.adoptChannel(st, event.agentName, traceChannelId(event));
         break;
@@ -379,7 +298,7 @@ export class TtsRelayModule implements Module {
       case 'inference:tokens': {
         const st = this.activation(event.agentName);
         this.adoptChannel(st, event.agentName, traceChannelId(event));
-        if (!st.rawChannelId) break; // no locus — nothing to voice into
+        if (!st.rawChannelId) break;
         st.blocks.set(event.blockIndex, (st.blocks.get(event.blockIndex) ?? '') + event.content);
         this.client?.emit('chunk', {
           channelId: st.rawChannelId,
@@ -387,8 +306,6 @@ export class TtsRelayModule implements Module {
           text: event.content,
           blockIndex: event.blockIndex,
           blockType: event.blockType as BlockType,
-          // Voice only spoken prose. Thinking/tool blocks still stream (the
-          // protocol carries them for UI), but flagged invisible.
           visible: event.blockType === 'text',
         });
         break;
@@ -407,8 +324,7 @@ export class TtsRelayModule implements Module {
         if (event.phase === 'block_start') {
           this.client?.emit('block_start', base);
         } else {
-          // Reconstructed from this block's chunks — the trace itself
-          // deliberately omits block content.
+          // inference:content_block carries no content.
           const content = st.blocks.get(event.blockIndex) ?? '';
           st.blocks.delete(event.blockIndex);
           this.client?.emit('block_complete', { ...base, content });
@@ -418,8 +334,6 @@ export class TtsRelayModule implements Module {
 
       case 'inference:completed':
       case 'inference:turn_ended':
-        // A turn a tool ended (skip_reply, sleep) ends as completely as one
-        // that streams to its end.
         this.endActivation(event.agentName, 'complete');
         break;
       case 'inference:aborted':
@@ -435,10 +349,6 @@ export class TtsRelayModule implements Module {
         break;
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Interruption → edit the posted message down to the voiced words
-  // -------------------------------------------------------------------------
 
   private async handleInterruption(ev: InterruptionEvent): Promise<void> {
     console.error(
@@ -466,24 +376,14 @@ export class TtsRelayModule implements Module {
       console.error('[tts-relay] no published message matched the interruption — nothing edited');
     }
 
-    // Tell the agent she was cut off — otherwise her next turn believes the
-    // whole paragraph was heard. Plain context note, no inference request:
-    // the voice client's transcript of what the human said is the activation.
     if (this.config.notifyOnInterruption !== false) {
       const note = edited
         ? `[voice] Your message was interrupted by ${ev.reason.replace('_', ' ')} — only this much was voiced, and the posted message was trimmed to match: "${ev.spokenText}"`
         : `[voice] Your reply was interrupted by ${ev.reason.replace('_', ' ')} after: "${ev.spokenText}" (the posted message could not be trimmed)`;
-      this.ctx?.addMessage('user', [{ type: 'text', text: note }]);
+      this.ctx?.addMessage('user', [{ type: 'text', text: note }], hostNoteMetadata('voice-interruption'));
     }
   }
 
-  /**
-   * Match the interruption to the posted segment being voiced when it hit:
-   * newest-first, same channel, and the voiced words prefix-match the
-   * segment's text (whitespace-collapsed — TTS clients normalize). Falls back
-   * to the newest message in the channel: with PUBLISHED_RING_MAX recency that's
-   * almost always the one being read aloud.
-   */
   private findInterruptedMessage(ev: InterruptionEvent): PublishedMessage | null {
     const inChannel = this.published.filter((r) => r.rawChannelId === ev.channelId).reverse();
     if (inChannel.length === 0) return null;

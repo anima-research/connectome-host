@@ -1,11 +1,6 @@
 /**
- * autoStart children launch once the parent's framework has started, not
- * while it is being built. The framework awaits every module's start() inside
- * AgentFramework.create(), before its own start() runs its agents, so a child
- * launched from the fleet's start() could have residents acting before the
- * parent's framework had started its agents. start() now only adopts living
- * children, and the host
- * calls launchAutoStart() after framework.start() (src/start-framework.ts).
+ * agent-framework's create() awaits every module's start(), before the
+ * framework's own start() runs its agents.
  */
 import { describe, test, expect, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,7 +11,6 @@ import { FleetModule } from '../src/modules/fleet-module.js';
 type Ctx = Parameters<FleetModule['start']>[0];
 const ctx = { getState: () => null, setState: () => {} } as unknown as Ctx;
 
-/** A fleet whose launches are recorded rather than run. */
 function fleetWith(names: Array<{ name: string; autoStart?: boolean }>) {
   const fleet = new FleetModule({
     autoStart: names.map(({ name, autoStart }) => ({ name, recipe: `${name}.json`, ...(autoStart !== undefined ? { autoStart } : {}) })),
@@ -26,7 +20,6 @@ function fleetWith(names: Array<{ name: string; autoStart?: boolean }>) {
   return { fleet, launches, launched };
 }
 
-/** Make start()'s adoption take back `name`, as reattaching to a living child does. */
 function adopting(fleet: FleetModule, name: string) {
   spyOn(fleet as any, 'adoptPersistedChildren').mockImplementation(async () => {
     (fleet as unknown as { children: Map<string, unknown> }).children.set(name, { name, adopted: true, status: 'ready' });
@@ -35,7 +28,6 @@ function adopting(fleet: FleetModule, name: string) {
 
 describe('FleetModule autoStart, after the framework has started', () => {
   test('start() launches no autoStart child, and launchAutoStart() launches each one once', async () => {
-    // The host gives an enabled child autoStart: true (src/index.ts), and a recipe can leave it out.
     const { fleet, launched } = fleetWith([{ name: 'a', autoStart: true }, { name: 'off', autoStart: false }, { name: 'b' }]);
     await fleet.start(ctx);
     expect(launched()).toEqual([]);
@@ -61,10 +53,8 @@ describe('FleetModule autoStart, after the framework has started', () => {
       expect([...fleet.autoStartLaunching()]).toEqual([]);
       fleet.launchAutoStart();
       expect([...fleet.autoStartLaunching()]).toEqual(['a', 'b']);
-      // The wait for them ends once every one has ended, whether it was refused or not.
       let waited = false;
       void fleet.autoStartRecorded().then(() => { waited = true; });
-      // A refused launch ends with no record, and leaves the other still under way.
       settle.get('a')!({ success: false, error: 'refused' });
       await Bun.sleep(0);
       expect([...fleet.autoStartLaunching()]).toEqual(['b']);
@@ -82,9 +72,6 @@ describe('FleetModule autoStart, after the framework has started', () => {
 
   test('autoStartRecorded() resolves once each launch has recorded its child, before the child is ready', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-autostart-recorded-'));
-    // The mock child never opens its socket, so its launch is still waiting
-    // for it long after the launch has recorded the child, until the stop
-    // below ends the child.
     const recipe = join(dir, 'leaf.json');
     writeFileSync(recipe, JSON.stringify({ noSocket: true }));
     const fleet = new FleetModule({
@@ -94,12 +81,10 @@ describe('FleetModule autoStart, after the framework has started', () => {
       sigtermEscalationMs: 100,
       autoStart: [{ name: 'leaf', recipe, dataDir: join(dir, 'leaf') }],
     });
-    // The spy lets each launch run, and keeps what it returns.
     const launches = spyOn(fleet as any, 'handleLaunch');
     const logged: string[] = [];
     try {
       await fleet.start(ctx);
-      // Nothing is under way yet, so there's nothing to wait for.
       await fleet.autoStartRecorded();
       fleet.launchAutoStart();
       expect([...fleet.autoStartLaunching()]).toEqual(['leaf']);
@@ -107,10 +92,6 @@ describe('FleetModule autoStart, after the framework has started', () => {
       expect(fleet.getChildren().get('leaf')?.status).toBe('starting');
       expect([...fleet.autoStartLaunching()]).toEqual([]);
     } finally {
-      // The stop ends the child while its launch still waits for the socket,
-      // so the launch fails, and logs that as it ends, which can be after the
-      // stop has returned. The test waits for that end, so no line of its
-      // launch lands in a later test's spy.
       const log = spyOn(console, 'error').mockImplementation((line) => { logged.push(String(line)); });
       try {
         await fleet.stop();
@@ -130,7 +111,6 @@ describe('FleetModule autoStart, after the framework has started', () => {
     fleet.launchAutoStart();
     expect(launched().map(({ name }) => name)).toEqual(['fresh']);
     expect([...fleet.autoStartLaunching()]).toEqual(['fresh']);
-    // The adopted record is a stand-in with no process to stop.
     fleet.setDetachMode(true);
     await fleet.stop();
   });
@@ -144,7 +124,6 @@ describe('FleetModule autoStart, after the framework has started', () => {
     expect(early.launched().map(({ name }) => name)).toEqual(['a']);
     await early.fleet.stop();
 
-    // While start() awaits its adoption, which takes back 'kept', nothing launches.
     const during = fleetWith([{ name: 'kept' }, { name: 'fresh' }]);
     let adopt!: () => void;
     spyOn(during.fleet as any, 'adoptPersistedChildren').mockImplementation(() => new Promise<void>((done) => {
@@ -168,7 +147,6 @@ describe('FleetModule autoStart, after the framework has started', () => {
     const late = fleetWith([{ name: 'a' }]);
     await late.fleet.start(ctx);
     const stopped = late.fleet.stop();
-    // stop() has begun and not finished: the fleet still holds its context.
     late.fleet.launchAutoStart();
     await stopped;
     late.fleet.launchAutoStart();

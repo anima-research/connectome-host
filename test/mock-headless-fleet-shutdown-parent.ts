@@ -23,12 +23,13 @@ await runHeadless({
   agentName: 'fixture',
   framework: {
     getAllAgents: () => [{ name: 'fixture', state: { status: 'idle' } }],
+    getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
+    getQueueDepth: () => 0,
+    getAllModules: () => [],
     onTrace: () => () => {},
     async stop() {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // A synthetic caller deadline expires before Fleet's actual 10s/5s waits.
-        // This does not exercise Framework.stop(timeoutMs).
         await Promise.race([
           fleet.stop(),
           new Promise<never>((_, reject) => {

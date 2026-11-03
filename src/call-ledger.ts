@@ -1,13 +1,3 @@
-/**
- * Recent provider-call ledger for the WebUI.
- *
- * The provider adapter feeds this tracker compact, content-free call records.
- * It reconstructs the cache verdict operators actually need (hit, first
- * write, expired rewrite, uncached auxiliary call) and retains a bounded
- * window. Older process logs are replayed on startup so a host restart does
- * not leave the dashboard blank.
- */
-
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
@@ -32,26 +22,19 @@ export interface ProviderCallRecord {
    *  Anthropic charges different multipliers for 5m and 1h writes. */
   cacheWrite5mTokens?: number;
   cacheWrite1hTokens?: number;
-  /** True only when the split came from the response usage object. */
   cacheWriteBucketsAuthoritative?: boolean;
   inferenceGeo?: string;
   serviceTier?: string;
-  /** Undefined for historical compact logs written before cache summaries. */
   cacheBreakpoints?: number;
   /** TTLs found on cache_control blocks. `default` means provider default. */
   cacheTtls?: string[];
   stopReason?: string;
-  /** Present exactly when the call failed: its error text, which can be empty. */
   error?: string;
   /** membrane's key for the call's cache lineage: its model, system and
-   *  tools. Undefined for rows written before it was recorded. */
+   *  tools. */
   lineage?: string;
 }
 
-/** The cache lineages a ledger remembers the last activity of, the least
- *  recently active forgotten first: far more than the lineages a resident
- *  runs, one for each model, system prompt and tool list it calls with. One
- *  forgotten is measured as one not yet seen. */
 const LINEAGES_REMEMBERED = 256;
 
 export interface CallLedgerOptions {
@@ -69,7 +52,6 @@ export class CallLedger {
   private readonly defaultTtl: '5m' | '1h';
   private readonly listeners = new Set<Listener>();
   private lastCacheActivityAt: number | null = null;
-  /** The last cache activity of each lineage, least recent first. */
   private readonly lastCacheActivityByLineage = new Map<string, number>();
   private sequence = 0;
 
@@ -141,15 +123,6 @@ export class CallLedger {
     const ttlSeconds = ttl === '1h' ? 3600 : 300;
     const hasKnownFlags = call.cacheBreakpoints !== undefined;
     const hasCacheControls = (call.cacheBreakpoints ?? 0) > 0;
-    // A call's gap runs from the last cache activity in its lineage. Another
-    // lineage's calls or keepalive pokes say nothing of whether this one's
-    // entry expired. A lineage not seen yet, as after a change to the system
-    // prompt or the tools, and a row that names none, are measured from the
-    // last activity of any: a changed prefix still reads as one while that
-    // gap is inside the call's TTL, and as expired past it. For a lineage the
-    // ledger doesn't hold, the cause says the gap is any lineage's, since a
-    // new agent's first call, or a lineage last active before what the
-    // ledger holds, reads the same.
     const ownCacheAt = call.lineage !== undefined ? this.lastCacheActivityByLineage.get(call.lineage) : undefined;
     const priorCacheAt = ownCacheAt ?? this.lastCacheActivityAt;
     const gapFromAnyLineage = call.lineage !== undefined && ownCacheAt === undefined;
@@ -172,7 +145,6 @@ export class CallLedger {
     const splitMismatch = call.cacheWriteTokens > 0 && (
       !call.cacheWriteBucketsAuthoritative || reportedSplit !== call.cacheWriteTokens
     );
-    // A failure is priced at nothing, whatever its text: an empty one too.
     const cost = call.error !== undefined ? undefined : priceAnthropicCall(call.model, call.timestamp, {
       inputTokens: call.inputTokens,
       outputTokens: call.outputTokens,
@@ -219,13 +191,11 @@ export class CallLedger {
     if (notify) {
       const snapshot = this.snapshot();
       for (const listener of this.listeners) {
-        try { listener(snapshot); } catch { /* observability must not break inference */ }
+        try { listener(snapshot); } catch { }
       }
     }
   }
 
-  /** A call that read or wrote the cache is its lineage's, and the
-   *  process's, latest cache activity. */
   private noteCacheActivity(call: ProviderCallRecord): void {
     const at = Date.parse(call.timestamp);
     if (!(call.cacheReadTokens > 0 || call.cacheWriteTokens > 0) || !Number.isFinite(at)) return;
@@ -250,9 +220,6 @@ export class CallLedger {
       return;
     }
 
-    // The newest file first, all four within one budget, so the newest calls
-    // are read whole, up to the writers' line bound. A line longer than what's
-    // left of the budget ends the restore there, and older files go unread.
     const calls: ProviderCallRecord[] = [];
     let budget = CALL_LOG_READ_BUDGET;
     for (const file of files.reverse()) {
@@ -263,24 +230,15 @@ export class CallLedger {
             const parsed = parseLoggedCall(JSON.parse(line) as Record<string, unknown>);
             if (parsed) calls.push(parsed);
           } catch {
-            // A line that isn't a call record is skipped on its own.
           }
         });
       } catch {
-        // A file that can't be read is passed over. One that fails part way
-        // keeps the calls read from it, and what it read isn't counted
-        // against the budget.
         continue;
       }
       budget -= read.bytes;
       if (budget <= 0) break;
     }
-    // Back into the order the logs hold them, oldest first, so calls that
-    // share a time keep it through the sort below.
     calls.reverse();
-    // A call whose time can't be read sorts first, the rest in time order:
-    // a comparator that answered NaN for it would leave the calls around it
-    // out of order, and a lineage's clock could then step backwards.
     const at = (call: ProviderCallRecord): number => {
       const time = Date.parse(call.timestamp);
       return Number.isFinite(time) ? time : -Infinity;
@@ -290,9 +248,6 @@ export class CallLedger {
       const y = at(b);
       return x < y ? -1 : x > y ? 1 : 0;
     });
-    // The rows kept are the newest, but every call read that read or wrote
-    // the cache is its lineage's activity, as it was for the process that
-    // logged it.
     const kept = Math.max(0, calls.length - this.maxRows);
     for (const call of calls.slice(0, kept)) this.noteCacheActivity(call);
     for (const call of calls.slice(kept)) this.append(call, false);
@@ -305,12 +260,9 @@ function classifyCall(opts: {
   hasCacheControls: boolean;
   ttlSeconds: number;
   gapSeconds?: number;
-  /** The gap runs from any lineage's last activity, since the ledger holds
-   *  none of this call's lineage. */
   gapFromAnyLineage?: boolean;
 }): { verdict: CallLedgerVerdict; cause: string } {
   const { call, hasKnownFlags, hasCacheControls, ttlSeconds, gapSeconds, gapFromAnyLineage } = opts;
-  // A call failed exactly when it carries an error, whatever its text.
   if (call.error !== undefined) return { verdict: 'ERROR', cause: call.error || 'the error carried no text' };
   if (hasKnownFlags && !hasCacheControls) {
     return { verdict: 'uncached', cause: 'no cache_control flags in request' };
@@ -362,7 +314,6 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-/** Decode the vendor fields shared by live background receipts and log replay. */
 export function parseLoggedCall(record: Record<string, unknown>): ProviderCallRecord | null {
   const kind = record.kind;
   const timestamp = record.timestamp;
@@ -399,7 +350,6 @@ export function parseLoggedCall(record: Record<string, unknown>): ProviderCallRe
   };
 }
 
-/** Content-free cache_control inventory from an actual provider payload. */
 export function summarizeCacheControls(raw: unknown): { count: number; ttls: string[] } {
   let count = 0;
   const ttls: string[] = [];

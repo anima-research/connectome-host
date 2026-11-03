@@ -1,6 +1,6 @@
 # Tool-presentation configuration
 
-Uses agent-framework's tool-presentation API (agent-framework #162), which every agent-framework this host can install (^0.23.1) carries.
+Uses agent-framework's tool-presentation API (agent-framework #162), which every agent-framework this host can install (^0.29.0) carries.
 
 ```json
 {
@@ -15,7 +15,7 @@ Uses agent-framework's tool-presentation API (agent-framework #162), which every
 
 Merge this fragment into an existing recipe. Workspace must be enabled and contain the catalogue mount. Use a reserved catalogue filename; it is generated through `workspace--read`, not maintained on disk. The override file is an ordinary editable file with `{"version":1,"tools":{}}` for defaults. A missing file also means defaults; its parent directory must exist and be writable for editing tools.
 
-If the recipe sets `agent.allowedTools`, it must allow `workspace--read`, `set_tool_visibility` and `set_tool_description`, which are how the catalogue is read and how the resident's choices are undone; the framework refuses to start otherwise, naming the tool that's missing.
+If the recipe sets `agent.allowedTools`, it must allow `workspace--read`, `set_tool_visibility` and `set_tool_description`, which are how the catalogue is read and how the resident's choices are undone; the framework refuses to start otherwise, naming the tool that's missing. `set_tool_visibility` and `set_tool_description` are in the resident's built-in `settings` toolset (`toolsets--open {"toolset": "settings"}`, then `toolsets--act`). A tool hidden with `set_tool_visibility` leaves the tool list for the same place, or, for an MCPL server's tool, for that server's tab. A resident whose `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act` has no `settings` toolset: the two tools are in its tool list, and a tool it hides is in no list until `set_tool_visibility` shows it again.
 
 The presentation is the recipe's agent's own: subagents and conversation forks don't get one. Give each agent its own presentation file. Two recipes that name the same path share its overrides, so a tool one agent hides is hidden from the other too.
 

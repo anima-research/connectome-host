@@ -1,8 +1,3 @@
-/**
- * What the registry says of the package's releases (src/update/releases.ts):
- * each version's own fields from the full manifest, the release Update
- * offers, and the versions an update crosses.
- */
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_REGISTRY, candidateOf, rangeOf, readReleases, registryOf, releasesOf, shownRegistry } from '../src/update/releases.js';
 
@@ -72,7 +67,6 @@ describe('reading the registry', () => {
     expect(shownRegistry('https://me@r.example/npm/')).toBe('https://r.example/npm/');
     expect(shownRegistry('https://r.example/npm/')).toBe('https://r.example/npm/');
     expect(shownRegistry('not a url')).toBe('not a url');
-    // A failure that quotes the URL it was given is told without the secret too.
     const quoting = (async (url: string) => { throw new Error(`fetch ${url} refused`); }) as unknown as typeof fetch;
     const failed = await readReleases(secret, quoting).then(() => '', (error: Error) => error.message);
     expect(failed).toStartWith('The registry at https://r.example/npm/ couldn\'t be read: fetch https://r.example/npm/');
@@ -86,7 +80,6 @@ describe('reading the registry', () => {
   });
 
   test('gives up on a registry that answers nothing within its time', async () => {
-    // A registry that never answers: only the read's own signal ends it.
     let signal: AbortSignal | undefined;
     const silent = ((_url: string, init?: RequestInit) => new Promise<Response>((_done, fail) => {
       signal = init?.signal ?? undefined;

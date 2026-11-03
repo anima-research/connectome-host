@@ -1,7 +1,6 @@
 import {test,expect} from 'bun:test';
 import {buildDebugContext} from '../src/web/panel-data.js';
 
-// A stand-in framework whose presentation lookup checks it is asked, as itself, about the request its preview made.
 const fake=(presentation:unknown,injections:boolean)=>{
  const request={messages:[],tools:[]};
  const framework={

@@ -1,4 +1,3 @@
-/** Dependency-free operator viewer for the authenticated retrieval trace endpoint. */
 export const RETRIEVAL_TRACE_PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>

@@ -1,26 +1,3 @@
-/**
- * Minimal wire-protocol-only mock of a headless child, used as
- * FleetModuleConfig.childIndexPath in orchestration tests.
- *
- * Implements just enough of the parent↔child protocol to exercise
- * fleet--relay / fleet--await / lifecycle:idle / inference:speech
- * without spinning up the full framework + Membrane + Chronicle stack.
- *
- * Commands it understands (on top of shutdown/subscribe from the real one):
- *   { "type": "text", "content": "..." }
- *       → emit inference:started, inference:speech, inference:completed,
- *         then lifecycle:idle after ~30ms (simulates final-inference round).
- *
- *   { "type": "command", "command": "/hang" }
- *       → same as text but SKIP the lifecycle:idle emit (for await timeout).
- *
- *   { "type": "command", "command": "/crash" }
- *       → process.exit(1) (for await crash-detection test).
- *
- *   { "type": "command", "command": "/tool-use-then-speak <text>" }
- *       → simulate a tool-using turn (tool_calls_yielded clears speech)
- *         followed by a final turn with the supplied text.
- */
 import { createServer, type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
 import { existsSync, unlinkSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -31,7 +8,7 @@ const socketPath = join(dataDir, 'ipc.sock');
 const pidPath = join(dataDir, 'headless.pid');
 
 if (existsSync(socketPath)) {
-  try { unlinkSync(socketPath); } catch { /* noop */ }
+  try { unlinkSync(socketPath); } catch { }
 }
 writeFileSync(pidPath, String(process.pid));
 
@@ -41,14 +18,15 @@ function emit(obj: Record<string, unknown>): void {
   if (!currentClient) return;
   try {
     currentClient.write(JSON.stringify({ ...obj, ts: Date.now() }) + '\n');
-  } catch { /* noop */ }
+  } catch { }
 }
 
 const server = createServer((sock) => {
   if (currentClient) {
-    try { currentClient.end(); } catch { /* noop */ }
+    try { currentClient.end(); } catch { }
   }
   currentClient = sock;
+  textsReceived = 0;
 
   sock.setEncoding('utf8');
   let buf = '';
@@ -66,29 +44,43 @@ const server = createServer((sock) => {
   });
 
   sock.on('end', () => { if (currentClient === sock) currentClient = null; });
-  sock.on('error', () => { /* swallow */ });
+  sock.on('error', () => { });
 
-  // Ready with our own pid.
-  emit({ type: 'lifecycle', phase: 'ready', pid: process.pid, dataDir });
+  emit({ type: 'lifecycle', phase: 'ready', pid: process.pid, dataDir, idle: idleSaid });
+  if (bootTurn) {
+    bootTurn = false;
+    emit({ type: 'inference:started', agentName: 'mock', replay: true });
+    emit({ type: 'inference:completed', agentName: 'mock', replay: true });
+  }
 });
 
-function simulateFinalInference(text: string, emitIdleAfter: boolean): void {
+let bootTurn = process.env.MOCK_BOOT_TURN === '1';
+let idleSaid = bootTurn;
+let textsReceived = 0;
+
+function started(): void {
+  idleSaid = false;
   emit({ type: 'inference:started', agentName: 'mock' });
+}
+
+function idle(texts: number | null = textsReceived): void {
+  idleSaid = true;
+  emit({ type: 'lifecycle', phase: 'idle', ...(texts === null ? {} : { texts }) });
+}
+
+function simulateFinalInference(text: string, emitIdleAfter: boolean): void {
+  started();
   emit({ type: 'inference:speech', agentName: 'mock', content: text });
   emit({ type: 'inference:completed', agentName: 'mock' });
   if (emitIdleAfter) {
-    setTimeout(() => emit({ type: 'lifecycle', phase: 'idle' }), 30);
+    setTimeout(idle, 30);
   }
 }
 
 function dispatch(msg: Record<string, unknown>): void {
   const t = typeof msg.type === 'string' ? msg.type : '';
-  if (t === 'subscribe') return;  // accept silently
+  if (t === 'subscribe') return;
   if (t === 'panel-request') {
-    // Panel-op verbs for FleetModule.requestPanel tests:
-    //   op 'hang' → never answers (timeout path)
-    //   op 'fail' → ok:false with a status (error passthrough path)
-    //   anything else → ok:true echoing the params back
     const op = typeof msg.op === 'string' ? msg.op : '';
     if (op === 'hang') return;
     if (op === 'fail') {
@@ -99,10 +91,6 @@ function dispatch(msg: Record<string, unknown>): void {
     return;
   }
   if (t === 'update-request') {
-    // A switch's request (FleetModule.requestSwitch): a quiesce answers as a
-    // child whose agent 'mock' still holds a turn; a resume, resumed. Each
-    // answer echoes the request, and comes after a reply of another type
-    // carrying the same corrId, which the request mustn't take for its own.
     const request = (msg.request ?? {}) as Record<string, unknown>;
     emit({ type: 'panel-response', corrId: msg.corrId, op: 'not-this', ok: true, data: { decoy: true } });
     emit({
@@ -119,31 +107,80 @@ function dispatch(msg: Record<string, unknown>): void {
     return;
   }
   if (t === 'text' && typeof msg.content === 'string') {
+    textsReceived += 1;
+    idleSaid = false;
+    const held = /^held:(.+)$/.exec(msg.content);
+    if (held) {
+      started();
+      const releasedAt = held[1];
+      const watching = setInterval(() => {
+        if (!existsSync(releasedAt)) return;
+        clearInterval(watching);
+        emit({ type: 'inference:speech', agentName: 'mock', content: `echo: ${msg.content}` });
+        emit({ type: 'inference:completed', agentName: 'mock' });
+        setTimeout(idle, 30);
+      }, 20);
+      return;
+    }
+    const late = /^late:(\d+)/.exec(msg.content);
+    if (late) {
+      setTimeout(started, Number(late[1]));
+      return;
+    }
+    const slow = /^slow:(\d+)/.exec(msg.content);
+    if (slow) {
+      started();
+      setTimeout(() => {
+        emit({ type: 'inference:speech', agentName: 'mock', content: `echo: ${msg.content}` });
+        emit({ type: 'inference:completed', agentName: 'mock' });
+        setTimeout(idle, 30);
+      }, Number(slow[1]));
+      return;
+    }
+    if (msg.content === 'stale-start-and-idle-first') {
+      emit({ type: 'inference:started', agentName: 'mock' });
+      emit({ type: 'lifecycle', phase: 'idle', texts: textsReceived - 1 });
+      setTimeout(() => simulateFinalInference(`echo: ${msg.content}`, true), 300);
+      return;
+    }
+    if (msg.content === 'no-texts') {
+      started();
+      emit({ type: 'inference:completed', agentName: 'mock' });
+      setTimeout(() => idle(null), 30);
+      return;
+    }
     simulateFinalInference(`echo: ${msg.content}`, true);
     return;
   }
   if (t === 'command' && typeof msg.command === 'string') {
     const cmd = msg.command;
     if (cmd === '/hang') {
-      // Simulate text intake without going idle — for await-timeout testing.
-      emit({ type: 'inference:started', agentName: 'mock' });
+      started();
       emit({ type: 'inference:speech', agentName: 'mock', content: 'still thinking' });
       emit({ type: 'inference:completed', agentName: 'mock' });
-      // No lifecycle:idle.
       return;
     }
     if (cmd === '/crash') {
       process.exit(1);
     }
-    if (cmd.startsWith('/tool-use-then-speak ')) {
-      const finalText = cmd.slice('/tool-use-then-speak '.length);
-      // Round 1: thought preamble that ends in tool calls — speech tracker resets.
-      emit({ type: 'inference:started', agentName: 'mock' });
-      emit({ type: 'inference:tokens', agentName: 'mock', content: 'let me think' });
-      emit({ type: 'inference:tool_calls_yielded', agentName: 'mock', calls: [{ id: 't1', name: 'dummy', input: {} }] });
+    if (cmd === '/exit-after-idle') {
+      started();
       emit({ type: 'inference:completed', agentName: 'mock' });
-      // Round 2: final speech — should be the one that lands in lastCompletedSpeech.
-      setTimeout(() => simulateFinalInference(finalText, true), 20);
+      idle();
+      setTimeout(() => {
+        emit({ type: 'lifecycle', phase: 'exiting', reason: 'test' });
+        setTimeout(() => process.exit(0), 50);
+      }, 100);
+      return;
+    }
+    if (cmd === '/turn-later') {
+      setTimeout(() => {
+        started();
+        setTimeout(() => {
+          emit({ type: 'inference:completed', agentName: 'mock' });
+          idle();
+        }, 400);
+      }, 50);
       return;
     }
     if (cmd === '/help') {
@@ -155,7 +192,7 @@ function dispatch(msg: Record<string, unknown>): void {
 }
 
 server.listen(socketPath);
-server.on('error', () => { /* swallow */ });
+server.on('error', () => { });
 
 process.on('SIGTERM', () => {
   emit({ type: 'lifecycle', phase: 'exiting', reason: 'sigterm' });

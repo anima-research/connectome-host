@@ -1,14 +1,6 @@
-/**
- * What the Web UI's health panel makes of health without failure text, as an
- * observer that holds 'health' and not 'ops' is sent it (HEALTH_STRINGS,
- * QUOTA_STRINGS): each fact the text stood beside still shows, that a call
- * failed, a read failed, an agent is down or the quota can't be read, and no
- * text is shown in its place. The panel reads the snapshot through these
- * helpers; Health.tsx and App.tsx only lay their answers out.
- */
 import { describe, expect, test } from 'bun:test';
 import { CREDENTIAL_STRINGS, HEALTH_STRINGS, QUOTA_STRINGS, keepNamedStrings, type KeptStrings } from '../src/modules/web-ui-observers.js';
-import type { UpdateStatus } from '../src/update/update.js';
+import { PAGE_WAYS, bannerOf, restartLines, statusLines, type UpdateStatus } from '../src/web/update-text.js';
 import { credentialNote, healthEntry, healthReadError, lastActionText, readFailureLine } from '../src/web/health-lookup.js';
 import { debtNextStep, debtSummary, debtTone, type CompressionDebt } from '../src/web/compression-debt.js';
 import type { CallLedgerRow, QuotaSnapshotData } from '../src/web/protocol.js';
@@ -25,9 +17,9 @@ const TEXT = {
   quota: 'the usage endpoint answered 500',
   credential: 'anthropic rejected the credential (invalid x-api-key)',
   action: 'refresh failed: the token endpoint answered 400',
+  unsaved: "anthropic credential couldn't be written to /x/creds.json (EACCES: permission denied)",
 };
 
-/** As the page receives it: through JSON, without the strings `kept` doesn't name. */
 const sent = <T>(value: T, kept: KeptStrings | null): T =>
   JSON.parse(JSON.stringify(kept ? keepNamedStrings(value, kept) : value)) as T;
 
@@ -37,8 +29,6 @@ const row = (over: Partial<CallLedgerRow>): CallLedgerRow => ({
   cache: { ttls: ['5m'], effectiveTtl: '5m' }, verdict: 'HIT', cause: '90% from cache', ...over,
 });
 
-// /healthz on a host whose main agent is down, whose debt report and one
-// section's read failed, with a quarantined span and a failed call.
 const health = {
   agents: [{
     name: 'main',
@@ -72,7 +62,6 @@ describe('the health panel, with health and without ops', () => {
     const exhausted = (h: HealthSnapshot) => planHealthAlerts(h, new Map()).upsert.find((u) => u.kind === 'inference-exhausted')?.message;
     expect(exhausted(whole)).toBe(`3 consecutive inference failures — agent is down. Last: ${TEXT.lastError}`);
     expect(exhausted(bare)).toBe('3 consecutive inference failures — agent is down.');
-    // The quarantine row counts the span as the operator's does.
     const quarantine = (h: HealthSnapshot) => planHealthAlerts(h, new Map()).upsert.find((u) => u.kind === 'compression-quarantine')?.message;
     expect(quarantine(bare)).toBe(quarantine(whole));
   });
@@ -86,8 +75,6 @@ describe('the health panel, with health and without ops', () => {
     const debt = (h: HealthSnapshot) => healthEntry(h.compressionDebt, 'main') as CompressionDebt;
     expect(debtSummary(debt(bare))).toBe(debtSummary(debt(whole)));
     expect(debtTone(debt(bare))).toBe(debtTone(debt(whole)));
-    // The next step asks the operator to report what the message shows, so
-    // it comes only with the message.
     expect(debtNextStep(debt(whole))).toBeDefined();
     expect(debtNextStep(debt(bare))).toBeUndefined();
   });
@@ -114,9 +101,6 @@ describe('the health panel, with health and without ops', () => {
     expect(quotaUnreadable({ ...quota, error: undefined })).toBe(false);
     expect(quotaTitle(bareQuota)).toBe('Subscription quota (anthropic)\nLast refresh failed');
     expect(quotaTitle(quota)).toBe(`Subscription quota (anthropic)\nLast refresh failed: ${TEXT.quota}`);
-    // Before the first poll answers there is no quota; a meter that failed
-    // while it still holds windows from an earlier read has windows to show,
-    // so it isn't unreadable; a good read says nothing failed.
     expect(quotaUnreadable(null)).toBe(false);
     const kept = { ...bareQuota, windows: [{ key: 'five_hour', label: '5h', utilization: 10 }] };
     expect(quotaUnreadable(kept)).toBe(false);
@@ -124,21 +108,20 @@ describe('the health panel, with health and without ops', () => {
     expect(quotaTitle({ ...kept, error: undefined })).toBe('Subscription quota (anthropic)\n5h: 10% used');
   });
 
-  test("the credential still shows its kind, its login and how its last action ended, without what either said", () => {
+  test("the credential still shows its kind, its login and how its last action ended, without what any of them said", () => {
     const credential = {
       subscription: true, kind: 'auth-rejected', provider: 'anthropic', message: TEXT.credential, since: 1, rotatable: true,
       actions: [{ id: 'refresh', label: 'Refresh' }], login: { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' },
-      lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
+      lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action }, unsaved: TEXT.unsaved,
     };
     const bare = sent(credential, CREDENTIAL_STRINGS);
     expect(JSON.stringify(bare)).not.toContain(TEXT.credential);
     expect(JSON.stringify(bare)).not.toContain(TEXT.action);
+    expect(JSON.stringify(bare)).not.toContain(TEXT.unsaved);
     expect(bare).toMatchObject({ kind: 'auth-rejected', login: credential.login, actions: credential.actions });
-    // The line under the kind goes when its text does; it says nothing while the state is ok.
     expect(credentialNote(credential)).toBe(TEXT.credential);
     expect(credentialNote(bare)).toBeUndefined();
     expect(credentialNote({ ...credential, kind: 'ok' })).toBeUndefined();
-    // A state that names no kind is taken as ok.
     expect(credentialNote({ message: TEXT.credential })).toBeUndefined();
     expect(lastActionText(credential.lastAction, '5s ago')).toBe(`refresh FAILED 5s ago — ${TEXT.action}`);
     expect(lastActionText(bare.lastAction, '5s ago')).toBe('refresh FAILED 5s ago');
@@ -197,5 +180,51 @@ describe("the update section, with health and without ops", () => {
   test("a read that failed keeps its time and empties its error", () => {
     const failed: UpdateStatus = { ...update, check: { at: '2026-10-22T12:00:00.000Z', ok: false, error: 'getaddrinfo ENOTFOUND registry.internal.example' } };
     expect(sent({ update: failed }, HEALTH_STRINGS).update.check).toEqual({ at: '2026-10-22T12:00:00.000Z', ok: false, error: '' });
+  });
+
+  const secrets = ['E404', 'ECONNRESET', 'disk swap', 'sk-ant', 'journal.jsonl', 'store bug', 'ENOTFOUND', 'refused'];
+  const words = (status: UpdateStatus): string => {
+    const shown = sent({ update: status }, HEALTH_STRINGS).update;
+    return [...statusLines(shown, PAGE_WAYS), ...(restartLines(shown) ?? []), bannerOf(shown)?.line ?? ''].join('\n');
+  };
+
+  test("the page's words keep each fact, with no clause for the text emptied from it", () => {
+    const text = words(update);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    expect(text).toContain("- kid: can't be counted\n");
+    expect(text).toContain('This host is quiesced: a restart, or a Go back that keeps the data, keeps it so.');
+    expect(text).toContain("Last request: to 0.12.2, didn't go ahead at 2026-10-21T09:00:00.000Z.");
+    expect(text).toContain("1 part of this status couldn't be read.");
+    expect(text).toContain('This host is quiesced, and comes back quiesced.');
+    const failedInstall = words({ ...update, installing: null, restart: null });
+    expect(failedInstall).toContain('Installing 0.13.0 failed.');
+    expect(failedInstall).toContain("0.12.2 is installed, and the last request to switch to it didn't go ahead.");
+    expect(words({ ...update, check: { at: '2026-10-22T12:00:00.000Z', ok: false, error: 'getaddrinfo ENOTFOUND' } }))
+      .toContain('Reading the registry failed at 2026-10-22T12:00:00.000Z.\n');
+    const deprecated = { ...update.check!, candidate: null, costs: [] } as UpdateStatus['check'];
+    expect(words({ ...update, check: deprecated })).toContain('0.12.1 is deprecated on npm.\n');
+    const quiet: UpdateStatus = { ...update, check: deprecated, restart: null, installing: null, installed: null, lastInstall: null };
+    expect(bannerOf(sent({ update: quiet }, HEALTH_STRINGS).update)?.line).toBe('0.12.1 is deprecated on npm.');
+    const two: UpdateStatus = { ...update, problems: ['the last switch: EACCES on journal.jsonl', 'the copy: ENOENT'] };
+    expect(words(two)).toContain("2 parts of this status couldn't be read.");
+    expect(words({ ...two, install: false })).toContain("2 parts of this status couldn't be read.");
+  });
+
+  test("a fallback's emptied lines read as none, pointing at the service's log", () => {
+    const fellBack: UpdateStatus = {
+      ...update, restart: null, installing: null,
+      lastSwitch: {
+        outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: '0.12.2 refused its store',
+        trialLog: ['Fatal error: Error: ANTHROPIC_API_KEY sk-ant-xyz was refused'],
+      },
+    };
+    const text = words(fellBack);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    expect(text).toContain('Last switch: 0.12.1 came back with its data at 2026-10-21T09:00:00.000Z, from a try of 0.12.2. ' +
+      "The service's log, or the terminal the host was started in, says more.");
+    expect(text).toContain("0.12.2 ended before its commit at its last try, so 0.12.1 came back. The service's log, or the " +
+      'terminal the host was started in, says more.');
+    expect(text).toContain("Its last try ended before its commit. The service's log, or the terminal the host was started " +
+      'in, says more.');
   });
 });

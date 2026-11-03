@@ -1,16 +1,7 @@
-/**
- * A subagent's peek stream passes on each of its streams' ends
- * (state/turn-trace.ts), so the panel that follows it shows how each stream
- * ended: a turn a tool ended (its return, skip_reply, sleep), an abort and a
- * turn the framework gave up on, as well as a completed or failed one. The
- * in-flight flag the reaper reads stays as it was at those three.
- */
 import { describe, expect, test } from 'bun:test';
 import type { TraceEvent } from '@animalabs/agent-framework';
 import { SubagentModule, type SubagentStreamEvent } from '../src/modules/subagent-module.js';
 
-/** A live subagent the module's trace handler can find, and the events its
- *  peek stream sends. */
 function setUp() {
   const mod = new SubagentModule();
   const live = {
@@ -48,7 +39,6 @@ describe("a subagent's peek stream", () => {
     expect(events).toEqual([
       { type: 'inference:turn_ended' },
       { type: 'inference:aborted', reason: 'user' },
-      // No reason, or an empty one, sends none.
       { type: 'inference:aborted' },
       { type: 'inference:aborted' },
       { type: 'inference:exhausted', error: 'Stream aborted: timeout' },

@@ -1,30 +1,16 @@
 /**
- * Anthropic OAuth (subscription) credential source.
- *
  * Membrane resolves the bearer per request through a CredentialResolver and
- * retries a 401 once with `forceRefresh`; what it never does is ACQUIRE a
- * credential (membrane's src/ has no node: imports). This is the host half:
- * where the token comes from, whether it can rotate, and how to check it
- * without spending inference.
+ * retries a 401 once with `forceRefresh`.
  *
- * Two shapes of credential:
- *   - a bare token (`ANTHROPIC_AUTH_TOKEN`, typically `claude setup-token`):
- *     no refresh token, no expiry ⇒ not rotatable; the operator pastes a new
- *     one (`/auth token …`, WebUI "Paste new token").
- *   - a credentials FILE (`ANTHROPIC_OAUTH_CREDENTIALS_FILE`) in the shape
- *     Claude Code writes — `{ claudeAiOauth: { accessToken, refreshToken,
- *     expiresAt } }` — or the same three keys flat. With a refresh token the
- *     host can rotate at the vendor's token endpoint and writes the new pair
- *     back to the SAME file.
+ * A credentials file (`ANTHROPIC_OAUTH_CREDENTIALS_FILE`) is in the shape
+ * Claude Code writes, `{ claudeAiOauth: { accessToken, refreshToken,
+ * expiresAt } }`, or holds the same three keys flat. With a refresh token the
+ * host can rotate at the vendor's token endpoint, and it writes the new pair
+ * back to the SAME file.
  *
  * Point the file variable at a COPY, never at `~/.claude/.credentials.json`
  * itself: refresh tokens may be single-use, so two processes refreshing from
  * one file invalidate each other.
- *
- * Rotation is operator-driven by default: `forceRefresh` from membrane's
- * 401 retry returns the same token unless `autoRefresh` is on, so an expired
- * credential becomes an alert with a "Refresh token" action rather than a
- * silent rotation (the operator asked for click-to-act first).
  */
 
 import { readFileSync, renameSync, openSync, writeSync, closeSync, unlinkSync, fsyncSync } from 'node:fs';
@@ -32,23 +18,20 @@ import type { CredentialResolver, CredentialContext } from '@animalabs/membrane'
 import type { CredentialSource } from './credential-state.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 
-/** Claude Code's public OAuth client id (it ships in the CLI binary). */
+/** Claude Code's public OAuth client id. */
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 export const ANTHROPIC_OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 
 export interface AnthropicCredentialsConfig {
-  /** Static bearer token. Ignored when `credentialsFile` loads. */
   token?: string;
-  /** JSON file holding the token (+ refresh token + expiry). */
   credentialsFile?: string;
   tokenEndpoint?: string;
   clientId?: string;
-  /** Honour membrane's 401 `forceRefresh` automatically. Default false. */
   autoRefresh?: boolean;
-  /** Inference base URL; the probe reads `/api/oauth/usage` under it. */
   baseURL?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  onWriteBack?: (file: string, error?: string) => void;
 }
 
 interface StoredCredential {
@@ -81,9 +64,8 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private refreshing: Promise<void> | null = null;
-  /** Bumped by setToken; a refresh started under an older generation is discarded. */
   private generation = 0;
-  private lastPersistError: string | undefined;
+  private readonly onWriteBack?: (file: string, error?: string) => void;
 
   constructor(config: AnthropicCredentialsConfig) {
     this.tokenEndpoint = config.tokenEndpoint ?? ANTHROPIC_OAUTH_TOKEN_URL;
@@ -92,6 +74,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     this.baseURL = (config.baseURL ?? 'https://api.anthropic.com').replace(/\/+$/, '');
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.now = config.now ?? Date.now;
+    this.onWriteBack = config.onWriteBack;
     this.file = config.credentialsFile;
     if (this.file) {
       const stored = this.readFile(this.file);
@@ -105,7 +88,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     }
   }
 
-  /** True when the credential came from a file (rotations persist there). */
   get fileBacked(): boolean {
     return this.file !== undefined;
   }
@@ -114,7 +96,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     return this.accessToken;
   }
 
-  /** Membrane-facing resolver: per-request token, optional auto-rotation. */
   resolver(): CredentialResolver {
     return async (context: CredentialContext) => {
       if (context.forceRefresh && this.autoRefresh && this.canRefresh()) {
@@ -128,8 +109,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     };
   }
 
-  /** Same thing shaped for AnthropicAdapter's `authToken` callback form,
-   *  which keeps the host's OAuth-mode detection (`Boolean(authToken)`) true. */
   tokenResolver(): (context: CredentialContext) => Promise<string> {
     const resolve = this.resolver();
     return async (context) => (await resolve(context)).token;
@@ -139,18 +118,10 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     return typeof this.refreshToken === 'string' && this.refreshToken.length > 0;
   }
 
-  /** Set when the last rotation took effect in memory but the credentials
-   *  file could not be rewritten: inference runs on the new token, a restart
-   *  would reload the old one (and a rotated refresh token may be gone). */
-  persistWarning(): string | undefined {
-    return this.lastPersistError;
-  }
-
   expiresAt(): number | undefined {
     return this.expiresAtMs;
   }
 
-  /** Rotate at the token endpoint. Coalesces concurrent callers. */
   refresh(): Promise<void> {
     if (this.refreshing) return this.refreshing;
     this.refreshing = this.doRefresh().finally(() => {
@@ -161,10 +132,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
 
   private async doRefresh(): Promise<void> {
     if (!this.canRefresh()) throw new Error('no refresh token on this credential');
-    // A refresh answers for the credential it was asked about. If the
-    // operator replaces the token while the exchange is in flight, the
-    // answer belongs to the old subscription and is dropped, never applied
-    // or written over the replacement.
     const generation = this.generation;
     const res = await this.fetchImpl(this.tokenEndpoint, {
       method: 'POST',
@@ -198,10 +165,9 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     if (typeof doc.refresh_token === 'string' && doc.refresh_token) this.refreshToken = doc.refresh_token;
     const expiresIn = typeof doc.expires_in === 'number' && Number.isFinite(doc.expires_in) ? doc.expires_in : undefined;
     this.expiresAtMs = expiresIn !== undefined ? this.now() + expiresIn * 1000 : undefined;
-    this.persist();
+    this.writeBack();
   }
 
-  /** Operator-pasted replacement: no refresh token, no known expiry. */
   setToken(token: string): void {
     const trimmed = token.trim();
     if (!trimmed) throw new Error('empty token');
@@ -209,10 +175,9 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     this.accessToken = trimmed;
     this.refreshToken = undefined;
     this.expiresAtMs = undefined;
-    this.persist();
+    this.writeBack();
   }
 
-  /** Usage read: 401/403 is an auth verdict, anything else inconclusive. */
   async probe(): Promise<void> {
     const res = await this.fetchImpl(`${this.baseURL}/api/oauth/usage`, {
       headers: {
@@ -229,10 +194,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     void res.body?.cancel().catch(() => {});
     throw new ProbeError(`usage endpoint answered HTTP ${res.status}`, res.status);
   }
-
-  // ---------------------------------------------------------------------------
-  // File I/O
-  // ---------------------------------------------------------------------------
 
   private readFile(path: string): StoredCredential {
     let text: string;
@@ -268,20 +229,19 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   }
 
   /**
-   * Write the live credential to the file. The in-memory credential is the
-   * source of truth and is already updated when this runs: after a refresh
-   * the OLD pair may be dead (rotated refresh tokens), so a failed write must
-   * not roll memory back. The failure is recorded for the action outcome.
+   * The in-memory credential is the source of truth and is already updated
+   * when this runs: after a refresh the OLD pair may be dead (rotated
+   * refresh tokens), so a failed write must not roll memory back.
    */
-  private persist(): void {
+  writeBack(): void {
     if (!this.file) return;
+    let error: string | undefined;
     try {
       this.writeFile(this.file);
-      this.lastPersistError = undefined;
     } catch (err) {
-      this.lastPersistError = `credential rotated in memory but not written to ${this.file}: ${err instanceof Error ? err.message : String(err)}`;
-      console.error(`[anthropic-credentials] ${this.lastPersistError}`);
+      error = err instanceof Error ? err.message : String(err);
     }
+    this.onWriteBack?.(this.file, error);
   }
 
   private writeFile(file: string): void {
@@ -290,8 +250,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
       ...(this.refreshToken ? { refreshToken: this.refreshToken } : {}),
       ...(this.expiresAtMs !== undefined ? { expiresAt: this.expiresAtMs } : {}),
     };
-    // Preserve the file's other keys (Claude Code keeps scopes etc. there)
-    // but never the stale token triple.
+    // Preserve the file's other keys (Claude Code keeps scopes etc. there).
     let existing: Record<string, unknown> = {};
     try {
       existing = parseHandWrittenJson(readFileSync(file, 'utf8')) as Record<string, unknown>;
@@ -319,14 +278,14 @@ export class AnthropicOAuthCredentials implements CredentialSource {
       fsyncSync(fd);
     } catch (err) {
       closeSync(fd);
-      try { unlinkSync(tmp); } catch { /* best effort */ }
+      try { unlinkSync(tmp); } catch { }
       throw err;
     }
     closeSync(fd);
     try {
       renameSync(tmp, file);
     } catch (err) {
-      try { unlinkSync(tmp); } catch { /* best effort */ }
+      try { unlinkSync(tmp); } catch { }
       throw err;
     }
   }

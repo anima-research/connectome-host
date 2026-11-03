@@ -1,15 +1,6 @@
 /**
- * The host itself in TUI mode, on a pseudo-terminal, with the mock provider
- * and a loopback Web UI. Each way of quitting ends the process with code 0:
- * /quit; SIGTERM, which the Web UI's own quit sends (scheduleShutdown); SIGINT
- * and SIGHUP; and the terminal going away, its window or SSH session closed.
- * Closing Bun's terminal alone doesn't signal the host, so that case also
- * sends the SIGHUP a terminal's hangup brings. The Web UI's server outlives
- * framework.stop() and would keep the process running, so code 0 here also
- * says the TUI's stop settled and the host then closed the server. A recipe
- * without the Web UI quits the same way, with no server to close.
- *
- * The time limits only catch a hang, so they leave a loaded machine room.
+ * Closing a Bun.Terminal doesn't signal the process on it, so the terminal's
+ * case also sends the SIGHUP a terminal's hangup brings.
  */
 import { expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -70,10 +61,8 @@ for (const { way, webui } of CASES) {
       ]);
       expect({ ended, exitCode: host.exitCode, signalCode: host.signalCode }).toEqual({ ended: true, exitCode: 0, signalCode: null });
       if (way === 'its terminal going away') {
-        // At most one line, naming the terminal's first error. Whether the
-        // closed terminal fails before the host has handled its SIGHUP is up
-        // to Bun's close, so the line itself is tui-shutdown.test.ts's to
-        // check.
+        // Whether the closed terminal fails before the host handles its SIGHUP is
+        // up to Bun's close, so there is one such line or none.
         const failures = readFileSync(join(dir, 'tui-error.log'), 'utf8').split('\n').filter(l => l.startsWith('terminal failed'));
         expect(failures.length).toBeLessThanOrEqual(1);
         for (const line of failures) expect(line).toMatch(/^terminal failed \([^)]+\): stopping as \/quit does$/);

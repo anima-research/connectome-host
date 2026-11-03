@@ -32,7 +32,9 @@ The context you're given is assembled from three parts:
    for as long as it fits; only when your whole context would exceed its
    budget (`contextBudgetTokens`) are stretches folded — just enough to fit.
 3. **Tail** — the most recent messages, kept **verbatim**
-   (`recentWindowTokens`). Everything here is exactly as it happened. If this
+   (`recentWindowTokens`). Everything here is exactly as it happened, except that on
+   a model whose thinking binds, the reasoning behind replies after a fold's first
+   change is left out, though their words stay. If this
    is large, most of an ordinary conversation stays verbatim for a long time.
 
 You're never shown the same stretch twice: a span appears either raw or as a
@@ -194,7 +196,10 @@ impressionistic with age and depth.
   with everything else.
 - **You don't have to manage memory — but you can.** Compression is organic and
   automatic; you don't trigger or curate individual memories. You can, though,
-  read and change the frame it works in with your `agent_settings` tool:
+  read and change the frame it works in with `agent_settings`, in your built-in
+  `settings` toolset (`toolsets--open {"toolset": "settings"}`, then
+  `toolsets--act {"tool": "agent_settings", "args": {...}}`; if your tool list
+  lacks `toolsets--open` or `toolsets--act`, it's in your tool list):
   `context_budget_tokens` (how large your whole context may be),
   `tail_tokens` (how much stays verbatim at the end) and
   `transition_pace_tokens` (how quickly you converge to a lowered budget). Raising
@@ -210,9 +215,10 @@ impressionistic with age and depth.
   `maxMessageTokens` (10000 by default here) is truncated in your context, and
   a tool result over its inline cap (24000 characters by default, yours to
   change as `tool_result_inline_max_chars`) is written in full to a
-  `tool-results/` file when a writable workspace mount is available. The
-  inline result contains a preview and a reference to that file. With no
-  writable mount, or if the spill write fails, the result reports that the
+  `tool-results/` file in the first writable workspace mount with no
+  `include` that isn't configured direct. The inline result contains a
+  preview and a reference to that file. With no such mount, or if the spill
+  write fails, the result reports that the
   content beyond the preview was not retained. Do not treat that preview as
   the complete result.
   When `workspace--read` is available, use it to read large files in bounded pages.
@@ -252,9 +258,14 @@ impressionistic with age and depth.
   placeholder *even while the surrounding words remain verbatim*. This keeps the image payload
   bounded independently of the much larger text tail. Your recipe may change
   all three limits under `agent.strategy` for autobiographical and frontdesk
-  strategies; zero disables that limit while the others still apply, and larger
-  limits can exceed the provider's request-size cap. If an image matters beyond
-  the moment, describe it in text or save it to your workspace.
+  strategies. A depth of zero turns depth stripping off. A count or byte limit
+  of zero means up to context-manager's ceilings, 500 images and 24 MiB, and a
+  larger one is held to them. Images at the byte ceiling leave 4 MiB of
+  membrane's default 28 MiB cap on a request's messages for everything else,
+  and membrane refuses a turn whose messages pass that cap before sending it,
+  except an XML-mode continuation round on a provider other than
+  Anthropic's. If an image matters beyond the moment, describe it in text or
+  save it to your workspace.
 
 ## Finding your own settings
 
@@ -266,7 +277,7 @@ KV-continuity work described above.
 
 | Knob | Default here | Typical large-tail recipe | What it controls |
 |---|---|---|---|
-| `recentWindowTokens` / `tail_tokens` *(your verbatim tail)* | 30 000 | **~300 000–450 000** | how much recent history stays exactly as it happened |
+| `recentWindowTokens` / `tail_tokens` *(your verbatim tail)* | 30 000 | **~300 000–450 000** | how much recent history stays verbatim (on a model whose thinking binds, see Tail above) |
 | `contextBudgetTokens` / `context_budget_tokens` | 100 000 | set to fit the model's window | the size your whole context is fitted into; decides when the middle folds |
 | `transitionPaceTokens` / `transition_pace_tokens` | 16 000 | — | how much your context may shrink per turn while converging to a lowered budget |
 | `headWindowTokens` | 4 000 | 0 – a few k | verbatim origin/anchor pinned at the very start |

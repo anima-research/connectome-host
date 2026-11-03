@@ -1,18 +1,6 @@
 /**
- * Ephemeral subagents must inherit the caller's proseRouting mode.
- *
- * AF's Agent defaults proseRouting to 'locus' (ambient locus capture
- * publishes plain prose to the open channel). Before this fix,
- * SubagentModule never passed proseRouting to createEphemeralAgent, so a
- * resident running proseRouting 'disabled' still spawned divers whose
- * between-tool-calls prose leaked into its live Zulip topic as parent
- * speech — field-confirmed on a deployed resident, 2026-08-26, and
- * reproduced again after the recipe adopted 'disabled' (the recipe value
- * reached only the resident, never the divers).
- *
- * Harness follows subagent-async-timeout.test.ts: real framework + mock
- * membrane, runEphemeralToCompletion stubbed — here to capture the
- * ephemeral Agent it receives so the test can read its proseRouting.
+ * agent-framework's Agent defaults proseRouting to 'locus', which publishes
+ * plain prose, where 'disabled' publishes none.
  */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -48,7 +36,6 @@ async function makeHarness(parentProseRouting?: 'locus' | 'explicit' | 'hybrid' 
   });
   subagent.setFramework(framework);
 
-  // Capture the ephemeral Agent handed to the run loop; resolve immediately.
   let captured: { proseRouting?: string; name?: string } | null = null;
   const fw = framework as unknown as {
     runEphemeralToCompletion: (agent: unknown, ctxMgr: unknown) => Promise<{ speech: string; toolCallsCount: number }>;
@@ -99,9 +86,6 @@ describe('subagent prose-routing inheritance', () => {
       const result = await h.subagent.handleToolCall(spawnCall());
       if (!result.success) console.error('SPAWN ERROR:', result.error);
       expect(result.success).toBe(true);
-      // Parent's resolved mode is AF's default 'locus'; inheritance passes it
-      // through explicitly — same value the child would default to, asserted
-      // so a future AF default change keeps parent and child in lockstep.
       expect(h.getCaptured()!.proseRouting).toBe('locus');
     } finally {
       await h.cleanup();

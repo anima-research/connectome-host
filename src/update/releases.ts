@@ -1,51 +1,33 @@
 /**
- * What the registry says of connectome-host's releases, for the update notice
- * and Update (update.ts). One read of the package's full manifest gives every
- * version with its own package.json fields: `deprecated`, `engines.bun`, and
- * `connectomeRelease`, which the cut writes (scripts/release-changelog.ts).
  * The abbreviated manifest npm installs from leaves `connectomeRelease` out,
  * so this asks for the full one.
- *
- * Nothing here is kept between reads: the candidate and the costs are worked
- * out from the manifest each time it's read.
  */
 import { EXACT_VERSION, PACKAGE } from './install.js';
 
 /** npm's registry, when `npm_config_registry` doesn't name another. */
 export const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
 
-/** How long a read of the manifest may take. */
 export const READ_TIMEOUT_MS = 10_000;
 
-/** One version of the package, as its manifest describes it. */
 export interface Release {
   version: string;
   prerelease: boolean;
-  /** npm's deprecation message, or null. */
   deprecated: string | null;
-  /** `engines.bun` as the release declares it, or null. */
   bunFloor: string | null;
-  /** What its cut recorded (`connectomeRelease`): whether anything is
-   *  breaking since the last final release before it, and whether an update
-   *  from that release writes each resident's prompt cache in full. Null
-   *  where it records nothing: a release cut before the field, or a cut
-   *  nobody measured the cost of. */
   breaking: boolean | null;
   cacheWrite: boolean | null;
 }
 
-/** The registry the host reads, with a closing `/`: the one
- *  `npm_config_registry` names, else npm's own. A registry set only in an
- *  `.npmrc`, such as a scoped `@animalabs:registry=`, isn't read, and the
- *  read carries no token, so a mirror is named in the service's environment
- *  for the notice to read it. */
+/** The registry the host reads: the one `npm_config_registry` names, else
+ *  npm's own. A registry set only in an `.npmrc`, such as a scoped
+ *  `@animalabs:registry=`, isn't read, and the read carries no token, so
+ *  a mirror is named in the service's environment for the notice to read
+ *  it. */
 export function registryOf(env: Record<string, string | undefined> = process.env): string {
   const registry = env.npm_config_registry || DEFAULT_REGISTRY;
   return registry.endsWith('/') ? registry : `${registry}/`;
 }
 
-/** The package's versions in a manifest, oldest first. A version that isn't
- *  an exact one, or whose entry isn't an object, is left out. */
 export function releasesOf(manifest: unknown): Release[] {
   const versions = (manifest as { versions?: unknown } | null)?.versions;
   if (!versions || typeof versions !== 'object') {
@@ -70,8 +52,6 @@ export function releasesOf(manifest: unknown): Release[] {
   return releases.sort((a, b) => Bun.semver.order(a.version, b.version));
 }
 
-/** `registry` as a message may name it: a user and password in it, which a
- *  URL can carry, are left out, so a log or an answer never shows them. */
 export function shownRegistry(registry: string): string {
   let url: URL;
   try {
@@ -85,9 +65,6 @@ export function shownRegistry(registry: string): string {
   return url.toString();
 }
 
-/** Read the package's versions from `registry`, within `timeoutMs`. Throws
- *  with the reason when the manifest can't be read, naming the registry as
- *  shownRegistry does, in its own words and in the reason's. */
 export async function readReleases(
   registry: string, fetchManifest: typeof fetch = fetch, timeoutMs: number = READ_TIMEOUT_MS,
 ): Promise<Release[]> {
@@ -111,18 +88,11 @@ export async function readReleases(
   return releasesOf(manifest);
 }
 
-/** The release Update offers a host running `running`: the newest final
- *  release after it that isn't deprecated, or null. */
 export function candidateOf(releases: readonly Release[], running: string): Release | null {
   const offered = releases.filter((r) => !r.prerelease && r.deprecated === null && Bun.semver.order(r.version, running) > 0);
   return offered.at(-1) ?? null;
 }
 
-/** The versions an update from `running` to `to` crosses, each with what it
- *  records: every version after `running`, up to and including `to`,
- *  prereleases and deprecated ones included. A final release's fields cover
- *  the stretch back to the final release before it, so together they cover
- *  the whole update. */
 export function rangeOf(releases: readonly Release[], running: string, to: string): Release[] {
   return releases.filter((r) => Bun.semver.order(r.version, running) > 0 && Bun.semver.order(r.version, to) <= 0);
 }

@@ -1,7 +1,3 @@
-/**
- * The Web UI stream panel's lines: what each end of a turn shows as, the
- * bookkeeping traces it skips, and how many lines a panel keeps.
- */
 import { describe, expect, test } from 'bun:test';
 import { formatStreamEvent, STREAM_LINES_KEPT, withStreamLines, type StreamLine } from '../src/web/stream-lines.js';
 
@@ -16,7 +12,6 @@ describe('formatStreamEvent', () => {
     expect(text({ type: 'inference:aborted', reason: '' })).toBe('✗ turn aborted');
     expect(text({ type: 'inference:exhausted', error: 'Stream aborted: timeout' })).toBe('✗ turn ended: Stream aborted: timeout');
     expect(text({ type: 'inference:failed', error: 'overloaded' })).toBe('✗ inference failed: overloaded');
-    // What a client gets in place of an end whose trace its scopes don't cover.
     expect(text({ type: 'stream-ended', agentName: 'clerk' })).toBe('── stream ended ──');
   });
 
@@ -55,7 +50,6 @@ describe('withStreamLines', () => {
     expect(kept[0]!.text).toBe('… 4 earlier lines not shown');
     expect(kept[1]!.id).toBe(5);
     expect(kept[kept.length - 1]!.id).toBe(STREAM_LINES_KEPT + 3);
-    // The count goes on from the line that says it, which stays first.
     const later = withStreamLines(kept, lines(STREAM_LINES_KEPT + 4, 1));
     expect(later).toHaveLength(STREAM_LINES_KEPT);
     expect(later[0]!.text).toBe('… 5 earlier lines not shown');
