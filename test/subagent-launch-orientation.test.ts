@@ -525,6 +525,23 @@ describe('fork orientation', () => {
       await h.cleanup();
     }
   });
+
+  test("a locked caller's spawn runs disabled too", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' } });
+    try {
+      const input = { name: 'probe-locked', systemPrompt: 'you are a probe', task: 'probe' };
+      const res = await h.subagent.handleToolCall(call('spawn', 'toolu_spawn_locked', input));
+      expect(res.success).toBe(true);
+      await h.asyncPromise(input.name);
+      const block = launchBlock(res.data as string);
+      expect(line(block, '- Prose routing:')).toBe(
+        `- Prose routing: disabled, since the caller's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
+      );
+      expect(h.runs[0]!.proseRouting).toBe('disabled');
+    } finally {
+      await h.cleanup();
+    }
+  });
 });
 
 describe('spawn orientation', () => {

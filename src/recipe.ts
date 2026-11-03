@@ -377,8 +377,8 @@ export interface RecipeAgent {
   /**
    * Locked routing's destination until the agent chooses one with
    * `prose_locus`: "#channel", "@person", a channel id or "drafts". Left out,
-   * plain text is held as drafts until the agent chooses. Ignored by the
-   * other modes.
+   * plain text is held as drafts until the agent chooses. Refused under any
+   * other mode, which would ignore it.
    */
   proseLock?: string;
   /** Default-off containment of whole-response prose wrappers for known tools. */
@@ -2334,6 +2334,13 @@ export function validateRecipe(raw: unknown): Recipe {
   if (agent.proseLock !== undefined && (typeof agent.proseLock !== 'string' || !agent.proseLock.trim())) {
     throw new Error(
       `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${JSON.stringify(agent.proseLock)}.`,
+    );
+  }
+  // Only locked routing reads it: under any other mode the lock would never
+  // apply, and nothing would say so.
+  if (agent.proseLock !== undefined && agent.proseRouting !== 'locked') {
+    throw new Error(
+      `Recipe agent.proseLock requires agent.proseRouting "locked", got ${agent.proseRouting === undefined ? 'no proseRouting (locus)' : JSON.stringify(agent.proseRouting)}.`,
     );
   }
 

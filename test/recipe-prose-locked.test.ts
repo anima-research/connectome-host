@@ -24,6 +24,15 @@ describe('locked prose routing recipe wiring', () => {
     }
   });
 
+  test('refuses a proseLock outside locked routing, which would ignore it', () => {
+    expect(() => validateRecipe(recipe({ proseLock: '#lounge' }))).toThrow(
+      'Recipe agent.proseLock requires agent.proseRouting "locked", got no proseRouting (locus).',
+    );
+    expect(() => validateRecipe(recipe({ proseRouting: 'locus', proseLock: 'drafts' }))).toThrow(
+      'Recipe agent.proseLock requires agent.proseRouting "locked", got "locus".',
+    );
+  });
+
   test('names locked among the modes it refuses another for', () => {
     expect(() => validateRecipe(recipe({ proseRouting: 'pinned' }))).toThrow(
       `Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got "pinned".`,
