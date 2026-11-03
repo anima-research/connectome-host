@@ -211,7 +211,7 @@ delivered by Agent Framework according to `agent.proseRouting`:
 | `"hybrid"` | Like `locus`, but a leading `>>>destination` envelope routes that segment elsewhere through the authorized channel resolver. |
 | `"explicit"` | Text must start with `>>#channel` / `>>@person` / `>>skip_reply`; unprefixed text is never delivered and bounces to a clipboard for a prefixed resend. |
 | `"disabled"` | Text is never auto-published. The only way anything reaches a channel is an explicit send tool (`send_message`, `channel_publish`, `reply_message`, `send_dm`, ...). Authored text stays in Chronicle and the turn-end `[delivered] nothing` receipt tells the agent how many segments were withheld. |
-| `"locked"` | Text goes to one destination the agent chose, on every turn, heartbeats included. Nothing moves it automatically: not the channel a message comes from, an addressed message, or `channel_open`. The agent's `prose_locus` tool moves it, to a channel or to `"drafts"` (held, posted nowhere unless resent). The choice survives restarts. `agent.proseLock` (`"#channel"`, `"@person"`, an id or `"drafts"`) is the destination until the agent first chooses; without it, text is held as drafts. |
+| `"locked"` | Text goes to one destination the agent chose, on every turn, heartbeats included. Nothing moves it automatically: not the channel a message comes from, an addressed message, or `channel_open`. The agent's `prose_locus` tool moves it, to a channel or to `"drafts"` (held, posted nowhere unless resent). The choice survives restarts. Its subagents run `"disabled"`. `agent.proseLock` (`"#channel"`, `"@person"`, an id or `"drafts"`) is the destination until the agent first chooses; without it, text is held as drafts. |
 
 From agent-framework 0.29.0, a turn the heartbeat opens (a tick or a reminder) takes no fallback to the channel that last had a message for its plain speech; an explicit send reaches someone from it. agent-framework's notes say where such text goes in each mode.
 
@@ -221,7 +221,9 @@ channel: in `locus` mode a stray one-line narration between two tool calls
 the only mitigation is behavioral (never narrate in tool rounds, always end
 tool-only turns with `skip_reply`). With `"disabled"` the agent replies by
 calling a send tool, and nothing else leaks. Ephemeral subagents inherit the
-caller's mode.
+caller's mode, except that a `"locked"` resident's subagents run `"disabled"`:
+a subagent has no lock of its own, so it publishes no plain text and reports
+through `subagent--return`.
 
 `agent.sameRoundThinkTextPolicy` (`"public"` default, or `"private"`) governs
 only text emitted **beside a `think()` call** in the same round. It does not

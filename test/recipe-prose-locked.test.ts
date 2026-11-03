@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { validateRecipe } from '../src/recipe.js';
+import { setupFacts } from '../src/bug-report.js';
 
 const recipe = (agent: Record<string, unknown>) => ({ name: 'locked', agent: { systemPrompt: 'sys', ...agent } });
 const built = (agent: Record<string, unknown>) =>
@@ -27,5 +28,10 @@ describe('locked prose routing recipe wiring', () => {
     expect(() => validateRecipe(recipe({ proseRouting: 'pinned' }))).toThrow(
       `Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got "pinned".`,
     );
+  });
+
+  test('a bug report keeps locked as the resident\'s mode', () => {
+    expect(setupFacts({ agent: { proseRouting: 'locked' } } as never).proseRouting).toBe('locked');
+    expect(setupFacts({ agent: { proseRouting: 'pinned' } } as never).proseRouting).toBeNull();
   });
 });

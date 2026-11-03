@@ -505,6 +505,26 @@ describe('fork orientation', () => {
       }
     }
   });
+
+  test("a locked parent's fork runs disabled, said as its own mode rather than inherited, and listed as a difference", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' } });
+    try {
+      const input = { name: 'speaker-locked', task: 'say something' };
+      seedForkCall(h.framework, 'toolu_locked', input);
+      const res = await h.subagent.handleToolCall(call('fork', 'toolu_locked', input));
+      await h.asyncPromise(input.name);
+      const block = launchBlock(res.data as string);
+      expect(line(block, '- Prose routing:')).toBe(
+        `- Prose routing: disabled, since the parent's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
+      );
+      const against = line(block, '- Against the parent at the call')!;
+      expect(against).toMatch(/Differs in [^.]*prose routing\./);
+      expect(against).not.toMatch(/Same: [^.]*prose routing/);
+      expect(h.runs[0]!.proseRouting).toBe('disabled');
+    } finally {
+      await h.cleanup();
+    }
+  });
 });
 
 describe('spawn orientation', () => {

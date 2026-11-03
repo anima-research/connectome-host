@@ -415,10 +415,23 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
   hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
     'a leading ">>>destination" envelope routes that text to the destination it names instead',
   disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
-  // A subagent is an ephemeral run, which agent-framework routes as locus
-  // mode whatever its parent's lock: it has no lock of its own.
-  locked: 'plain text is published to the channel the framework infers for each turn, if there is one',
+  // A launch is never 'locked' (a locked parent's subagent runs 'disabled':
+  // subagentProseRouting), and agent-framework runs an ephemeral run of a
+  // locked agent as disabled too: it has no lock of its own.
+  locked: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
 };
+
+/**
+ * The mode a subagent runs: its parent's, except that a locked parent's runs
+ * `disabled`. A locked parent's plain text goes only where it chose, and a
+ * subagent has no lock of its own, so it publishes no plain text at all and
+ * reports through subagent--return. Run as locus mode, its narration between
+ * tool calls would post to the channel inferred for its turn, the leak the
+ * inheritance of `disabled` closed.
+ */
+function subagentProseRouting(parent: ProseRouting | undefined): ProseRouting | undefined {
+  return parent === 'locked' ? 'disabled' : parent;
+}
 
 function proseRoutingEffect(mode: ProseRouting, shownHelp: boolean): string {
   return PROSE_ROUTING_EFFECT[mode] + (mode === 'explicit' && shownHelp ? '; the prose_help tool shows the syntax' : '');
@@ -466,6 +479,8 @@ export interface SubagentLaunch {
   };
   parent: null | {
     stream: string;
+    /** The parent's own prose routing, where it differs from the launch's (subagentProseRouting). */
+    proseRouting?: ProseRouting;
     model: string;
     maxTokens: number;
     maxStreamTokens: number;
@@ -688,12 +703,20 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
         ...(p ? { uncompared: 'at-start' as const } : {}),
         line: "- Prose routing: not set by this launch, so the framework's default applies, stated when the stream starts.",
       }
-    : {
-        name: 'prose routing',
-        ...(p ? { same: true } : {}),
-        line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ` +
-          `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
-      });
+    : p?.proseRouting !== undefined && p.proseRouting !== routing
+      ? {
+          // Not inherited: a locked parent's subagent has no lock of its own (subagentProseRouting).
+          name: 'prose routing',
+          same: false,
+          line: `- Prose routing: ${routing}, since ${them}'s is ${p.proseRouting} and a subagent has no lock of its own: ` +
+            `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
+        }
+      : {
+          name: 'prose routing',
+          ...(p ? { same: true } : {}),
+          line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ` +
+            `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
+        });
 
   const gets = (fromList: string, offeredAt: string): string => {
     if (!shownHelp) {
@@ -2209,7 +2232,8 @@ export class SubagentModule implements Module {
     const parentRuntime = parentAgent?.getRuntimeSettings();
 
     // Without a caller, the stream takes agent-framework's default, 'locus'.
-    const proseRouting = parentAgent?.proseRouting;
+    const parentRouting = parentAgent?.proseRouting;
+    const proseRouting = subagentProseRouting(parentRouting);
     return {
       kind,
       name: input.name,
@@ -2233,6 +2257,7 @@ export class SubagentModule implements Module {
       parent: parentAgent
         ? {
             stream: parentAgent.name,
+            ...(parentRouting !== undefined && parentRouting !== proseRouting ? { proseRouting: parentRouting } : {}),
             model: parentAgent.model,
             maxTokens: parentAgent.maxTokens,
             maxStreamTokens: parentAgent.maxStreamTokens,
