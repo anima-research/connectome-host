@@ -344,11 +344,13 @@ surgery and still uses its own branch stacks.
   usage, timing, errors; raw requests on refusals, on anomalous responses
   (a client `tool_use` under a stop reason other than `tool_use`), and on
   the first failure of each kind of error (its type, or for an untyped error
-  its name, with its HTTP status when it has one) in a run of failures on a
-  cache lineage, which a call's success on that lineage, or an hour with no
-  failed call on it, ends (keepalive pokes, cancelled calls, and failed
-  calls whose request is missing or can't be serialized count for neither),
-  for the latest 256 lineages and
+  its name, with its HTTP status when it has one) whose copy the budget below
+  has room for and the line bound leaves whole, in a run of failures on a
+  cache lineage, which begins at its first failure and which a call's
+  success on that lineage, or an hour with no failed call on it, ends
+  (keepalive pokes, cancelled calls, and failed calls whose request is
+  missing or can't be serialized count for neither), for the latest 256
+  lineages, runs that have ended dropped first, and
   within a budget per log of 64 MiB of such copies, refilled at 64 MiB a
   day, that an anomalous response's copy isn't charged to; a cancelled
   call's never; or always with `LLM_CALLS_FULL_PAYLOADS=1`, which alone

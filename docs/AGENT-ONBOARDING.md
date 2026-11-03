@@ -917,13 +917,14 @@ only where its next request would pass the window, and a fresh compile carries t
   anomalous responses (a client `tool_use` under any stop reason but `tool_use`, flagged by an
   `anomaly` field and one `[llm-calls] … ANOMALY …` stderr line), and on the first failure of
   each kind of error (its type, or for an untyped error its name, with its HTTP status when it has
-  one) in a run of failures on a cache lineage, until a call on it succeeds or an hour passes with
+  one) that the budget below has room for and the line bound leaves whole, in a run of failures on
+  a cache lineage, from its first failure until a call on it succeeds or an hour passes with
   no failed call on it, keepalive pokes, cancelled calls, and failed calls whose request is missing or
   can't be serialized counting for neither (later failures of
   that kind carry `requestSha256`, the request's size under `rawRequestOmitted`, and, once that
   kind's copy is written, the run's copy's hash as
   `rawRequestOmitted.copySha256`, its record's `requestSha256`; the latest 256 lineages' runs are
-  remembered; at most 64 MiB of such copies per log at once, refilled at 64 MiB a day, and the
+  remembered, runs that have ended dropped first; at most 64 MiB of such copies per log at once, refilled at 64 MiB a day, and the
   first one refused for it since the last one written prints one `[llm-calls]` stderr line; an
   anomalous response's copy isn't charged to it; a cancelled call, membrane's `abort`, keeps
   none), or on every call with

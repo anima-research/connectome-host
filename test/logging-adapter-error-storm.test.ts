@@ -24,6 +24,8 @@ const savedFullPayloads = process.env.LLM_CALLS_FULL_PAYLOADS;
 // run with LLM_CALLS_FULL_PAYLOADS=1 in the environment tests the default.
 beforeEach(() => {
   delete process.env.LLM_CALLS_FULL_PAYLOADS;
+  // A run killed before its afterEach can leave a log under this PID.
+  rmSync(logPath, { force: true });
 });
 
 afterEach(() => {
@@ -46,6 +48,8 @@ function failWith(err: unknown, raw: unknown = BIG): void {
 }
 
 const sha = (raw: unknown) => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
+/** What a repeat's note says its copy is. */
+const FOLLOWED = 'has in full the first request of this kind that the log kept since it began following this run (it follows the runs of the 256 lineages whose runs began latest)';
 /** A request of its own cache lineage: the system text is part of the lineage. */
 const ofLineage = (name: string, content = 'x') => ({ model: 'claude-fable-5', system: [{ type: 'text', text: name }], messages: [{ role: 'user', content }] });
 const newAdapter = () => new LoggingAnthropicAdapter({ apiKey: 'test-key' }, logPath, () => ({ enabled: false, budgetTokens: 0 }));
@@ -53,9 +57,13 @@ const newAdapter = () => new LoggingAnthropicAdapter({ apiKey: 'test-key' }, log
 /** Call `n` times on one adapter; the error records it wrote, in order. */
 async function errorRecords(kind: 'complete' | 'stream', n: number, adapter = newAdapter()): Promise<Record<string, unknown>[]> {
   const request = { model: 'claude-fable-5', messages: [] } as never;
+  const lines = () => { try { return readFileSync(logPath, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
+  const before = lines();
   for (let i = 0; i < n; i++) {
     const call = kind === 'complete' ? adapter.complete(request) : adapter.stream(request, {} as never);
     await expect(call).rejects.toBeDefined();
+    // Each call appends its own record, so `.at(-1)` never reads an earlier one.
+    expect(lines()).toBe(before + i + 1);
   }
   return readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.type === 'error');
 }
@@ -266,6 +274,11 @@ test('the memory keeps the latest 256 runs: the oldest is written whole again, t
   failWith(rateLimitError('429'), ofLineage('agent 0', 'again'));
   const oldest = (await errorRecords('stream', 1, adapter)).at(-1)!;
   expect(oldest.rawRequest).toEqual(ofLineage('agent 0', 'again'));
+  // Its run starts again where the log began following it again, and its
+  // next repeat names that copy, not the one written before it was dropped.
+  failWith(rateLimitError('429'), ofLineage('agent 0', 'once more'));
+  const repeat = (await errorRecords('stream', 1, adapter)).at(-1)!;
+  expect(repeat.rawRequestOmitted).toMatchObject({ copySha256: oldest.requestSha256, reason: expect.stringContaining(FOLLOWED) });
 }, 30_000);
 
 test("a request membrane's own check refuses before sending is kept from the error, with its lineage", async () => {
@@ -575,4 +588,94 @@ test("an error whose request can't be serialized keeps its summary and error, wi
   expect(rec.rawRequest).toBeUndefined();
   expect(rec.requestSha256).toBeUndefined();
   expect(rec.truncated).toBe('raw bodies dropped (they could not be serialized)');
+});
+
+test("after a first failure the budget had no room for, the run's copy is the first of its kind that fit, and repeats say so", async () => {
+  const adapter = newAdapter();
+  const small = ofLineage('a', 'x'.repeat(1000));
+  const large = ofLineage('a', 'y'.repeat(10_000));
+  (adapter as unknown as { failedCopyBudget: number }).failedCopyBudget = Buffer.byteLength(JSON.stringify(small), 'utf8') + 10;
+  await stderrOf(async () => {
+    failWith(rateLimitError('429'), large);
+    const refused = (await errorRecords('stream', 1, adapter)).at(-1)!;
+    expect(refused.rawRequest).toBeUndefined();
+    expect(refused.rawRequestOmitted).toMatchObject({ reason: expect.stringContaining('has no room for this one') });
+    expect((refused.rawRequestOmitted as { copySha256?: unknown }).copySha256).toBeUndefined();
+    failWith(rateLimitError('429'), small);
+    const copy = (await errorRecords('stream', 1, adapter)).at(-1)!;
+    expect(copy.rawRequest).toEqual(small);
+    failWith(rateLimitError('429'), ofLineage('a', 'z'));
+    const repeat = (await errorRecords('stream', 1, adapter)).at(-1)!;
+    expect(repeat.rawRequestOmitted).toMatchObject({ copySha256: copy.requestSha256, reason: expect.stringContaining(FOLLOWED) });
+  });
+});
+
+test("after a first failure whose record the line bound cut, the run's copy is the first of its kind that fit, and repeats say so", async () => {
+  const adapter = newAdapter();
+  // Under 16 MiB itself, over it with the record's other fields.
+  const near = { ...ofLineage('a'), messages: [{ role: 'user', content: 'x'.repeat(16 * 1024 * 1024 - 300) }] };
+  failWith(rateLimitError('429'), near);
+  const cut = (await errorRecords('stream', 1, adapter)).at(-1)!;
+  expect(cut.truncated).toBe('raw bodies dropped (record exceeded size guard)');
+  failWith(rateLimitError('429'), ofLineage('a', 'small'));
+  const copy = (await errorRecords('stream', 1, adapter)).at(-1)!;
+  expect(copy.rawRequest).toEqual(ofLineage('a', 'small'));
+  failWith(rateLimitError('429'), ofLineage('a', 'again'));
+  const repeat = (await errorRecords('stream', 1, adapter)).at(-1)!;
+  expect(repeat.rawRequestOmitted).toMatchObject({ copySha256: copy.requestSha256, reason: expect.stringContaining(FOLLOWED) });
+}, 30_000);
+
+test('past the bound of 256 runs, runs that have ended are dropped before a live one', async () => {
+  const adapter = newAdapter();
+  let now = Date.parse('2026-10-21T09:00:00Z');
+  const fail = async (name: string, content: string) => {
+    setSystemTime(new Date(now));
+    failWith(rateLimitError('429'), ofLineage(name, content));
+    return (await errorRecords('stream', 1, adapter)).at(-1)!;
+  };
+  try {
+    // 256 runs; only the oldest goes on failing, every 50 minutes.
+    for (let n = 0; n < 256; n++) await fail(`agent ${n}`, 'first');
+    now += 50 * 60_000;
+    await fail('agent 0', 'at 50 minutes');
+    now += 50 * 60_000;
+    await fail('agent 0', 'at 100 minutes');
+    // A new lineage passes the bound: the 255 runs that ended an hour ago go.
+    now += 60_000;
+    expect((await fail('agent 256', 'first')).rawRequest).toBeDefined();
+    now += 60_000;
+    const live = await fail('agent 0', 'at 102 minutes');
+    expect(live.rawRequest).toBeUndefined();
+    expect(live.rawRequestOmitted).toMatchObject({ copySha256: sha(ofLineage('agent 0', 'first')) });
+  } finally {
+    setSystemTime();
+  }
+}, 30_000);
+
+test("a failure whose request can't be serialized neither ends its lineage's run nor keeps it going", async () => {
+  const adapter = newAdapter();
+  let now = Date.parse('2026-10-21T09:00:00Z');
+  const fail = async (raw: unknown) => {
+    setSystemTime(new Date(now));
+    failWith(rateLimitError('429'), raw);
+    return (await errorRecords('stream', 1, adapter)).at(-1)!;
+  };
+  const odd = (name: string) => ({ ...ofLineage(name, 'odd'), extra: 10n });
+  try {
+    // Lineage a: the run goes on past an unserializable failure.
+    expect((await fail(ofLineage('a', 'first'))).rawRequest).toBeDefined();
+    now += 60_000;
+    expect((await fail(odd('a'))).requestSha256).toBeUndefined();
+    now += 60_000;
+    expect((await fail(ofLineage('a', 'after'))).rawRequestOmitted).toMatchObject({ copySha256: sha(ofLineage('a', 'first')) });
+    // Lineage b: an unserializable failure 50 minutes in doesn't keep the run
+    // going, so a failure 70 minutes in starts a new one.
+    expect((await fail(ofLineage('b', 'first'))).rawRequest).toBeDefined();
+    now += 50 * 60_000;
+    await fail(odd('b'));
+    now += 20 * 60_000;
+    expect((await fail(ofLineage('b', 'later'))).rawRequest).toEqual(ofLineage('b', 'later'));
+  } finally {
+    setSystemTime();
+  }
 });

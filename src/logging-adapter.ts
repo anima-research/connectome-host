@@ -262,9 +262,9 @@ const FAILING_RUN_GAP_MS = 60 * 60 * 1000;
  *  of that kind name as their copy. */
 type Written = { lineage: string | undefined; kind: string; bytes: number; requestSha256: string };
 
-/** A lineage's run of failures: for each kind of error whose first failing
- *  request it has written in full, that request's hash, and when it last
- *  failed. */
+/** A lineage's run of failures, from the first that reached the copy
+ *  decision: for each kind of error it has written a failing request of in
+ *  full, the first such request's hash, and when it last failed. */
 type FailingRun = { kinds: Map<string, string>; lastFailureAt: number };
 
 /** The kind of failure a run keeps one copy of: membrane's error type, or
@@ -755,10 +755,11 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   /** The cache lineages (model, system and tools) failing since a call on
    *  them, a turn or complete(), last succeeded, within FAILING_RUN_GAP_MS of their last failure,
    *  each with its run: the FAILING_RUNS_REMEMBERED whose runs began latest,
-   *  oldest first, so the map can't grow with every lineage a long process
-   *  meets. A storm repeats its lineage, not its request: membrane's retries
-   *  resend one request, but each turn adds the framework's failure marker
-   *  and new messages, and a running subagent's status line its clock. One
+   *  oldest first, those that have ended dropped first (followRun), so the
+   *  map can't grow with every lineage a long process meets. A storm repeats
+   *  its lineage, not its request: membrane's retries resend one request,
+   *  but each turn adds the framework's failure marker and new messages, and
+   *  a running subagent's status line its clock. One
    *  OAuth 429 storm wrote a ~4.4MB request per retry and grew a single
    *  llm-calls file to 687MB. */
   private readonly failingRuns = new Map<string, FailingRun>();
@@ -776,7 +777,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
 
   /** An error record's request fields. Whatever the error, a cancelled call
    *  apart, the first failing request of each kind (failureKind) in a
-   *  lineage's run of failures is kept whole, within the budget, since any
+   *  lineage's run of failures that the budget has room for, and whose
+   *  record the line bound leaves whole, is kept whole, since any
    *  failure, a 429 included (see
    *  OAUTH_SYSTEM_IDENTITY), can be the request's doing, and a run's first
    *  failure of a kind is where its cause shows. The run's later failures of
@@ -814,42 +816,57 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       },
     });
     if (aborted) return omitted('a cancelled call (membrane types it `abort`) is never the request\'s doing');
-    const run = lineage === undefined ? undefined : this.failingRun(lineage);
+    const run = lineage === undefined ? undefined : this.followRun(lineage);
     const copySha256 = run?.kinds.get(kind);
     if (copySha256 !== undefined) {
       const note = omitted('this lineage has failed with this kind of error (its type, or for an untyped error its name, '
         + 'with its HTTP status when it has one) since a call on it last succeeded, with no hour between its failures, and an earlier error '
-        + 'record in this log, whose requestSha256 is copySha256, has the first such request in full, unless the file '
-        + 'was rotated since');
+        + 'record in this log, whose requestSha256 is copySha256, has in full the first request of this kind that the log kept '
+        + `since it began following this run (it follows the runs of the ${FAILING_RUNS_REMEMBERED} lineages whose runs began `
+        + 'latest), unless the file was rotated since');
       return { fields: { ...note.fields, rawRequestOmitted: { ...note.fields.rawRequestOmitted, copySha256 } } };
     }
     if (bytes > this.failedCopyRoomNow()) {
-      this.tellBudgetRefusal();
+      this.tellBudgetRefusal(bytes);
       return omitted(`this log's budget for failing requests in full (${this.failedCopyBudget} bytes, refilled at that `
         + 'much a day) has no room for this one now');
     }
     // Noted only once its record is written whole: a record the line bound cut
-    // has no copy, so the run's next failure of the kind tries again.
+    // has no copy, so the run's next failure of the kind tries again, as one
+    // the budget refused does.
     return { fields: { rawRequest, requestSha256 }, remember: { lineage, kind, bytes, requestSha256 } };
   }
 
-  /** A lineage's run, if one is going on: one whose last failure is older
-   *  than FAILING_RUN_GAP_MS has ended. A failed call that comes here counts
-   *  as the run's latest whether or not its request is kept. A cancelled
-   *  call, one whose request is missing or can't be serialized, a keepalive
-   *  poke's failure, and every call with LLM_CALLS_FULL_PAYLOADS=1 don't
-   *  come here. Its latest failure never moves back: a clock stepped back
-   *  would otherwise end the run early once it came forward again. */
-  private failingRun(lineage: string): FailingRun | undefined {
-    const run = this.failingRuns.get(lineage);
-    if (!run) return undefined;
+  /** A lineage's run, started now if none is going on, which makes this
+   *  failure its first: one whose last failure is older than
+   *  FAILING_RUN_GAP_MS has ended. Every failed call that comes here counts
+   *  as the run's latest, whether or not its request is kept, so a run
+   *  begins at its first failure, not at its first copy. A cancelled call,
+   *  one whose request is missing or can't be serialized, a keepalive poke's
+   *  failure, and every call with LLM_CALLS_FULL_PAYLOADS=1 don't come here.
+   *  A run's latest failure never moves back: a clock stepped back would
+   *  otherwise end the run early once it came forward again. */
+  private followRun(lineage: string): FailingRun {
     const now = Date.now();
-    if (now - run.lastFailureAt > FAILING_RUN_GAP_MS) {
-      this.failingRuns.delete(lineage);
-      return undefined;
+    const run = this.failingRuns.get(lineage);
+    if (run && now - run.lastFailureAt <= FAILING_RUN_GAP_MS) {
+      run.lastFailureAt = Math.max(run.lastFailureAt, now);
+      return run;
     }
-    run.lastFailureAt = Math.max(run.lastFailureAt, now);
-    return run;
+    // A run that has ended starts again, last in begun-latest order.
+    if (run) this.failingRuns.delete(lineage);
+    const started: FailingRun = { kinds: new Map(), lastFailureAt: now };
+    this.failingRuns.set(lineage, started);
+    if (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
+      // Runs that have ended go first, then those begun earliest.
+      for (const [other, otherRun] of this.failingRuns) {
+        if (now - otherRun.lastFailureAt > FAILING_RUN_GAP_MS) this.failingRuns.delete(other);
+      }
+      while (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
+        this.failingRuns.delete(this.failingRuns.keys().next().value as string);
+      }
+    }
+    return started;
   }
 
   /** The budget's room now: what was left at the last refill, plus what the
@@ -870,34 +887,26 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
 
   /** One stderr line the first time the budget refuses a copy since the last
    *  copy written, so a spent budget shows outside the records too. */
-  private tellBudgetRefusal(): void {
+  private tellBudgetRefusal(bytes: number): void {
     if (this.budgetRefusalTold) return;
     this.budgetRefusalTold = true;
     try {
       console.error(`[llm-calls] ${new Date().toISOString()} the budget for failing requests in full `
-        + `(${this.failedCopyBudget} bytes, refilled at that much a day) has no room: failing requests are recorded `
-        + 'by size and hash until it refills. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request '
+        + `(${this.failedCopyBudget} bytes, refilled at that much a day) has no room for one of ${bytes} bytes: `
+        + 'a failing request is kept in full only while the budget has room for its size, and is otherwise recorded '
+        + 'by size and hash. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request '
         + "of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, "
         + 'not for leaving on.');
     } catch { /* never throw from logging */ }
   }
 
   /** Notes a failing request as written in full: its bytes against the
-   *  budget, and its kind in its lineage's run. A run keeps its place from
-   *  when it began, for the oldest-first bound. */
+   *  budget, and its hash as its kind's copy in its lineage's run, which
+   *  followRun began at the run's first failure. */
   private rememberFailedRequest({ lineage, kind, bytes, requestSha256 }: Written): void {
     this.failedCopyRoom = this.failedCopyRoomNow() - bytes;
     this.budgetRefusalTold = false;
-    if (lineage === undefined) return;
-    const run = this.failingRuns.get(lineage);
-    if (run) {
-      run.kinds.set(kind, requestSha256);
-      return;
-    }
-    this.failingRuns.set(lineage, { kinds: new Map([[kind, requestSha256]]), lastFailureAt: Date.now() });
-    if (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
-      this.failingRuns.delete(this.failingRuns.keys().next().value as string);
-    }
+    if (lineage !== undefined) this.failingRuns.get(lineage)?.kinds.set(kind, requestSha256);
   }
 
   /** A call's success on a lineage, a turn's or complete()'s, ends its run
