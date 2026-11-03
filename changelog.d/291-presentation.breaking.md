@@ -8,7 +8,10 @@
   - `/undo` is agent-framework's `undoLastTurn`: the agent's last turn leaves
     its window, and its next request is built without it. The record keeps the
     turn and no branch moves, so the workspace and `_config` mounts, MCPL
-    checkpoints and the inference log are no longer reverted, and another
+    checkpoints and the inference log are no longer reverted, history search
+    (`modules.history`, its semantic search too) still finds the turn,
+    marked `window: "undone"`, where it left out a turn the undo had moved
+    off the current branch, and another
     resident's newer row is left alone, where `/undo` used to branch the store
     before the record's newest reply, whoever's it was. `/redo` puts the turn
     back. Both are refused while the agent's own turn is alive, and for an
@@ -30,7 +33,16 @@
     `switchBranch` to the checkpoint's branch head instead, and one at its
     checkpoint already moves nothing. Each is refused unless every agent
     sharing the store is idle, as before, and each takes every agent's
-    context to the branch it moves to. The operator log
+    context to the branch it moves to. While the command agent's own turn
+    is alive the host refuses it at once, as before (`/checkout refused: a
+    turn is in flight (…)`). While another agent's turn is, the host
+    refused it at once too; now the command answers with its progress line
+    (`Switching → branch …`, `Restoring to checkpoint …`, `Branching at
+    …`), then with agent-framework's refusal after `Checkout failed:`,
+    `Restore failed:` or `branchto failed:` (`Cannot … while … — every
+    agent sharing the store must be idle (quiesce the host first)`) and
+    `This command moved nothing. Try again once what it names has
+    finished.` The operator log
     records `/restore` and `/branchto` as `rollback`, `/checkout` and a
     `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
     `undo-turn` and `redo-turn`, each with the requester `host-console`.
@@ -49,11 +61,14 @@
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo took out (dimmed, and `(undone)` in the TUI, which marks
-    its lines in place and draws an undone row it has no line for below
-    them until a redo puts it back), and the Web
+    its lines in place and draws below them an undone row stored since it
+    loaded the history that it has no line for, until a redo puts it
+    back), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again at each undo or redo. The pin picker leaves
-    undone rows out.
+    pins) read the window again at each undo, redo or shed. The local pin picker
+    lists the host's candidates, the record's last 200 rows, as a fleet
+    child's does, where it listed the rows the transcript had loaded; it
+    leaves out undone rows and rows stamped for other residents only.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,
@@ -62,9 +77,10 @@
   agent names, counts, ids and slots, never content. `window:undone`, an undo
   or a redo on a window, needs `messages`, and so does the new
   `undone-marks` frame, sent at each undo, redo or shed on the conversation
-  agent's window, which names every row of the transcript's record that is
-  out of that window as undone (`fromIndex` 0), as a welcome's and a history
-  page's entries mark them (`undone: true`). `undo:completed` and `redo:completed`
+  agent's window, which names each row of the transcript's record that an
+  undo or a shed took out of that window (status `undone`), from `fromIndex`
+  0, as a welcome's and a history page's entries mark them (`undone: true`).
+  `undo:completed` and `redo:completed`
   are gone, with agent-framework's branch-moving undo.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
@@ -87,8 +103,17 @@
   on `undo:completed` or `redo:completed` listens for `window:undone`.
   `/history`, `/find` and `/branches` read the context of the agent the
   commands act for, as `/branchto` does, where they read the first
-  registered agent's. **Unchanged:** `/checkpoint`;
+  registered agent's. A checkpoint saves the record's position, its last
+  row, an undone one included, as it did. `/undo` leaves that row the
+  record's last, so after `/undo` a `/restore` to a checkpoint at the undone
+  turn's last row, with no row stored since, says it is already there and
+  moves nothing (`/redo` puts the turn back); once a row is stored after the
+  checkpoint, a `/restore` to it rolls back with that turn in the window, a
+  checkpoint taken after `/undo` included. **Unchanged:**
   `/checkout`, `/restore` and `/branchto` are still refused while any agent
   sharing the store is mid-turn, the subconscious included, as the 0.16.0
   entry for #264 has it, and `/newtopic` while the agent the command acts
-  for is.
+  for is. A caller that reads or matches a branch command's answer gets,
+  for another agent's turn, the progress line and then agent-framework's
+  refusal (above), and the host's immediate `refused: a turn is in flight`
+  only for the command agent's own turn.

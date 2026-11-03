@@ -344,8 +344,10 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
   turn is on its way. A bare `/newtopic` stores nothing if the branch or the
   strategy changes while it writes its summary: context-manager then refuses
   the summary, and the answer says why. It also stores nothing if a turn of
-  the agent starts, or the session is switched or the host stops, while the
-  summary is written, and then the answer gives the summary back. They are
+  the agent starts, rows enter the agent's window (a whole turn, or another
+  `/newtopic`'s transition), or the session is switched or the host stops,
+  while the summary is written, and then the answer gives the summary back.
+  They are
   refused while a turn is in flight. Checkpoints are held in memory for the
   session.
 - **Framework surgery** (WebUI) — roll back to a message or suppress messages

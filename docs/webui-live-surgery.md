@@ -118,12 +118,16 @@ saying nothing changed. After a successful surgery the server does what
 
 An undo or a redo on the conversation agent's window (`/undo`, `/redo`, the
 `window:undone` trace) moves no branch, and the transcript still shows the
-record. A transcript entry whose row left the window by an undo carries
-`undone: true` (the welcome, history pages), and after each such trace, and
+record. A transcript entry whose row is out of the window as an undone
+turn's carries `undone: true` (the welcome, history pages): an undo (which
+`/redo` puts back) or a shed after a refusal or failed inference (which it
+doesn't) takes rows out that way. After each `window:undone` trace, and
 each shed from that window (`presentation:retracted`, reason `shed`), the
 server sends `undone-marks` (scope `messages`) naming every undone row of
 the record, from index 0, which the page dims and labels wherever it holds
 them, clearing the label of each row it holds that the frame doesn't name.
 The page also reads the
 window's panels again (Context's makeup and coverage, the compiled context
-document, the pins), and the pin picker leaves undone rows out.
+document, the pins). The pin picker lists the server's candidates, the
+record's last 200 rows less the undone ones and those whose audience stamp
+leaves the agent out (another resident's on a shared store).

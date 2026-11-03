@@ -98,8 +98,13 @@ export function ContextPanel(props: {
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
 
+  // Each read counts itself; a response that comes back after a newer read
+  // started (a scope change, an undo's refresh, the coverage poll) is dropped,
+  // so an older figure never replaces a newer one.
+  let latestMakeup = 0;
   const load = async () => {
-    const scopeAtStart = props.scope;
+    const thisLoad = ++latestMakeup;
+    const superseded = () => thisLoad !== latestMakeup;
     setLoading(true);
     setErr(null);
     try {
@@ -109,19 +114,21 @@ export function ContextPanel(props: {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const j = (await res.json()) as Makeup;
+      if (superseded()) return;
       if (j.error) throw new Error(j.error);
-      if (props.scope !== scopeAtStart) return;
       setData(j);
     } catch (e) {
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!superseded()) setLoading(false);
     }
   };
 
+  let latestCoverage = 0;
   const loadCoverage = async () => {
-    const scopeAtStart = props.scope;
+    const thisLoad = ++latestCoverage;
+    const superseded = () => thisLoad !== latestCoverage;
     setCoverageLoading(true);
     setCoverageErr(null);
     try {
@@ -131,13 +138,13 @@ export function ContextPanel(props: {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const cov = (await res.json()) as Coverage;
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setCoverage(cov);
     } catch (e) {
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setCoverageErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setCoverageLoading(false);
+      if (!superseded()) setCoverageLoading(false);
     }
   };
 

@@ -84,6 +84,7 @@ describe('what each client is sent', () => {
     host = await startObservedHost({
       grants: {
         dashboard: ['health'],
+        watch: ['health', 'ops'],
         reader: ['messages'],
         interior: ['messages', 'thinking', 'tools'],
         everything: ['health', 'ops', 'messages', 'thinking', 'tools'],
@@ -711,6 +712,50 @@ describe('what each client is sent', () => {
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
       ]);
     } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // Host #485 bot review finding 17: the frame read the whole record at each
+  // undo, redo and shed while any client was connected, a health or an ops
+  // observer that is never sent it as well.
+  test("an undo, a redo or a shed reads no record while no connected client holds messages", async () => {
+    const say = (id: string, text: string) => ({ id, participant: 'user', content: [{ type: 'text', text }] });
+    transcript = Array.from({ length: 5 }, (_, i) => say(`r${i}`, `row ${i}`));
+    undone = new Set(['r4']);
+    const reads: [number, number][] = [];
+    try {
+      // Only observers without messages stay connected.
+      const closed = open.splice(0).map((c) => new Promise<void>((resolve) => {
+        if (c.ws.readyState === WebSocket.CLOSED) return resolve();
+        c.ws.addEventListener('close', () => resolve());
+        c.ws.close();
+      }));
+      await Promise.all(closed);
+      const dashboard = await host.observer('dashboard');
+      const watch = await host.observer('watch');
+      open.push(dashboard, watch);
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['r4'], reason: 'shed' });
+      onRead = undefined;
+      expect(reads).toEqual([]);
+      await host.fence([dashboard, watch]);
+      for (const conn of [dashboard, watch]) expect(conn.framesOf('undone-marks')).toEqual([]);
+
+      // A client that holds messages connects: the record is read again.
+      const reader = await host.observer('reader');
+      open.push(reader);
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      onRead = undefined;
+      expect(reads).toEqual([[0, 5]]);
+      await host.fence([reader]);
+      expect(reader.framesOf('undone-marks')).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['r4'] }]);
+    } finally {
+      onRead = undefined;
       transcript = [];
       undone = new Set();
     }

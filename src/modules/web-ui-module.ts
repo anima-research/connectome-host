@@ -810,9 +810,13 @@ export class WebUiModule implements Module {
    *  undo took out with 200 rows stored after it, which no welcome's tail
    *  holds, and a row a redo put back after it left the tail. It reads the
    *  whole record, one windowStatusOf a row, at each undo, redo or shed
-   *  while a client is connected. */
+   *  while a client the frame goes to (one that holds messages) is
+   *  connected, and reads nothing while none is. */
   private broadcastUndoneMarks(agentName: unknown): void {
-    const agent = sharedServer?.app?.framework.getAllAgents()[0];
+    if (!sharedServer) return;
+    const scopes = frameScopes({ type: 'undone-marks', agent: '', fromIndex: 0, undone: [] });
+    if (![...sharedServer.clients.values()].some((c) => c.welcomed && clientHolds(c, scopes))) return;
+    const agent = sharedServer.app?.framework.getAllAgents()[0];
     if (!agent || agent.name !== agentName) return;
     const cmw = agent.getContextManager() as unknown as WindowCapableCm | undefined;
     if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.getMessageWindow !== 'function') return;
@@ -2683,7 +2687,7 @@ export class WebUiModule implements Module {
     if (!app) return;
     try {
       const sessionId = sharedServer!.app!.frameworkSessionId;
-      const snap = buildPinsSnapshot(app, resolveAgent(app, agentName));
+      const snap = buildPinsSnapshot(app, resolveAgent(app, agentName), { withCandidates: true });
       this.send(client, { type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch (err) {
       this.send(client, {
@@ -2722,7 +2726,7 @@ export class WebUiModule implements Module {
     if (!app) return;
     try {
       const sessionId = sharedServer!.app!.frameworkSessionId;
-      const snap = buildPinsSnapshot(app, agentName);
+      const snap = buildPinsSnapshot(app, agentName, { withCandidates: true });
       this.broadcast({ type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch { }
   }

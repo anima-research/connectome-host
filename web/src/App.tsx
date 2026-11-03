@@ -12,7 +12,7 @@ import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow, type McplLiveRow, type ToolClassRow } from './Mcpl';
 import { SettingsPanel, type SettingsState } from './Settings';
 import { DryContext, type DryContextData } from './DryContext';
-import { PinsPanel, type PinsState, type PinCandidate } from './Pins';
+import { PinsPanel, type PinsState } from './Pins';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
@@ -84,9 +84,11 @@ interface Message {
   timestamp?: number;
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   streaming?: boolean;
-  /** The row left the conversation agent's window by an undo
-   *  (agent-framework #291): the record keeps it, its next request is built
-   *  without it. From the welcome, a history page or an undone-marks frame. */
+  /** The row is out of the conversation agent's window as an undone turn's
+   *  (agent-framework #291): an undo (which /redo puts back) or a shed after
+   *  a refusal or failed inference (which it doesn't). The record keeps it,
+   *  its next request is built without it. From the welcome, a history page
+   *  or an undone-marks frame. */
   undone?: boolean;
   trigger?: {
     origin: string;
@@ -567,9 +569,10 @@ export function App() {
   };
 
   /** Bumped at each undo or redo on an agent's window (the window:undone
-   *  trace, DQ-4): the panels built from what a window holds (Context's
-   *  makeup and coverage, the compiled context) read again when it moves,
-   *  and so do the pins, whose candidates leave an undone row out. */
+   *  trace, DQ-4) and at each undone-marks frame (which a shed sends too):
+   *  the panels built from what a window holds (Context's makeup and
+   *  coverage, the compiled context) read again when it moves, and so do
+   *  the pins, whose candidates leave an undone row out. */
   const [windowEpoch, setWindowEpoch] = createSignal(0);
   const onWindowUndone = (): void => {
     setWindowEpoch((n) => n + 1);
@@ -1606,14 +1609,10 @@ export function App() {
                   loaded={pinsLoaded()}
                   state={pinsState()}
                   agent={pinsState()?.agent}
-                  candidates={panelScope() === 'local'
-                    ? messages
-                        // A row an undo took out of the window: a pin on it would hold nothing.
-                        .filter((m) => m.index !== undefined && m.id && !m.undone)
-                        .map<PinCandidate>((m) => ({
-                          id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
-                        }))
-                    : pinsState()?.candidates ?? []}
+                  // The server's list for every scope: it leaves out the rows
+                  // a pin on would hold nothing (an undone row, another
+                  // resident's), which the transcript doesn't tell apart.
+                  candidates={pinsState()?.candidates ?? []}
                   onRefresh={refreshPins}
                   onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
                   onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}
@@ -1702,7 +1701,7 @@ interface HandlerHooks {
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   onOperatorAction: () => void;
   onCommandAnswer: () => void;
-  /** An undo or a redo on an agent's window: the panels built from it read again. */
+  /** An undo, a redo or a shed on an agent's window: the panels built from it read again. */
   onWindowUndone: (agentName: string | undefined) => void;
   /** Apply an undone-marks frame to the transcript. */
   applyUndoneMarks: (marks: UndoneMarksMessage) => void;
@@ -1770,6 +1769,9 @@ function handleServerMessage(
       return;
     case 'undone-marks':
       hooks.applyUndoneMarks(msg);
+      // A shed sends this frame without a window:undone trace: the panels
+      // built from the window read again here too.
+      hooks.onWindowUndone(msg.agent);
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
@@ -1935,7 +1937,7 @@ type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
 
 function MessageRow(props: {
   storeId?: string;
-  /** The row left the conversation agent's window by an undo: dimmed and labelled. */
+  /** The row is out of the conversation agent's window as an undone turn's: dimmed and labelled. */
   undone?: boolean;
   canRollback: boolean;
   canSuppress: boolean;
@@ -1951,7 +1953,7 @@ function MessageRow(props: {
       <Show when={props.undone}>
         <div
           class="text-[10px] font-mono text-amber-300/80 mb-0.5"
-          title="An undo took this out of the agent's context: its next request is built without it. The record keeps it; /redo puts it back."
+          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
         >undone · not in the agent's context</div>
       </Show>
       <Show when={actionable()}>
@@ -1960,7 +1962,7 @@ function MessageRow(props: {
             <button
               type="button"
               class="px-1.5 py-0.5 rounded border bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] font-mono leading-tight shadow"
-              title="roll back: fork the chronicle here and make this message the tail of the live branch (the current branch keeps everything after it)"
+              title="roll back: fork the chronicle here and make this message the tail of the live branch (the current branch keeps everything after it; rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many)"
               onClick={props.onRollback}
             >⏪ roll back</button>
           </Show>
@@ -2377,7 +2379,7 @@ const COMMANDS: CommandHint[] = [
   { name: '/budget', blurb: 'show or set stream token budget' },
   { name: '/branches', blurb: 'list Chronicle branches' },
   { name: '/checkout', blurb: 'switch to named branch' },
-  { name: '/checkpoint', blurb: 'save current state as named checkpoint' },
+  { name: '/checkpoint', blurb: "save the record's position (its last row, an undone one included)" },
   { name: '/restore', blurb: 'roll back to checkpoint, or to its branch head' },
   { name: '/undo', blurb: "take the agent's last turn out of its window" },
   { name: '/redo', blurb: 'put the undone turn back in its window' },

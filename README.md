@@ -671,10 +671,14 @@ unknown-key warning, like those at the other levels.
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
   (read-only `./input`) and `products` (read-write `./output`). A mount with
   `"backend": "direct"` reads disk as it is, and writes it as it is if it's
-  writable, with no store, undo or watcher: it names its mode, `"read-only"`,
-  or `"read-write"` from agent-framework 0.27.0, and a mount whose changes
-  should wake the agent, or whose writes should be undoable, leaves `backend`
-  out. A direct mount that names no `ignore` passes over `node_modules`,
+  writable, with no store or watcher, so a branch switch or a rollback
+  (`/checkout`, `/restore`, `/branchto`) leaves its files as they are: it
+  names its mode, `"read-only"`, or `"read-write"` from agent-framework
+  0.27.0, and a mount whose changes should wake the agent, or whose writes a
+  branch switch or a rollback should take back, leaves `backend` out.
+  `/undo` moves no branch, so it takes back no mount's writes, a
+  Chronicle-backed mount's included. A direct mount that names no `ignore`
+  passes over `node_modules`,
   `.git`, `dist`, `build`, `coverage`, `target`, `__pycache__` and `.venv`,
   and one that names any passes over only what it names. While its store
   holds changes from when it ran as Chronicle, it runs as Chronicle, taking no
@@ -937,8 +941,8 @@ headless socket.
 | `/puppet <tool> [json]` | Admin: execute a tool as the agent and store the call/result pair |
 | `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
 | `/redo` | Put the turn `/undo` took out back in the agent's window |
-| `/checkpoint [name]` | Save current state (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves |
+| `/checkpoint [name]` | Save the record's position: its last row, an undone one included (no name: list checkpoints; held for this session) |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts the turn back); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
@@ -965,9 +969,10 @@ while any agent sharing the store is mid-turn, the subconscious included, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy
 changes meanwhile, the summary can't be written: it stores nothing, and its
-answer says why. If a turn of the agent starts, or the session is switched or
-the host stops, meanwhile, it stores nothing, and its answer gives the
-summary it wrote, to pass as `/newtopic <text>`.
+answer says why. If a turn of the agent starts, rows enter the agent's
+window (a whole turn, or another `/newtopic`'s transition), or the session is
+switched or the host stops, meanwhile, it stores nothing, and its answer
+gives the summary it wrote, to pass as `/newtopic <text>`.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the

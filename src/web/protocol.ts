@@ -167,10 +167,11 @@ export interface WelcomeMessageEntry {
   text: string;
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
-  /** The row left the conversation agent's window by an undo
-   *  (agent-framework #291): its next request is built without it, and the
-   *  record, which the transcript shows, keeps it. A redo puts it back.
-   *  Absent otherwise. */
+  /** The row is out of the conversation agent's window as an undone
+   *  turn's (agent-framework #291): an undo (which /redo puts back) or a
+   *  shed after a refusal or failed inference (which it doesn't). Its next
+   *  request is built without it, and the record, which the transcript
+   *  shows, keeps it. Absent otherwise. */
   undone?: true;
 }
 
@@ -559,10 +560,10 @@ export interface PinsListMessage {
   levelHonored: boolean;
   /** Deepest fold level currently present, so the UI can bound level inputs. */
   deepestLevel?: number;
-  /** Recent pinnable messages (REAL store ids) from the scoped process.
-   *  Shipped for fleet-child scopes, where the SPA has no message window of
-   *  its own to build a picker from; local scope keeps using the client-side
-   *  candidate list. */
+  /** Recent pinnable messages (REAL store ids) from the scoped process, the
+   *  local one's as well as a fleet child's: the record's last 200 rows,
+   *  less a row out of the agent's window as undone and a row whose audience
+   *  stamp leaves the agent out (another resident's on a shared store). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
 }
 
@@ -959,9 +960,9 @@ export interface McplSetEnvMessage {
   env: Record<string, string>;
 }
 
-/** Pull the agent's protected ranges. Response is a `pins-list` envelope.
- *  With a fleet-child `scope` the child also ships picker `candidates`
- *  (recent real store ids) since the SPA has no window into its store. */
+/** Pull the agent's protected ranges. Response is a `pins-list` envelope,
+ *  with picker `candidates` (recent real store ids) for the local scope and
+ *  a fleet-child `scope` alike. */
 export interface RequestPinsMessage {
   type: 'request-pins';
   /** Fleet child name, or 'local'/undefined for the parent process. */
