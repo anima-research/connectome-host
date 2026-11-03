@@ -134,8 +134,9 @@ A message is refused when it would come near `imageStripDepthTokens`
 (default 30 000) as soon as it is stored, since past it its images could
 reach the model only as a placeholder. When its text takes it there, the
 refusal asks for the images in a message of their own or a shorter text;
-when its images alone do, it asks for fewer images at once, or a larger
-`imageStripDepthTokens`. The line is the context manager's own token
+when the number of its images does, it asks for fewer images at once; and
+when a single image would, it says the depth is too small for any image,
+which whoever runs the host can raise. The line is the context manager's own token
 estimate of the message, as it stores it, at the calibration of the agent's
 last compile, and the host refuses past 90% of the depth. It is an estimate
 at send time: a calibration change from a provider reply, or messages

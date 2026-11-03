@@ -13,9 +13,10 @@ const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 const IMAGE = { mediaType: 'image/png', data: FIX.png };
 const REFUSAL = 'message not sent: with this much text, its images could be dropped before the model sees them. '
   + 'Send the images in a message of their own, or shorten the text';
-const IMAGES_REFUSAL = "message not sent: these images alone come too near this host's image depth, the recipe's "
-  + 'imageStripDepthTokens, so they could reach the model only as placeholders. '
-  + 'Send fewer images at once, or raise imageStripDepthTokens';
+const IMAGES_REFUSAL = "message not sent: these images together come too near this host's image depth, the recipe's "
+  + 'imageStripDepthTokens, so they could reach the model only as placeholders. Send fewer images at once';
+const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, is too small for an "
+  + 'image: any image could reach the model only as a placeholder. Whoever runs this host can raise it';
 
 // context-manager 0.24.0 estimates prose at 2.9 characters a token and an
 // image at 1,600, and the default depth is 30,000, so a send's line is 90% of
@@ -78,6 +79,18 @@ afterAll(async () => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
+async function calibrate(cm: ContextManager, multiplier: number): Promise<void> {
+  cm.addMessage('user', [{ type: 'text', text: prose(5_000) }]);
+  await cm.compile();
+  const strategy = cm.getStrategy() as unknown as {
+    reportRealInputTokens(real: number): void;
+    _lastCompileEstimate: number;
+  };
+  strategy.reportRealInputTokens(Math.round(strategy._lastCompileEstimate * multiplier));
+  await cm.compile();
+  expect(cm.getRenderStats()?.calibration?.multiplier).toBeCloseTo(multiplier, 2);
+}
+
 async function send(msg: Record<string, unknown>, afterWelcome?: () => void) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
     headers: { origin: `http://127.0.0.1:${port}`, authorization: AUTH },
@@ -133,12 +146,18 @@ describe("a send whose images the strategy would strip at once", () => {
       .toEqual({ type: 'error', corrId: 'c-past', message: REFUSAL });
   });
 
-  test('is refused for its images, not its text, when the images alone pass the line', async () => {
+  test('says the depth is too small for any image when one image alone passes the line', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 1_700 });
-    expect((await send({ content: '', images: [IMAGE], corrId: 'c-alone' })).error)
-      .toEqual({ type: 'error', corrId: 'c-alone', message: IMAGES_REFUSAL });
-    expect((await send({ content: 'hello', images: [IMAGE], corrId: 'c-alone-text' })).error)
-      .toEqual({ type: 'error', corrId: 'c-alone-text', message: IMAGES_REFUSAL });
+    expect((await send({ content: '', images: [IMAGE], corrId: 'c-one' })).error)
+      .toEqual({ type: 'error', corrId: 'c-one', message: DEPTH_REFUSAL });
+    expect((await send({ content: 'hello', images: [IMAGE, IMAGE], corrId: 'c-one-text' })).error)
+      .toEqual({ type: 'error', corrId: 'c-one-text', message: DEPTH_REFUSAL });
+  });
+
+  test('asks for fewer images when it is their number that passes the line', async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
+    expect((await send({ content: '', images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together' })).error)
+      .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL });
   });
 
   test('is refused for its text when the images alone are under the line', async () => {
@@ -154,13 +173,13 @@ describe("a send whose images the strategy would strip at once", () => {
     expect((await send({ content: prose(OVER), images: [IMAGE], corrId: 'c-custom' })).pushed?.type).toBe('external-message');
   });
 
-  test('is judged at a multiplier of 1 by a manager closed after the welcome', async () => {
-    await openAgent();
+  test('is judged at a multiplier of 1 by a manager closed after the welcome, whatever its calibration was', async () => {
+    await calibrate(await openAgent(), 1.2);
     expect((await send(
       { content: prose(UNDER), images: [IMAGE], corrId: 'c-closed-under' },
       () => agents[0]!.getContextManager().close(),
     )).pushed?.type).toBe('external-message');
-    await openAgent();
+    await calibrate(await openAgent(), 0.8);
     expect((await send(
       { content: prose(OVER), images: [IMAGE], corrId: 'c-closed-over' },
       () => agents[0]!.getContextManager().close(),
@@ -183,16 +202,7 @@ describe("a send whose images the strategy would strip at once", () => {
   });
 
   test("is judged at the store's calibration: a sample at 1.2 puts the send under the line past it", async () => {
-    const cm = await openAgent();
-    cm.addMessage('user', [{ type: 'text', text: prose(5_000) }]);
-    await cm.compile();
-    const strategy = cm.getStrategy() as unknown as {
-      reportRealInputTokens(real: number): void;
-      _lastCompileEstimate: number;
-    };
-    strategy.reportRealInputTokens(Math.round(strategy._lastCompileEstimate * 1.2));
-    await cm.compile();
-    expect(cm.getRenderStats()?.calibration?.multiplier).toBeCloseTo(1.2, 2);
+    await calibrate(await openAgent(), 1.2);
     const result = await send({ content: prose(UNDER), images: [IMAGE], corrId: 'c-moved' });
     expect(result.error).toEqual({ type: 'error', corrId: 'c-moved', message: REFUSAL });
   });

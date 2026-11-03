@@ -1767,16 +1767,18 @@ export class WebUiModule implements Module {
             const line = depth * SEND_DEPTH_SHARE;
             const strategy = cm.getStrategy();
             if (sendDepthTokens(content as ContentBlock[], strategy, multiplier) > line) {
-              const imagesAlone = sendDepthTokens(checked.blocks, strategy, multiplier) > line;
+              const past = (blocks: ContentBlock[]): boolean => sendDepthTokens(blocks, strategy, multiplier) > line;
               this.send(client, {
                 type: 'error',
                 ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
-                message: imagesAlone
-                  ? "message not sent: these images alone come too near this host's image depth, the recipe's "
-                    + 'imageStripDepthTokens, so they could reach the model only as placeholders. '
-                    + 'Send fewer images at once, or raise imageStripDepthTokens'
-                  : 'message not sent: with this much text, its images could be dropped before the model sees them. '
-                    + 'Send the images in a message of their own, or shorten the text',
+                message: checked.blocks.every((image) => past([image]))
+                  ? "message not sent: this host's image depth, the recipe's imageStripDepthTokens, is too small for an "
+                    + 'image: any image could reach the model only as a placeholder. Whoever runs this host can raise it'
+                  : past(checked.blocks)
+                    ? "message not sent: these images together come too near this host's image depth, the recipe's "
+                      + 'imageStripDepthTokens, so they could reach the model only as placeholders. Send fewer images at once'
+                    : 'message not sent: with this much text, its images could be dropped before the model sees them. '
+                      + 'Send the images in a message of their own, or shorten the text',
               });
               return;
             }

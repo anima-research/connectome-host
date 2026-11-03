@@ -80,6 +80,29 @@ describe("the host's estimate of a send's image depth", () => {
   });
 });
 
+describe("context-manager's own strip, at the measure the host prices", () => {
+  async function compiledImages(content: ContentBlock[]): Promise<{ host: number; images: number }> {
+    const root = mkdtempSync(join(tmpdir(), 'image-depth-strip-'));
+    try {
+      const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: { type: 'autobiographical', imageStripDepthTokens: 2_000 } } });
+      const cm = await ContextManager.open({ path: join(root, 'store'), strategy: buildFrameworkStrategy(recipe, 'claude-sonnet-4-5-20250929', 'UTC')! });
+      const host = sendDepthTokens(content, cm.getStrategy(), 1);
+      cm.addMessage('user', content as never);
+      const { messages } = await cm.compile();
+      cm.close();
+      const images = messages.flatMap((m) => m.content as Array<{ type: string }>).filter((b) => b.type === 'image').length;
+      return { host, images };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  test('keeps the image of a send at the depth, and replaces it one token past', async () => {
+    expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_159) } as ContentBlock])).toEqual({ host: 2_000, images: 1 });
+    expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_161) } as ContentBlock])).toEqual({ host: 2_001, images: 0 });
+  });
+});
+
 describe('the depth the host checks a send against', () => {
   test("is the recipe's, or context-manager's default, for the strategies the host builds", () => {
     expect(liveImageDepth(undefined)).toBe(30_000);
