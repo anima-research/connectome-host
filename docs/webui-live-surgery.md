@@ -163,9 +163,8 @@ request that carries it alongside 20 others, so the agent is stuck until the
 image leaves the live window. The docs don't give the stricter limit's
 value, which a refusal states; they give 3,000 px on a side as under it on
 every platform. Probes on 2026-10-13 and 2026-10-19 found the Anthropic API
-accepting 21 and 101 images with one of them at 2100 px, so its own limit
-may be higher, and the host follows the docs' bound for every platform
-regardless. With the default `maxLiveImages` of 6 no request gets there. A
+accepting 21 and 101 images with one of them at 2100 px, within the 3,000
+the docs now give; the host follows the docs' bound for every platform. With the default `maxLiveImages` of 6 no request gets there. A
 host whose recipe can keep more than 20 images live (`maxLiveImages` past 20
 or set to 0, or a strategy an extension registers) holds composer images to
 3,000 px on a side. A message also takes no more images than the live window
