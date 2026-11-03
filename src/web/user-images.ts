@@ -28,7 +28,7 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 /**
  * The most images a request may carry at the full side limit, by Anthropic's
  * vision docs: past it, every image in the request is held to 2000 px on a
- * side.
+ * side. https://platform.claude.com/docs/en/build-with-claude/vision
  */
 const MANY_IMAGES = 20;
 /** The side the docs give for a request past `MANY_IMAGES`. */

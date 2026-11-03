@@ -851,6 +851,9 @@ export interface UserMessageImage {
  *   on every image in it, so a host whose recipe can keep more than 20 live
  *   advertises a smaller side, as it does a smaller count when its live
  *   window is under 8 (`userImageLimits` in the welcome).
+ *
+ * The per-image limits are Claude's vision docs':
+ * https://platform.claude.com/docs/en/build-with-claude/vision
  */
 export interface UserImageLimits {
   maxCount: number;
