@@ -465,11 +465,11 @@ describe('userImageBlocks', () => {
     expect(userImageBlocks(seven.slice(0, 6), six).ok).toBe(true);
 
     const many = hostImageLimits(liveImageWindow({ type: 'autobiographical', maxLiveImages: 24 }));
-    expect(many).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
-    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(2000, 1).toString('base64') }], many).ok).toBe(true);
-    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(2001, 1).toString('base64') }], many)).toEqual({
+    expect(many).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 3000 });
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3000, 1).toString('base64') }], many).ok).toBe(true);
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3001, 1).toString('base64') }], many)).toEqual({
       ok: false,
-      error: 'the image is 2001×1; this host can carry more than 20 images in one request, where the model APIs hold every image to a stricter limit, and 2000 px on a side stays under it. Shrink it to 2000 px or less on its longer side.',
+      error: 'the image is 3001×1; this host can carry more than 20 images in one request, where the model APIs hold every image to a stricter limit, and 3000 px on a side stays under it. Shrink it to 3000 px or less on its longer side.',
     });
   });
 });
@@ -484,11 +484,11 @@ describe("a host's image limits, from its recipe's live window", () => {
     expect(liveImageWindow({ type: 'from-an-extension' })).toBeUndefined();
   });
 
-  test('a message takes no more images than the window keeps, and past 20 each side is held to 2000 px', () => {
+  test('a message takes no more images than the window keeps, and past 20 each side is held to 3000 px', () => {
     expect(hostImageLimits(3)).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 3 });
     expect(hostImageLimits(20)).toEqual(USER_IMAGE_LIMITS);
-    expect(hostImageLimits(21)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
-    expect(hostImageLimits(undefined)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
+    expect(hostImageLimits(21)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 3000 });
+    expect(hostImageLimits(undefined)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 3000 });
   });
 
   test('a message takes no more base64 than the window keeps, where the recipe sets that', () => {

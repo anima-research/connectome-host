@@ -840,8 +840,8 @@ export interface UserMessageImage {
  * until it leaves the context manager's live window.
  *
  * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
- *   the per-image limit everywhere the model is served: 5 MB of base64 on
- *   Bedrock and Google Cloud, 10 MB on the Anthropic API itself.
+ *   the per-image limit everywhere the model is served, the strictest being
+ *   Bedrock's 5 MB of base64.
  * - `maxTotalBase64Chars`: what one message's images may come to, leaving
  *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
  *   bounded by it, so the composer checks the whole frame too
