@@ -22,10 +22,12 @@
   live holds them to 2000 px on a side, under the stricter limit the model
   APIs apply to requests that carry that many. Images can't be routed to a
   fleet child. A host whose recipe uses `passthrough`, which keeps every
-  image in every request, takes no composer images. A message with so much
-  text that its images would sit past `imageStripDepthTokens` as soon as it
-  is stored, and reach the model only as a placeholder, is refused, asking
-  for the images in a message of their own or a shorter text.
+  image in every request, takes no composer images. A message that would
+  come near `imageStripDepthTokens` as soon as it is stored, where its
+  images could reach the model only as a placeholder, is refused: one with
+  much text asks for the images in a message of their own or a shorter
+  text, and one whose images alone come that near asks for fewer images at
+  once, or a larger `imageStripDepthTokens`.
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.

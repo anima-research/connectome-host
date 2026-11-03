@@ -1763,12 +1763,19 @@ export class WebUiModule implements Module {
             } catch {
               // context-manager refuses the query while its strategy is not initialized, and once closed.
             }
-            if (sendDepthTokens(content as ContentBlock[], cm.getStrategy(), multiplier) > depth * SEND_DEPTH_SHARE) {
+            const line = depth * SEND_DEPTH_SHARE;
+            const strategy = cm.getStrategy();
+            if (sendDepthTokens(content as ContentBlock[], strategy, multiplier) > line) {
+              const imagesAlone = sendDepthTokens(checked.blocks, strategy, multiplier) > line;
               this.send(client, {
                 type: 'error',
                 ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
-                message: 'message not sent: with this much text, its images would be dropped before the model sees them. '
-                  + 'Send the images in a message of their own, or shorten the text',
+                message: imagesAlone
+                  ? "message not sent: these images alone come too near this host's image depth, the recipe's "
+                    + 'imageStripDepthTokens, so they could reach the model only as placeholders. '
+                    + 'Send fewer images at once, or raise imageStripDepthTokens'
+                  : 'message not sent: with this much text, its images could be dropped before the model sees them. '
+                    + 'Send the images in a message of their own, or shorten the text',
               });
               return;
             }

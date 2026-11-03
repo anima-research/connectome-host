@@ -11,8 +11,11 @@ import { validateRecipe } from '../src/recipe.js';
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/user-images.json', import.meta.url), 'utf-8')) as Record<string, string>;
 const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 const IMAGE = { mediaType: 'image/png', data: FIX.png };
-const REFUSAL = 'message not sent: with this much text, its images would be dropped before the model sees them. '
+const REFUSAL = 'message not sent: with this much text, its images could be dropped before the model sees them. '
   + 'Send the images in a message of their own, or shorten the text';
+const IMAGES_REFUSAL = "message not sent: these images alone come too near this host's image depth, the recipe's "
+  + 'imageStripDepthTokens, so they could reach the model only as placeholders. '
+  + 'Send fewer images at once, or raise imageStripDepthTokens';
 
 // context-manager 0.24.0 estimates prose at 2.9 characters a token and an
 // image at 1,600, and the default depth is 30,000, so a send's line is 90% of
@@ -28,11 +31,17 @@ let port: number;
 const pushed: Array<Record<string, unknown>> = [];
 const agents: Array<{ name: string; getContextManager: () => ContextManager }> = [];
 const roots: string[] = [];
+const AUTOBIOGRAPHICAL = { type: 'autobiographical' };
+const recipeAgent: { strategy: Record<string, unknown> } = { strategy: AUTOBIOGRAPHICAL };
 
-async function openAgent(): Promise<ContextManager> {
+async function openAgent(
+  strategyConfig: Record<string, unknown> = AUTOBIOGRAPHICAL,
+  hostStrategy: Record<string, unknown> = strategyConfig,
+): Promise<ContextManager> {
   const root = mkdtempSync(join(tmpdir(), 'webui-image-depth-'));
   roots.push(root);
-  const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: { type: 'autobiographical' } } });
+  recipeAgent.strategy = hostStrategy;
+  const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: strategyConfig } });
   const strategy = buildFrameworkStrategy(recipe, 'claude-sonnet-4-5-20250929', 'UTC')!;
   const cm = await ContextManager.open({ path: join(root, 'store'), strategy });
   agents.splice(0, agents.length, { name: 'agent', getContextManager: () => cm });
@@ -52,12 +61,15 @@ beforeAll(async () => {
     },
     frameworkSessionId: 's',
     sessionManager: { findSession: () => null },
-    recipe: { name: 'recipe', agent: { strategy: { type: 'autobiographical' } } },
+    recipe: { name: 'recipe', agent: recipeAgent },
   } as never);
 });
 
 afterEach(() => {
-  for (const { getContextManager } of agents.splice(0)) getContextManager().close();
+  for (const { getContextManager } of agents.splice(0)) {
+    try { getContextManager().close(); } catch { /* closed by its test */ }
+  }
+  recipeAgent.strategy = AUTOBIOGRAPHICAL;
 });
 
 afterAll(async () => {
@@ -66,7 +78,7 @@ afterAll(async () => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
-async function send(msg: Record<string, unknown>) {
+async function send(msg: Record<string, unknown>, afterWelcome?: () => void) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
     headers: { origin: `http://127.0.0.1:${port}`, authorization: AUTH },
   } as unknown as undefined);
@@ -82,6 +94,7 @@ async function send(msg: Record<string, unknown>) {
     }
   };
   await until(() => frames.find((f) => f.type === 'welcome'), 'welcome');
+  afterWelcome?.();
   const before = pushed.length;
   ws.send(JSON.stringify({ type: 'user-message', ...msg }));
   const result = await until(
@@ -111,6 +124,47 @@ describe("a send whose images the strategy would strip at once", () => {
     await openAgent();
     const result = await send({ content: prose(OVER) });
     expect(result.pushed?.type).toBe('external-message');
+  });
+
+  test('is refused one token past the line, and taken at it', async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 2_000 });
+    expect((await send({ content: 'a'.repeat(579), images: [IMAGE], corrId: 'c-at' })).pushed?.type).toBe('external-message');
+    expect((await send({ content: 'a'.repeat(582), images: [IMAGE], corrId: 'c-past' })).error)
+      .toEqual({ type: 'error', corrId: 'c-past', message: REFUSAL });
+  });
+
+  test('is refused for its images, not its text, when the images alone pass the line', async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 1_700 });
+    expect((await send({ content: '', images: [IMAGE], corrId: 'c-alone' })).error)
+      .toEqual({ type: 'error', corrId: 'c-alone', message: IMAGES_REFUSAL });
+    expect((await send({ content: 'hello', images: [IMAGE], corrId: 'c-alone-text' })).error)
+      .toEqual({ type: 'error', corrId: 'c-alone-text', message: IMAGES_REFUSAL });
+  });
+
+  test('is refused for its text when the images alone are under the line', async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
+    expect((await send({ content: 'a'.repeat(1_300), images: [IMAGE, IMAGE], corrId: 'c-text' })).error)
+      .toEqual({ type: 'error', corrId: 'c-text', message: REFUSAL });
+  });
+
+  test("goes through where the host knows no depth: a depth of 0, or a strategy an extension registers", async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 0 });
+    expect((await send({ content: prose(OVER), images: [IMAGE], corrId: 'c-zero' })).pushed?.type).toBe('external-message');
+    await openAgent(AUTOBIOGRAPHICAL, { type: 'custom-images' });
+    expect((await send({ content: prose(OVER), images: [IMAGE], corrId: 'c-custom' })).pushed?.type).toBe('external-message');
+  });
+
+  test('is judged at a multiplier of 1 by a manager closed after the welcome', async () => {
+    await openAgent();
+    expect((await send(
+      { content: prose(UNDER), images: [IMAGE], corrId: 'c-closed-under' },
+      () => agents[0]!.getContextManager().close(),
+    )).pushed?.type).toBe('external-message');
+    await openAgent();
+    expect((await send(
+      { content: prose(OVER), images: [IMAGE], corrId: 'c-closed-over' },
+      () => agents[0]!.getContextManager().close(),
+    )).error).toEqual({ type: 'error', corrId: 'c-closed-over', message: REFUSAL });
   });
 
   test("is priced at a multiplier of 1 by a manager that won't answer for its calibration", async () => {

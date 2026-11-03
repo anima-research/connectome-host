@@ -130,16 +130,18 @@ composer says so and keeps the draft. Once sent, the context manager's
 live-image limits (`maxLiveImages`, `imageStripDepthTokens`,
 `maxLiveImageBytes`) apply to them like any other image.
 
-A message is refused, asking for its images in a message of their own or a
-shorter text, when its own text would put its images past
-`imageStripDepthTokens` (default 30 000) as soon as it is stored, so they
-would reach the model only as a placeholder. The line is the context
-manager's own token estimate of the message, as it stores it, at the
-calibration of the agent's last compile, and the host refuses at 90% of the
-depth. It is an estimate at send time: a calibration change from a provider
-reply, or messages stored after it, before the message's first compile can
-still put its images past the depth. A recipe whose
-`imageStripDepthTokens` is 0 has no depth to check.
+A message is refused when it would come near `imageStripDepthTokens`
+(default 30 000) as soon as it is stored, since past it its images could
+reach the model only as a placeholder. When its text takes it there, the
+refusal asks for the images in a message of their own or a shorter text;
+when its images alone do, it asks for fewer images at once, or a larger
+`imageStripDepthTokens`. The line is the context manager's own token
+estimate of the message, as it stores it, at the calibration of the agent's
+last compile, and the host refuses past 90% of the depth. It is an estimate
+at send time: a calibration change from a provider reply, or messages
+stored after it, before the message's first compile can still put its
+images past the depth. A recipe whose `imageStripDepthTokens` is 0 has no
+depth to check.
 
 By Claude's vision docs
 (https://platform.claude.com/docs/en/build-with-claude/vision), a request
