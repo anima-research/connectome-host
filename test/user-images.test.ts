@@ -209,6 +209,10 @@ describe('a whole image', () => {
     expect(imageDamage(bare, 'image/jpeg')).toBe('has no image data');
     const restartOnly = Buffer.concat([headed.subarray(0, -2), Buffer.from([0xff, 0xd0, 0xff, 0xd9])]);
     expect(imageDamage(restartOnly, 'image/jpeg')).toBe('has no image data');
+    const stuffedOnly = Buffer.concat([headed.subarray(0, -2), Buffer.from([0xff, 0x00, 0xff, 0xd9])]);
+    expect(imageDamage(stuffedOnly, 'image/jpeg')).toBeNull();
+    const headerOfNone = Buffer.concat([headed.subarray(0, 15), Buffer.from([0xff, 0xda, 0x00, 0x00, 0xff, 0xd9])]);
+    expect(imageDamage(headerOfNone, 'image/jpeg')).toBe('is damaged: its segments are out of step');
   });
 
   test("an end marker inside a segment between a JPEG's scans doesn't end it", () => {
@@ -280,7 +284,7 @@ describe('animated images and the provider', () => {
 });
 
 describe('an image whose parts are there but empty', () => {
-  test('an empty IDAT, a GIF frame with no data and an empty ANMF are no image data', () => {
+  test('an empty IDAT, a GIF frame with no data and an ANMF of no more than its frame header hold no image data', () => {
     const png = bytes('png');
     const emptyIdat = Buffer.concat([png.subarray(0, 33), pngChunk('IDAT', new Uint8Array()), pngChunk('IEND', new Uint8Array())]);
     expect(imageDamage(emptyIdat, 'image/png')).toBe('has no image data');
@@ -291,17 +295,31 @@ describe('an image whose parts are there but empty', () => {
     ]);
     expect(imageDamage(emptyFrame, 'image/gif')).toBe('has no image data');
     const vp8x = [...Buffer.from('VP8X', 'latin1'), 10, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    const emptyAnmf = Buffer.from([
-      ...Buffer.from('RIFF', 'latin1'), 4 + 18 + 8, 0, 0, 0, ...Buffer.from('WEBP', 'latin1'),
-      ...vp8x, ...Buffer.from('ANMF', 'latin1'), 0, 0, 0, 0,
+    const anmf = (size: number) => Buffer.from([
+      ...Buffer.from('RIFF', 'latin1'), 4 + 18 + 8 + size + (size & 1), 0, 0, 0, ...Buffer.from('WEBP', 'latin1'),
+      ...vp8x, ...Buffer.from('ANMF', 'latin1'), size, 0, 0, 0, ...new Array(size + (size & 1)).fill(0),
     ]);
-    expect(imageDamage(emptyAnmf, 'image/webp')).toBe('has no image data');
+    expect(imageDamage(anmf(0), 'image/webp')).toBe('has no image data');
+    expect(imageDamage(anmf(16), 'image/webp')).toBe('has no image data');
+    expect(imageDamage(anmf(24), 'image/webp')).toBeNull();
+  });
+
+  test("a GIF with a frame of data and an empty one is whole, and animated", () => {
+    const empty = [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0x00, 0x02, 0x00];
+    const after = Buffer.from([...gifOf(1).subarray(0, -1), ...empty, 0x3b]);
+    const before = Buffer.from([...gifOf(1).subarray(0, 13), ...empty, ...gifOf(1).subarray(13)]);
+    for (const gif of [after, before]) {
+      expect(imageDamage(gif, 'image/gif')).toBeNull();
+      expect(isAnimated(gif, 'image/gif')).toBe(true);
+    }
   });
 
   test('an IHDR of any length but 13 gives no size', () => {
     const png = bytes('png');
     const short = Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', png.subarray(16, 24)), png.subarray(33)]);
     expect(imageSize(short, 'image/png')).toBeNull();
+    const long = Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', Buffer.concat([png.subarray(16, 29), Buffer.from([0])])), png.subarray(33)]);
+    expect(imageSize(long, 'image/png')).toBeNull();
   });
 
   test("a WebP whose last chunk lacks its pad byte, or that ends in a few spare bytes, is taken, as decoders take it", () => {
@@ -325,13 +343,15 @@ describe('isAnimated', () => {
     expect(isAnimated(bytes('gif'), 'image/gif')).toBe(false);
   });
 
-  test('a PNG with an acTL chunk ahead of its data is animated (APNG)', () => {
+  test('a PNG with an acTL chunk ahead of its data that declares frames is animated (APNG)', () => {
     const png = bytes('png');
-    const actl = pngChunk('acTL', new Uint8Array([0, 0, 0, 1, 0, 0, 0, 0]));
+    const actl = pngChunk('acTL', new Uint8Array([0, 0, 0, 2, 0, 0, 0, 0]));
     const apng = Buffer.concat([png.subarray(0, 33), actl, png.subarray(33)]);
     expect(imageDamage(apng, 'image/png')).toBeNull();
     expect(isAnimated(apng, 'image/png')).toBe(true);
     expect(isAnimated(png, 'image/png')).toBe(false);
+    const oneFrame = Buffer.concat([png.subarray(0, 33), pngChunk('acTL', new Uint8Array([0, 0, 0, 1, 0, 0, 0, 0])), png.subarray(33)]);
+    expect(isAnimated(oneFrame, 'image/png')).toBe(false);
     // acTL counts only ahead of the image data, as APNG places it.
     const iend = png.length - 12;
     const late = Buffer.concat([png.subarray(0, iend), actl, png.subarray(iend)]);

@@ -120,14 +120,13 @@ export function imageDamage(b: Uint8Array, mediaType: string): string | null {
 /**
  * Whether a whole image is animated: a GIF of more than one frame, a WebP
  * whose VP8X header sets its animation flag, or a PNG with an `acTL` chunk
- * ahead of its image data (APNG). The model APIs use only the first frame,
- * so the composer says so.
+ * ahead of its image data (APNG) that declares more than one frame.
  */
 export function isAnimated(b: Uint8Array, mediaType: string): boolean {
   switch (mediaType) {
     case 'image/gif': {
       const walk = gifWalk(b);
-      return typeof walk === 'number' && walk > 1;
+      return typeof walk !== 'string' && walk.frames > 1;
     }
     case 'image/webp':
       // VP8X flags byte: bit 1 is the animation flag.
@@ -138,7 +137,7 @@ export function isAnimated(b: Uint8Array, mediaType: string): boolean {
       let o = 8;
       while (o + 12 <= b.length) {
         const type = String.fromCharCode(b[o + 4]!, b[o + 5]!, b[o + 6]!, b[o + 7]!);
-        if (type === 'acTL') return true;
+        if (type === 'acTL') return u32be(b, o) >= 4 && o + 12 <= b.length && u32be(b, o + 8) > 1;
         if (type === 'IDAT' || type === 'IEND') return false;
         o += 12 + u32be(b, o);
       }
@@ -194,7 +193,9 @@ function jpegScansDamage(b: Uint8Array, sos: number): string | null {
   let sawData = false;
   let o = sos;
   for (;;) {
-    let i = o + 2 + ((b[o + 2]! << 8) | b[o + 3]!);
+    const header = (b[o + 2]! << 8) | b[o + 3]!;
+    if (header < 2) return 'is damaged: its segments are out of step';
+    let i = o + 2 + header;
     for (; i + 1 < b.length; i++) {
       if (b[i] !== 0xff) { sawData = true; continue; }
       const next = b[i + 1]!;
@@ -213,7 +214,9 @@ function jpegScansDamage(b: Uint8Array, sos: number): string | null {
       if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { m += 2; continue; }
       if (m + 4 > b.length) return CUT_SHORT;
       if (marker === 0xda) break;
-      m += 2 + ((b[m + 2]! << 8) | b[m + 3]!);
+      const len = (b[m + 2]! << 8) | b[m + 3]!;
+      if (len < 2) return 'is damaged: its segments are out of step';
+      m += 2 + len;
     }
     o = m;
   }
@@ -222,12 +225,12 @@ function jpegScansDamage(b: Uint8Array, sos: number): string | null {
 function gifDamage(b: Uint8Array): string | null {
   const walk = gifWalk(b);
   if (typeof walk === 'string') return walk;
-  return walk > 0 ? null : 'has no image data';
+  return walk.withData > 0 ? null : 'has no image data';
 }
 
-/** Walks a GIF's blocks to its trailer: how many image frames it holds, or
- *  why the file isn't whole. */
-function gifWalk(b: Uint8Array): number | string {
+/** Walks a GIF's blocks to its trailer: how many image frames it holds, and
+ *  how many of them hold data, or why the file isn't whole. */
+function gifWalk(b: Uint8Array): { frames: number; withData: number } | string {
   if (b.length < 13) return CUT_SHORT;
   const tableSize = (flags: number) => (flags & 0x80 ? 3 * (1 << ((flags & 0x07) + 1)) : 0);
   /** Past a run of data sub-blocks (each a length byte, then that many
@@ -243,15 +246,17 @@ function gifWalk(b: Uint8Array): number | string {
   };
   let o = 13 + tableSize(b[10]!);
   let frames = 0;
+  let withData = 0;
   while (o < b.length) {
     const block = b[o]!;
-    if (block === 0x3b) return frames;
+    if (block === 0x3b) return { frames, withData };
     if (block === 0x21) {
       o = skipSubBlocks(o + 2);
     } else if (block === 0x2c) {
       if (o + 10 > b.length) return CUT_SHORT;
       const data = o + 10 + tableSize(b[o + 9]!) + 1;
-      if (data < b.length && b[data] !== 0) frames++;
+      frames++;
+      if (data < b.length && b[data] !== 0) withData++;
       o = skipSubBlocks(data);
     } else {
       return 'is damaged: it has a block of unknown kind';
