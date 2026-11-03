@@ -120,11 +120,13 @@ export interface RecipeStrategy {
   carrierPolicy?: 'full' | 'live-strip';
   targetChunkTokens?: number;
   mergeThreshold?: number;
-  /** Context Manager: summaries never offered as merge sources by any scheduler
-   *  (operator holds, e.g. while a summary awaits review). The ids name
-   *  summaries in the store of the agent this recipe starts; its subconscious
-   *  forks share them, its conversation forks aren't held, and a change takes
-   *  a restart. */
+  /** Context Manager: summaries that no merge scheduler of the built-in
+   *  strategies offers as a merge source (operator holds, e.g. while a summary
+   *  awaits review). A custom strategy type receives the list in its config and
+   *  decides what to do with it. The ids name summaries in the store of the
+   *  session the host runs, a session switch included; the agent's subconscious
+   *  forks share them, its conversation forks aren't held, and a change takes a
+   *  restart. */
   mergeHoldSummaryIds?: string[];
   mergeMaxSourceSpanMessages?: number;
   summaryTargetTokens?: number;
