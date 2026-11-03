@@ -2,6 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { handleCommand, createBranchState } from '../src/commands.js';
 import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
+import { clearAccountBindings, recordAccountBinding } from '../src/logging-adapter.js';
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
@@ -219,6 +220,25 @@ describe('/budget honest display', () => {
     expect(set[0]).toBe('Stream budget set to 200.0k tokens for all agents.');
     expect(set[1]).toContain("doesn't break the stream mid-turn for bound, whose thinking binds and whose window is set");
     expect(set).toHaveLength(2);
+  });
+  test("on an account found to show thinking whose earlier conversation changed, the budget breaks a binding model's stream as any other", () => {
+    recordAccountBinding('claude-opus-5-5', 'shows');
+    try {
+      const app = {
+        framework: {
+          getAgent: () => undefined,
+          getAllAgents: () => [{
+            name: 'bound', model: 'claude-opus-5-5', physicalWindowTokens: 1_000_000, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
+          }],
+          getAllModules: () => [],
+        },
+        branchState: createBranchState(),
+      } as any;
+      expect(handleCommand('/budget', app).lines.map(l => l.text).find(l => l.startsWith('  bound:'))).not.toContain("doesn't break");
+      expect(handleCommand('/budget 200k', app).lines.map(l => l.text)).toEqual(['Stream budget set to 200.0k tokens for all agents.']);
+    } finally {
+      clearAccountBindings();
+    }
   });
 });
 

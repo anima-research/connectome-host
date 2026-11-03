@@ -28,6 +28,7 @@
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
 import { hostMembraneRetry } from './membrane-retry.js';
+import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
   BedrockAdapter,
   Membrane,
@@ -109,7 +110,8 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
+import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
@@ -509,6 +511,7 @@ async function createFramework(
   const framework = await AgentFramework.create({
     storePath,
     membrane,
+    ...frameworkErrorPolicy(recipe.agent.retry),
 agents: [agentConfig],
     modules: moduleInstances,
     mcplServers,
@@ -520,7 +523,7 @@ agents: [agentConfig],
     // A 429 while a subscription window is spent is a quota, not a throttle:
     // park until it resets instead of retrying into it.
     ...(quotaMeter ? { providerHold: quotaProviderHold(quotaMeter, () => model) } : {}),
-    ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
+    ...codeExecutionOption(recipe),
     ...(conversations ? { conversations } : {}),
     // Tune-out's reader (agent-framework#77, #232) and the Dendrite options
     // (`speech`, `tuneOut`, `dendrite`) — recipe opt-ins, typed against the
@@ -529,6 +532,7 @@ agents: [agentConfig],
     ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
+    inferenceBounds: recipe.inferenceBounds,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -1135,6 +1139,16 @@ async function main() {
   }
 
   const extensions = await loadExtensions(recipe);
+  // Before any agent config is built: what this account does with thinking
+  // whose earlier conversation changed decides whether agents leave it out.
+  await probeAccountBinding(membrane, {
+    provider,
+    formatter: recipe.agent.formatter,
+    assistant: agentName,
+    models: [resolveModel(recipe), typeof recipe.modules?.subagents === 'object' ? recipe.modules.subagents.defaultModel : undefined],
+    stateFile: join(config.dataDir, 'thinking-binding.json'),
+    route: `${provider} ${process.env.ANTHROPIC_BASE_URL ?? ''}`.trim(),
+  });
   const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
 
   const app: AppContext = {

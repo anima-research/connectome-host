@@ -273,17 +273,21 @@ export interface RecipeAgent {
    * prompting structure intact. */
   formatter?: 'native' | 'anthropic-xml';
   /**
-   * Membrane retry policy for the host's own provider calls: compression and
-   * merging, retrieval, session naming and the TUI's status line.
-   * agent-framework retries the agent's turns itself, on membrane's default
-   * schedules, so this policy doesn't reach them. It applies over the host's
-   * default (`hostMembraneRetry`): membrane's base schedule (3 sends, 1 s then
-   * 2 s, for a retryable failure before anything was delivered) with its
-   * overloaded schedule off, so a 529 is retried as any other retryable
-   * failure. `{ "maxRetries": 4 }` rides out longer blips with exponential
-   * backoff (retryDelayMs 1000, x2, capped at maxRetryDelayMs 30000 by
-   * default), and `overloaded` brings back a patient schedule for 529s. See
-   * membrane's `RetryConfigInput` for every field.
+   * Retry settings for framework turns AND other provider calls (compression
+   * and merging, retrieval, session naming and the TUI status line).
+   * A non-empty object installs a framework-wide DefaultErrorPolicy, completing
+   * partial fields from the framework's turn defaults;
+   * absent or {} leaves the turn policy untouched. It covers the resident,
+   * forks and subagents in that instance; separate fleet hosts use their own
+   * recipes. maxRetries counts total sends including the first: 4 means 4
+   * sends / 3 waits for ordinary retryable failures. Rate limits get at least
+   * 5 sends per policy cycle. Turn policies keep 13 overloaded sends per cycle
+   * unless overloaded.maxRetries is specified, with equal-jitter backoff,
+   * at-least-10-minute stated-wait ceilings
+   * for subagents, and one fresh call after a deadline cut;
+   * overloaded.maxRetries:0 uses the base schedule instead. Other calls keep
+   * hostMembraneRetry's existing default
+   * (overloaded schedule off), with recipe overrides. See RetryConfigInput.
    */
   retry?: import('@animalabs/membrane').MembraneConfig['retry'];
   /** Prefill scaffold user message appended after the conversation (e.g.
@@ -1589,7 +1593,10 @@ export interface Recipe {
   speech?: RecipeSpeech;
   /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
   tuneOut?: RecipeTuneOut;
-  /** Dendrite lifecycle options (agent-framework `dendrite`). */
+  /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
+   *  `derivationNotice`, so an agent isn't told of a derivation and
+   *  `collapseDerivationNoticesAfter`, which only spaces those lines out, has no
+   *  effect here. */
   dendrite?: RecipeDendrite;
   /**
    * MCPL RFC-008 operator class overrides: tool-name pattern → classes. The
@@ -1608,6 +1615,15 @@ export interface Recipe {
    * timer off. Left out, the framework's own interval (5000 ms) stands.
    */
   maintenanceIntervalMs?: number;
+  /**
+   * How long agent-framework lets a model call go without progress
+   * (FrameworkConfig.inferenceBounds), passed to it as written: `false` for
+   * none of its bounds, or an object with `progressBounds`, any of
+   * `beforeContentMs`, `betweenEventsMs` and `thinkTokensPerSecond`, and
+   * `flatMinimumMs` beside it. Left out, agent-framework's defaults stand:
+   * the "Inference bounds" section of the README its package ships gives them.
+   */
+  inferenceBounds?: FrameworkConfig['inferenceBounds'];
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -1950,7 +1966,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
-  'maintenanceIntervalMs',
+  'maintenanceIntervalMs', 'inferenceBounds',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -1972,6 +1988,33 @@ function rejectUnknownKeys(path: string, value: object, known: readonly string[]
   if (unknown.length === 0) return;
   const takes = known.length === 1 ? known[0] : `${known.slice(0, -1).join(', ')} and ${known[known.length - 1]}`;
   throw new Error(`Recipe ${path} has unknown key${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => JSON.stringify(k)).join(', ')}; it takes ${takes}.`);
+}
+const INFERENCE_BOUNDS_KEYS = ['progressBounds', 'flatMinimumMs'] as const;
+const PROGRESS_BOUNDS_KEYS = ['beforeContentMs', 'betweenEventsMs', 'thinkTokensPerSecond'] as const;
+
+/** Refuses at load what agent-framework's start would refuse, so a saved
+ *  recipe never holds it, and a key the framework and membrane ignore, such
+ *  as a misspelt bound, which would leave the default in force unseen. */
+function validateInferenceBounds(value: unknown): void {
+  if (value === false) return;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Recipe inferenceBounds must be false or an object, got ${JSON.stringify(value)}.`);
+  }
+  rejectUnknownKeys('inferenceBounds', value, INFERENCE_BOUNDS_KEYS);
+  const { progressBounds, flatMinimumMs } = value as Record<string, unknown>;
+  const aboveZero = (path: string, v: unknown): void => {
+    if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v > 0)) {
+      throw new Error(`Recipe ${path} must be a finite number above 0, got ${typeof v === 'number' ? String(v) : JSON.stringify(v)}.`);
+    }
+  };
+  if (progressBounds !== undefined) {
+    if (typeof progressBounds !== 'object' || progressBounds === null || Array.isArray(progressBounds)) {
+      throw new Error(`Recipe inferenceBounds.progressBounds must be an object, got ${JSON.stringify(progressBounds)}.`);
+    }
+    rejectUnknownKeys('inferenceBounds.progressBounds', progressBounds, PROGRESS_BOUNDS_KEYS);
+    for (const key of PROGRESS_BOUNDS_KEYS) aboveZero(`inferenceBounds.progressBounds.${key}`, (progressBounds as Record<string, unknown>)[key]);
+  }
+  aboveZero('inferenceBounds.flatMinimumMs', flatMinimumMs);
 }
 const RECIPE_AGENT_CLOCK_KEYS = ['intervalMinutes', 'intervalSeconds', 'precision'] as const;
 const RECIPE_AGENT_MOCK_KEYS = [
@@ -3314,6 +3357,8 @@ export function validateRecipe(raw: unknown): Recipe {
     const must = timerMs(0)(obj.maintenanceIntervalMs);
     if (must) throw new Error(`Recipe maintenanceIntervalMs is ${JSON.stringify(obj.maintenanceIntervalMs)}; it must be ${must}.`);
   }
+
+  if (obj.inferenceBounds !== undefined) validateInferenceBounds(obj.inferenceBounds);
 
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {

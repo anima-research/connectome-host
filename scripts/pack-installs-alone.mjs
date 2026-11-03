@@ -11,7 +11,9 @@
 //   2. `bun build` resolves src/index.ts's static imports, and its dynamic
 //      ones with a literal specifier, in the installed tree, on paths a run
 //      doesn't reach too (a recipe extension, loaded by a computed path, isn't
-//      among them);
+//      among them), and discord.js resolves from the installed
+//      @animalabs/agent-framework, which loads it by require, out of
+//      `bun build`'s reach;
 //   3. @opentui/core loads with its native package for this platform, which
 //      it imports by a computed path that `bun build` can't follow;
 //   4. the README's offline smoke run, recipes/mock-test.json in batch mode,
@@ -27,12 +29,16 @@
 // limits in milliseconds (defaults 900000 and 120000); npm pack has the
 // install's.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { CheckError, TimeoutError, hostStarts, run } from "./lib/host-starts.mjs";
 
 const ENTRY = "src/index.ts";
+// agent-framework (0.31.0 on) loads discord.js by require when a host makes its first DiscordJsClient
+// (src/modules/discord/discord-js-client.ts), so `bun build` of the entry no longer reaches it.
+const LAZY = { from: "@animalabs/agent-framework", spec: "discord.js" };
 const WEB_UI = "dist/web/index.html";
 const INSTALL_ATTEMPTS = 3;
 const BUILD_TIMEOUT_MS = 5 * 60_000;
@@ -56,6 +62,33 @@ function changesFromHead() {
 function webAssets(html) {
   const refs = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"'#?]*)/gi)].map((match) => match[1]);
   return [...new Set(refs.filter((ref) => ref !== "" && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)).map((ref) => ref.replace(/^\.?\//, "")))];
+}
+
+function lazyResolves(installed, root, subject) {
+  const pkg = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
+  if (pkg.dependencies?.[LAZY.from] === undefined) return false;
+  const real = realpathSync(root);
+  const inside = (path) => path.startsWith(root + sep) || path.startsWith(real + sep);
+  const lookups = (createRequire(join(installed, "package.json")).resolve.paths(LAZY.from) ?? []).filter(inside);
+  const from = lookups.map((dir) => join(dir, ...LAZY.from.split("/"))).find((dir) => existsSync(join(dir, "package.json")));
+  if (from === undefined) {
+    throw new CheckError(`${LAZY.from} isn't in the installed tree of ${subject}, though its package.json depends on it.`);
+  }
+  let found;
+  try {
+    found = createRequire(join(from, "package.json")).resolve(LAZY.spec);
+  } catch {
+    found = undefined;
+  }
+  if (found === undefined || !inside(found)) {
+    throw new CheckError(
+      `${LAZY.spec} doesn't resolve from the installed ${LAZY.from} in ${subject}` +
+        `${found === undefined ? "" : ` without leaving the install: it resolves only to ${found}`}: ${LAZY.from} loads ` +
+        `it by require when the host makes its first Discord client, which \`bun build\` of ${ENTRY} doesn't reach, so ` +
+        "a host with a Discord module would fail there. A dependency missing from the install does that.",
+    );
+  }
+  return true;
 }
 
 function some(paths) {
@@ -177,11 +210,12 @@ function main() {
         "A file missing from the package, or a dependency only devDependencies supplied, does that.",
     );
 
+    const lazy = lazyResolves(installed, dir, packed.filename);
     const { native } = hostStarts({ root: installed, cwd: dir, work, subject: `the installed ${packed.filename}`, smokeTimeoutMs });
     console.log(
       `${packed.filename} (${files.length} files) installs on its own with npm ${npmVersion}, running no install ` +
         `scripts; it carries the Web UI and tsconfig.json, ${ENTRY}'s imports resolve` +
-        `${native ? ", @opentui/core loads" : ""}, and the offline smoke run answered.`,
+        `${lazy ? `, ${LAZY.spec} resolves from ${LAZY.from}` : ""}${native ? ", @opentui/core loads" : ""}, and the offline smoke run answered.`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });

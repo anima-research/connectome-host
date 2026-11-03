@@ -169,6 +169,52 @@ export function modelThinking(model: string): ModelThinking {
   return MODEL_THINKING_PATTERNS.find(([pattern]) => pattern.test(id))?.[1] ?? UNREACHED;
 }
 
+/** What this process's account does with a signed thinking block whose
+ *  earlier conversation changed, as the start-up probe found it
+ *  (thinking-binding-probe.ts): refuses the request, drops the block on its
+ *  own, or still shows it to the model. */
+export type AccountBinding = 'refuses' | 'drops' | 'shows';
+
+const accountBindings = new Map<string, AccountBinding>();
+
+/** One key per row of the model record, so a dated snapshot, a routing prefix
+ *  or a [1m] suffix reads what was found for its model; a Claude model the
+ *  record doesn't list is its own key. */
+export function accountBindingKey(model: string): string {
+  const id = model.toLowerCase().replace(/(\d)\.(\d)/g, '$1-$2');
+  const row = MODEL_THINKING_PATTERNS.findIndex(([pattern]) => pattern.test(id));
+  return row >= 0 ? `row:${MODEL_THINKING[row]![0]}` : `id:${id.replace(/\[[^\]]*\]$/, '')}`;
+}
+
+export function recordAccountBinding(model: string, binding: AccountBinding): void {
+  accountBindings.set(accountBindingKey(model), binding);
+}
+
+/** What the probe found for `model` on this account; undefined when it wasn't probed or couldn't tell. */
+export function accountBinding(model: string): AccountBinding | undefined {
+  return accountBindings.get(accountBindingKey(model));
+}
+
+/** For tests. */
+export function clearAccountBindings(): void {
+  accountBindings.clear();
+}
+
+/** The provider's refusal of a signed thinking block minted for a different conversation. */
+export function isBindingRefusal(error: unknown): boolean {
+  const e = error as { httpStatus?: number; status?: number; rawError?: { status?: number } } | null;
+  const status = e?.httpStatus ?? e?.status ?? e?.rawError?.status;
+  const message = String((error as { message?: unknown } | null)?.message ?? error);
+  return status === 400 && /bound to a different conversation|invalid `?signature`? in `?thinking`? block/i.test(message);
+}
+
+/** Whether an agent on `model` leaves out thinking whose earlier conversation
+ *  changed: its thinking binds, and the account wasn't found to show such a
+ *  block anyway. */
+export function leavesOutChangedThinking(model: string): boolean {
+  return modelThinking(model).binds && accountBinding(model) !== 'shows';
+}
+
 const DROP_BLOCK = { prefix_mismatch_behavior: 'drop_block' } as const;
 export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 
@@ -450,7 +496,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
    *  the control. */
   private withBinding(request: ProviderRequest): ProviderRequest {
     const facts = modelThinking(request.model);
-    if (!facts.binds || !facts.dropBlock) return request;
+    // An account that shows such a block is asked to drop it by the control.
+    if (!facts.binds || !facts.dropBlock || accountBinding(request.model) === 'shows') return request;
     const extraThinking = (request.extra as { thinking?: unknown } | undefined)?.thinking;
     const current = (extraThinking ?? request.thinking) as Record<string, unknown> | null | undefined;
     let thinking: Record<string, unknown>;
@@ -750,15 +797,40 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
+    // What the request was shaped by: a refusal is answered from this, not from
+    // a verdict another agent's refusal changed while this one was out.
+    const sentWithoutControl = accountBinding(request.model) === 'shows';
     const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(request)))));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
+    let delivered = false;
+    const watched: StreamCallbacks = sentWithoutControl
+      ? {
+          ...callbacks,
+          onChunk: (chunk) => { delivered = true; callbacks.onChunk(chunk); },
+          ...(callbacks.onContentBlock ? { onContentBlock: (i: number, b: unknown) => { delivered = true; callbacks.onContentBlock!(i, b); } } : {}),
+          ...(callbacks.onThinkingSignature ? { onThinkingSignature: (i: number, s: string) => { delivered = true; callbacks.onThinkingSignature!(i, s); } } : {}),
+        }
+      : callbacks;
     let response: ProviderResponse;
     try {
-      response = await super.stream(effective, callbacks, wrapped);
+      response = await super.stream(effective, watched, wrapped);
     } catch (err) {
       this.recordCall('stream', request, t0, sink.rawRequest, { error: err });
-      throw err;
+      // Sent again only when nothing of it reached the caller, as membrane's own retries.
+      if (!sentWithoutControl || delivered || !isBindingRefusal(err)) throw err;
+      // The account was found at start to show such a block, and this one
+      // refused it: a gateway moved the agent to another account. From here on
+      // the control goes with every request (a 'shows' verdict is kept only
+      // for a model that takes it), so the provider drops such a block instead
+      // of refusing; the refusal came before anything streamed, so the request
+      // is sent again. A restart checks the account again.
+      recordAccountBinding(request.model, 'refuses');
+      console.error(
+        `[thinking-binding] ${request.model}: a signed thinking block whose earlier conversation changed was refused, ` +
+        'though the account was found at start to show such blocks; the drop control goes with every request from now on.',
+      );
+      return this.stream(request, callbacks, options);
     }
     this.recordCall('stream', request, t0, sink.rawRequest, { response });
     return response;

@@ -20,7 +20,7 @@ import { traceError } from '../state/turn-trace.js';
 import { shown } from './shown.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { hostNoteMetadata } from '../speaker.js';
-import { hasFoldLine, systemPromptFor, thinkingBindingSettings } from '../framework-agent-config.js';
+import { systemPromptFor, thinkingBindingSettings } from '../framework-agent-config.js';
 
 export interface SubagentModuleConfig {
   provider?: string;
@@ -445,7 +445,6 @@ export interface SubagentLaunch {
   model: string;
   systemPrompt: string;
   systemPromptSource: 'parent' | 'override' | 'caller' | 'default';
-  systemPromptFoldLine?: 'added' | 'removed';
   maxTokens: number;
   maxStreamTokens: number;
   strategy: {
@@ -617,20 +616,15 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
     settings.push({ name: 'provider connection', line: `- Provider: ${launch.provider ?? 'not stated by the host'}.` });
   }
 
-  const foldLine = launch.systemPromptFoldLine === 'added'
-    ? ", with the host's paragraph on folds added"
-    : launch.systemPromptFoldLine === 'removed'
-      ? ", with the host's paragraph on folds taken off"
-      : '';
   const promptText: Record<SubagentLaunch['systemPromptSource'], string> = {
-    parent: `- System prompt: the parent's${foldLine}.`,
-    override: p ? `- System prompt: overridden for this fork${foldLine}.` : `- System prompt: set for this fork${foldLine}.`,
-    caller: `- System prompt: supplied by the caller for this spawn${foldLine}.`,
-    default: `- System prompt: the default research-assistant prompt${foldLine}.`,
+    parent: "- System prompt: the parent's.",
+    override: p ? '- System prompt: overridden for this fork.' : '- System prompt: set for this fork.',
+    caller: '- System prompt: supplied by the caller for this spawn.',
+    default: '- System prompt: the default research-assistant prompt.',
   };
   settings.push({
     name: 'system prompt',
-    ...(fork && p ? { same: launch.systemPromptSource === 'parent' && launch.systemPromptFoldLine === undefined } : {}),
+    ...(fork && p ? { same: launch.systemPromptSource === 'parent' } : {}),
     line: promptText[launch.systemPromptSource],
   });
 
@@ -2183,7 +2177,7 @@ export class SubagentModule implements Module {
       systemPromptSource = 'caller';
     } else if (
       input.systemPrompt !== undefined
-      && (!parentAgent || systemPromptFor(input.systemPrompt, model, this.config.formatter) !== systemPromptFor(parentAgent.systemPrompt, model, this.config.formatter))
+      && (!parentAgent || systemPromptFor(input.systemPrompt) !== systemPromptFor(parentAgent.systemPrompt))
     ) {
       systemPrompt = input.systemPrompt;
       systemPromptSource = 'override';
@@ -2195,7 +2189,7 @@ export class SubagentModule implements Module {
       systemPromptSource = 'default';
     }
 
-    const given = systemPromptFor(systemPrompt, model, this.config.formatter);
+    const given = systemPromptFor(systemPrompt);
 
     const requestedTools = kind === 'spawn' ? (input as SpawnInput).tools : undefined;
     const allowed = this.filterToolNames(requestedTools, callerDepth, parentAgent);
@@ -2223,9 +2217,6 @@ export class SubagentModule implements Module {
       model,
       systemPrompt: given,
       systemPromptSource,
-      ...(hasFoldLine(given) !== hasFoldLine(systemPrompt)
-        ? { systemPromptFoldLine: hasFoldLine(given) ? 'added' as const : 'removed' as const }
-        : {}),
       maxTokens: this.resolveMaxTokens(input.maxTokens, callerAgentName),
       maxStreamTokens: SUBAGENT_STREAM_TOKENS,
       strategy: { ...SUBAGENT_STRATEGY, compressionModel: model },
@@ -3032,11 +3023,12 @@ export class SubagentModule implements Module {
     };
   }
 
-  /** An agent's config from its stored launch, for a launch and a resume alike, so a resumed run gets what it launched with. */
+  /** An agent's config from its stored launch, for a launch and a resume alike, so a resumed run gets what it launched with,
+   *  less the legacy fold paragraph a launch stored by an earlier host may carry. */
   private agentConfig(launch: ResumableLaunch, agentName: string) {
     return {
       model: launch.model,
-      systemPrompt: launch.systemPrompt,
+      systemPrompt: systemPromptFor(launch.systemPrompt),
       maxTokens: launch.maxTokens,
       maxStreamTokens: launch.maxStreamTokens,
       ...(launch.proseRouting !== undefined ? { proseRouting: launch.proseRouting } : {}),

@@ -2,7 +2,7 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
 import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
-import { modelThinking } from './logging-adapter.js';
+import { leavesOutChangedThinking, modelThinking } from './logging-adapter.js';
 import { getDefaultModelLimits } from './model-limits.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
@@ -28,7 +28,10 @@ export type FrameworkAgentConfig = AgentConfig & {
 };
 
 /** The drop control and the window go only on the Anthropic route, the one
- *  they were tried on (anima-research/context-manager#155). */
+ *  they were tried on (anima-research/context-manager#155). Where the start-up
+ *  probe found the account still shows the model a block whose earlier
+ *  conversation changed, neither the binding nor the control goes: the
+ *  thinking is the model's to read, and the control would have it dropped. */
 export function thinkingBindingSettings(model: string, provider: string | undefined): {
   thinkingBinding?: { binds: true; dropBlock: boolean };
   physicalWindowTokens?: number;
@@ -38,30 +41,36 @@ export function thinkingBindingSettings(model: string, provider: string | undefi
   const direct = provider === 'anthropic';
   const window = direct && facts.windowShownByRefusal ? getDefaultModelLimits(model)?.maxContextTokens : undefined;
   return {
-    thinkingBinding: { binds: true, dropBlock: direct && facts.dropBlock },
+    ...(leavesOutChangedThinking(model) ? { thinkingBinding: { binds: true as const, dropBlock: direct && facts.dropBlock } } : {}),
     ...(window !== undefined ? { physicalWindowTokens: window } : {}),
   };
 }
 
-/** The system-text line the host gives an agent whose model binds, since a
- *  fold takes its earlier replies' reasoning (anima-research/context-manager#155). */
-export const FOLD_REASONING_LINE =
+/** The paragraph hosts 0.16.0 to 0.20.x appended to a binding model's system
+ *  prompt about folds taking an agent's earlier reasoning. The host no longer
+ *  adds it: an agent isn't told about the mechanics of its own memory or
+ *  reasoning in standing text. */
+const LEGACY_FOLD_LINE =
   'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
   'so a reply of yours that shows no reasoning may still have had some.';
 
-export function hasFoldLine(systemPrompt: string): boolean {
-  return systemPrompt === FOLD_REASONING_LINE || systemPrompt.endsWith(`\n\n${FOLD_REASONING_LINE}`);
+/** The system prompt an agent is given: the recipe's (or a launch's), with the
+ *  legacy fold paragraph taken off where a prompt still carries it, such as a
+ *  fork's copy of a parent's prompt from a host that added it. */
+export function systemPromptFor(systemPrompt: string): string {
+  if (systemPrompt === LEGACY_FOLD_LINE) return '';
+  return systemPrompt.endsWith(`\n\n${LEGACY_FOLD_LINE}`)
+    ? systemPrompt.slice(0, -(LEGACY_FOLD_LINE.length + 2))
+    : systemPrompt;
 }
 
-/** No agent under an `anthropic-xml` recipe gets the line: membrane's XML
- *  transcript renders no thinking, so a reply's reasoning never reaches the
- *  model again, fold or none. */
-export function systemPromptFor(systemPrompt: string, model: string, formatter?: Recipe['agent']['formatter']): string {
-  const base = !hasFoldLine(systemPrompt) ? systemPrompt
-    : systemPrompt === FOLD_REASONING_LINE ? ''
-      : systemPrompt.slice(0, -(FOLD_REASONING_LINE.length + 2));
-  if (!modelThinking(model).binds || formatter === 'anthropic-xml') return base;
-  return base ? `${base}\n\n${FOLD_REASONING_LINE}` : FOLD_REASONING_LINE;
+/**
+ * agent-framework's `codeExecution` option as `AgentFramework.create` takes it:
+ * the recipe's block when it has one, and nothing otherwise, so an agent-framework without the option reads nothing it
+ * doesn't know.
+ */
+export function codeExecutionOption(recipe: Recipe): { codeExecution?: NonNullable<Recipe['codeExecution']> } {
+  return recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {};
 }
 
 /**
@@ -114,7 +123,7 @@ export function buildFrameworkAgentConfig(
     name: agentName,
     ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
-    systemPrompt: systemPromptFor(recipe.agent.systemPrompt, model, recipe.agent.formatter),
+    systemPrompt: systemPromptFor(recipe.agent.systemPrompt),
     ...(recipe.agent.allowedTools !== undefined
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),

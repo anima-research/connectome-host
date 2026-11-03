@@ -44,7 +44,7 @@ function fakeFramework(name: string) {
     send(type: string, extra: Trace = {}) {
       for (const listener of [...listeners]) listener({ type, agentName: 'agent', ...extra });
     },
-    getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
+    getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'numbered-fork-failed-then-started', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
@@ -187,6 +187,59 @@ async function play(): Promise<void> {
     await step('ended error');
     await escape();
     await step('ended error, Escape');
+  } else if (scenario.startsWith('background-retry')) {
+    first.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'first round words' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    if (scenario === 'background-retry') first.send('inference:stream_resumed');
+    if (scenario === 'background-retry-restarted') first.send('inference:started');
+    if (scenario !== 'background-retry-before-resume') first.send('inference:tokens', { content: 'dead attempt words' });
+    first.send('inference:failed', { error: 'overloaded' });
+    await step('failed in background');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'retry words' });
+    first.send('inference:completed');
+    await step('returned');
+  } else if (scenario === 'switch-ctrl-b') {
+    first.send('inference:started');
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    endSwitch('switched');
+    await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
+    second.send('inference:started');
+    second.send('inference:tokens', { content: 'new session words', blockType: 'text' });
+    await step('new session streaming');
+  } else if (scenario === 'background-switch-fails') {
+    first.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'old round words' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    first.send('inference:failed', { error: 'overloaded' });
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    endSwitch('failed');
+    await until(async () => (await frame()).includes('Session switch failed'), 'the switch to fail');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'retry words' });
+    first.send('inference:completed');
+    await step('old turn returned');
+  } else if (scenario === 'background-switch') {
+    first.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'old session words' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    first.send('inference:failed', { error: 'overloaded' });
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    endSwitch('switched');
+    await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
+    second.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    second.send('inference:tokens', { content: 'new session words' });
+    second.send('inference:completed');
+    await step('new session answered');
   } else if (scenario === 'missed-start') {
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await step('no start, then tools');
@@ -196,6 +249,8 @@ async function play(): Promise<void> {
     await step('no start, then completed');
     first.send('inference:failed', { error: 'a turn the TUI never saw start' });
     await step('no start, then failed');
+    first.send('inference:exhausted', { error: 'a turn the TUI never saw start' });
+    await step('no start, failed, then exhausted');
   } else if (scenario === 'switch' || scenario === 'switch-fails') {
     first.send('inference:started');
     await command('/session switch other');
@@ -226,7 +281,7 @@ async function play(): Promise<void> {
     first.send('inference:tokens', { agentName: 'spawn-1' });
     await letAKeptInterruptTry();
     await step('subagent compiled');
-  } else if (scenario === 'numbered-fork-failed' || scenario === 'numbered-fork-exhausted') {
+  } else if (scenario.startsWith('numbered-fork-')) {
     for (const name of ['web', 'web-1']) {
       subagents.activeSubagents.set(name, {
         name, status: 'running', startedAt: Date.now(),
@@ -244,9 +299,9 @@ async function play(): Promise<void> {
 
     const agentName = 'web-1-d1-1700000000001';
     first.send('inference:started', { agentName });
-    first.send(scenario === 'numbered-fork-failed' ? 'inference:failed' : 'inference:exhausted', {
-      agentName, error: 'numbered fork failure',
-    });
+    if (scenario !== 'numbered-fork-exhausted') first.send('inference:failed', { agentName, error: 'numbered fork failure' });
+    if (scenario === 'numbered-fork-exhausted' || scenario === 'numbered-fork-failed-then-exhausted') first.send('inference:exhausted', { agentName, error: 'numbered fork failure' });
+    if (scenario === 'numbered-fork-failed-then-started') first.send('inference:started', { agentName });
     await tab();
     await tab();
     await step('after');

@@ -37,7 +37,7 @@ import { parseCommand } from './command-name.js';
 import { OperatorActionError, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import type { Line } from './output-line.js';
 import { fmtTokens } from './tui.js';
-import { modelThinking } from './logging-adapter.js';
+import { leavesOutChangedThinking } from './logging-adapter.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
@@ -835,11 +835,12 @@ function handleStatus(framework: AgentFramework): CommandResult {
   return { lines };
 }
 
-/** For an agent whose thinking binds and whose window is set, agent-framework
- *  doesn't break the stream at maxStreamTokens mid-turn, only before a request
- *  the window can't hold (anima-research/context-manager#155). */
+/** For an agent that leaves out thinking whose earlier conversation changed
+ *  and whose window is set, agent-framework doesn't break the stream at
+ *  maxStreamTokens mid-turn, only before a request the window can't hold
+ *  (anima-research/context-manager#155). */
 function windowInsteadOfBudget(agent: { model: string; physicalWindowTokens?: number }): number | undefined {
-  return agent.physicalWindowTokens !== undefined && modelThinking(agent.model).binds ? agent.physicalWindowTokens : undefined;
+  return agent.physicalWindowTokens !== undefined && leavesOutChangedThinking(agent.model) ? agent.physicalWindowTokens : undefined;
 }
 
 function handleBudget(framework: AgentFramework, arg?: string): CommandResult {

@@ -6,6 +6,160 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.21.0 — 2026-10-31
+
+### Breaking
+
+- **Operators and residents, from agent-framework 0.31.0 (see its notes):**
+  `@animalabs/agent-framework` is now `^0.31.0` (was `^0.30.0`);
+  `package-lock.json` and `bun.lock` move that package and nothing else. An
+  install that npm updates onto this release can take a newer
+  context-manager with it: in a probe, an install of 0.20.0 holding 0.24.1
+  took 0.24.2 (see its notes), while one that bun updated kept the 0.24.1 it
+  had. What changes for residents:
+  - A model call that stops making progress is cut. On the `anthropic` and
+    `bedrock` providers, a resident's streamed call ends 60 seconds after its
+    send if no content has come, or, once a thinking block has started, at its
+    `max_tokens` at 87 tokens a second from that start if that's later. Once
+    content has begun, it ends 150 seconds after its last provider event, or,
+    when that event was a thinking block's start, after the block's allowance
+    if that's longer. An SSE keepalive isn't progress. A cut call gets one
+    fresh call a second later; if that is cut too, the turn ends with an
+    `[inference-failed]` note that names the bound and says that a reply still
+    owed from that turn can be given now. Before, such a call ended only at
+    the Anthropic adapter's own 600-second watchdogs, the SDK's request
+    timeout or a fetch timeout, and one kept open with keepalives didn't end.
+    **Migration:** to give calls longer, raise the bounds with the recipe's
+    new `inferenceBounds`, or set it to `false` for none of them.
+    **Unchanged:** a call that keeps making progress runs as long as it needs.
+  - A turn keeps the messages it opened to answer raw until it ends, where
+    compression could fold them before. Their tokens count against the
+    budget; a compile refused as over budget drops that hold and runs once
+    more.
+  - `save_recent_image`, which the workspace module brings, takes null for a
+    selector the agent isn't using, and its `index` and `count` are integers.
+    Its description and parameters change, so where prompt caching is on, the
+    first request after the update of an agent whose requests carry it (one
+    with the workspace module, which the default recipe has, unless
+    `allowedTools` leaves the tool out) writes its cache in full.
+  - Importing agent-framework no longer loads discord.js, which it now loads
+    when a Discord client is made. This host's own code makes none, so it
+    starts without loading it unless an extension makes one.
+
+### Added
+
+- **Recipe authors:** `inferenceBounds`, at the recipe's top level, passed to
+  agent-framework as written: how long a model call may go without progress
+  before it's cut. `{"progressBounds": {"beforeContentMs": 90000}}` raises the
+  bound before content to 90 seconds; `progressBounds` also takes
+  `betweenEventsMs` and `thinkTokensPerSecond`, the object takes
+  `flatMinimumMs`, and `false` sets none of these bounds. A key it doesn't
+  know, or a value that isn't a finite number above 0, stops the load, naming
+  it. A host before this release warns that it doesn't read the key, and
+  ignores it.
+
+### Changed
+
+- `@animalabs/agent-framework` is now `^0.32.0` (was `^0.31.0`);
+  `package-lock.json` and `bun.lock` move that package and nothing else. What
+  changes for residents (see its notes):
+  - An agent is no longer told when a fork is derived from it. Since host
+    0.19.0, every subagent `fork` registered as a task-fork, and
+    agent-framework put an `[Agent lifecycle: … was derived from you …]` line
+    (past a threshold, a count line) in the forking agent's context.
+    agent-framework now adds it only for a host that passes
+    `dendrite.derivationNotice`, which this host doesn't. So a recipe's
+    `dendrite.collapseDerivationNoticesAfter`, which only spaced those lines
+    out, no longer has any effect.
+  - An agent is no longer told when reasoning leaves its context: the
+    `[reasoning] <agent>:` notices agent-framework added on a binding compile's
+    strip, or on a block the provider dropped, are gone.
+  - Besides streamed turns, 0.31.0's bounds also cap each compression call,
+    from its send: the setup term plus its `max_tokens` at 87 tokens a second,
+    about 334 seconds at context-manager's 16,000. `inferenceBounds` raises
+    or removes them, as for turns.
+
+- A fleet parent connects again to a running child that closed its
+  connection without saying it was exiting, as a child does when another
+  client connects to it, and when the parent has stopped reading long
+  enough for the child to close a client that stops reading. Before, the
+  child stayed ready with no connection: `fleet--send`, `fleet--command`
+  and `fleet--relay` to it refused, saying it might be exiting, with
+  `fleet--restart`, which stops the child, as the way on, and
+  `fleet--await` waited out its timeout. A connect that fails is logged,
+  and each `fleet--send`, `fleet--command`, `fleet--relay` and
+  `fleet--await`, and each of the release switch's requests, that finds
+  no connection tries once more. A connection that closes again within
+  30 s of a connect is left closed, since another client may hold it: for
+  30 s those four tools make no connect of their own and answer at once
+  (`fleet--relay` once any connect under way to its other child has
+  ended), saying so and from when they try again, while the release
+  switch's requests still try, and a call made during such a connect
+  waits for it when its answer depends on it. `fleet--await` answers at
+  once for a child it can't reach, and the tool descriptions of
+  `fleet--relay` and `fleet--await` say what they now do. A client
+  attached to a fleet child by hand loses its connection when the parent
+  connects again.
+
+- The host no longer appends a paragraph about folds to the system prompt of
+  agents on models it records as binding ("When your context folds, the
+  reasoning behind your earlier replies leaves it…", added in 0.16.0). An
+  agent isn't told about the mechanics of its own memory or reasoning in
+  standing text: it gives no information the agent can act on, and invites the
+  agent to keep thinking about it. A prompt that still carries the paragraph,
+  such as a fork's copy of its parent's prompt from a host that added it, has
+  it taken off. A subagent's launch receipt no longer mentions it. The binding
+  settings themselves (`thinkingBinding`, the drop control, the window) are
+  unchanged. Where prompt caching is on, an affected agent's first request
+  after the update writes its prompt cache in full, once. On a host that sets
+  binding (`thinkingBinding.binds`), the shorter system prompt is a change of
+  the request's head, so thinking blocks minted under the old head are left
+  out once, as at any system-prompt change.
+
+- An agent whose recipe sets no `summaryContextLabel` reads context-manager's
+  default, "What do you remember from earlier?", before each summary of folded
+  conversation again, as before 0.16.0. The host default label 0.16.0 through 0.20.x set ("A summary
+  follows, standing in for earlier conversation…") is withdrawn: the words a
+  resident reads before its own memories are decided with the residents, per
+  recipe (`summaryContextLabel`), not changed fleet-wide by a host default.
+  0.16.0's other change in that release, summaries voiced by the agent's own
+  name for an unnamed agent and for subagents, stays. Where prompt caching is
+  on, an agent that ran 0.16.0 through 0.20.x with no label of its own can't reuse
+  its cache from the first label on, once.
+
+- At start the host checks what the account does with a signed thinking block
+  whose earlier conversation changed, for each model whose thinking binds
+  (the agent's and its subagents' default): a few small requests mint a block
+  and replay it under a changed system text. Where the account still shows
+  the model such a block, the agent and its subagents now send their thinking
+  as stored, without the drop control, instead of leaving out what a fold or a
+  changed tool list invalidated: that reasoning was being lost. Where it
+  refuses or drops the block, nothing changes. "Shows" is taken only on the
+  Anthropic route for a model that takes the drop control, and a binding
+  refusal later in the run (a gateway moving the agent to another account)
+  turns the control on and sends the request again. A start at which the
+  check can't tell uses what it last found on the same route, kept in
+  `$DATA_DIR/thinking-binding.json`, or leaves such thinking out. Each
+  model's outcome is logged as a `[thinking-binding]` line, and
+  `THINKING_BINDING_PROBE=off` skips the check.
+
+### Fixed
+
+- A host that restarts and finds a child's socket answered by a process
+  that reports a pid other than the recorded child's no longer passes on
+  anything that process sends, to the Web UI's fleet views among others:
+  it checks the pid in the first line on the connection before it takes
+  anything from it, as it does when it connects again to a running child.
+  A connection that closes before that first line now fails the adoption
+  at once.
+
+- `fleet--relay` no longer passes on a reply from a running child its
+  host can't reach. Replies the child made while the host had no
+  connection to it never reached the host, so the reply it held might not
+  be the child's latest. It now refuses, saying why, until the host has
+  seen the child's process end, and then passes that reply on. Each time
+  the host connects to a child again, it forgets the child's last reply.
+
 ## 0.20.0 — 2026-10-30
 
 ### Breaking

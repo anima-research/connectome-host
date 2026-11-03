@@ -249,15 +249,13 @@ describe('standard-recipe memory defaults', () => {
     expect(config.kvUnified).toBeUndefined();
   });
 
-  test("every recipe that sets no summary label gets the host's, and a recipe's own label is kept", () => {
-    const label = "A summary follows, standing in for earlier conversation, tool calls and results included. The exact text it replaces isn't shown.";
+  test("the host sets no summary label of its own, so context-manager's default stands; a recipe's label is passed through", () => {
     const built = (agent: Record<string, unknown>) =>
       configView(buildFrameworkStrategy(recipe(agent), 'some-model', 'America/Los_Angeles')).summaryContextLabel;
-    expect(built({ name: 'Mira' })).toBe(label);
-    expect(built({})).toBe(label);
-    expect(built({ name: 'Mira', strategy: { type: 'autobiographical', witnessedBeforeSequence: 12 } })).toBe(label);
-    expect(built({ name: 'Mira', strategy: { type: 'frontdesk' } })).toBe(label);
-    expect(built({ name: 'Mira', strategy: { type: 'autobiographical', adaptiveResolution: false, positionedRecallPairs: false } })).toBe(label);
+    const libraryDefault = 'What do you remember from earlier?';
+    expect(built({ name: 'Mira' })).toBe(libraryDefault);
+    expect(built({})).toBe(libraryDefault);
+    expect(built({ name: 'Mira', strategy: { type: 'frontdesk' } })).toBe(libraryDefault);
     expect(built({ name: 'Mira', strategy: { type: 'autobiographical', summaryContextLabel: 'Earlier:' } })).toBe('Earlier:');
   });
 

@@ -144,8 +144,8 @@ the autobiographical memory strategy with adaptive resolution, **kv-unified
 folding** (a cost-aware solver that weighs budget fit, prompt-cache cost and
 continuity), a context budget with a verbatim tail of 40% of it, compression by
 the agent's own model, and summaries voiced as the agent itself
-(`summaryParticipant` defaults to the agent's name), each introduced as standing
-in for earlier conversation whose exact text isn't shown
+(`summaryParticipant` defaults to the agent's name), each introduced by
+context-manager's default label unless a recipe sets its own
 (`summaryContextLabel`). On a model the host knows a
 window for (Claude from 4.5 on, on Anthropic's API), with an `agent.maxTokens`
 that is unset or a positive number, the budget is the smaller
@@ -182,6 +182,23 @@ failed tool-result storage of a subagent run or fork that has ended, so a
 process that ends without a stop can lose it. Set 0 only for a short run in
 which a pass at a point that depends on the machine's load would make runs
 differ, such as a test fixture's.
+
+`inferenceBounds`, at the recipe's top level, is how long agent-framework
+lets a model call go without progress before it cuts it, passed to the
+framework as written. Left out, agent-framework's defaults stand. Its
+`progressBounds` takes `beforeContentMs` (how long a streamed call may go
+from its send with no content), `betweenEventsMs` (once content has begun,
+how long after its last provider event) and `thinkTokensPerSecond` (the rate
+a thinking block's allowance assumes: a lower rate allows a slower think);
+the object takes `flatMinimumMs` beside it (the least the flat bound on a
+stream can be); and `false` sets none of these bounds.
+`{"progressBounds": {"beforeContentMs": 90000}}` sets the bound before
+content to 90 seconds. The defaults, which calls each bound applies to, and
+what a cut call does next are in the "Inference bounds" section of
+agent-framework's README, which its package ships
+(`node_modules/@animalabs/agent-framework/README.md` in an install). A key it
+doesn't know, or a value that isn't a finite number above 0, stops the load,
+naming it.
 
 ### Prose routing
 
@@ -302,15 +319,63 @@ or a fleet child's own, `mcpl-servers.agent.child.json`, in its data directory
 the recipe. Their relative `./` args resolve against the working directory.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
-by default) for slow tools. `agent.retry` sets a Membrane retry policy for
-the host's own provider calls, such as compression and retrieval; an agent's
-turns are retried by agent-framework itself.
+by default) for slow tools. For provider failures, see [`agent.retry`](#provider-retries-agentretry).
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the entry's `env`, then the host's `AGENT_TIMEZONE`. agent-framework then adds its derived `DISCORD_SUPPRESSED_REACTIONS_BASELINE` when the child spawns, unless the entry's `env` sets one with tokens, or, for an `inheritEnv` entry, the host's own environment does. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 
 Operator-owned recipe/file entries can set `inheritEnv: true` to pass the full host environment, including credentials. Prefer explicit `env` entries for needed variables. Explicit recipe `false` overrides file `true`; omission preserves the file's policy. Agent-owned `mcpl-servers.agent.json` overlays strip `inheritEnv`, including when replacing an operator-defined server, as they strip `allowHostCommands`, `enabledCapabilities` and `toolLifecycle`, and the startup warnings name each one an overlay entry sets. Put `inheritEnv` or `toolLifecycle` in the recipe, or in `mcpl-servers.json` for a server the recipe names, instead, and `allowHostCommands` or `enabledCapabilities` in a server the recipe defines itself, with its own command or url and an id `mcpl-servers.json` doesn't define, since neither `mcpl-servers.json` nor a recipe's override of a server from it passes those two on.
 
 Check legacy configuration variables before enabling full inheritance. For Discord MCPL, an inherited `DISCORD_SUPPRESS_REACTION_EMOJIS=""` seeds an explicit empty suppression list when its configured filters file does not yet exist; that durable file then overrides the protective baseline. Remove an unintended stale variable before the first startup, or configure the intended suppression in the filters file. Likewise, a `DISCORD_SUPPRESSED_REACTIONS_BASELINE` with tokens in the host's environment becomes an inheriting child's whole baseline, in place of agent-framework's protective default. The framework logs when it does.
+
+### Provider retries (`agent.retry`)
+
+`agent.retry` governs framework **turns** as well as Membrane's other calls
+(compression and merging, retrieval, session naming and the TUI status line).
+Omitted or `{}` leaves the framework's default turn policy untouched. A non-empty
+object installs a framework-wide policy, preserving the framework's turn defaults
+for omitted fields, including nested `overloaded` fields. Recipe validation still
+runs first; unknown keys, negative values and non-finite numbers are rejected.
+
+The policy applies to the resident, conversation forks and subagents, not just
+the named recipe agent. Fleet children each load their own recipe and get their
+own framework policy; they do not inherit the parent's policy.
+
+Despite its name, `maxRetries` counts **total sends including the first**, not
+additional retries, in the pinned Membrane API. For example,
+`"agent": { "retry": { "maxRetries": 4 } }` allows 4 sends and 3 waits for an
+ordinary retryable failure (1 s, 2 s, 4 s by default). The base default is 3
+sends; retryable rate limits get at least 5 sends even with `maxRetries: 0`.
+Zero stops ordinary resends, not the initial send, nor the class-specific floors.
+
+Turn policies retain the framework's 529 schedule: 13 sends unless
+`overloaded.maxRetries` is specified, with `retryDelayMs: 10000`,
+`backoffMultiplier: 2` and `maxRetryDelayMs: 300000` by default. The send limit
+is the larger of the base and overloaded counts; waits use equal jitter
+(half to just below the exponential step). Setting `overloaded.maxRetries: 0`
+disables that special schedule: 529s then use the base schedule without jitter.
+Non-turn calls retain the existing default of `overloaded.maxRetries: 0`,
+unless the recipe overrides it. Their behavior is unchanged by this wiring fix;
+explicit recipe fields still reach those calls too.
+
+These backoff schedules assume the provider states no wait. Turn schedules keep
+stated-wait ceilings of at least 10 minutes (or their maximum delay if longer),
+including for partial recipe overrides. These policy ceilings apply to
+**subagents**, which run as ephemeral bounded jobs without a home channel.
+A subagent can wait and retry inside the same run for stated waits up to the
+framework's separate 10-minute ephemeral cap; longer waits end its run with a
+provider-wait error. Residents and conversation forks instead hold for the
+provider's full stated wait **before** the error policy runs, so this ceiling
+does not shorten their holds. Retry fields do not configure provider holds or
+admission rules. No maximum-delay workaround is needed to retain turn patience.
+
+Non-retryable errors stop immediately. Stream deadline cuts retain the
+framework's separate schedule: one fresh call after 1 s; a second consecutive
+cut ends that cycle, regardless of `agent.retry` (including `maxRetries: 0`).
+Provider quota holds and other framework admission rules are unchanged.
+
+Send counts above are per policy cycle, not lifetime totals. Exhausted resident
+turns can be re-armed independently by `exhaustedTurnRearmMs` (by default after
+2, 8 and 32 minutes); these re-arms apply under either policy.
 
 ### Feature sets and tool names
 
@@ -650,7 +715,8 @@ unknown-key warning, like those at the other levels.
 - **Subconscious** (top-level `subconscious`) — a secondary agent that can
   `tune_out` channels; **code execution** (top-level `codeExecution`) —
   JavaScript scripts that call the agent's tools, in a QuickJS engine
-  (agent-framework 0.24)
+  (agent-framework 0.24); recommended for every resident, and off unless a
+  recipe turns it on (see docs/AGENT-ONBOARDING.md)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
@@ -770,6 +836,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
 | `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
+| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/AGENT-ONBOARDING.md` §11.10); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
 
 Recipes may reference any further variables they need as `${VAR}` (for

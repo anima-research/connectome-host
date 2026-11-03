@@ -231,7 +231,7 @@ Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3101 / 7343).
 > `@opentui/core` needs a per-platform package (`@opentui/core-linux-x64`). If you build on a
 > Mac and deploy to Linux, exclude `node_modules` and `*.node` from the rsync and let the
 > target keep/install its own. A missing `@opentui/core-<platform>` makes the host crash at
-> boot resolving `@opentui/core-<platform>/index.ts` — install it (`npm pack` + extract, or a
+> boot resolving `@opentui/core-<platform>` — install it (`npm pack` + extract, or a
 > proper `bun install`).
 
 ---
@@ -302,6 +302,7 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
                "subagents": false, "lessons": false, "retrieval": false,
                "heartbeat": true
                /* + wake policies, workspace mounts (files/, notes/) */ },
+  "codeExecution": { "enabled": true },     // top-level, not under modules — recommended for every resident, see below
   "mcpServers": {
     "shell":   { /* terminal-sessions stdio server; "env": { "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}", "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}" } */ },
     "discord": { /* discord-mcpl; "env": { "DISCORD_TOKEN": "${DISCORD_TOKEN}", "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}", ... } */ }
@@ -374,11 +375,39 @@ entries in the recipe anyway — older host checkouts treated these as opt-out,
 and an accidentally-enabled RetrievalModule has caused severe prompt-cache
 churn in the field.
 
+**Code execution — turn it on for every resident.** `"codeExecution": { "enabled": true }`
+(top-level, beside `modules`) gives the agent agent-framework's `code_execution` tool. The
+agent writes JavaScript that calls its own tools by name (`await tools["module--tool"]({...})`),
+and only what the script writes or returns comes back, with how each call ended: the calls
+and the results between them stay out of the context. Reading ten files, querying every
+channel or paging through a log then takes one tool round instead of ten, and the window keeps
+the answer, not the haystack. A script that runs long yields and keeps going; the agent can
+wait on it, stop it, or leave it running past its turn, and a script can wake the agent with
+`wake_agent(payload)` (it is also woken if the script fails or reaches its lifetime). Each
+script starts fresh and reaches nothing but the agent's tools — no network, files, timers or
+packages — so by design it adds no authority: anything a script does, the agent could already
+do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's
+WebAssembly sandbox inside a child process of the host, as the host's user, with no
+operating-system sandbox around it: agent-framework claims no containment beyond its engine and
+its glue (the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already
+has a shell tool can already do far more than a script can; on one without, weigh that before
+turning it on.
+
+There is nothing to install: the engine (QuickJS, in a child process) ships with
+agent-framework 0.24 and later. Releases before that ran Python and took other keys
+(`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …); in a block with `"enabled": true`,
+current hosts refuse them with a message saying what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`,
+`scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`,
+`wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`), so `{ "enabled": true }` is the
+whole setting. It is off unless the recipe turns it on: the host's built-in default recipe
+leaves it off, so an agent started with no recipe has none. Turning it on for a running
+resident adds one tool, so its first turn after the restart is one full cache write.
+
 **Memory defaults.** Current host code fills an omitted/partial `strategy` with:
 autobiographical + `adaptiveResolution: true` + `foldingStrategy: "kv-unified"` with the
 host's standard `kvUnified` block (§5b) + same-model compression (`compressionModel` falls
-back to `agent.model`) + `summaryParticipant` = the agent's name + a `summaryContextLabel`
-saying the summary stands in for earlier conversation. Omitted sizes: a
+back to `agent.model`) + `summaryParticipant` = the agent's name (the label before each
+summary stays context-manager's default unless the recipe sets `summaryContextLabel`). Omitted sizes: a
 `contextBudgetTokens` of 300k, or, on Anthropic's API for a model the host knows a window for, with a `maxTokens`
 that is unset or a positive number, the smaller of 300k and the window less the system prompt and 32k for the tools (§11.1); a `recentWindowTokens`
 of 40% of the budget (120k at 300k), or 40% of the budget less `maxTokens` where the head and
@@ -388,7 +417,8 @@ recipe's budget: if you lower the budget at runtime on a recipe without its own 
 `tailTokens` with it, or compiles fail once the history fills the tail. A resident whose store was built under
 `kv-stable` must pin `"foldingStrategy": "kv-stable"` before it moves to such a host, or
 the upgrade switches its solver. The host's built-in default recipe (`bun src/index.ts`
-with no recipe) is just these defaults with an empty system prompt. Keep the skeleton's
+with no recipe) is just these defaults with an empty system prompt; it leaves code execution
+off (turn it on deliberately in the recipe, below). Keep the skeleton's
 explicit values anyway: older host checkouts default folding to `kv-stable` or
 `flat-profile`, the budget to 100k, the tail to 30k and summary voice to the literal
 `'Claude'` (the stranger's-voice hazard), reject `kv-unified` without a complete block, and
@@ -842,7 +872,18 @@ On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block 
 to the conversation and head (system text, tools, model) it was minted under: an account that
 enforces the binding refuses a request where those changed, as after a fold. The host sends the
 drop control on agent turns through the Anthropic API so the provider sets such a block aside instead, and context-manager
-leaves out what a fold invalidates (anima-research/context-manager#155). On those four the host
+leaves out what a fold invalidates (anima-research/context-manager#155). Not every account
+binds: some still show the model such a block. At start, for each such model the recipe uses (the
+agent's and its subagents' default), the host mints one block and replays it under a changed
+system text, a few small requests that `[thinking-binding]` lines in its log report on. Where the
+account showed the block, the agent and its subagents send their thinking as stored, without the
+drop control, which would have the block dropped. That holds only on the Anthropic route for a model
+that takes the control: if a gateway later moves the agent to an account that refuses such a block,
+the first refusal turns the control on for the rest of the run and the request is sent again. Where
+the account refused or dropped the block they leave such thinking out as above. A start at which the
+check can't tell uses what it last found on the same route (`$DATA_DIR/thinking-binding.json`), or
+leaves such thinking out. `THINKING_BINDING_PROBE=off` skips the check.
+On those four the host
 also passes the model's window, and with both, agent-framework doesn't break a turn's stream at
 `maxStreamTokens` (or the `/budget` command's value): its stream breaks mid-turn for its size
 only where its next request would pass the window, and a fresh compile carries the turn on.
