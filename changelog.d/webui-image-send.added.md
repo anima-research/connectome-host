@@ -27,8 +27,8 @@
   images could reach the model only as a placeholder, is refused: one with
   much text asks for the images in a message of their own or a shorter
   text, one whose images together come that near asks for fewer images at
-  once, and where a single image would, the refusal says the depth is too
-  small for any image, which whoever runs the host can raise.
+  once, and where a single image would, the refusal says the depth leaves
+  too little room for an image, which whoever runs the host can raise.
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.

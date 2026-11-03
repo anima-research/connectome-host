@@ -1768,17 +1768,23 @@ export class WebUiModule implements Module {
             const strategy = cm.getStrategy();
             if (sendDepthTokens(content as ContentBlock[], strategy, multiplier) > line) {
               const past = (blocks: ContentBlock[]): boolean => sendDepthTokens(blocks, strategy, multiplier) > line;
+              const text = (content as ContentBlock[]).filter((block) => block.type === 'text');
+              const tooMuchText = 'message not sent: with this much text, its images could be dropped before the model sees them. '
+                + 'Send the images in a message of their own, or shorten the text';
               this.send(client, {
                 type: 'error',
                 ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
                 message: checked.blocks.every((image) => past([image]))
-                  ? "message not sent: this host's image depth, the recipe's imageStripDepthTokens, is too small for an "
-                    + 'image: any image could reach the model only as a placeholder. Whoever runs this host can raise it'
-                  : past(checked.blocks)
-                    ? "message not sent: these images together come too near this host's image depth, the recipe's "
-                      + 'imageStripDepthTokens, so they could reach the model only as placeholders. Send fewer images at once'
-                    : 'message not sent: with this much text, its images could be dropped before the model sees them. '
-                      + 'Send the images in a message of their own, or shorten the text',
+                  ? "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
+                    + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as '
+                    + 'placeholders. Whoever runs this host can raise it'
+                  : checked.blocks.every((image) => past([image, ...text]))
+                    ? tooMuchText
+                    : past(checked.blocks)
+                      ? "message not sent: these images together come within 10% of this host's image depth, the "
+                        + "recipe's imageStripDepthTokens, past which they reach the model only as placeholders. "
+                        + 'Send fewer images at once'
+                      : tooMuchText,
               });
               return;
             }

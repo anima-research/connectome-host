@@ -132,13 +132,15 @@ live-image limits (`maxLiveImages`, `imageStripDepthTokens`,
 
 A message is refused when it would come near `imageStripDepthTokens`
 (default 30 000) as soon as it is stored, since past it its images could
-reach the model only as a placeholder. When its text takes it there, the
-refusal asks for the images in a message of their own or a shorter text;
-when the number of its images does, it asks for fewer images at once; and
-when a single image would, it says the depth is too small for any image,
-which whoever runs the host can raise. The line is the context manager's own token
-estimate of the message, as it stores it, at the calibration of the agent's
-last compile, and the host refuses past 90% of the depth. It is an estimate
+reach the model only as a placeholder. When a single image would come
+that near on its own, the refusal says the depth leaves too little room for
+an image, which whoever runs the host can raise; when the text leaves no
+room for even one image, or the text takes it there, it asks for the images
+in a message of their own or a shorter text; and when the number of its
+images does, it asks for fewer images at once. The line is the context
+manager's own token estimate of the message, as it stores it, at the
+calibration of the agent's last compile, and the host refuses past 90% of
+the depth. It is an estimate
 at send time: a calibration change from a provider reply, or messages
 stored after it, before the message's first compile can still put its
 images past the depth. A recipe whose `imageStripDepthTokens` is 0 has no

@@ -13,10 +13,11 @@ const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 const IMAGE = { mediaType: 'image/png', data: FIX.png };
 const REFUSAL = 'message not sent: with this much text, its images could be dropped before the model sees them. '
   + 'Send the images in a message of their own, or shorten the text';
-const IMAGES_REFUSAL = "message not sent: these images together come too near this host's image depth, the recipe's "
-  + 'imageStripDepthTokens, so they could reach the model only as placeholders. Send fewer images at once';
-const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, is too small for an "
-  + 'image: any image could reach the model only as a placeholder. Whoever runs this host can raise it';
+const IMAGES_REFUSAL = "message not sent: these images together come within 10% of this host's image depth, the "
+  + "recipe's imageStripDepthTokens, past which they reach the model only as placeholders. Send fewer images at once";
+const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
+  + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as placeholders. '
+  + 'Whoever runs this host can raise it';
 
 // context-manager 0.24.0 estimates prose at 2.9 characters a token and an
 // image at 1,600, and the default depth is 30,000, so a send's line is 90% of
@@ -146,7 +147,7 @@ describe("a send whose images the strategy would strip at once", () => {
       .toEqual({ type: 'error', corrId: 'c-past', message: REFUSAL });
   });
 
-  test('says the depth is too small for any image when one image alone passes the line', async () => {
+  test('says the depth leaves too little room for an image when one image alone passes the line', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 1_700 });
     expect((await send({ content: '', images: [IMAGE], corrId: 'c-one' })).error)
       .toEqual({ type: 'error', corrId: 'c-one', message: DEPTH_REFUSAL });
@@ -158,6 +159,14 @@ describe("a send whose images the strategy would strip at once", () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
     expect((await send({ content: '', images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together' })).error)
       .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL });
+    expect((await send({ content: 'a'.repeat(1_000), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-text' })).error)
+      .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL });
+  });
+
+  test('asks about the text when the text leaves no room for even one image, though the images together also pass', async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
+    expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-no-room' })).error)
+      .toEqual({ type: 'error', corrId: 'c-no-room', message: REFUSAL });
   });
 
   test('is refused for its text when the images alone are under the line', async () => {

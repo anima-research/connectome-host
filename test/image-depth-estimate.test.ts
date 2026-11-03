@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ContextManager } from '@animalabs/context-manager';
+import { AutobiographicalStrategy, ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/agent-framework';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { validateRecipe } from '../src/recipe.js';
@@ -81,25 +81,40 @@ describe("the host's estimate of a send's image depth", () => {
 });
 
 describe("context-manager's own strip, at the measure the host prices", () => {
-  async function compiledImages(content: ContentBlock[]): Promise<{ host: number; images: number }> {
+  const PLACEHOLDER = (AutobiographicalStrategy as unknown as { IMAGE_PLACEHOLDER: string }).IMAGE_PLACEHOLDER;
+
+  async function compiledImages(
+    content: ContentBlock[],
+  ): Promise<{ host: number; store: number; images: number; placeholders: number }> {
     const root = mkdtempSync(join(tmpdir(), 'image-depth-strip-'));
     try {
       const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: { type: 'autobiographical', imageStripDepthTokens: 2_000 } } });
       const cm = await ContextManager.open({ path: join(root, 'store'), strategy: buildFrameworkStrategy(recipe, 'claude-sonnet-4-5-20250929', 'UTC')! });
       const host = sendDepthTokens(content, cm.getStrategy(), 1);
+      const before = cm.getMessageCount();
       cm.addMessage('user', content as never);
+      const messageStore = (cm as unknown as { messageStore: { getAll(): unknown[]; estimateTokens(m: unknown): number } }).messageStore;
+      const store = messageStore.getAll().slice(before).reduce((sum: number, m) => sum + messageStore.estimateTokens(m), 0);
       const { messages } = await cm.compile();
       cm.close();
-      const images = messages.flatMap((m) => m.content as Array<{ type: string }>).filter((b) => b.type === 'image').length;
-      return { host, images };
+      const blocks = messages.flatMap((m) => m.content as Array<{ type: string; text?: string }>);
+      return {
+        host,
+        store,
+        images: blocks.filter((b) => b.type === 'image').length,
+        placeholders: blocks.filter((b) => b.type === 'text' && b.text === PLACEHOLDER).length,
+      };
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }
 
   test('keeps the image of a send at the depth, and replaces it one token past', async () => {
-    expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_159) } as ContentBlock])).toEqual({ host: 2_000, images: 1 });
-    expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_161) } as ContentBlock])).toEqual({ host: 2_001, images: 0 });
+    expect(PLACEHOLDER).toEqual(expect.any(String));
+    expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_159) } as ContentBlock]))
+      .toEqual({ host: 2_000, store: 2_000, images: 1, placeholders: 0 });
+    expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_161) } as ContentBlock]))
+      .toEqual({ host: 2_001, store: 2_001, images: 0, placeholders: 1 });
   });
 });
 
