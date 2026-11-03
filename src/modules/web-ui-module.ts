@@ -1788,7 +1788,12 @@ export class WebUiModule implements Module {
           const depth = liveImageDepth(sharedServer.app.recipe.agent.strategy);
           const cm = sharedServer.app.framework.getAllAgents()[0]?.getContextManager();
           if (depth !== undefined && cm) {
-            const multiplier = cm.getRenderStats()?.calibration?.multiplier ?? 1;
+            let multiplier = 1;
+            try {
+              multiplier = cm.getRenderStats()?.calibration?.multiplier ?? 1;
+            } catch {
+              // context-manager refuses the query while its strategy is not initialized, and once closed.
+            }
             if (sendDepthTokens(content as ContentBlock[], cm.getStrategy(), multiplier) > depth * SEND_DEPTH_SHARE) {
               this.send(client, {
                 type: 'error',

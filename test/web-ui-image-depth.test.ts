@@ -113,6 +113,21 @@ describe("a send whose images the strategy would strip at once", () => {
     expect(result.pushed?.type).toBe('external-message');
   });
 
+  test("is priced at a multiplier of 1 by a manager that won't answer for its calibration", async () => {
+    const cm = await openAgent();
+    const refusing = new Proxy(cm, {
+      get(target, key, receiver) {
+        if (key === 'getRenderStats') return () => { throw new Error('ContextManager: not initialized'); };
+        const v = Reflect.get(target, key, receiver);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    agents.splice(0, agents.length, { name: 'agent', getContextManager: () => refusing });
+    expect((await send({ content: prose(UNDER), images: [IMAGE], corrId: 'c-unready-under' })).pushed?.type).toBe('external-message');
+    expect((await send({ content: prose(OVER), images: [IMAGE], corrId: 'c-unready-over' })).error)
+      .toEqual({ type: 'error', corrId: 'c-unready-over', message: REFUSAL });
+  });
+
   test("is judged at the store's calibration: a sample at 1.2 puts the send under the line past it", async () => {
     const cm = await openAgent();
     cm.addMessage('user', [{ type: 'text', text: prose(5_000) }]);
