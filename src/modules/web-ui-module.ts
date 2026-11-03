@@ -106,7 +106,7 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
-import { hostImageLimits, liveImageBytes, liveImageWindow, userImageBlocks } from '../web/user-images.js';
+import { hostImageLimits, liveImageBytes, liveImageWindow, takesUserImages, userImageBlocks } from '../web/user-images.js';
 import { loadRecipeDetailed } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -1479,7 +1479,7 @@ export class WebUiModule implements Module {
 
   private hostFeatures(): string[] {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
-    const features = ['media', 'user-images'];
+    const features = takesUserImages(sharedServer?.app?.recipe.agent.strategy) ? ['media', 'user-images'] : ['media'];
     if (!fw) return features;
     if (typeof fw.rollbackToMessage === 'function') features.push('rollback');
     if (typeof fw.suppressMessages === 'function') features.push('suppress');
@@ -1756,6 +1756,14 @@ export class WebUiModule implements Module {
         // Images go ahead of the text, the order Anthropic's vision docs recommend.
         let content: unknown = parsed.content;
         if (parsed.images && parsed.images.length > 0) {
+          if (!takesUserImages(sharedServer?.app?.recipe.agent.strategy)) {
+            this.send(client, {
+              type: 'error',
+              ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
+              message: "message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request",
+            });
+            return;
+          }
           const checked = userImageBlocks(parsed.images, this.imageLimits());
           if (!checked.ok) {
             this.send(client, {

@@ -18,7 +18,8 @@
   keeps live (6 images by default); a recipe that can keep more than 20
   live holds them to 2000 px on a side, under the stricter limit the model
   APIs apply to requests that carry that many. Images can't be routed to a
-  fleet child.
+  fleet child. A host whose recipe uses `passthrough`, which keeps every
+  image in every request, takes no composer images.
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.

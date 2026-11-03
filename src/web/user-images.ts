@@ -53,6 +53,15 @@ export function liveImageWindow(strategy: RecipeStrategy | undefined): number | 
 }
 
 /**
+ * Whether this host takes composer images: not under `passthrough`, which
+ * keeps every image in every request, so a few large ones would carry each
+ * request past the most membrane sends (28 MiB) and fail every inference after.
+ */
+export function takesUserImages(strategy: RecipeStrategy | undefined): boolean {
+  return (strategy?.type ?? 'autobiographical') !== 'passthrough';
+}
+
+/**
  * The base64 a recipe's strategy keeps live across its images, where the
  * recipe sets it (`maxLiveImageBytes`); `undefined` leaves context-manager's
  * default, 20 MiB at 0.14.0, which is above what one message may carry

@@ -1297,10 +1297,8 @@ export function App() {
       setAttachNotice('still reading images; send again in a moment');
       return;
     }
-    // Attached while the host took images, sent after a reconnect to one
-    // that doesn't: it would drop them without a word.
     if (images.length > 0 && !canAttach()) {
-      setAttachNotice("this host doesn't take images (it was restarted on a version without them): remove them to send");
+      setAttachNotice("this host doesn't take images now: remove them to send");
       return;
     }
     if (images.length > 0 && text.startsWith('/')) {

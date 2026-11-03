@@ -134,11 +134,17 @@ alongside 20 others, so the agent is stuck until the image leaves the live
 window. Probes on 2026-10-13 and 2026-10-19 found the API accepting such
 requests; the host follows the docs regardless. With the default
 `maxLiveImages` of 6 no request gets there. A host whose recipe can keep more
-than 20 images live (`maxLiveImages` past 20 or set to 0, `passthrough`,
-which keeps every image, or a strategy an extension registers) holds
-composer images to 2000 px on a side, which the model API's docs give as
-under that limit on every platform. A message also takes no more images than
-the live window keeps, since the rest would never reach the model.
+than 20 images live (`maxLiveImages` past 20 or set to 0, or a strategy an
+extension registers) holds composer images to 2000 px on a side, which the
+model API's docs give as under that limit on every platform. A message also
+takes no more images than the live window keeps, since the rest would never
+reach the model.
+
+A host whose recipe uses `passthrough` doesn't take composer images: it
+keeps every image in every request, so a few large ones would carry each
+request past the most membrane sends (28 MiB), and every inference after
+would fail. Its Web UI offers no attaching, and the host refuses a message
+that carries images.
 
 ## Operator log
 

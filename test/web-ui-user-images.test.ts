@@ -207,6 +207,22 @@ describe('composer images over the WebSocket', () => {
     }
   });
 
+  test("a passthrough host offers no images, and refuses a send that carries them", async () => {
+    agent.strategy = { type: 'passthrough' };
+    try {
+      const c = await connect();
+      const welcome = await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+      expect(welcome.features).not.toContain('user-images');
+      c.ws.close();
+      const sent = await send({ content: 'look', images: [{ mediaType: 'image/png', data: FIX.png }] });
+      expect(sent.pushed).toBeUndefined();
+      expect(sent.error).toBe("message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request");
+      expect((await send({ content: 'just text' })).pushed).toBeDefined();
+    } finally {
+      delete agent.strategy;
+    }
+  });
+
   test("the recipe's byte window holds the check to its base64, one image and the message's total", async () => {
     const one = { mediaType: 'image/png', data: FIX.png! };
     try {
