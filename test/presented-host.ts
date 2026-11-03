@@ -130,7 +130,7 @@ export interface PresentedHost {
   inWindow(agent: string, id: string): boolean;
   /** Nudge the agent and wait for the turn to end. */
   turn(agent: string): Promise<void>;
-  /** Wait for every turn to end. */
+  /** Wait for the agent's turn to end, a continuation or a retry of it included. */
   settled(agent: string): Promise<void>;
   cleanup(): Promise<void>;
 }
@@ -165,9 +165,13 @@ export async function bootPresentedHost(opts: {
   const traces: TraceEvent[] = [];
   framework.onTrace((event) => { traces.push(event); });
   framework.start();
+  // A turn is alive from its dequeue to its settled teardown, and while a
+  // continuation or a retry of it is on its way with the agent idle
+  // (getHostModeStatus's activeTurnAgents, which the host's own idle checks read).
   const turnAlive = (agent: string): boolean =>
     framework.getAgent(agent)?.state.status !== 'idle'
-    || ((framework as unknown as { activeTurnTokens?: Map<string, unknown> }).activeTurnTokens?.has(agent) ?? false);
+    || ((framework as unknown as { activeTurnTokens?: Map<string, unknown> }).activeTurnTokens?.has(agent) ?? false)
+    || framework.getHostModeStatus().activeTurnAgents.includes(agent);
   const settled = (agent: string) => until(() => !turnAlive(agent), `${agent}'s turn to end`);
   return {
     framework,
