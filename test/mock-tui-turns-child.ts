@@ -9,7 +9,7 @@ import { createTestRenderer } from '@opentui/core/testing';
 const [scenario] = process.argv.slice(2);
 // Kitty's key encoding, so a lone Escape is read at once rather than held to
 // tell it from the start of a sequence.
-const { renderer, mockInput, renderOnce, captureCharFrame } = await createTestRenderer({
+const { renderer, mockInput, renderOnce, captureCharFrame, captureSpans } = await createTestRenderer({
   width: 120, height: 60, exitOnCtrlC: false, kittyKeyboard: true,
 });
 mock.module('@opentui/core', () => ({ ...core, createCliRenderer: async () => renderer }));
@@ -33,6 +33,22 @@ const subagents = {
   cancelAll() { aborts.push('cancelAll'); return 1; },
 };
 
+const history = scenario === 'history-images' ? [
+  {
+    participant: 'user',
+    content: [{ type: 'image' }, { type: 'text', text: 'from alice' }],
+    metadata: {
+      author: { id: 'u42', name: 'alice' },
+      inboundSource: { kind: 'channel', lane: 'channels/incoming', serverId: 'discord', binding: 'b1', channelId: 'discord:42', label: '#general', acceptedAt: 1 },
+    },
+  },
+  {
+    participant: 'user',
+    content: [{ type: 'image' }, { type: 'image' }, { type: 'text', text: 'from me' }],
+    metadata: { inboundSource: { kind: 'surface', surface: 'tui', acceptedAt: 1 } },
+  },
+] : [];
+
 function fakeFramework(name: string) {
   const listeners = new Set<Listener>();
   const abortable = new Set<string>();
@@ -48,7 +64,7 @@ function fakeFramework(name: string) {
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
-      ? { name: 'agent', state: { status: 'idle' }, getContextManager: () => ({ getAllMessages: () => [] }) }
+      ? { name: 'agent', state: { status: 'idle' }, getContextManager: () => ({ getAllMessages: () => history }) }
       : undefined,
     onTrace(listener: Listener) {
       listeners.add(listener);
@@ -126,6 +142,14 @@ async function until(done: () => boolean | Promise<boolean>, what: string): Prom
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+async function coloredStep(name: string, pattern: RegExp): Promise<void> {
+  await renderOnce();
+  const colors = captureSpans().lines.flatMap(({ spans }) => spans
+    .filter((span) => pattern.test(span.text))
+    .map((span) => ({ text: span.text.trim(), fg: span.fg.toInts().slice(0, 3) })));
+  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: captureCharFrame(), aborts: [...aborts], colors })}\n`);
 }
 
 async function step(name: string): Promise<void> {
@@ -426,6 +450,9 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:exhausted', { agentName, error: 'after switch' });
     await step('after switch');
+  } else if (scenario === 'history-images') {
+    await until(async () => (await frame()).includes('end history'), 'the replayed history');
+    await coloredStep('history', /\[(an image|\d+ images)\]|from (alice|me)/);
   } else {
     throw new Error(`unknown scenario ${scenario}`);
   }

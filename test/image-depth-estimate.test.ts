@@ -14,46 +14,69 @@ const SENTENCE = 'The quick brown fox jumps over the lazy dog, and then it rests
 const LOG_LINE = '{"level":"info","path":"/api/v1/items","status":200,"ms":12}\n';
 const repeat = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
 
-/** The store's own estimate of a send once stored: every message it adds. */
-async function storedEstimate(content: ContentBlock[]): Promise<number> {
+/** The host's figure for a send, and the store's own estimate of it once
+ *  stored, on a store a provider sample has calibrated to `calibration`. */
+async function figures(
+  content: ContentBlock[],
+  strategyConfig: Record<string, unknown> = { type: 'autobiographical' },
+  calibration?: number,
+): Promise<{ host: number; store: number; multiplier: number; stored: number }> {
   const root = mkdtempSync(join(tmpdir(), 'image-depth-estimate-'));
   try {
-    const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: { type: 'autobiographical' } } });
+    const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: strategyConfig } });
     const cm = await ContextManager.open({ path: join(root, 'store'), strategy: buildFrameworkStrategy(recipe, 'claude-sonnet-4-5-20250929', 'UTC')! });
+    if (calibration !== undefined) {
+      cm.addMessage('user', [{ type: 'text', text: repeat(SENTENCE, 5_000) }]);
+      await cm.compile();
+      const strategy = cm.getStrategy() as unknown as { reportRealInputTokens(real: number): void; _lastCompileEstimate: number };
+      strategy.reportRealInputTokens(Math.round(strategy._lastCompileEstimate * calibration));
+      await cm.compile();
+    }
+    const multiplier = cm.getRenderStats()?.calibration?.multiplier ?? 1;
+    const host = sendDepthTokens(content, cm.getStrategy(), multiplier);
     const before = cm.getMessageCount();
     cm.addMessage('user', content as never);
     const store = (cm as unknown as { messageStore: { getAll(): unknown[]; estimateTokens(m: unknown): number } }).messageStore;
-    const total = store.getAll().slice(before).reduce((sum: number, m) => sum + store.estimateTokens(m), 0);
+    const added = store.getAll().slice(before);
+    const total = added.reduce((sum: number, m) => sum + store.estimateTokens(m), 0);
     cm.close();
-    return total;
+    return { host, store: total, multiplier, stored: added.length };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 describe("the host's estimate of a send's image depth", () => {
-  const strategy = buildFrameworkStrategy(
-    validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: { type: 'autobiographical' } } }),
-    'claude-sonnet-4-5-20250929',
-    'UTC',
-  )!;
-
-  const sends: Array<[string, ContentBlock[]]> = [
-    ['a short message and an image', [image(), { type: 'text', text: 'hello' } as ContentBlock]],
-    ['long prose and an image', [image(), { type: 'text', text: repeat(SENTENCE, 80_000) } as ContentBlock]],
-    ['prose that goes on as a log, and two images', [image(), image(), {
-      type: 'text', text: repeat(SENTENCE, 3_000) + repeat(LOG_LINE, 60_000),
-    } as ContentBlock]],
+  const longProse = (): ContentBlock[] => [image(), { type: 'text', text: repeat(SENTENCE, 80_000) } as ContentBlock];
+  const proseThenLog = (): ContentBlock[] => [image(), image(), {
+    type: 'text', text: repeat(SENTENCE, 3_000) + repeat(LOG_LINE, 60_000),
+  } as ContentBlock];
+  const sends: Array<[string, () => ContentBlock[]]> = [
+    ['a short message and an image', () => [image(), { type: 'text', text: 'hello' } as ContentBlock]],
+    ['long prose and an image', longProse],
+    ['prose that goes on as a log, and two images', proseThenLog],
   ];
   for (const [name, content] of sends) {
     test(`is the store's own, for ${name}`, async () => {
-      expect(sendDepthTokens(content, strategy, 1)).toBe(await storedEstimate(content));
+      const f = await figures(content());
+      expect(f.host).toBe(f.store);
     });
   }
 
-  test('scales with the calibration multiplier, block by block', () => {
-    const content = [image(), { type: 'text', text: repeat(SENTENCE, 80_000) } as ContentBlock];
-    expect(sendDepthTokens(content, strategy, 1.2)).toBeGreaterThan(sendDepthTokens(content, strategy, 1) * 1.19);
+  for (const calibration of [1.2, 0.8]) {
+    test(`is the store's own on a store calibrated to ${calibration}`, async () => {
+      for (const content of [longProse, proseThenLog]) {
+        const f = await figures(content(), { type: 'autobiographical' }, calibration);
+        expect(f.multiplier).toBeCloseTo(calibration, 2);
+        expect(f.host).toBe(f.store);
+      }
+    });
+  }
+
+  test("is the store's own when the recipe turns adaptive resolution off, and the send is stored whole", async () => {
+    const f = await figures(longProse(), { type: 'autobiographical', adaptiveResolution: false });
+    expect(f.stored).toBe(1);
+    expect(f.host).toBe(f.store);
   });
 });
 

@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-type Step = { frame: string; aborts: string[] };
+type Step = { frame: string; aborts: string[]; colors?: Array<{ text: string; fg: number[] }> };
 
 async function play(scenario: string): Promise<Map<string, Step>> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tui-turns-')));
@@ -29,8 +29,8 @@ async function play(scenario: string): Promise<Map<string, Step>> {
     expect(stdout).toContain('TUI_DONE');
     const steps = new Map<string, Step>();
     for (const [, json] of stdout.matchAll(/TUI_STEP (\{[^\n]*\})/g)) {
-      const { step, frame, aborts } = JSON.parse(json);
-      steps.set(step, { frame, aborts });
+      const { step, frame, aborts, colors } = JSON.parse(json);
+      steps.set(step, { frame, aborts, colors });
     }
     return steps;
   } finally {
@@ -314,4 +314,18 @@ describe("the TUI's numbered fork phases, through runTui", () => {
       expect(after.frame).not.toMatch(/web  \[(attempt-)?failed /);
     }, 40000);
   }
+});
+
+describe("the TUI's history replay, through runTui", () => {
+  test('a replayed image line names the speaker of the text after it, in the same colour', async () => {
+    const colors = (await play('history-images')).get('history')!.colors!;
+    const fg = (text: string) => {
+      const found = colors.find((c) => c.text === text);
+      if (!found) throw new Error(`no line "${text}" among ${JSON.stringify(colors.map((c) => c.text))}`);
+      return found.fg;
+    };
+    expect(fg('alice in #general: [an image]')).toEqual(fg('alice in #general: from alice'));
+    expect(fg('You: [2 images]')).toEqual(fg('You: from me'));
+    expect(fg('alice in #general: [an image]')).not.toEqual(fg('You: [2 images]'));
+  }, 40000);
 });
