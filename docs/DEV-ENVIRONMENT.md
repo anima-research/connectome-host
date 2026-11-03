@@ -102,8 +102,8 @@ What "build" means differs by package:
 - **MCPL servers** (`discord-mcpl`, `heartbeat-mcpl`, `terminal-sessions-mcp`)
   — `npm install && npm run build`; recipes run their `dist/` under node.
 - **`connectome-host`** — no `main` and no build step: bun runs `src/`
-  directly. `bun install` runs `postinstall`, which builds the WebUI SPA into
-  `dist/web` (`bun run build:web` to rebuild it).
+  directly. After `bun install`, `bun run build:web` builds the WebUI SPA into
+  `dist/web`; run it again after a pull that changes `web/`.
 
 > `discord-mcpl` now depends on `@animalabs/mcpl-core` as a regular npm
 > dependency (the old `file:../mcpl-core-ts` path dep is gone). A sibling
@@ -209,7 +209,11 @@ can't add env to a file server. A variable left only in `.env` is unset for
 the server, unless its entry (in the recipe or `mcpl-servers.json`) sets
 `inheritEnv: true`, which passes the host's whole environment, `.env` and
 every secret in it included, so prefer mapping the variables a server needs.
-An agent's own overlay can't set `inheritEnv`.
+An agent's own overlay can't set `inheritEnv`, `allowHostCommands`,
+`enabledCapabilities` or `toolLifecycle`: the boot leaves them out and
+the startup warnings say so, with where the operator sets each. Only a
+server the recipe defines itself, under an id `mcpl-servers.json` doesn't
+define, carries `allowHostCommands` or `enabledCapabilities`.
 
 **Run the host (headless), supervised,** from `<agent>-cm/`. Several things
 resolve from the working directory: Bun loads `.env` from it, `data/` is
@@ -235,7 +239,7 @@ systemd user unit in your home directory.
 ## 6. Runtimes
 
 - **bun ≥ 1.4.3** — runs the host (`bun src/index.ts …`).
-- **node ≥ 22.12** — builds the Web UI when the host installs, and runs the MCPL servers. nvm fine locally.
+- **node ≥ 22.12** — builds the Web UI (`bun run build:web`), and runs the MCPL servers. nvm fine locally.
 - **Rust toolchain** — only to build `chronicle` from a checkout; the npm
   package ships prebuilt binaries.
 

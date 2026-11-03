@@ -1,11 +1,5 @@
-// Black-box coverage of scripts/pack-installs-alone.mjs: each case runs the
-// real script under node, as the publish workflow runs it, in a throwaway
-// stand-in for the host. The stand-in has no dependencies, so npm packs and
-// installs it offline with its own cache. Its postinstall writes
-// dist/web/index.html, as the host's builds the Web UI there, and its
-// src/index.ts answers the smoke run as batch mode with the mock recipe
-// does: '> line' for each line it reads, then the mock agent's queued reply,
-// and only with the Web UI off and the mock's echo off.
+// The stand-in has no dependencies, so npm packs and installs it offline with
+// its own cache.
 import { afterAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -15,9 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/pack-installs-alone.mjs", import.meta.url));
-// The node on PATH, which runs the script as the workflows do (under
-// `bun test`, process.execPath is bun). Found once, since a case may hand
-// the script a PATH without it.
+// Under `bun test`, process.execPath is bun, so node is found on PATH.
 const NODE = execFileSync("sh", ["-c", "command -v node"], { encoding: "utf8" }).trim();
 const TIMEOUT_MS = 60_000;
 
@@ -35,19 +27,19 @@ if (recipe.agent?.name !== "zz-agent") { console.error("zz: the recipe's agent s
 const queue = [...(recipe.agent?.mock?.responseQueue ?? [])];
 for (const line of readFileSync(0, "utf8").split("\\n").filter(Boolean)) console.log(\`> \${line}\\n\\n\${helper(queue.shift() ?? "")}\`);
 `;
-const BUILDS_WEB_UI = `node -e "require('fs').mkdirSync('dist/web',{recursive:true});require('fs').writeFileSync('dist/web/index.html','')"`;
-
-/** A stand-in host: package.json from `pkg` (its postinstall building the Web
- *  UI unless `pkg` says otherwise), and its files, `index` being
- *  src/index.ts's text. */
 function standIn(pkg: Record<string, unknown>, index = HOST, extra: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "pack-installs-alone-test-"));
   made.push(dir);
   const files: Record<string, string> = {
-    "package.json": JSON.stringify({ name: "@zz/host", version: "1.0.0", type: "module", scripts: { postinstall: BUILDS_WEB_UI }, ...pkg }),
+    "package.json": JSON.stringify({ name: "@zz/host", version: "1.0.0", type: "module", files: ["src", "recipes", "dist/web", "tsconfig.json"], ...pkg }),
+    ".gitignore": "dist/\ntmp-*/\n",
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
     "src/index.ts": index,
     "src/helper.ts": "export const helper = (line: string): string => line;\n",
     "recipes/mock-test.json": JSON.stringify({ name: "Mock", agent: { name: "zz-agent" }, modules: { wake: false, webui: { host: "127.0.0.1" } } }),
+    "dist/web/index.html": '<!doctype html>\n<link rel="stylesheet" href="/assets/app.css">\n<script type="module" src="./assets/app.js"></script>\n<script src="//cdn.example.invalid/x.js"></script>\n<a href="https://example.invalid/">x</a><a href="#top">top</a>\n',
+    "dist/web/assets/app.css": "body {}\n",
+    "dist/web/assets/app.js": "export {};\n",
     ...extra,
   };
   for (const [path, text] of Object.entries(files)) {
@@ -80,9 +72,6 @@ function check(dir: string, env: Record<string, string> = {}): Promise<{ code: n
   });
 }
 
-/** A directory holding an `npm` that runs `body` with `args` (its
- *  arguments), `fs`, `bin` (this directory) and `pass()`, which runs the
- *  real npm with the same arguments. */
 function npmShim(body: string): string {
   const bin = mkdtempSync(join(tmpdir(), "pack-installs-alone-npm-"));
   made.push(bin);
@@ -98,21 +87,21 @@ const withPath = (bin: string) => ({ PATH: `${bin}:${process.env.PATH ?? ""}` })
 
 const smokeRun = "the offline smoke run \\(recipes\\/mock-test\\.json in batch mode, Web UI off\\) of the installed zz-host-1\\.0\\.0\\.tgz";
 
-test("a package that installs alone, builds its Web UI, resolves and gives its queued reply with the Web UI off passes, naming the npm", async () => {
+test("a package that carries its Web UI, installs alone, resolves and gives its queued reply with the Web UI off passes, naming the npm", async () => {
   const result = await check(standIn({}));
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /^> pack-installs-alone: hello\n\npack-installs-alone: reply [0-9a-f]{8}$/m);
   const npm = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim().replace(/\./g, "\\.");
   assert.match(
     result.stdout,
-    new RegExp(`^zz-host-1\\.0\\.0\\.tgz \\(\\d+ files\\) installs on its own with npm ${npm}; the Web UI built, src\\/index\\.ts's imports resolve, and the offline smoke run answered\\.$`, "m"),
+    new RegExp(`^zz-host-1\\.0\\.0\\.tgz \\(\\d+ files\\) installs on its own with npm ${npm}, running no install scripts; it carries the Web UI and tsconfig\\.json, src\\/index\\.ts's imports resolve, and the offline smoke run answered\\.$`, "m"),
   );
   assert.doesNotMatch(result.stderr, /warning/);
 }, TIMEOUT_MS);
 
 test("npm pack's JSON is read in npm 12's shape too, and a prepack's output doesn't break it", async () => {
-  // npm 12 prints an object keyed by package name: a shim in front of the
-  // real npm rewrites npm 11's array that way, and passes npm 12's through.
+  // npm 12 prints the pack's JSON as an object keyed by package name, npm 11 as
+  // an array.
   const bin = mkdtempSync(join(tmpdir(), "pack-installs-alone-npm12-"));
   made.push(bin);
   const realNpm = execFileSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).trim();
@@ -124,18 +113,54 @@ test("npm pack's JSON is read in npm 12's shape too, and a prepack's output does
   const twelve = await check(standIn({}), { PATH: `${bin}:${process.env.PATH ?? ""}` });
   assert.equal(twelve.code, 0, twelve.stderr);
   assert.match(twelve.stdout, /^zz-host-1\.0\.0\.tgz \(\d+ files\) installs on its own with npm /m);
-  const chatty = await check(standIn({ scripts: { postinstall: BUILDS_WEB_UI, prepack: "echo zz: packing" } }));
+  const chatty = await check(standIn({ scripts: { prepack: "echo zz: packing" } }));
   assert.equal(chatty.code, 0, chatty.stderr);
 }, TIMEOUT_MS * 2);
 
-test("a postinstall that doesn't build the Web UI fails, so install scripts must run", async () => {
-  const result = await check(standIn({ scripts: { postinstall: "echo 'zz: the Web UI build failed' >&2" } }));
+test("a tree without the built Web UI is told to build it, before anything is packed", async () => {
+  const dir = standIn({});
+  rmSync(join(dir, "dist"), { recursive: true });
+  const result = await check(dir);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /zz: the Web UI build failed/);
+  assert.equal(
+    result.stderr,
+    "pack-installs-alone: dist/web/index.html isn't in this tree: build the Web UI first (npm run build:web:ci), since the package carries it built.\n",
+  );
+}, TIMEOUT_MS);
+
+test("a package whose files leave the Web UI out fails: npm 12 and bun installs would have none", async () => {
+  for (const pkg of [{ files: ["src", "recipes"] }, { files: undefined }]) {
+    const result = await check(standIn(pkg));
+    assert.equal(result.code, 1);
+    assert.match(
+      result.stderr,
+      /pack-installs-alone: the installed zz-host-1\.0\.0\.tgz has no dist\/web\/index\.html, though this tree has it: package\.json's files must list dist\/web, so that npm 12 and bun installs, which run no install scripts, get the Web UI\.\n$/,
+    );
+  }
+}, TIMEOUT_MS * 2);
+
+test("a package that carries the Web UI's index.html without the files it names fails, naming them", async () => {
+  const result = await check(standIn({ files: ["src", "recipes", "dist/web/index.html", "tsconfig.json"] }));
+  assert.equal(result.code, 1);
   assert.match(
     result.stderr,
-    /pack-installs-alone: the installed zz-host-1\.0\.0\.tgz has no dist\/web\/index\.html: its postinstall didn't build the Web UI \(its warning, if any, is above\)\. web\/ left out of the package does that, a Web UI build that fails, or an npm that skips a dependency's install scripts, as npm 12 does by default \(this is npm \d+\.\d+\.\d+\)\.\n$/,
+    /pack-installs-alone: the installed zz-host-1\.0\.0\.tgz's dist\/web\/index\.html names assets\/app\.css, assets\/app\.js, which aren't in the package: package\.json's files must list all of dist\/web, or the Web UI is a blank page\.\n$/,
   );
+}, TIMEOUT_MS);
+
+test("a package whose files leave tsconfig.json out fails: a consumer typechecks the source with it", async () => {
+  const result = await check(standIn({ files: ["src", "recipes", "dist/web"] }));
+  assert.equal(result.code, 1);
+  assert.match(
+    result.stderr,
+    /pack-installs-alone: the installed zz-host-1\.0\.0\.tgz has no tsconfig\.json: package\.json's files must list it, since the package ships its TypeScript source and a consumer typechecks that with it, as connectome-smoke's published lane does\.\n$/,
+  );
+}, TIMEOUT_MS);
+
+test("the install runs no install scripts, the package's own included", async () => {
+  const result = await check(standIn({ scripts: { postinstall: "echo 'zz: postinstall ran' >&2; exit 1" } }));
+  assert.equal(result.code, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /zz: postinstall ran/);
 }, TIMEOUT_MS);
 
 test("a dependency that can't be installed fails the install after three attempts, saying what does that", async () => {
@@ -154,7 +179,7 @@ test("a dependency that can't be installed fails the install after three attempt
 }, TIMEOUT_MS * 2);
 
 test("a file left out of the package fails the resolve, naming the entry", async () => {
-  const result = await check(standIn({ files: ["src/index.ts", "recipes"] }));
+  const result = await check(standIn({ files: ["src/index.ts", "recipes", "dist/web", "tsconfig.json"] }));
   assert.equal(result.code, 1);
   assert.match(
     result.stderr,
@@ -170,7 +195,7 @@ test("a dependency only devDependencies supplied fails the resolve", async () =>
 }, TIMEOUT_MS);
 
 test("a smoke recipe left out of the package fails, naming it", async () => {
-  const result = await check(standIn({ files: ["src"] }));
+  const result = await check(standIn({ files: ["src", "dist/web", "tsconfig.json"] }));
   assert.equal(result.code, 1);
   assert.match(result.stderr, /pack-installs-alone: the installed zz-host-1\.0\.0\.tgz has no readable recipes\/mock-test\.json: ENOENT/);
 }, TIMEOUT_MS);
@@ -215,7 +240,6 @@ test("a working tree that differs from HEAD gets a warning, and is checked as it
     result.stderr,
     /^pack-installs-alone: warning: the working tree differs from HEAD in 1 path \(src\/untracked\.ts\)\. npm pack packs the working tree, so this run checks whichever of them the package includes, where the publish workflow packs a clean checkout\.$/m,
   );
-  // The untracked file went into the package that was checked.
   assert.equal(files(result.stdout), files(clean.stdout) + 1);
 }, TIMEOUT_MS * 2);
 
@@ -226,12 +250,14 @@ test("@opentui/core must load in the installed tree, its native package with it"
     "node_modules/@opentui/core/index.js": body,
   });
   const pkg = { dependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
-  const loads = await check(standIn(pkg, HOST, opentui("export const ok = true;\n")));
+  const loads = await check(standIn(pkg, HOST, opentui("export function resolveRenderLib() {}\n")));
   assert.equal(loads.code, 0, loads.stderr);
   assert.match(loads.stdout, /src\/index\.ts's imports resolve, @opentui\/core loads, and the offline smoke run answered\.$/m);
   const missing = await check(standIn(pkg, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(missing.code, 1);
-  // Listed as an optional dependency, it's probed all the same.
+  const unopened = await check(standIn(pkg, HOST, opentui(`export function resolveRenderLib() { throw new Error("Failed to initialize OpenTUI render library"); }\n`)));
+  assert.equal(unopened.code, 1);
+  assert.match(unopened.stderr, /pack-installs-alone: @opentui\/core doesn't load in the installed zz-host-1\.0\.0\.tgz/);
   const optional = { optionalDependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
   const optionalMissing = await check(standIn(optional, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(optionalMissing.code, 1);
@@ -242,11 +268,49 @@ test("@opentui/core must load in the installed tree, its native package with it"
   );
 }, TIMEOUT_MS * 3);
 
-test("a smoke run that doesn't finish is stopped at its limit, and the limit must be a number", async () => {
-  const slow = await check(
-    standIn({}, `${HOST}await new Promise((resolve) => setTimeout(resolve, 30_000));\n`),
-    { PACK_INSTALLS_ALONE_SMOKE_TIMEOUT_MS: "2000" },
-  );
+const AGENT_FRAMEWORK = {
+  "node_modules/@animalabs/agent-framework/package.json": JSON.stringify({ name: "@animalabs/agent-framework", version: "1.0.0", type: "module", main: "index.js" }),
+  "node_modules/@animalabs/agent-framework/index.js": "export {};\n",
+};
+
+test("discord.js resolving from the installed agent-framework, which loads it by require out of bun build's reach, is named", async () => {
+  const nested = {
+    "node_modules/@animalabs/agent-framework/package.json": JSON.stringify({ name: "@animalabs/agent-framework", version: "1.0.0", type: "module", main: "index.js", dependencies: { "discord.js": "1.0.0" } }),
+    "node_modules/@animalabs/agent-framework/index.js": "export {};\n",
+    "node_modules/@animalabs/agent-framework/node_modules/discord.js/package.json": JSON.stringify({ name: "discord.js", version: "1.0.0", main: "index.js" }),
+    "node_modules/@animalabs/agent-framework/node_modules/discord.js/index.js": "module.exports = {};\n",
+  };
+  const pkg = { dependencies: { "@animalabs/agent-framework": "1.0.0" }, bundleDependencies: ["@animalabs/agent-framework"] };
+  const result = await check(standIn(pkg, HOST, nested));
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /src\/index\.ts's imports resolve, discord\.js resolves from @animalabs\/agent-framework, and the offline smoke run answered\.$/m);
+}, TIMEOUT_MS);
+
+test("an install where discord.js doesn't resolve from agent-framework fails, though bun build doesn't reach it", async () => {
+  const pkg = { dependencies: { "@animalabs/agent-framework": "1.0.0" }, bundleDependencies: ["@animalabs/agent-framework"] };
+  const result = await check(standIn(pkg, HOST, AGENT_FRAMEWORK));
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^pack-installs-alone: discord\.js doesn't resolve from the installed @animalabs\/agent-framework in zz-host-1\.0\.0\.tgz: /m);
+}, TIMEOUT_MS);
+
+test("a discord.js that only a node_modules above the install holds doesn't count as installed", async () => {
+  const above = mkdtempSync(join(tmpdir(), "pack-installs-alone-above-"));
+  made.push(above);
+  mkdirSync(join(above, "node_modules", "discord.js"), { recursive: true });
+  writeFileSync(join(above, "node_modules", "discord.js", "package.json"), JSON.stringify({ name: "discord.js", version: "1.0.0", main: "index.js" }));
+  writeFileSync(join(above, "node_modules", "discord.js", "index.js"), "module.exports = {};\n");
+  const pkg = { dependencies: { "@animalabs/agent-framework": "1.0.0" }, bundleDependencies: ["@animalabs/agent-framework"] };
+  const result = await check(standIn(pkg, HOST, AGENT_FRAMEWORK), { TMPDIR: above });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^pack-installs-alone: discord\.js doesn't resolve from the installed @animalabs\/agent-framework in zz-host-1\.0\.0\.tgz without leaving the install: it resolves only to .*node_modules\/discord\.js\/index\.js: /m);
+}, TIMEOUT_MS);
+
+const DEAF = `process.on("SIGTERM", () => {});\nawait new Promise((resolve) => setTimeout(resolve, 90_000));\n`;
+
+test("a smoke run that doesn't finish is stopped at its limit, even one that ignores SIGTERM, and the limit must be a number", async () => {
+  const start = Date.now();
+  const slow = await check(standIn({}, `${HOST}${DEAF}`), { PACK_INSTALLS_ALONE_SMOKE_TIMEOUT_MS: "2000" });
+  assert.ok(Date.now() - start < 60_000, `took ${Date.now() - start} ms`);
   assert.equal(slow.code, 1);
   assert.match(slow.stderr, /didn't finish within 2 s \(its output is above\)\.\n$/);
   for (const value of ["", "2m", "0"]) {
@@ -254,7 +318,7 @@ test("a smoke run that doesn't finish is stopped at its limit, and the limit mus
     assert.equal(bad.code, 1);
     assert.equal(bad.stderr, `pack-installs-alone: PACK_INSTALLS_ALONE_SMOKE_TIMEOUT_MS is '${value}', not a whole number of milliseconds.\n`);
   }
-}, TIMEOUT_MS);
+}, TIMEOUT_MS * 2);
 
 test("an install that fails once and then succeeds passes on its second attempt", async () => {
   const blip = npmShim(`if (args[0] === "install" && !fs.existsSync(bin + "/failed")) { fs.writeFileSync(bin + "/failed", ""); console.error("zz: registry blip"); process.exit(1); }\npass();`);
@@ -265,24 +329,38 @@ test("an install that fails once and then succeeds passes on its second attempt"
   assert.match(result.stdout, /installs on its own with npm /);
 }, TIMEOUT_MS * 2);
 
-test("an install that runs out of time fails at once, saying so, without another attempt", async () => {
-  const slow = npmShim(`if (args[0] === "install") setTimeout(() => {}, 30_000);\nelse pass();`);
+test("an install that runs out of time, even one that ignores SIGTERM, fails at once, saying so, without another attempt", async () => {
+  const slow = npmShim(
+    `if (args[0] === "install") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\n` +
+      `else if (args[0] === "pack") process.stdout.write('[{"filename":"zz-host-1.0.0.tgz","files":[]}]');\nelse pass();`,
+  );
+  const start = Date.now();
   const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "2000" });
+  assert.ok(Date.now() - start < 60_000, `took ${Date.now() - start} ms`);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /pack-installs-alone: the install of zz-host-1\.0\.0\.tgz didn't finish within 2 s\.\n$/);
   assert.doesNotMatch(result.stderr, /attempt 1 of 3/);
-}, TIMEOUT_MS);
+}, TIMEOUT_MS * 2);
 
-test("npm pack that fails, or prints anything but one record with a filename, fails by name", async () => {
+test("npm pack that runs out of the install's time, even ignoring SIGTERM, fails, saying so", async () => {
+  const slow = npmShim(`if (args[0] === "pack") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\nelse pass();`);
+  const start = Date.now();
+  const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "2000" });
+  assert.ok(Date.now() - start < 60_000, `took ${Date.now() - start} ms`);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /pack-installs-alone: npm pack didn't finish within 2 s\.\n$/);
+}, TIMEOUT_MS * 2);
+
+test("npm pack that fails, or prints anything but one record with a filename and its files, fails by name", async () => {
   const failing = npmShim(`if (args[0] === "pack") { console.error("zz: pack failed"); process.exit(1); }\npass();`);
   const failed = await check(standIn({}), withPath(failing));
   assert.equal(failed.code, 1);
   assert.match(failed.stderr, /zz: pack failed\n(?:.*\n)*pack-installs-alone: npm pack failed \(its output is above\)\.\n$/);
-  for (const out of ["[]", "{}", "not json", '[{"name":"zz"}]']) {
+  for (const out of ["[]", "{}", "not json", '[{"name":"zz"}]', '[{"name":"zz","filename":"zz-host-1.0.0.tgz"}]']) {
     const odd = npmShim(`if (args[0] === "pack") { process.stdout.write(${JSON.stringify(out)}); process.exit(0); }\npass();`);
     const result = await check(standIn({}), withPath(odd));
     assert.equal(result.code, 1, out);
-    assert.match(result.stderr, /pack-installs-alone: npm pack --json didn't print one record with a filename \(its output is above\)\.\n$/, out);
+    assert.match(result.stderr, /pack-installs-alone: npm pack --json didn't print one record with a filename and its files \(its output is above\)\.\n$/, out);
   }
 }, TIMEOUT_MS * 3);
 

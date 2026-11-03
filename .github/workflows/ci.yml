@@ -15,22 +15,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # Both platforms on purpose: a package-lock.json regenerated over an
-      # existing node_modules tree records only that machine's native binaries
-      # (esbuild/rollup/tailwind-oxide), so a lock made on macOS breaks Linux
-      # installs and vice versa. Each runner catches the lock the other's
-      # platform produced. macOS runs the install+build lock guard only;
-      # the full test suite runs on ubuntu.
-      #
-      # Runtimes: the oldest Node and Bun that package.json's engines admit,
-      # pinned exactly; the newest of each; and on Linux, Node 24 between
-      # them, the maintained line between the floor's major and the newest's.
-      # Each Node line ships its own built-in fetch. Bun has published no
-      # release to an older minor after a newer one, so its floor is its
-      # newest release when the floor was set. macOS runs the two ends.
+      # npm 10.9.0, which Node 22.12.0 ships, regenerating a package-lock.json
+      # over an existing node_modules tree records only that machine's native
+      # binaries (esbuild, rollup, tailwind's oxide), so a lock made on macOS
+      # breaks Linux installs and vice versa. Each Node line ships its own
+      # built-in fetch (undici).
       matrix:
         include:
-          - { os: ubuntu-latest, node: '22.12.0', bun: '1.4.3' }
+          - { os: ubuntu-latest, node: '22.12.0', bun: '1.4.3', suite: true }
           - { os: ubuntu-latest, node: '24', bun: latest }
           - { os: ubuntu-latest, node: latest, bun: latest }
           - { os: macos-latest, node: '22.12.0', bun: '1.4.3' }
@@ -51,44 +43,63 @@ jobs:
         with:
           bun-version: ${{ matrix.bun }}
 
-      # npm ci, the root's lockfile guard on each platform, as the web step
-      # below is the web app's: it never rewrites package-lock.json, and
-      # fails when the lock doesn't match package.json or lacks a package
-      # this platform needs, where `npm install` (npm >= 11) would re-resolve
-      # it silently. --ignore-scripts skips the root postinstall, a
-      # non-strict `npm --prefix web install` followed by the web build. Run
-      # first, that install would heal a broken web/package-lock.json on disk
-      # before the strict step below could check it. The strict step does the
-      # web build instead. No dependency in package-lock.json has an install
-      # script of its own.
+      # npm ci never rewrites package-lock.json, and fails when the lock
+      # doesn't match package.json or lacks a package this platform needs,
+      # where npm 11's `npm install` re-resolves it silently.
       - name: Install dependencies (strict lockfile)
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # npm ci is the actual lockfile guard: `npm install` (npm >= 11)
-      # silently re-resolves platform packages missing from the lock, so a
-      # broken lock sails through it. npm ci never rewrites the lock, and with
-      # a platform package missing it fails its own check ("Missing: ... from
-      # lock file") before the build.
       - name: Build web assets (strict lockfile)
         run: npm run build:web:ci
 
       - name: Test
-        if: matrix.os == 'ubuntu-latest'
-        run: npm test
+        if: matrix.suite
+        run: bash scripts/test-on-tmpfs.sh
 
-  # The release as npm would pack it, installed on its own and run, as the
-  # publish workflow checks before it publishes (see
-  # scripts/pack-installs-alone.mjs): a change that leaves a file out of the
-  # package, or imports what only devDependencies supply, fails before it
-  # merges, not after a tag and its release notes are out. Its own job,
-  # with contents: read only, since the install runs install scripts. That
-  # install resolves dependencies from the registry as it stands, not from
-  # this branch's lockfile, so a new upstream release can turn it red on a
-  # change that touched nothing it installs: when it fails, rerunning it on
-  # main tells a change's own break from the registry's drift.
+      - name: Host starts
+        if: ${{ !matrix.suite }}
+        run: node scripts/host-starts.mjs
+
+  # bun runs TypeScript without checking its types, and `vite build`
+  # doesn't check them either. isolatedModules has the host's check also
+  # reject what bun can't transpile one module at a time: a type-only name
+  # re-exported without `export type`, for one, passes the rest of the
+  # check and fails when bun loads the module.
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.12.0'
+
+      - name: Install dependencies (strict lockfile)
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix web --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck the host's source
+        run: npx tsc --noEmit
+
+      - name: Typecheck the web app
+        working-directory: web
+        run: npx tsc --noEmit
+
+  # The packed release installs its dependencies from the registry as it
+  # stands, not from this branch's lockfile, so a new upstream release can
+  # turn this job red on a change that touched nothing it installs: when it
+  # fails, rerunning it on main tells a change's own break from the
+  # registry's drift.
   pack-check:
     name: Packed release installs on its own
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -100,20 +111,17 @@ jobs:
         with:
           node-version: 24
 
-      # bun runs the host.
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.3
 
+      - name: Build web assets
+        run: npm run build:web:ci
+
       - name: Packed release installs on its own
         run: node scripts/pack-installs-alone.mjs
 
-  # The README installs a checkout with `bun install`, from bun.lock; the
-  # build job and the publish workflow install with npm, from
-  # package-lock.json. This job keeps the stack's packages (@animalabs/*)
-  # resolving the same way in both, so a checkout installed as the README
-  # says runs the stack versions CI tested. Other packages may differ.
   lockfiles:
     name: Lockfiles agree
     runs-on: ubuntu-latest
@@ -134,8 +142,7 @@ jobs:
           bun-version: 1.4.3
 
       # Frozen, bun refuses to install when package.json asks for anything
-      # bun.lock doesn't pin. Install only: scripts off, and nothing is
-      # tested on this tree.
+      # bun.lock doesn't pin.
       - name: bun.lock matches package.json
         run: bun install --frozen-lockfile --ignore-scripts
 

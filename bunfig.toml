@@ -1,0 +1,5 @@
+[test]
+# Hosts the tests start don't read npm's registry for an update notice
+# (src/update/update.ts): the suite stays off the network, and its output
+# doesn't change when a release is published.
+preload = ["./test/no-update-check.preload.ts"]

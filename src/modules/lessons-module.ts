@@ -1,15 +1,3 @@
-/**
- * LessonsModule — persistent knowledge store backed by Chronicle.
- *
- * Lessons are units of extracted knowledge with:
- *   - Confidence scores (0–1)
- *   - Tags for categorization
- *   - Evidence links (source message references)
- *
- * The module also implements gatherContext() to auto-inject
- * relevant lessons into the agent's context before inference.
- */
-
 import type {
   Module,
   ModuleContext,
@@ -22,14 +10,13 @@ import type {
 } from '@animalabs/agent-framework';
 import type { ContextInjection } from '@animalabs/context-manager';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import {
+  readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, chmodSync, statSync, lstatSync, realpathSync, accessSync,
+  openSync, fsyncSync, closeSync, constants, type Stats,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface Lesson {
   id: string;
@@ -43,16 +30,12 @@ export interface Lesson {
   deprecationReason?: string;
 }
 
-/** A lesson as it's stored. A record an earlier version wrote, or one written
- *  by hand into the shared lessons file, can lack its content, tags or
- *  evidence, or hold a confidence outside 0 to 1, as text, or none that's a
- *  number, so every reader takes it through readable(), and the record stays
- *  as stored. */
 type StoredLesson = Omit<Lesson, 'content' | 'tags' | 'evidence' | 'confidence'> &
   { content?: unknown; tags?: unknown; evidence?: unknown; confidence?: unknown };
 
 interface LessonsState {
   lessons: StoredLesson[];
+  heldTwice?: string[];
 }
 
 interface CreateInput {
@@ -93,16 +76,16 @@ interface IdInput {
   id: string;
 }
 
-// ---------------------------------------------------------------------------
-// Module
-// ---------------------------------------------------------------------------
-
 export class LessonsModule implements Module {
   readonly name = 'lessons';
 
   private ctx: ModuleContext | null = null;
   private state: LessonsState = { lessons: [] };
   private globalPath: string | null;
+  private sharedProblem: { text: string; on: 'read' | 'write' } | null = null;
+  private unwrittenLine = '';
+  private carriedSaid = '';
+  private inPlaceSaid = new Set<string>();
 
   constructor(opts?: { globalPath?: string }) {
     this.globalPath = opts?.globalPath ?? null;
@@ -114,13 +97,15 @@ export class LessonsModule implements Module {
     if (saved) {
       this.state = saved;
     }
-    // Merge in lessons from the global shared file
     if (this.globalPath) {
-      this.mergeFromGlobal();
+      const read = readSharedFile(this.globalPath);
+      this.noteRead(read);
+      if (read.kind === 'read') {
+        const { carried, changed } = this.mergeShared(read.entries);
+        this.noteCarried(carried);
+        if (changed) ctx.setState(this.state);
+      }
     }
-    // Each lesson stored with a fault is named once per load for whoever
-    // runs the host, with the mark the agent's list gives it; see readable()
-    // for how readers take it.
     for (const l of this.state.lessons) {
       if (l.deprecated) continue;
       const line = loadLine(l);
@@ -256,23 +241,14 @@ export class LessonsModule implements Module {
     return {};
   }
 
-  // Lesson injection is handled solely by RetrievalModule (intelligent retrieval
-  // pipeline). LessonsModule provides storage + CRUD tools only.
-
-  // Public accessor for other modules (e.g., RetrievalModule)
   getLessons(): Lesson[] {
     return this.readableLessons();
   }
 
-  /** Every lesson as readers see it; see readable(). */
   private readableLessons(): Lesson[] {
     return this.state.lessons.map(readable);
   }
 
-  /** Each lesson as stored, with how readers see it and what the agent's
-   *  mark says it needs. A filter or a sort carries each lesson's own
-   *  record, so two that share an id don't take each other's. /export
-   *  writes the stored records as data and shows the readable ones. */
   getLessonRecords(): Array<{ stored: unknown; lesson: Lesson; needsFix?: string }> {
     return this.state.lessons.map(stored => {
       const fix = stored.deprecated ? undefined : needsFix(stored);
@@ -280,20 +256,15 @@ export class LessonsModule implements Module {
     });
   }
 
-  // =========================================================================
-  // Tool Handlers
-  // =========================================================================
-
   private handleCreate(input: CreateInput): ToolResult {
-    // A lesson stored without its content or tags reads as having none, and
-    // stays marked until it's fixed, so a call that would store one is refused.
     const problems = inputProblems(input, true);
     if (problems.length > 0) {
       return { success: false, isError: true, error: `Nothing was created: ${problems.join('; ')}.` };
     }
 
+    const read = this.refresh();
     const lesson: Lesson = {
-      id: randomUUID().slice(0, 8),
+      id: this.freshId(read),
       content: input.content,
       confidence: input.confidence ?? 0.5,
       tags: input.tags,
@@ -304,15 +275,18 @@ export class LessonsModule implements Module {
     };
 
     this.state.lessons.push(lesson);
-    this.save();
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, message: 'Lesson created' } };
   }
 
   private handleUpdate(input: UpdateInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     const problems = inputProblems(input, false);
     if (!lesson) return notFound('updated', input.id, problems.join('; ') || undefined);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'updated', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
     if (problems.length > 0) {
       return { success: false, isError: true, error: `Nothing was updated: ${problems.join('; ')}.` };
     }
@@ -321,19 +295,18 @@ export class LessonsModule implements Module {
     if (input.tags !== undefined) lesson.tags = input.tags;
     if (input.confidence !== undefined) lesson.confidence = input.confidence;
     if (input.evidence !== undefined) {
-      // Merge evidence, dedup, keeping every stored value: a lone one is
-      // the list's first entry
       const existing = new Set(storedEvidence(lesson.evidence));
       for (const e of input.evidence) existing.add(e);
       lesson.evidence = [...existing];
     }
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, message: 'Lesson updated' } };
   }
 
   private handleDeprecate(input: DeprecateInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     const reason: unknown = input.reason;
     const reasonProblem = typeof reason === 'string'
@@ -342,12 +315,14 @@ export class LessonsModule implements Module {
         ? 'reason is missing: say why the lesson is no longer accurate'
         : `reason must be text, not ${shown(reason)}`;
     if (!lesson) return notFound('deprecated', input.id, reasonProblem);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'deprecated', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
     if (reasonProblem) return { success: false, isError: true, error: `Nothing was deprecated: ${reasonProblem}.` };
 
     lesson.deprecated = true;
     lesson.deprecationReason = input.reason;
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, message: 'Lesson deprecated' } };
   }
@@ -356,12 +331,10 @@ export class LessonsModule implements Module {
     const limit = input.limit ?? 20;
     let results = this.getLessonRecords().filter(r => !r.lesson.deprecated);
 
-    // Filter by minimum confidence
     if (input.minConfidence !== undefined) {
       results = results.filter(r => r.lesson.confidence >= input.minConfidence!);
     }
 
-    // Filter by tags (any match)
     if (input.tags && input.tags.length > 0) {
       const tagSet = new Set(input.tags.map(t => t.toLowerCase()));
       results = results.filter(r =>
@@ -369,7 +342,6 @@ export class LessonsModule implements Module {
       );
     }
 
-    // Text search (simple keyword matching)
     if (input.text) {
       const keywords = input.text.toLowerCase().split(/\s+/);
       results = results.filter(r => {
@@ -378,7 +350,6 @@ export class LessonsModule implements Module {
       });
     }
 
-    // Sort by relevance (confidence descending)
     results.sort((a, b) => b.lesson.confidence - a.lesson.confidence);
 
     return {
@@ -388,8 +359,6 @@ export class LessonsModule implements Module {
         lessons: results.slice(0, limit).map(({ stored, lesson: l, needsFix: fix }) => ({
           id: l.id,
           content: l.content,
-          // As stored, so a confidence outside 0 to 1, or stored as text,
-          // shows as it is.
           confidence: (stored as StoredLesson).confidence,
           tags: l.tags,
           evidence: l.evidence,
@@ -404,7 +373,6 @@ export class LessonsModule implements Module {
     const all = this.getLessonRecords();
     let results = input.includeDeprecated ? all : all.filter(r => !r.lesson.deprecated);
 
-    // Filter by tags
     if (input.tags && input.tags.length > 0) {
       const tagSet = new Set(input.tags.map(t => t.toLowerCase()));
       results = results.filter(r =>
@@ -412,7 +380,6 @@ export class LessonsModule implements Module {
       );
     }
 
-    // Sort
     const sort = input.sort ?? 'confidence';
     switch (sort) {
       case 'confidence':
@@ -430,12 +397,9 @@ export class LessonsModule implements Module {
       success: true,
       data: {
         total: results.length,
-        // A deprecated lesson has no mark: deprecating it is a fix.
         lessons: results.slice(0, limit).map(({ stored, lesson: l, needsFix: fix }) => ({
           id: l.id,
           content: l.content,
-          // As stored, so a confidence outside 0 to 1, or stored as text,
-          // shows as it is.
           confidence: (stored as StoredLesson).confidence,
           tags: l.tags,
           deprecated: l.deprecated,
@@ -446,115 +410,390 @@ export class LessonsModule implements Module {
   }
 
   private handleBoost(input: IdInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     if (!lesson) return notFound('boosted', input.id);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'boosted', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
 
     const refused = adjustRefusal(lesson, 'boost');
     if (refused) return { success: false, error: refused, isError: true };
 
-    // Diminishing returns boost; one stored as text that holds a number
-    // starts from that number.
     const base = confidenceValue(lesson.confidence);
     lesson.confidence = Math.min(1, base + 0.1 * (1 - base));
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, confidence: lesson.confidence } };
   }
 
   private handleDemote(input: IdInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     if (!lesson) return notFound('demoted', input.id);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'demoted', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
 
     const refused = adjustRefusal(lesson, 'demote');
     if (refused) return { success: false, error: refused, isError: true };
 
-    // Diminishing returns demote; one stored as text that holds a number
-    // starts from that number.
     const base = confidenceValue(lesson.confidence);
     lesson.confidence = Math.max(0, base - 0.1 * base);
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, confidence: lesson.confidence } };
   }
 
-  private save(): void {
+  private refresh(): SharedRead | null {
+    if (!this.globalPath) return null;
+    const read = readSharedFile(this.globalPath);
+    this.noteRead(read);
+    if (read.kind === 'read') {
+      const { carried, changed } = this.mergeShared(read.entries);
+      this.noteCarried(carried);
+      if (changed) this.ctx?.setState(this.state);
+    }
+    return read;
+  }
+
+  private freshId(read: SharedRead | null): string {
+    const taken = new Set(this.state.lessons.map(idOf));
+    if (read?.kind === 'read') for (const e of read.entries) taken.add(idOf(e));
+    let id: string;
+    do id = randomUUID().slice(0, 8); while (taken.has(id));
+    return id;
+  }
+
+  private save(read: SharedRead | null): void {
     this.ctx?.setState(this.state);
-    if (this.globalPath) {
-      this.saveToGlobal();
+    if (!this.globalPath || !read || read.kind === 'unreadable') return;
+    const doc: Record<string, unknown> = read.kind === 'read' ? read.doc : {};
+    const entries: unknown[] = read.kind === 'read' ? read.entries : [];
+    const named = namedIds(entries, this.state.lessons);
+    const mine = new Map<string, StoredLesson>();
+    for (const l of this.state.lessons) {
+      const id = idOf(l);
+      if (id !== undefined && named.has(id)) mine.set(id, l);
+    }
+    const lessons = entries.map((entry) => {
+      const id = idOf(entry);
+      const l = id === undefined ? undefined : mine.get(id);
+      if (!l) return entry;
+      mine.delete(id!);
+      return l;
+    });
+    lessons.push(...mine.values());
+    const inPlace = (key: string, why: string): void => {
+      if (this.inPlaceSaid.has(key)) return;
+      this.inPlaceSaid.add(key);
+      console.warn(`[lessons] the shared lessons file ${this.globalPath} is written in place, since ${why}: a write that fails partway can leave it broken.`);
+    };
+    try {
+      writeShared(this.globalPath, JSON.stringify({ ...doc, lessons }, null, 2), inPlace);
+    } catch (err) {
+      const after = readSharedFile(this.globalPath);
+      if (after.kind === 'unreadable') this.sayShared(after.problem, 'read', `couldn't be written (${errorText(err)}), and now `);
+      else this.sayShared(`couldn't be written (${errorText(err)})`, 'write');
+      return;
+    }
+    const made = read.kind === 'absent';
+    if (this.sharedProblem !== null) {
+      this.sharedProblem = null;
+      const how = made ? "it wasn't there, so this host wrote it with its lessons" : 'this host merged its lessons in and wrote it';
+      console.warn(`[lessons] the shared lessons file ${this.globalPath} can be written again: ${how}.`);
+    } else if (made) {
+      console.warn(`[lessons] the shared lessons file ${this.globalPath} wasn't there: this host wrote it with its lessons.`);
+    }
+    const unwritten = this.state.lessons.filter((l) => {
+      const id = idOf(l);
+      return id !== undefined && !named.has(id);
+    });
+    const one = unwritten.length === 1;
+    const ids = [...new Set(unwritten.map(idOf))] as string[];
+    const inFile = idCounts(entries);
+    const onHost = idCounts(this.state.lessons);
+    const advice = ids.filter((id) => (inFile.get(id) ?? 0) > 1 && onHost.get(id) === 1)
+      .map((id) => ` To keep every lesson with the id ${shown(id)}, ${newIdAdvice(entries, id)}.`).join('');
+    const line = unwritten.length === 0 ? '' :
+      `[lessons] the shared lessons file ${this.globalPath}, or this host, holds another lesson with the id of ` +
+      `${one ? 'a lesson' : `${unwritten.length} lessons`} this host holds (${ids.join(', ')}): ` +
+      `this host keeps ${one ? 'it' : 'them'} in its own state and doesn't write ${one ? 'it' : 'them'} to the file.${advice}`;
+    if (line !== this.unwrittenLine) {
+      this.unwrittenLine = line;
+      if (line) console.warn(line);
     }
   }
 
-  /** Merge lessons from the global JSON file. Newer `updated` wins on ID conflicts. */
-  private mergeFromGlobal(): void {
-    if (!this.globalPath) return;
-    let global: unknown;
-    try {
-      // A number JSON can't hold, such as 1e999, parses as Infinity, which
-      // the module's store refuses to save. It's read as null wherever it
-      // sits: a confidence of 1e999 reads as one that isn't a number, and
-      // an id of 1e999 as one that isn't text. A save writes the null back.
-      global = JSON.parse(readFileSync(this.globalPath, 'utf-8'), (_key, value: unknown) =>
-        typeof value === 'number' && !Number.isFinite(value) ? null : value);
-    } catch {
-      return; // File doesn't exist yet — nothing to merge
-    }
-    if (!isRecord(global) || !Array.isArray(global.lessons)) return;
-
-    const byId = new Map(this.state.lessons.map(l => [l.id, l]));
-    let merged = false;
-    // An entry that isn't an object isn't a lesson: it's left out of what's
-    // merged. The next save writes the file with the lessons the module
-    // holds, so without it unless the module's own state holds it too.
-    const entries = (global.lessons as unknown[]).filter(isRecord) as StoredLesson[];
-    const skipped = global.lessons.length - entries.length;
-    if (skipped > 0) {
-      console.warn(skipped === 1
-        ? `[lessons] the shared lessons file ${this.globalPath} has 1 entry that isn't a lesson (not an object). ` +
-          "It's left out of what this host loads, and the next save writes the file with the lessons this host holds."
-        : `[lessons] the shared lessons file ${this.globalPath} has ${skipped} entries that aren't lessons (not objects). ` +
-          "They're left out of what this host loads, and the next save writes the file with the lessons this host holds.");
-    }
-    for (const gl of entries) {
-      const existing = byId.get(gl.id);
-      if (!existing) {
-        this.state.lessons.push(gl);
-        merged = true;
-      } else if (gl.updated > existing.updated) {
-        Object.assign(existing, gl);
-        merged = true;
+  private mergeShared(entries: unknown[]): { carried: unknown[]; named: Set<string>; changed: boolean } {
+    const named = namedIds(entries, this.state.lessons);
+    const inFile = idCounts(entries);
+    const onHost = idCounts(this.state.lessons);
+    const wasHeld = new Set(this.state.heldTwice ?? []);
+    const held = new Set([...inFile].filter(([id, n]) => n > 1 && onHost.get(id) === 1).map(([id]) => id));
+    const at = new Map<string, number>();
+    this.state.lessons.forEach((l, i) => {
+      const id = idOf(l);
+      if (id !== undefined && named.has(id)) at.set(id, i);
+    });
+    const carried: unknown[] = [];
+    let changed = held.size !== wasHeld.size || [...held].some((id) => !wasHeld.has(id));
+    for (const entry of entries) {
+      const id = idOf(entry);
+      if (id === undefined || !named.has(id)) {
+        carried.push(entry);
+        continue;
+      }
+      const gl = entry as StoredLesson;
+      const i = at.get(id);
+      if (i === undefined) {
+        at.set(id, this.state.lessons.push(gl) - 1);
+        changed = true;
+      } else if (wasHeld.has(id) || stampOf(gl) >= stampOf(this.state.lessons[i])) {
+        this.state.lessons[i] = gl;
+        changed = true;
       }
     }
-    if (merged) {
-      this.ctx?.setState(this.state);
-    }
+    if (held.size > 0) this.state.heldTwice = [...held];
+    else delete this.state.heldTwice;
+    return { carried, named, changed };
   }
 
-  /** Write current lessons to the global JSON file. */
-  private saveToGlobal(): void {
-    if (!this.globalPath) return;
-    try {
-      mkdirSync(dirname(this.globalPath), { recursive: true });
-      writeFileSync(this.globalPath, JSON.stringify({ lessons: this.state.lessons }, null, 2));
-    } catch {
-      // Best-effort — don't break the module if the file can't be written
+  private noteRead(read: SharedRead): void {
+    if (read.kind === 'unreadable') {
+      this.sayShared(read.problem, 'read');
+      return;
     }
+    if (this.sharedProblem?.on !== 'read') return;
+    this.sharedProblem = null;
+    if (read.kind === 'read') console.warn(`[lessons] the shared lessons file ${this.globalPath} reads as a lessons file again.`);
+  }
+
+  private noteCarried(carried: unknown[]): void {
+    const line = carriedLine(this.globalPath!, carried) ?? '';
+    if (line === this.carriedSaid) return;
+    this.carriedSaid = line;
+    if (line) console.warn(line);
+  }
+
+  private sayShared(problem: string, on: 'read' | 'write', lead = ''): void {
+    if (this.sharedProblem?.text === problem) return;
+    this.sharedProblem = { text: problem, on };
+    const then = on === 'read'
+      ? "won't write the file until it reads as a lessons file again"
+      : 'tries again at its next save';
+    console.warn(`[lessons] the shared lessons file ${this.globalPath} ${lead}${problem}: this host keeps its lessons in its own state and ${then}.`);
   }
 }
 
-/** What's wrong with a stored lesson, field by field, or nothing when it's
- *  whole. The agent's mark, the operator's load line and boost and demote's
- *  refusals all say it from this. */
+type SharedRead =
+  | { kind: 'absent' }
+  | { kind: 'unreadable'; problem: string }
+  | { kind: 'read'; doc: Record<string, unknown>; entries: unknown[] };
+
+/** TextDecoder drops a byte-order mark at the start. */
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+function readSharedFile(path: string): SharedRead {
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(path);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unreadable', problem: `can't be read (${errorText(err)})` };
+  }
+  let text: string;
+  try {
+    text = utf8.decode(bytes);
+  } catch {
+    return { kind: 'unreadable', problem: "isn't UTF-8 text" };
+  }
+  let doc: unknown;
+  try {
+    // JSON.parse reads a number JSON can't hold, such as 1e999, as Infinity,
+    // which the module's store refuses to save: chronicle's setStateJson takes
+    // only numbers JSON can hold.
+    doc = JSON.parse(text, (_key, value: unknown) =>
+      typeof value === 'number' && !Number.isFinite(value) ? null : value);
+  } catch (err) {
+    return { kind: 'unreadable', problem: `isn't valid JSON (${errorText(err)})` };
+  }
+  if (!isRecord(doc) || !Array.isArray(doc.lessons)) {
+    return { kind: 'unreadable', problem: "isn't a lessons file (no object holding a lessons list)" };
+  }
+  return { kind: 'read', doc, entries: doc.lessons };
+}
+
+/** Where writing a shared file that's there through a temporary file is
+ *  refused for permission or a mount, and writing it in place still works:
+ *  a directory this host can't write in (EACCES), a rename over a file
+ *  another user owns in a directory with the sticky bit (EPERM, or EACCES:
+ *  rename(2)), a file mounted on its own (EBUSY; EXDEV), or one mounted on
+ *  its own in a directory on a read-only mount (EROFS: the file itself
+ *  passed the check of its permission). */
+const IN_PLACE = new Set(['EACCES', 'EPERM', 'EBUSY', 'EXDEV', 'EROFS']);
+
+/** A rename over a file makes it a new file, owned as any new file this host
+ *  makes there, without an access control list or other extended attribute
+ *  the old one had, and a second name (a hard link) keeps the old text. A
+ *  rename onto a link to a file not made yet replaces the link with a plain
+ *  file. */
+function writeShared(path: string, text: string, inPlace: (key: string, why: string) => void): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const old = statIfThere(path);
+  if (old === null ? statIfThere(path, lstatSync) !== null : !writable(path)) {
+    writeFileSync(path, text);
+    return;
+  }
+  if (old !== null && old.nlink > 1) {
+    inPlace('a second name', 'it has another name, which replacing it would leave holding the old text');
+    writeFileSync(path, text);
+    return;
+  }
+  const target = old === null ? path : realpathSync(path);
+  const tmp = join(dirname(target), `lessons-${randomUUID()}.tmp`);
+  const mode = old === null ? 0o666 : old.mode & 0o777;
+  try {
+    const fd = openSync(tmp, 'w', mode);
+    try {
+      writeFileSync(fd, text);
+      // Synced before the rename, so a machine that goes down finds the old file
+      // or this one, whole.
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // The umask narrows the mode a file is made with.
+    if (old !== null) chmodSync(tmp, mode);
+    renameSync(tmp, target);
+  } catch (err) {
+    try { rmSync(tmp, { force: true }); } catch { }
+    const code = codeOf(err);
+    const said = errorText(err).replaceAll(tmp, join(dirname(target), 'lessons-<random>.tmp'));
+    if (old === null || !IN_PLACE.has(code)) throw Object.assign(new Error(said), { code });
+    inPlace(code, `this host can't replace it through a temporary file beside it (${said})`);
+    writeFileSync(path, text);
+  }
+}
+
+/** access(2) refuses for permission with EACCES, EPERM or EROFS. */
+function writable(path: string): boolean {
+  try {
+    accessSync(path, constants.W_OK);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'EROFS'].includes(codeOf(err))) return false;
+    throw err;
+  }
+}
+
+function codeOf(err: unknown): string {
+  return String((err as { code?: unknown }).code);
+}
+
+function heldTwiceRefusal(
+  read: SharedRead | null,
+  l: StoredLesson,
+  verb: 'updated' | 'deprecated' | 'boosted' | 'demoted',
+  heldTwice: string[] | undefined,
+): ToolResult | undefined {
+  const id = idOf(l);
+  if (read === null || id === undefined) return undefined;
+  let holds: string;
+  let advice: string;
+  if (read.kind === 'read' && (idCounts(read.entries).get(id) ?? 0) > 1) {
+    holds = 'holds';
+    advice = newIdAdvice(read.entries, id);
+  } else if (read.kind === 'unreadable' && heldTwice?.includes(id)) {
+    holds = 'held, when this host last read it,';
+    advice = ALL_BUT_ONE;
+  } else {
+    return undefined;
+  }
+  return {
+    success: false,
+    isError: true,
+    error:
+      `Nothing was ${verb}: the shared lessons file ${holds} another lesson with the id ${shown(id)}, so this host can't ` +
+      'tell which of them this one is, and a change to it couldn\'t be shared. It waits on whoever runs the host, who can ' +
+      `${advice}.`,
+  };
+}
+
+const ALL_BUT_ONE = 'give all but one of them a new id in the file, leaving the id on one with the latest updated';
+
+function newIdAdvice(entries: unknown[], id: string): string {
+  const doubled = entries.filter((e) => idOf(e) === id) as Record<string, unknown>[];
+  if (doubled.length !== 2) return ALL_BUT_ONE;
+  const [a, b] = doubled;
+  if (stampOf(a) === stampOf(b)) return 'give either one a new id in the file (neither\'s updated is later)';
+  const u = (stampOf(a) < stampOf(b) ? a : b).updated;
+  return `give the one with ${u === undefined ? 'no updated' : `updated ${shown(u)}`} a new id in the file`;
+}
+
+function statIfThere(path: string, stat: (path: string) => Stats = statSync): Stats | null {
+  try {
+    return stat(path);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Past Number.MAX_SAFE_INTEGER, adding one can give the same number, and
+ *  no clock gives a stamp that large: a Date holds at most 8.64e15. */
+function stampOf(l: unknown): number {
+  const u = isRecord(l) ? l.updated : undefined;
+  return typeof u === 'number' && Number.isFinite(u) && u <= Number.MAX_SAFE_INTEGER ? u : -Infinity;
+}
+
+function laterStamp(l: StoredLesson): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(Date.now(), stampOf(l) + 1));
+}
+
+function namedIds(entries: unknown[], lessons: StoredLesson[]): Set<string> {
+  const inFile = idCounts(entries);
+  const inState = idCounts(lessons);
+  const named = new Set<string>();
+  for (const id of new Set([...inFile.keys(), ...inState.keys()])) {
+    if ((inFile.get(id) ?? 0) <= 1 && (inState.get(id) ?? 0) <= 1) named.add(id);
+  }
+  return named;
+}
+
+function idCounts(list: unknown[]): Map<string, number> {
+  const n = new Map<string, number>();
+  for (const e of list) {
+    const id = idOf(e);
+    if (id !== undefined) n.set(id, (n.get(id) ?? 0) + 1);
+  }
+  return n;
+}
+
+function idOf(entry: unknown): string | undefined {
+  return isRecord(entry) && typeof entry.id === 'string' && entry.id !== '' ? entry.id : undefined;
+}
+
+function carriedLine(path: string, carried: unknown[]): string | undefined {
+  if (carried.length === 0) return undefined;
+  const notObjects = carried.filter(e => !isRecord(e)).length;
+  const unnamed = carried.length - notObjects;
+  const parts = [
+    ...(notObjects > 0 ? [notObjects === 1 ? "1 entry that isn't a lesson (not an object)" : `${notObjects} entries that aren't lessons (not objects)`] : []),
+    ...(unnamed > 0 ? [`${unnamed} ${unnamed === 1 ? 'lesson' : 'lessons'} without a named id (text, not empty, held once at most in the file and once at most on this host)`] : []),
+  ];
+  const one = carried.length === 1;
+  return `[lessons] the shared lessons file ${path} has ${parts.join(' and ')}. ` +
+    `${one ? "It's" : "They're"} kept in the file, and this host doesn't load ${one ? 'it' : 'them'}.`;
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 interface Faults {
-  /** Content that isn't text, or is blank: queries find no words in it, and
-   *  retrieval leaves the lesson out. */
   content: boolean;
-  /** Tags that aren't a list ('missing'), read as none, or a list with
-   *  entries that aren't text ('mixed'), read by the ones that are. */
   tags?: 'missing' | 'mixed';
-  /** A confidence stored outside 0 to 1, as text, or as no number at all:
-   *  what's stored, as a phrase after "with". */
   confidence?: string;
 }
 
@@ -565,25 +804,17 @@ function faultsOf(l: StoredLesson): Faults | undefined {
   return content || tags || confidence ? { content, ...(tags ? { tags } : {}), ...(confidence ? { confidence } : {}) } : undefined;
 }
 
-/** A stored confidence as a number: a number as it is, text that holds a
- *  number as that number, and anything else, blank text included, as NaN. */
 function confidenceValue(c: unknown): number {
   if (typeof c === 'number') return c;
   if (typeof c === 'string' && c.trim() !== '') return Number(c);
   return NaN;
 }
 
-/** A confidence as queries, lists and retrieval rank and filter by it: one
- *  outside 0 to 1 counts as the nearer end, and one that isn't a number as
- *  0. A lesson stored with 85 ranks as 1, the top of the range, with every
- *  lesson stored at 1, rather than as 85. */
 function rankedConfidence(c: unknown): number {
   const v = confidenceValue(c);
   return Number.isNaN(v) ? 0 : Math.min(1, Math.max(0, v));
 }
 
-/** What's wrong with a stored confidence, as a phrase after "with", or
- *  nothing when it's a number from 0 to 1. */
 function confidenceFault(c: unknown): string | undefined {
   const v = confidenceValue(c);
   const inRange = v >= 0 && v <= 1;
@@ -593,7 +824,6 @@ function confidenceFault(c: unknown): string | undefined {
   return inRange ? asStored : `${asStored}, outside 0 to 1`;
 }
 
-/** What a lesson is stored with, as a phrase after "stored". */
 function storedPhrase(f: Faults): string {
   const missing = [...(f.content ? ['content'] : []), ...(f.tags === 'missing' ? ['tags'] : [])];
   return [
@@ -603,21 +833,16 @@ function storedPhrase(f: Faults): string {
   ].join(', and ');
 }
 
-/** What an update gives to fix it, and whether deprecating would do too. */
 function fixPhrase(f: Faults): { give: string; orDeprecate: boolean } {
   const fields = f.content && f.tags ? ['its content and tags'] : f.content ? ['its content'] : f.tags ? ['its tags'] : [];
   const confidence = f.confidence ? ['a confidence from 0 to 1'] : [];
   return { give: [...fields, ...confidence].join(', and '), orDeprecate: fields.length > 0 };
 }
 
-/** The lesson a call's id names: only an id that's non-empty text names
- *  one. A call without an id used to find the first lesson stored without
- *  one, since undefined === undefined. */
 function findLesson(lessons: StoredLesson[], id: unknown): StoredLesson | undefined {
   return idProblem(id) ? undefined : lessons.find(l => l.id === id);
 }
 
-/** Why a call's id can't name a lesson, if it can't. */
 function idProblem(id: unknown): string | undefined {
   if (id === undefined) return 'id is missing: give the lesson\'s id';
   if (id === '') return 'id is empty: give the lesson\'s id';
@@ -625,8 +850,6 @@ function idProblem(id: unknown): string | undefined {
   return undefined;
 }
 
-/** Why no call can name a stored lesson, as a phrase after "stored", if none
- *  can: lesson tools find a lesson by an id that's non-empty text. */
 function idFault(l: StoredLesson): string | undefined {
   if (l.id === undefined) return 'without an id';
   if (l.id === '') return 'with an empty id';
@@ -634,9 +857,6 @@ function idFault(l: StoredLesson): string | undefined {
   return undefined;
 }
 
-/** What the agent's list and query say a stored lesson needs, if anything.
- *  A lesson no call can name gets only that, since no lesson tool can act on
- *  its other faults. */
 function needsFix(l: StoredLesson): string | undefined {
   const unnamed = idFault(l);
   if (unnamed) return `Stored ${unnamed}, so no lesson tool can name it.`;
@@ -646,18 +866,12 @@ function needsFix(l: StoredLesson): string | undefined {
   return `Stored ${storedPhrase(f)}: give ${give} with lessons--update${orDeprecate ? ', or deprecate this lesson' : ''}.`;
 }
 
-/** The line that gives a stored lesson's mark to whoever runs the host,
- *  once per load: the agent's words, naming the lesson by its id, or as "a
- *  lesson" when no call can name it. */
 function loadLine(l: StoredLesson): string | undefined {
   const mark = needsFix(l);
   if (!mark) return undefined;
   return `[lessons] ${idFault(l) ? 'a lesson' : `lesson ${JSON.stringify(l.id)}`}: ${mark}`;
 }
 
-/** Why boost or demote leaves a lesson as it is: one whose stored confidence
- *  is outside 0 to 1 or isn't a number has no value to start from, and one
- *  taken from its rank would quietly decide it. */
 function adjustRefusal(l: StoredLesson, verb: 'boost' | 'demote'): string | undefined {
   const fault = confidenceFault(l.confidence);
   const v = confidenceValue(l.confidence);
@@ -667,11 +881,6 @@ function adjustRefusal(l: StoredLesson, verb: 'boost' | 'demote'): string | unde
     `confidence to ${verb} from. Give it one from 0 to 1 with lessons--update, then ${verb} it.`;
 }
 
-/** A stored lesson as every reader sees it: content it lacks reads as empty,
- *  of its tags and its evidence only the text entries count (evidence stored
- *  as one value counts as a list of that one), and its confidence is the one
- *  it's ranked by. The stored record isn't changed, so it stays as stored
- *  until someone updates it. */
 function readable(l: StoredLesson): Lesson {
   if (typeof l.content === 'string' && isTextList(l.tags) && isTextList(l.evidence) && !confidenceFault(l.confidence)) {
     return l as Lesson;
@@ -691,13 +900,10 @@ function isTextList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(t => typeof t === 'string');
 }
 
-/** Stored evidence as a list: a list as it is, a lone value as a list of
- *  that one, and none when nothing is stored. */
 function storedEvidence(value: unknown): unknown[] {
   return value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
 }
 
-/** The text entries of a list, or none when it isn't one. */
 function textEntries(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((t): t is string => typeof t === 'string') : [];
 }
@@ -706,16 +912,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** What's wrong with the fields a create or update gives, each named with the
- *  value given. create needs content and tags; update takes any of them. */
 function inputProblems(
   input: { content?: unknown; tags?: unknown; confidence?: unknown; evidence?: unknown },
   isCreate: boolean,
 ): string[] {
   const problems: string[] = [];
   const textList = (value: unknown) => Array.isArray(value) && value.every(t => typeof t === 'string');
-  // A field left out keeps its value on update; null is a value, and not
-  // one any field takes.
   const orKeep = (what: string) => (isCreate ? '' : `, or leave it out to keep the current ${what}`);
   if (input.content === undefined) {
     if (isCreate) problems.push('content is missing: give the lesson as text');
@@ -739,8 +941,6 @@ function inputProblems(
   return problems;
 }
 
-/** An update, deprecate, boost or demote whose id matches no lesson, with
- *  any other problem in the call named beside it. */
 function notFound(verb: 'updated' | 'deprecated' | 'boosted' | 'demoted', id: unknown, also?: string): ToolResult {
   const which = idProblem(id) ?? `no lesson has the id ${shown(id)}`;
   return {

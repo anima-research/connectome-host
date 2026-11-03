@@ -1,15 +1,19 @@
-// Packs connectome-host as `npm publish` packs it, installs the tarball
-// alone into an empty directory with its dependencies from the registry, as
-// `npm install @animalabs/connectome-host` does with the npm on PATH, and
-// runs it there under bun. That npm must run a dependency's install scripts,
-// as npm 10 and 11 do, so the postinstall builds the Web UI: npm 12 and bun skip
-// them by default, so their installs have no Web UI, and under npm 12 this
-// check fails at its Web UI step. It checks:
-//   1. the Web UI built: dist/web/index.html is in the installed package;
+// Packs connectome-host as `npm publish` packs it, with the Web UI this tree
+// has built (package.json's `files` lists dist/web), installs the tarball
+// alone into an empty directory with its dependencies from the registry, and
+// runs it there under bun. The install runs no install scripts, as npm 12
+// and bun install by default, so a dependency that needs its install script
+// to work fails here as it would for them. Build the Web UI first
+// (`npm run build:web:ci`), and run it from the repository root. It checks:
+//   1. the package carries the Web UI, dist/web/index.html and every local
+//      file its quoted src and href attributes name, and tsconfig.json, with
+//      which a consumer typechecks the TypeScript source the package ships;
 //   2. `bun build` resolves src/index.ts's static imports, and its dynamic
 //      ones with a literal specifier, in the installed tree, on paths a run
 //      doesn't reach too (a recipe extension, loaded by a computed path, isn't
-//      among them);
+//      among them), and discord.js resolves from the installed
+//      @animalabs/agent-framework, which loads it by require, out of
+//      `bun build`'s reach;
 //   3. @opentui/core loads with its native package for this platform, which
 //      it imports by a computed path that `bun build` can't follow;
 //   4. the README's offline smoke run, recipes/mock-test.json in batch mode,
@@ -17,38 +21,29 @@
 //      so no credentials and no provider call. It must exit 0, taking the
 //      message it was sent and then printing the queued reply, which carries
 //      a nonce of this run.
-// A file missing from the package, or a dependency only devDependencies
-// supplied, then fails here, before the release is published, and not for
-// whoever installs it. The publish workflow runs it in a job of its own,
-// without the publish credential, since install scripts run here; to check
-// by hand, run it from the repository root, for example before
-// `git push --follow-tags`. npm pack packs the working tree, so it warns when
-// that differs from HEAD, where the publish workflow packs a clean checkout.
+// npm pack packs the working tree, so it warns when that differs from HEAD.
 // A failed install is tried again, three attempts in all,
-// PACK_INSTALLS_ALONE_RETRY_DELAY_MS apart (default 15000), to get past a
-// registry blip; one that runs out of time isn't.
-// PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS and
+// PACK_INSTALLS_ALONE_RETRY_DELAY_MS apart (default 15000); one that runs out
+// of time isn't. PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS and
 // PACK_INSTALLS_ALONE_SMOKE_TIMEOUT_MS set the install's and the smoke run's
-// limits in milliseconds (defaults 900000 and 120000).
+// limits in milliseconds (defaults 900000 and 120000); npm pack has the
+// install's.
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
+import { CheckError, TimeoutError, hostStarts, run } from "./lib/host-starts.mjs";
 
 const ENTRY = "src/index.ts";
-const SMOKE_RECIPE = "recipes/mock-test.json";
-const SMOKE_MESSAGE = "pack-installs-alone: hello";
+// agent-framework (0.31.0 on) loads discord.js by require when a host makes its first DiscordJsClient
+// (src/modules/discord/discord-js-client.ts), so `bun build` of the entry no longer reaches it.
+const LAZY = { from: "@animalabs/agent-framework", spec: "discord.js" };
 const WEB_UI = "dist/web/index.html";
-// Loads its native package for this platform by a computed import.
-const NATIVE = "@opentui/core";
 const INSTALL_ATTEMPTS = 3;
 const BUILD_TIMEOUT_MS = 5 * 60_000;
 const MAX_BUFFER = 64 * 1024 * 1024;
 
-class CheckError extends Error {}
-
-/** A whole number of milliseconds from the environment, or `fallback`. */
 function millis(name, fallback, zeroAllowed = false) {
   const value = process.env[name];
   if (value === undefined) return fallback;
@@ -58,26 +53,46 @@ function millis(name, fallback, zeroAllowed = false) {
   return Number(value);
 }
 
-/** The working tree's changes from HEAD, as git lists them, or none outside
- *  a git checkout. */
 function changesFromHead() {
   const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
   if (status.status !== 0) return [];
   return status.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
 }
 
-class TimeoutError extends CheckError {}
+function webAssets(html) {
+  const refs = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"'#?]*)/gi)].map((match) => match[1]);
+  return [...new Set(refs.filter((ref) => ref !== "" && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)).map((ref) => ref.replace(/^\.?\//, "")))];
+}
 
-/** Runs a command, its output going to ours. A failure throws `message`,
- *  and running out of time says that `what` didn't finish. */
-function run(file, args, options, what, message) {
-  try {
-    execFileSync(file, args, { stdio: ["ignore", "inherit", "inherit"], ...options });
-  } catch (error) {
-    if (error?.code === "ENOENT") throw new CheckError(`couldn't run ${file}: it isn't on PATH.`);
-    if (error?.code === "ETIMEDOUT") throw new TimeoutError(`${what} didn't finish within ${options.timeout / 1000} s.`);
-    throw new CheckError(message);
+function lazyResolves(installed, root, subject) {
+  const pkg = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
+  if (pkg.dependencies?.[LAZY.from] === undefined) return false;
+  const real = realpathSync(root);
+  const inside = (path) => path.startsWith(root + sep) || path.startsWith(real + sep);
+  const lookups = (createRequire(join(installed, "package.json")).resolve.paths(LAZY.from) ?? []).filter(inside);
+  const from = lookups.map((dir) => join(dir, ...LAZY.from.split("/"))).find((dir) => existsSync(join(dir, "package.json")));
+  if (from === undefined) {
+    throw new CheckError(`${LAZY.from} isn't in the installed tree of ${subject}, though its package.json depends on it.`);
   }
+  let found;
+  try {
+    found = createRequire(join(from, "package.json")).resolve(LAZY.spec);
+  } catch {
+    found = undefined;
+  }
+  if (found === undefined || !inside(found)) {
+    throw new CheckError(
+      `${LAZY.spec} doesn't resolve from the installed ${LAZY.from} in ${subject}` +
+        `${found === undefined ? "" : ` without leaving the install: it resolves only to ${found}`}: ${LAZY.from} loads ` +
+        `it by require when the host makes its first Discord client, which \`bun build\` of ${ENTRY} doesn't reach, so ` +
+        "a host with a Discord module would fail there. A dependency missing from the install does that.",
+    );
+  }
+  return true;
+}
+
+function some(paths) {
+  return `${paths.slice(0, 5).join(", ")}${paths.length > 5 ? ", …" : ""}`;
 }
 
 function main() {
@@ -88,9 +103,14 @@ function main() {
   if (changed.length > 0) {
     console.error(
       `pack-installs-alone: warning: the working tree differs from HEAD in ${changed.length} ` +
-        `${changed.length === 1 ? "path" : "paths"} (${changed.slice(0, 5).join(", ")}${changed.length > 5 ? ", …" : ""}). ` +
+        `${changed.length === 1 ? "path" : "paths"} (${some(changed)}). ` +
         "npm pack packs the working tree, so this run checks whichever of them the package includes, where the " +
         "publish workflow packs a clean checkout.",
+    );
+  }
+  if (!existsSync(WEB_UI)) {
+    throw new CheckError(
+      `${WEB_UI} isn't in this tree: build the Web UI first (npm run build:web:ci), since the package carries it built.`,
     );
   }
   let npmVersion;
@@ -110,10 +130,13 @@ function main() {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "inherit"],
         maxBuffer: MAX_BUFFER,
+        timeout: installTimeoutMs,
+        killSignal: "SIGKILL",
       });
     } catch (error) {
       if (error?.code === "ENOENT") throw new CheckError("couldn't run npm: it isn't on PATH.");
       process.stderr.write(error?.stdout ?? out);
+      if (error?.code === "ETIMEDOUT") throw new CheckError(`npm pack didn't finish within ${installTimeoutMs / 1000} s.`);
       throw new CheckError("npm pack failed (its output is above).");
     }
     // npm 11 prints an array of records, npm 12 an object keyed by name.
@@ -124,11 +147,12 @@ function main() {
     } catch {
       records = [];
     }
-    if (records.length !== 1 || typeof records[0]?.filename !== "string") {
+    if (records.length !== 1 || typeof records[0]?.filename !== "string" || !Array.isArray(records[0]?.files)) {
       process.stderr.write(out);
-      throw new CheckError("npm pack --json didn't print one record with a filename (its output is above).");
+      throw new CheckError("npm pack --json didn't print one record with a filename and its files (its output is above).");
     }
     const packed = records[0];
+    const files = packed.files.map((file) => file.path);
     const tarball = join(work, packed.filename);
     const dir = join(work, "install");
     mkdirSync(dir);
@@ -137,10 +161,7 @@ function main() {
       try {
         run(
           "npm",
-          // In the foreground, so the postinstall's warning reaches this
-          // check's output: a Web UI build that fails warns and exits 0, and
-          // npm 10 doesn't show a script's output when it exits 0.
-          ["install", "--no-audit", "--no-fund", "--no-package-lock", "--foreground-scripts", tarball],
+          ["install", "--no-audit", "--no-fund", "--no-package-lock", "--ignore-scripts", tarball],
           { cwd: dir, timeout: installTimeoutMs },
           `the install of ${packed.filename}`,
           `${packed.filename} didn't install on its own into an empty directory, in ${INSTALL_ATTEMPTS} attempts ` +
@@ -149,8 +170,6 @@ function main() {
         );
         break;
       } catch (error) {
-        // Running out of time isn't a blip: retried, it would leave npm's
-        // children writing into the tree the next attempt starts from.
         const final = !(error instanceof CheckError) || error instanceof TimeoutError;
         if (final || attempt === INSTALL_ATTEMPTS) throw error;
         console.error(`pack-installs-alone: the install failed (attempt ${attempt} of ${INSTALL_ATTEMPTS}); trying again.`);
@@ -162,9 +181,23 @@ function main() {
 
     if (!existsSync(join(installed, WEB_UI))) {
       throw new CheckError(
-        `the installed ${packed.filename} has no ${WEB_UI}: its postinstall didn't build the Web UI (its warning, if any, ` +
-          "is above). web/ left out of the package does that, a Web UI build that fails, or an npm that skips a " +
-          `dependency's install scripts, as npm 12 does by default (this is npm ${npmVersion}).`,
+        `the installed ${packed.filename} has no ${WEB_UI}, though this tree has it: package.json's files must list ` +
+          `${dirname(WEB_UI)}, so that npm 12 and bun installs, which run no install scripts, get the Web UI.`,
+      );
+    }
+    const unshipped = webAssets(readFileSync(join(installed, WEB_UI), "utf8")).filter(
+      (asset) => !existsSync(join(installed, dirname(WEB_UI), asset)),
+    );
+    if (unshipped.length > 0) {
+      throw new CheckError(
+        `the installed ${packed.filename}'s ${WEB_UI} names ${some(unshipped)}, which ${unshipped.length === 1 ? "isn't" : "aren't"} ` +
+          `in the package: package.json's files must list all of ${dirname(WEB_UI)}, or the Web UI is a blank page.`,
+      );
+    }
+    if (!existsSync(join(installed, "tsconfig.json"))) {
+      throw new CheckError(
+        `the installed ${packed.filename} has no tsconfig.json: package.json's files must list it, since the package ships ` +
+          "its TypeScript source and a consumer typechecks that with it, as connectome-smoke's published lane does.",
       );
     }
 
@@ -177,66 +210,12 @@ function main() {
         "A file missing from the package, or a dependency only devDependencies supplied, does that.",
     );
 
-    const pkg = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
-    const native = [pkg.dependencies, pkg.optionalDependencies, pkg.peerDependencies].some((deps) => deps?.[NATIVE] !== undefined);
-    if (native) {
-      run(
-        "bun",
-        ["-e", `await import(${JSON.stringify(NATIVE)})`],
-        { cwd: installed, stdio: ["ignore", "ignore", "inherit"], timeout: BUILD_TIMEOUT_MS },
-        `loading ${NATIVE}`,
-        `${NATIVE} doesn't load in the installed ${packed.filename} (bun's output is above): its native package ` +
-          `for this platform (${process.platform}-${process.arch}) is missing or doesn't load.`,
-      );
-    }
-
-    // The smoke run's recipe, with the Web UI off (batch mode keeps a Web UI
-    // serving after the run, and nothing here would end it), and the mock
-    // agent's reply queued, with a nonce, so the check reads this run's reply.
-    const reply = `pack-installs-alone: reply ${randomBytes(4).toString("hex")}`;
-    let recipe;
-    try {
-      recipe = JSON.parse(readFileSync(join(installed, SMOKE_RECIPE), "utf8"));
-    } catch (error) {
-      throw new CheckError(`the installed ${packed.filename} has no readable ${SMOKE_RECIPE}: ${error.message}.`);
-    }
-    recipe.modules = { ...recipe.modules, webui: false };
-    recipe.agent = { ...recipe.agent, mock: { echoMode: false, responseQueue: [reply] } };
-    const smokeRecipe = join(work, "smoke-recipe.json");
-    writeFileSync(smokeRecipe, JSON.stringify(recipe));
-    const smoke = spawnSync("bun", [join(installed, ENTRY), smokeRecipe], {
-      cwd: dir,
-      input: `${SMOKE_MESSAGE}\n`,
-      encoding: "utf8",
-      timeout: smokeTimeoutMs,
-      maxBuffer: MAX_BUFFER,
-      env: { ...process.env, DATA_DIR: join(work, "data") },
-    });
-    process.stdout.write(smoke.stdout ?? "");
-    process.stderr.write(smoke.stderr ?? "");
-    const smokeRun = `the offline smoke run (${SMOKE_RECIPE} in batch mode, Web UI off) of the installed ${packed.filename}`;
-    if (smoke.error?.code === "ETIMEDOUT") {
-      throw new CheckError(`${smokeRun} didn't finish within ${smokeTimeoutMs / 1000} s (its output is above).`);
-    }
-    if (smoke.error?.code === "ENOENT") throw new CheckError("couldn't run bun: it isn't on PATH.");
-    if (smoke.error) throw new CheckError(`${smokeRun} failed: ${smoke.error.message}.`);
-    if (smoke.status !== 0) {
-      throw new CheckError(`${smokeRun} exited ${smoke.status ?? `on ${smoke.signal}`} (its output is above).`);
-    }
-    // Batch mode prints each line it takes as '> line', and the agent's reply
-    // after it.
-    const lines = (smoke.stdout ?? "").split("\n");
-    const taken = lines.indexOf(`> ${SMOKE_MESSAGE}`);
-    if (taken === -1 || !lines.slice(taken + 1).some((line) => line.trim() === reply)) {
-      throw new CheckError(
-        `${smokeRun} exited 0, but the mock agent's queued reply, '${reply}', didn't follow '> ${SMOKE_MESSAGE}' ` +
-          "(its output is above).",
-      );
-    }
+    const lazy = lazyResolves(installed, dir, packed.filename);
+    const { native } = hostStarts({ root: installed, cwd: dir, work, subject: `the installed ${packed.filename}`, smokeTimeoutMs });
     console.log(
-      `${packed.filename} (${packed.entryCount} files) installs on its own with npm ${npmVersion}; the Web UI built, ` +
-        `${ENTRY}'s imports resolve${native ? `, ${NATIVE} loads` : ""}, and the ` +
-        "offline smoke run answered.",
+      `${packed.filename} (${files.length} files) installs on its own with npm ${npmVersion}, running no install ` +
+        `scripts; it carries the Web UI and tsconfig.json, ${ENTRY}'s imports resolve` +
+        `${lazy ? `, ${LAZY.spec} resolves from ${LAZY.from}` : ""}${native ? ", @opentui/core loads" : ""}, and the offline smoke run answered.`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });

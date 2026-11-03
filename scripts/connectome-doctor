@@ -5,8 +5,8 @@ Usage:  connectome-doctor [INSTALL_DIR] [UNIT]
         connectome-doctor ~/mythos-cm mythos-agent.service
 
 Prints a pipeline ladder: the last-seen timestamp at every stage an inbound
-event passes through. The first stage whose timestamp lags its upstream is
-where events are dying.
+event passes through (for delivery, the agent log's last write). The first
+stage whose timestamp lags its upstream is where events are dying.
 
   discord event -> mcpl forward -> chronicle ingest (gate verdict)
   -> inference (llm-call) -> routeSpeech delivery
@@ -45,7 +45,6 @@ def sh(cmd, timeout=15):
 
 
 def age(ts):
-    """Humanize seconds-since-epoch -> '3m ago' / 'never'."""
     if ts is None:
         return "never"
     d = NOW - ts
@@ -89,19 +88,14 @@ def tail_bytes(path, n):
 
 
 def last_matching_line(path, pattern, chunk=2_000_000):
-    """Last line matching regex `pattern`, scanning only the file tail."""
     data = tail_bytes(path, chunk).decode("utf-8", "replace")
     matches = [ln for ln in data.splitlines() if re.search(pattern, ln)]
     return matches[-1] if matches else None
 
 
-# ---------------------------------------------------------------------------
-# 0. Arguments / discovery
-# ---------------------------------------------------------------------------
 install_dir = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "~/mythos-cm")
 unit = sys.argv[2] if len(sys.argv) > 2 else None
 if unit is None:
-    # Guess: <name>-agent.service from install dir like ~/mythos-cm
     base = os.path.basename(install_dir.rstrip("/")).replace("-cm", "")
     unit = f"{base}-agent.service"
 
@@ -111,9 +105,6 @@ logs_dir = os.path.join(install_dir, "logs")
 print(f"connectome-doctor — {install_dir}  ({unit})")
 print("=" * 72)
 
-# ---------------------------------------------------------------------------
-# 1. Service
-# ---------------------------------------------------------------------------
 props = {}
 for line in sh(
     f"systemctl --user show {unit} -p ActiveState -p SubState -p NRestarts "
@@ -138,9 +129,6 @@ if active not in ("active", "running"):
 if start_ts and NOW - start_ts < 300:
     warn(f"service started only {age(start_ts)} — recent restart/crash?")
 
-# ---------------------------------------------------------------------------
-# 2. Disk
-# ---------------------------------------------------------------------------
 df = sh("df -h / | tail -1").split()
 if len(df) >= 5:
     pct = int(df[4].rstrip("%"))
@@ -149,9 +137,6 @@ if len(df) >= 5:
     if pct >= 88:
         warn(f"disk at {pct}% — agents corrupt stores when writes fail (see 2026-07-02)")
 
-# ---------------------------------------------------------------------------
-# 3. Journal staleness + real log location
-# ---------------------------------------------------------------------------
 jlast = sh(f"journalctl --user -u {unit} -q --no-pager -n 1 -o short-unix 2>/dev/null | tail -1")
 jts = None
 m = re.match(r"^(\d+)\.\d+", jlast)
@@ -169,12 +154,8 @@ print(f"journal    : last entry {age(jts)}" + (f"  {C_DIM}(stdout/err -> {agent_
 if jts is None or (start_ts and jts < start_ts):
     warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}")
 
-# ---------------------------------------------------------------------------
-# 4. Pipeline ladder
-# ---------------------------------------------------------------------------
-stages = []  # (name, ts, detail)
+stages = []
 
-# 4a. discord-mcpl: last gateway event seen / forwarded / dropped
 dbg = os.path.join(data_dir, "discord-mcpl-debug.log")
 enter_ts = fwd_ts = None
 enter_detail = fwd_detail = ""
@@ -202,7 +183,6 @@ if os.path.exists(dbg):
 stages.append(("discord event seen", enter_ts, enter_detail))
 stages.append(("mcpl forward to host", fwd_ts, fwd_detail))
 
-# 4b. chronicle ingest: last "messages" append in records.log (byte-encoded!)
 rec_ts = None
 rec_detail = ""
 records = None
@@ -219,7 +199,6 @@ if records:
         last_msg = mm
     if last_msg:
         rec_ts = int(last_msg.group(1)) / 1_000_000  # store stamps in microseconds
-        # decode the byte-array payload to recover metadata (triggered flag etc.)
         arr = re.search(r"\[([0-9,]{40,})\]", last_msg.group(0))
         if arr:
             try:
@@ -231,44 +210,98 @@ if records:
                               + (f"  #{cm.group(1)}" if cm else "")
                               + (f"  by {pm.group(1)}" if pm else ""))
                 if trig:
-                    rec_detail = rec_detail  # noted below vs inference lag
+                    rec_detail = rec_detail
                 globals()["_last_ingest_triggered"] = trig
             except Exception:
                 pass
 stages.append(("chronicle ingest (+gate)", rec_ts, rec_detail))
 
-# 4c. inference: newest llm-calls file, last record stop_reason
+def err_text(err):
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("name") or "")
+    return "" if err is None else str(err)
+
+
 llm_ts = None
 llm_detail = ""
+turn_ts = None
+llm_window_from = None
+llm_written_at = None
+llm_unsure = False
+LLM_WINDOW = 30_000_000
 llm_files = sorted(
     (f for f in os.listdir(data_dir) if f.startswith("llm-calls.")),
     key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
 )
 if llm_files:
     newest = os.path.join(data_dir, llm_files[-1])
-    llm_ts = os.path.getmtime(newest)
-    # last complete JSON line from tail (lines can be multi-MB)
-    raw = tail_bytes(newest, 30_000_000).decode("utf-8", "replace")
-    for ln in reversed(raw.splitlines()):
+    size = os.path.getsize(newest)
+    llm_written_at = os.path.getmtime(newest)
+    where = "the newest file's last 30 MB" if size > LLM_WINDOW + 1 else "the newest file"
+    # Split at newlines only: splitlines() also splits at U+2028, U+2029 and
+    # U+0085, which JSON.stringify leaves unescaped inside a row.
+    raw = tail_bytes(newest, LLM_WINDOW + 1).decode("utf-8", "replace")
+    lines = raw.split("\n")
+    if size > LLM_WINDOW + 1:
+        lines = lines[1:]
+    last = lines.pop() if lines else ""
+    incomplete = False
+    if last.strip():
+        try:
+            json.loads(last)
+            lines.append(last)
+        except Exception:
+            incomplete = True
+    call = None
+    pokes = 0
+    unreadable = 0
+    before_ingest = rec_ts is not None and llm_written_at < rec_ts - 120
+    llm_unsure = incomplete and not before_ingest
+    for ln in reversed(lines):
         ln = ln.strip()
         if not ln.startswith("{"):
             continue
         try:
             r = json.loads(ln)
         except Exception:
+            unreadable += 1
+            llm_unsure = llm_unsure or not before_ingest
             continue
-        resp = r.get("rawResponse") or {}
+        r_ts = parse_iso(str(r.get("timestamp", "")))
+        if rec_ts is not None and r_ts is not None and r_ts < rec_ts - 120:
+            before_ingest = True
+        llm_window_from = r_ts or llm_window_from
+        if r.get("kind") == "keepalive":
+            pokes += 1
+            continue
+        if call is None:
+            call = r
+        if r.get("kind") == "stream":
+            turn_ts = parse_iso(str(r.get("timestamp", "")))
+            llm_window_from = None
+            break
+    if call is not None:
+        llm_ts = parse_iso(str(call.get("timestamp", "")))
+        resp = call.get("rawResponse") or {}
         resp = resp.get("response") or resp
         sr = resp.get("stop_reason")
-        err = resp.get("error") or r.get("error")
-        llm_detail = f"stop={sr}" + (f"  {C_RED}err={str(err)[:80]}{C_OFF}" if err else "")
+        err = resp.get("error") or call.get("error")
+        if call.get("type") == "error" or err:
+            llm_detail = f"stop={sr}  {C_RED}err={err_text(err)[:80] or '(no text)'}{C_OFF}"
+        else:
+            llm_detail = f"stop={sr}"
         if sr == "refusal":
             warn("last model response was a REFUSAL — check context contamination "
                  "(see project_mythos: contextBudgetTokens fix)")
-        break
+    else:
+        llm_detail = f"no readable model call in {where}" + (
+            f": {pokes} keepalive poke(s)" if pokes else "")
+    if unreadable:
+        llm_detail += f"  {C_YEL}{unreadable} row(s){' since the last turn' if turn_ts else ''} unreadable{C_OFF}"
+    if incomplete:
+        llm_detail += f"  {C_YEL}last row incomplete (being written, or cut off){C_OFF}"
 stages.append(("inference (llm call)", llm_ts, llm_detail))
 
-# 4d. delivery: last routeSpeech in agent log
 del_ts = None
 del_detail = ""
 if os.path.exists(agent_log):
@@ -299,15 +332,16 @@ for name, ts, detail in stages:
     if ts:
         prev_ts = ts
 
-# triggered ingest but no inference since -> the tonight signature
-if globals().get("_last_ingest_triggered") and rec_ts and (llm_ts is None or llm_ts < rec_ts - 120):
-    warn("a gate-TRIGGERED event was ingested but NO inference followed — "
-         "events are dying between the gate and the model (check inference "
-         "policy drops / budget failures / [diagnostics] dump below)")
+NO_TURN = "NO turn was recorded after it"
+no_turn_after = turn_ts is None or (rec_ts is not None and turn_ts < rec_ts - 120)
+window_from = llm_window_from if llm_window_from is not None else llm_written_at
+turn_unknown = bool(llm_files) and (llm_unsure or (turn_ts is None and (
+    window_from is None or (rec_ts is not None and rec_ts < window_from))))
+if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not turn_unknown:
+    warn(f"a gate-TRIGGERED event was ingested but {NO_TURN} — events may be "
+         "dying between the gate and the model (check inference policy drops / "
+         "budget failures / [diagnostics] dump below)")
 
-# ---------------------------------------------------------------------------
-# 5. Recent failures (agent.log + failures.log)
-# ---------------------------------------------------------------------------
 print()
 fail_lines = []
 for path in (agent_log, os.path.join(logs_dir, "failures.log")):
@@ -325,9 +359,6 @@ if fail_lines:
 else:
     print(f"recent failures: {C_GRN}none found{C_OFF} in {agent_log}")
 
-# ---------------------------------------------------------------------------
-# 6. Live gate dump (SIGUSR2)
-# ---------------------------------------------------------------------------
 if pid not in ("0", "", None) and active in ("active", "running"):
     before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
     sh(f"kill -USR2 {pid} 2>/dev/null")
@@ -336,7 +367,8 @@ if pid not in ("0", "", None) and active in ("active", "running"):
     if os.path.exists(agent_log):
         with open(agent_log, "rb") as f:
             f.seek(before)
-            for ln in f.read().decode("utf-8", "replace").splitlines():
+            # Split at newlines only: the dump is JSON, which can hold U+2028.
+            for ln in f.read().decode("utf-8", "replace").split("\n"):
                 if "[diagnostics]" in ln:
                     dump = ln
     print()
@@ -350,9 +382,7 @@ if pid not in ("0", "", None) and active in ("active", "running"):
             if g.get("sleepUntil", 0) > NOW * 1000:
                 warn(f"agent is ASLEEP until {hhmm(g['sleepUntil']/1000)}")
             if d.get("activeStreams"):
-                # a turn is running right now — the "no inference followed"
-                # heuristic is premature; the model is just still thinking.
-                WARNINGS[:] = [w for w in WARNINGS if "NO inference followed" not in w]
+                WARNINGS[:] = [w for w in WARNINGS if NO_TURN not in w]
                 print(f"  {C_GRN}turn in-flight for: {', '.join(d['activeStreams'])}{C_OFF}")
         except Exception:
             pass
@@ -360,9 +390,6 @@ if pid not in ("0", "", None) and active in ("active", "running"):
         print(f"live gate dump: {C_DIM}no [diagnostics] response to SIGUSR2 "
               f"(framework predates the diagnostics patch?){C_OFF}")
 
-# ---------------------------------------------------------------------------
-# 7. Verdict
-# ---------------------------------------------------------------------------
 print()
 if WARNINGS:
     print(f"{C_YEL}=== findings ==={C_OFF}")

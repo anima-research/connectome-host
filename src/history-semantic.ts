@@ -1,8 +1,3 @@
-/**
- * modules.history → HistoryModule options, and the startup guard for
- * `history--semantic_search` (agent-framework#173). Kept out of index.ts so
- * the namespace rule and the guard are unit-testable.
- */
 import type { RecipeModules } from './recipe.js';
 
 /** First agent-framework release whose HistoryModule offers `semantic_search`. */
@@ -59,12 +54,13 @@ export function assertSemanticSearchRegistered(
   );
 }
 
-/** Loopback, Tailscale CGNAT (100.64.0.0/10) or MagicDNS (*.ts.net). */
+const TAILSCALE_IPV6_ULA = /^fd7a:115c:a1e0:/;
+
 export function isLoopbackOrTailnetHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (h === 'localhost' || h.endsWith('.localhost') || h === '::1') return true;
   if (h.endsWith('.ts.net')) return true;
-  if (/^fd7a:115c:a1e0:/.test(h)) return true; // Tailscale IPv6 ULA
+  if (TAILSCALE_IPV6_ULA.test(h)) return true;
   const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
   if (!m) return false;
   const [a, b] = [Number(m[1]), Number(m[2])];

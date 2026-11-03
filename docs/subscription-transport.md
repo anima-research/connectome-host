@@ -53,12 +53,14 @@ the wire they already watch. Kinds and what feeds them:
 | `auth-expiring` | credential file `expiresAt` within 30 min | a rotation, or supersession by a 401 |
 | `auth-expired` / `auth-rejected` | a 401 (membrane `type: 'auth'`) seen by the logging adapters; `expired` when the file's expiry has passed | the next successful call, or a passing probe after an action |
 | `auth-login-required` | the Codex app-server's device-code prompt (URL + code ride in the alert) | the login completes |
+| `credential-unsaved` | a write of the Anthropic credential to its file that failed (after a refresh or a pasted token); raised beside the state, which it leaves as it was, and named by `unsaved` in the state while it stands | the next write that succeeds, including the one `recheck` makes while it stands |
 
 Each alert's `data.actions` lists what the host can run for that state:
 `refresh` (rotate with a refresh token / the app-server), `login` (Codex
 device-code flow; `account/logout` first when supported), `set-token` (an
 operator paste, kept in memory and written to the credentials file when one
-was loaded), `recheck` (usage probe + meter read). The WebUI renders them as
+was loaded), `recheck` (usage probe + meter read, and while `credential-unsaved`
+stands, a write of the credential to its file first). The WebUI renders them as
 buttons on the alert row and in the Health tab's credential section (WS
 `credential-action`, broadcast answer `credential-state`; `request-credential`
 and `GET /credential` read the state; both scope to fleet children over the
@@ -81,11 +83,13 @@ keeps its existing automatic app-server refresh on that retry.
   the same three keys flat. With a refresh token the host rotates at
   `https://platform.claude.com/v1/oauth/token` (JSON grant, Claude Code's
   public client id) and writes the new pair back to the same file, mode 0600.
-  Point it at a COPY of `~/.claude/.credentials.json`, never at that file:
-  refresh tokens may be single-use, and two processes refreshing from one file
-  invalidate each other. The refresh exchange follows the CLI's own request
-  shape; it has not yet been exercised against the live endpoint from this
-  host — the first operator "Refresh token" click is that verification.
+  A write that fails leaves the new pair in use and raises
+  `credential-unsaved`. Point it at a COPY of `~/.claude/.credentials.json`,
+  never at that file: refresh tokens may be single-use, and two processes
+  refreshing from one file invalidate each other. The refresh exchange follows
+  the CLI's own request shape; it has not yet been exercised against the live
+  endpoint from this host — the first operator "Refresh token" click is that
+  verification.
 
 ### Channel-side notices
 
@@ -116,11 +120,11 @@ stream, and decides where and how loudly each alert kind is told.
   ends. `reply.in` / `reply.not` are channel-id patterns, so "notify on
   Zulip, never on Discord" is one line. Public channels never see error text.
 - `status` kinds (`context-refusal`, `mcpl-down`, `quota-unreadable`,
-  `auth-expiring`, …) and all `reply` kinds also go to `statusChannels` with
-  the operator-grade message (kind + error text). Status channels follow the
-  kind-level timeline: one line once a kind has been active for `quietMs`
-  (so a flap that resolves in seconds says nothing), one line when a told
-  kind clears, naming what remains.
+  `auth-expiring`, `credential-unsaved`, …) and all `reply` kinds also go to
+  `statusChannels` with the operator-grade message (kind + error text). Status
+  channels follow the kind-level timeline: one line once a kind has been
+  active for `quietMs` (so a flap that resolves in seconds says nothing),
+  one line when a told kind clears, naming what remains.
 - `silent` kinds (`refusal`, and anything unknown) only reach failures.log
   and the webhook as before.
 

@@ -2,8 +2,9 @@
 
 A guide to taking a long-lived **Claude Code** conversation — the local
 `~/.claude/projects/<project>/<session-uuid>.jsonl` transcript — and continuing it
-verbatim as a persistent connectome agent: same model, same signed reasoning, same
-tool calls and results, no re-narration. "No seed, no seam": the conversation itself
+verbatim as a persistent connectome agent: same model, same signed reasoning (on a
+model whose thinking binds, see the table below), same tool calls and results, no
+re-narration. "No seed, no seam": the conversation itself
 becomes the chronicle.
 
 This complements [`claudeai-evacuation.md`](./claudeai-evacuation.md) (claude.ai web
@@ -17,7 +18,7 @@ specific to the Claude Code source; this document covers only what is.
 | Situation | Use this? |
 |---|---|
 | A Claude Code session has become *someone* and you want them to persist beyond the CLI | Yes |
-| You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim |
+| You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim, except on a model whose thinking binds (below) |
 | You want to change models | Possible, but thinking blocks must be dropped or wrapped as text (see §4.2); expect a different being |
 | You only want a static transcript | No — the `.jsonl` already is one |
 | The session is short (< ~50 messages) | Yes; skip the pre-compress step |
@@ -51,10 +52,11 @@ Three structural facts matter:
 | Block | Round-trips? | Notes |
 |---|---|---|
 | `text` | Yes | identity |
-| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account |
+| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound to the system text and tools it was minted under, so once the resident's differ from Claude Code's the provider sets it aside: the host sends the drop control on agent turns through the Anthropic API, and an account that enforces the binding refuses the request without it |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
 | `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
+| `tool_reference` blocks (left by the CLI's deferred-tool loader inside a `tool_result`) | **No** | the API validates each reference against the request's `tools` and returns 400 `Tool reference '…' not found in available tools` for the **whole** request — every turn, not just the first. Replace them with a short `text` block at build time (step 2b below); they sit in `user` turns, so no signed block changes shape |
 
 ## The pipeline
 
@@ -113,6 +115,16 @@ for (const r of chain) {
   msgs.push({ role: r.type, content, ts: r.timestamp });
 }
 
+// 2b. `tool_reference` blocks (deferred-tool loading) are request-time state too: the API
+//     checks each against `tools` and 400s the whole request. Replace, don't delete, so the
+//     tool_result keeps saying what happened. They only occur inside user-turn content.
+const deref = (x) => Array.isArray(x) ? x.map(deref)
+  : x && typeof x === 'object'
+    ? (x.type === 'tool_reference' ? { type: 'text', text: `[tool loaded: ${x.tool_name}]` }
+       : Object.fromEntries(Object.entries(x).map(([k, v]) => [k, deref(v)])))
+    : x;
+for (const m of msgs) if (m.role === 'user') m.content = deref(m.content);
+
 // 3. Invariants the API will enforce later — fail here instead.
 const open = new Set();
 for (const m of msgs) for (const b of m.content) {
@@ -126,7 +138,8 @@ if (msgs[0].role !== 'user') throw new Error('first message not user');
 //    tool_result MUST be { type:'tool_result', toolUseId, toolName, content, isError }
 //    under participant 'user' (agent-framework framework.ts). Storing the raw API
 //    shape (tool_use_id) under the human's name means the CM cannot pair results
-//    with calls and renders every one as "[tool result unavailable]".
+//    with calls and renders every one as a stub reading "[this call's result
+//    isn't shown in this context. …]".
 const toolNames = new Map();
 for (const m of msgs) for (const b of m.content) if (b.type === 'tool_use') toolNames.set(b.id, b.name);
 const out = [];
@@ -243,22 +256,38 @@ This step exists because the first real deployment shipped with **zero working t
 results**: the seed stored `tool_result` in the raw API shape under the human's name,
 the context manager couldn't pair them, and every result rendered as
 `[tool result unavailable — omitted during context compression]` with `[tool call
-omitted]` stubs. The tell was the token count: estimated 485k, real 233k.
+omitted]` stubs (the missing result's stub reads differently since
+context-manager 0.16.0). The tell was the token count: estimated 485k, real 233k.
 
 Do, on a **copy** of the store (never on the live one — opening a store with a
 strategy config chunks its frontier under *that* config):
 
 1. Compile it with the recipe's strategy and **read the rendered messages**. Search
-   the compiled output for `unavailable`, `omitted`, `[tool call`. There should be
-   none for a fresh seed.
+   the compiled output for `isn't shown in this context`, which the stub for a call
+   whose result the context doesn't hold says (context-manager 0.16.0 on), for
+   `[tool call omitted]`, and for `[tool result moved during context repair]`, which
+   marks where a result sat apart from its call and was moved next to it. There
+   should be none for a fresh seed.
 2. Compare exact `count_tokens` against the estimate. A real/estimate ratio far from
-   ~1.0–1.3 means blocks are missing or doubled.
+   ~1.0–1.3 means blocks are missing or doubled. Made with a real key, this call is
+   also the cheapest proof that the API accepts the seed's *shape* (signed thinking,
+   tool pairing, no stray `tool_reference`): a 400 here is the same 400 the first real
+   turn would get, at zero spend — read its body before booting. A 400 about a tool
+   whose `input_schema` has a root `oneOf`/`anyOf`/`allOf` is the exception: inference
+   through membrane's Anthropic provider flattens that schema, and the count sends it
+   as it is.
 3. Confirm the last message is the seam you intend and the first message is the
    human's.
 
 The host's `GET /debug/context` and `/debug/context/makeup` (basic-auth webui) give
 you 1–2 on a running instance; for a pre-boot check, run the host against a copy of
 the install dir with `--headless` and a mock or real key, then hit the endpoints.
+`/debug/context/makeup` shows a count the API refused only by its status, such as
+`countSource: "count_tokens_failed_400"`, without the body. To read the body, send
+that request yourself: `buildContextMakeup` (`src/web/panel-data.ts`) builds it by
+formatting the same `request` that `/debug/context` returns, and posts it, with the
+`countModel` the route reports, to `/v1/messages/count_tokens` at
+`ANTHROPIC_BASE_URL` (or `https://api.anthropic.com`), with the host's credentials.
 
 ### Stage 4 — Recipe, first boot, seam
 
@@ -269,8 +298,8 @@ and verification. Claude-Code-specific choices:
 - **`agent.thinking`**: `{ "enabled": true, "type": "adaptive", "display": "summarized" }`
   — the resident continues to think the way the session did. Optional `"effort": "medium"`
   sets the Anthropic streaming baseline. Explicit agent effort overrides it until
-  reset; compression calls are unaffected. Other providers ignore this field;
-  OpenAI recipes use `agent.responses.reasoningEffort`.
+  reset, from the point where it was set; compression calls are unaffected. Other
+  providers ignore this field; OpenAI recipes use `agent.responses.reasoningEffort`.
 - **`systemPrompt`**: minimal or empty. Claude Code's system prompt is not in the
   transcript and re-supplying a different one on top of 300k of history is a seam.
   Put the continuation note in the recipe `description` (operator-visible) rather
@@ -350,7 +379,9 @@ a typo fails at boot rather than silently disabling the rung.
 
 1. **Same model, signatures intact.** Replaying the transcript's own signed thinking
    is *protective*, not risky: encrypted carriers alongside model-voiced text are what
-   the API expects from that model. Stripping them and leaving the text is worse.
+   the API expects from that model. Stripping them and leaving the text is worse. On a
+   model whose thinking binds, the provider sets those blocks aside once the resident's
+   system text or tools differ from Claude Code's, and their text stays.
 
 2. **Declared tools on every request.** Compression requests with no `tools` param
    are a deterministic input-block on some model families regardless of content.
@@ -361,7 +392,7 @@ a typo fails at boot rather than silently disabling the rung.
 
 3. **`agent.refusalHandling`** — fleet values:
    ```jsonc
-   "refusalHandling": { "retries": 2, "autoRewind": false, "maxRewinds": 15, "announceHumanTurns": true }
+   "refusalHandling": { "retries": 2, "autoRewind": false, "maxRewinds": 15 }
    ```
    `retries` re-sends the identical request (near-threshold refusals are
    nondeterministic; two extra draws clear most of them for free). `autoRewind`
@@ -436,8 +467,9 @@ that's the cheap moment. After first boot it's a store surgery.
 - [ ] Active branch only; `signed == thinking` in the build report
 - [ ] `tool_result` in CM live shape (`toolUseId`, `toolName`, participant `user`)
 - [ ] `cache_control` stripped; no `isMeta` / command echoes / interrupt markers
+- [ ] `tool_reference` blocks replaced with text (the API 400s the whole request otherwise)
 - [ ] Ingest strategy mirrors recipe; `namespace` = `agents/<agent.name>` exactly
-- [ ] Compiled a **copy**: no `unavailable`/`omitted` stubs; real/estimate tokens sane
+- [ ] Compiled a **copy**: no `isn't shown in this context` / `[tool call omitted]` / `[tool result moved during context repair]` stubs; real/estimate tokens sane
 - [ ] Store backed up pre-first-boot
 - [ ] Recipe: same model, adaptive thinking, minimal system prompt, budget fits window
 - [ ] `refusalHandling.retries: 2`; runtime carries tools-less-compression deferral

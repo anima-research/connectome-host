@@ -1,26 +1,40 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.10.2",
+  "version": "0.21.0",
   "description": "Recipe-configured host for long-lived agents on the Connectome stack: TUI, headless daemon, fleets, and a web operator console",
   "type": "module",
+  "bin": {
+    "connectome-host": "src/cli/connectome.ts"
+  },
+  "files": [
+    "src",
+    "recipes",
+    "scripts",
+    "docs",
+    "dist/web",
+    "tsconfig.json",
+    ".env.example",
+    "ARCHITECTURE.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "preversion": "node scripts/release-holds.mjs",
+    "preversion": "node scripts/release-bump.mjs && node scripts/release-holds.mjs",
     "version": "bun scripts/release-changelog.ts && git add CHANGELOG.md changelog.d",
+    "prepack": "node scripts/pack-contents.mjs",
     "prepublishOnly": "node scripts/release-holds.mjs",
     "build:web": "npm --prefix web install && npm --prefix web run build",
     "build:web:ci": "npm ci --prefix web && npm --prefix web run build",
-    "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install",
-    "postinstall": "test ! -d web || { npm --prefix web install && npm --prefix web run build; } || echo 'connectome-host: the optional Web UI build failed (npm --prefix web install, then run build). The host can run without the Web UI. Retry with: npm run build:web' >&2"
+    "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.22.2",
-    "@animalabs/chronicle": "^0.4.0",
-    "@animalabs/context-manager": "^0.14.0",
-    "@animalabs/membrane": "^0.5.87",
-    "@opentui/core": "^0.1.82"
+    "@animalabs/agent-framework": "^0.32.0",
+    "@animalabs/chronicle": "^0.5.1",
+    "@animalabs/context-manager": "^0.24.0",
+    "@animalabs/membrane": "^0.8.0",
+    "@opentui/core": "^0.2.16"
   },
   "engines": {
     "node": ">=22.12.0",
@@ -38,5 +52,9 @@
   "homepage": "https://github.com/anima-research/connectome-host#readme",
   "bugs": {
     "url": "https://github.com/anima-research/connectome-host/issues"
+  },
+  "connectomeRelease": {
+    "breaking": true,
+    "cacheWrite": true
   }
 }

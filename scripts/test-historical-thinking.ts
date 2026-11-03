@@ -2,28 +2,12 @@
 /**
  * Probe whether Anthropic's API accepts historical thinking blocks without
  * cryptographic signatures, when the current request has extended thinking
- * enabled.
- *
- * Context: claude.ai web export contains thinking text but no signatures
- * (claude.ai never plumbed signatures into the export pipeline). To resume
- * those conversations via API with extended thinking on — preserving the
- * model's cognitive mode — we need to know which of these the API tolerates:
+ * enabled. A claude.ai web export holds thinking text but no signatures.
  *
  *   case A: signature field omitted
  *   case B: signature field empty string ""
  *   case C: thinking wrapped as <recovered_thinking> text (control — must work)
  *   case D: redacted_thinking block (alt encoding the API natively supports)
- *
- * Cases that succeed unlock the corresponding import strategy.
- *
- * Last run: 2026-05-13 against claude-sonnet-4-5-20250929. Results:
- *   A_no_signature     → 400 invalid_request_error "signature: Field required"
- *   B_empty_signature  → 400 invalid_request_error "Invalid `signature` in `thinking` block"
- *   C_wrapped_text     → 200 OK; response itself contained native thinking
- *   D_redacted_thinking → 400 invalid_request_error "Invalid `data` in `redacted_thinking`"
- * Conclusion: signatures are server-generated HMACs, cryptographically validated,
- * cannot be forged or stripped. Wrapped text is the only path that round-trips.
- * Re-run if Anthropic loosens this in future API versions.
  *
  * Run: ANTHROPIC_API_KEY=sk-... bun scripts/test-historical-thinking.ts
  */
@@ -37,8 +21,6 @@ if (!API_KEY) {
 const MODEL = process.env.MODEL ?? 'claude-sonnet-4-5-20250929';
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 
-// A fabricated past turn: user asked something, assistant thought, then spoke.
-// This mirrors the shape of an exported claude.ai assistant message.
 const FAKE_PAST_THINKING =
   'The user is asking about prime numbers. The smallest prime is 2 — sometimes ' +
   'people forget 1 is not prime by convention. I should give the answer plainly.';

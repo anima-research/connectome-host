@@ -2,13 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { resolve } from 'node:path';
 import { buildWorkspaceMounts } from '../src/workspace-mounts.js';
 
-/**
- * Contract tests for the shared mount builder. validateRecipe's instructions
- * cross-check reasons over this exact output, so these pin the properties the
- * validator depends on — most importantly that `_config` is NOT
- * auto-materialized (agent edits stay Chronicle-side between branch-changing
- * commands), which is why the validator rejects it as an instructions path.
- */
 describe('buildWorkspaceMounts', () => {
   test('workspace: false disables mounts entirely', () => {
     expect(buildWorkspaceMounts(false, '/store')).toBeNull();
@@ -36,19 +29,26 @@ describe('buildWorkspaceMounts', () => {
     expect(mounts[0]).toMatchObject({
       name: 'instructions',
       path: resolve('./instructions'),
-      mode: 'read-write', // defaulted
-      watch: 'never', // defaulted (no chokidar by default)
+      mode: 'read-write',
+      watch: 'never',
       autoMaterialize: true,
     });
     expect(mounts[1]).toMatchObject({ mode: 'read-only', watch: 'always' });
     expect(mounts[1].autoMaterialize).toBeUndefined();
   });
 
-  test('_config mount (configMount: true) is read-write and NOT auto-materialized', () => {
-    // THE contract behind rejecting `_config/...` as an instructions path:
-    // the host materializes this mount only after branch-changing commands,
-    // never on ordinary agent writes. If this test starts failing because
-    // `_config` gained autoMaterialize, revisit the validator's rejection.
+  test("a mount's walkCap passes through, and a mount that sets none leaves agent-framework's default", () => {
+    const mounts = buildWorkspaceMounts({
+      mounts: [
+        { name: 'corpus', path: './corpus', walkCap: 20_000 },
+        { name: 'refs', path: './refs' },
+      ],
+    }, '/store')!;
+    expect(mounts[0]!.walkCap).toBe(20_000);
+    expect('walkCap' in mounts[1]!).toBe(false);
+  });
+
+  test('_config mount (configMount: true) is read-write and NOT auto-materialized, which validateRecipe\'s refusal of a _config instructions path rests on', () => {
     const mounts = buildWorkspaceMounts({ mounts: [], configMount: true }, '/store')!;
     const config = mounts.find((m) => m.name === '_config')!;
     expect(config).toBeDefined();
@@ -56,10 +56,11 @@ describe('buildWorkspaceMounts', () => {
     expect(config.autoMaterialize).toBeUndefined();
     expect(config.path).toBe(resolve('/store/config'));
     expect(config.watch).toBe('always');
+    expect(config.include).toEqual(['gate.json', 'gate.js', 'gate.recipe.json']);
+    expect(config.backend).toBe('chronicle');
   });
 
   test('configMount composes with the implicit default mounts only in object form', () => {
-    // Matches the host: `workspace: true` cannot request the config mount.
     const objForm = buildWorkspaceMounts({ mounts: undefined as never, configMount: true }, '/s');
     expect((objForm ?? []).some((m) => m.name === '_config')).toBe(true);
     const boolForm = buildWorkspaceMounts(true, '/s')!;
