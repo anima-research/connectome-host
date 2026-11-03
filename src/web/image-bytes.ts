@@ -181,16 +181,42 @@ function jpegDamage(b: Uint8Array): string | null {
     if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) sawFrame = true;
     if (marker === 0xda) {
       if (!sawFrame) return 'is damaged: its image data comes before its frame header';
-      // Scan data stuffs every 0xff byte (ff 00) or follows it with a restart
-      // marker, so ff d9 after the first scan is the end-of-image marker.
-      for (let i = o + 2; i + 1 < b.length; i++) {
-        if (b[i] === 0xff && b[i + 1] === 0xd9) return null;
-      }
-      return CUT_SHORT;
+      return jpegScansDamage(b, o);
     }
     o += 2 + ((b[o + 2]! << 8) | b[o + 3]!);
   }
   return CUT_SHORT;
+}
+
+// Scan data stuffs every 0xff byte (ff 00) or follows it with a restart
+// marker (ff d0 to ff d7), so any other marker ends it (ITU-T T.81, B.1.1.5).
+function jpegScansDamage(b: Uint8Array, sos: number): string | null {
+  let sawData = false;
+  let o = sos;
+  for (;;) {
+    let i = o + 2 + ((b[o + 2]! << 8) | b[o + 3]!);
+    for (; i + 1 < b.length; i++) {
+      if (b[i] !== 0xff) { sawData = true; continue; }
+      const next = b[i + 1]!;
+      if (next === 0x00) { sawData = true; i++; continue; }
+      if (next >= 0xd0 && next <= 0xd7) { i++; continue; }
+      if (next === 0xff) continue;
+      break;
+    }
+    let m = i;
+    for (;;) {
+      if (m + 2 > b.length) return CUT_SHORT;
+      if (b[m] !== 0xff) return 'is damaged: its segments are out of step';
+      const marker = b[m + 1]!;
+      if (marker === 0xff) { m++; continue; }
+      if (marker === 0xd9) return sawData ? null : 'has no image data';
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { m += 2; continue; }
+      if (m + 4 > b.length) return CUT_SHORT;
+      if (marker === 0xda) break;
+      m += 2 + ((b[m + 2]! << 8) | b[m + 3]!);
+    }
+    o = m;
+  }
 }
 
 function gifDamage(b: Uint8Array): string | null {

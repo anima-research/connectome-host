@@ -188,6 +188,42 @@ describe('a whole image', () => {
     });
   });
 
+  test('a JPEG whose scan has no data before its end is refused', () => {
+    // SOI; a frame of 1x1 with one component; its scan's header; then EOI.
+    const headed = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+      0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
+      0xff, 0xd9,
+    ]);
+    expect(imageSize(headed, 'image/jpeg')).toEqual({ width: 1, height: 1 });
+    expect(imageDamage(headed, 'image/jpeg')).toBe('has no image data');
+    // 17 bytes: SOI, a frame header, a scan header with no fields, EOI.
+    const bare = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xc0, 0x00, 0x07, 0x08, 0x00, 0x01, 0x00, 0x01,
+      0xff, 0xda, 0x00, 0x02,
+      0xff, 0xd9,
+    ]);
+    expect(bare.length).toBe(17);
+    expect(imageDamage(bare, 'image/jpeg')).toBe('has no image data');
+    const restartOnly = Buffer.concat([headed.subarray(0, -2), Buffer.from([0xff, 0xd0, 0xff, 0xd9])]);
+    expect(imageDamage(restartOnly, 'image/jpeg')).toBe('has no image data');
+  });
+
+  test("an end marker inside a segment between a JPEG's scans doesn't end it", () => {
+    const scanned = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xc2, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+      0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+      0x12, 0xff, 0x00, 0x34,
+      0xff, 0xfe, 0x00, 0x06, 0x41, 0xff, 0xd9, 0x42,
+    ]);
+    expect(imageDamage(scanned, 'image/jpeg')).toBe('is cut short: the file ends before the image does');
+    const second = Buffer.from([0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x01, 0x01, 0x00, 0x56, 0xff, 0xd9]);
+    expect(imageDamage(Buffer.concat([scanned, second]), 'image/jpeg')).toBeNull();
+  });
+
   test('a damaged byte inside a PNG chunk fails its checksum', () => {
     const b = Buffer.from(bytes('png'));
     b[b.indexOf(Buffer.from('IDAT')) + 5]! ^= 0xff;
