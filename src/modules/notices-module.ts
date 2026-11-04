@@ -63,6 +63,8 @@ const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
 const COMPONENT_KINDS: ReadonlySet<string> = new Set(['mcpl-down']);
 
 function isProcessRefusal(key: string, kind: string): boolean {
+  // Only this host/kind pair is a process notice; other host alerts still
+  // follow the configured agent filter and their existing lifecycle.
   return key === 'host' && kind === 'refusal-offpath';
 }
 
@@ -248,6 +250,7 @@ export class NoticesModule implements Module {
 
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
+    this.reconnectEpoch++;
     this.unsubscribe?.();
     this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>));
     for (const ep of this.episodes.values()) this.scheduleStatus(ep);
@@ -375,6 +378,8 @@ export class NoticesModule implements Module {
     const base = kind.endsWith('-clear') ? kind.slice(0, -'-clear'.length) : null;
 
     if (base !== null) {
+      // A process refusal reports a call, not an outage with a recovery signal.
+      if (isProcessRefusal(key, base)) return;
       const ep = this.episodes.get(key);
       if (!ep || !ep.kinds.has(base)) return;
       this.removeKind(ep, base, { message, superseded: /^superseded by /.test(message) });
@@ -393,8 +398,13 @@ export class NoticesModule implements Module {
     const existing = this.episodes.get(key);
     if (existing) {
       const prior = existing.kinds.get(kind);
-      existing.kinds.set(kind, { message, tier, until, at: prior?.at ?? this.now(), seq: prior?.seq ?? existing.nextSeq++ });
-      if (prior) return;
+      const process = isProcessRefusal(key, kind);
+      const now = this.now();
+      const at = process && prior && prior.at + this.quietMs <= now ? now : prior?.at ?? now;
+      const seq = prior && !process ? prior.seq : existing.nextSeq++;
+      existing.kinds.set(kind, { message, tier, until, at, seq });
+      if (prior && !process) return;
+      if (process) for (const heard of existing.statusHeard.values()) heard.delete(kind);
       this.scheduleStatus(existing);
       void this.replyToWaker();
       return;
@@ -419,6 +429,7 @@ export class NoticesModule implements Module {
   private removeKind(ep: Episode, kind: string, opts: { message: string; superseded: boolean }): void {
     const wasReply = episodeTier(ep) === 'reply';
     ep.kinds.delete(kind);
+    if ([...ep.kinds.keys()].every((k) => isProcessRefusal(ep.key, k))) ep.markedForms.clear();
     const open = ep.kinds.size > 0;
     const stillReply = open && episodeTier(ep) === 'reply';
     if (!open) {
@@ -444,7 +455,16 @@ export class NoticesModule implements Module {
     ep.notified.clear();
   }
 
+  private consumeProcessRefusal(ep: Episode): void {
+    const kind = 'refusal-offpath';
+    if (isProcessRefusal(ep.key, kind) && ep.kinds.has(kind) &&
+        this.statusChannels.every((ch) => ep.statusHeard.get(ch)?.has(kind))) {
+      this.removeKind(ep, kind, { message: '', superseded: true });
+    }
+  }
+
   private scheduleStatus(ep: Episode): void {
+    this.consumeProcessRefusal(ep);
     if (this.statusChannels.length === 0) return;
     if (this.episodes.get(ep.key) !== ep) return;
     const now = this.now();
@@ -514,17 +534,29 @@ export class NoticesModule implements Module {
   private async postStatus(ep: Episode, channelId: string, kind: string): Promise<void> {
     const k = ep.kinds.get(kind);
     if (!k) return;
+    const process = isProcessRefusal(ep.key, kind);
     const heard = getSet(ep.statusHeard, channelId);
     let posting = ep.statusPosting.get(channelId);
     if (!posting) { posting = new Map(); ep.statusPosting.set(channelId, posting); }
-    if (heard.has(kind) || posting.get(kind) === k.seq) return;
+    if (heard.has(kind) || (process ? posting.has(kind) : posting.get(kind) === k.seq)) return;
     posting.set(kind, k.seq);
     const subject = ep.key || this.config.agentName || 'the agent';
     const r = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
     if (posting.get(kind) === k.seq) posting.delete(kind);
     if (r.reflush) this.reflush(ep, channelId);
-    if (!r.ok) return;
     const live = this.episodes.get(ep.key) === ep ? ep.kinds.get(kind) : undefined;
+    if (process) {
+      if (live && live.seq !== k.seq) { this.scheduleStatus(ep); return; }
+      if (!r.ok) {
+        // Retain even non-parked failures for the next real alert or reconnect;
+        // do not start an automatic retry loop.
+        if (live) ep.pending.add(channelId);
+        return;
+      }
+      if (live) { heard.add(kind); this.consumeProcessRefusal(ep); }
+      return;
+    }
+    if (!r.ok) return;
     if (live?.seq === k.seq) { heard.add(kind); return; }
     if (live) { this.scheduleStatus(ep); return; }
     const still = this.episodes.get(ep.key) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
@@ -631,7 +663,9 @@ export class NoticesModule implements Module {
       result = { success: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (result.success) {
-      ep?.pending.delete(channelId);
+      const unheardProcessNotice = ep && this.statusChannels.includes(channelId) && isProcessRefusal(ep.key, 'refusal-offpath') &&
+        ep.kinds.has('refusal-offpath') && !ep.statusHeard.get(channelId)?.has('refusal-offpath');
+      if (!unheardProcessNotice || opts.kind === 'refusal-offpath') ep?.pending.delete(channelId);
       if (ep && opts.track && opts.kind !== undefined && !COMPONENT_KINDS.has(opts.kind) && !isProcessRefusal(ep.key, opts.kind)) {
         const form = this.markerForm(opts.kind);
         if (!ep.markedForms.has(form)) {

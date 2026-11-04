@@ -353,7 +353,7 @@ export function offPathRefusalAlert(info: OffPathRefusal): {
 } {
   const category = info.category ?? 'unknown';
   const size = `~${Math.round(info.inputTokens / 1000)}k tok`;
-  const message = `off-path refusal (category=${category}) on a ${info.messages}-message complete() call ` +
+  const message = `off-path refusal (category=${category}) on a ${info.messages}-message ${info.model} complete() call ` +
     `(${size}) — likely compression/summarizer`;
   const { kind: call, ...rest } = info;
   return { kind: 'refusal-offpath', agent: 'host', message, data: { call, ...rest } };

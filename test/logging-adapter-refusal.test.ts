@@ -56,11 +56,11 @@ test('non-refusal completions and throwing callbacks are harmless', () => {
 test("the ops alert says which call refused, and keeps 'refusal-offpath' as failures.log's kind", () => {
   const alert = offPathRefusalAlert({ kind: 'complete', category: 'cyber', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 });
   expect(alert.kind).toBe('refusal-offpath');
-  expect(alert.message).toBe('off-path refusal (category=cyber) on a 37-message complete() call (~64k tok) — likely compression/summarizer');
+  expect(alert.message).toBe('off-path refusal (category=cyber) on a 37-message claude-fable-5 complete() call (~64k tok) — likely compression/summarizer');
   // agent-framework's failures.log spreads the data after the alert's kind.
   expect(alert.data).toEqual({ call: 'complete', category: 'cyber', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 });
   const unknown = offPathRefusalAlert({ kind: 'complete', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 });
-  expect(unknown.message).toBe('off-path refusal (category=unknown) on a 37-message complete() call (~64k tok) — likely compression/summarizer');
+  expect(unknown.message).toBe('off-path refusal (category=unknown) on a 37-message claude-fable-5 complete() call (~64k tok) — likely compression/summarizer');
 });
 
 test('unknown-caller refusal alerts name the host and preserve call diagnostics', () => {
@@ -126,7 +126,7 @@ test('the shared adapter forwards complete refusal alerts as host and suppresses
   expect(notifications.length).toBe(1);
 });
 
-test('the production callback resolves replaced frameworks and retains the notifier receiver', () => {
+test('the callback factory resolves replaced frameworks and retains the notifier receiver', () => {
   const { adapter, observe } = makeAdapter();
   const first = {
     notifications: [] as unknown[][],
@@ -150,7 +150,7 @@ test('the production callback resolves replaced frameworks and retains the notif
   expect(first.notifications.length).toBe(1);
   expect(replacement.notifications).toEqual([[
     'refusal-offpath', 'host',
-    'off-path refusal (category=reasoning_extraction) on a 37-message complete() call (~64k tok) — likely compression/summarizer',
+    'off-path refusal (category=reasoning_extraction) on a 37-message claude-fable-5 complete() call (~64k tok) — likely compression/summarizer',
     { call: 'complete', category: 'reasoning_extraction', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 },
   ]]);
 });

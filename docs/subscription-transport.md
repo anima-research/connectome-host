@@ -124,8 +124,18 @@ stream, and decides where and how loudly each alert kind is told.
 - `silent` kinds (`refusal`, and anything unknown) only reach failures.log
   and the webhook as before.
 
-Episodes close on the kind's `-clear` alert, or, for framework kinds with no
-clear (`hard-down`, refusals), on the agent's next completed inference; an
+Off-path refusals with subject `host` are process notices about individual calls.
+They include the model, category, message count, and input-token count. A burst
+shares one `quietMs` window and posts its latest diagnostics. The notice is
+consumed after every configured status channel hears it (immediately if there
+are none); a later refusal starts fresh delivery. Failed delivery stays pending
+for a later refusal, reconnect, or framework replacement, without an automatic
+retry loop. These notices produce no recovery line, agent reply, or context
+marker, and a reply-tier override is capped at status. Agent inference success
+does not establish recovery of an auxiliary call.
+
+Other episodes close on the kind's `-clear` alert, or, for framework kinds with no
+clear (`hard-down`, agent refusals), on the agent's next completed inference; an
 `mcpl-down` episode closes when that server reconnects. Channel ids are opaque
 and resolved at post time: a notice whose chat server is itself down is parked
 on the episode and delivered if the server comes back while the outage is
