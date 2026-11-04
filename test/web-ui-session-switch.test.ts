@@ -8,6 +8,7 @@ import {
   __getSharedServerPortForTests,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { switchQuiesceReason } from '../src/update/contract.js';
 
 const USER = 'admin';
 const PASS = 'open-sesame';
@@ -141,6 +142,23 @@ describe("the web UI's own entry during a session switch", () => {
       client.send({ type: 'host-quiesce', corrId: 'quiesce' });
       expect(await client.next('the refusal error', (r) => r.corrId === 'quiesce')).toEqual({ type: 'error', corrId: 'quiesce', message: refusal('host-quiesce') });
       expect((await client.next('a host-mode after the refusal', (r) => r.type === 'host-mode')).hostMode).toMatchObject({ mode: 'serving' });
+    } finally {
+      client.close();
+    }
+  }, TEST_MS);
+
+  test("a host-quiesce while a switch's quiesce holds the host is refused, saying so, and the switch's quiesce stays", async () => {
+    const quiesces: unknown[] = [];
+    const held = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
+    webUiModule.setApp(hostApp({ getHostModeStatus: () => held, quiesce: async (opts: unknown) => { quiesces.push(opts); return held; } }, false) as never);
+    const client = await connect();
+    try {
+      client.send({ type: 'host-quiesce', corrId: 'quiesce', reason: 'maintenance' });
+      const answer = await client.next('the refusal error', (r) => r.corrId === 'quiesce');
+      expect(answer).toMatchObject({ type: 'error', corrId: 'quiesce' });
+      expect(String(answer.message)).toStartWith('host-quiesce refused: ');
+      expect(String(answer.message)).toContain('switch');
+      expect(quiesces).toEqual([]);
     } finally {
       client.close();
     }

@@ -89,14 +89,13 @@ async function install(opts: { listens: boolean; journalFails?: string; dumpRead
   const now = Math.floor(Date.now() / 1000);
   const at = { work, bins, host, started: now - 60, now };
   systemctl(at);
-  const signalHandled = `i=0; until grep -q usr2 ${host.signals} 2>/dev/null || [ $i -ge 100 ]; do sleep 0.05; i=$((i+1)); done`;
   bin(bins, 'journalctl', opts.journalFails !== undefined
     ? `echo "${opts.journalFails}" >&2; exit 1`
     : [
       'case "$*" in',
       opts.dumpReadFails
         ? '  *--since*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
-        : `  *--since*) ${signalHandled}; grep -q usr2 ${host.signals} 2>/dev/null && echo '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}' ;;`,
+        : `  *--since*) grep -q usr2 ${host.signals} 2>/dev/null && echo '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}' ;;`,
       `  *) cat ${join(work, 'journal.txt')} ;;`,
       'esac',
     ].join('\n'));
@@ -358,25 +357,31 @@ describe('the ladder\'s recent failures', () => {
     expect(out).not.toMatch(/inference failure/);
   });
 
-  test('a failure whose time can\'t be read, beside one whose time can, leaves the last failure\'s time not known', async () => {
+  test('a failure whose time can\'t be read, beside one whose time can, leaves the finding to the newest failure whose time is known, and says so', async () => {
     const at = await install({ listens: true });
     const file = join(at.work, 'host.err');
     writeFileSync(file, '[inference-failed] agent=resident consecutive=1: 529 overloaded\n');
     systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 300) * 1000).toISOString(),
       agent: 'resident', consecutive: 1, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
-    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
-      timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
-    const { out } = ladder(at, ['--no-signal']);
-    expect(out).toContain('inference failures present, and when the last was isn\'t known here');
-    expect(out).not.toContain('a later call');
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    const success = (s: number) => `${JSON.stringify({
+      timestamp: new Date(s * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`;
+    const findings = () => JSON.parse(ladder(at, ['--no-signal', '--findings-json']).out.split('\n')
+      .find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
+    writeFileSync(calls, success(at.now - 400));
+    expect(findings()).toContainEqual({ text: expect.stringMatching(
+      /^inference failures, the last whose time is known \d+m ago, with no successful turn found since/), counts: true });
+    writeFileSync(calls, success(at.now - 5));
+    expect(findings()).toContainEqual({ text: expect.stringMatching(
+      new RegExp(`^last inference failure whose time is known \\d+m ago: a later call, at ${stamp(at.now - 5)}, succeeded`)), counts: false });
     writeFileSync(file, '');
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 300) * 1000).toISOString(),
       agent: 'resident', consecutive: 1, reason: '529 overloaded', kind: 'inference-exhausted' })}\n${JSON.stringify({
       agent: 'resident', consecutive: 2, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
-    const recordOnly = ladder(at, ['--no-signal']).out;
-    expect(recordOnly).toContain('inference failures present, and when the last was isn\'t known here');
-    expect(recordOnly).not.toContain('a later call');
+    writeFileSync(calls, success(at.now - 400));
+    expect(findings()).toContainEqual({ text: expect.stringMatching(
+      /^inference failures, the last whose time is known \d+m ago, with no successful turn found since/), counts: true });
   });
 
   test('failures whose time the journal can\'t give are said, with that time not known, as a line that doesn\'t count', async () => {
@@ -391,11 +396,27 @@ describe('the ladder\'s recent failures', () => {
   });
 
 
-  test('every logs/failures.log record is a failure, whatever its reason says', async () => {
+  test('every logs/failures.log record but a channel\'s auto-close is a failure, whatever its reason says', async () => {
     const at = await install({ listens: true });
-    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: '529 overloaded' })}\n`);
+    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: '529 overloaded' })}\n${JSON.stringify({
+      kind: 'subscription-gc-close', channelId: '101', at: new Date().toISOString(), limitChars: 4000, restore: 'channel_open' })}\n`);
     const { out } = ladder(at, ['--no-signal']);
-    expect(out).toContain('529 overloaded');
+    expect(out).toMatch(/recent failures in .*failures\.log:\n.*529 overloaded/);
+    expect(out).not.toContain('subscription-gc-close');
+  });
+
+  test('a newest call log that can\'t be read leaves the inference stage not known, saying so, not never', async () => {
+    const at = await install({ listens: true });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    writeFileSync(calls, `${JSON.stringify({ timestamp: new Date().toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
+    chmodSync(calls, 0o000);
+    try {
+      const { out } = ladder(at, ['--no-signal']);
+      expect(out).toMatch(/· inference \(llm call\) +can't be seen here: the newest call log, llm-calls\.2026-10-30T00-00-00\.jsonl, can't be read \(Permission denied\)/);
+      expect(out).not.toContain('no readable model call');
+    } finally {
+      chmodSync(calls, 0o644);
+    }
   });
 
   test('the journal\'s failures and failures.log\'s are each shown, under where they came from', async () => {

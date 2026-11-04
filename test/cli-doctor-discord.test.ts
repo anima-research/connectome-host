@@ -196,12 +196,16 @@ describe('doctor: Discord', () => {
     expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
   });
 
-  test('a redirect is reported, not followed with the token', async () => {
-    let redirect: RequestRedirect | undefined;
-    const discord = fakeDiscord({ answers: { '/users/@me': () => new Response(null, { status: 307, headers: { location: 'https://elsewhere.example/' } }) } });
-    const r = await run({ DISCORD_TOKEN: TOKEN }, { ...discord, fetch: (async (input: string, init: RequestInit) => { redirect = init.redirect; return discord.fetch(input, init); }) as typeof fetch });
-    expect(redirect).toBe('manual');
-    expect(r.problems).toEqual(['Discord answered 307 to GET /users/@me, a redirect, which doctor doesn\'t follow with the token, so the Discord checks after it weren\'t made.']);
+  test('a redirect, to the first request or a later one, is reported, not followed with the token', async () => {
+    const moved = () => new Response(null, { status: 307, headers: { location: 'https://elsewhere.example/' } });
+    for (const path of ['/users/@me', '/applications/@me', '/guilds/100/roles']) {
+      const asked: Array<RequestRedirect | undefined> = [];
+      const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { [path]: moved } });
+      const r = await run({ DISCORD_TOKEN: TOKEN }, { ...discord, fetch: (async (input: string, init: RequestInit) => { asked.push(init.redirect); return discord.fetch(input, init); }) as typeof fetch });
+      expect([path, asked]).toEqual([path, discord.requests.map(() => 'manual')]);
+      expect(discord.requests.at(-1)!.path).toBe(path);
+      expect(r.problems).toEqual([`Discord answered 307 to GET ${path}, a redirect, which doctor doesn't follow with the token, so the Discord checks after it weren't made.`]);
+    }
   });
 
   test('a token a request header can\'t carry is named as such and never sent, with where the service\'s token comes from', async () => {

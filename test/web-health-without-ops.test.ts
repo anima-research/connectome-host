@@ -186,7 +186,10 @@ describe("the update section, with health and without ops", () => {
         to: '0.12.2', why: 'update', keepData: false, since: '2026-10-22T11:00:00.000Z', by: 'alice',
         lastTry: {
           at: '2026-10-22T11:30:00.000Z', waited: 'a host didn\'t answer: ECONNRESET at /srv/root/sock.',
-          hosts: [{ host: 'kid', answered: false, why: 'the socket said ECONNRESET' }],
+          hosts: [
+            { host: 'kid', answered: false, why: 'the socket said ECONNRESET' },
+            { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2, operatorHold: { reason: 'moving /srv/root' } },
+          ],
         },
       },
       armedDropped: {
@@ -196,7 +199,12 @@ describe("the update section, with health and without ops", () => {
     };
     const shown = sent({ update: armed }, HEALTH_STRINGS).update;
     expect(shown.armed).toEqual({
-      ...armed.armed!, lastTry: { at: '2026-10-22T11:30:00.000Z', waited: '', hosts: [{ host: 'kid', answered: false, why: '' }] },
+      ...armed.armed!, lastTry: {
+        at: '2026-10-22T11:30:00.000Z', waited: '', hosts: [
+          { host: 'kid', answered: false, why: '' },
+          { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2, operatorHold: { reason: '' } },
+        ],
+      },
     });
     expect(shown.armedDropped).toEqual({ ...armed.armedDropped!, reason: '' });
     const text = words(armed);

@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from 'bun:test';
-import { createPipedTurns, switchFollowing, traceFollower, type TraceSource } from '../src/piped-turns.js';
+import { PIPED_TURN_CAP_MS, createPipedTurns, switchFollowing, traceFollower, type TraceSource } from '../src/piped-turns.js';
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES } from '../src/state/turn-trace.js';
 
 function setUp(showsItself?: (tool: string) => boolean) {
@@ -236,15 +236,34 @@ describe('the wait for a line\'s turn', () => {
   });
 
   test('with no cap, only the turn\'s end ends it, and nothing is said of a cap', async () => {
-    const { out, turns, emit } = setUp();
-    const wait = turns.waitForTurn(null);
-    emit('inference:started');
-    emit('inference:failed', { error: 'held' });
-    await Bun.sleep(400);
-    expect(await settled(wait)).toBe(false);
-    emit('inference:completed');
-    expect(await settled(wait)).toBe(true);
-    expect(out.some((line) => line.includes('no answer after'))).toBe(false);
+    await onFakeTimers(async (advance, settledNow) => {
+      const { out, turns, emit } = setUp();
+      const wait = turns.waitForTurn(null);
+      emit('inference:started');
+      emit('inference:failed', { error: 'held' });
+      await advance(PIPED_TURN_CAP_MS * 10);
+      expect(await settledNow(wait)).toBe(false);
+      emit('inference:completed');
+      expect(await settledNow(wait)).toBe(true);
+      expect(out.some((line) => line.includes('no answer after'))).toBe(false);
+    });
+  });
+
+  test('a cap held and released keeps the time it had left when the clock is set back meanwhile', async () => {
+    await onFakeTimers(async (advance, settledNow) => {
+      const { out, turns, emit } = setUp();
+      const typed = turns.waitForTurn(300);
+      emit('inference:started');
+      await advance(200);
+      jest.setSystemTime(Date.now() - 3_600_000);
+      const release = turns.holdCaps();
+      release();
+      await advance(99);
+      expect(await settledNow(typed)).toBe(false);
+      await advance(2);
+      expect(await settledNow(typed)).toBe(true);
+      expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on without it)');
+    });
   });
 
   test('a turn that settles before the cap says nothing of it', async () => {

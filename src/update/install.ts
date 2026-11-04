@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -8,7 +8,6 @@ import {
 import { exists, syncPath } from './data-swap.js';
 import type { ReleaseHere } from './host.js';
 import { HOST_ENTRY, LAUNCHER, RELEASE_HOST } from './launcher.js';
-import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 
 export const PACKAGE = '@animalabs/connectome-host';
 
@@ -98,7 +97,6 @@ async function installInto(tmp: string, running: string, version: string, ops: I
   copyFileSync(join(running, 'package.json'), join(tmp, 'package.json'));
   if (lock) copyFileSync(join(running, lock.name), join(tmp, lock.name));
   const manager = lock?.manager ?? 'npm';
-  if (manager === 'bun') await trustAsBunDoes(tmp, ops);
   const args = manager === 'npm'
     ? ['install', '--save-exact', '--no-audit', '--no-fund', `${PACKAGE}@${version}`]
     : ['add', '--exact', `${PACKAGE}@${version}`];
@@ -118,24 +116,6 @@ async function installInto(tmp: string, running: string, version: string, ops: I
     throw new ContractError(`Installing ${version} with \`${command}\` didn't put its host in place: ${problem}, so it ` +
       "isn't installed.");
   }
-}
-
-async function trustAsBunDoes(tmp: string, ops: InstallOps): Promise<void> {
-  const path = join(tmp, 'package.json');
-  let manifest: unknown;
-  try {
-    manifest = JSON.parse(readFileSync(path, 'utf-8'));
-  } catch {
-    return;
-  }
-  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) return;
-  const trusted = await defaultTrusted((_bun, args, cwd) => ops.run('bun', args, cwd), tmp);
-  if (!Array.isArray(trusted)) {
-    ops.report(`[update] Bun's default trusted list couldn't be read (${trusted.reason}), so this install keeps the ` +
-      'running release\'s trustedDependencies, or none where it has none.');
-    return;
-  }
-  writeFileSync(path, `${JSON.stringify({ ...manifest, trustedDependencies: [...trusted, ...HOST_TRUSTED] }, null, 2)}\n`);
 }
 
 export function hostProblem(dir: string, version: string): string | null {

@@ -22,6 +22,13 @@ interface Filters { guildIds: string[]; guildChannels: Record<string, string[]> 
 
 class DiscordAnswer extends Error {}
 
+export const BEFORE_ENV_FILE = 'another of the files Bun reads there, such as .env.local or .env.development, or the ' +
+  'service\'s own environment, comes before .env where it sets the name';
+
+export function sentToken(given: string): string {
+  return given.replace(/^(Bot|Bearer)\s*/i, '');
+}
+
 export async function checkDiscord(
   env: Record<string, string | undefined>,
   options: { fetch: typeof fetch; workingDir: string; requestLimitMs?: number },
@@ -35,7 +42,7 @@ export async function checkDiscord(
 
   const given = env.DISCORD_TOKEN ?? '';
   // discord.js's Client.login drops this prefix before it uses the token (14.16.0 on), so the token is checked so.
-  const token = given.replace(/^(Bot|Bearer)\s*/i, '');
+  const token = sentToken(given);
   if (token.trim() === '') {
     problem('The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. If .env doesn\'t hold the ' +
       `bot token yet, store it with \`connectome setup discord\`, which keeps it in ${join(options.workingDir, '.env')}. ` +
@@ -58,8 +65,7 @@ export async function checkDiscord(
   const source = 'Where the recipe alone defines the server and maps "${DISCORD_TOKEN}" in its env, or the server is handed ' +
     'the host\'s whole environment ("inheritEnv": true, in the recipe or mcpl-servers.json) with no DISCORD_TOKEN ' +
     'of its own, the token is the service\'s DISCORD_TOKEN. `connectome setup discord` stores it in ' +
-    `${join(options.workingDir, '.env')}, and another of the files Bun reads there, such as .env.local or ` +
-    '.env.development, or the service\'s own environment, comes before .env where it sets the name: a token reset on ' +
+    `${join(options.workingDir, '.env')}, and ${BEFORE_ENV_FILE}: a token reset on ` +
     'the Developer Portal\'s Bot page has to be stored again in whichever gives the service its value. Where the ' +
     'entry that defines the server gives DISCORD_TOKEN a value itself, that value is the one to replace: ' +
     'mcpl-servers.json and the agent overlay take it as written, a "${DISCORD_TOKEN}" included, and an overlay ' +
@@ -72,6 +78,7 @@ export async function checkDiscord(
       res = await options.fetch(DISCORD_API + path, {
         headers: { authorization: `Bot ${token}`, 'user-agent': userAgent },
         signal: AbortSignal.timeout(limitMs),
+        redirect: 'manual',
       });
       text = await res.text();
     } catch (error) {
@@ -85,6 +92,10 @@ export async function checkDiscord(
       body = undefined;
     }
     if (res.status === 401) throw new DiscordAnswer(refused);
+    if (res.status >= 300 && res.status < 400) {
+      throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}, a redirect, which doctor doesn't follow with ` +
+        `the token, ${unchecked}.`);
+    }
     const said = body as { message?: unknown; code?: unknown } | undefined;
     if (!res.ok) {
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}` +

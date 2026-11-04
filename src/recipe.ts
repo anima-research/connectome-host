@@ -11,6 +11,7 @@
  *   - Built-in default (generic assistant)
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
@@ -1282,7 +1283,8 @@ export interface RecipeModules {
    * can check for, install, restart onto or go back from a release of its
    * own install, as `/update` does. A restart or Go back begins at the
    * host's first quiet moment, as `QUIET_MOMENT` in `src/web/update-text.ts`
-   * says, and is armed only on a host whose environment at its start holds
+   * says, though no sooner than a minute after a try that found something
+   * still going, and is armed only on a host whose environment at its start holds
    * `CONNECTOME_SUPERVISED=1`, which the service written by `connectome service
    * install` sets only if that service starts the host again when it exits
    * with 75 and when it exits with 1.
@@ -1743,10 +1745,7 @@ export async function loadRecipe(source: string): Promise<Recipe> {
   return (await loadRecipeDetailed(source)).recipe;
 }
 
-export async function loadRecipeDetailed(
-  source: string,
-  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {},
-): Promise<LoadedRecipe> {
+export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
   return loadRecipeDocument(await readRecipeDocument(source), source, options);
 }
 
@@ -1873,6 +1872,10 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
     };
   }
   return recipe;
+}
+
+export function recipeDigest(recipe: Recipe): string {
+  return createHash('sha256').update(JSON.stringify(recipe)).digest('hex');
 }
 
 export function runningFit(recipe: Recipe, envModel: string | undefined, beside?: number): RecipeFit {

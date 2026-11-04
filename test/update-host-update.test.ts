@@ -404,15 +404,24 @@ describe('Restart', () => {
     }
   });
 
-  test("an unsupervised host, or a headless one started without the service, stops as /quit does, and says to start it again", async () => {
-    for (const [supervised, env] of [[false, {}], [true, {}], [false, { CONNECTOME_SUPERVISED: '1' }]] as const) {
+  test("an unsupervised host stops as /quit does, and says to start it again", async () => {
+    for (const env of [{}, { CONNECTOME_SUPERVISED: '1' }]) {
       const { root, dataDir } = install('0.12.1', ['0.13.0']);
-      const { update, stops } = hostUpdate({ root, dataDir, env }, { supervised });
+      const { update, stops } = hostUpdate({ root, dataDir, env }, { supervised: false });
       expect((await update.restartToInstalled()).lines).toEqual([
         'Stopping to switch to 0.13.0: once it has stopped, start the host again, and that start does it.',
       ]);
       expect(stops).toHaveLength(1);
     }
+  });
+
+  test("a headless host started without the service's line says its next start does the switch, which a service set up for updates makes by itself", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    const { update, stops } = hostUpdate({ root, dataDir, env: {} }, { supervised: true });
+    expect((await update.restartToInstalled()).lines).toEqual([
+      'Stopping to switch to 0.13.0: the host\'s next start does it, which a service set up for updates makes by itself.',
+    ]);
+    expect(stops).toHaveLength(1);
   });
 
   test("turns that don't end leave it waiting: wait longer, stop now, or resume", async () => {

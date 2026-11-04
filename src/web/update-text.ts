@@ -36,7 +36,7 @@ export type SwitchOutcome =
  *  child's name. A host that can't be counted, such as a child that didn't
  *  answer or a host serving again, says why. */
 export type HostQuiet =
-  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number }
+  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number; operatorHold?: { reason?: string } }
   | { host: string; answered: false; why: string };
 
 export interface RestartState {
@@ -151,12 +151,13 @@ export const TOOL_WAYS: UpdateWays = {
   check: 'lifecycle--update check',
 };
 
-export function toolWays(headless: boolean): UpdateWays {
-  return headless ? TOOL_WAYS : {
+export function toolWays(headless: boolean, command = 'connectome'): UpdateWays {
+  const person = headless ? cliWays(command) : COMMAND_WAYS;
+  return {
     ...TOOL_WAYS,
-    wait: `the person's ${COMMAND_WAYS.wait}`,
-    now: `the person's ${COMMAND_WAYS.now}`,
-    resume: `the person's ${COMMAND_WAYS.resume}`,
+    wait: `the person's ${person.wait}`,
+    now: `the person's ${person.now}`,
+    resume: `the person's ${person.resume}`,
   };
 }
 
@@ -164,11 +165,18 @@ export const QUIET_MOMENT = 'nothing the host counts as in flight is still going
   'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
   'going there, such as a turn or background script';
 
+export const ARMED_RETRY = 'A try that finds something still going waits at least a minute before the next.';
+
 export const TOOL_CANCEL = 'lifecycle--update cancel';
 
 export const LAST_SWITCH = 'the last switch';
 
 export const QUOTED = '  ';
+
+export const BUN_UPGRADE = 'Upgrade Bun (`bun upgrade`, or the package manager that installed it), start the host ' +
+  'again, then Update.';
+
+export const BUN_FIRST = 'upgrade Bun first, and Update installs nothing until then.';
 
 export function inShellWords(text: string, command: string): string {
   return text.split('\n').map((line) => line.startsWith(QUOTED) ? line
@@ -186,11 +194,26 @@ export function notesUrl(version: string): string {
   return `https://github.com/anima-research/connectome-host/blob/v${version}/CHANGELOG.md`;
 }
 
+const TO_AN_INSTALL = 'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the ' +
+  'directory you start the host in and with the DATA_DIR you start it with ' +
+  '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says how ' +
+  'to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".';
+
 export const NOT_AN_INSTALL = 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
-  'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory you start ' +
-  'the host in and with the DATA_DIR you start it with (`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` ' +
-  'when it\'s installed there); setup then says how to start the host. A clone updates by hand: ' +
-  'docs/DEPLOYMENTS.md, "Updating an install", "By hand".';
+  TO_AN_INSTALL;
+
+const AGENT_WORDS: ReadonlyArray<readonly [string, string]> = [
+  [BUN_UPGRADE, 'Only the person who runs your host can upgrade its Bun (`bun upgrade`, or the package manager that ' +
+    `installed it) and start the host again; then ${TOOL_WAYS.install} can install it.`],
+  [BUN_FIRST, `the person who runs your host upgrades Bun first, and ${TOOL_WAYS.install} installs nothing until then.`],
+  [TO_AN_INSTALL, 'Nothing you call changes that: only the person who runs your host can, by making it an install ' +
+    'with setup or by updating it by hand.'],
+];
+
+export function inAgentWords(text: string): string {
+  return text.split('\n').map((line) => line.startsWith(QUOTED) ? line
+    : AGENT_WORDS.reduce((said, [person, agent]) => said.split(person).join(agent), line)).join('\n');
+}
 
 export const GO_BACK_UNREAD = 'whether a Go back is offered';
 
@@ -236,7 +259,7 @@ export function noticeLines(
   if (check.runningDeprecated !== null) lines.push(deprecatedLine(running, check.runningDeprecated));
   lines.push(...costLines(check.costs));
   if (check.bunFloorUnmet !== null) {
-    lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: upgrade Bun first, and Update installs nothing until then.`);
+    lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: ${BUN_FIRST}`);
   }
   lines.push(`Notes: ${notesUrl(check.candidate)}`);
   lines.push(!install ? NOT_AN_INSTALL
@@ -318,7 +341,7 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   const armed = status.armed ?? null;
   if (armed !== null) {
     lines.push(`${armedName(armed)} is armed since ${armed.since}${armed.by !== null ? `, asked for by ${armed.by}` : ''}: it ` +
-      `begins at the host's first quiet moment, once ${QUIET_MOMENT}.`);
+      `begins at the host's first quiet moment, once ${QUIET_MOMENT}.` + (armed.lastTry === null ? ` ${ARMED_RETRY}` : ''));
     const last = armed.lastTry;
     if (last !== null) {
       lines.push(told(`Its try at ${last.at} didn't go ahead`, last.waited) + ' It tries again at a quiet moment at ' +
@@ -407,7 +430,7 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       'difference.',
     ways.check === TOOL_WAYS.check
       ? 'Either way it begins at the host\'s first quiet moment, however long that takes, so it cuts no turn and asks ' +
-        'nobody.'
+        `nobody. ${ARMED_RETRY}`
       : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }

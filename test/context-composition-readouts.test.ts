@@ -136,7 +136,7 @@ describe("why the Context page's next request wasn't counted", () => {
     expect(notCounted('count_tokens_unsupported_model')).toBe("not counted: count_tokens doesn't take this agent's model");
     expect(notCounted('count_tokens_failed_429')).toBe('not counted: count_tokens answered 429');
     expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed');
-    expect(notCounted('count_tokens_no_credential')).toBe('not counted: no Anthropic credential to count with');
+    expect(notCounted('count_tokens_no_credential')).toBe('not counted: count_tokens answered 401, with no Anthropic credential sent by the host');
     expect(notCounted('count_tokens')).toBe('not counted: count_tokens answered with no count');
     expect(notCounted('something_new')).toBe('not counted (something_new)');
   });

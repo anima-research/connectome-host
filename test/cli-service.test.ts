@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
+import * as fs from 'node:fs';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
-  symlinkSync, writeFileSync,
+  renameSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -37,7 +38,7 @@ function install(name = 'My Resident', options: { shell?: boolean; home?: string
   mkdirSync(root, { recursive: true });
   mkdirSync(data, { recursive: true });
   mkdirSync(join(work, 'node_modules', '@animalabs', 'connectome-host'), { recursive: true });
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: data, extraState: [], workingDir: work }));
   writeFileSync(join(root, 'start.js'), '');
   writeFileSync(join(root, 'connectome'), '#!/bin/sh\n', { mode: 0o755 });
   const recipe = join(work, 'resident.json');
@@ -54,6 +55,16 @@ function shellPackage(work: string): void {
     name: 'term-sessions-mcp', version: '1.7.3',
     bin: { 'terminal-sessions-mcp': './dist/src/mcp/mcp-stdio-server.js', 'session-server': './dist/src/server/start-session-server.js' },
   }));
+}
+
+function plistFields(args: string[], fields: Record<string, string | number>, converts = true): Ran {
+  if (args[0] === '-convert') return converts ? ok(JSON.stringify(fields))
+    : { status: 1, stdout: 'invalid object in plist for destination format\n', stderr: '' };
+  if (args[0] === '-lint') return ok('fixture: OK\n');
+  const value = fields[args[1]!];
+  if (value === undefined) return { status: 1, stdout: 'No value at that key path\n', stderr: '' };
+  if (args[0] === '-type') return ok((typeof value === 'string' ? 'string' : 'integer') + '\n');
+  return ok(String(value) + '\n');
 }
 
 interface Loaded {
@@ -261,7 +272,9 @@ class FakeSystemd {
         SubState: this.deactivating.has(unit) ? 'stop-sigterm' : crashing ? 'auto-restart' : running ? 'running'
           : this.exiting.has(unit) ? 'failed' : 'dead',
         NRestarts: String(this.nrestarts.get(unit) ?? 0),
-        ExecMainStartTimestamp: this.latest.has(unit) ? `@${STARTED_AT}` : '',
+        ExecMainStartTimestamp: this.latest.has(unit)
+          ? 'Mon ' + new Date(STARTED_AT * 1000).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : '',
+        MainPID: running ? '4242' : '0',
         ExecMainStatus: this.crashing.has(unit) ? '1' : this.exitStatus.get(unit) ?? '0',
         Environment: (loaded?.environment ?? []).join(' '),
         InvocationID: this.running.get(unit) ?? this.latest.get(unit) ?? '',
@@ -479,6 +492,552 @@ function nothingWritten(at: Install, unitFile = hostUnit(at)): void {
   expect(existsSync(join(at.root, 'service.json'))).toBe(false);
 }
 
+test('service operations and log excerpts work with systemd 247 timestamp styles', async () => {
+  const at = install();
+  const f = fake(at);
+  const run = f.system.run;
+  const stamp = new Date(STARTED_AT * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  f.system.run = (cmd, args, env) => {
+    if (cmd === 'systemctl' && args.includes('--timestamp=unix')) {
+      return { status: 1, stdout: '', stderr: 'Invalid value: unix.' };
+    }
+    const ran = run(cmd, args, env);
+    return cmd === 'systemctl' ? { ...ran,
+      stdout: ran.stdout.replace(/ExecMainStartTimestamp=.+/,
+        'ExecMainStartTimestamp=Mon ' + stamp + (env.TZ === 'UTC' && env.LC_ALL === 'C' ? ' UTC' : ' EST')) } : ran;
+  };
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out).toContain('  | Loaded recipe: resident');
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  expect(await runService(f.ctx(['start']), f.system)).toBe(0);
+});
+
+test('a latest invocation that ended is read with a 200-entry cap, not a lifetime read', async () => {
+  const at = install();
+  const f = fake(at);
+  f.systemd.exiting.add(HOST);
+  f.systemd.prints = () => Array.from({ length: 350 }, (_, at) => 'report ' + at);
+  const run = f.system.run;
+  let captured = 0;
+  f.system.run = (cmd, args, env) => {
+    const ran = run(cmd, args, env);
+    if (cmd === 'journalctl' && args.some((arg) => arg.startsWith('_SYSTEMD_INVOCATION_ID='))) {
+      const reports = ran.stdout.trimEnd().split('\n');
+      const n = args.indexOf('-n');
+      const kept = n < 0 ? reports : reports.slice(-Number(args[n + 1]));
+      captured = kept.length;
+      return { ...ran, stdout: kept.join('\n') + '\n' };
+    }
+    return ran;
+  };
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(captured).toBe(200);
+  expect(f.out.join('\n')).toContain('last 200 entries');
+  expect(f.out).toContain('  | report 349');
+});
+
+test('earlier-start selection reports every journal entry it cannot interpret', async () => {
+  const at = install();
+  const f = fake(at, { ready: false });
+  f.systemd.crashing.add(HOST);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  f.systemd.crashing.delete(HOST);
+  const run = f.system.run;
+  f.system.run = (cmd, args, env) => {
+    const ran = run(cmd, args, env);
+    return cmd === 'journalctl' && args.includes('json')
+      ? { ...ran, stdout: ran.stdout + '{broken\n' +
+        JSON.stringify({ MESSAGE: [255], USER_INVOCATION_ID: 'opaque' }) + '\n' +
+        JSON.stringify({ MESSAGE: 'has no invocation' }) + '\n' } : ran;
+  };
+  const checked = await checkService(at.root, f.system);
+  expect(checked.lines.join('\n')).toContain("3 journal entries couldn't be interpreted");
+});
+
+for (const verb of ['stop', 'check'] as const) test('launchd query failure is diagnosed as unknown during ' + verb, async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.out.length = 0;
+  f.err.length = 0;
+  f.systemd.launchctlFailsOnce.set('list', 'manager denied query');
+  const result = verb === 'stop' ? await runService(f.ctx(['stop']), f.system)
+    : await checkService(at.root, f.system);
+  const said = typeof result === 'number' ? f.out.concat(f.err).join('\n') : result.lines.join('\n');
+  expect(typeof result === 'number' ? result : Number(!result.passed)).toBe(1);
+  expect(said).toContain('manager denied query');
+  expect(said).not.toContain("wasn't running");
+  expect(said).not.toContain('has no com.animalabs.connectome.my-resident loaded');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an answering host outside the ' + platform + ' unit', async () => {
+  const at = install();
+  const f = fake(at, { platform });
+  f.system.openHost = async () => ({ ready: { pid: 9999, recipe: at.recipe }, close() {} }) as never;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('9999');
+  expect(f.err.join('\n')).toContain('4242');
+  expect(f.out.join('\n')).not.toContain('Its host answers:');
+});
+
+for (const port of ['0', '65536', '3.1', 'word', '-1']) test('an invalid stored shell port is refused before writing units: ' + port, async () => {
+  const at = install('My Resident', { shell: true });
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_PORT=' + port + '\n');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(JSON.stringify(port));
+  expect(existsSync(hostUnit(at))).toBe(false);
+  expect(existsSync(shellUnit(at))).toBe(false);
+});
+
+for (const operation of ['install', 'start']) test('an unknown launchd state includes its reason while ' + operation + ' preserves logs and attempts loading', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  if (operation === 'start') {
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  }
+  const log = join(at.work, 'logs', 'agent.log');
+  mkdirSync(dirname(log), { recursive: true });
+  writeFileSync(log, 'earlier-load');
+  const run = f.system.run;
+  let once = true;
+  f.system.run = (cmd, args, env) => {
+    if (cmd === 'launchctl' && args[0] === 'list' && existsSync(agentPlist(at)) && once) {
+      once = false;
+      return { status: 77, stdout: '', stderr: 'unknown-state detail' };
+    }
+    return run(cmd, args, env);
+  };
+  f.out.length = 0;
+  expect(await runService(f.ctx(operation === 'start' ? ['start'] : ['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain('unknown-state detail');
+  expect(readFileSync(log, 'utf-8')).toBe('earlier-load');
+});
+
+test('an unexpected log-rotation error reports partial effects and releases the lock for retry', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const log = join(at.work, 'logs', 'agent.log');
+  mkdirSync(log + '.previous', { recursive: true });
+  writeFileSync(join(log + '.previous', 'occupied'), 'keep');
+  writeFileSync(log, 'earlier-load');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('may already have changed');
+  expect(f.err.join('\n')).toContain('repeat this command');
+  rmSync(log + '.previous', { recursive: true });
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+});
+
+test('an empty external shell token leaves whole-credential diagnostic masking intact', async () => {
+  const at = install();
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_TOKEN=""\n');
+  const f = fake(at, { env: { ANTHROPIC_API_KEY: 'provider-opaque-value' },
+    recipeLoad: { loads: false, words: 'credential provider-opaque-value refused' } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('<ANTHROPIC_API_KEY>');
+  expect(f.err.join('\n')).not.toContain('<SESSION_SERVER_TOKEN>');
+});
+
+test('service logs mask an external shell token omitted from an existing secret-name list', async () => {
+  const at = install();
+  mkdirSync(join(at.work, '.setup'));
+  writeFileSync(join(at.work, '.setup', 'stored-secrets.json'), '[]');
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_TOKEN=external-opaque-value\n');
+  const f = fake(at);
+  f.systemd.prints = () => ['shell credential=external-opaque-value'];
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain('<SESSION_SERVER_TOKEN>');
+  expect(f.out.join('\n')).not.toContain('external-opaque-value');
+});
+
+test('a first no-shell install preserves external settings and names what it kept', async () => {
+  const at = install();
+  const before = 'SESSION_SERVER_TOKEN=external-value\nSESSION_SERVER_PORT=3200\n';
+  writeFileSync(join(at.work, '.env'), before);
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
+  expect(f.out.join('\n')).toContain('Kept SESSION_SERVER_TOKEN');
+  expect(f.out.join('\n')).toContain('SESSION_SERVER_PORT');
+  expect(f.out.join('\n')).toContain("isn't recorded as written by this service");
+});
+
+test('a managed shell preserves inherited settings when later retired', async () => {
+  const at = install('My Resident', { shell: true });
+  const before = 'SESSION_SERVER_TOKEN=external-value\nSESSION_SERVER_PORT=3200\n';
+  writeFileSync(join(at.work, '.env'), before);
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(at.recipe, '{}');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(existsSync(shellUnit(at))).toBe(false);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
+});
+
+test('a re-run carries ownership of generated settings until a later no-shell install removes them', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const before = readFileSync(join(at.work, '.env'), 'utf-8');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
+  writeFileSync(at.recipe, '{}');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(false);
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_PORT')).toBe(false);
+});
+
+test('retirement keeps a changed token but removes the generated port still owned by the service', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = join(at.work, '.env');
+  writeFileSync(file, readFileSync(file, 'utf-8').replace(/SESSION_SERVER_TOKEN=.*\n/, 'SESSION_SERVER_TOKEN=independent-value\n'));
+  writeFileSync(at.recipe, '{}');
+  f.out.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  const values = readEnvFile(file);
+  expect(values.get('SESSION_SERVER_TOKEN')).toBe('independent-value');
+  expect(values.has('SESSION_SERVER_PORT')).toBe(false);
+  expect(f.out.join('\n')).toContain('Kept SESSION_SERVER_TOKEN');
+  expect(f.out.join('\n')).not.toContain('independent-value');
+});
+
+test('macOS refuses another installed agent in this working directory, including a binary plist', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'older.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? plistFields(args, { Label: 'other.resident', WorkingDirectory: at.work })
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(existsSync(agentPlist(at))).toBe(false);
+  expect(f.err.join('\n')).toContain(other);
+  expect(f.err.join('\n')).toContain('other.resident');
+  expect(f.err.join('\n')).toContain('another working directory');
+  expect(f.err.join('\n')).toContain('launchctl bootout');
+});
+
+test('an unreadable LaunchAgents plist is named with its reason rather than ruled out', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'unreadable.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'unreadable fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? { status: 1, stdout: '', stderr: 'conversion denied' }
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain(other);
+  expect(f.out.join('\n')).toContain('conversion denied');
+  expect(f.out.join('\n')).toContain("isn't ruled out");
+});
+
+test('a converted agent for another working directory leaves this install available', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'unrelated.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? plistFields(args, { Label: 'another.job', WorkingDirectory: at.home })
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(other, 'utf-8')).toBe('bplist00fixture');
+});
+
+test('a Linux same-directory unit that is not a host is offered another working directory', async () => {
+  const at = install();
+  const f = fake(at);
+  f.systemd.otherUnits.push({ id: 'indexer.service', workingDirectory: at.work, fragment: '/indexer.service' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('indexer.service');
+  expect(f.err.join('\n')).toContain('another working directory');
+});
+
+
+for (const platform of ['linux', 'darwin'] as const) for (const form of ['legacy', 'invalid', 'moved', 'copied']) {
+  test(platform + ' new service refuses an install record not bound here: ' + form, async () => {
+    const at = install();
+    const path = join(at.root, 'install.json');
+    const installed = JSON.parse(readFileSync(path, 'utf-8'));
+    if (form === 'legacy') delete installed.workingDir;
+    else installed.workingDir = form === 'invalid' ? 10 : form === 'moved' ? join(at.home, 'gone') : at.home;
+    writeFileSync(path, JSON.stringify(installed));
+    const f = fake(at, { platform });
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+    expect(f.systemd.calls).toEqual([]);
+    expect(f.loads).toEqual([]);
+    expect(existsSync(join(at.root, 'service.json'))).toBe(false);
+    expect(existsSync(join(at.work, '.env'))).toBe(false);
+    expect(f.err.join('\n')).toContain(path);
+    expect(f.err.join('\n')).toContain('setup');
+    expect(f.err.join('\n')).toContain(at.work);
+  });
+}
+
+for (const platform of ['linux', 'darwin'] as const) for (const action of ['start', 'stop', 'install', 'status', 'check']) {
+  test(platform + ' a foreign service record cannot supply ordinary ' + action, async () => {
+    const at = install('Original', { shell: true });
+    const f = fake(at, { platform });
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    const copy = install('Copy', { home: at.home });
+    const bytes = readFileSync(join(at.root, 'service.json'), 'utf-8');
+    writeFileSync(join(copy.root, 'service.json'), bytes);
+    f.systemd.calls.length = f.out.length = f.err.length = 0;
+    let said: string;
+    if (action === 'status') {
+      let error: unknown;
+      try { serviceLines(copy.root); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(Error);
+      said = String(error);
+    } else if (action === 'check') {
+      const checked = await checkService(copy.root, f.system);
+      expect(checked.passed).toBe(false);
+      said = checked.lines.join('\n');
+    } else {
+      expect(await runService({ ...f.ctx([action]), root: copy.root }, f.system)).toBe(1);
+      said = [...f.out, ...f.err].join('\n');
+    }
+    expect(said).toContain(at.work);
+    expect(said).toContain(copy.work);
+    expect(said).toContain('service install <recipe>');
+    expect(f.systemd.calls).toEqual([]);
+    expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
+  });
+}
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' explicit copy install leaves the original service and inherited settings alone', async () => {
+  const at = install('Original', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const units = [previous.units.host, previous.units.shell!];
+  const files = units.map((unit) => readFileSync(unit.file, 'utf-8'));
+  const settings = readFileSync(join(at.work, '.env'), 'utf-8');
+  const copy = install('Copy', { home: at.home });
+  writeFileSync(join(copy.root, 'service.json'), readFileSync(join(at.root, 'service.json')));
+  writeFileSync(join(copy.work, '.env'), settings);
+  f.systemd.calls.length = 0;
+  expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(0);
+  for (const [i, unit] of units.entries()) {
+    expect(readFileSync(unit.file, 'utf-8')).toBe(files[i]!);
+    expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
+    expect(f.systemd.calls.some((line) => /\b(stop|disable|restart|bootout|kickstart)\b/.test(line) && line.includes(unit.name))).toBe(false);
+  }
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(settings);
+  expect(readFileSync(join(copy.work, '.env'), 'utf-8')).toBe(settings);
+  expect(readServiceRecord(copy.root)!.workingDirectory).toBe(copy.work);
+  expect(readServiceRecord(copy.root)!.shellSettings).toBeUndefined();
+  const notice = f.out.find((line) => line.includes('This run uses the explicit recipe'))!;
+  expect(notice).toContain("It isn't used here. This run uses the explicit recipe");
+  expect(notice).not.toContain('Name the recipe');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a moved service waits for explicit native retirement before replacement', async () => {
+  const at = install('Original', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const units = [previous.units.host, previous.units.shell!];
+  const moved = join(at.home, 'Moved');
+  renameSync(at.work, moved);
+  const root = join(moved, 'connectome-host');
+  const recipe = join(moved, 'resident.json');
+  writeFileSync(join(root, 'install.json'), JSON.stringify({
+    v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved,
+  }));
+  const before = readFileSync(join(root, 'service.json'), 'utf-8');
+  f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(1);
+  expect(readFileSync(join(root, 'service.json'), 'utf-8')).toBe(before);
+  const said = [...f.out, ...f.err].join('\n');
+  expect(said).toContain(previous.units.host.name);
+  expect(said).toContain(platform === 'darwin' ? 'launchctl bootout' : 'systemctl --user');
+  expect(said).not.toContain('Name the recipe');
+  expect(said.indexOf('Then repeat ')).toBeGreaterThan(said.indexOf('Before replacing its record'));
+  expect(said).toEndWith(' service install <recipe>.');
+  for (const unit of units) {
+    expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
+    if (platform === 'darwin') f.system.run('launchctl', ['bootout', 'gui/1001/' + unit.name], {});
+    else f.system.run('systemctl', ['--user', 'stop', unit.name], {});
+    rmSync(unit.file);
+  }
+  if (platform === 'linux') f.system.run('systemctl', ['--user', 'daemon-reload'], {});
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(0);
+  expect(readServiceRecord(root)!.workingDirectory).toBe(moved);
+});
+
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a missing old file does not settle a moved service native state', async () => {
+  const at = install('Original');
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const unit = previous.units.host;
+  const moved = join(at.home, 'Moved');
+  renameSync(at.work, moved);
+  const root = join(moved, 'connectome-host');
+  const recipe = join(moved, 'resident.json');
+  writeFileSync(join(root, 'install.json'), JSON.stringify({
+    v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved,
+  }));
+  rmSync(unit.file);
+  const before = readFileSync(join(root, 'service.json'), 'utf-8');
+  f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(1);
+  expect([...f.out, ...f.err].join('\n')).toContain(unit.name);
+  expect(readFileSync(join(root, 'service.json'), 'utf-8')).toBe(before);
+  expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
+  const run = f.system.run;
+  let queried = 0;
+  f.system.run = (command, args, env) => {
+    if ((platform === 'linux' && command === 'systemctl' && args.includes('show') && args.includes(unit.name)) ||
+      (platform === 'darwin' && command === 'launchctl' && args[0] === 'list' && args[1] === unit.name)) {
+      queried++;
+      return { status: 5, stdout: '', stderr: 'original state query denied' };
+    }
+    return run(command, args, env);
+  };
+  f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(1);
+  expect(queried).toBe(1);
+  expect([...f.out, ...f.err].join('\n')).toContain('original state query denied');
+  expect(readFileSync(join(root, 'service.json'), 'utf-8')).toBe(before);
+  f.system.run = run;
+  if (platform === 'darwin') f.system.run('launchctl', ['bootout', 'gui/1001/' + unit.name], {});
+  else {
+    f.system.run('systemctl', ['--user', 'stop', unit.name], {});
+    f.system.run('systemctl', ['--user', 'daemon-reload'], {});
+  }
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(0);
+});
+
+test('an uncheckable foreign directory refuses without treating it as a missing old directory', async () => {
+  const at = install('Original');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const file = readFileSync(previous.units.host.file, 'utf-8');
+  const copy = install('Copy', { home: at.home });
+  const loop = join(at.home, 'uncheckable');
+  symlinkSync(loop, loop);
+  const bytes = JSON.stringify({ ...previous, workingDirectory: loop });
+  writeFileSync(join(copy.root, 'service.json'), bytes);
+  f.systemd.calls.length = f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain("recorded directory can't be checked");
+  expect(f.err.join('\n')).not.toContain('Name the recipe');
+  expect(f.err.join('\n')).toEndWith(`Then repeat ${join(copy.root, 'connectome')} service install <recipe>.`);
+  expect(f.systemd.calls).toEqual([]);
+  expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
+  expect(readFileSync(previous.units.host.file, 'utf-8')).toBe(file);
+  expect(f.systemd.running.has(previous.units.host.name)).toBe(true);
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' existing service start and stop keep legacy install-record compatibility', async () => {
+  const at = install();
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: at.data, extraState: [] }));
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  expect(await runService(f.ctx(['start']), f.system)).toBe(0);
+});
+
+test('service identity and new-install binding accept an alias of the same directory', async () => {
+  const at = install();
+  const alias = join(at.home, 'Alias');
+  symlinkSync(at.work, alias);
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({
+    v: 1, dataDir: at.data, extraState: [], workingDir: alias,
+  }));
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const record = readServiceRecord(at.root)!;
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, workingDirectory: alias }));
+  expect(serviceLines(join(alias, 'connectome-host'))).not.toBeNull();
+  expect((await checkService(join(alias, 'connectome-host'), f.system)).passed).toBe(true);
+});
+
+test('a service record path that is a directory names the path before its repair instruction', async () => {
+  const at = install();
+  const f = fake(at);
+  const path = join(at.root, 'service.json');
+  mkdirSync(path);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(false);
+  const line = checked.lines.join('\n');
+  expect(line).toContain("The service record at " + path + " can't be read: ");
+  expect(line).toContain('. Name the recipe');
+  expect(line).toEndWith(' service install <recipe>.');
+});
+
+test('a foreign record naming a regular file refuses before its repeat instruction', async () => {
+  const at = install('Original');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const original = readServiceRecord(at.root)!;
+  const copy = install('Copy', { home: at.home });
+  const path = join(at.home, 'not-a-directory');
+  writeFileSync(path, 'file');
+  const bytes = JSON.stringify({ ...original, workingDirectory: path });
+  writeFileSync(join(copy.root, 'service.json'), bytes);
+  f.systemd.calls.length = f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(1);
+  const line = f.err.join('\n');
+  expect(line).toContain('not a directory; resolve that before replacing this record.');
+  expect(line).not.toContain('Name the recipe');
+  expect(line).toEndWith('Then repeat ' + join(copy.root, 'connectome') + ' service install <recipe>.');
+  expect(f.systemd.calls).toEqual([]);
+  expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
+  expect(f.systemd.running.has(original.units.host.name)).toBe(true);
+});
+
+test('a check with a damaged service record gives the explicit-recipe repair instruction', async () => {
+  const at = install();
+  const f = fake(at);
+  writeFileSync(join(at.root, 'service.json'), 'not json');
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(false);
+  expect(checked.lines.join('\n')).toContain(join(at.root, 'service.json'));
+  expect(checked.lines.join('\n')).toContain('service install <recipe>');
+});
+
+for (const property of ['date', 'data']) test('a valid agent with an unrelated ' + property + ' field still blocks a second host', async () => {
+  const at = install('  Résident_日本  ');
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'typed.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00 ' + property + ' fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? plistFields(args, { Label: 'older.host', WorkingDirectory: at.work }, false)
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('older.host');
+  expect(existsSync(agentPlist(at))).toBe(false);
+});
+
+for (const fields of [{ Label: 'unrelated.job' }, { Label: 'unrelated.job', WorkingDirectory: 10 }]) {
+  test('an absent or non-string WorkingDirectory is not a matching agent: ' + JSON.stringify(fields), async () => {
+    const at = install();
+    const f = fake(at, { platform: 'darwin' });
+    const other = join(at.home, 'Library', 'LaunchAgents', 'other.plist');
+    mkdirSync(dirname(other), { recursive: true });
+    writeFileSync(other, 'fixture');
+    const run = f.system.run;
+    f.system.run = (command, args, env) => command === 'plutil' ? plistFields(args, fields) : run(command, args, env);
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    expect(f.out.join('\n')).not.toContain("isn't ruled out");
+  });
+}
+
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();
   const f = fake(at);
@@ -498,7 +1057,7 @@ test('the host\'s unit gives the host the data directory install.json names', as
   const at = install();
   const kept = join(dirname(at.work), 'kept data');
   mkdirSync(kept);
-  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: kept, extraState: [] }));
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: kept, extraState: [], workingDir: at.work }));
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(readFileSync(hostUnit(at), 'utf-8')).toContain(`Environment="DATA_DIR=${kept}"\n`);
@@ -516,7 +1075,7 @@ test('an install without install.json is refused, writing nothing', async () => 
 
 test('an install whose install.json names its data directory by no absolute path is refused, writing nothing', async () => {
   const at = install('My Resident', { shell: true });
-  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: 'data', extraState: [] }));
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: 'data', extraState: [], workingDir: at.work }));
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('not an absolute path');
@@ -759,8 +1318,8 @@ test('another unit that already runs a host from this working directory is refus
     'away: ');
   expect(said).toContain('take it away: XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop \'resident\\x2dold.service\', ' +
     'XDG_RUNTIME_DIR=/run/user/1001 systemctl --user disable \'resident\\x2dold.service\', ' +
-    `remove '${file}', then XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload. Then repeat this service install ` +
-    'command with the same recipe. Nothing was written.');
+    `remove '${file}', then XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload.`);
+  expect(said).toContain('Then repeat this service install command with the same recipe. Nothing was written.');
   expect(said).not.toContain('as root');
   expect(f.systemd.starts).toEqual([]);
   nothingWritten(at);
@@ -776,7 +1335,7 @@ test('a system unit that already runs a host from this working directory is refu
   expect(said).toContain('old-host.service (a system unit, at /etc/systemd/system/old-host.service) is already set up ' +
     `to run from ${at.work}`);
   expect(said).toContain('take it away: as root, systemctl stop old-host.service, systemctl disable old-host.service, ' +
-    'remove /etc/systemd/system/old-host.service, then systemctl daemon-reload. Then repeat');
+    'remove /etc/systemd/system/old-host.service, then systemctl daemon-reload.');
   expect(said).not.toContain('--user');
   nothingWritten(at);
 });
@@ -1021,6 +1580,7 @@ test('a service record that can\'t be read is written again when the recipe is g
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.out.join('\n')).toContain(join(at.root, 'service.json'));
   expect(f.out.join('\n')).toContain('This run replaces it with a new record once it has written a unit file.');
+  expect(f.out.join('\n')).not.toContain('Name the recipe');
   expect(readServiceRecord(at.root)!.hostArgs[0]).toBe(at.recipe);
 });
 
@@ -1541,7 +2101,7 @@ test('a shell daemon that isn\'t active fails the check, which shows its latest 
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = f.out.join('\n');
   expect(said).toContain(`${SHELL} is failed, not active: journalctl --user -u ${SHELL} shows its log`);
-  const shown = 'The journal\'s last lines from the shell daemon\'s latest start, which ended:\n  | session-server: starting\n' +
+  const shown = 'The journal\'s last lines from the shell daemon\'s latest start, which ended (last 200 entries):\n  | session-server: starting\n' +
     '  | Error: Cannot find module \'node-pty\'';
   expect(said).toContain(shown);
   expect(said.indexOf(shown)).toBeLessThan(said.indexOf('Put right what the lines above show'));
@@ -1629,7 +2189,7 @@ test('a host that keeps failing fails the install\'s check, with its restarts an
   f.systemd.prints = () => ['Loaded recipe: resident', 'Fatal error: error: Failed to start server. Is port 7340 in use?'];
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = [...f.out, ...f.err].join('\n');
-  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n  | Loaded recipe: resident\n' +
+  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended (last 200 entries):\n  | Loaded recipe: resident\n' +
     '  | Fatal error: error: Failed to start server');
   expect(said).not.toContain('  ! ');
   expect(said).toMatch(/restarted it \d+ times? since it was last started, and its process last exited with 1\./);
@@ -1912,7 +2472,7 @@ test('for a host that isn\'t active, the check shows its latest start\'s last li
   f.systemd.prints = () => ['Loaded recipe: resident', { after: 90, line: 'Missing ANTHROPIC_API_KEY. Set one in .env.' }];
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain(`connectome: ${HOST} is failed, and no host answers: `);
-  expect(f.out.join('\n')).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n' +
+  expect(f.out.join('\n')).toContain('The journal\'s last lines from the host\'s latest start, which ended (last 200 entries):\n' +
     '  | Loaded recipe: resident\n  | Missing ANTHROPIC_API_KEY. Set one in .env.');
   expect(f.out.join('\n')).not.toContain('  ! ');
 });
@@ -2009,8 +2569,8 @@ test('every command service prints spells the install\'s own command by its full
   expect(await installService(elsewhere.ctx(['install']), elsewhere.system)).toBe(2);
   expect(elsewhere.err).toEqual([`connectome: the first install needs the recipe: ${full} service install <recipe>`]);
   expect(await runService(elsewhere.ctx(['stop']), elsewhere.system)).toBe(1);
-  expect(elsewhere.err.at(-1)).toBe(`connectome: No service is set up for this install yet: ${full} service install ` +
-    '<recipe> sets one up.');
+  expect(elsewhere.err.at(-1)).toBe(`connectome: No service is recorded for this install (${join(at.root, 'service.json')}). ` +
+    `${full} service install <recipe> sets one up.`);
   expect(await installService(elsewhere.ctx(['install', at.recipe]), elsewhere.system)).toBe(0);
   expect(elsewhere.out).toContain(`  stop it: ${full} service stop`);
   expect(elsewhere.out).toContain(`  start it: ${full} service start`);
@@ -2130,7 +2690,131 @@ test('on macOS the check shows its log\'s last lines, which can hold more than o
   expect(stopped).not.toContain('  ! ');
 });
 
-test('on macOS the check reads only what the agent logged since it was loaded', async () => {
+
+test('the Mac host check reads only a bounded suffix of a large real log and qualifies its line counts', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const path = join(at.work, 'logs', 'agent.log');
+  const old = 'earlier report\n'.repeat(150_000);
+  const recent = Array.from({ length: 60 }, (_, i) => 'new report ' + i).join('\n\n   \n') + '\n';
+  writeFileSync(path, old + recent);
+  const readFile = fs.readFileSync;
+  const read = fs.readSync;
+  let bytesRead = 0;
+  const full = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (file === path) throw new Error('the log must be read with a bounded suffix');
+    return Reflect.apply(readFile, fs, [file, ...args]);
+  }) as typeof fs.readFileSync);
+  const suffix = spyOn(fs, 'readSync').mockImplementation(((fd: number, buffer: NodeJS.ArrayBufferView,
+    offset: number, length: number, position: number | null) => {
+    const count = read(fd, buffer, offset, Math.min(length, 997), position);
+    bytesRead += count;
+    return count;
+  }) as typeof fs.readSync);
+  let checked: Awaited<ReturnType<typeof checkService>>;
+  try {
+    checked = await checkService(at.root, f.system);
+  } finally {
+    full.mockRestore();
+    suffix.mockRestore();
+  }
+  expect(checked.passed).toBe(true);
+  expect(bytesRead).toBeGreaterThan(0);
+  expect(bytesRead).toBeLessThanOrEqual(40 * 1024 + 1);
+  const said = checked.lines.join('\n');
+  expect(said).toContain(`${Buffer.byteLength(old + recent) - 40 * 1024} earlier file bytes are outside this window`);
+  expect(said).toContain('Line counts below cover only this window');
+  expect(checked.lines.filter((line) => line.startsWith('  | '))).toEqual(
+    Array.from({ length: 40 }, (_, i) => '  | new report ' + (i + 20)));
+});
+
+for (const whose of ['host', 'shell']) test('the Mac ' + whose + ' log bounds an oversized single line and identifies its partial first line', async () => {
+  const at = install('My Resident', { shell: whose === 'shell' });
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  if (whose === 'shell') f.systemd.agents.get('com.animalabs.connectome.my-resident.shell')!.pid = null;
+  const path = join(at.work, 'logs', whose === 'host' ? 'agent.log' : 'shell.log');
+  writeFileSync(path, 'earlier prefix' + 'x'.repeat(80 * 1024) + 'visible-end');
+  const checked = await checkService(at.root, f.system);
+  const said = checked.lines.join('\n');
+  expect(said).not.toContain('earlier prefix');
+  expect(said).toContain('The first line starts partway through a file line');
+  const report = checked.lines.find((line) => line.endsWith('visible-end'))!;
+  expect(report).toBeDefined();
+  expect(Buffer.byteLength(report.slice('  | '.length))).toBe(40 * 1024);
+});
+
+for (const content of [null, '', 'a short report\n']) test('the Mac bounded file view preserves ' +
+  (content === null ? 'a missing log' : content === '' ? 'an empty log' : 'a short log'), async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const path = join(at.work, 'logs', 'agent.log');
+  if (content === null) rmSync(path, { force: true });
+  else writeFileSync(path, content);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(true);
+  const said = checked.lines.join('\n');
+  if (content === null) expect(said).toContain('isn\'t there yet');
+  else if (content === '') expect(said).toContain('nothing.');
+  else expect(checked.lines).toContain('  | a short report');
+  expect(said).not.toContain('earlier file bytes');
+});
+
+
+test('a Mac file window beginning inside a UTF8 character starts after that character without a replacement glyph', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const end = 'visible-end';
+  const padding = 'q'.repeat(40 * 1024 + 1 - 4 - end.length);
+  writeFileSync(join(at.work, 'logs', 'agent.log'), 'p'.repeat(50_000) + '🙂' + padding + end);
+  const checked = await checkService(at.root, f.system);
+  const report = checked.lines.find((line) => line.endsWith('visible-end'))!;
+  expect(report.startsWith('  | q')).toBe(true);
+  expect(report.includes('\uFFFD')).toBe(false);
+  expect(report.includes('🙂')).toBe(false);
+  expect(Buffer.byteLength(report.slice('  | '.length))).toBe(40 * 1024 - 3);
+});
+
+
+test('a Mac byte window on a line boundary reports its skipped bytes without claiming a partial line', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const prefix = 'earlier\n'.repeat(10_000);
+  const recent = 'r'.repeat(40 * 1024 - 1) + '\n';
+  writeFileSync(join(at.work, 'logs', 'agent.log'), prefix + recent);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.lines.join('\n')).toContain(Buffer.byteLength(prefix) + ' earlier file bytes');
+  expect(checked.lines.join('\n')).not.toContain('partway through a file line');
+  expect(checked.lines).toContain('  | ' + recent.trimEnd());
+});
+
+for (const credential of ['first-é-last', 'first\né-second\nlast']) test('the bounded Mac file view masks an edge-crossing ' +
+  (credential.includes('\n') ? 'multiline UTF8 credential' : 'UTF8 credential'), async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin', env: { DISCORD_TOKEN: credential } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const prefix = 'old'.repeat(20_000) + '\ncredential=';
+  const cut = Buffer.byteLength(prefix + credential.slice(0, credential.indexOf('é'))) + 1;
+  const end = '\nvisible-last\n';
+  const padding = 'q'.repeat(40 * 1024 - (Buffer.byteLength(prefix + credential + end) - cut));
+  writeFileSync(join(at.work, 'logs', 'agent.log'), prefix + credential + padding + end);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(true);
+  const reports = checked.lines.filter((line) => line.startsWith('  | ')).join('\n');
+  expect(reports.includes('first')).toBe(false);
+  expect(reports.includes('last' + padding)).toBe(false);
+  expect(reports.includes('é-')).toBe(false);
+  expect(reports.includes('\uFFFD')).toBe(false);
+  expect(checked.lines).toContain('  | visible-last');
+  expect(checked.lines.filter((line) => line.includes('<DISCORD_TOKEN>'))).toHaveLength(credential.split('\n').length);
+  expect(checked.lines.filter((line) => line.startsWith('  | '))).toHaveLength(credential.split('\n').length + 1);
+});
+
+test('on macOS install rotates the earlier log before loading and checks the replacement log', async () => {
   const at = install();
   const log = join(at.work, 'logs', 'agent.log');
   mkdirSync(dirname(log), { recursive: true });
@@ -2320,7 +3004,7 @@ test('a shell daemon that isn\'t active and whose latest start isn\'t known name
     'shows it.');
 });
 
-test('on macOS a launch agent launchctl won\'t boot out is refused, saying it\'s still loaded as it was', async () => {
+test('on macOS a failed bootout reports the native failure without asserting the agent state', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -2328,7 +3012,8 @@ test('on macOS a launch agent launchctl won\'t boot out is refused, saying it\'s
   writeFileSync(second, '{}');
   f.systemd.launchctlFailsOnce.set('bootout', 'Boot-out failed: 5: Input/output error');
   expect(await installService(f.ctx(['install', second]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('is still loaded as it was');
+  expect(f.err.join('\n')).toContain('Boot-out failed: 5: Input/output error');
+  expect(f.err.join('\n')).not.toContain('is still loaded as it was');
   expect(f.systemd.bootstraps).toHaveLength(1);
 });
 
@@ -2415,8 +3100,8 @@ test('stop and start with no service recorded say how to set one up, and run not
   for (const verb of ['stop', 'start']) {
     f.err.length = 0;
     expect(await runService(f.ctx([verb]), f.system)).toBe(1);
-    expect(f.err).toEqual(['connectome: No service is set up for this install yet: connectome service install <recipe> ' +
-      'sets one up.']);
+    expect(f.err).toEqual([`connectome: No service is recorded for this install (${join(at.root, 'service.json')}). ` +
+      'connectome service install <recipe> sets one up.']);
   }
   expect(f.systemd.calls).toEqual([]);
 });
@@ -2430,7 +3115,7 @@ test('stop and start with a record that can\'t be read name the file and the way
     expect(await runService(f.ctx([verb]), f.system)).toBe(1);
     expect(f.err).toHaveLength(1);
     expect(f.err[0]).toContain(join(at.root, 'service.json'));
-    expect(f.err[0]).toEndWith('Name the recipe to write the service and its record again: connectome service install <recipe>');
+    expect(f.err[0]).toEndWith('Name the recipe to write the service and its record again: connectome service install <recipe>.');
   }
   expect(f.systemd.calls).toEqual([]);
 });
@@ -2965,10 +3650,10 @@ test('on macOS stop boots out the host, then its shell agent, says so of each an
     'with connectome service start.']);
   f.out.length = 0;
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
-  expect(f.out.slice(0, 2)).toEqual([`${host} wasn't running.`, `${shell} wasn't running.`]);
+  expect(f.out.slice(0, 2)).toEqual([`${host} wasn't loaded.`, `${shell} wasn't loaded.`]);
 });
 
-test('on macOS stop and start leave alone a recorded agent whose plist runs another directory, and stop one loaded with its plist gone', async () => {
+test('on macOS stop and start refuse another-directory configuration, and stop refuses a loaded agent with its plist gone', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -3006,7 +3691,7 @@ test('on macOS stop with only the shell agent\'s plist gone says whether the hos
   rmSync(agentPlist(at, shell));
   f.out.length = 0;
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
-  expect(f.out).toEqual([`${host} wasn't running.`, `${shell} wasn't running.`, `${host}'s launch agent stays in ` +
+  expect(f.out).toEqual([`${host} wasn't loaded.`, `${shell} wasn't loaded.`, `${host}'s launch agent stays in ` +
     `${dirname(agentPlist(at))}, so launchd starts it again when resident next logs in to the Mac's graphical session.`, `${agentPlist(at, shell)}, ` +
     `${shell}'s launch agent's file, is gone, so connectome service start refuses. ${serviceRepairWords}`]);
 });
@@ -3029,7 +3714,7 @@ test('on macOS a bootout that fails is said, with the agents stopped before it, 
   expect(await runService(f.ctx(['stop']), f.system)).toBe(1);
   expect(f.out).toEqual([`Stopped ${host}.`]);
   expect(f.err).toEqual([`connectome: launchctl bootout gui/1001/${shell} failed: Boot-out failed: 5: Input/output ` +
-    `error. ${shell} is still loaded as it was. Run connectome service stop again to finish stopping its agents.`]);
+    'error. Run connectome service stop again to finish stopping its agents.']);
 });
 
 test('on macOS start loads the shell agent, then the host\'s, setting each log aside first, starts one loaded but not running, and checks the service', async () => {
@@ -3196,9 +3881,10 @@ test('an installed shell package alone gives a no-shell recipe no daemon or sett
   expect(existsSync(shellUnit(at))).toBe(false);
   expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
   expect(existsSync(join(at.work, '.env'))).toBe(false);
+  expect(f.out.join('\n')).not.toContain('To bring it back');
 });
 
-test('removing the shell from a recipe removes its daemon and both settings, retaining other setup values', async () => {
+test('removing the shell retires its daemon while retaining changed token lines and unrelated settings', async () => {
   const at = install('My Resident', { shell: true });
   writeFileSync(at.recipe, JSON.stringify({ mcpServers: { shell: { command: 'terminal-sessions-mcp' } } }));
   const f = fake(at);
@@ -3214,11 +3900,14 @@ test('removing the shell from a recipe removes its daemon and both settings, ret
   expect(f.systemd.enabled.has(SHELL)).toBe(false);
   expect(existsSync(shellUnit(at))).toBe(false);
   expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
-  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe('# keep this comment\nDISCORD_TOKEN="keep-this"\n');
-  expect(new StoredSecrets(join(at.work, '.setup')).names()).toEqual(['DISCORD_TOKEN']);
-  expect(f.out.join('\n')).toContain('the recipe runs no shell client');
+  const kept = '# keep this comment\nDISCORD_TOKEN="keep-this"\n' +
+    'SESSION_SERVER_TOKEN="old-token"\nSESSION_SERVER_TOKEN="last-token"\n';
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(kept);
+  expect(new Set(new StoredSecrets(join(at.work, '.setup')).names()))
+    .toEqual(new Set(['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN']));
+  expect(f.out.join('\n')).toContain('the recipe source names no shell client or shell setting');
   expect(await installService(f.ctx(['install']), f.system)).toBe(0);
-  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe('# keep this comment\nDISCORD_TOKEN="keep-this"\n');
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(kept);
 });
 
 test('a recipe requesting a shell without the package gets an explanation and keeps external daemon settings', async () => {
@@ -3739,6 +4428,78 @@ test('a retiring launch agent with unreadable state keeps its record and setting
 });
 
 
+
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' shell retirement explains how an explicit recipe brings its daemon back', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  const source = readFileSync(at.recipe, 'utf-8');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(at.recipe, '{}');
+  f.out.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
+  expect(f.out.join('\n')).toContain('To bring it back, run connectome service install <recipe>');
+  expect(f.out.join('\n')).toContain('SESSION_SERVER_TOKEN or SESSION_SERVER_PORT in its source');
+  writeFileSync(at.recipe, source);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readServiceRecord(at.root)!.units.shell).toBeDefined();
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(true);
+});
+
+test('a Mac reinstall ownership refusal says the host was already unloaded', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = agentPlist(at);
+  const label = readServiceRecord(at.root)!.units.host.name;
+  const run = f.system.run;
+  let changed = '';
+  f.system.run = (command, args, env) => {
+    const ran = run(command, args, env);
+    if (command === 'launchctl' && args[0] === 'bootout' && args[1]?.endsWith('/' + label)) {
+      changed = readFileSync(file, 'utf-8').replace('<string>' + at.work + '</string>', '<string>/srv/other</string>');
+      writeFileSync(file, changed);
+    }
+    return ran;
+  };
+  f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+  expect(f.systemd.agents.has(label)).toBe(false);
+  expect(readFileSync(file, 'utf-8')).toBe(changed);
+  expect(f.err.join('\n')).toContain(label + ' was already unloaded');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' retirement ownership refusal names the shell operation already completed', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const shell = readServiceRecord(at.root)!.units.shell!;
+  writeFileSync(at.recipe, '{}');
+  const run = f.system.run;
+  let changed = '';
+  f.system.run = (command, args, env) => {
+    const ran = run(command, args, env);
+    if ((command === 'launchctl' && args[0] === 'bootout' && args[1]?.endsWith('/' + shell.name)) ||
+      (command === 'systemctl' && args.includes('disable') && args.includes(shell.name))) {
+      const old = readFileSync(shell.file, 'utf-8');
+      changed = platform === 'darwin'
+        ? old.replace('<string>' + at.work + '</string>', '<string>/srv/other</string>')
+        : old.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/other');
+      writeFileSync(shell.file, changed);
+    }
+    return ran;
+  };
+  f.out.length = f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+  expect(readFileSync(shell.file, 'utf-8')).toBe(changed);
+  expect(platform === 'darwin' ? f.systemd.agents.has(shell.name) : f.systemd.running.has(shell.name)).toBe(false);
+  if (platform === 'linux') expect(f.systemd.enabled.has(shell.name)).toBe(false);
+  expect(readServiceRecord(at.root)!.units.shell!.name).toBe(shell.name);
+  expect([...f.out, ...f.err].join('\n')).toContain(shell.name +
+    (platform === 'darwin' ? ' was already unloaded' : ' was already stopped and disabled'));
+});
+
 test('a foreign shell file written during readiness leaves the still-loaded local shell tracked', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at);
@@ -3926,7 +4687,9 @@ test('an unexpected planning error releases the service guard before a retry', a
   const f = fake(at);
   const portFree = f.system.portFree;
   f.system.portFree = async () => { throw new Error('port probe interrupted'); };
-  await expect(installService(f.ctx(['install', at.recipe]), f.system)).rejects.toThrow('port probe interrupted');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('port probe interrupted');
+  expect(f.err.join('\n')).toContain('repeat this command');
   nothingWritten(at);
   f.system.portFree = portFree;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);

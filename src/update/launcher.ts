@@ -153,6 +153,12 @@ function unwritableDirectory(dirs: string[]): string | null {
 
 export class LockHeld extends ContractError {}
 
+/** Whether a lock's holder still runs: its pid is alive on this boot, or on a boot neither side can name. */
+export function lockLive(holder: LockRecord, ops: LauncherOps): boolean {
+  const bootId = ops.bootId();
+  return ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId);
+}
+
 export function takeLock(root: string, ops: LauncherOps): void {
   const { lock } = installPaths(root);
   const bootId = ops.bootId();
@@ -175,11 +181,14 @@ export function takeLock(root: string, ops: LauncherOps): void {
         syncPath(dirname(lock));
         return;
       }
-      if (ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId)) {
+      if (lockLive(holder, ops)) {
         throw new LockHeld(
           `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
-          'An install runs one host at a time. If that process is this install\'s host, stop it first; if it\'s ' +
-          'something else that reused the number, remove the lock file.',
+          'An install runs one host at a time. If that process is this install\'s host, stop it first. If this ' +
+          'install is a copy, made while another install\'s host ran, the lock came with the copy: run setup here ' +
+          'first, which binds the copy to its own places and removes a lock it can show came with it, and then ' +
+          'remove the lock file if it\'s still there. If it\'s something else that reused the number, remove the ' +
+          'lock file.',
         );
       }
       if (attempt > 0) {
@@ -1182,7 +1191,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
   }
 }
 
-function releaseLock(root: string): void {
+export function releaseLock(root: string): void {
   const { lock } = installPaths(root);
   try {
     if (readRecord<LockRecord>(lock, 'lock')?.pid === process.pid) rmSync(lock, { force: true });

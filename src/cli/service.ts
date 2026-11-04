@@ -1,18 +1,24 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync,
+  readSync, renameSync, rmSync, statSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ContractError, INSTALL_ROOT_ENV, RESTART_EXIT_CODE, installPaths, pendingGoBack, readCurrent, readJournal, readMark,
-  readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type JournalLine, type Mark,
+  readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type InstallRecord, type JournalLine, type Mark,
 } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
 import { shellWord } from '../update/launcher.js';
+import { boundHere, sameDirectory, workingDirOf } from '../update/rebind.js';
 import { lingerOf } from '../setup/linger.js';
 import { takeFileLock } from '../setup/file-lock.js';
-import { StoredSecrets, envForm, readEnvFile, removeEnvValues, storedSecretRedactor, writeEnvValue } from '../setup/secrets.js';
+import {
+  StoredSecrets, envForm, readEnvFile, removeEnvValues, storedSecretRedactor, storedSecretWindowRedactor, writeEnvValue,
+} from '../setup/secrets.js';
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
@@ -29,6 +35,7 @@ const READY_WAIT_MS = 60_000;
 const RECIPE_CHECK_MS = 60_000;
 const FIRST_MINUTE_S = 60;
 const LOG_LINES = 40;
+const LOG_BYTES = 40 * 1024;
 const ENDED_ENTRIES = 200;
 const INVOCATION_FIELDS = ['_SYSTEMD_INVOCATION_ID', 'USER_INVOCATION_ID', 'INVOCATION_ID'];
 export const EXCERPT_LEAD = "Lines starting with | are reports from the process named above each excerpt, " +
@@ -39,7 +46,7 @@ const serviceUsage = (cmd: string) => `${cmd} service install [<recipe>] | stop 
 const RUNNING = new Set(['active', 'activating', 'reloading']);
 const STOPPING = new Set([...RUNNING, 'deactivating']);
 const recordAgain = (cmd: string) =>
-  `Name the recipe to write the service and its record again: ${cmd} service install <recipe>`;
+  `Name the recipe to write the service and its record again: ${cmd} service install <recipe>.`;
 const guessedSecretsNotice = (work: string) =>
   `The secret-name list ${join(work, '.setup', 'stored-secrets.json')} is missing, so additional .env names were ` +
   'treated as potentially secret. For later service checks, write it as a JSON list of the name of every secret, ' +
@@ -53,6 +60,9 @@ export interface ServiceUnit {
   file: string;
 }
 
+const SHELL_SETTING_NAMES = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'] as const;
+type ShellSettings = Partial<Record<(typeof SHELL_SETTING_NAMES)[number], string>>;
+
 export interface ServiceRecord {
   v: 1;
   manager: 'systemd-user' | 'launchd';
@@ -60,6 +70,7 @@ export interface ServiceRecord {
   hostArgs: string[];
   workingDirectory: string;
   logs: { kind: 'journal' } | { kind: 'file'; path: string };
+  shellSettings?: ShellSettings;
 }
 
 export interface Ran {
@@ -230,24 +241,23 @@ export async function runService(ctx: CliContext, sys: ServiceSystem = machine()
   const [verb, ...rest] = ctx.argv;
   if (verb === 'install' && rest.length <= 1) return installService(ctx, sys);
   if ((verb === 'stop' || verb === 'start') && rest.length === 0) {
-    try {
-      return await withServiceLock(ctx, () => (verb === 'stop' ? stopService : startService)(ctx, sys));
-    } catch (error) {
-      if (!(error instanceof Refusal) && !(error instanceof ContractError)) throw error;
-      ctx.err(`connectome: ${error.message}`);
-      return 1;
-    }
+    return serviceRun(ctx, () => (verb === 'stop' ? stopService : startService)(ctx, sys));
   }
   ctx.err(`Usage: ${serviceUsage(typedCommand(ctx.root!, sys.env.PATH))}`);
   return 2;
 }
 
 export async function installService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
+  return serviceRun(ctx, () => installWithRecord(ctx, sys));
+}
+
+async function serviceRun(ctx: CliContext, run: () => Promise<number>): Promise<number> {
   try {
-    return await withServiceLock(ctx, () => installWithRecord(ctx, sys));
+    return await withServiceLock(ctx, run);
   } catch (error) {
-    if (!(error instanceof Refusal) && !(error instanceof ContractError)) throw error;
-    ctx.err(`connectome: ${error.message}`);
+    ctx.err(`connectome: ${error instanceof Refusal || error instanceof ContractError ? error.message
+      : `Service command failed: ${errorText(error)}. Files or units may already have changed. ` +
+        "Inspect this install's files and service-manager state, resolve the error, then repeat this command."}`);
     return 1;
   }
 }
@@ -273,27 +283,82 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   const given = ctx.argv[1];
   const root = ctx.root!;
   const cmd = typedCommand(root, sys.env.PATH);
+  const installed = readRecord<InstallRecord>(installPaths(root).install, 'install record');
+  if (installed === null || !boundHere(installed, root)) {
+    throw new Refusal(`The install record at ${installPaths(root).install} isn't bound to ${workingDirOf(root)}. ` +
+      `Run ${cmd} setup here to confirm each recorded place, then repeat this service install command.`);
+  }
   let old: ServiceRecord | null = null;
   try {
-    old = readServiceRecord(root);
+    old = readServiceRecordFile(root, cmd, given === undefined);
   } catch (error) {
     if (given === undefined) {
-      ctx.err(`connectome: ${errorText(error)} ${recordAgain(cmd)}`);
+      ctx.err(`connectome: ${errorText(error)}`);
       return 1;
     }
-    ctx.out(`${errorText(error)} This run replaces it with a new record once it has written a unit file.`);
+    ctx.out(`${errorText(error).replace(/\.+$/, '')}. This run replaces it with a new record once it has written a unit file.`);
+  }
+  if (old !== null && !sameDirectory(old.workingDirectory, workingDirOf(root))) {
+    if (given === undefined) throw new Refusal(`${foreignServiceWords(root, old)} ${recordAgain(cmd)}`);
+    foreignRecordReplaceable(root, old, sys, cmd);
+    ctx.out(`${foreignServiceWords(root, old)} This run uses the explicit recipe and records only this directory's units.`);
+    old = null;
   }
   if (given === undefined && old === null) {
     ctx.err(`connectome: the first install needs the recipe: ${cmd} service install <recipe>`);
     return 2;
   }
+  const recipe = given === undefined ? old!.hostArgs[0]! : /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
+  return install(ctx, sys, root, recipe, old, cmd);
+}
+
+function foreignServiceWords(root: string, record: ServiceRecord): string {
+  return `The service record at ${join(root, 'service.json')} names ${record.workingDirectory}, which can't be shown ` +
+    `to be this working directory, ${workingDirOf(root)}. It isn't used here.`;
+}
+
+function foreignRecordReplaceable(root: string, record: ServiceRecord, sys: ServiceSystem, cmd: string): void {
+  let directory: ReturnType<typeof statSync> | undefined;
   try {
-    const recipe = given === undefined ? old!.hostArgs[0]! : /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
-    return await install(ctx, sys, root, recipe, old, cmd);
+    directory = statSync(record.workingDirectory, { throwIfNoEntry: false });
   } catch (error) {
-    if (!(error instanceof Refusal) && !(error instanceof ContractError)) throw error;
-    ctx.err(`connectome: ${error.message}`);
-    return 1;
+    throw new Refusal(`${foreignServiceWords(root, record)} Its recorded directory can't be checked: ${errorText(error)}. ` +
+      `Resolve that access problem. Then repeat ${cmd} service install <recipe>.`);
+  }
+  if (directory !== undefined) {
+    if (!directory.isDirectory()) throw new Refusal(`${foreignServiceWords(root, record)} ` +
+      'The recorded working-directory path is not a directory; resolve that before replacing this record. ' +
+      `Then repeat ${cmd} service install <recipe>.`);
+    return;
+  }
+  const env = childEnv(sys);
+  for (const unit of unitsOf(record)) {
+    const next = record.manager === 'systemd-user'
+      ? `${stopLine(sys, record.manager, unit.name)}, remove ${shellWord(unit.file)} if present, then ` +
+        systemctlLine(sys, 'daemon-reload')
+      : `${stopLine(sys, record.manager, unit.name)} and remove ${shellWord(unit.file)} if present`;
+    const refuse = (why: string): never => {
+      throw new Refusal(`${foreignServiceWords(root, record)} The recorded directory isn't present, and ${why}. ` +
+        `Before replacing its record, retire ${unit.name} with its native manager and remove its file. ` +
+        `If it belongs to the original install: ${next}. Then repeat ${cmd} service install <recipe>.`);
+    };
+    try {
+      if (lstatSync(unit.file, { throwIfNoEntry: false }) !== undefined) refuse(`its file ${unit.file} is still there`);
+    } catch (error) {
+      if (error instanceof Refusal) throw error;
+      refuse(`its file ${unit.file} can't be checked: ${errorText(error)}`);
+    }
+    if (record.manager === 'systemd-user') {
+      const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState']);
+      if (typeof shown === 'string') return refuse(shown);
+      if (shown.get('LoadState') !== 'not-found' || !['inactive', 'failed'].includes(shown.get('ActiveState') ?? '')) {
+        refuse(`systemd still holds ${unit.name} (${stateOf(shown)})`);
+      }
+    } else {
+      const state = agentState(sys, env, unit);
+      if (state.kind === 'unknown') refuse(`its loaded state can't be read: ${state.why}`);
+      if (state.kind !== 'unloaded') refuse(`launchd still has ${unit.name} loaded`);
+    }
   }
 }
 
@@ -347,7 +412,13 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const hostEnv: Array<[string, string]> = [...hostVars, [SUPERVISED_ENV, '1'], [INSTALL_ROOT_ENV, realOrResolved(root)]];
   const loaderEnv = { HOME: sys.home, USER: sys.user, LOGNAME: sys.user, ...Object.fromEntries(hostEnv) };
   const envBefore = readOr(envFile);
-  const externalToken = readEnvFile(envFile).get('SESSION_SERVER_TOKEN');
+  const knownSettings = readEnvFile(envFile);
+  const externalToken = knownSettings.get('SESSION_SERVER_TOKEN');
+  const ownedSettings: ShellSettings = {};
+  for (const name of SHELL_SETTING_NAMES) {
+    const value = old?.shellSettings?.[name];
+    if (value !== undefined && value === knownSettings.get(name)) ownedSettings[name] = value;
+  }
   const source = sys.readRecipe(recipe, work, loaderEnv);
   if (source.loads !== true) recipeProblem(source, work, sys, externalToken);
   const wantsShell = source.shell;
@@ -373,6 +444,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   }
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
   if (manager === 'systemd-user') noOtherHost(ctx, work, names, sys, env, cmd);
+  else noOtherAgent(ctx, work, names, sys, env);
   if (!wantsShell) {
     try {
       new StoredSecrets(join(work, '.setup')).names();
@@ -404,6 +476,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     hostArgs,
     workingDirectory: work,
     logs: manager === 'systemd-user' ? { kind: 'journal' } : { kind: 'file', path: logPath },
+    shellSettings: ownedSettings,
   };
   const previousShell = old?.units.shell;
   const retiring = shell === null && (previousShell?.name === names.shell.name ||
@@ -424,7 +497,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       touched = true;
     };
     try {
-      if (shell !== null) keepShellSettings(ctx, sys, work, shell);
+      if (shell !== null) keepShellSettings(ctx, sys, work, shell, ownedSettings);
       if (manager === 'systemd-user') {
         if (texts.shell !== null) {
           writeUnit(names.shell, texts.shell);
@@ -481,10 +554,10 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           const loaded = stateBefore.kind === 'running' || stateBefore.kind === 'loaded';
           if (loaded) await bootout(ctx, sys, env, unit,
             'Repeat this service install command with the same recipe to load its rewritten agents.');
-          ownedOrFree(unit, manager, work, sys, env, true);
+          ownedOrFree(unit, manager, work, sys, env, loaded ? `${unit.name} was already unloaded. ` : '');
           const rotate = loaded || stateBefore.kind === 'unloaded';
-          if (!rotate) ctx.out(`The state of ${unit.name} couldn't be read, so this run kept its log in place; ` +
-            'it can hold earlier loads.');
+          if (stateBefore.kind === 'unknown') ctx.out(`The state of ${unit.name} couldn't be read: ${stateBefore.why}. ` +
+            'This run kept its log in place; it can hold earlier loads.');
           const ran = loadAgent(sys, env, unit, unit === names.host ? logPath : join(work, 'logs', 'shell.log'), rotate);
           if (ran.status !== 0) {
             const state = agentState(sys, env, unit);
@@ -524,12 +597,22 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
             'Use a native stop instruction only if that unit belongs to this install.');
         }
       }
+      if (retiring !== undefined) {
+        ctx.out(`A managed shell daemon needs term-sessions-mcp installed in ${work}. ` +
+          `To bring it back, run ${cmd} service install <recipe> with a recipe that names the shell client or ` +
+          'SESSION_SERVER_TOKEN or SESSION_SERVER_PORT in its source.');
+      }
       if (retained) {
         const withoutShell = { ...recorded, units: { host: recorded.units.host } };
         writeJsonAtomic(join(root, 'service.json'), withoutShell, 0o600);
         retained = false;
       }
-      if (!wantsShell) dropShellSettings(ctx, work);
+      if (!wantsShell) {
+        dropShellSettings(ctx, work, ownedSettings);
+        const withoutSettings = { ...record };
+        delete withoutSettings.shellSettings;
+        writeJsonAtomic(join(root, 'service.json'), withoutSettings, 0o600);
+      }
     }
     if (!passed) {
       const before = old?.hostArgs[0];
@@ -577,14 +660,10 @@ async function readyAndChecked(ctx: CliContext, root: string, record: ServiceRec
 }
 
 function recordOf(root: string, cmd: string): ServiceRecord {
-  let record: ServiceRecord | null;
-  try {
-    record = readServiceRecord(root);
-  } catch (error) {
-    throw new Refusal(`${errorText(error)} ${recordAgain(cmd)}`);
-  }
+  const record = readServiceRecord(root, cmd);
   if (record === null) {
-    throw new Refusal(`No service is set up for this install yet: ${cmd} service install <recipe> sets one up.`);
+    throw new Refusal(`No service is recorded for this install (${join(root, 'service.json')}). ` +
+      `${cmd} service install <recipe> sets one up.`);
   }
   return record;
 }
@@ -637,13 +716,17 @@ async function stopService(ctx: CliContext, sys: ServiceSystem): Promise<number>
     if (!stopUnits(ctx, sys, env, units)) return 1;
   } else {
     for (const unit of units) {
-      const listed = sys.run('launchctl', ['list', unit.name], env);
-      if (listed.status !== 0) {
-        ctx.out(`${unit.name} wasn't running.`);
+      const state = agentState(sys, env, unit);
+      if (state.kind === 'unknown') {
+        throw new Refusal(`Whether ${unit.name} is loaded can't be told: ${state.why}. ` +
+          `Run ${cmd} service stop again once the query succeeds.`);
+      }
+      if (state.kind === 'unloaded') {
+        ctx.out(`${unit.name} wasn't loaded.`);
         continue;
       }
       await bootout(ctx, sys, env, unit, `Run ${cmd} service stop again to finish stopping its agents.`);
-      ctx.out(pidOf(listed.stdout) === undefined ? `${unit.name} wasn't running, and launchd no longer has it loaded.`
+      ctx.out(state.kind === 'loaded' ? `${unit.name} wasn't running, and launchd no longer has it loaded.`
         : `Stopped ${unit.name}.`);
     }
   }
@@ -834,12 +917,13 @@ function startAgents(ctx: CliContext, sys: ServiceSystem, env: Record<string, st
   const states = order.map((unit) => agentState(sys, env, unit));
   if (states.at(-1)!.kind !== 'running') for (const line of updateState(root, 'this start')) ctx.out(line);
   for (const [at, unit] of order.entries()) {
-    if (states[at]!.kind === 'running') {
+    const state = states[at]!;
+    if (state.kind === 'running') {
       ctx.out(`${unit.name} was already running, so it wasn't started again.`);
       continue;
     }
-    if (states[at]!.kind === 'unknown') {
-      ctx.out(`${unit.name}'s state couldn't be read from launchd, so this start kept its log in place. ` +
+    if (state.kind === 'unknown') {
+      ctx.out(`${unit.name}'s state couldn't be read from launchd: ${state.why}. This start kept its log in place. ` +
         "It may hold lines from an earlier load.");
     }
     const ran = states[at]!.kind === 'loaded'
@@ -857,14 +941,17 @@ function startAgents(ctx: CliContext, sys: ServiceSystem, env: Record<string, st
   return true;
 }
 
-type AgentState = { kind: 'unloaded' | 'loaded' } | { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
+type AgentState = { kind: 'unloaded' } | { kind: 'loaded'; exit?: string } |
+  { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
 
 function agentState(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit): AgentState {
   const listed = sys.run('launchctl', ['list', unit.name], env);
   if (listed.status === 113) return { kind: 'unloaded' };
   if (listed.status !== 0) return { kind: 'unknown', why: launchctlFailure(listed) };
   const pid = pidOf(listed.stdout);
-  return pid === undefined ? { kind: 'loaded' } : { kind: 'running', pid };
+  return pid === undefined
+    ? { kind: 'loaded', exit: /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1] }
+    : { kind: 'running', pid };
 }
 
 function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit, log: string, rotate: boolean): Ran {
@@ -891,8 +978,8 @@ function insideNeither(sys: ServiceSystem, manager: ServiceRecord['manager'],
 }
 
 function installRedactor(work: string, sys: ServiceSystem, token?: string): ReturnType<typeof storedSecretRedactor> {
-  const stored = storedSecretRedactor(work, sys.env);
-  return (text) => stored(token === undefined ? text : text.replaceAll(token, '<SESSION_SERVER_TOKEN>'));
+  return storedSecretRedactor(work, token ? { ...sys.env, SESSION_SERVER_TOKEN: token } : sys.env,
+    false, ['SESSION_SERVER_TOKEN']);
 }
 
 function recipeProblem(loaded: Exclude<RecipeLoad, { loads: true }>, work: string, sys: ServiceSystem,
@@ -998,10 +1085,10 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
-  env: Record<string, string>, written = false): void {
+  env: Record<string, string>, afterWrite?: string): void {
   const owner = ownerOf(unit, manager, work, sys, env);
-  const effect = written ? 'The service files already written remain in place. No further unit was changed.'
-    : 'Nothing was written.';
+  const effect = afterWrite === undefined ? 'Nothing was written.'
+    : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
@@ -1064,7 +1151,58 @@ function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; 
       `and two hosts on one install would both serve its data. ${statuses.join(' and ')} shows ` +
       `${others.length === 1 ? 'its state, and its process if it\'s running' : 'their states, and their processes if ' +
         'they\'re running'}. If that shows nothing uses ${them}, take ${them} away: ` +
-      `${steps.join('; and ')}. Then repeat this service install command with the same recipe. Nothing was written.`);
+      `${steps.join('; and ')}. If ${others.length === 1 ? 'it runs' : 'they run'} something other than a host, give ` +
+      `${them} another working directory instead. Then repeat this service install command with the same recipe. Nothing was written.`);
+  }
+}
+
+function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
+  sys: ServiceSystem, env: Record<string, string>): void {
+  const dir = join(sys.home, 'Library', 'LaunchAgents');
+  const warn = (file: string, why: string) => ctx.out(`${file} couldn't be checked: ${why}. ` +
+    `Another agent running a host from ${work} isn't ruled out.`);
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warn(dir, errorText(error));
+    return;
+  }
+  const field = (path: string, key: string): string | null => {
+    const type = sys.run('plutil', ['-type', key, path], env);
+    if (type.status !== 0) {
+      const lint = sys.run('plutil', ['-lint', path], env);
+      if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
+      return null;
+    }
+    if (type.stdout !== 'string\n') return null;
+    const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
+    if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
+    // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
+    return raw.stdout.replace(/\n$/, '');
+  };
+  for (const file of files.filter((file) => file.endsWith('.plist'))) {
+    const path = join(dir, file);
+    if (path === names.host.file || path === names.shell.file) continue;
+    let label: string | null;
+    try {
+      const directory = field(path, 'WorkingDirectory');
+      if (directory === null || realOrResolved(directory) !== realOrResolved(work)) continue;
+      label = field(path, 'Label');
+    } catch (error) {
+      warn(path, errorText(error));
+      continue;
+    }
+    if (label === null || label === '') {
+      warn(path, 'no launch-agent Label');
+      continue;
+    }
+    if (label === names.host.name || label === names.shell.name) continue;
+    throw new Refusal(`${label} (${path}) is already set up to run from ${work}, and two hosts there would both ` +
+      `serve its data. Inspect it with launchctl print gui/${sys.uid}/${shellWord(label)}. If it's an obsolete host, ` +
+      `retire it with launchctl bootout gui/${sys.uid} ${shellWord(path)}, then remove that plist. ` +
+      'If it runs something other than a host, give it another working directory. Then repeat this service install ' +
+      'command with the same recipe. Nothing was written.');
   }
 }
 
@@ -1111,7 +1249,8 @@ async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<strin
     await bootout(ctx, sys, env, unit, `Repeat this service install command with the same recipe to finish removing the shell daemon.`);
   }
   if (text !== null) {
-    ownedOrFree(unit, manager, work, sys, env, true);
+    ownedOrFree(unit, manager, work, sys, env, manager === 'systemd-user'
+      ? `${unit.name} was already stopped and disabled. ` : live ? `${unit.name} was already unloaded. ` : '');
     rmSync(unit.file, { force: true });
   }
   ctx.out(text === null
@@ -1146,7 +1285,7 @@ async function bootout(ctx: CliContext, sys: ServiceSystem, env: Record<string, 
   const ran = sys.run('launchctl', ['bootout', target], env);
   if (ran.status !== 0) {
     throw new Refusal('launchctl bootout ' + target + ' failed: ' + launchctlFailure(ran) + '. ' +
-      unit.name + ' is still loaded as it was. ' + next);
+      next);
   }
   const started = sys.now();
   const until = started + READY_WAIT_MS;
@@ -1202,6 +1341,10 @@ async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise
   const file = join(work, '.env');
   const known = readEnvFile(file);
   let port = known.get('SESSION_SERVER_PORT');
+  if (port && (!/^\d+$/.test(port) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) {
+    throw new Refusal(`SESSION_SERVER_PORT in ${file} is ${JSON.stringify(port)}, not an integer from 1 to 65535. ` +
+      'Set a TCP port in that range, then repeat this service install command. Nothing was written.');
+  }
   const newPort = !port;
   for (let candidate = SHELL_PORTS.first; candidate <= SHELL_PORTS.last && !port; candidate++) {
     if (await sys.portFree(candidate)) port = String(candidate);
@@ -1216,7 +1359,8 @@ async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise
     : { bin, port, token: randomBytes(32).toString('hex'), newPort, newToken: true };
 }
 
-function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, shell: ShellPlan): void {
+function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, shell: ShellPlan,
+  owned: ShellSettings): void {
   const file = join(work, '.env');
   const mode = existsSync(file) ? statSync(file).mode & 0o777 : 0o600;
   try {
@@ -1236,9 +1380,10 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
     ctx.out(`${file} ${shell.newToken ? 'is to hold' : 'holds'} the shell daemon's token and was open to others than ` +
       `${sys.user} (mode ${mode.toString(8)}), so it's now readable by ${sys.user} alone.`);
   }
-  const keep = (name: string, value: string) => {
+  const keep = (name: keyof ShellSettings, value: string) => {
     try {
       writeEnvValue(file, name, value);
+      owned[name] = value;
     } catch (error) {
       throw new Refusal(`${name} can't be written to ${file}: ${errorText(error)}. No unit was written.`);
     }
@@ -1254,17 +1399,20 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-function dropShellSettings(ctx: CliContext, work: string): void {
-  const names = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
+function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings): void {
   const stored = new StoredSecrets(join(work, '.setup'));
   try {
+    const current = readEnvFile(join(work, '.env'));
+    const remove = SHELL_SETTING_NAMES.filter((name) => owned[name] !== undefined && current.get(name) === owned[name]);
+    const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
     stored.names();
-    const envChanged = removeEnvValues(join(work, '.env'), names);
-    const storedChanged = stored.forget(names);
-    ctx.out("No shell daemon was set up: the recipe runs no shell client and uses neither shell setting." +
-      (envChanged || storedChanged ? " Removed its token and port from .env and setup's stored secrets." : ''));
+    removeEnvValues(join(work, '.env'), remove);
+    stored.forget(remove);
+    ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
+    if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
+    for (const name of keep) ctx.out(`Kept ${name} in .env: its current value isn't recorded as written by this service.`);
   } catch (error) {
-    throw new Refusal("The recipe needs no shell daemon, but its token and port couldn't be removed from .env and " +
+    throw new Refusal("No shell daemon was requested, but its recorded settings couldn't be removed from .env and " +
       "setup's stored secrets: " + errorText(error));
   }
 }
@@ -1385,7 +1533,19 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
     if (!('reason' in host)) {
       const ready = host.ready;
       host.close();
-      return ready;
+      let pid: string;
+      if (record.manager === 'systemd-user') {
+        const shown = showUnit(sys, env, name, ['MainPID']);
+        if (typeof shown === 'string') return shown;
+        pid = shown.get('MainPID') ?? '0';
+      } else {
+        const state = agentState(sys, env, record.units.host);
+        if (state.kind === 'unknown') return `Whether ${name} runs the answering host can't be told: ${state.why}.`;
+        pid = state.kind === 'running' ? state.pid : '0';
+      }
+      return pid === String(ready.pid) ? ready
+        : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${pid}. ` +
+          "That answer doesn't establish that this service's host is ready.";
     }
     last = host.reason;
     if (record.manager === 'systemd-user') {
@@ -1405,26 +1565,44 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
   }
 }
 
-export function readServiceRecord(root: string): ServiceRecord | null {
-  const path = join(root, 'service.json');
-  const record = readRecord<ServiceRecord>(path, 'service record');
-  if (record === null) return null;
-  const unit = (value: unknown) => typeof value === 'object' && value !== null &&
-    typeof (value as ServiceUnit).name === 'string' && typeof (value as ServiceUnit).file === 'string';
-  const logs = record.logs as { kind?: unknown; path?: unknown } | undefined;
-  const fits = (record.manager === 'systemd-user' || record.manager === 'launchd') &&
-    unit(record.units?.host) && (record.units.shell === undefined || unit(record.units.shell)) &&
-    Array.isArray(record.hostArgs) && record.hostArgs.length > 0 && record.hostArgs.every((arg) => typeof arg === 'string') &&
-    typeof record.workingDirectory === 'string' &&
-    (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
-  if (!fits) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
+export function readServiceRecord(root: string, cmd = typedCommand(root)): ServiceRecord | null {
+  const record = readServiceRecordFile(root, cmd);
+  if (record !== null && !sameDirectory(record.workingDirectory, workingDirOf(root))) {
+    throw new ContractError(`${foreignServiceWords(root, record)} ${recordAgain(cmd)}`);
+  }
   return record;
 }
 
+function readServiceRecordFile(root: string, cmd: string, repair = true): ServiceRecord | null {
+  const path = join(root, 'service.json');
+  try {
+    const record = readRecord<ServiceRecord>(path, 'service record');
+    if (record === null) return null;
+    const unit = (value: unknown) => typeof value === 'object' && value !== null &&
+      typeof (value as ServiceUnit).name === 'string' && typeof (value as ServiceUnit).file === 'string';
+    const logs = record.logs as { kind?: unknown; path?: unknown } | undefined;
+    const fits = (record.manager === 'systemd-user' || record.manager === 'launchd') &&
+      unit(record.units?.host) && (record.units.shell === undefined || unit(record.units.shell)) &&
+      Array.isArray(record.hostArgs) && record.hostArgs.length > 0 && record.hostArgs.every((arg) => typeof arg === 'string') &&
+      typeof record.workingDirectory === 'string' &&
+      (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
+    const settings = record.shellSettings;
+    const settingsFit = settings === undefined || (settings !== null && typeof settings === 'object' && !Array.isArray(settings) &&
+      Object.entries(settings).every(([name, value]) => SHELL_SETTING_NAMES.includes(name as keyof ShellSettings) &&
+        typeof value === 'string'));
+    if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
+    return record;
+  } catch (error) {
+    const why = error instanceof ContractError ? errorText(error)
+      : `The service record at ${path} can't be read: ${errorText(error).replace(/\.+$/, '')}.`;
+    throw new ContractError(`${why}${repair ? ' ' + recordAgain(cmd) : ''}`);
+  }
+}
+
 export function serviceLines(root: string, path: string | undefined = process.env.PATH): string[] | null {
-  const record = readServiceRecord(root);
-  if (record === null) return null;
   const cmd = typedCommand(root, path);
+  const record = readServiceRecord(root, cmd);
+  if (record === null) return null;
   const host = record.units.host;
   const log = record.logs.kind === 'file' ? record.logs.path : join(record.workingDirectory, 'logs', 'agent.log');
   const systemd = record.manager === 'systemd-user';
@@ -1440,7 +1618,7 @@ export async function checkService(root: string, sys: ServiceSystem = machine(),
   Promise<{ passed: boolean; lines: string[]; stopped?: true }> {
   let record: ServiceRecord | null;
   try {
-    record = readServiceRecord(root);
+    record = readServiceRecord(root, typedCommand(root, sys.env.PATH));
   } catch (error) {
     return { passed: false, lines: [errorText(error)] };
   }
@@ -1469,37 +1647,73 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     lines.push(EXCERPT_LEAD);
     explained = true;
   };
+  const showLog = (original: string, rendered: { text: string; guessed: string[] }, what: string,
+    ended: boolean, scope?: string) => {
+    if (rendered.guessed.length > 0 && !explainedGuess) {
+      lines.push(guessedSecretsNotice(workingDirectory));
+      explainedGuess = true;
+    }
+    logLines(original, rendered.text, what, lines, ended, explain, scope);
+  };
   const log = (text: string, what: string, ended = false) => {
     let redact: ReturnType<typeof storedSecretRedactor>;
     try {
-      redact = storedSecretRedactor(workingDirectory, sys.env, true);
+      redact = storedSecretRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']);
     } catch (error) {
       fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
       return;
     }
-    const redacted = redact(text);
-    if (redacted.guessed.length > 0 && !explainedGuess) {
-      lines.push(guessedSecretsNotice(workingDirectory));
-      explainedGuess = true;
+    showLog(text, redact(text), what, ended);
+  };
+  const fileLog = (path: string, what: string, missing: string) => {
+    let fd: number;
+    try {
+      fd = openSync(path, 'r');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      lines.push(missing);
+      return;
     }
-    logLines(text, redacted.text, what, lines, ended, explain);
+    try {
+      let window: ReturnType<typeof storedSecretWindowRedactor>;
+      try {
+        window = storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']);
+      } catch (error) {
+        fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
+        return;
+      }
+      const { bytes, from, offset } = readLogTail(fd, window.contextBytes);
+      const rendered = window.redact(bytes, from, bytes.length);
+      const before = offset + rendered.start;
+      const partial = before > 0 && bytes[rendered.start - 1] !== 0x0a;
+      const scope = before === 0 ? undefined : `${before} earlier file bytes are outside this window. ` +
+        (partial ? 'The first line starts partway through a file line. ' : '') +
+        'Line counts below cover only this window.';
+      showLog(bytes.toString('utf-8', rendered.start, rendered.end), rendered, what, true, scope);
+    } finally {
+      closeSync(fd);
+    }
   };
   const latestStart = (unit: ServiceUnit, shown: Map<string, string>, active: boolean, whose: string):
     { invocation: string; started: string } | null => {
     const invocation = shown.get('InvocationID') ?? '';
-    const started = /^@(\d+)$/.exec(shown.get('ExecMainStartTimestamp') ?? '')?.[1];
+    const stamp = shown.get('ExecMainStartTimestamp') ?? '';
+    const utc = /^\w{3} (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC$/.exec(stamp);
+    const seconds = utc === null ? NaN : Date.parse(`${utc[1]}T${utc[2]}Z`) / 1000;
+    const started = Number.isFinite(seconds) ? String(seconds) : undefined;
     if (invocation === '' || started === undefined) {
       lines.push(`Its latest start isn't known, so its log isn't shown: journalctl --user -u ${unit.name} shows it.`);
       return null;
     }
     const logged = sys.run('journalctl', ['--user', `_SYSTEMD_INVOCATION_ID=${invocation}`, '--since', `@${started}`,
-      ...(active ? ['--until', `@${Number(started) + FIRST_MINUTE_S}`] : []), '-o', 'cat', '--no-pager'], env);
+      ...(active ? ['--until', `@${Number(started) + FIRST_MINUTE_S}`] : ['-n', String(ENDED_ENTRIES)]),
+      '-o', 'cat', '--no-pager'], env);
     if (logged.status !== 0) {
       fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
       return null;
     }
     if (active) log(logged.stdout, `The journal's lines from ${whose} in the first minute of its latest start`);
-    else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended`, true);
+    else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended (last ${ENDED_ENTRIES} entries)`, true);
     return { invocation, started };
   };
   const units = unitsOf(record);
@@ -1567,43 +1781,37 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       }
     }
   } else {
-    const listedAll = units.map((unit) => sys.run('launchctl', ['list', unit.name], env));
-    stopped = stoppedIsFine && gone.length === 0 && listedAll.every((listed) => listed.status === 113);
+    const states = units.map((unit) => agentState(sys, env, unit));
+    stopped = stoppedIsFine && gone.length === 0 && states.every((state) => state.kind === 'unloaded');
     for (const [index, unit] of units.entries()) {
-      const listed = listedAll[index]!;
+      const state = states[index]!;
       if (stopped) {
         lines.push(`${unit.name} is stopped: launchd has it unloaded.`);
         continue;
       }
-      if (listed.status === 113) {
+      if (state.kind === 'unknown') {
+        fail(`Whether launchd has ${unit.name} loaded can't be told: ${state.why}.`);
+        continue;
+      }
+      if (state.kind === 'unloaded') {
         fail(`launchd has no ${unit.name} loaded.`);
         continue;
       }
-      if (listed.status !== 0) {
-        fail(`Whether launchd has ${unit.name} loaded can't be told: ${launchctlFailure(listed)}.`);
-        continue;
-      }
-      const pid = pidOf(listed.stdout);
-      const exit = /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1];
-      if (pid !== undefined) lines.push(`${unit.name} is running, pid ${pid}.`);
+      const exit = state.kind === 'loaded' ? state.exit : undefined;
+      if (state.kind === 'running') lines.push(`${unit.name} is running, pid ${state.pid}.`);
       else if (unit === record.units.host) {
         fail(`${unit.name} is loaded but not running${exit === undefined ? '' : `; it last exited with ${exit}`}.`);
       } else {
         const shellLog = join(record.workingDirectory, 'logs', 'shell.log');
         fail(`${unit.name} is loaded but not running${exit === undefined ? '' : `; it last exited with ${exit}`}. ` +
           `Its log is ${shellLog}.`);
-        const text = readOr(shellLog);
-        if (text === null) lines.push(`Its log ${shellLog} isn't there.`);
-        else {
-          log(text, 'The last lines of the shell daemon\'s log file, which can hold earlier loads and more than one start',
-            true);
-        }
+        fileLog(shellLog, 'The last lines of the shell daemon\'s log file, which can hold earlier loads and more than one start',
+          `Its log ${shellLog} isn't there.`);
       }
     }
     if (record.logs.kind === 'file') {
-      const text = readOr(record.logs.path);
-      if (text === null) lines.push(`Its log ${record.logs.path} isn't there yet.`);
-      else log(text, 'The last lines of the host\'s log file, which can hold earlier loads and more than one start', true);
+      fileLog(record.logs.path, 'The last lines of the host\'s log file, which can hold earlier loads and more than one start',
+        `Its log ${record.logs.path} isn't there yet.`);
     }
   }
   return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}) };
@@ -1616,8 +1824,10 @@ function stateOf(shown: Map<string, string>): string {
 
 function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
   properties: string[]): Map<string, string> | string {
-  const ran = sys.run('systemctl', ['--user', 'show', '--timestamp=unix', `--property=${properties.join(',')}`, '--', name],
-    env);
+  const timestamp = properties.includes('ExecMainStartTimestamp');
+  // systemd 247 ignores show's timestamp style. TZ and LC_ALL also fix its default output to numeric UTC seconds.
+  const ran = sys.run('systemctl', ['--user', 'show', ...(timestamp ? ['--timestamp=utc'] : []),
+    `--property=${properties.join(',')}`, '--', name], timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
   if (ran.status !== 0) {
     return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
       `(${systemctlLine(sys, `show ${name}`)})`;
@@ -1634,16 +1844,18 @@ function endedStart(sys: ServiceSystem, env: Record<string, string>, name: strin
     lines.push(`Its start before the latest isn't shown: journalctl --user failed: ${stderrOf(ran)}.`);
     return;
   }
-  const entries = ran.stdout.split('\n').flatMap((line) => {
-    let entry: Record<string, unknown>;
+  let unread = 0;
+  const entries = ran.stdout.split('\n').filter((line) => line.trim() !== '').flatMap((line) => {
     try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return [];
-    }
-    const id = INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
-    return typeof id === 'string' && typeof entry.MESSAGE === 'string' ? [{ id, message: entry.MESSAGE }] : [];
+      const entry = JSON.parse(line) as Record<string, unknown> | null;
+      const id = entry && INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
+      if (typeof id === 'string' && typeof entry!.MESSAGE === 'string') return [{ id, message: entry!.MESSAGE }];
+    } catch {}
+    unread++;
+    return [];
   });
+  if (unread > 0) lines.push(`${unread} journal entr${unread === 1 ? 'y' : 'ies'} couldn't be interpreted; ` +
+    'the earlier-start selection uses only the remaining entries.');
   const latest = entries.findIndex((entry) => entry.id === invocation);
   const read = `Its last ${ENDED_ENTRIES} journal entries, up to a second past its latest start,`;
   if (latest === -1) {
@@ -1661,18 +1873,20 @@ function endedStart(sys: ServiceSystem, env: Record<string, string>, name: strin
 }
 
 function logLines(original: string, text: string, what: string, lines: string[], ended: boolean,
-  beforeExcerpt: () => void): void {
+  beforeExcerpt: () => void, scope?: string): void {
   const rendered = text.split('\n');
   const logged = original.split('\n').map((line, at) => ({ original: line, text: rendered[at]!,
     matches: REPORT_WORDS.test(line) })).filter(({ original }) => original.trim() !== '');
   if (logged.length === 0) {
     lines.push(`${what}: nothing.`);
+    if (scope !== undefined) lines.push(`  ${scope}`);
     return;
   }
   beforeExcerpt();
   if (ended) {
     const hidden = Math.max(0, logged.length - LOG_LINES);
     lines.push(`${what}:`);
+    if (scope !== undefined) lines.push(`  ${scope}`);
     if (hidden > 0) lines.push(`  ${hidden} earlier line${hidden === 1 ? '' : 's'} not shown.`);
     for (const line of logged.slice(hidden)) lines.push(`  | ${line.text}`);
     return;
@@ -1686,6 +1900,24 @@ function logLines(original: string, text: string, what: string, lines: string[],
   });
   const hidden = shown.filter((each) => !each).length;
   if (hidden > 0) lines.push(`  ${hidden} more line${hidden === 1 ? '' : 's'} not shown.`);
+}
+
+function readLogTail(fd: number, contextBytes: number): { bytes: Buffer; from: number; offset: number } {
+  const size = fstatSync(fd).size;
+  const windowStart = Math.max(0, size - LOG_BYTES);
+  const offset = Math.max(0, windowStart - contextBytes - 1);
+  const buffer = Buffer.alloc(size - offset);
+  let read = 0;
+  while (read < buffer.length) {
+    const count = readSync(fd, buffer, read, buffer.length - read, offset + read);
+    if (count === 0) break;
+    read += count;
+  }
+  const bytes = buffer.subarray(0, read);
+  let from = Math.min(read, windowStart - offset);
+  // Buffer decoding would turn a partial UTF-8 character at the cut into a replacement character.
+  while (from < bytes.length && (bytes[from]! & 0xc0) === 0x80) from++;
+  return { bytes, from, offset };
 }
 
 function readOr(path: string): string | null {
