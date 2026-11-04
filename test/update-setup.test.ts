@@ -114,8 +114,9 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   'An update copies only the places the ' +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
-  'And <working directory> is the real path of the directory that holds the record\'s directory, as `pwd -P` ' +
-  'prints it in that directory: the record is bound to it, and start.js and connectome refuse a record bound to another.\n' +
+  'And <working directory> is the real path of the directory that holds the record\'s directory, as `realpath .` ' +
+  'prints it in that directory: the record is bound to it, and start.js and connectome refuse a record bound to ' +
+  'another.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
   'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
   'as a current that names no release. Its service can keep running ' +

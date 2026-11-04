@@ -833,7 +833,10 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
     for (;;) {
       const typed = await world.ask(`${place.path} (${what}${existsSync(place.path) ? '' : ', not there now'}): `);
       if (typed === null) return -1;
-      const given = typed.trim() === '' ? place.path : resolve(dirname(root), typed.trim());
+      const path = typed.trim();
+      const home = homeDirectory(world.env.HOME);
+      const given = path === '' ? place.path
+        : resolve(dirname(root), home !== null && (path === '~' || path.startsWith('~/')) ? join(home, path.slice(1)) : path);
       if (place.data) {
         const data = mapPath(record.dataDir, { from: null, to, places: [{ from: place.path, to: given }] })!;
         if (!existsSync(data) || !statSync(data).isDirectory()) {

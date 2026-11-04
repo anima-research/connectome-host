@@ -217,6 +217,21 @@ describe('binding an install to the directory it is in', () => {
     expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
   });
 
+  test('a record bound to another spelling of this directory, through a link, is bound: its entry starts, and setup runs as before, asking nothing', () => {
+    setup(options(install));
+    updated(install);
+    const spelling = join(dir, 'spelling');
+    symlinkSync(install, spelling);
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: spelling });
+    const files = readFileSync(join(rootOf(install), 'copy', 'copy.json'), 'utf-8');
+    expect(startOf(install).exitCode).toBe(0);
+    said = [];
+    setup(options(install));
+    expect(said[0]).toBe(`The install at ${rootOf(install)} serves ${join(install, 'data')} and runs 0.10.2, as before.`);
+    expect(record(install)!.workingDir).toBe(install);
+    expect(readFileSync(join(rootOf(install), 'copy', 'copy.json'), 'utf-8')).toBe(files);
+  });
+
   test('--place is refused where there is nothing to bind, and where it names no place the install names', () => {
     setup(options(install));
     expect(refusal(() => setup(options(install, { places: [{ from: join(install, 'data'), to: join(install, 'data') }] }))))
@@ -369,15 +384,16 @@ describe('the lock across a move or a copy', () => {
     expect(tree(rootOf(moved))).toEqual(kept);
   });
 
-  test('where the old directory leads back to this one, the lock there is this lock, and shows no copy', () => {
+  test('where the root where the install was leads back to this one, the lock there is this lock, and shows no copy', () => {
     setup(options(install));
-    const pid = live();
-    lockHeldBy(install, pid);
-    const moved = join(dir, 'moved');
-    renameSync(install, moved);
-    symlinkSync(moved, install);
-    expect(refusal(() => setup(options(moved)))).toContain(`and ${rootOf(install)}, where the install was, leads to this same directory.`);
-    expect(record(moved)!.workingDir).toBe(install);
+    lockHeldBy(install, live());
+    const other = join(dir, 'other');
+    mkdirSync(other);
+    symlinkSync(rootOf(install), rootOf(other));
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: other });
+    const places = [{ from: join(install, 'data'), to: join(install, 'data') }];
+    expect(refusal(() => setup(options(install, { places })))).toContain(`and ${rootOf(other)}, where the install was, leads to this same directory.`);
+    expect(record(install)!.workingDir).toBe(other);
   });
 
   test('a lock where the install was that names another holder shows no copy', () => {

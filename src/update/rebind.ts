@@ -14,7 +14,7 @@
  * finishes a binding cut off from its plan, without asking again.
  */
 import { randomUUID } from 'node:crypto';
-import { linkSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync } from 'node:fs';
+import { linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import {
   ContractError, copyLabelPath, installPaths, readRecord, realOrResolved, syncDir, writeJsonAtomic,
@@ -43,9 +43,26 @@ export function rebindPath(root: string): string {
   return join(root, REBIND_PLAN);
 }
 
-/** The directory an install at `root` is bound to: the real path of the directory that holds its root. */
+/** The directory setup binds an install at `root` to: the real path of the directory that holds its root. */
 export function workingDirOf(root: string): string {
   return dirname(realpathSync(root));
+}
+
+/** Whether two paths name one directory, by device and inode, so another spelling of it (its case on a volume that
+ *  ignores case, a link, a bind mount) names it too. A path that can't be looked at names none. */
+export function sameDirectory(a: string, b: string): boolean {
+  try {
+    const one = statSync(a, { bigint: true });
+    const other = statSync(b, { bigint: true });
+    return one.dev === other.dev && one.ino === other.ino;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `record` is bound to the directory that holds the install at `root`. */
+export function boundHere(record: InstallRecord, root: string): boolean {
+  return typeof record.workingDir === 'string' && sameDirectory(record.workingDir, workingDirOf(root));
 }
 
 /** A file of the install's root whose paths a binding maps: a copy's label, or a Go back's list of its places. */
@@ -170,7 +187,7 @@ export function bindingOf(root: string, record: InstallRecord): Binding {
   const plan = readPlan(root);
   if (plan !== null) return { kind: 'resume', plan };
   const to = workingDirOf(root);
-  if (record.workingDir === to) return { kind: 'bound', to };
+  if (boundHere(record, root)) return { kind: 'bound', to };
   const from = typeof record.workingDir === 'string' ? record.workingDir : null;
   const places = placesOf(record, boundFiles(root));
   return { kind: 'bind', from, to, places, ask: places.filter((place) => from === null || !isUnder(place.path, from)) };
@@ -318,12 +335,22 @@ function setAsideCopied(lock: string, holder: LockRecord): void {
 }
 
 /** The lines each setup-written entry, the entry point and the install's command, runs before it imports anything
- *  of a release, with `root` its install's root, as it found it, and `existsSync`, `readFileSync`, `dirname` and
- *  `join` in scope. `allowSetup` lets the command's `setup` through, since setup is what binds. */
+ *  of a release, with `root` its install's root, as it found it, and `existsSync`, `readFileSync`, `statSync`,
+ *  `dirname` and `join` in scope. They test a binding as boundHere does. `allowSetup` lets the command's `setup`
+ *  through, since setup is what binds. */
 export function bindingCheckLines(said: string, allowSetup: boolean): string[] {
   return [
     '{',
     `  const plan = join(root, ${JSON.stringify(REBIND_PLAN)});`,
+    '  const sameDirectory = (a, b) => {',
+    '    try {',
+    '      const one = statSync(a, { bigint: true });',
+    '      const other = statSync(b, { bigint: true });',
+    '      return one.dev === other.dev && one.ino === other.ino;',
+    '    } catch {',
+    '      return false;',
+    '    }',
+    '  };',
     '  let refused = null;',
     '  if (existsSync(plan)) {',
     '    refused = `a setup binding this install to ${dirname(root)} was cut off before it finished (${plan} is its ` +',
@@ -334,7 +361,7 @@ export function bindingCheckLines(said: string, allowSetup: boolean): string[] {
     "      bound = JSON.parse(readFileSync(join(root, 'install.json'), 'utf-8'))?.workingDir;",
     '    } catch {',
     '    }',
-    "    if (typeof bound === 'string' && bound !== dirname(root)) {",
+    "    if (typeof bound === 'string' && !sameDirectory(bound, dirname(root))) {",
     '      refused = `its record is bound to ${bound}, and it\'s in ${dirname(root)}, so it was moved or copied here, ` +',
     "        'and the places its record names may be another install\\'s. Setup binds it to this directory, asking about ' +",
     '        `any place outside ${bound}`;',

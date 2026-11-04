@@ -314,14 +314,14 @@ install it was. Run setup again in the new directory, the line above with
 the new `DATA_DIR`, or `<root>/connectome setup discord` for an install
 `connectome setup` made. It binds the install there: each place under the
 old directory becomes the same place under the new one, in the record, in
-the last update's copy and in each Go back's list. Each place outside the
+the copy labels and in each Go back's list. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
 `PLACE` the same path after a move, or the copy's own after a copy. An
 install set up before setup recorded its directory is checked for a move or
 a copy only after setup next runs there, and that run asks the same of
 every place it names, its data directory included. A binding that changes
-the paths of the copy or of a Go back writes its plan, `rebind.json`, in the
+the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
 root first; if it's cut off, nothing starts until setup, run again, finishes
 it from the plan.
 

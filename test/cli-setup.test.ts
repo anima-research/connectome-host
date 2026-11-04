@@ -1917,7 +1917,7 @@ test('a copy with a place outside its old directory asks where that place is in 
   const copy = besideIt(dir, 'copy');
   expect(Bun.spawnSync(['cp', '-a', dir, copy]).exitCode).toBe(0);
   const own = join(copy, 'state.json');
-  const again = world(copy, { answers: [own] });
+  const again = world(copy, { answers: ['~/state.json'] });
   expect(await runSetup(copy, ['discord'], again)).toBe(0);
   expect(again.seen.asked).toEqual([`${outside} (state kept outside its data directory): `]);
   expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(copy, 'connectome-host'), '--place', outside, own], dataDir: join(copy, 'data') });

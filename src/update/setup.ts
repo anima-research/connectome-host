@@ -57,7 +57,7 @@ export function entryPointText(): string {
     '// service starts the host here with the arguments it would give the host:',
     '// the launcher of the release this install\'s data last committed on decides what',
     '// runs, and then becomes the host of the release it decided on.',
-    "import { existsSync, readFileSync, realpathSync } from 'node:fs';",
+    "import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
     "import { dirname, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
