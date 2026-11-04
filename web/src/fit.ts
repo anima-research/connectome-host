@@ -30,9 +30,12 @@ export async function fitByRedraw(width: number, height: number, limits: UserIma
 }
 
 export function fitNote(fit: { w: number; h: number; flattened: boolean }, from: { width: number; height: number; type: string; to: string }): string {
+  const converted = `converted from ${from.type || 'an unknown type'} to ${from.to}`;
+  // A flattened redraw names its JPEG below.
+  const alsoConverted = !fit.flattened && from.type !== from.to ? ` and ${converted}` : '';
   const what = fit.w !== from.width || fit.h !== from.height
-    ? `shrunk from ${from.width}×${from.height} to ${fit.w}×${fit.h} to fit`
-    : `converted from ${from.type || 'an unknown type'} to ${from.to}`;
+    ? `shrunk from ${from.width}×${from.height} to ${fit.w}×${fit.h}${alsoConverted} to fit`
+    : converted;
   return fit.flattened ? `${what}, as a JPEG on white, which flattens any transparency` : what;
 }
 
@@ -41,5 +44,5 @@ export const ANIMATED_REDRAWN_NOTE = 'an animation, redrawn as one still frame';
 export function noFitReason(name: string, fit: { tooBig: boolean }, limits: UserImageLimits): string {
   return fit.tooBig
     ? `${name} is still over ${base64Chars(limits.maxBase64Chars)} after shrinking; crop it, or attach a smaller copy`
-    : `${name} couldn't be redrawn to fit: the browser drew no image at any size tried`;
+    : `${name} couldn't be redrawn to fit: the browser drew no image at any size tried; attach a smaller copy`;
 }

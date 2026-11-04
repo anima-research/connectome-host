@@ -64,6 +64,16 @@ function keptSends<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyAr
     }));
 }
 
+/**
+ * Mark every send still waiting for its echo not confirmed, as a welcome this
+ * client can't read leaves it: the reload that welcome asks for drops the row.
+ */
+export function markUnconfirmed(rows: SentRow[]): void {
+  for (const r of rows) {
+    if (isSyntheticId(r.id) && r.corrId !== undefined && !r.unsent) r.unsent = 'unconfirmed';
+  }
+}
+
 export function rowsAfterWelcome<R extends SentRow & { index?: number }>(
   rows: ReadonlyArray<R>,
   window: ReadonlyArray<R>,
@@ -85,9 +95,18 @@ export function settleByEntries(rows: SentRow[], entries: ReadonlyArray<{ corrId
   }
 }
 
+/** The host's reason for a refusal, without its leading "message not sent: ". */
+const hostReason = (refusal?: string): string | undefined => refusal?.replace(/^message not sent:\s*/, '');
+
+/** The composer's note for a refused send put back into it, with the host's reason. */
+export function refusedNote(refusal?: string): string {
+  const reason = hostReason(refusal);
+  return `not sent: the host refused it${reason ? ` (${reason})` : ''}; the message is back here`;
+}
+
 export function unsentMark(row: SentRow): string | null {
   if (!row.unsent) return null;
-  const reason = row.refusal?.replace(/^message not sent:\s*/, '');
+  const reason = hostReason(row.refusal);
   const mark = row.unsent === 'refused'
     ? `not sent: the host refused it${reason ? ` (${reason})` : ''}`
     : 'not confirmed: it may not have reached the host';

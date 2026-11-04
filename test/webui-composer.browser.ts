@@ -428,6 +428,12 @@ describe('a message is never lost', () => {
       c.host.refuse(damson.corrId!);
       await until('the message back in the composer', () => c.box.inputValue(), (v) => v === 'damson');
       expect(await rowsOf(c.page, 'damson').count()).toBe(0);
+      const note = 'not sent: the host refused it (refused by the scripted host); the message is back here';
+      await c.page.getByText(note).waitFor();
+      c.host.welcomeAgain();
+      c.host.append('after the welcome', 'a corrId of its own');
+      await c.page.getByText('after the welcome', { exact: true }).waitFor();
+      expect(await c.page.getByText(note).count()).toBe(1);
     });
   });
 
@@ -579,6 +585,16 @@ describe('a message is never lost', () => {
       c.host.append('after the page', 'a corrId of its own');
       await c.page.getByText('after the page', { exact: true }).waitFor();
       expect(await c.page.getByText('older', { exact: true }).count()).toBe(0);
+    });
+  });
+
+  test("a welcome in a protocol this client doesn't speak marks a send still waiting for its echo not confirmed", async () => {
+    await withComposer(async (c) => {
+      await send(c, 'quince');
+      expect(await rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count()).toBe(0);
+      c.host.welcomeAgain({ protocolVersion: WEB_PROTOCOL_VERSION + 1 });
+      await c.page.getByText(/^Protocol mismatch/).waitFor();
+      await until('the unconfirmed mark', () => rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count(), (n) => n === 1);
     });
   });
 
@@ -753,12 +769,40 @@ describe('images', () => {
     });
   });
 
+  test("a file the browser can't read is named in a note that says to attach it again", async () => {
+    await withComposer(async (c) => {
+      await attach(c, [{ name: 'gone.png', buffer: DOT_PNG }, { name: 'dot.png', buffer: DOT_PNG }]);
+      await c.page.getByTitle(/^dot\.png/).waitFor();
+      await c.page.getByText("gone.png couldn't be read; attach it again").waitFor();
+      expect(await c.page.getByTitle(/^gone\.png/).count()).toBe(0);
+    }, { init: FAIL_GONE_READS });
+  });
+
+  test("an image dropped or pasted with a file type the browser doesn't recognise is read by its bytes", async () => {
+    await withComposer(async (c) => {
+      const untyped = (how: 'drop' | 'paste', name: string): Promise<void> => c.box.evaluate((box, [b64, how, name]) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], name, { type: '' }));
+        box.dispatchEvent(how === 'drop'
+          ? new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })
+          : new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      }, [DOT_PNG.toString('base64'), how, name] as const);
+      await untyped('drop', 'dot.unknown');
+      await c.page.getByTitle(/^dot\.unknown/).waitFor();
+      await untyped('paste', 'pasted.unknown');
+      await c.page.getByTitle(/^pasted\.unknown/).waitFor();
+      expect(await c.page.getByText(/skipped/).count()).toBe(0);
+      const frame = await send(c, 'by its bytes');
+      expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/png', 'image/png']);
+    });
+  });
+
   test('an image is fitted to the side the welcome advertises, its thumbnail says so, and the fitted image is what is sent', async () => {
     await withComposer(async (c) => {
       await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
       const tile = c.page.getByTitle(/^wide\.png/);
       await tile.waitFor();
-      expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×300 to 2000×200 to fit');
+      expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×300 to 2000×200 and converted from image/png to image/webp to fit');
       expect(await tile.getByText('shrunk', { exact: true }).count()).toBe(1);
       for (const [fx, fy, colour] of RED_BLUE_READS) {
         const shown = await tileImage(tile, fx, fy);
@@ -880,6 +924,16 @@ const HOLD_FILE_READS = `(() => {
     const going = held.filter((h) => name === undefined || h.name === name);
     held = held.filter((h) => !going.includes(h));
     for (const h of going) h.go();
+  };
+})();`;
+
+const FAIL_GONE_READS = `(() => {
+  const read = Blob.prototype.arrayBuffer;
+  Blob.prototype.arrayBuffer = function () {
+    if (this instanceof File && this.name.startsWith('gone')) {
+      return Promise.reject(new DOMException('The requested file could not be read', 'NotReadableError'));
+    }
+    return read.call(this);
   };
 })();`;
 

@@ -22,9 +22,10 @@ import {
   type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
 } from './Health';
 import { BranchPanel } from './Branches';
-import { AttachmentStrip, dragHasFiles, pastedImages, prepareImage, type Attachment } from './Attachments';
+import { AttachmentStrip, dragHasFiles, mayBeImage, pastedImages, prepareImage, type Attachment } from './Attachments';
 import {
-  isSyntheticId, newCorrId, placeOf, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
+  isSyntheticId, markUnconfirmed, newCorrId, placeOf, refusedNote, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries,
+  settleRefusal, unsentMark,
   type Place,
 } from './echo';
 import { base64Chars } from './fit';
@@ -780,6 +781,7 @@ export function App() {
 
     if (msg.protocolVersion !== WEB_PROTOCOL_VERSION) {
       setProtoMismatch(msg.protocolVersion);
+      setMessages(produce((arr) => markUnconfirmed(arr)));
       return;
     }
     setProtoMismatch(null);
@@ -1238,7 +1240,7 @@ export function App() {
     setSendNote(null);
     if (preparing() === 0) setFileNotes([]);
     const notes: string[] = [];
-    const images = files.filter((f) => f.type.startsWith('image/'));
+    const images = files.filter(mayBeImage);
     if (images.length < files.length) notes.push(`${files.length - images.length} file(s) skipped: only images can be attached`);
     let overCount = 0;
     setPreparing((n) => n + images.length);
@@ -1370,7 +1372,7 @@ export function App() {
       setDraft(text);
       setAttachments(images);
       setFileNotes((shown) => [...leftOut, ...shown]);
-      setSendNote('not sent (see the error above); the message is back here');
+      setSendNote(refusedNote(reason));
     }
   };
 

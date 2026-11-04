@@ -107,10 +107,10 @@ cut short, a damaged PNG, the size and the dimensions. Damage inside compressed
 data, which they can't see, can still be stored. The limits are the host's
 own, from its recipe, and its welcome advertises them for the composer to fit
 to. The refusal carries the send's `corrId`: when the composer is empty (no
-text, no images, none still being read), the message goes back into it and its
-row comes out of the transcript; with a draft there, the row stays, marked not
-sent with the host's reason. The stored message's entry carries the `corrId`
-too, so its echo replaces exactly the row its send showed, and a history page
+text, no images, none still being read), the message goes back into it, with
+a note giving the host's reason, and its row comes out of the transcript; with
+a draft there, the row stays, marked not sent with the host's reason. The
+stored message's entry carries the `corrId` too, so its echo replaces exactly the row its send showed, and a history page
 holding it settles the row the same way. A message the socket doesn't take,
 while it isn't open, stays in the composer with a note. Whenever a welcome
 replaces the transcript, after a reconnect or a change of session or branch, a
@@ -118,8 +118,10 @@ send typed here that its window doesn't hold stays after it: a refused one
 with its mark, and any other marked not confirmed, since its message may not
 have reached the host, until an echo replaces it. Shown in another session
 than it was sent in, the mark names that session and its branch, and in
-another branch of the same session, that branch. Only `/clear`, or a reload
-of the page, drops them. A routed message's row gives way, since no echo of
+another branch of the same session, that branch. A welcome in a protocol this
+client doesn't speak marks every send not yet echoed not confirmed, so it's
+plain, before the reload its banner asks for, which sends that reload drops. Only `/clear`, or a reload of the page,
+drops them. A routed message's row gives way, since no echo of
 it comes here. A host from before the `corrId` on entries, as under
 `bun run dev` against an older running host, shows each send twice until a
 reload, and after a reconnect marks this client's copy not confirmed beside

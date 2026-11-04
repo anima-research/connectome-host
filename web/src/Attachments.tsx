@@ -32,6 +32,15 @@ function readDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+/** A read of a picked file, which fails when the file changed or went away after it was picked. */
+async function readPicked<T>(name: string, read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch {
+    throw new Error(`${name} couldn't be read; attach it again`);
+  }
+}
+
 async function loadImage(file: Blob): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(file);
   try {
@@ -70,7 +79,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   const name = file.name || 'pasted image';
   // The type by the bytes, as the host reads it: a browser takes the type
   // from the file name.
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const bytes = new Uint8Array(await readPicked(name, () => file.arrayBuffer()));
   const sniffed = sniffImageType(bytes);
   // A browser draws what it has of a cut-short or damaged image.
   if (sniffed) {
@@ -91,7 +100,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   if (!width || !height) throw new Error(`${name} has no size to draw it at`);
 
   if (sniffed && !animated && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(file.size) <= L.maxBase64Chars) {
-    const dataUrl = await readDataUrl(file);
+    const dataUrl = await readPicked(name, () => readDataUrl(file));
     const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
     return {
       id: `att${++attachmentSeq}`,
@@ -125,10 +134,14 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
  * spreadsheet cells come with a picture of themselves) is a text paste, and
  * yields nothing here.
  */
+/** Whether a file may be an image: its type says so, or the browser didn't
+ *  recognise its type, which is then empty, and its bytes decide. */
+export const mayBeImage = (f: File): boolean => f.type.startsWith('image/') || f.type === '';
+
 export function pastedImages(data: DataTransfer | null): File[] {
   if (!data) return [];
   if (data.getData('text/plain').trim()) return [];
-  return [...data.files].filter((f) => f.type.startsWith('image/'));
+  return [...data.files].filter(mayBeImage);
 }
 
 /** Whether a drag carries files, so the composer should accept the drop. */

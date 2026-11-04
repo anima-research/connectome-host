@@ -58,9 +58,11 @@ describe('fitByRedraw', () => {
 });
 
 describe('the notes', () => {
-  test('a shrunk or converted image says so, and that a JPEG on white flattens transparency', () => {
+  test('a shrunk or converted image says so, both when both, and that a JPEG on white flattens transparency', () => {
     const from = { width: 4000, height: 3000, type: 'image/png', to: 'image/webp' };
-    expect(fitNote({ w: 2000, h: 1500, flattened: false }, from)).toBe('shrunk from 4000×3000 to 2000×1500 to fit');
+    expect(fitNote({ w: 2000, h: 1500, flattened: false }, from))
+      .toBe('shrunk from 4000×3000 to 2000×1500 and converted from image/png to image/webp to fit');
+    expect(fitNote({ w: 2000, h: 1500, flattened: false }, { ...from, type: 'image/webp' })).toBe('shrunk from 4000×3000 to 2000×1500 to fit');
     expect(fitNote({ w: 2000, h: 1500, flattened: true }, { ...from, to: 'image/jpeg' }))
       .toBe('shrunk from 4000×3000 to 2000×1500 to fit, as a JPEG on white, which flattens any transparency');
     expect(fitNote({ w: 4000, h: 3000, flattened: false }, { ...from, type: 'image/bmp' })).toBe('converted from image/bmp to image/webp');
@@ -70,6 +72,6 @@ describe('the notes', () => {
     expect(base64Chars(USER_IMAGE_LIMITS.maxTotalBase64Chars)).toBe('12,582,912 characters of base64');
     expect(noFitReason('cat.png', { tooBig: true }, USER_IMAGE_LIMITS)).toBe('cat.png is still over 5,000,000 characters of base64 after shrinking; crop it, or attach a smaller copy');
     expect(noFitReason('cat.png', { tooBig: false }, USER_IMAGE_LIMITS))
-      .toBe("cat.png couldn't be redrawn to fit: the browser drew no image at any size tried");
+      .toBe("cat.png couldn't be redrawn to fit: the browser drew no image at any size tried; attach a smaller copy");
   });
 });
