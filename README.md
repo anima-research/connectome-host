@@ -222,8 +222,9 @@ the only mitigation is behavioral (never narrate in tool rounds, always end
 tool-only turns with `skip_reply`). With `"disabled"` the agent replies by
 calling a send tool, and nothing else leaks. Ephemeral subagents inherit the
 caller's mode, except that a `"locked"` resident's subagents run `"disabled"`:
-a subagent has no lock of its own, so it publishes no plain text and reports
-through `subagent--return`.
+a subagent has no lock of its own, so it publishes no plain text, and its
+result still reaches its parent (through `subagent--return`, or its final
+text).
 
 `agent.sameRoundThinkTextPolicy` (`"public"` default, or `"private"`) governs
 only text emitted **beside a `think()` call** in the same round. It does not

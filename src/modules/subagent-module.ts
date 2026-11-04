@@ -424,10 +424,10 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
 /**
  * The mode a subagent runs: its parent's, except that a locked parent's runs
  * `disabled`. A locked parent's plain text goes only where it chose, and a
- * subagent has no lock of its own, so it publishes no plain text at all and
- * reports through subagent--return. Run as locus mode, its narration between
- * tool calls would post to the channel inferred for its turn, the leak the
- * inheritance of `disabled` closed.
+ * subagent has no lock of its own, so it publishes no plain text at all; its
+ * result still reaches its parent, through subagent--return or its final
+ * text. Run as locus mode, a subagent that opens a channel would speak there,
+ * which no prose_locus move chose.
  */
 function subagentProseRouting(parent: ProseRouting | undefined): ProseRouting | undefined {
   return parent === 'locked' ? 'disabled' : parent;
@@ -2335,10 +2335,6 @@ export class SubagentModule implements Module {
     }
     const names = tools.map((t) => t.name);
     if (agent.proseRouting === 'explicit' && agent.canUseTool('prose_help')) names.push('prose_help');
-    // Locked routing offers prose_locus the same way, outside the tool
-    // board. A subagent never has it (subagentProseRouting runs it disabled),
-    // so a fork of a locked parent is told it lacks it.
-    if (agent.proseRouting === 'locked' && agent.canUseTool('prose_locus')) names.push('prose_locus');
     return names;
   }
 
@@ -3063,7 +3059,8 @@ export class SubagentModule implements Module {
       systemPrompt: systemPromptFor(launch.systemPrompt),
       maxTokens: launch.maxTokens,
       maxStreamTokens: launch.maxStreamTokens,
-      ...(launch.proseRouting !== undefined ? { proseRouting: launch.proseRouting } : {}),
+      // A stored launch never runs locked: a subagent has no lock of its own.
+      ...(launch.proseRouting !== undefined ? { proseRouting: subagentProseRouting(launch.proseRouting) } : {}),
       ...thinkingBindingSettings(launch.model, this.config.provider),
       allowedTools: launch.allowedTools === 'all' ? 'all' as const : [...launch.allowedTools],
       strategy: new KnowledgeStrategy({
@@ -3100,7 +3097,11 @@ export class SubagentModule implements Module {
       let resuming: ReturnType<AgentFramework['resumeAgent']> | undefined;
       let created: Awaited<ReturnType<AgentFramework['resumeAgent']>>;
       try {
-        resuming = framework.resumeAgent(record.name, this.agentConfig(launch, record.name));
+        // A resume follows its parent as it is now: a resident locked since
+        // the launch has its subagents run disabled, as a new launch would.
+        const parentLocked = framework.getAgent(parentAgentName)?.proseRouting === 'locked';
+        const resumed = parentLocked ? { ...launch, proseRouting: 'disabled' as const } : launch;
+        resuming = framework.resumeAgent(record.name, this.agentConfig(resumed, record.name));
         created = await Promise.race([resuming, cancel.promise]);
       } catch (err) {
         if (err instanceof SubagentTerminated) {
