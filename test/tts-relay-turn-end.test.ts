@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
-import { TtsRelayModule } from '../src/modules/tts-relay-module.js';
+import { TtsRelayModule, type TtsRelayModuleConfig } from '../src/modules/tts-relay-module.js';
 
 type RelayMessage = { type: string } & Record<string, unknown>;
 
@@ -17,7 +17,7 @@ async function waitFor(check: () => boolean, what: string): Promise<void> {
   }
 }
 
-async function harness() {
+async function harness(config: Partial<TtsRelayModuleConfig> = {}) {
   const received: RelayMessage[] = [];
   const server = Bun.serve({
     port: 0,
@@ -38,7 +38,7 @@ async function harness() {
     getAgents: () => [{ name: 'Wren' }],
     onTrace: (cb: (e: TraceEvent) => void) => { listener = cb; return () => { listener = null; }; },
   } as unknown as ModuleContext;
-  const module = new TtsRelayModule({ url: `ws://127.0.0.1:${server.port}/bot`, token: 't', reconnectIntervalMs: 50 });
+  const module = new TtsRelayModule({ url: `ws://127.0.0.1:${server.port}/bot`, token: 't', reconnectIntervalMs: 50, ...config });
   await module.start(ctx);
   cleanups.push(async () => { await module.stop(); server.stop(true); });
   const connected = () =>
@@ -181,5 +181,43 @@ describe('what the relay is given to voice', () => {
     await waitFor(() => received.some((m) => m.type === 'block_complete'), 'the Discord message');
     expect(JSON.stringify(received)).not.toContain('Over on the other server.');
     expect(received.filter((m) => m.type === 'chunk').map((m) => [m.channelId, m.text])).toEqual([['123', 'Here on Discord.']]);
+  }, 30_000);
+
+  test("a server whose messages aren't voiced is logged once, naming the server the relay voices", async () => {
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { received, emit } = await harness();
+      emit({ type: 'inference:started', channelId: CHANNEL });
+      emit({ type: 'inference:published', serverId: 'zulip', channelId: 'zulip:stream:7', inferenceId: 'i1', index: 0, text: 'One.', messageId: 'z1' });
+      emit({ type: 'inference:published', serverId: 'zulip', channelId: 'zulip:stream:7', inferenceId: 'i1', index: 1, text: 'Two.', messageId: 'z2' });
+      emit({ type: 'inference:published', serverId: 'slack', channelId: 'slack:team:9', inferenceId: 'i1', index: 2, text: 'Three.', messageId: 's1' });
+      emit({ type: 'inference:published', serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1', index: 3, text: 'Here on Discord.', messageId: 'd1' });
+      await waitFor(() => received.some((m) => m.type === 'block_complete'), 'the Discord message');
+      const unvoiced = errors.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("aren't voiced"));
+      expect(unvoiced).toEqual([
+        "[tts-relay] messages published on server 'zulip' aren't voiced: the relay voices only server 'discord', the default when modules.ttsRelay.editServerId is unset. Later ones on 'zulip' aren't logged.",
+        "[tts-relay] messages published on server 'slack' aren't voiced: the relay voices only server 'discord', the default when modules.ttsRelay.editServerId is unset. Later ones on 'slack' aren't logged.",
+      ]);
+    } finally {
+      errors.mockRestore();
+    }
+  }, 30_000);
+
+  test("with editServerId set, the log names the server it sets", async () => {
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { received, emit } = await harness({ editServerId: 'discord-main' });
+      emit({ type: 'inference:started', channelId: 'discord-main:guild:123' });
+      emit({ type: 'inference:published', serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1', index: 0, text: 'Not here.', messageId: 'x1' });
+      emit({ type: 'inference:published', serverId: 'discord-main', channelId: 'discord-main:guild:123', inferenceId: 'i1', index: 1, text: 'Here.', messageId: 'd1' });
+      await waitFor(() => received.some((m) => m.type === 'block_complete'), 'the voiced message');
+      expect(received.filter((m) => m.type === 'chunk').map((m) => [m.channelId, m.text])).toEqual([['123', 'Here.']]);
+      const unvoiced = errors.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("aren't voiced"));
+      expect(unvoiced).toEqual([
+        "[tts-relay] messages published on server 'discord' aren't voiced: the relay voices only server 'discord-main', which modules.ttsRelay.editServerId names. Later ones on 'discord' aren't logged.",
+      ]);
+    } finally {
+      errors.mockRestore();
+    }
   }, 30_000);
 });

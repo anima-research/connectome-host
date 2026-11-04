@@ -10,6 +10,10 @@
   when its message is posted, not while it is being written. A message's
   block can now arrive after its turn's `activation_end`, or on a channel
   where no activation was opened.
+- A message published on a server other than the one `editServerId` names
+  isn't voiced, and the host logs the first such message from each server,
+  naming the server the relay voices. A host whose Discord server has a key
+  other than `discord` voices nothing until `editServerId` names it.
 - A failed model call that the framework tries again, or holds for a
   provider's wait, no longer ends the voice client's activation, so it no
   longer cancels the audio of what the turn had already published. A turn

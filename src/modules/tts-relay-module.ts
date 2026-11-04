@@ -181,6 +181,7 @@ export class TtsRelayModule implements Module {
   private activations = new Map<string, ActivationState>();
   private published: PublishedMessage[] = [];
   private agentName: string | null = null;
+  private unvoicedServers = new Set<string>();
 
   constructor(private readonly config: TtsRelayModuleConfig) {}
 
@@ -213,6 +214,7 @@ export class TtsRelayModule implements Module {
     this.client = null;
     this.activations.clear();
     this.published = [];
+    this.unvoicedServers.clear();
     this.ctx = null;
   }
 
@@ -272,7 +274,10 @@ export class TtsRelayModule implements Module {
       case 'inference:published': {
         // The relay takes one server's raw channel ids, the server its edits go to.
         // Another server's channel id can cut down to the same raw id.
-        if (event.serverId !== (this.config.editServerId ?? 'discord')) break;
+        if (event.serverId !== (this.config.editServerId ?? 'discord')) {
+          this.logUnvoiced(event.serverId);
+          break;
+        }
         const content = event.text.replace(/^\n+/, '');
         if (!content.trim()) break;
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
@@ -338,6 +343,17 @@ export class TtsRelayModule implements Module {
       default:
         break;
     }
+  }
+
+  private logUnvoiced(serverId: string): void {
+    if (this.unvoicedServers.has(serverId)) return;
+    this.unvoicedServers.add(serverId);
+    const voiced = this.config.editServerId === undefined
+      ? "'discord', the default when modules.ttsRelay.editServerId is unset"
+      : `'${this.config.editServerId}', which modules.ttsRelay.editServerId names`;
+    console.error(
+      `[tts-relay] messages published on server '${serverId}' aren't voiced: the relay voices only server ${voiced}. Later ones on '${serverId}' aren't logged.`,
+    );
   }
 
   private async handleInterruption(ev: InterruptionEvent): Promise<void> {
