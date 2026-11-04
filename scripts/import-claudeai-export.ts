@@ -80,7 +80,13 @@ function parseArgs(argv: string[]): Opts {
     const a = args[i]!;
     if (a === '--out') outDir = resolve(args[++i]!);
     else if (a === '--agent') agentName = args[++i]!;
-    else if (a === '--person') personName = args[++i]!;
+    else if (a === '--person') {
+      personName = args[++i];
+      if (personName === undefined || personName.startsWith('--')) {
+        console.error('--person needs the name to give the person\'s turns: --person <name>');
+        process.exit(1);
+      }
+    }
     else if (a === '--filter') filter = new RegExp(args[++i]!, 'i');
     else if (a === '--dry-run') dryRun = true;
     else if (a === '--no-interactive') interactive = false;

@@ -438,7 +438,8 @@ export function setup(options: SetupOptions): void {
       `since its path is the same, and \`${typedCommand(root)} service install <recipe>\` then records the service ` +
       'again, if that\'s what set it up. Those places: a setup run that ' +
       `finished printed them after "${EXTRA_STATE_LINE}" ` +
-      '(`connectome setup` shows that block only at its end, and only while the record still holds it), ' +
+      '(`connectome setup` shows that block only at its end, only while the record still holds it, and not at all ' +
+      'when it holds none), ' +
       `and the moved root's copy/copy.json, if it has updated, ${copyShows('which aren\'t given')} ` +
       'A run that stopped partway may have written the record without printing them. ' +
       'If setup didn\'t make it, choose another --root.');

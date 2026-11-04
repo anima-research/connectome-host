@@ -11,6 +11,7 @@ import { bare, send } from '../src/cli/connectome.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { installPaths } from '../src/update/contract.js';
+import { shellWord } from '../src/update/launcher.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
 
 const REPO = resolve(import.meta.dir, '..');
@@ -132,12 +133,23 @@ test('the package\'s bin, in a directory with no install, says there\'s none', a
     expect(ran.status).toBe(1);
     expect(ran.err).toContain('no connectome-host install here');
   }
+  const typed = `bunx @animalabs/connectome-host@${JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version}`;
   const wrong = await run(BIN, ['frobnicate'], empty);
   expect(wrong.status).toBe(2);
   expect(wrong.err).toContain('there\'s no command frobnicate');
+  expect(wrong.err).toContain(`\n  ${typed} send <text>\n`);
   const help = await run(BIN, ['help'], empty);
   expect(help.status).toBe(0);
-  expect(help.out).toContain('connectome send <text>');
+  expect(help.out).toContain(`\n  ${typed} send <text>\n`);
+  expect(help.out).not.toMatch(/\n {2}connectome /);
+});
+
+test('help names an install\'s command by its path as it is, a `$&` in it included', async () => {
+  const { root } = install('a$&b');
+  const { path } = writeInstallCommand(root, '');
+  const help = await run(path, ['help'], root);
+  expect(help.status).toBe(0);
+  expect(help.out).toContain(`\n  ${shellWord(path)} send <text>\n`);
 });
 
 test('the package\'s bin is connectome-host, at the dispatcher, executable', () => {

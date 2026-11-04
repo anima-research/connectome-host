@@ -23,15 +23,17 @@ const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
 const dataOf = (body: unknown): unknown =>
   (body !== null && typeof body === 'object' ? (body as { data?: unknown }).data : undefined);
 const listed = (body: unknown): boolean => Array.isArray(dataOf(body));
-const trimmed = (url: string) => url.replace(/\/+$/, '');
+// A base URL and a path joined as @anthropic-ai/sdk 0.52.0's buildURL joins them, as the key check does: a base
+// ending in / takes the path without its first /.
+const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
 
 function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
-  return { url: `${trimmed(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1')}/models`, headers: bearer(key) };
+  return { url: under(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1', '/models'), headers: bearer(key) };
 }
 
 function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request {
   return {
-    url: `${trimmed(env.get('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com')}/v1/models?limit=1000`,
+    url: under(env.get('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com', '/v1/models?limit=1000'),
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
   };
 }
@@ -57,6 +59,8 @@ interface Options {
   fetch?: typeof fetch;
   limitMs?: number;
   env?: ReadonlyMap<string, string>;
+  /** Values that an answer quoting them shows by their names, as `<NAME>`, beside the key's own. */
+  hide?: readonly { name: string; value: string }[];
 }
 
 export function checkProviderKey(name: string, key: string, options: Options = {}): Promise<ProviderAnswer<null>> | null {
@@ -89,7 +93,7 @@ async function ask<T>(
     const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
     const words = timedOut ? `no answer within ${limitMs / 1000} s`
       : error instanceof Error ? error.message : String(error);
-    return { kind: 'unanswered', why: hidden(words, key, name) };
+    return { kind: 'unanswered', why: hidden(words, key, name, options.hide) };
   };
   let response: Response;
   try {
@@ -118,12 +122,15 @@ async function ask<T>(
   const message = typeof error === 'string' ? error
     : typeof (error as { message?: unknown } | undefined)?.message === 'string' ? (error as { message: string }).message
     : null;
-  return { kind: 'answered', status: response.status, said: message === null ? null : hidden(message, key, name) };
+  return {
+    kind: 'answered', status: response.status, said: message === null ? null : hidden(message, key, name, options.hide),
+  };
 }
 
-function hidden(words: string, key: string, name: string): string {
-  const forms = [...new Set([key, key.trim()])].filter((form) => form !== '').sort((a, b) => b.length - a.length);
-  for (const form of forms) words = words.split(form).join(`<${name}>`);
+function hidden(words: string, key: string, name: string, also: Options['hide'] = []): string {
+  const forms = [...[key, key.trim()].map((value) => ({ name, value })), ...also]
+    .filter(({ value }) => value !== '').sort((a, b) => b.value.length - a.value.length);
+  for (const form of forms) words = words.split(form.value).join(`<${form.name}>`);
   return words;
 }
 

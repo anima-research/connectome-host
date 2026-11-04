@@ -2,11 +2,11 @@ import { afterEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import {
   chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
-  lstatSync, symlinkSync, unlinkSync, writeFileSync,
+  lstatSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { SETUP_SUMMARY, costLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
 import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 import { lingerOf } from '../src/setup/linger.js';
 import { SetupModule } from '../src/modules/setup-module.js';
@@ -14,7 +14,7 @@ import { readEnvFile } from '../src/setup/secrets.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths, keptOutsideLines } from '../src/update/contract.js';
 import { entryPointText } from '../src/update/setup.js';
-import { machineOps, takeLock } from '../src/update/launcher.js';
+import { machineOps, shellWord, takeLock } from '../src/update/launcher.js';
 import { HostUpdate } from '../src/update/update.js';
 
 const REPO = resolve(import.meta.dir, '..');
@@ -122,11 +122,13 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
         return { status: 1, stdout: '', stderr: `connectome-host setup: The data directory ${dataDir} isn't there.\n` };
       }
       const record = join(root, 'install.json');
+      let before: string | null = null;
       if (existsSync(record)) {
         const served = (JSON.parse(readFileSync(record, 'utf-8')) as { dataDir: string }).dataDir;
         if (realpathSync(served) !== realpathSync(dataDir)) {
           return { status: 1, stdout: '', stderr: `connectome-host setup: The install at ${root} serves ${served}, not ${dataDir}.\n` };
         }
+        before = `The install at ${root} serves ${served} and runs ${basename(readlinkSync(join(root, 'current')))}, as before.`;
       }
       const release = script.release ?? VERSION;
       const scope = join(root, 'releases', release, 'node_modules', '@animalabs');
@@ -146,7 +148,8 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
         writeFileSync(join(root, ENTRY_POINT), entryPointText());
       }
       writeInstallCommand(root, options.env.PATH);
-      return { status: 0, stdout: `Set up ${root} as the install of ${release} that serves ${dataDir}.\n${script.installSetupSays ?? ''}`, stderr: '' };
+      const first = before ?? `Set up ${root} as the install of ${release} that serves ${dataDir}.`;
+      return { status: 0, stdout: `${first}\n${script.installSetupSays ?? ''}`, stderr: '' };
     }
     if (argv[1]?.endsWith(join('src', 'index.ts'))) {
       seen.boot = options;
@@ -207,11 +210,24 @@ test('setup sets up Discord alone, and names it when asked for anything else', a
   for (const argv of [['telegram'], [], ['discord', 'now']]) {
     const made = world(dir);
     expect(await runSetup(dir, argv, made)).toBe(2);
-    expect(text(made.seen.err)).toContain('connectome setup discord');
+    expect(text(made.seen.err)).toContain(`Usage: ${firstLine()}`);
     expect(text(made.seen.err)).toContain('Discord is the one surface setup sets a resident up on.');
     expect(made.seen.asked).toEqual([]);
   }
   expect(readdirSync(dir)).toEqual([]);
+});
+
+test('setup\'s usage line is the command that runs it here: the package\'s first line, or the install\'s own command', async () => {
+  const dir = directory();
+  const fresh = world(dir);
+  expect(await runSetup(dir, ['telegram'], fresh)).toBe(2);
+  expect(fresh.seen.err[0]).toBe(`Usage: ${firstLine()}`);
+  const root = join(dir, 'connectome-host');
+  mkdirSync(root);
+  writeInstallCommand(root, '');
+  const installed = world(dir);
+  expect(await runSetup(dir, ['telegram'], installed)).toBe(2);
+  expect(installed.seen.err[0]).toBe(`Usage: ${shellWord(join(root, 'connectome'))} setup discord`);
 });
 
 test('the package\'s bin, without a terminal, says setup needs a person at one and leaves the directory as it was',
@@ -532,12 +548,23 @@ test('a first run with a gateway in .env says the gateway may charge otherwise t
 });
 
 test('the PATH advice names the file the person\'s shell reads: ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS', async () => {
-  for (const [shell, platform, file] of [['/bin/zsh', 'linux', '~/.zshrc'], ['/bin/bash', 'linux', '~/.bashrc'], ['/bin/bash', 'darwin', '~/.bash_profile'], ['/usr/bin/fish', 'linux', 'your shell\'s startup file']] as const) {
+  for (const [shell, platform, file] of [['/bin/zsh', 'linux', '~/.zshrc'], ['/bin/bash', 'linux', '~/.bashrc'], ['/bin/bash', 'darwin', '~/.bash_profile'], ['/bin/dash', 'linux', 'your shell\'s startup file']] as const) {
     const dir = directory();
     const answers = platform === 'darwin' ? ['no', 'yes'] : ['no', ''];
     const made = world(dir, { answers, secrets: [KEY] }, { platform, env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
     expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
     expect(text(made.seen.out), `${shell} ${platform}`).toContain(`For that, put it on your PATH, and in ${file} to keep it there:`);
+  }
+});
+
+test('a shell that isn\'t a Bourne shell, such as fish or tcsh, is told to put the install on its PATH in its own way, with no export line', async () => {
+  for (const shell of ['/usr/bin/fish', '/bin/tcsh']) {
+    const dir = directory();
+    const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
+    expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
+    const root = join(dir, 'connectome-host');
+    expect(text(made.seen.out), shell).toContain(`For that, put ${root} on your PATH as your shell sets it, and in its startup file to keep it there.`);
+    expect(text(made.seen.out), shell).not.toContain('export PATH=');
   }
 });
 
@@ -577,6 +604,7 @@ test('where the running Bun\'s default trusted list can\'t be read whole, setup 
     expect(await runSetup(dir, ['discord'], made)).toBe(0);
     const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as Record<string, unknown>;
     expect(manifest.trustedDependencies).toBeUndefined();
+    expect(text(made.seen.out)).toContain(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} (`);
     expect(made.seen.launched).not.toBeNull();
   }
 });
@@ -636,7 +664,7 @@ test('with a shell, a node-pty that still opens no pty once installed again stop
   expect(text(made.seen.err)).toContain(`The resident's shell runs on node-pty, and here it doesn't work: Failed to load native module: pty.node, checked: build/Release. On Linux, its native part is built as it's installed, with python3, make and a C++ compiler; on Debian and Ubuntu, \`sudo apt install build-essential python3\` installs them, run by you if you can use sudo here, or by whoever administers this machine. Then run setup again, which installs node-pty again. Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where setup keeps its answers, and run setup again to answer no.`);
 });
 
-test('setup trusts term-sessions-mcp with Bun\'s own list, so Bun runs its install script and prints no "Blocked" line, and it asks Bun for nothing more after its add', async () => {
+test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies before its add, prints no "Blocked" line of its own, and asks Bun for nothing more after its add', async () => {
   const dir = directory();
   let atAdd: unknown = null;
   const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], atAdd: (cwd) => { atAdd = (JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf-8')) as { trustedDependencies?: unknown }).trustedDependencies; } });
@@ -775,6 +803,7 @@ test('without a shell, setup doesn\'t check node-pty', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'unreached\n' }] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.launched).not.toBeNull();
   expect(made.seen.ran.some((argv) => argv[0] === 'node' && argv[1] === '-e')).toBe(false);
 });
 
@@ -841,13 +870,22 @@ test('once its agent has recorded setup finished in this run, setup says it\'s f
       return 0;
     },
   });
+  const finishedLine = (dir: string) =>
+    `Setup is finished. To change something it set up, run setup again: \`${join(dir, 'connectome-host', 'connectome')} setup discord\`.`;
   const dir = directory();
   const made = finishing(dir, () => new Date().toISOString());
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain(`Setup is finished. To change something it set up, run setup again: \`${join(dir, 'connectome-host', 'connectome')} setup discord\`.`);
+  expect(made.seen.out).toContain(finishedLine(dir));
   expect(made.seen.out).not.toContain(resumeLine(dir));
+  // The clock set back during the conversation: the finish recorded in this run counts all the same.
+  const back = directory();
+  const stepped = finishing(back, () => '2000-01-01T00:00:00.000Z');
+  expect(await runSetup(back, ['discord'], stepped)).toBe(0);
+  expect(stepped.seen.out).toContain(finishedLine(back));
   const earlier = directory();
-  const old = finishing(earlier, () => '2026-10-01T00:00:00.000Z');
+  mkdirSync(join(earlier, '.setup'), { recursive: true });
+  writeFileSync(state(earlier), JSON.stringify({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' }));
+  const old = world(earlier, { secrets: [KEY] }, { startAgent: async () => 0 });
   expect(await runSetup(earlier, ['discord'], old)).toBe(0);
   expect(old.seen.out).toContain(resumeLine(earlier));
   expect(text(old.seen.out)).not.toContain('Setup is finished');
@@ -951,8 +989,12 @@ test('a setup whose install keeps no state outside the data directory shows no l
 test('a run that stops before its agent starts shows no list of the state kept outside the data directory: it didn\'t finish', async () => {
   const dir = directory();
   const block = keptOutsideBlock(dir);
-  const made = world(dir, { answers: ['no', ''], secrets: [], installSetupSays: [...block, ''].join('\n') });
-  await runSetup(dir, ['discord'], made);
+  const made = world(dir, {
+    answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, ''].join('\n'),
+    boot: { status: 1, stdout: '', stderr: 'the mock recipe fails\n' },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(true);
   expect(made.seen.launched).toBeNull();
   expect(text(made.seen.out)).not.toContain(EXTRA_STATE_LINE);
 });
@@ -1320,6 +1362,23 @@ test('nothing Bun gave setup from any dotenv file of the directory it was starte
   }
 });
 
+test('a value Bun expanded from a $NAME in a dotenv file stays away from setup\'s programs and its agent too', async () => {
+  const started = directory();
+  writeFileSync(join(started, '.env.local'), 'SOURCE=abc\nCOPIED=$SOURCE\nQUOTED=\'${SOURCE}-x\'\n');
+  const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+    cwd: started, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+  });
+  const given = JSON.parse(ran.stdout.toString()) as Record<string, string>;
+  expect([given.SOURCE, given.COPIED, given.QUOTED]).toEqual(['abc', 'abc', 'abc-x']);
+  const dir = directory();
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { cwd: started, env: { ...given, KEEP_ME: 'kept' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  for (const env of [...made.seen.options.map((options) => options.env), made.seen.launched!.env]) {
+    for (const name of ['SOURCE', 'COPIED', 'QUOTED']) expect(env[name], name).toBeUndefined();
+    expect(env.KEEP_ME).toBe('kept');
+  }
+});
+
 test('a name the shell exports that a plain object inherits, such as toString, reaches setup\'s agent like any other', async () => {
   const dir = directory();
   const env = { PATH: '/usr/bin:/bin', HOME: dir, toString: 'exported-to-string', constructor: 'exported-constructor' };
@@ -1446,7 +1505,7 @@ test('linger reads as systemd keeps it: on for a user with its file, off without
   expect(lingerOf('bob', root)).toBe(false);
 });
 
-test('setup\'s agent starts, and leaves the install\'s lock free for its service to start', async () => {
+test('the launch setup gives its agent starts the installed host, run here on a mock recipe in place of setup\'s, and leaves the install\'s lock free for its service to start', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', ''], secrets: [KEY], host: 'copy' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -1762,7 +1821,7 @@ test('a .env with a line outside setup\'s form stops setup before it asks or run
   writeFileSync(join(dir, '.env'), before, { mode: 0o600 });
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toBe(`${join(dir, '.env')}, line 1, spells its value in none of the form's three ways, and 2 other lines aren't in setup's form either. Setup reads and writes .env in one form, which Bun reads as it's written: empty lines, comments starting with #, and NAME=value, NAME="value" or NAME='value', each on one line, where NAME is ASCII letters, digits and _, not starting with a digit, a quoted value holds no quote of its own kind, $ or backslash, an unquoted one no quote, $, backslash, space or #, and no line holds a tab or another ASCII control character. Rewrite such a line in that form, or take it out of this .env, which is setup's: a value the host needs from it then has to reach the host's environment another way. Then run setup again.`);
+  expect(text(made.seen.err)).toBe(`${join(dir, '.env')}, line 1, spells its value in none of the form's three ways, and 2 other lines aren't in setup's form either. Setup reads and writes .env in one form, which Bun reads as it's written: empty lines, comments starting with #, and NAME=value, NAME="value" or NAME='value', each on one line, where NAME is ASCII letters, digits and _, not starting with a digit, a quoted value holds no quote of its own kind, $ or backslash, an unquoted one no quote, backtick, $, backslash, space or #, and no line holds a tab or another ASCII control character. Rewrite such a line in that form, or take it out of this .env, which is setup's: a value the host needs from it then has to reach the host's environment another way. Then run setup again.`);
   expect(text([...made.seen.out, ...made.seen.err])).not.toContain('body-of-the-key');
   expect(made.seen.asked).toEqual([]);
   expect(made.seen.ran).toEqual([]);
@@ -2134,6 +2193,7 @@ test('the host refuses modules.setup headless, in the TUI, or with stdin or stdo
   const ran = Bun.spawnSync(launch.argv, { cwd: launch.cwd, env: launch.env, stdin: Buffer.from('') });
   expect(ran.exitCode).not.toBe(0);
   expect(ran.stdout.toString() + ran.stderr.toString()).toContain(refusal);
+  expect(ran.stderr.toString(), 'a refusal, not a crash with its stack').not.toContain('Fatal error');
 
   // script(1) gives the host a terminal on stdin; the redirect inside takes stdout off it.
   const out = join(directory(), 'out.txt');
@@ -2300,7 +2360,7 @@ test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(text(made.seen.err)).toContain(`ANTHROPIC_BASE_URL, in ${join(dir, '.env')}, isn't an http:// or https:// URL`);
   expect(made.seen.checked).toEqual([]);
-  expect(made.seen.asked.some((question) => question.includes('Anthropic API key'))).toBe(false);
+  expect(made.seen.asked.filter((question) => /\bkey\b/i.test(question))).toEqual([]);
 });
 
 test('a .setup this user can\'t write in is named, with what to do, and nothing is asked', async () => {
@@ -2416,7 +2476,7 @@ test('an empty ANTHROPIC_API_KEY line in .env counts as no key, so an exported o
 const LATER_RUN = [
   'Setup keeps its answers here: the resident doesn\'t get a shell, and runs as this user, alice. They aren\'t asked again; setup\'s agent picks up where it stopped, and can change with you what it set up.',
   'Checking the install at <dir>/connectome-host.',
-  `Set up <dir>/connectome-host as the install of ${VERSION} that serves <dir>/data.`,
+  `The install at <dir>/connectome-host serves <dir>/data and runs ${VERSION}, as before.`,
   'Starting the installed host once, on a mock recipe, to see that it starts.',
   `The installed host (${VERSION}) starts.`,
   'Checking the ANTHROPIC_API_KEY in <dir>/.env: one call at https://api.anthropic.com to claude-opus-5-5, the model setup\'s agent runs on, which the key\'s account has to be able to use.',

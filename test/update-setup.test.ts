@@ -103,8 +103,8 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   'And <places> are the places of state kept outside the data directory that each update copies, such as an MCPL ' +
   'server\'s state, each a JSON string, or none. Only the install\'s setup writes that list, and each of its runs ' +
   'that finished printed what it recorded, after "State kept outside the data directory", though `connectome setup` ' +
-  'shows that block only at its end, and only while the record still holds it; a run that stopped partway may have ' +
-  'written the record without printing it. If the install has updated, ' +
+  'shows that block only at its end, only while the record still holds it, and not at all when it holds none; a run ' +
+  'that stopped partway may have written the record without printing it. If the install has updated, ' +
   'copy/copy.json beside ' +
   'the record shows under "items" and "absent" what the last update copied or found missing: the data directory, ' +
   'its fleet children\'s data directories and the files every update copies (mcpl-servers.json and the agent ' +
@@ -545,7 +545,8 @@ describe('setup', () => {
       `\`${join(root, 'connectome')} service install <recipe>\` then records the service again, if that's what set ` +
       'it up. Those places: a setup run that ' +
       'finished printed them after "State kept outside the data directory" (`connectome setup` shows that block only at ' +
-      'its end, and only while the record still holds it), and the moved root\'s copy/copy.json, if it ' +
+      'its end, only while the record still holds it, and not at all when it holds none), and the moved root\'s ' +
+      'copy/copy.json, if it ' +
       'has updated, shows under "items" and "absent" what the last ' +
       'update copied or found missing: the data directory, its fleet children\'s data directories and the files every ' +
       'update copies (mcpl-servers.json and the agent overlay, mcpl-servers.agent.json or the file ' +

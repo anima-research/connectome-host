@@ -57,6 +57,8 @@ const EDGE: Record<string, () => Response> = {
 const ERRORED: Record<string, () => Response> = {
   streamerror: () => sse(named([started(MESSAGE), { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }])),
   streamfailed: () => sse(named([started(MESSAGE), { type: 'error', error: { type: 'api_error', message: 'Internal server error' } }])),
+  streamauth: () => sse(named([started(MESSAGE), { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }])),
+  streamdenied: () => sse(named([started(MESSAGE), { type: 'error', error: { type: 'permission_error', message: 'not allowed' } }])),
 };
 const STREAMS: Record<string, () => Response> = { ...READ, ...UNREAD, ...EDGE, ...ERRORED };
 const ORCA = 'OrcaRouter doesn\'t stream responses to callers, so nothing ran: send the request again without `stream: true`';
@@ -174,6 +176,14 @@ describe("the key's one real call", () => {
     const other = await checkKey({ key: 'k', model: 'm', baseUrl: at('streamfailed') });
     expect(other).toEqual({ ok: false, cause: expect.stringContaining('It said: "Internal server error".'), anotherKeyMayHelp: false });
     expect(cause(other)).toContain('Try again shortly.');
+  });
+
+  test('a stream that ends in an authentication or permission error is the key refused, which another key may help', async () => {
+    const refused = await checkKey({ key: 'sk-ant-stream', model: 'm', baseUrl: at('streamauth') });
+    expect(refused).toEqual({ ok: false, cause: expect.stringContaining('It said: "invalid x-api-key".'), anotherKeyMayHelp: true });
+    expect(cause(refused)).toContain('refused the key in its stream (authentication_error)');
+    const denied = await checkKey({ key: 'sk-ant-stream', model: 'm', baseUrl: at('streamdenied') });
+    expect(denied).toEqual({ ok: false, cause: expect.stringContaining('It said: "not allowed".'), anotherKeyMayHelp: true });
   });
 
   test('a body that breaks off partway is the call failing, named by its code, not an answer from something else', async () => {
