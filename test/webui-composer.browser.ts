@@ -809,6 +809,26 @@ describe('images', () => {
     });
   });
 
+  test('an untyped file counts as being read while its bytes are sniffed, so Send waits for it', async () => {
+    await withComposer(async (c) => {
+      const from = c.host.received.length;
+      await c.box.fill('with the untyped picture');
+      await c.box.evaluate((box, b64) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], 'dot.unknown', { type: '' }));
+        box.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      }, DOT_PNG.toString('base64'));
+      await c.page.getByText('reading 1 image').waitFor();
+      await c.box.press('Enter');
+      await c.page.getByText('still reading images; send again in a moment').waitFor();
+      expect(c.host.received.slice(from).filter((f) => f.type === 'user-message')).toHaveLength(0);
+      await until('the tile', async () => {
+        await releaseFileReads(c);
+        return c.page.getByTitle(/^dot\.unknown/).count();
+      }, (n) => n === 1);
+    }, { init: HOLD_EVERY_READ });
+  });
+
   test('an image is fitted to the side the welcome advertises, its thumbnail says so, and the fitted image is what is sent', async () => {
     await withComposer(async (c) => {
       await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
@@ -948,6 +968,9 @@ const FAIL_GONE_READS = `(() => {
     return read.call(this);
   };
 })();`;
+
+/** HOLD_FILE_READS for every Blob's bytes, a slice's included. */
+const HOLD_EVERY_READ = HOLD_FILE_READS.replace('if (!(this instanceof File)) return read.call(this);', '');
 
 const releaseFileReads = (c: Composer, name?: string): Promise<void> =>
   c.page.evaluate((n) => (window as unknown as { releaseFileReads: (name?: string) => void }).releaseFileReads(n), name);

@@ -1240,10 +1240,12 @@ export function App() {
     setSendNote(null);
     if (preparing() === 0) setFileNotes([]);
     const notes: string[] = [];
+    // Counted before any await, so a Send meanwhile waits for them.
+    setPreparing((n) => n + files.length);
     const images = await imageFiles(files);
+    setPreparing((n) => n - (files.length - images.length));
     if (images.length < files.length) notes.push(`${files.length - images.length} file(s) skipped: only images can be attached`);
     let overCount = 0;
-    setPreparing((n) => n + images.length);
     for (const file of images) {
       try {
         if (attachments().length >= L.maxCount) { overCount++; continue; }
