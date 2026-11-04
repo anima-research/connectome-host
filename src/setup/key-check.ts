@@ -155,6 +155,13 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     const streamed = isObject(said) && isObject(said.error) ? said.error : null;
     if (streamed !== null) {
       const words = typeof streamed.message === 'string' ? ` It said: "${quote(streamed.message)}".` : '';
+      if (streamed.type === 'authentication_error') {
+        return failed(`${host} refused the key in its stream (authentication_error).${words} Check that it was copied ` +
+          `whole${set ? `, and that it's a key ${origin} accepts` : ', from console.anthropic.com\'s API keys'}.`, true);
+      }
+      if (streamed.type === 'permission_error') {
+        return failed(`${host} refused this call in its stream (permission_error).${words}`, true);
+      }
       return failed(`${host} answered, but its stream ended in an error.${words} So the key isn't known to work. ` +
         (streamed.type === 'overloaded_error' ? 'Try again in a few minutes.' : 'Try again shortly.'), false);
     }

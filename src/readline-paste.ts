@@ -5,6 +5,8 @@ export const PASTE_OFF = '\x1b[?2004l';
 
 type Signals = Pick<NodeJS.Process, 'on' | 'off' | 'kill' | 'listenerCount' | 'pid'>;
 
+const ENDING_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+
 export interface BracketedPaste {
   take(line: string): string | null;
   end(): void;
@@ -16,8 +18,8 @@ export interface BracketedPaste {
  * paste-start and paste-end. So the terminal's bracketed paste is turned on here, the lines that end inside a paste
  * are held, and the person's next Enter sends them with the line it ends; `held` is told how many lines wait after a
  * paste that left any. A terminal that doesn't support the mode sends no paste-start, and its lines go on as typed.
- * The mode goes off again however the host leaves: end(), the process exiting, or a SIGTERM, which this restores
- * before the signal's own death when nothing else in the process handles it.
+ * The mode goes off again however the host leaves: end(), the process exiting, or a SIGTERM, SIGINT or SIGHUP, whose
+ * own death this restores when nothing else in the process handles the signal.
  */
 export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: NodeJS.WriteStream,
   held: (lines: number) => void, signals: Signals = process): BracketedPaste {
@@ -39,14 +41,17 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
       if (lines.length > 0) held(lines.length + (rl.line === '' ? 0 : 1));
     }
   };
-  const onTerm = (): void => {
+  const onSignal = (signal: (typeof ENDING_SIGNALS)[number]): void => {
     off();
-    signals.off('SIGTERM', onTerm);
-    if (signals.listenerCount('SIGTERM') === 0) signals.kill(signals.pid, 'SIGTERM');
+    for (const each of ENDING_SIGNALS) signals.off(each, onEach[each]);
+    if (signals.listenerCount(signal) === 0) signals.kill(signals.pid, signal);
+  };
+  const onEach = {
+    SIGTERM: () => onSignal('SIGTERM'), SIGINT: () => onSignal('SIGINT'), SIGHUP: () => onSignal('SIGHUP'),
   };
   input.on('keypress', onKey);
   signals.on('exit', off);
-  signals.on('SIGTERM', onTerm);
+  for (const each of ENDING_SIGNALS) signals.on(each, onEach[each]);
   output.write(PASTE_ON);
   return {
     take(line) {
@@ -60,7 +65,7 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
       off();
       input.off('keypress', onKey);
       signals.off('exit', off);
-      signals.off('SIGTERM', onTerm);
+      for (const each of ENDING_SIGNALS) signals.off(each, onEach[each]);
     },
   };
 }

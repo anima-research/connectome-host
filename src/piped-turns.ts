@@ -144,7 +144,7 @@ export function createPipedTurns(
         after: turnsStarted,
         arm: (): void => {
           if (capMs === null || left === null || timer !== undefined || held > 0) return;
-          since = Date.now();
+          since = performance.now();
           timer = setTimeout(() => {
             if (!waits.includes(wait)) return;
             out.error(`(no answer after ${capMs / 1000} s: going on without it)`);
@@ -156,7 +156,7 @@ export function createPipedTurns(
           if (timer === undefined || left === null) return;
           clearTimeout(timer);
           timer = undefined;
-          left = Math.max(0, left - (Date.now() - since));
+          left = Math.max(0, left - (performance.now() - since));
         },
         done: (): void => { clearTimeout(timer); resolve(); },
       };

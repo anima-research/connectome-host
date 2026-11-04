@@ -11,6 +11,7 @@
  *   - Built-in default (generic assistant)
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
@@ -1744,10 +1745,7 @@ export async function loadRecipe(source: string): Promise<Recipe> {
   return (await loadRecipeDetailed(source)).recipe;
 }
 
-export async function loadRecipeDetailed(
-  source: string,
-  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {},
-): Promise<LoadedRecipe> {
+export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
   return loadRecipeDocument(await readRecipeDocument(source), source, options);
 }
 
@@ -1874,6 +1872,10 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
     };
   }
   return recipe;
+}
+
+export function recipeDigest(recipe: Recipe): string {
+  return createHash('sha256').update(JSON.stringify(recipe)).digest('hex');
 }
 
 export function runningFit(recipe: Recipe, envModel: string | undefined, beside?: number): RecipeFit {

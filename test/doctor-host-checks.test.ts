@@ -79,6 +79,7 @@ describe('doctor host checks over the socket', () => {
   let sock: Socket;
   let events: Array<Record<string, unknown>>;
   let countServer: ReturnType<typeof Bun.serve>;
+  let recipePath: string;
   const countedModels: string[] = [];
   const countedBodies: Array<{ model?: string; system?: unknown; tools?: unknown[]; messages?: unknown[] }> = [];
   let seq = 0;
@@ -96,9 +97,12 @@ describe('doctor host checks over the socket', () => {
       hostname: '127.0.0.1',
       async fetch(req) {
         const body = (await req.json()) as { model?: string; system?: unknown; tools?: unknown[]; messages?: unknown[] };
-        countedModels.push(body.model ?? '');
-        countedBodies.push(body);
-        if (new URL(req.url).pathname === '/v1/messages/count_tokens' && body.model === 'claude-live-test') {
+        const counting = new URL(req.url).pathname === '/v1/messages/count_tokens';
+        if (counting) {
+          countedModels.push(body.model ?? '');
+          countedBodies.push(body);
+        }
+        if (counting && body.model === 'claude-live-test') {
           return Response.json({ input_tokens: 7 + ((body.tools?.length ?? 0) > 0 ? 1_000 : 0) });
         }
         return Response.json({ type: 'error', error: { type: 'not_found_error', message: 'model' } }, { status: 404 });
@@ -125,7 +129,7 @@ describe('doctor host checks over the socket', () => {
         closed: { command: process.execPath, args: [serverPath, 'ok', join(dir, 'closed-calls.jsonl')], presentation: 'closed-tab' },
       },
     };
-    const recipePath = join(dir, 'recipe.json');
+    recipePath = join(dir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify(recipe));
     const env: Record<string, string | undefined> = {
       ...process.env,
@@ -162,7 +166,13 @@ describe('doctor host checks over the socket', () => {
     }
     expect((await live()).find((s) => s.id === 'dying')?.connected).toBe(false);
     const nextRequest = async () => ((await panel('debug-context')).data as { request: { messages: unknown } }).request.messages;
+    const seed = 'a message from before the shell check';
+    const idles = events.filter((e) => e.type === 'lifecycle' && e.phase === 'idle').length;
+    sock.write(JSON.stringify({ type: 'text', content: seed }) + '\n');
+    await waitFor(() => events.filter((e) => e.type === 'lifecycle' && e.phase === 'idle').length > idles, 20_000,
+      'the host idle after the seeded message');
     const before = await nextRequest();
+    expect(JSON.stringify(before)).toContain(seed);
     expect(await nextRequest()).toEqual(before);
     const res = await panel('shell-check');
     expect(res.ok).toBe(true);
@@ -220,6 +230,11 @@ describe('doctor host checks over the socket', () => {
     expect(JSON.stringify(beside.tools)).toContain('listSessions');
     expect(beside.messages).toHaveLength(1);
     expect(JSON.stringify(beside.messages)).toContain('ping');
+    const { loadRecipeDetailed, recipeDigest } = await import('../src/recipe.js') as unknown as {
+      loadRecipeDetailed: (path: string) => Promise<{ recipe: unknown }>;
+      recipeDigest: (recipe: unknown) => string;
+    };
+    expect((data as { recipeDigest?: unknown }).recipeDigest).toBe(recipeDigest((await loadRecipeDetailed(recipePath)).recipe));
   }, 30_000);
 });
 

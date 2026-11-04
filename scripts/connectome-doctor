@@ -363,6 +363,7 @@ turn_ok = False
 llm_window_from = None
 llm_written_at = None
 llm_unsure = False
+llm_unread = None
 LLM_WINDOW = 30_000_000
 if not os.path.isdir(data_dir):
     warn(f"there's no data directory at {data_dir}, so the discord, mcpl, chronicle and inference stages read nothing"
@@ -379,7 +380,8 @@ if llm_files:
     where = "the newest file's last 30 MB" if size > LLM_WINDOW + 1 else "the newest file"
     # Split at newlines only: splitlines() also splits at U+2028, U+2029 and
     # U+0085, which JSON.stringify leaves unescaped inside a row.
-    lines = (read_text(newest, last=LLM_WINDOW + 1)[0] or "").split("\n")
+    llm_text, llm_unread = read_text(newest, last=LLM_WINDOW + 1)
+    lines = (llm_text or "").split("\n")
     last = lines.pop() if lines else ""
     incomplete = False
     if last.strip():
@@ -433,6 +435,8 @@ if llm_files:
         if sr == "refusal":
             warn("last model response was a REFUSAL — check context contamination "
                  "(see project_mythos: contextBudgetTokens fix)")
+    elif llm_unread is not None:
+        llm_detail = f"the newest call log, {llm_files[-1]}, can't be read ({llm_unread})"
     else:
         llm_detail = f"no readable model call in {where}" + (
             f": {pokes} keepalive poke(s)" if pokes else "")
@@ -448,6 +452,8 @@ DELIVERED = r"\[routeSpeech\] .*: routed \d+ chars -> \S"
 UNCONFIRMED = r"\[routeSpeech\] .*speech delivery NOT confirmed"
 ROUTE_SAID = DELIVERED + r"|\[routeSpeech\] .*speech (NOT routed|delivery NOT confirmed)"
 unknown = {INGEST} if ingest_unknown else set()
+if llm_unread is not None:
+    unknown.add(INFERENCE)
 if discord_unknown:
     unknown |= {DISCORD_SEEN, DISCORD_FORWARD}
 if not os.path.isdir(data_dir):
@@ -548,6 +554,18 @@ def file_failures(path, is_failure):
     return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None
 
 
+def record_of(ln, kind):
+    try:
+        record = json.loads(ln)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) and record.get("kind") == kind else None
+
+
+def exhausted(ln):
+    return record_of(ln, "inference-exhausted")
+
+
 sources = []
 if journal_log:
     sources.append((f"{unit}'s journal", None if journal_error is not None
@@ -556,7 +574,7 @@ else:
     sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
 failures_log = os.path.join(logs_dir, "failures.log")
 if os.path.exists(failures_log):
-    sources.append(file_failures(failures_log, lambda ln: True))
+    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
 for where, found, why in sources:
     if found is None:
         print(f"recent failures in {where}: {C_YEL}not known: it can't be read ({why}){C_OFF}")
@@ -566,14 +584,6 @@ for where, found, why in sources:
             print(f"  {C_RED}{ln[:150]}{C_OFF}")
     else:
         print(f"recent failures in {where}: {C_GRN}none found{C_OFF}")
-def exhausted(ln):
-    try:
-        record = json.loads(ln)
-    except ValueError:
-        return None
-    return record if isinstance(record, dict) and record.get("kind") == "inference-exhausted" else None
-
-
 times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
 untimed = False
 for index, (_, found, _) in enumerate(sources):
@@ -588,12 +598,13 @@ for index, (_, found, _) in enumerate(sources):
         elif "inference-failed" in ln and not (journal_log and index == 0):
             untimed = True
 if times or untimed:
-    failed_at = None if untimed else max(times)
+    failed_at = max(times) if times else None
+    timed = " whose time is known" if untimed else ""
     if failed_at is not None and turn_ok and turn_ts is not None and turn_ts > failed_at:
-        warn(f"last inference failure {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
+        warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
              "doesn't say whose, so whether the agent that failed has recovered isn't known", counts=False)
     elif failed_at is not None:
-        warn(f"inference failures, the last {age(failed_at)}, with no successful turn found since — if the reason "
+        warn(f"inference failures, the last{timed} {age(failed_at)}, with no successful turn found since — if the reason "
              "repeats identically, the agent is hard-down until config changes (e.g. budget)")
     else:
         warn("inference failures present, and when the last was isn't known here, so neither is whether a turn has "

@@ -439,7 +439,7 @@ async function createFramework(
 
   if (modules.setup === true) {
     if (!noTui || !process.stdin.isTTY || !process.stdout.isTTY) {
-      throw new Error('modules.setup runs only in readline mode with stdin and stdout on a terminal, as ' +
+      throw new StartRefusal('modules.setup runs only in readline mode with stdin and stdout on a terminal, as ' +
         '`connectome setup` starts it: setup--ask_secret asks the person on that terminal, with nothing typed shown.');
     }
     moduleInstances.push(new SetupModule({
