@@ -205,7 +205,10 @@ request naming two image ledgers, or a call and a result naming different
 forks, still differs from one that names one. The naming goes by the text's
 form, so a text written in that form by anything else is named the same way.
 The stand-in's thinking signatures hash the request ahead of them and the
-thinking itself, and carry a digest of the thinking alone. On every
+thinking itself, and carry a digest of the thinking alone: a signature's
+first 22 characters bind it to the request ahead of it and its last 21 are
+the thinking's own, so it keeps the length of one digest, and the price of a
+block, which counts its signature's characters, doesn't move. On every
 configuration, a request whose latest assistant message holds a thinking block
 whose text no longer matches that digest is refused with the extended-thinking
 page's 400: "If thinking blocks are modified, the API returns a 400
@@ -529,7 +532,14 @@ shows the host's last lines names that file.
   couldn't-judge flag. The continuation names check 2, W7 without refused
   merges check 1, which flags every alert not owned, and W9 check 12. W5
   takes each body from every messages read, so a body removed before the
-  run's last read is still judged in the requests that sent it.
+  run's last read is still judged in the requests that sent it. W4 judges
+  each of its own calls: its script gives each reply one call with its
+  thinking ahead of it, and membrane merges two replies left adjacent, as
+  when the result between them and the second's thinking are both dropped,
+  into one message, so each call needs a thinking block between the call
+  before it and itself. W11 judges each pin it adds, the first included, by
+  the panel's list after it: exactly one new pin, and none of the earlier
+  ones gone.
 - **Check 15: binding control.** On a model that binds thinking and takes the
   drop control, every agent request carries
   `thinking.block_binding.prefix_mismatch_behavior: drop_block`, the host's

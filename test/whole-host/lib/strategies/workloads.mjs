@@ -259,8 +259,6 @@ export const WORKLOADS = {
       const w = writer(ctx, 'W4');
       return Array.from({ length: this.turns }, (_, i) => w.turn(i + 1, { thinking: w.between(SIZES.call), callId: () => `t${ctx.seed}_${i + 1}` }));
     },
-    // W4's script gives each reply one call, with its thinking ahead of it, so each of its calls in a message needs a
-    // thinking block between the call before it and itself: membrane merges two replies left adjacent into one.
     check(run, ctx) {
       const own = new RegExp(`^t${ctx.seed}_\\d+$`);
       const out = [];
@@ -574,7 +572,7 @@ export const WORKLOADS = {
       const protection = (p) => JSON.stringify([p.kind, p.level, p.maxLevel, p.firstMessageId, p.lastMessageId]);
       const out = [];
       let judged = 0;
-      let before = null;
+      let before = [];
       for (const step of ['2.level0', '2.max0', '3.result', '4.max2', '4.level1', '8.document', '8.level1']) {
         const listed = pinsAt(step);
         if (!Array.isArray(listed)) { out.push({ step: `${ctx.seed}.${step}`, message: 'couldn\'t judge: the panel\'s answer to this pin holds no list' }); before = null; continue; }

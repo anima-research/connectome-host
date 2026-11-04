@@ -898,7 +898,6 @@ test('W4 flags a call of its own that goes out without thinking between the call
   assert.equal(after.length, 1, 'thinking after the call isn\'t what led to it');
   const other = WORKLOADS.W4.check(ran(text(), call('toolu_fx000001')), { seed: 7 });
   assert.deepEqual([other.length, other.judged], [0, 0], 'a call the workload didn\'t make isn\'t its to judge');
-  // Two replies left adjacent once the result between them is dropped, which membrane merges into one message.
   const merged = WORKLOADS.W4.check(ran(think, call('t7_1'), call('t7_2')), { seed: 7 });
   assert.deepEqual([merged.judged, merged.map((f) => f.message)], [2, ['request r1: a call went out without its thinking (t7_2)']]);
   const both = WORKLOADS.W4.check(ran(think, call('t7_1'), think, call('t7_2')), { seed: 7 });
@@ -965,7 +964,7 @@ test('W8 and H4\'s reader let a turn end unanswered from the first cut through t
   assert.ok(!h1.find((s) => s.id === '5.2').mayFail, 'the retried turn must still answer');
 });
 
-test('W11 flags a pin or mark lost as later ones are added, and one placed by step 8 that the panel no longer lists, or lists over another range or level, after the cut or after the restore', () => {
+test('W11 flags a pin or mark lost as later ones are added, a first pin the panel never lists, and one placed by step 8 that the panel no longer lists, or lists over another range or level, after the cut or after the restore', () => {
   const ADDS = ['2.level0', '2.max0', '3.result', '4.max2', '4.level1', '8.document', '8.level1'];
   const pins = [{ id: 'p1', kind: 'pin', level: 0, firstMessageId: 'm1', lastMessageId: 'm1' }, { id: 'p2', kind: 'pin', maxLevel: 0, firstMessageId: 'm2', lastMessageId: 'm2' },
     { id: 'p3', kind: 'pin', firstMessageId: 'm3', lastMessageId: 'm3' }, { id: 'p4', kind: 'pin', maxLevel: 2, firstMessageId: 'm4', lastMessageId: 'm4' },
@@ -975,18 +974,20 @@ test('W11 flags a pin or mark lost as later ones are added, and one placed by st
   const adds = (list = (k) => pins.slice(0, k + 1)) => ADDS.map((step, k) => snapshot(step, list(k)));
   const check = (...log) => WORKLOADS.W11.check({ log, records: [] }, { seed: 9 });
   const held = check(...adds(), snapshot('12.pins', pins), snapshot('14.pins', pins));
-  assert.deepEqual([held.length, held.judged], [0, 6 + 7 * 2]);
+  assert.deepEqual([held.length, held.judged], [0, 7 + 7 * 2]);
+  const firstMissing = check(...adds((k) => pins.slice(1, k + 1)), snapshot('12.pins', pins.slice(1)), snapshot('14.pins', pins.slice(1)));
+  assert.deepEqual(firstMissing.map((f) => [f.step, f.message]), [['9.2.level0', 'adding this pin listed 0 new pin(s) or mark(s), and 0 listed before it are gone']]);
   const early = check(...adds((k) => (k >= 3 ? pins.slice(1, k + 1) : pins.slice(0, k + 1))), snapshot('12.pins', pins.slice(1)), snapshot('14.pins', pins.slice(1)));
   assert.deepEqual(early.map((f) => [f.step, f.message]), [['9.4.max2', 'adding this pin listed 1 new pin(s) or mark(s), and 1 listed before it are gone: pin at L0']]);
   const cut = check(...adds(), snapshot('12.pins', pins.slice(0, 5)), snapshot('14.pins', pins));
-  assert.equal(cut.judged, 20);
+  assert.equal(cut.judged, 21);
   assert.deepEqual(cut.map((f) => [f.step, f.message]), [['9.12.pins', '2 of the 7 pins and marks placed by step 8 are gone: document to L1, pin at L1']]);
   const restored = check(...adds(), snapshot('12.pins', pins), snapshot('14.pins', pins.slice(1)));
   assert.deepEqual(restored.map((f) => f.step), ['9.14.pins'], 'a pin lost after the restore');
   const moved = check(...adds(), snapshot('12.pins', pins.map((p) => (p.id === 'p5' ? { ...p, level: 2 } : p.id === 'p6' ? { ...p, lastMessageId: 'm9' } : p))), snapshot('14.pins', pins));
   assert.deepEqual(moved.map((f) => [f.step, f.message]), [['9.12.pins', '2 of the 7 pins and marks placed by step 8 no longer protect what they did: pin at L1 is now pin at L2, pin at L1 is now pin at L1 over another range']]);
   const unread = check(...adds(), snapshot('12.pins', pins), { kind: 'panel', step: '9.14.pins', op: 'pins', response: { ok: true, data: {} } });
-  assert.deepEqual([unread.judged, unread.map((f) => [f.step, f.message])], [6 + 7, [['9.14.pins', 'couldn\'t judge: the panel\'s pins answer holds no list']]]);
+  assert.deepEqual([unread.judged, unread.map((f) => [f.step, f.message])], [7 + 7, [['9.14.pins', 'couldn\'t judge: the panel\'s pins answer holds no list']]]);
   const unplaced = check(snapshot('12.pins', pins));
   assert.deepEqual([unplaced.judged, unplaced[0].message], [0, 'couldn\'t judge: the panel listed no pin once the last was added']);
 });

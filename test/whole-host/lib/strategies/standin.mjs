@@ -194,8 +194,6 @@ function bindingIdentity(body, beforeMessage) {
 
 const THINKING_CHARS = 600;
 
-// A signature is as long as one digest: its first 22 characters bind the thinking to the request ahead of it, and the
-// last 21 are the thinking's own, which the extended-thinking page says the provider verifies on every model.
 const digest64 = (text) => Buffer.from(sha(text), 'hex').toString('base64url');
 const signatureFor = (identity, thinking) => `fx1.${digest64(`${identity}\n${thinking}`).slice(0, 22)}${digest64(thinking).slice(0, 21)}`;
 const signs = (signature, thinking) => typeof signature === 'string' && signature.startsWith('fx1.') && signature.slice(4 + 22) === digest64(thinking).slice(0, 21);
