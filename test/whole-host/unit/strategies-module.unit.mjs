@@ -55,6 +55,49 @@ test('module: a take covers an agent that compiled and has left the registry onc
   assert.deepEqual(after.store, {}, 'once, then forgotten');
 });
 
+test('module: a compile that work started inside an agent\'s compile call runs after the call settles isn\'t the request\'s', async () => {
+  const [module, Own] = harness(null);
+  const manager = new Own();
+  module.agentOf.set(manager, 'fixture');
+  let later;
+  class Agent {
+    constructor() { this.name = 'fixture'; }
+    getContextManager() { return manager; }
+    async compileWithInjections() {
+      await manager.compile();
+      setTimeout(() => { later = manager.compile(); }, 0);
+      return 'sent';
+    }
+  }
+  module.wrapAgentCompiles(Agent.prototype);
+  assert.equal(await new Agent().compileWithInjections(), 'sent');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await later;
+  assert.deepEqual(module.lines.map((l) => l.kind), ['request', 'other']);
+});
+
+test('module: an agent that has left is kept while its take reads unreadable, so the next readable take reports what changed', async () => {
+  const registered = [];
+  const managers = new Map();
+  const [module, Own] = harness({ listAgents: () => registered.map((name) => ({ name })), getAgent: (name) => (registered.includes(name) ? { getContextManager: () => managers.get(name) } : null) });
+  const sub = new Own();
+  managers.set('sub', sub);
+  registered.push('sub');
+  module.agentOf.set(sub, 'sub');
+  await sub.compile();
+  await module.answer({ op: 'take' });
+  registered.length = 0;
+  const read = sub.getAllMessages;
+  sub.getAllMessages = () => { throw new Error('busy'); };
+  const unread = await module.answer({ op: 'take' });
+  assert.deepEqual(unread.store.sub.messages, { unreadable: 'busy' }, 'the premise: the take after it left couldn\'t read its messages');
+  sub.getAllMessages = read;
+  sub.messages = [];
+  const after = await module.answer({ op: 'take' });
+  assert.deepEqual(after.store.sub.removedMessages, ['1'], 'the next readable take still reports the removal');
+  assert.deepEqual((await module.answer({ op: 'take' })).store, {}, 'then forgotten');
+});
+
 test('module: with recording off the agent\'s compiles reach the manager as called and nothing is recorded, ticks are still counted and reads still answer; with it on, the same calls are recorded as request compiles', async () => {
   const boot = (record) => {
     const module = new HarnessModule('/nowhere', { record });

@@ -375,7 +375,10 @@ export function checkCompile(manager, budget, compiled, messages, { compresses =
   else if (!summaryUnread) {
     for (const p of pins) {
       const from = sequenceOf.get(String(p.firstMessageId)), to = sequenceOf.get(String(p.lastMessageId));
-      if (from === undefined || to === undefined) continue;
+      if (from === undefined || to === undefined) {
+        out.push({ invariant: 'unreadable', detail: `pin ${spanName('pin', nameOf(p.firstMessageId), nameOf(p.lastMessageId))} names a message the compile's view doesn't hold; that pin wasn't judged` });
+        continue;
+      }
       const allowed = p.level ?? p.maxLevel ?? 0;
       for (const m of messages) for (const s of m.sources) {
         if (!s.startsWith('s:')) continue;

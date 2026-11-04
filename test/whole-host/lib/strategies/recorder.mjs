@@ -102,8 +102,15 @@ export function receiptHeadOf(manager) {
   }));
 }
 
-export function storeDelta(manager, seen = { messages: new Map(), summaries: new Map(), head: 'null', quarantine: 'null' }, blobs) {
+// A take with no earlier one for the manager in this process (`seen` undefined) lists the whole store and says so
+// (`whole`): the run's first take of it, or the first after a host restart, which the record compares with what it
+// already knows of the agent.
+export function storeDelta(manager, seen, blobs) {
   const out = {};
+  if (seen === undefined) {
+    seen = { messages: new Map(), summaries: new Map(), head: 'null', quarantine: 'null' };
+    out.whole = true;
+  }
   const next = { messages: new Map(seen.messages), summaries: new Map(), head: seen.head, quarantine: seen.quarantine };
   const messages = readable(() => manager.getAllMessages());
   if (!isUnreadable(messages)) {

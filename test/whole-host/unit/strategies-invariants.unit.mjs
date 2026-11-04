@@ -108,6 +108,13 @@ test('pins: a summary sent over a pinned message at a level the pin doesn\'t all
   assert.deepEqual(check(pinned(1), ['s:S@1', 'r:3', 'r:4']).filter((v) => v.invariant === 'pins'), []);
 });
 
+test('pins: a pin naming a message the compile\'s view doesn\'t hold is a couldn\'t-judge flag naming the pin, not skipped', () => {
+  const m = manager({ pins: [{ id: 'p1', firstMessageId: '1', lastMessageId: '9', level: 0 }] });
+  assert.deepEqual(named(check(m, ['r:1', 'r:2', 'r:3', 'r:4'])), [
+    ['unreadable', 'pin pin(start+1-9) names a message the compile\'s view doesn\'t hold; that pin wasn\'t judged'],
+  ]);
+});
+
 test('unreadable: a store or pins read that fails is a violation naming the read, never a compile judged clean; the manager\'s render stats aren\'t read at all', () => {
   const failing = (what) => () => { throw new Error(`${what} failed`); };
   assert.deepEqual(named(check({ ...manager(), getAllMessages: failing('store') }, ['r:1'])), [['unreadable', 'getAllMessages: store failed; no invariant was judged']]);

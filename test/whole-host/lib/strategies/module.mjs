@@ -89,9 +89,15 @@ export class HarnessModule {
     for (const method of AGENT_COMPILES) {
       const original = proto[method];
       if (typeof original !== 'function' || original[WRAPPED]) continue;
+      // The context marks the request's compile only while the call is open: work it started that compiles after
+      // it settles isn't the request's.
       const wrapped = function (...args) {
-        const assembly = ++module.assemblies;
-        return CALLER.run({ agent: this.name, manager: this.getContextManager(), assembly }, () => original.apply(this, args));
+        const caller = { agent: this.name, manager: this.getContextManager(), assembly: ++module.assemblies, open: true };
+        const close = () => { caller.open = false; };
+        const result = CALLER.run(caller, () => original.apply(this, args));
+        if (result && typeof result.then === 'function') result.then(close, close);
+        else close();
+        return result;
       };
       wrapped[WRAPPED] = true;
       proto[method] = wrapped;
@@ -107,7 +113,7 @@ export class HarnessModule {
       if (!module.recording) return original.apply(this, args);
       const [budget, , opts] = args;
       const caller = CALLER.getStore();
-      const own = caller?.manager === this;
+      const own = caller?.manager === this && caller.open;
       const dry = opts?.dryRun === true;
       const head = {
         seq: ++module.seq,
@@ -263,10 +269,12 @@ export class HarnessModule {
     this.sock = sock;
   }
 
+  // Whether any part of the take was unreadable, so a later take is still owed what this one couldn't read.
   takeDelta(store, name, manager) {
     const delta = storeDelta(manager, this.seen.get(name), this.blobs);
     this.seen.set(name, delta.seen);
     if (delta.changed) store[name] = delta.out;
+    return Object.values(delta.out).some(isUnreadable);
   }
 
   async answer(msg) {
@@ -286,8 +294,8 @@ export class HarnessModule {
         // ticks settle.
         for (const [name, manager] of this.managers) {
           if (live.get(name) === manager) continue;
-          this.takeDelta(store, name, manager);
-          if (this.ticksInFlight(manager) > 0) continue;
+          const unread = this.takeDelta(store, name, manager);
+          if (unread || this.ticksInFlight(manager) > 0) continue;
           this.managers.delete(name);
           this.seen.delete(name);
         }

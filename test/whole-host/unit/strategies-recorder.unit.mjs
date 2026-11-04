@@ -24,6 +24,17 @@ test('storeDelta: a stored message holding thinking is added with the bit; one w
   assert.deepEqual(redacted.out.messages, [['1', ['[[c:a.r1]]'], { thinking: true }]], 'redacted thinking counts');
 });
 
+test('storeDelta: a take with no earlier one lists the whole store and says so; a later take is a delta and doesn\'t', () => {
+  const blobs = blobStore();
+  const first = storeDelta(manager([{ id: 1, content: [text('[[c:a.r1]] hello')] }]), undefined, blobs);
+  assert.equal(first.out.whole, true);
+  assert.equal(first.changed, true);
+  const empty = storeDelta(manager([]), undefined, blobs);
+  assert.deepEqual([empty.out, empty.changed], [{ whole: true }, true], 'an empty store too, so a restart that lost everything still says what it lists');
+  const later = storeDelta(manager([{ id: 1, content: [text('[[c:a.r1]] hello')] }]), first.seen, blobs);
+  assert.deepEqual([later.out, later.changed], [{}, false]);
+});
+
 test('storeDelta: context-manager\'s quarantines, compression spans and merges, are reported when they move', () => {
   const blobs = blobStore();
   let status = { count: 0, keys: [], spans: [] };

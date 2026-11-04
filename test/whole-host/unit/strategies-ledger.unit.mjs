@@ -21,11 +21,11 @@ test('ledgerOf reads context-manager\'s layout of the compile: each view member 
   assert.deepEqual(ledgerOf(log, { agent: 'fixture', layout: { memberIds: ['1'], units: [{ k: 'o', n: 2 }] } }), ['- no ledger: the compile line carries no layout context-manager gave'], 'units that don\'t account for the members exactly');
 });
 
-test('moduleCounts: request compiles made and refused by assembly, calls by level, the last quarantine, the last request compile\'s layout, and lines with a breach', () => {
+test('moduleCounts: request compile calls made and refused, a refusal whose retry compiled counting as one of each, calls by level, the last quarantine, the last request compile\'s layout, and lines with a breach', () => {
   const records = [{ kind: 'summariser', level: 1 }, { kind: 'summariser', level: 1 }, { kind: 'summariser', level: 2 }, { kind: 'agent' }];
-  assert.deepEqual(moduleCounts(log, records), { compiles: 2, refused: 0, compressions: 2, merges: 1, quarantines: 1, raw: 3, summarised: 2, out: 1, invariantLines: 1 });
+  assert.deepEqual(moduleCounts(log, records), { compiles: 2, refused: 1, compressions: 2, merges: 1, quarantines: 1, raw: 3, summarised: 2, out: 1, invariantLines: 1 });
   const refusedLast = [...log, { kind: 'compiles', step: 'c', boot: 1, lines: [line(5, 4, 'refused')], blobs: {} }];
-  assert.deepEqual([moduleCounts(refusedLast, []).compiles, moduleCounts(refusedLast, []).refused], [2, 1]);
+  assert.deepEqual([moduleCounts(refusedLast, []).compiles, moduleCounts(refusedLast, []).refused], [2, 2]);
   const bare = moduleCounts([{ kind: 'compiles', lines: [line(1, 1, 'compiled', { layout: undefined })], blobs: {} }], []);
   assert.deepEqual(Object.keys(bare), ['compiles', 'refused', 'compressions', 'merges', 'invariantLines'], 'what isn\'t known is left out, and the view shows it as ?');
 });
@@ -37,9 +37,9 @@ test('moduleCounts: requests and quarantines are the run\'s, every agent\'s; raw
     { kind: 'compiles', step: 'c', boot: 1, lines: [line(6, 7, 'compiled', { agent: 'helper', layout: sub }), line(7, 8, 'refused', { agent: 'helper' })], store: { helper: { quarantine: { compression: 0, merge: 2 } } }, blobs: {} },
   ];
   const fixture = moduleCounts(two, []);
-  assert.deepEqual([fixture.compiles, fixture.refused, fixture.quarantines, fixture.raw], [3, 1, 3, 3]);
+  assert.deepEqual([fixture.compiles, fixture.refused, fixture.quarantines, fixture.raw], [3, 2, 3, 3]);
   const helper = moduleCounts(two, [], 'helper');
-  assert.deepEqual([helper.compiles, helper.refused, helper.quarantines, helper.raw, helper.summarised, helper.out], [3, 1, 3, 1, 0, 0]);
+  assert.deepEqual([helper.compiles, helper.refused, helper.quarantines, helper.raw, helper.summarised, helper.out], [3, 2, 3, 1, 0, 0]);
   assert.equal(moduleCounts(two, [], 'nobody').raw, undefined, 'an agent with no compile has no ledger counts');
 });
 

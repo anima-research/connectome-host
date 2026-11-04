@@ -82,9 +82,8 @@ export function ledgerOf(log, line) {
 }
 
 export function moduleCounts(log, records, agent = FIXTURE_AGENT) {
-  const agents = [...new Set(log.filter((e) => e.kind === 'compiles').flatMap((e) => (e.lines ?? []).filter((l) => l.kind === 'request').map((l) => l.agent)))];
-  const asm = agents.flatMap((a) => assemblies(log, a));
-  const made = asm.filter((l) => l.outcome === 'compiled');
+  // Each request compile call counts, so a refusal whose retry in the same assembly compiled counts as one of each.
+  const calls = log.filter((e) => e.kind === 'compiles').flatMap((e) => (e.lines ?? []).filter((l) => l.kind === 'request'));
   const summariser = records.filter((r) => r.kind === 'summariser');
   const quarantine = new Map();
   for (const e of log) {
@@ -95,8 +94,8 @@ export function moduleCounts(log, records, agent = FIXTURE_AGENT) {
   const known = reported.every((q) => typeof q?.compression === 'number' && typeof q?.merge === 'number');
   const last = fates(assemblies(log, agent).filter((l) => l.outcome === 'compiled').at(-1)?.layout)?.counts;
   return {
-    compiles: made.length,
-    refused: asm.length - made.length,
+    compiles: calls.filter((l) => l.outcome === 'compiled').length,
+    refused: calls.filter((l) => l.outcome === 'refused').length,
     compressions: summariser.filter((r) => r.level === 1).length,
     merges: summariser.filter((r) => typeof r.level === 'number' && r.level > 1).length,
     ...(reported.length && known ? { quarantines: reported.reduce((n, q) => n + q.compression + q.merge, 0) } : {}),
