@@ -160,7 +160,13 @@ the lines of requests are in the order the stand-in received them:
   line lets the view show the request.
 - **`action COMMAND`**: a host command the workload sent.
 - **`wrote NAME [T:…]`** and **`removed NAMES`**: a summary the store added or
-  changed, with its text, and those it removed.
+  changed, with its text, and those it removed. The driver reads each store
+  whole at every boot, before any step. What it lists at the first boot is
+  the store as the run began, so a checkpoint's summaries aren't written.
+  What it lists after a restart is compared with what the record knew, so a
+  summary the reloaded store lacks is `removed` at the restart's step, and a
+  message it lacks names nothing from then on. An agent first seen later in
+  the run, such as a subagent, has every summary it holds written.
 - **`checkpoint NAME`**: where the script took a checkpoint.
 
 The record ends with `end ok` or `end failed`, then each agent's last receipt,
@@ -215,20 +221,21 @@ any is left; a removed one left unpaired is a request the run no longer
 sends. The pairing is the view's best reading; the record diff beside it is
 what holds.
 
-- **`summary.md`** has one row per run: its outcome (`pass`, its flags'
-  count, `invalid`, or why it couldn't run, then the self-check's outcome
-  where one ran), whether its record matched, and for one that differs how
-  many requests changed, then its counts. Those are the
-  request compiles made and refused, the compression and merge calls and the
-  quarantines across every agent, the stored messages raw, summarised and left
-  out at the last compile of the agent its checks judge (named in the row,
-  H2's knowledge subagent for H2), the tokens sent (cached and uncached
-  input), and the compile lines whose check 11 entries hold a breach or a
-  part it couldn't judge; a compile it couldn't record isn't among them. `?`
-  is a count the run couldn't give. Where anything isn't clean, the table is
-  followed by where each run's report, record and view are in the job's
-  evidence and what to do next, then each flagged run's flags, at most 20 a
-  run, with the rest in its `report.txt`.
+- **`summary.md`** has one row per run: its outcome (`pass`, its flags' count,
+  `invalid`, or why it couldn't run, then the self-check's outcome where one
+  ran), whether its record matched, and for one that differs how many requests
+  changed, then its counts. Those are, across every agent, the request compile
+  calls made and refused (a refusal whose retry compiled counts as one of
+  each), the compression and merge calls, and the quarantines held at the
+  run's end; then the stored messages raw, summarised and left out at the last
+  compile of the agent its checks judge (named in the row, H2's knowledge
+  subagent for H2), the tokens sent (cached and uncached input), and the
+  compile lines whose check 11 entries hold a breach or a part it couldn't
+  judge; a compile it couldn't record isn't among them. `?` is a count the run
+  couldn't give. Where anything isn't clean, the table is followed by where
+  each run's report, record and view are in the job's evidence and what to do
+  next, then each flagged run's flags, at most 20 a run, with the rest in its
+  `report.txt`.
 - **`<run>/view.md`**, for each run whose record differs or isn't committed,
   has a section for each request whose record lines changed. Each section has
   its record line, then, for an agent's request, the ledger of where each
@@ -239,7 +246,10 @@ what holds.
   context-manager compiled it", since agent-framework can still drop a row after the compile,
   then the request as the resident received it:
   - the stack's words, verbatim: the system prompt, each tool's definition,
-    templates, notices and framing;
+    templates, notices and framing. The run's content is marked in messages
+    alone. Run content a host put into the system prompt or a tool's
+    description would show there verbatim, as stack words, while the record's
+    head line still moves;
   - the run's own content, as its mark, its length and a short head, with
     `chars a–b of n` where only part of it went, thinking included. A stretch
     shorter than 32 characters is never taken as the run's, and one shorter
