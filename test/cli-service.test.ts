@@ -693,6 +693,63 @@ test('retirement keeps a changed token but removes the generated port still owne
   expect(f.out.join('\n')).not.toContain('independent-value');
 });
 
+test('macOS refuses another installed agent in this working directory, including a binary plist', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'older.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? ok(JSON.stringify({ Label: 'other.resident', WorkingDirectory: at.work }))
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(existsSync(agentPlist(at))).toBe(false);
+  expect(f.err.join('\n')).toContain(other);
+  expect(f.err.join('\n')).toContain('other.resident');
+  expect(f.err.join('\n')).toContain('another working directory');
+  expect(f.err.join('\n')).toContain('launchctl bootout');
+});
+
+test('an unreadable LaunchAgents plist is named with its reason rather than ruled out', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'unreadable.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'unreadable fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? { status: 1, stdout: '', stderr: 'conversion denied' }
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain(other);
+  expect(f.out.join('\n')).toContain('conversion denied');
+  expect(f.out.join('\n')).toContain("isn't ruled out");
+});
+
+test('a converted agent for another working directory leaves this install available', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'unrelated.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? ok(JSON.stringify({ Label: 'another.job', WorkingDirectory: at.home }))
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(other, 'utf-8')).toBe('bplist00fixture');
+});
+
+test('a Linux same-directory unit that is not a host is offered another working directory', async () => {
+  const at = install();
+  const f = fake(at);
+  f.systemd.otherUnits.push({ id: 'indexer.service', workingDirectory: at.work, fragment: '/indexer.service' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('indexer.service');
+  expect(f.err.join('\n')).toContain('another working directory');
+});
+
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();
   const f = fake(at);
@@ -973,8 +1030,8 @@ test('another unit that already runs a host from this working directory is refus
     'away: ');
   expect(said).toContain('take it away: XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop \'resident\\x2dold.service\', ' +
     'XDG_RUNTIME_DIR=/run/user/1001 systemctl --user disable \'resident\\x2dold.service\', ' +
-    `remove '${file}', then XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload. Then repeat this service install ` +
-    'command with the same recipe. Nothing was written.');
+    `remove '${file}', then XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload.`);
+  expect(said).toContain('Then repeat this service install command with the same recipe. Nothing was written.');
   expect(said).not.toContain('as root');
   expect(f.systemd.starts).toEqual([]);
   nothingWritten(at);
@@ -990,7 +1047,7 @@ test('a system unit that already runs a host from this working directory is refu
   expect(said).toContain('old-host.service (a system unit, at /etc/systemd/system/old-host.service) is already set up ' +
     `to run from ${at.work}`);
   expect(said).toContain('take it away: as root, systemctl stop old-host.service, systemctl disable old-host.service, ' +
-    'remove /etc/systemd/system/old-host.service, then systemctl daemon-reload. Then repeat');
+    'remove /etc/systemd/system/old-host.service, then systemctl daemon-reload.');
   expect(said).not.toContain('--user');
   nothingWritten(at);
 });

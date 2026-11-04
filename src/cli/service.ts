@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -376,6 +376,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   }
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
   if (manager === 'systemd-user') noOtherHost(ctx, work, names, sys, env, cmd);
+  else noOtherAgent(ctx, work, names, sys, env);
   if (!wantsShell) {
     try {
       new StoredSecrets(join(work, '.setup')).names();
@@ -1081,7 +1082,52 @@ function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; 
       `and two hosts on one install would both serve its data. ${statuses.join(' and ')} shows ` +
       `${others.length === 1 ? 'its state, and its process if it\'s running' : 'their states, and their processes if ' +
         'they\'re running'}. If that shows nothing uses ${them}, take ${them} away: ` +
-      `${steps.join('; and ')}. Then repeat this service install command with the same recipe. Nothing was written.`);
+      `${steps.join('; and ')}. If ${others.length === 1 ? 'it runs' : 'they run'} something other than a host, give ` +
+      `${them} another working directory instead. Then repeat this service install command with the same recipe. Nothing was written.`);
+  }
+}
+
+function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
+  sys: ServiceSystem, env: Record<string, string>): void {
+  const dir = join(sys.home, 'Library', 'LaunchAgents');
+  const warn = (file: string, why: string) => ctx.out(`${file} couldn't be checked: ${why}. ` +
+    `Another agent running a host from ${work} isn't ruled out.`);
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warn(dir, errorText(error));
+    return;
+  }
+  for (const file of files.filter((file) => file.endsWith('.plist'))) {
+    const path = join(dir, file);
+    if (path === names.host.file || path === names.shell.file) continue;
+    const ran = sys.run('plutil', ['-convert', 'json', '-o', '-', path], env);
+    if (ran.status !== 0) {
+      warn(path, ran.stderr.trim() || ran.stdout.trim() || `plutil exited with ${ran.status}`);
+      continue;
+    }
+    let plist: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(ran.stdout);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a plist dictionary');
+      plist = parsed as Record<string, unknown>;
+    } catch (error) {
+      warn(path, errorText(error));
+      continue;
+    }
+    if (typeof plist.WorkingDirectory !== 'string' || realOrResolved(plist.WorkingDirectory) !== realOrResolved(work)) continue;
+    const label = plist.Label;
+    if (typeof label !== 'string' || label === '') {
+      warn(path, 'no launch-agent Label');
+      continue;
+    }
+    if (label === names.host.name || label === names.shell.name) continue;
+    throw new Refusal(`${label} (${path}) is already set up to run from ${work}, and two hosts there would both ` +
+      `serve its data. Inspect it with launchctl print gui/${sys.uid}/${shellWord(label)}. If it's an obsolete host, ` +
+      `retire it with launchctl bootout gui/${sys.uid} ${shellWord(path)}, then remove that plist. ` +
+      'If it runs something other than a host, give it another working directory. Then repeat this service install ' +
+      'command with the same recipe. Nothing was written.');
   }
 }
 
