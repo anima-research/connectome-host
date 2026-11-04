@@ -14,3 +14,7 @@
   the event type, server and channel; no content) and
   `gate:suppression-review` (counts and verdicts per rule), from
   agent-framework's event suppression (#975).
+  An ops observer also receives `tune-out:deferred-cancel-dropped` (a
+  deferred cancel dropped because the hold it was accepted for had ended:
+  the epoch it was for, the one in force, the reason, and whether a note
+  was lost; no text).
