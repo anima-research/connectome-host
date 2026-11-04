@@ -48,143 +48,21 @@ T:call-user-quiet-signal-80537d0e1482 = {"bytes":11951,"head":"user: Quiet signa
 T:call-user-station-meadow-9b5ad3d34441 = {"bytes":11979,"head":"user: Station meadow window station bridge canyon kettle winter. Basket ribbon b","sha256":"0d1e9b1ad5131597","tail":" morning pencil harbor thread shadow canyon canyon island ribbon winter window. "}
 T:call-user-station-pencil-60fde9faca0d = {"bytes":11996,"head":"user: Station pencil bridge island island signal harbor letter market winter cop","sha256":"acec9fd894b06380","tail":"window meadow basket. Compass quiet harbor bridge island market market lantern. "}
 T:call-user-tool-call-49788a7a0b6a = user: [tool call omitted]
-T:summary-l1-06892f1067a6 = {"bytes":4400,"head":"[[s:M52084132]] Memory 52084132, carried 5 canaries to c:494449.65.r2: Letter me","sha256":"06892f1067a61576","tail":"stone pencil ledger. Kettle copper signal copper kettle letter window canyon sig"}
-T:summary-l1-068e3c41c735 = {"bytes":4400,"head":"[[s:Mb700086b]] Memory b700086b, carried 1 canaries to c:494449.1.in: Quiet isla","sha256":"068e3c41c735928a","tail":"tter signal ledger meadow answer stone harbor pencil river letter stone harbor k"}
-T:summary-l1-07722b40366b = {"bytes":4400,"head":"[[s:M1b0fe13c]] Memory 1b0fe13c, carried 6 canaries to c:494449.51.r1: Market br","sha256":"07722b40366bb3e2","tail":"ation morning kettle. Kettle morning market bridge copper garden shadow. Meadow."}
-T:summary-l1-0e14a5e925d6 = {"bytes":4400,"head":"[[s:M01294cab]] Memory 01294cab, carried 5 canaries to c:494449.38.r2: Bridge wi","sha256":"0e14a5e925d62d45","tail":"ing letter ribbon basket canyon. Garden bridge velvet winter harbor orchard penc"}
 T:summary-l1-0ffb127d4fb5 = {"bytes":4400,"head":"[[s:M0f4b032e]] Memory 0f4b032e, carried 2 canaries to c:494449.69.r1: Kettle th","sha256":"0ffb127d4fb5232d","tail":" lantern meadow harbor market. Island garden canyon harbor market letter copper."}
-T:summary-l1-134b67a6191d = {"bytes":4400,"head":"[[s:M41100e9d]] Memory 41100e9d, carried 6 canaries to c:494449.52.r2: Market ke","sha256":"134b67a6191dc882","tail":"arbor island ledger window basket bridge kettle compass pencil stone copper sign"}
-T:summary-l1-1472422a1e94 = {"bytes":4400,"head":"[[s:M2e59ffc4]] Memory 2e59ffc4, carried 4 canaries to c:494449.37.r3: Shadow si","sha256":"1472422a1e94969b","tail":"letter shadow island ribbon ledger velvet lantern harbor winter stone. Orchard r"}
-T:summary-l1-177b84f050f2 = {"bytes":4400,"head":"[[s:M6569c2ac]] Memory 6569c2ac, carried 1 canaries to c:494449.1.in: Morning le","sha256":"177b84f050f2b7a6","tail":"anyon copper. Morning island window ribbon river morning canyon harbor meadow la"}
-T:summary-l1-1acd04ddb4d0 = {"bytes":4400,"head":"[[s:M362ef227]] Memory 362ef227, carried 4 canaries to c:494449.11.r3: Ledger la","sha256":"1acd04ddb4d0f2d5","tail":"r compass station morning. River stone pencil stone quiet signal signal kettle h"}
-T:summary-l1-1ced035a6002 = {"bytes":4400,"head":"[[s:M123dc1ba]] Memory 123dc1ba, carried 4 canaries to c:494449.43.r3: Winter ke","sha256":"1ced035a6002c11b","tail":"morning kettle meadow window. Kettle pencil velvet meadow orchard winter ribbon."}
-T:summary-l1-1d0b9db0438b = {"bytes":4400,"head":"[[s:M3a9950d9]] Memory 3a9950d9, carried 4 canaries to c:494449.45.r1: Compass w","sha256":"1d0b9db0438bad31","tail":"window quiet. Answer canyon window compass lantern answer harbor canyon river si"}
-T:summary-l1-1f07bb9255a2 = {"bytes":4400,"head":"[[s:Ma43c3ce9]] Memory a43c3ce9, carried 5 canaries to c:494449.43.r1: Velvet le","sha256":"1f07bb9255a278ea","tail":"nal market island island station shadow kettle answer river signal compass river"}
-T:summary-l1-2075390ee66f = {"bytes":4400,"head":"[[s:Mdfa979c1]] Memory dfa979c1, carried 4 canaries to c:494449.35.r1: Market sh","sha256":"2075390ee66fc986","tail":"bor quiet velvet. Harbor garden velvet river thread stone letter bridge meadow q"}
-T:summary-l1-20c19916d369 = {"bytes":4400,"head":"[[s:M7cacdcbe]] Memory 7cacdcbe, carried 5 canaries to c:494449.4.r1: Quiet orch","sha256":"20c19916d369b049","tail":"uiet pencil bridge ledger harbor letter quiet. Thread window bridge ribbon ribbo"}
-T:summary-l1-21b1e8fd5f3d = {"bytes":4400,"head":"[[s:Mf0079d24]] Memory f0079d24, carried 6 canaries to c:494449.31.r1: Orchard h","sha256":"21b1e8fd5f3df127","tail":" canyon velvet garden signal answer canyon. Canyon compass quiet meadow station."}
-T:summary-l1-2435973ca60a = {"bytes":4400,"head":"[[s:M1229f9bd]] Memory 1229f9bd, carried 1 canaries to c:494449.1.in: River lett","sha256":"2435973ca60aca86","tail":"or basket winter thread bridge morning compass copper copper answer ribbon ribbo"}
-T:summary-l1-262347d53b20 = {"bytes":4400,"head":"[[s:M5baed5a5]] Memory 5baed5a5, carried 5 canaries to c:494449.14.r2: Ledger wi","sha256":"262347d53b20f116","tail":"orchard station river island velvet. Copper basket market meadow stone station b"}
-T:summary-l1-264410ee44ed = {"bytes":4400,"head":"[[s:M9211c6aa]] Memory 9211c6aa, carried 1 canaries to c:494449.1.in: Station sh","sha256":"264410ee44eddaaa","tail":"n island stone pencil canyon lantern orchard island ledger lantern harbor lanter"}
-T:summary-l1-283b31916c0b = {"bytes":4400,"head":"[[s:M9c2a3180]] Memory 9c2a3180, carried 4 canaries to c:494449.17.r3: Winter ba","sha256":"283b31916c0bd3d1","tail":"r quiet copper. Answer letter copper morning station market. River kettle answer"}
-T:summary-l1-286b2d64b0d9 = {"bytes":4400,"head":"[[s:M5e91408c]] Memory 5e91408c, carried 1 canaries to c:494449.1.in: Copper pen","sha256":"286b2d64b0d961aa","tail":" copper garden winter bridge market market window. Lantern ribbon meadow orchard"}
-T:summary-l1-2ad3eec8f791 = {"bytes":4400,"head":"[[s:Medd52a5e]] Memory edd52a5e, carried 6 canaries to c:494449.21.r1: Stone pen","sha256":"2ad3eec8f7916c93","tail":"tone market quiet window signal station signal pencil island station. Velvet sha"}
-T:summary-l1-2d8d832d8dd8 = {"bytes":4400,"head":"[[s:Mb1b3953b]] Memory b1b3953b, carried 7 canaries to c:494449.11.r1: Bridge or","sha256":"2d8d832d8dd8eb72","tail":"er river compass pencil window letter answer kettle morning winter window mornin"}
-T:summary-l1-2dc42cbef10b = {"bytes":4400,"head":"[[s:M14bcc1e4]] Memory 14bcc1e4, carried 5 canaries to c:494449.53.r1: Bridge la","sha256":"2dc42cbef10be82a","tail":"window basket winter orchard lantern orchard thread garden. Bridge station signa"}
-T:summary-l1-2f66d0cb2c62 = {"bytes":4400,"head":"[[s:Mcc4caaa2]] Memory cc4caaa2, carried 2 canaries to c:494449.29.r1: Market ke","sha256":"2f66d0cb2c624dc6","tail":"g answer velvet lantern garden letter. Ledger pencil winter canyon thread basket"}
-T:summary-l1-30d4e9db0651 = {"bytes":4400,"head":"[[s:M71fd3160]] Memory 71fd3160, carried 5 canaries to c:494449.58.r2: Meadow mo","sha256":"30d4e9db06511793","tail":"adow kettle compass kettle shadow kettle river answer orchard pencil velvet wind"}
-T:summary-l1-30ec10c7f8af = {"bytes":4400,"head":"[[s:Ma2adebef]] Memory a2adebef, carried 4 canaries to c:494449.47.r3: Morning l","sha256":"30ec10c7f8af3507","tail":"r meadow shadow. Thread island bridge bridge velvet stone basket lantern letter."}
-T:summary-l1-32982cfab5a2 = {"bytes":4400,"head":"[[s:Md849930b]] Memory d849930b, carried 4 canaries to c:494449.33.r3: Ribbon wi","sha256":"32982cfab5a29413","tail":"d pencil shadow. Ribbon station shadow basket morning river bridge ledger velvet"}
-T:summary-l1-36cd7ffc6d33 = {"bytes":4400,"head":"[[s:Mbf4e11df]] Memory bf4e11df, carried 2 canaries to c:494449.9.in: Ribbon sha","sha256":"36cd7ffc6d33f3dd","tail":"nswer quiet shadow signal ribbon meadow canyon stone bridge harbor. Ribbon stone"}
-T:summary-l1-3730e9d27df5 = {"bytes":4400,"head":"[[s:M5256817d]] Memory 5256817d, carried 1 canaries to c:494449.1.in: Lantern or","sha256":"3730e9d27df596f2","tail":"kettle shadow pencil answer basket basket velvet quiet canyon orchard. Quiet pen"}
-T:summary-l1-387608befbdd = {"bytes":4400,"head":"[[s:M2357ea04]] Memory 2357ea04, carried 1 canaries to c:494449.1.in: Meadow com","sha256":"387608befbdd5e20","tail":"d shadow station kettle. Harbor pencil answer basket harbor meadow kettle window"}
-T:summary-l1-3bd2a9f3dd43 = {"bytes":4400,"head":"[[s:Mf0f9445b]] Memory f0f9445b, carried 6 canaries to c:494449.12.r2: Bridge mo","sha256":"3bd2a9f3dd43f67a","tail":"ttle signal. Bridge ribbon harbor garden canyon orchard kettle basket station co"}
-T:summary-l1-3d04e204482d = {"bytes":4400,"head":"[[s:M63459eb7]] Memory 63459eb7, carried 6 canaries to c:494449.22.r2: Lantern s","sha256":"3d04e204482db4fc","tail":"n shadow island orchard quiet thread. Basket compass canyon meadow river bridge."}
-T:summary-l1-405dbd968fb6 = {"bytes":4400,"head":"[[s:Mb47316b4]] Memory b47316b4, carried 4 canaries to c:494449.7.r3: Harbor win","sha256":"405dbd968fb68d7d","tail":"shadow winter kettle kettle letter pencil lantern velvet velvet station window.."}
-T:summary-l1-417f588fa775 = {"bytes":4400,"head":"[[s:Me35e8248]] Memory e35e8248, carried 1 canaries to c:494449.1.in: Compass ga","sha256":"417f588fa77500e4","tail":" lantern quiet. Signal island island kettle island letter garden basket signal.."}
-T:summary-l1-41d57a16064e = {"bytes":4400,"head":"[[s:M7966da1e]] Memory 7966da1e, carried 4 canaries to c:494449.51.r3: Winter le","sha256":"41d57a16064ebe06","tail":"nal kettle island. Winter winter island signal ribbon orchard window station ket"}
-T:summary-l1-472c27a03c35 = {"bytes":4400,"head":"[[s:M5a775051]] Memory 5a775051, carried 6 canaries to c:494449.32.r2: Bridge or","sha256":"472c27a03c355965","tail":"harbor. Lantern velvet canyon winter signal harbor signal signal stone shadow. T"}
 T:summary-l1-488b9964cba9 = {"bytes":4400,"head":"[[s:M8937218e]] Memory 8937218e, carried 1 canaries to c:494449.1.in: Winter mea","sha256":"488b9964cba95850","tail":"ion ribbon compass window. Ledger morning copper velvet station river harbor pen"}
-T:summary-l1-4c4428a7c00f = {"bytes":4400,"head":"[[s:Md84b97d5]] Memory d84b97d5, carried 1 canaries to c:494449.1.in: Quiet harb","sha256":"4c4428a7c00f0ad3","tail":"bbon pencil garden shadow pencil. Ribbon answer station letter window window sha"}
-T:summary-l1-4ebf35e53553 = {"bytes":4400,"head":"[[s:Mb2b55ee5]] Memory b2b55ee5, carried 6 canaries to c:494449.61.r1: Winter co","sha256":"4ebf35e53553eca8","tail":"nal winter market signal signal. Signal bridge stone shadow window harbor garden"}
-T:summary-l1-5027ad28afe3 = {"bytes":4400,"head":"[[s:M23c16030]] Memory 23c16030, carried 1 canaries to c:494449.1.in: Stone bask","sha256":"5027ad28afe3dd37","tail":" morning quiet letter morning thread quiet answer letter ribbon island island qu"}
-T:summary-l1-531289b8c15c = {"bytes":4400,"head":"[[s:M5a145d0b]] Memory 5a145d0b, carried 2 canaries to c:494449.19.in: Meadow le","sha256":"531289b8c15cf3e3","tail":"mpass basket. Harbor thread compass compass copper ledger orchard answer. Harbor"}
-T:summary-l1-541047eb8077 = {"bytes":4400,"head":"[[s:Mcb8877d1]] Memory cb8877d1, carried 5 canaries to c:494449.23.r1: Signal br","sha256":"541047eb807706f3","tail":"pass thread market. Shadow lantern shadow canyon pencil bridge market thread can"}
-T:summary-l1-547c8983c6f5 = {"bytes":4400,"head":"[[s:Md205d9f9]] Memory d205d9f9, carried 1 canaries to c:494449.1.in: Morning ve","sha256":"547c8983c6f54b39","tail":"r ledger shadow letter ribbon answer window letter bridge ledger window orchard."}
-T:summary-l1-54e8ab4da8aa = {"bytes":4400,"head":"[[s:Mbe8b6145]] Memory be8b6145, carried 1 canaries to c:494449.1.in: Thread cop","sha256":"54e8ab4da8aa0b24","tail":"velvet. Harbor harbor orchard winter bridge compass winter. Copper kettle thread"}
-T:summary-l1-56be00d59e9f = {"bytes":4400,"head":"[[s:Mf77eb2ec]] Memory f77eb2ec, carried 4 canaries to c:494449.31.r3: Kettle ke","sha256":"56be00d59e9f2ca1","tail":"ow copper lantern kettle ribbon stone orchard. Quiet orchard morning stone garde"}
-T:summary-l1-5973f764ed95 = {"bytes":4400,"head":"[[s:M9146b3ed]] Memory 9146b3ed, carried 2 canaries to c:494449.49.in: Basket ke","sha256":"5973f764ed9594d7","tail":"ket velvet morning garden morning. Pencil compass signal morning winter shadow q"}
-T:summary-l1-5bf9f54062d8 = {"bytes":4400,"head":"[[s:M719b6065]] Memory 719b6065, carried 5 canaries to c:494449.13.r1: Window ke","sha256":"5bf9f54062d8d118","tail":"et bridge answer orchard lantern orchard ribbon orchard canyon river river river"}
-T:summary-l1-5c320a13ffee = {"bytes":4400,"head":"[[s:Mc8c4d244]] Memory c8c4d244, carried 4 canaries to c:494449.15.r1: Pencil ba","sha256":"5c320a13ffee1ca3","tail":"ow basket stone winter kettle window canyon quiet answer. Station pencil ribbon."}
 T:summary-l1-5c8e0737c729 = {"bytes":4400,"head":"[[s:M0d8a8461]] Memory 0d8a8461, carried 5 canaries to c:494449.1.in: River lett","sha256":"5c8e0737c7296781","tail":"w. Quiet copper winter window basket thread letter copper meadow station station"}
-T:summary-l1-5dc2ee4f01a1 = {"bytes":4400,"head":"[[s:Mce1182ae]] Memory ce1182ae, carried 1 canaries to c:494449.1.in: Canyon har","sha256":"5dc2ee4f01a138dc","tail":"Lantern letter signal pencil stone meadow compass pencil kettle ledger bridge ga"}
-T:summary-l1-5e0b87937f1e = {"bytes":4400,"head":"[[s:Mc4140387]] Memory c4140387, carried 5 canaries to c:494449.33.r1: Station m","sha256":"5e0b87937f1e5af7","tail":"n stone meadow winter basket copper meadow ledger velvet garden shadow shadow co"}
-T:summary-l1-5eb7dccd099a = {"bytes":4400,"head":"[[s:M481523fd]] Memory 481523fd, carried 6 canaries to c:494449.62.r2: Winter or","sha256":"5eb7dccd099a8498","tail":"rn signal shadow pencil. Stone stone harbor basket garden station kettle canyon."}
-T:summary-l1-5ec2ea68d5a7 = {"bytes":4400,"head":"[[s:M8c2ab5bf]] Memory 8c2ab5bf, carried 5 canaries to c:494449.64.r2: Letter ca","sha256":"5ec2ea68d5a7b35e","tail":"iver quiet velvet compass market ledger shadow orchard window pencil island. Ket"}
-T:summary-l1-5ee33865bccc = {"bytes":4400,"head":"[[s:M8ae5c57c]] Memory 8ae5c57c, carried 5 canaries to c:494449.5.r1: Ledger har","sha256":"5ee33865bccc5258","tail":"market basket river pencil river quiet. Canyon winter bridge harbor market answe"}
-T:summary-l1-60b037769475 = {"bytes":4400,"head":"[[s:M381742c9]] Memory 381742c9, carried 4 canaries to c:494449.57.r3: Meadow ri","sha256":"60b037769475be87","tail":" market station market river answer answer copper shadow bridge kettle morning t"}
-T:summary-l1-624158f1b47a = {"bytes":4400,"head":"[[s:M167bce8a]] Memory 167bce8a, carried 2 canaries to c:494449.59.r1: Winter ba","sha256":"624158f1b47a6d62","tail":"nal winter river stone meadow river market. Compass ledger island shadow basket."}
-T:summary-l1-6665289cb9b4 = {"bytes":4400,"head":"[[s:M21aa978f]] Memory 21aa978f, carried 5 canaries to c:494449.2.r1: Copper led","sha256":"6665289cb9b45e06","tail":"compass pencil island compass kettle meadow stone thread signal. Pencil shadow k"}
-T:summary-l1-66d8e89ab797 = {"bytes":4400,"head":"[[s:Mfa0a9171]] Memory fa0a9171, carried 7 canaries to c:494449.47.r1: Shadow le","sha256":"66d8e89ab797cf5e","tail":"tle island letter thread. Velvet answer ledger basket ribbon signal market winte"}
-T:summary-l1-6aa84ad4d0b6 = {"bytes":4400,"head":"[[s:M09763234]] Memory 09763234, carried 4 canaries to c:494449.23.r3: Kettle co","sha256":"6aa84ad4d0b6530e","tail":"tle signal meadow window bridge basket copper signal basket bridge. Stone stone."}
-T:summary-l1-718fdc87aec7 = {"bytes":4400,"head":"[[s:M27190620]] Memory 27190620, carried 4 canaries to c:494449.53.r3: Lantern h","sha256":"718fdc87aec76076","tail":" station shadow winter market basket basket winter orchard harbor orchard letter"}
-T:summary-l1-74f670f6a812 = {"bytes":4400,"head":"[[s:M791c569e]] Memory 791c569e, carried 2 canaries to c:494449.29.in: Answer ba","sha256":"74f670f6a81226de","tail":"e answer ribbon velvet. Thread lantern island winter quiet thread thread shadow."}
 T:summary-l1-7d12db3a421e = {"bytes":4400,"head":"[[s:M39479a44]] Memory 39479a44, carried 5 canaries to c:494449.1.in: Quiet brid","sha256":"7d12db3a421e2508","tail":" harbor garden. Shadow meadow pencil thread window quiet bridge letter canyon ca"}
-T:summary-l1-8641c6f10446 = {"bytes":4400,"head":"[[s:Mb8c30c00]] Memory b8c30c00, carried 7 canaries to c:494449.41.r1: Garden le","sha256":"8641c6f10446809e","tail":"read orchard pencil winter pencil kettle orchard ribbon morning. Market meadow i"}
-T:summary-l1-8de8944acfeb = {"bytes":4400,"head":"[[s:M10878b48]] Memory 10878b48, carried 4 canaries to c:494449.63.r3: Shadow co","sha256":"8de8944acfebc4c9","tail":"kettle thread pencil winter pencil velvet ledger ledger answer. River orchard ca"}
 T:summary-l1-8f395cc2d346 = {"bytes":4400,"head":"[[s:M5d28fc7c]] Memory 5d28fc7c, carried 5 canaries to c:494449.68.r2: Answer si","sha256":"8f395cc2d346dced","tail":"one signal stone canyon answer. Basket copper lantern signal shadow thread threa"}
-T:summary-l1-91a2d6967144 = {"bytes":4400,"head":"[[s:M8ced21cf]] Memory 8ced21cf, carried 1 canaries to c:494449.1.in: Window mar","sha256":"91a2d6967144b233","tail":"adow bridge winter pencil pencil. Morning lantern ledger lantern signal meadow l"}
-T:summary-l1-9680ee49d168 = {"bytes":4400,"head":"[[s:M65c013d3]] Memory 65c013d3, carried 1 canaries to c:494449.1.in: Bridge bri","sha256":"9680ee49d168a69c","tail":"edger signal orchard ledger. Bridge thread garden harbor morning kettle pencil c"}
-T:summary-l1-975a417d215a = {"bytes":4400,"head":"[[s:M5449c040]] Memory 5449c040, carried 5 canaries to c:494449.24.r2: River qui","sha256":"975a417d215a522f","tail":"shadow canyon ribbon velvet ribbon ledger ribbon bridge lantern ledger kettle qu"}
-T:summary-l1-9b4db6609054 = {"bytes":4400,"head":"[[s:Mdd13d270]] Memory dd13d270, carried 1 canaries to c:494449.1.in: Winter ans","sha256":"9b4db6609054da7c","tail":"encil ribbon copper canyon. Orchard harbor island meadow shadow ribbon orchard v"}
 T:summary-l1-9dec7236477f = {"bytes":4400,"head":"[[s:M4fa0df3c]] Memory 4fa0df3c, carried 2 canaries to c:494449.1.in: Quiet wint","sha256":"9dec7236477f8948","tail":"ntern island winter garden island ledger. Canyon island harbor harbor thread ket"}
-T:summary-l1-a03a699d34c8 = {"bytes":4400,"head":"[[s:M00028945]] Memory 00028945, carried 7 canaries to c:494449.27.r1: Shadow me","sha256":"a03a699d34c8db3b","tail":"et copper. Canyon velvet bridge canyon thread river shadow meadow river basket.."}
-T:summary-l1-a5a22c115f25 = {"bytes":4400,"head":"[[s:M672f853e]] Memory 672f853e, carried 7 canaries to c:494449.57.r1: Shadow ri","sha256":"a5a22c115f2528dd","tail":"arbor window pencil compass ribbon canyon kettle. River quiet canyon morning can"}
-T:summary-l1-a6e257442656 = {"bytes":4400,"head":"[[s:Mb970a862]] Memory b970a862, carried 4 canaries to c:494449.2.r3: Canyon can","sha256":"a6e257442656c4b7","tail":"al quiet lantern market answer kettle basket canyon garden. Island market velvet"}
-T:summary-l1-a8ee1afa9ed4 = {"bytes":4400,"head":"[[s:Ma6f76e75]] Memory a6f76e75, carried 1 canaries to c:494449.1.in: Station ga","sha256":"a8ee1afa9ed40be5","tail":"opper stone market copper answer morning. Answer bridge kettle winter lantern br"}
-T:summary-l1-a9392de9edad = {"bytes":4400,"head":"[[s:M6269d328]] Memory 6269d328, carried 1 canaries to c:494449.1.in: Morning br","sha256":"a9392de9edaddf87","tail":"rket ledger pencil signal. Morning market window harbor letter quiet letter copp"}
 T:summary-l1-aa6969323b27 = {"bytes":4400,"head":"[[s:M482dc0a6]] Memory 482dc0a6, carried 1 canaries to c:494449.1.in: Letter vel","sha256":"aa6969323b27c79b","tail":"ibbon shadow compass garden bridge stone. Meadow ledger stone shadow ribbon morn"}
-T:summary-l1-abcf11eaa320 = {"bytes":4400,"head":"[[s:M5908a552]] Memory 5908a552, carried 1 canaries to c:494449.1.in: Morning ve","sha256":"abcf11eaa320266c","tail":"rchard pencil lantern. Answer bridge morning answer quiet shadow kettle orchard."}
-T:summary-l1-afd2b4287c6a = {"bytes":4400,"head":"[[s:M9a1867a6]] Memory 9a1867a6, carried 1 canaries to c:494449.1.in: Orchard ba","sha256":"afd2b4287c6ae4ab","tail":". Ledger island velvet winter station ledger orchard. Morning meadow basket lant"}
-T:summary-l1-b1f3d6492163 = {"bytes":4400,"head":"[[s:M15abe5b2]] Memory 15abe5b2, carried 5 canaries to c:494449.54.r2: Signal or","sha256":"b1f3d6492163d356","tail":" Ribbon harbor kettle ribbon compass copper quiet answer pencil signal signal. L"}
 T:summary-l1-b333ccf8a459 = {"bytes":4400,"head":"[[s:M7ee0a4a4]] Memory 7ee0a4a4, carried 1 canaries to c:494449.1.in: Harbor win","sha256":"b333ccf8a459b05b","tail":"market. Window basket velvet shadow stone ledger copper stone canyon copper bask"}
 T:summary-l1-b689a4aa8524 = {"bytes":4400,"head":"[[s:M28d0a1b7]] Memory 28d0a1b7, carried 1 canaries to c:494449.1.in: Island sto","sha256":"b689a4aa8524e69b","tail":"island market kettle meadow ledger. Basket lantern thread winter velvet shadow k"}
-T:summary-l1-b8ceb0d59004 = {"bytes":4400,"head":"[[s:M5206ebe5]] Memory 5206ebe5, carried 6 canaries to c:494449.67.r1: Answer ma","sha256":"b8ceb0d59004e390","tail":"nd morning ribbon answer harbor thread velvet river window window island orchard"}
-T:summary-l1-b9c08bd170dc = {"bytes":4400,"head":"[[s:M28b927e5]] Memory 28b927e5, carried 2 canaries to c:494449.59.in: Ledger ca","sha256":"b9c08bd170dc0f9f","tail":"per canyon compass meadow orchard answer basket. Meadow kettle market orchard sh"}
-T:summary-l1-b9c3364d6d20 = {"bytes":4400,"head":"[[s:Mc76baa0a]] Memory c76baa0a, carried 6 canaries to c:494449.42.r2: Window th","sha256":"b9c3364d6d20967a","tail":"ribbon market letter harbor. Velvet meadow canyon canyon ledger ledger basket ha"}
-T:summary-l1-bbeb9436c1ff = {"bytes":4400,"head":"[[s:M36ae3e7b]] Memory 36ae3e7b, carried 5 canaries to c:494449.34.r2: Quiet cop","sha256":"bbeb9436c1ff4862","tail":" quiet station lantern ribbon pencil canyon island compass stone thread shadow m"}
-T:summary-l1-bff41782b619 = {"bytes":4400,"head":"[[s:Mfa365ebc]] Memory fa365ebc, carried 2 canaries to c:494449.39.in: Basket co","sha256":"bff41782b6197f3b","tail":"lvet. River market pencil answer winter station harbor. Winter harbor thread win"}
-T:summary-l1-c29d3c347e4c = {"bytes":4400,"head":"[[s:Ma105a56a]] Memory a105a56a, carried 4 canaries to c:494449.61.r3: Stone isl","sha256":"c29d3c347e4ced69","tail":"er shadow letter quiet station ledger river orchard morning thread basket ledger"}
 T:summary-l1-c8442e966356 = {"bytes":4400,"head":"[[s:M80e0bd3d]] Memory 80e0bd3d, carried 4 canaries to c:494449.67.r3: Basket sh","sha256":"c8442e966356e3cd","tail":"mpass stone basket compass river velvet canyon garden market. Shadow island copp"}
-T:summary-l1-ca096bda89ab = {"bytes":4400,"head":"[[s:M14ba76f8]] Memory 14ba76f8, carried 4 canaries to c:494449.27.r3: Garden br","sha256":"ca096bda89abc497","tail":"ettle thread. Letter answer canyon basket orchard thread bridge. Garden winter g"}
 T:summary-l1-cf6fddb4f57c = {"bytes":4400,"head":"[[s:M8e0a3c9a]] Memory 8e0a3c9a, carried 9 canaries to c:494449.70.r1: Garden ke","sha256":"cf6fddb4f57c7f85","tail":"t velvet velvet quiet thread signal winter. Canyon letter basket river shadow qu"}
-T:summary-l1-d07350c89917 = {"bytes":4400,"head":"[[s:Mca0cd79e]] Memory ca0cd79e, carried 5 canaries to c:494449.8.r2: Winter mor","sha256":"d07350c89917ac74","tail":"er compass signal pencil signal signal bridge basket orchard velvet. Shadow gard"}
-T:summary-l1-d088e360051d = {"bytes":4400,"head":"[[s:Mb8441d09]] Memory b8441d09, carried 5 canaries to c:494449.44.r2: Window st","sha256":"d088e360051db19e","tail":"sket bridge harbor pencil. Signal island thread island ribbon river basket islan"}
-T:summary-l1-d2f2ef7c531d = {"bytes":4400,"head":"[[s:M94089f06]] Memory 94089f06, carried 1 canaries to c:494449.1.in: Ledger gar","sha256":"d2f2ef7c531df24e","tail":"e station window velvet bridge bridge shadow kettle quiet lantern. Ribbon window"}
-T:summary-l1-d35fbc8c42bb = {"bytes":4400,"head":"[[s:M33d5dfe1]] Memory 33d5dfe1, carried 5 canaries to c:494449.63.r1: Copper wi","sha256":"d35fbc8c42bb0c54","tail":"ket pencil garden velvet. Canyon velvet quiet canyon answer kettle velvet meadow"}
-T:summary-l1-d84cc1520e66 = {"bytes":4400,"head":"[[s:M328e99be]] Memory 328e99be, carried 5 canaries to c:494449.28.r2: Garden st","sha256":"d84cc1520e66d67d","tail":"et compass meadow stone stone basket morning morning. Meadow thread answer kettl"}
-T:summary-l1-d94aeb4d3e4e = {"bytes":4400,"head":"[[s:Mab14f18b]] Memory ab14f18b, carried 1 canaries to c:494449.1.in: Ribbon vel","sha256":"d94aeb4d3e4e2922","tail":"r basket copper bridge station winter copper morning orchard kettle island. Sign"}
-T:summary-l1-d983e1f91ac2 = {"bytes":4400,"head":"[[s:M7754521d]] Memory 7754521d, carried 4 canaries to c:494449.41.r3: Thread co","sha256":"d983e1f91ac27163","tail":"t market station pencil window morning meadow answer harbor ribbon meadow statio"}
-T:summary-l1-dd90dde8acaa = {"bytes":4400,"head":"[[s:Mebc6216e]] Memory ebc6216e, carried 2 canaries to c:494449.49.r1: Thread sh","sha256":"dd90dde8acaaccba","tail":"read island copper letter stone canyon morning orchard quiet. Market river answe"}
-T:summary-l1-e01e0fa6cdc4 = {"bytes":4400,"head":"[[s:Mdcfd21f0]] Memory dcfd21f0, carried 4 canaries to c:494449.21.r3: River lan","sha256":"e01e0fa6cdc415a0","tail":"vet ledger kettle garden ledger thread station compass canyon meadow canyon bask"}
-T:summary-l1-e135424a6ab1 = {"bytes":4400,"head":"[[s:M8bdcd70a]] Memory 8bdcd70a, carried 1 canaries to c:494449.1.in: Stone wint","sha256":"e135424a6ab1ee50","tail":" lantern window garden copper market signal harbor lantern meadow bridge. Winter"}
-T:summary-l1-e3510d7416d5 = {"bytes":4400,"head":"[[s:Mc90d5f04]] Memory c90d5f04, carried 2 canaries to c:494449.19.r1: Stone riv","sha256":"e3510d7416d5678d","tail":"ss bridge shadow pencil quiet. Answer kettle shadow answer morning letter mornin"}
-T:summary-l1-e37db4e6576e = {"bytes":4400,"head":"[[s:Mfac5e50e]] Memory fac5e50e, carried 5 canaries to c:494449.48.r2: Basket co","sha256":"e37db4e6576e26bf","tail":"window island. Ribbon basket signal thread thread meadow. Answer thread morning."}
-T:summary-l1-e673b76a9a5e = {"bytes":4400,"head":"[[s:M431fe89f]] Memory 431fe89f, carried 7 canaries to c:494449.7.r1: Canyon lan","sha256":"e673b76a9a5e6125","tail":"ss signal winter. Canyon ledger copper letter lantern meadow compass lantern can"}
-T:summary-l1-ea5fef2cc8b5 = {"bytes":4400,"head":"[[s:M2b64f1ab]] Memory 2b64f1ab, carried 6 canaries to c:494449.3.r2: Winter qui","sha256":"ea5fef2cc8b5073b","tail":"r stone stone basket answer ribbon pencil garden ledger answer. Market canyon co"}
-T:summary-l1-ea7ae0e670db = {"bytes":4400,"head":"[[s:M9aa532be]] Memory 9aa532be, carried 7 canaries to c:494449.37.r1: Velvet le","sha256":"ea7ae0e670dbd8ac","tail":" orchard shadow garden ledger orchard. Harbor compass garden answer winter marke"}
-T:summary-l1-eb723f9105d7 = {"bytes":4400,"head":"[[s:M4c84ed18]] Memory 4c84ed18, carried 1 canaries to c:494449.1.in: Market cop","sha256":"eb723f9105d76dde","tail":"n. Velvet orchard kettle velvet island river basket letter answer copper signal."}
-T:summary-l1-eb8db1c6b0b1 = {"bytes":4400,"head":"[[s:M62c27e4d]] Memory 62c27e4d, carried 7 canaries to c:494449.17.r1: Ribbon ma","sha256":"eb8db1c6b0b1865c","tail":"al garden market. Quiet signal ribbon pencil answer winter copper ledger lantern"}
-T:summary-l1-ec29f1739ae4 = {"bytes":4400,"head":"[[s:M02687314]] Memory 02687314, carried 1 canaries to c:494449.1.in: Morning le","sha256":"ec29f1739ae4ea57","tail":"ass compass harbor velvet kettle pencil window bridge. Ledger kettle meadow lant"}
 T:summary-l1-ee3e91a4c199 = {"bytes":4400,"head":"[[s:Mb75ba360]] Memory b75ba360, carried 2 canaries to c:494449.69.in: Basket ca","sha256":"ee3e91a4c19975ba","tail":" canyon lantern letter basket window station pencil kettle thread. Letter bridge"}
-T:summary-l1-ef7641fc52d4 = {"bytes":4400,"head":"[[s:Me2c79ace]] Memory e2c79ace, carried 4 canaries to c:494449.25.r1: Ribbon sh","sha256":"ef7641fc52d4f164","tail":"opper winter. Compass signal river meadow window station market winter lantern l"}
-T:summary-l1-f41fdc520d77 = {"bytes":4400,"head":"[[s:M11a9e31c]] Memory 11a9e31c, carried 1 canaries to c:494449.1.in: Letter pen","sha256":"f41fdc520d775327","tail":"tern letter island market winter harbor ribbon bridge quiet meadow garden island"}
-T:summary-l1-f974f4c4e3aa = {"bytes":4400,"head":"[[s:Md84b0ed2]] Memory d84b0ed2, carried 5 canaries to c:494449.18.r2: Shadow le","sha256":"f974f4c4e3aa6b2e","tail":"rket market ribbon. Thread kettle pencil kettle kettle compass velvet letter rib"}
-T:summary-l1-fb7d52ef7ea6 = {"bytes":4400,"head":"[[s:M97fd2141]] Memory 97fd2141, carried 4 canaries to c:494449.55.r1: Thread or","sha256":"fb7d52ef7ea6e565","tail":"mpass ribbon pencil letter. Basket signal compass garden harbor meadow letter wi"}
-T:summary-l1-fe4ea663723c = {"bytes":4400,"head":"[[s:M7a2ae6ae]] Memory 7a2ae6ae, carried 4 canaries to c:494449.13.r3: Winter ve","sha256":"fe4ea663723cd30d","tail":"tion garden market signal orchard orchard quiet meadow window thread copper mark"}
-T:summary-l1-ffd9f32cb44d = {"bytes":4400,"head":"[[s:M755defa7]] Memory 755defa7, carried 5 canaries to c:494449.1.r2: Thread led","sha256":"ffd9f32cb44dcd36","tail":"velvet pencil window kettle lantern. Morning morning station kettle station quie"}
-T:summary-l2-0b3ee0e37086 = {"bytes":4400,"head":"[[s:Me3d81559]] Memory e3d81559, carried 23 canaries to c:494449.35.r1: Orchard ","sha256":"0b3ee0e37086cad9","tail":"antern kettle thread winter lantern river bridge. Winter quiet station garden st"}
 T:summary-l2-1a991811ae5b = {"bytes":4400,"head":"[[s:M4e1d7adc]] Memory 4e1d7adc, carried 14 canaries to c:494449.69.in: Island v","sha256":"1a991811ae5bc6e9","tail":"Canyon lantern ledger island lantern river shadow island morning station answer."}
-T:summary-l2-267bca299698 = {"bytes":4400,"head":"[[s:Mc9a46b90]] Memory c9a46b90, carried 15 canaries to c:494449.39.in: Bridge h","sha256":"267bca299698ce1e","tail":"velvet copper copper kettle answer ribbon lantern. Basket signal meadow river mo"}
-T:summary-l2-37f8080b8739 = {"bytes":4400,"head":"[[s:Md9180e8a]] Memory d9180e8a, carried 15 canaries to c:494449.12.r2: Compass ","sha256":"37f8080b8739ffe0","tail":"r station ledger letter garden station ledger letter island morning pencil windo"}
-T:summary-l2-638807280ff5 = {"bytes":4400,"head":"[[s:Md5327829]] Memory d5327829, carried 22 canaries to c:494449.53.r3: Lantern ","sha256":"638807280ff51602","tail":"et basket basket copper kettle harbor. Stone thread ledger meadow bridge quiet b"}
-T:summary-l2-89a26457fce3 = {"bytes":4400,"head":"[[s:M8c57a49b]] Memory 8c57a49b, carried 22 canaries to c:494449.29.in: Market b","sha256":"89a26457fce3d48f","tail":"er window market letter. Market letter winter basket winter river market compass"}
-T:summary-l2-94fa729a20ad = {"bytes":4400,"head":"[[s:Mbaa874f0]] Memory baa874f0, carried 15 canaries to c:494449.9.in: Thread pe","sha256":"94fa729a20adff49","tail":"r canyon. Letter window river basket market velvet stone meadow. Market velvet l"}
-T:summary-l2-98e5e47f1cae = {"bytes":4400,"head":"[[s:M64736045]] Memory 64736045, carried 22 canaries to c:494449.23.r3: Quiet st","sha256":"98e5e47f1cae5539","tail":"e answer answer quiet morning lantern. Quiet shadow orchard kettle pencil ledger"}
-T:summary-l2-9da815c88fdf = {"bytes":4400,"head":"[[s:Mdebb0433]] Memory debb0433, carried 25 canaries to c:494449.5.r1: Island mo","sha256":"9da815c88fdfc276","tail":"signal island lantern lantern velvet harbor market answer window copper basket.."}
-T:summary-l2-a0ac9a0674c3 = {"bytes":4400,"head":"[[s:M2dcc3378]] Memory 2dcc3378, carried 7 canaries to c:494449.61.r1: Island ma","sha256":"a0ac9a0674c3089c","tail":"r station harbor ribbon meadow morning station answer compass thread winter ston"}
-T:summary-l2-b16554dd3937 = {"bytes":4400,"head":"[[s:Mf3fac376]] Memory f3fac376, carried 6 canaries to c:494449.49.in: Orchard r","sha256":"b16554dd39379ba9","tail":" velvet lantern window window winter lantern kettle river velvet window basket l"}
-T:summary-l2-c1f0ec2fe3b1 = {"bytes":4400,"head":"[[s:M73e40519]] Memory 73e40519, carried 7 canaries to c:494449.31.r1: Meadow ke","sha256":"c1f0ec2fe3b1e431","tail":"ket orchard market answer winter station compass harbor garden. Answer stone qui"}
-T:summary-l2-d45fb026af86 = {"bytes":4400,"head":"[[s:Mcee77b2c]] Memory cee77b2c, carried 24 canaries to c:494449.47.r3: Signal b","sha256":"d45fb026af8638b5","tail":"vet meadow. Signal basket letter basket stone garden signal quiet signal garden."}
-T:summary-l2-e09b835010d6 = {"bytes":4400,"head":"[[s:Mc9d019c7]] Memory c9d019c7, carried 22 canaries to c:494449.59.in: Signal s","sha256":"e09b835010d62ed0","tail":" thread station canyon compass winter ribbon letter quiet kettle. Answer quiet r"}
 T:summary-l2-e1da6beacf00 = {"bytes":4400,"head":"[[s:Md867ed53]] Memory d867ed53, carried 16 canaries to c:494449.70.r1: Window m","sha256":"e1da6beacf0023bc","tail":"rchard velvet bridge. Compass basket basket orchard answer velvet canyon window."}
-T:summary-l2-e29eec452a5a = {"bytes":4400,"head":"[[s:M9ddd7360]] Memory 9ddd7360, carried 6 canaries to c:494449.19.in: Thread pe","sha256":"e29eec452a5a0a9f","tail":"copper orchard pencil shadow velvet morning window pencil pencil compass answer."}
-T:summary-l2-e2c0d8efcd83 = {"bytes":4400,"head":"[[s:M7b8fbeee]] Memory 7b8fbeee, carried 15 canaries to c:494449.42.r2: Compass ","sha256":"e2c0d8efcd839761","tail":"r. Kettle pencil harbor quiet meadow orchard compass answer signal compass. Rive"}
-T:summary-l2-e3a0d66aaa78 = {"bytes":4400,"head":"[[s:M936e570e]] Memory 936e570e, carried 24 canaries to c:494449.17.r3: Shadow p","sha256":"e3a0d66aaa7894d5","tail":"ger island meadow thread lantern shadow compass. Orchard canyon harbor canyon wi"}
-T:summary-l2-ec3f8225a1b3 = {"bytes":4400,"head":"[[s:Mdddea055]] Memory dddea055, carried 24 canaries to c:494449.65.r2: Signal k","sha256":"ec3f8225a1b39d10","tail":" market island thread river canyon market winter shadow letter. Ribbon letter ri"}
 T:summary-l3-3561a7b0ac78 = {"bytes":4400,"head":"[[s:M4654ef62]] Memory 4654ef62, carried 1 canaries to c:494449.1.in: Winter riv","sha256":"3561a7b0ac78aed0","tail":"winter thread compass shadow ribbon. Velvet basket pencil ledger market pencil p"}
-T:summary-l3-f3bb2e9fdcaa = {"bytes":4400,"head":"[[s:Mbeef5c70]] Memory beef5c70, carried 1 canaries to c:494449.1.in: Basket orc","sha256":"f3bb2e9fdcaaaac6","tail":" Window kettle stone shadow garden station winter letter compass. Quiet window s"}
-T:summary-l3-f5f870bd7bc2 = {"bytes":4400,"head":"[[s:Me28cebd6]] Memory e28cebd6, carried 1 canaries to c:494449.1.in: Orchard qu","sha256":"f5f870bd7bc26eba","tail":"n signal basket station river river window letter compass morning river quiet. V"}
 T:system-you-are-the-fbe6bbb69f1b = You are the strategy fixture's agent.
 T:user-answer-basket-kettle-916266b77170 = {"bytes":38961,"head":"Answer basket kettle garden thread lantern thread lantern kettle lantern copper ","sha256":"e1294e217f887065","tail":"n window velvet ledger. Winter ribbon ledger ledger winter thread river market l"}
 T:user-basket-compass-kettle-f8606644af0b = {"bytes":206300,"head":"Basket compass kettle window bridge winter garden velvet ledger winter lantern i","sha256":"43b2384987bf1a78","tail":"n window velvet ledger. Winter ribbon ledger ledger winter thread river market l"}
@@ -213,128 +91,6 @@ step 51116.g
   compile [T:user-clock-monday-#-#-#-73714c23f411](2026,01,05,09,00) [T:user-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) 494449.1.in [T:user-routing-your-plain-d71d86cf6da8] L3(494449.1.r1-494449.23.r3+1) L3(494449.1.r1-494449.23.r3+1) L3(494449.24.in-494449.47.r3+1) L3(494449.24.in-494449.47.r3+1) L2(494449.48.in-494449.49.in+18) L2(494449.48.in-494449.49.in+18) L2(494449.49.in+19-494449.53.r3+1) L2(494449.49.in+19-494449.53.r3+1) L2(494449.54.in-494449.59.in+2) L2(494449.54.in-494449.59.in+2) L1(494449.59.in+3-494449.59.in+6) L1(494449.59.in+3-494449.59.in+6) L1(494449.59.in+7-494449.59.in+10) L1(494449.59.in+7-494449.59.in+10) L1(494449.59.in+11-494449.59.in+14) L1(494449.59.in+11-494449.59.in+14) [T:user-harbor-letter-island-361437d2c449]!shards 494449.59.r1 [T:user-delivered-plain-speech-17b308e66c2c] 494449.60.in-494449.60.r1 [T:user-delivered-plain-speech-17b308e66c2c] 494449.61.in-494449.61.r3 [T:user-delivered-plain-speech-17b308e66c2c] 494449.62.in-494449.62.r3 [T:user-delivered-plain-speech-17b308e66c2c] 494449.63.in!content 494449.63.r1-494449.63.r3 [T:user-delivered-plain-speech-17b308e66c2c] 494449.64.in-494449.64.r2 [T:user-delivered-plain-speech-17b308e66c2c] 494449.65.in-494449.65.r2 [T:user-delivered-plain-speech-17b308e66c2c] 494449.66.in-494449.66.r1 [T:user-delivered-plain-speech-17b308e66c2c] 494449.67.in-494449.67.r3 [T:user-delivered-plain-speech-17b308e66c2c] 494449.68.in-494449.68.r2 [T:user-delivered-plain-speech-17b308e66c2c] 494449.69.in 494449.69.r1 [T:user-delivered-plain-speech-17b308e66c2c] 494449.70.in-494449.70.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-tuesday-#-#-#-16d854dc023a](2026,01,06,09,00) 51116.g.in ^ 8,70,80, head H:c57a01ca, body 74b7be65
   round + 51116.g.r1, body eaa22af7
   round + 51116.g.r2, body 10c1feea
-  wrote L1(494449.1.r1-494449.1.call2) [T:summary-l1-ffd9f32cb44d]
-  wrote L1(494449.1.r3-494449.2.call1) [T:summary-l1-6665289cb9b4]
-  wrote L1(494449.2.r2-494449.2.r3+1) [T:summary-l1-a6e257442656]
-  wrote L1(494449.3.in-494449.3.call2) [T:summary-l1-ea5fef2cc8b5]
-  wrote L1(494449.3.r3-494449.4.call1) [T:summary-l1-20c19916d369]
-  wrote L1(494449.4.r2-494449.5.call1) [T:summary-l1-5ee33865bccc]
-  wrote L1(494449.5.r2-494449.7.call1) [T:summary-l1-e673b76a9a5e]
-  wrote L1(494449.7.r2-494449.7.r3+1) [T:summary-l1-405dbd968fb6]
-  wrote L2(494449.1.r1-494449.5.call1) [T:summary-l2-9da815c88fdf]
-  wrote L1(494449.8.in-494449.8.r2) [T:summary-l1-d07350c89917]
-  wrote L1(494449.8.r2+1-494449.9.in+2) [T:summary-l1-36cd7ffc6d33]
-  wrote L1(494449.9.in+3-494449.9.in+6) [T:summary-l1-a9392de9edad]
-  wrote L1(494449.9.in+7-494449.9.in+10) [T:summary-l1-ec29f1739ae4]
-  wrote L2(494449.5.r2-494449.9.in+10) [T:summary-l2-94fa729a20ad]
-  wrote L1(494449.9.in+11-494449.9.in+14) [T:summary-l1-d94aeb4d3e4e]
-  wrote L1(494449.9.in+15-494449.9.in+18) [T:summary-l1-f41fdc520d77]
-  wrote L1(494449.9.in+19-494449.9.in+22) [T:summary-l1-9b4db6609054]
-  wrote L1(494449.9.r1-494449.11.call1) [T:summary-l1-2d8d832d8dd8]
-  wrote L1(494449.11.r2-494449.11.r3+1) [T:summary-l1-1acd04ddb4d0]
-  wrote L1(494449.12.in-494449.12.call2) [T:summary-l1-3bd2a9f3dd43]
-  wrote L1(494449.12.r3-494449.13.call1) [T:summary-l1-5bf9f54062d8]
-  wrote L1(494449.13.r2-494449.13.r3+1) [T:summary-l1-fe4ea663723c]
-  wrote L1(494449.14.in-494449.14.r2) [T:summary-l1-262347d53b20]
-  wrote L1(494449.14.r2+1-494449.15.call1) [T:summary-l1-5c320a13ffee]
-  wrote L1(494449.15.r2-494449.17.call1) [T:summary-l1-eb8db1c6b0b1]
-  wrote L2(494449.9.in+11-494449.12.call2) [T:summary-l2-37f8080b8739]
-  wrote L1(494449.17.r2-494449.17.r3+1) [T:summary-l1-283b31916c0b]
-  wrote L2(494449.12.r3-494449.17.r3+1) [T:summary-l2-e3a0d66aaa78]
-  wrote L1(494449.18.in-494449.18.r2) [T:summary-l1-f974f4c4e3aa]
-  wrote L1(494449.18.r2+1-494449.19.in+2) [T:summary-l1-531289b8c15c]
-  wrote L1(494449.19.in+3-494449.19.in+6) [T:summary-l1-387608befbdd]
-  wrote L1(494449.19.in+7-494449.19.in+10) [T:summary-l1-286b2d64b0d9]
-  wrote L1(494449.19.in+11-494449.19.in+14) [T:summary-l1-e135424a6ab1]
-  wrote L1(494449.19.in+15-494449.19.in+18) [T:summary-l1-264410ee44ed]
-  wrote L1(494449.19.in+19-494449.19.r1) [T:summary-l1-e3510d7416d5]
-  wrote L1(494449.19.r1+1-494449.21.call1) [T:summary-l1-2ad3eec8f791]
-  wrote L1(494449.21.r2-494449.21.r3+1) [T:summary-l1-e01e0fa6cdc4]
-  wrote L1(494449.22.in-494449.22.call2) [T:summary-l1-3d04e204482d]
-  wrote L1(494449.22.r3-494449.23.call1) [T:summary-l1-541047eb8077]
-  wrote L1(494449.23.r2-494449.23.r3+1) [T:summary-l1-6aa84ad4d0b6]
-  wrote L1(494449.24.in-494449.24.r2) [T:summary-l1-975a417d215a]
-  wrote L1(494449.24.r2+1-494449.25.call1) [T:summary-l1-ef7641fc52d4]
-  wrote L1(494449.25.r2-494449.27.call1) [T:summary-l1-a03a699d34c8]
-  wrote L2(494449.18.in-494449.19.in+18) [T:summary-l2-e29eec452a5a]
-  wrote L2(494449.19.in+19-494449.23.r3+1) [T:summary-l2-98e5e47f1cae]
-  wrote L3(494449.1.r1-494449.23.r3+1) [T:summary-l3-f3bb2e9fdcaa]
-  wrote L1(494449.27.r2-494449.27.r3+1) [T:summary-l1-ca096bda89ab]
-  wrote L1(494449.28.in-494449.28.r2) [T:summary-l1-d84cc1520e66]
-  wrote L1(494449.28.r2+1-494449.29.in+2) [T:summary-l1-74f670f6a812]
-  wrote L2(494449.24.in-494449.29.in+2) [T:summary-l2-89a26457fce3]
-  wrote L1(494449.29.in+3-494449.29.in+6) [T:summary-l1-417f588fa775]
-  wrote L1(494449.29.in+7-494449.29.in+10) [T:summary-l1-5dc2ee4f01a1]
-  wrote L1(494449.29.in+11-494449.29.in+14) [T:summary-l1-abcf11eaa320]
-  wrote L1(494449.29.in+15-494449.29.in+18) [T:summary-l1-177b84f050f2]
-  wrote L1(494449.29.in+19-494449.29.r1) [T:summary-l1-2f66d0cb2c62]
-  wrote L1(494449.29.r1+1-494449.31.call1) [T:summary-l1-21b1e8fd5f3d]
-  wrote L1(494449.31.r2-494449.31.r3+1) [T:summary-l1-56be00d59e9f]
-  wrote L1(494449.32.in-494449.32.call2) [T:summary-l1-472c27a03c35]
-  wrote L1(494449.32.r3-494449.33.call1) [T:summary-l1-5e0b87937f1e]
-  wrote L1(494449.33.r2-494449.33.r3+1) [T:summary-l1-32982cfab5a2]
-  wrote L1(494449.34.in-494449.34.r2) [T:summary-l1-bbeb9436c1ff]
-  wrote L1(494449.34.r2+1-494449.35.call1) [T:summary-l1-2075390ee66f]
-  wrote L1(494449.35.r2-494449.37.call1) [T:summary-l1-ea7ae0e670db]
-  wrote L2(494449.29.in+3-494449.31.call1) [T:summary-l2-c1f0ec2fe3b1]
-  wrote L2(494449.31.r2-494449.35.call1) [T:summary-l2-0b3ee0e37086]
-  wrote L1(494449.37.r2-494449.37.r3+1) [T:summary-l1-1472422a1e94]
-  wrote L1(494449.38.in-494449.38.r2) [T:summary-l1-0e14a5e925d6]
-  wrote L1(494449.38.r2+1-494449.39.in+2) [T:summary-l1-bff41782b619]
-  wrote L1(494449.39.in+3-494449.39.in+6) [T:summary-l1-5027ad28afe3]
-  wrote L1(494449.39.in+7-494449.39.in+10) [T:summary-l1-afd2b4287c6a]
-  wrote L2(494449.35.r2-494449.39.in+10) [T:summary-l2-267bca299698]
-  wrote L1(494449.39.in+11-494449.39.in+14) [T:summary-l1-9680ee49d168]
-  wrote L1(494449.39.in+15-494449.39.in+18) [T:summary-l1-4c4428a7c00f]
-  wrote L1(494449.39.in+19-494449.39.in+22) [T:summary-l1-d2f2ef7c531d]
-  wrote L1(494449.39.r1-494449.41.call1) [T:summary-l1-8641c6f10446]
-  wrote L1(494449.41.r2-494449.41.r3+1) [T:summary-l1-d983e1f91ac2]
-  wrote L1(494449.42.in-494449.42.call2) [T:summary-l1-b9c3364d6d20]
-  wrote L1(494449.42.r3-494449.43.call1) [T:summary-l1-1f07bb9255a2]
-  wrote L1(494449.43.r2-494449.43.r3+1) [T:summary-l1-1ced035a6002]
-  wrote L1(494449.44.in-494449.44.r2) [T:summary-l1-d088e360051d]
-  wrote L1(494449.44.r2+1-494449.45.call1) [T:summary-l1-1d0b9db0438b]
-  wrote L2(494449.39.in+11-494449.42.call2) [T:summary-l2-e2c0d8efcd83]
-  wrote L1(494449.45.r2-494449.47.call1) [T:summary-l1-66d8e89ab797]
-  wrote L1(494449.47.r2-494449.47.r3+1) [T:summary-l1-30ec10c7f8af]
-  wrote L2(494449.42.r3-494449.47.r3+1) [T:summary-l2-d45fb026af86]
-  wrote L3(494449.24.in-494449.47.r3+1) [T:summary-l3-f5f870bd7bc2]
-  wrote L1(494449.48.in-494449.48.r2) [T:summary-l1-e37db4e6576e]
-  wrote L1(494449.48.r2+1-494449.49.in+2) [T:summary-l1-5973f764ed95]
-  wrote L1(494449.49.in+3-494449.49.in+6) [T:summary-l1-eb723f9105d7]
-  wrote L1(494449.49.in+7-494449.49.in+10) [T:summary-l1-91a2d6967144]
-  wrote L1(494449.49.in+11-494449.49.in+14) [T:summary-l1-547c8983c6f5]
-  wrote L1(494449.49.in+15-494449.49.in+18) [T:summary-l1-2435973ca60a]
-  wrote L1(494449.49.in+19-494449.49.r1+1) [T:summary-l1-dd90dde8acaa]
-  wrote L1(494449.50.in-494449.51.call1) [T:summary-l1-07722b40366b]
-  wrote L1(494449.51.r2-494449.51.r3+1) [T:summary-l1-41d57a16064e]
-  wrote L1(494449.52.in-494449.52.call2) [T:summary-l1-134b67a6191d]
-  wrote L1(494449.52.r3-494449.53.call1) [T:summary-l1-2dc42cbef10b]
-  wrote L1(494449.53.r2-494449.53.r3+1) [T:summary-l1-718fdc87aec7]
-  wrote L1(494449.54.in-494449.54.r2) [T:summary-l1-b1f3d6492163]
-  wrote L1(494449.54.r2+1-494449.55.call1) [T:summary-l1-fb7d52ef7ea6]
-  wrote L2(494449.48.in-494449.49.in+18) [T:summary-l2-b16554dd3937]
-  wrote L2(494449.49.in+19-494449.53.r3+1) [T:summary-l2-638807280ff5]
-  wrote L1(494449.55.r2-494449.57.call1) [T:summary-l1-a5a22c115f25]
-  wrote L1(494449.57.r2-494449.57.r3+1) [T:summary-l1-60b037769475]
-  wrote L1(494449.58.in-494449.58.r2) [T:summary-l1-30d4e9db0651]
-  wrote L1(494449.58.r2+1-494449.59.in+2) [T:summary-l1-b9c08bd170dc]
-  wrote L2(494449.54.in-494449.59.in+2) [T:summary-l2-e09b835010d6]
-  wrote L1(494449.59.in+3-494449.59.in+6) [T:summary-l1-54e8ab4da8aa]
-  wrote L1(494449.59.in+7-494449.59.in+10) [T:summary-l1-068e3c41c735]
-  wrote L1(494449.59.in+11-494449.59.in+14) [T:summary-l1-a8ee1afa9ed4]
-  wrote L1(494449.59.in+15-494449.59.in+18) [T:summary-l1-3730e9d27df5]
-  wrote L1(494449.59.in+19-494449.59.r1+1) [T:summary-l1-624158f1b47a]
-  wrote L1(494449.60.in-494449.61.call1) [T:summary-l1-4ebf35e53553]
-  wrote L1(494449.61.r2-494449.61.r3+1) [T:summary-l1-c29d3c347e4c]
-  wrote L1(494449.62.in-494449.62.call2) [T:summary-l1-5eb7dccd099a]
-  wrote L1(494449.62.r3-494449.63.call1) [T:summary-l1-d35fbc8c42bb]
-  wrote L1(494449.63.r2-494449.63.r3+1) [T:summary-l1-8de8944acfeb]
-  wrote L1(494449.64.in-494449.64.r2) [T:summary-l1-5ec2ea68d5a7]
-  wrote L1(494449.64.r2+1-494449.65.r2) [T:summary-l1-06892f1067a6]
-  wrote L2(494449.59.in+3-494449.61.call1) [T:summary-l2-a0ac9a0674c3]
-  wrote L2(494449.61.r2-494449.65.r2) [T:summary-l2-ec3f8225a1b3]
-  wrote L1(494449.65.r2+1-494449.67.call1) [T:summary-l1-b8ceb0d59004]
 step 51116.1
   compile + 51116.g.r1 [T:user-settings-open-call-8a083612d504] 51116.g.r2 [T:user-contextbudgettokens-#-effectivecontextbu-b54c1fc87678](300000,300000,120000,24000,8192,20000) 51116.g.r3 [T:user-delivered-plain-speech-17b308e66c2c] 51116.1.in ^ 8,80,87, body 292382b0
   round + 51116.1.r1 51116.1.call1, body b83192cf
@@ -402,4 +158,4 @@ step 51116.12
   wrote L1(51116.2.in-51116.2.r2) [T:summary-l1-5c8e0737c729]
   wrote L1(51116.2.r2+1-51116.3.r2+1) [T:summary-l1-7d12db3a421e]
 end ok
-totals {"actions":0,"calls":15,"compiles":13,"dry":0,"other":0,"refused":0,"rounds":14,"written":137}
+totals {"actions":0,"calls":15,"compiles":13,"dry":0,"other":0,"refused":0,"rounds":14,"written":15}
