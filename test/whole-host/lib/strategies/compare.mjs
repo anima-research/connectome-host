@@ -4,9 +4,8 @@ import { join } from 'node:path';
 const REF = /\bimg_([0-9a-z]+)_(\d+)\b/g;
 const FORK = /\b(fork-[^\s"]*?-)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/g;
 
-// Two runs of one key differ only in agent-framework's per-process image-ref nonce, in the random UUID the host's
-// subagent module gives a fork's call when its own call isn't in context (subagent-module.ts), and in the stand-in's
-// thinking signatures, which hash the request ahead of them.
+// agent-framework 0.32.0 names a tool-result image `img_<nonce>_<seq>`, its nonce minted by a ledger that lives only
+// as long as its process (tool-image-ledger.ts).
 export function runVaryingMasker() {
   const forks = new Map();
   const nonces = new Map();

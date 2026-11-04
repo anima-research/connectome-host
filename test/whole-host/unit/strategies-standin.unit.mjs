@@ -681,8 +681,6 @@ test('T7/T14/T15: summariser requests are answered at once, every arrival is rep
   const { seen, until } = arrivals(s);
   s.setClock(123);
   s.setStep(step('r', [{ text: '[[c:r.r1]] ok' }, { text: '[[c:r.r2]] ok' }]));
-  // Answered before the step's agent requests come, since agent-framework's provider gate can
-  // keep a turn's request waiting on a compression in flight.
   assert.equal((await post(s.url, summariserBody({ canaries: ['[[c:r.in]]'] }))).status, 200);
   await post(s.url, agentBody({ canary: '[[c:r.in]]' }));
   await until(2);
@@ -848,7 +846,7 @@ test('T33: a message\'s digest leaves out only the markers its record keeps, a b
   assert.notEqual(nulled, plain, 'a null marker isn\'t kept as a marker, so the digest takes it');
 });
 
-test('T18: each message in a record has a digest that a cache marker on any of its blocks and a tool image ref\'s nonce leave unchanged and a change in its text moves, and an answer records the tool_use ids it minted', async () => {
+test('T18: each message in a record has a digest that a non-null cache marker on any of its blocks and a tool image ref\'s nonce leave unchanged and a change in its text moves, and an answer records the tool_use ids it minted', async () => {
   const standin = await startStandin({ configuration: { windowTokens: 50_000 } });
   let records = null;
   try {

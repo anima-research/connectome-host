@@ -281,7 +281,7 @@ export const WORKLOADS = {
   W5: {
     from: 'checkpoint',
     turns: 12,
-    property: 'shards: a body larger than the message cap, stored in parts, that context-manager sends whole never goes out without its tool blocks',
+    property: 'shards: the store holds both blocks, the call and its result, of each of the workload\'s own calls, and a body larger than the message cap, stored in parts, that context-manager sends whole never goes out without its tool blocks',
     steps(ctx) {
       const w = writer(ctx, 'W5');
       const steps = [guardTurn(w, 'g')];

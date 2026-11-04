@@ -271,7 +271,7 @@ for (const id of names) {
         if (on) cpSync(join(bodies, on), join(dir, 'self-check', `recording-on-${on}`));
         if (offFile) cpSync(join(offBodies, offFile), join(dir, 'self-check', `recording-off-${offFile}`));
       }
-      console.log(`${LABEL} ${id}: self-check: ${selfCheck.outcome === 'same' ? `the stand-in received the same ${selfCheck.requests} requests with the test module's recording off` : selfCheck.outcome === 'couldnt-run' ? `couldn't run: ${selfCheck.reason}` : `request ${selfCheck.at} differs with recording off: ${selfCheck.detail}`}`);
+      console.log(`${LABEL} ${id}: self-check: ${selfCheck.outcome === 'same' ? `the stand-in received the same ${selfCheck.requests} request bodies with the test module's recording off` : selfCheck.outcome === 'couldnt-run' ? `couldn't run: ${selfCheck.reason}` : `request ${selfCheck.at} differs with recording off: ${selfCheck.detail}`}`);
     }
     if (record === 'updated') {
       stage = 'its record couldn\'t be committed';
@@ -293,7 +293,7 @@ for (const id of names) {
 }
 const versionsNow = versionsText({ release: { tag: stack.release, versions: versionsOnly(release.versions) }, candidate: { versions: versionsOnly(candidate.versions) } });
 const everyUpdated = everyRunUpdated(everyRun, results);
-if (flag('update-records') && !everyUpdated) console.log(`${LABEL} records/versions.txt is left as it was: it names the stack every committed record was made with, and this invocation updated ${results.filter((x) => x.record === 'updated').length} of ${everyRun.length} records`);
+if (flag('update-records') && !everyUpdated) console.log(`${LABEL} records/versions.txt is left as it was: it names the stack of the last invocation that updated every record, and this invocation updated ${results.filter((x) => x.record === 'updated').length} of ${everyRun.length} records`);
 const { state: versions, changes: versionMoves } = compareVersions(RECORDS, versionsNow, { update: flag('update-records') && everyUpdated });
 const versionNote = versions === 'differs' ? `Versions differ from the committed records/versions.txt: ${versionMoves.join('; ')}.` : versions === 'missing' ? 'No records/versions.txt is committed.' : null;
 if (versionNote) console.log(`${LABEL} ${versionNote}`);

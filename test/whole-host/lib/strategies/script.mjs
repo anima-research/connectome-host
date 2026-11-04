@@ -6,9 +6,6 @@ export const READER = '[[reader]]';
 const PARTICIPANTS = ['Ash', 'Tavy', 'Wren'];
 const MINUTE = 60_000;
 
-// A recipe that leaves the strategy unset gets autobiographical, adaptive and kv-unified with the standard block
-// (connectome-host framework-strategy.ts), and on claude-opus-5-5 the host passes agent-framework `thinkingBinding`
-// and the drop control (anima-research/connectome-host#500).
 export function configurations() {
   const agent = { model: 'claude-opus-4-6', cacheKeepalive: { enabled: false } };
   const run = (name, more, summarises = true) => ({ name, agent: { ...agent, ...more.agent }, ...(more.modules ? { modules: more.modules } : {}), ...(more.subconscious ? { subconscious: more.subconscious } : {}), ...(more.judges ? { judges: more.judges } : {}), maintenanceIntervalMs: 0, binds: false, summarises });

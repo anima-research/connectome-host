@@ -48,9 +48,10 @@ test('the self-check runs on a change to any file the test module loads, which t
   assert.deepEqual(loaded.filter((f) => !paths.includes(f)), [], 'each loaded file is a path that schedules the check');
 });
 
-test('the self-check also runs on a change to what chooses the stack the module runs beside, and to what sets up, drives and compares its two arms', () => {
+test('the self-check also runs on a change to the host\'s own source, to what chooses the stack the module runs beside, and to what sets up, drives and compares its two arms', () => {
   const paths = pullRequestPaths(readFileSync(join(ROOT, '.github/workflows/whole-host-self-check.yml'), 'utf-8'));
   for (const p of ['package.json', 'package-lock.json', 'bun.lock', 'test/whole-host/run.mjs', 'test/whole-host/lib/strategies/driver.mjs', 'test/whole-host/lib/common.mjs']) assert.ok(paths.includes(p), `${p} schedules the self-check`);
+  assert.ok(paths.includes('src/**'), 'a change to the host\'s own source schedules the self-check, since the host\'s code runs within and around the compiles the module records');
 });
 
 test('the files the test module loads are followed through re-exports, dynamic imports, imports over several lines and indented ones', () => {

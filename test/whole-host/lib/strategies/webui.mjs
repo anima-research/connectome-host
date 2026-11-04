@@ -1,5 +1,3 @@
-// The host's web UI is a WebSocket to `/ws` on the URL it logs (`[webui] listening on <url>`); its welcome names the
-// session (`welcome.session.id`), which a session-changing message such as `suppress` must carry.
 export async function openWebUi({ url, basicAuth = null, timeoutMs = 30_000 }) {
   const headers = basicAuth ? { authorization: `Basic ${Buffer.from(`${basicAuth.username}:${basicAuth.password}`).toString('base64')}` } : {};
   const ws = new WebSocket(`${url.replace(/^http/, 'ws').replace(/\/$/, '')}/ws`, { headers });

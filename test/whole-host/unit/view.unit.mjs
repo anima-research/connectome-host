@@ -173,6 +173,16 @@ test('the summary says each run\'s outcome: its flags\' count, why it couldn\'t 
   assert.match(table[6], /^\| H1\/W6 \| invalid: 1 flag\(s\); self-check couldn't run: the run with recording off failed: x \|/);
 });
 
+test('a reason with line breaks, as a checkpoint\'s failure carries the host\'s last lines, stays in its row', () => {
+  const table = summaryTable([
+    { run: 'H1/W4', outcome: 'couldnt-run', reason: 'its checkpoint H1/W2 failed: the host exited (1); its last lines are:\nboom\r\nbang', record: 'couldn\'t run' },
+    { run: 'H1/W5', outcome: 'pass', record: 'same', counts: {} },
+  ]).split('\n');
+  assert.equal(table.length, 4, 'one row per run');
+  assert.equal(table[2].split(' | ')[1], "couldn't run: its checkpoint H1/W2 failed: the host exited (1); its last lines are: boom bang");
+  assert.match(table[3], /^\| H1\/W5 \| pass \| same \|/);
+});
+
 test('the summary says where a run\'s evidence is and what to do when anything isn\'t clean, and lists every flag of each flagged run', () => {
   const clean = viewLib.summaryOf({ rows: [{ run: 'H1/W1', outcome: 'pass', record: 'same', counts: {} }], flagged: [] });
   assert.ok(!/evidence/.test(clean), 'nothing to act on, so nothing to say');

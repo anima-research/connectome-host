@@ -326,8 +326,8 @@ export class HarnessModule {
       case 'messages':
         return messagesOf(this.managerOf(msg.agent));
       case 'dry-compile': {
-        // The budget the agent's own request compile would pass (agent-framework's compileBudget,
-        // the context budget with the tool-result guard's reservation), unless the driver names one.
+        // agent-framework 0.32.0's compileBudget: the budget its own request compile passes, the context budget with
+        // the tool-result guard's reservation.
         const agent = this.agentNamed(msg.agent);
         const budget = msg.budget ?? (typeof agent.compileBudget === 'function' ? agent.compileBudget() : undefined);
         const before = this.seq;

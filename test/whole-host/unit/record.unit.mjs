@@ -432,7 +432,7 @@ test('a request the stand-in couldn\'t classify gets a line of its own with its 
   assert.deepEqual(changedRequests(renderRecord(at('d1')), renderRecordLines(at('d2'))).requests, ['r1'], 'a reworded instruction moves its body, and the view names it');
 });
 
-test('a summary is named by its sources\' canaries as they stood at each compile, so a later edit doesn\'t rename an earlier line', () => {
+test('a summary is named by its sources\' canaries as they stood at the take that carries each compile, so a later edit doesn\'t rename an earlier line', () => {
   const sum = { participant: 'summary', content: 'what happened' };
   const sumLine = (seq) => line(seq, [{ sources: ['s:L1-1@1'], content: 's1' }]);
   const store = (canary) => ({ fixture: { messages: [['9', [canary]]], summaries: [{ id: 'L1-1', level: 1, sourceLevel: 0, sources: ['9'], parent: null, content: 's1' }] } });
@@ -509,7 +509,7 @@ test('two different texts that would take one key make the record refuse to be w
   assert.throws(() => nameTemplates([t('one'), t('two')], () => '000000000000'), /two different texts take the template name call-same-words-000000000000: "one" and "two"/);
 });
 
-test('a summary is named by its sources as they stood at each compile, so one whose sources change later keeps its earlier name on earlier lines', () => {
+test('a summary is named by its sources as they stood at the take that carries each compile, so one whose sources change later keeps its earlier name on earlier lines', () => {
   const sum = { participant: 'summary', content: 'what happened' };
   const sumLine = (seq) => line(seq, [{ sources: ['s:L1-1@1'], content: 's1' }]);
   const store = (sources) => ({ fixture: { messages: [['1', ['[[c:a.in]]']], ['2', ['[[c:b.in]]']], ['3', ['[[c:c.in]]']]], summaries: [{ id: 'L1-1', level: 1, sourceLevel: 0, sources, parent: null, content: 's1' }] } });
@@ -564,7 +564,7 @@ test('a raw message is named by the shared namer through the store that holds it
   assert.match(r[1], /^  compile \[reader\] fixture\/f\.in\b/, 'the fixture\'s message in the reader\'s compile, with its owner');
 });
 
-test('a summary\'s ends are the messages its store holds at that compile, so a removed source no longer names an end', () => {
+test('a summary\'s ends are the messages its store holds at the take that carries that compile, so a removed source no longer names an end', () => {
   const sum = { participant: 'summary', content: 'what happened' };
   const summaries = [{ id: 'L1-1', level: 1, sourceLevel: 0, sources: ['2', '3'], parent: null, content: 's1' }];
   const lg = [

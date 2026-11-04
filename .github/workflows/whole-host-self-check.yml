@@ -15,6 +15,7 @@ on:
       - test/whole-host/run.mjs
       - test/whole-host/lib/strategies/driver.mjs
       - test/whole-host/lib/common.mjs
+      - src/**
       - package.json
       - package-lock.json
       - bun.lock
@@ -25,12 +26,12 @@ permissions:
 
 jobs:
   self-check:
-    name: Whole-host self-check (${{ matrix.shard }}/4)
+    name: Whole-host self-check (${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -51,7 +52,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Self-check
-        run: node test/whole-host/run.mjs --self-check --shard ${{ matrix.shard }}/4 --out whole-host-self-check
+        run: node test/whole-host/run.mjs --self-check --shard ${{ matrix.shard }}/6 --out whole-host-self-check
 
       - name: Keep the runs' evidence
         if: always()

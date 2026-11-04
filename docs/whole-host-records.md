@@ -21,32 +21,35 @@ when a run couldn't run.
   `workloads.mjs` `RUNS` lists them).
 - `--update-records` writes each run's record over the committed one. Use it
   once the change a diff shows is the change you mean. It rewrites
-  `records/versions.txt` only when it ran and updated every run, since that
-  file names the stack every committed record was made with.
+  `records/versions.txt` only when it ran and updated every run, so that file
+  names the stack of the last invocation that updated every record. A record
+  updated alone under another stack wasn't made with the stack it names, and
+  under that stack the file's comparison fails until every run is updated.
 - `--overlay PACK.tgz` lays a packed agent-framework, context-manager,
   membrane or chronicle over this checkout's install, to see what a change to
   one of them does here. A host change is a change to this checkout itself.
 - `--checkpoints DIR` keeps the runs' starting checkpoints in `DIR` between
   invocations, keyed by everything that writes them.
 - `--self-check` drives each run a second time with the test module's
-  recording off, and fails a run whose requests differ once the run-varying
-  values a record masks are masked in both: every record rests on
-  recording changing nothing the host sends. With recording off the driver
+  recording off, and fails a run whose request bodies differ once the
+  run-varying values a record masks are masked in both: every record rests on
+  recording changing nothing the host sends. It compares the bodies alone,
+  not the headers, path or query; the record's heads hold the path, the query
+  and the `anthropic-beta` and `anthropic-version` headers. With recording off the driver
   sets `FIXTURE_RECORD=off`, and otherwise leaves it unset, dropping a
   runner's own, so a runner's setting can't turn the recording arm off. An arm
   with recording off that logged compile batches anyway can't be judged, nor
   can one whose drive failed, and the summary names which arm. Where they
   differ, the first differing pair of request bodies is kept in the run's
-  evidence, under `self-check/`. CI runs it in four shares on a pull request
-  that changes a file the test module loads; `package.json` or a lockfile,
-  which choose the stack the module runs beside; or `run.mjs`, `driver.mjs` or
-  `common.mjs`, which set up, drive and compare the two arms. A change to the
-  host's own source doesn't schedule it. Host code reaches the module only by
-  loading it as an extension (`src/extensions.ts`) and through the installed
-  packages' methods the module wraps, and the module's own awaits run no host
-  code: the clock it reads at load, and the dry compile the driver asks of
-  context-manager. What a host change does to requests, the records themselves
-  measure.
+  evidence, under `self-check/`. CI runs it in six shares on a pull request
+  that changes a file the test module loads; the host's own source, whose code
+  runs within and around the compiles the module records, since a compile runs
+  the agent's strategy, which can be the host's own, and the host's modules
+  gather their context just before each request compile; `package.json` or a
+  lockfile, which choose the stack the module runs beside; or `run.mjs`,
+  `driver.mjs` or `common.mjs`, which set up, drive and compare the two arms.
+  A host change whose effect recording happened to hide would leave every
+  record as it was, so only the self-check would show it.
 - `--shard i/n` runs one of CI's shares, balanced by the seconds
   `stack.json` records.
 - `--workdir DIR` keeps the run's installs and stores in `DIR`, which must be
@@ -88,9 +91,9 @@ a newer release is a change of its own.
 
 A record opens with one header line: the run, and the checkpoint it starts
 from (`empty` for one that starts empty). No record names a version. The
-versions every record was made with are in `records/versions.txt`: the
-release that writes the checkpoints with its stack, and the candidate's
-stack, one line each. The candidate's own version isn't in it, since a
+versions are in `records/versions.txt`, as the last invocation that updated
+every record found them: the release that writes the checkpoints with its
+stack, and the candidate's stack, one line each. The candidate's own version isn't in it, since a
 release's `npm version` moves it, and neither is the Bun that ran, which a
 run's `run.json` names. A run compares that file as it compares a record, so
 a version change fails until the file is updated, and the job's summary names
@@ -105,7 +108,9 @@ them.
   numbers as `#`, and the first 12 hex digits of the sha256 of the text as
   written, which for a text over 4,096 bytes is its `{ sha256, bytes, head,
   tail }` form:
-  `T:user-clock-#-#-utc-9b6932fc9102 = Clock: #:# UTC`. A key depends on its
+  `T:user-clock-#-#-utc-9b6932fc9102 = Clock: #:# UTC`. A summary's key is
+  instead `summary-lN-` and the first 12 hex digits of the sha256 of its whole
+  text, the digits a long summary's `sha256` begins with. A key depends on its
   text alone, so a text leaving the set renames no other, and a one-word edit
   to a text renames it in every line that carries it, since each of those
   requests did change. Two different texts taking one key, a 48-bit
@@ -181,8 +186,11 @@ the lines of requests are in the order the stand-in received them:
   could tell neither as an agent's nor as the summariser's, such as one whose
   compression instruction it doesn't recognise, or one to any route but a
   POST to a path ending in `/v1/messages`, `count_tokens` included, which no
-  run sends. Check 1 fails
-  the run, and the line lets the view show the request.
+  run sends. Check 1 fails the run, naming the stand-in's reason, and the line
+  lets the view show the request. The line carries no method, and a body that
+  doesn't parse, or parses to a falsy value such as `null`, gets no head, so no
+  path or query either; for a route the stand-in doesn't serve, the reason
+  names the method and the path.
 - **`action COMMAND`**: a host command the workload sent.
 - **`wrote NAME [T:…]`** and **`removed NAMES`**: a summary the store added or
   changed, with its text, and those it removed. The driver takes the test
@@ -289,6 +297,23 @@ the tool-result guard on with `toolsets--open` on its settings, then
 for compression to go idle by maintenance passes rather than a settle, since
 the turn whose request is held keeps the host from draining.
 
+The harness leans on this host's own behaviour in five more places. A
+recipe that leaves the strategy unset gets autobiographical, adaptive and
+kv-unified with the standard block (`framework-strategy.ts`), and on
+claude-opus-5-5 the host passes agent-framework's `thinkingBinding` and the
+drop control (anima-research/connectome-host#500). A binding configuration
+boots with the host's binding probe off (`THINKING_BINDING_PROBE`), since the
+host shapes requests alike for no probe outcome and for an account that
+refuses or drops a changed block (`logging-adapter.ts` tells only `shows`
+apart). `/budget` writes a header, then a line per agent, `  <name>: …`,
+which is how the driver knows the report has ended. A maintenance pass
+returns at once while a compression the host's auto-tick started is in
+flight, and no event marks that work's end, so a settle waits for the test
+module's tick counts too. And the web UI, which W6 and W9 open, is a WebSocket to
+`/ws` on the URL the host logs (`[webui] listening on <url>`), whose welcome
+names the session (`welcome.session.id`), which a session-changing message
+such as `suppress` must carry.
+
 A store read the test module couldn't make is a line of its own,
 `unreadable messages: REASON`, `unreadable summaries: REASON` or
 `unreadable receipt: REASON`. An agent that has left agent-framework's
@@ -299,17 +324,22 @@ a take couldn't read is still reported once it can be.
 
 A request's line, with the head in force for it, changes whenever what that
 request sends changes, apart from what the record leaves out or writes alike
-and the run-varying values it masks by their pattern wherever they appear,
-the run's own text included (an image-ref nonce or a fork call's UUID in any
-string, and the signature of any object typed `thinking`), a change to one of
-which alone moves no line. It leaves
+and the run-varying values it masks by their pattern wherever they appear
+but in a cache marker, which it writes whole, the run's own text included (an
+image-ref nonce or a fork call's UUID in any other string, and the signature
+of any object typed `thinking`), a change to one of which alone moves no line. It leaves
 out every header but `anthropic-beta` and `anthropic-version`, and keeps the
 betas as a set, so their order and repeats move nothing. It writes alike an
-omitted `system` or `tools` and an empty one, a system prompt sent as a string
-and as one text block, an omitted `thinking` and a null one, any `stream` but
-`true` and none, an ephemeral cache marker with no TTL and one of `5m`, and a
-message's string content and one text block. A `tool_choice`, even a null
-one, is refused as unclassified, as above. A head is named only on the
+omitted, null or empty `system`, and any other that is neither a string nor a
+list; an omitted, null or empty `tools`; a system prompt sent as a string and
+as one text block, and a system block's null or missing text and an empty
+one; an omitted `thinking` and a null one; any `stream` but `true` and none;
+an ephemeral cache marker with no TTL and one of `5m`; and a message's string
+content and one text block, and its null or missing content, or any that is
+neither a string nor a list, and an empty list. It writes alike an omitted and
+a null `model`, and an omitted and a null `max_tokens`, each of which the
+stand-in refuses. A `tool_choice`, even a null one, is refused as
+unclassified, as above. A head is named only on the
 first line of its agent's under it, so a later request under a changed head
 keeps its line, and the view still names it.
 

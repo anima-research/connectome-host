@@ -123,7 +123,7 @@ const COLUMNS = [
 export function summaryTable(rows) {
   const cell = (v) => (v === undefined || v === null ? '?' : String(v));
   const record = (r) => (r.record === 'differs' ? `differs: ${r.changed.requests.length} request(s)${r.changed.stopped?.length ? `, ${r.changed.stopped.length} no longer sent` : ''}, +${r.changed.added} -${r.changed.removed} line(s)` : r.record ?? 'none');
-  const escaped = (t) => t.replaceAll('|', '\\|');
+  const escaped = (t) => t.replaceAll('|', '\\|').replace(/\r?\n/g, ' ');
   const counted = (r) => `${r.flags ?? '?'} flag(s)`;
   const outcome = (r) => {
     const main = r.outcome === undefined ? '?' : r.outcome === 'couldnt-run' ? `couldn't run: ${r.reason ?? 'no reason given'}` : r.outcome === 'flags' ? counted(r) : r.outcome === 'invalid' ? `invalid: ${counted(r)}` : r.outcome;

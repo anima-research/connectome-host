@@ -231,7 +231,6 @@ test('K1: check 1 flags the operator alerts the host raises, naming each one\'s 
   assert.deepEqual(owned.map((f) => [f.step, f.what]), [['w.over', 'mcpl-down'], ['w.next', 'context-refusal']]);
 });
 
-// A checkpoint's health panel as connectome-host 0.15.0 reports the last live compile.
 const panel = (name, { budget = 20_000, budgetMet = true, exhausted = false, head, tail } = {}) => ({
   kind: 'checkpoint', name, step: `${name}.cp`,
   health: { data: {
@@ -986,6 +985,8 @@ test('W11 flags a pin or mark lost as later ones are added, a first pin the pane
   assert.deepEqual(restored.map((f) => f.step), ['9.14.pins'], 'a pin lost after the restore');
   const moved = check(...adds(), snapshot('12.pins', pins.map((p) => (p.id === 'p5' ? { ...p, level: 2 } : p.id === 'p6' ? { ...p, lastMessageId: 'm9' } : p))), snapshot('14.pins', pins));
   assert.deepEqual(moved.map((f) => [f.step, f.message]), [['9.12.pins', '2 of the 7 pins and marks placed by step 8 no longer protect what they did: pin at L1 is now pin at L2, pin at L1 is now pin at L1 over another range']]);
+  const movedAfter = check(...adds(), snapshot('12.pins', pins), snapshot('14.pins', pins.map((p) => (p.id === 'p5' ? { ...p, level: 2 } : p))));
+  assert.deepEqual(movedAfter.map((f) => [f.step, f.message]), [['9.14.pins', '1 of the 7 pins and marks placed by step 8 no longer protect what they did: pin at L1 is now pin at L2']]);
   const unread = check(...adds(), snapshot('12.pins', pins), { kind: 'panel', step: '9.14.pins', op: 'pins', response: { ok: true, data: {} } });
   assert.deepEqual([unread.judged, unread.map((f) => [f.step, f.message])], [7 + 7, [['9.14.pins', 'couldn\'t judge: the panel\'s pins answer holds no list']]]);
   const unplaced = check(snapshot('12.pins', pins));
