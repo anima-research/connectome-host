@@ -633,3 +633,22 @@ test('a compile that sent no request keeps its place before the request its own 
   assert.ok(dry >= 0 && sent >= 0 && call >= 0, step.join('\n'));
   assert.ok(dry < sent && sent < call, `the batch's order, then the call that arrived after its request:\n${step.join('\n')}`);
 });
+
+test('a whole listing at the run\'s first boot is the store as the run began, writing nothing; one for an agent first seen later writes what it holds; one after a restart reports what went since', () => {
+  const sum = (id, sources, content) => ({ id, level: 1, sourceLevel: 0, sources, parent: null, content });
+  const said = (t) => ({ participant: 'summary', content: t });
+  const held = [['1', ['[[c:a.in]]']], ['2', ['[[c:b.in]]']], ['4', []]];
+  const lg = [
+    { kind: 'compiles', step: null, at: 'boot', boot: 1, blobs: { s1: said('one'), s2: said('two'), s3: said('three'), s4: said('four') }, store: { fixture: { whole: true, messages: held, summaries: [sum('L1-1', ['1'], 's1'), sum('L1-2', ['2'], 's2'), sum('L1-4', ['4'], 's4')] } }, lines: [] },
+    { kind: 'compiles', step: 'q.1', boot: 1, blobs: {}, store: { fixture: { summaries: [sum('L1-3', ['1'], 's3')] }, sub: { whole: true, messages: [['9', ['[[c:s.in]]']]], summaries: [sum('S-1', ['9'], 's1')] } }, lines: [line(1, [{ sources: ['s:L1-4@1'], content: 's4' }])] },
+    { kind: 'compiles', step: 'q.2', at: 'boot', boot: 2, blobs: {}, store: { fixture: { whole: true, messages: [['1', ['[[c:a.in]]']], ['4', []]], summaries: [sum('L1-1', ['1'], 's1'), sum('L1-3', ['1'], 's3'), sum('L1-4', ['4'], 's4')] } }, lines: [] },
+    { kind: 'compiles', step: 'q.3', boot: 2, blobs: {}, lines: [line(1, [{ sources: ['s:L1-4@1'], content: 's4' }])] },
+  ];
+  const r = renderRecord({ header, log: lg, records: [], end: { ok: true } }).split('\n');
+  const section = (step) => { const at = r.indexOf(`step ${step}`); const next = r.findIndex((l, i) => i > at && !l.startsWith('  ')); return r.slice(at + 1, next); };
+  assert.deepEqual(r.filter((l) => l.startsWith('  wrote')).map((l) => l.split(' [T:')[0]), ['  wrote L1(a.in)', '  wrote [sub] L1(s.in)'], 'L1-1 and L1-2 were the store as the run began, so the only lines are q.1\'s');
+  assert.deepEqual(section('q.1').filter((l) => l.startsWith('  wrote')).map((l) => l.split(' [T:')[0]), ['  wrote L1(a.in)', '  wrote [sub] L1(s.in)'], 'step q.1 wrote one, and every summary of an agent first seen there is new');
+  assert.deepEqual(section('q.2'), ['  removed L1(-)'], 'the restart\'s listing lacks L1-2 and its one source, so it is named as a delta reporting both would name it, and nothing else changed');
+  assert.match(section('q.1').find((l) => l.startsWith('  compile')), /L1\(b\.in\+1\)/, 'message 4, which L1-4 covers, is named past message 2 while 2 is held');
+  assert.match(section('q.3').find((l) => l.startsWith('  compile')), /L1\(a\.in\+1\)/, 'and past message 1 once the restart\'s listing lacks 2');
+});

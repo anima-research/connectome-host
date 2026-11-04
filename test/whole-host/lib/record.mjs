@@ -71,16 +71,24 @@ export function renderRecordLines({ header, log, records, end }) {
   };
   const remember = (map, key, at, value) => { if (!map.has(key)) map.set(key, []); map.get(key).push([at, value]); };
   const batchAt = new Map(batches.map((b, i) => [b, i]));
+  const live = new Map();
   batches.forEach((b, i) => {
     for (const [agent, st] of Object.entries(b.store ?? {})) {
       const store = storeOf(agent);
+      if (!live.has(agent)) live.set(agent, new Set());
+      const here = live.get(agent);
+      if (st.whole && Array.isArray(st.messages)) {
+        const listed = new Set(st.messages.map(([id]) => String(id)));
+        for (const id of [...here]) if (!listed.has(id)) { remember(store.present, id, i, false); here.delete(id); }
+      }
       for (const [id, canaries] of Array.isArray(st.messages) ? st.messages : []) {
         store.ids.add(String(id));
         store.reported.add(String(id));
         remember(store.present, String(id), i, true);
         remember(store.canaries, String(id), i, CANARY.exec(canaries?.[0] ?? '')?.[1] ?? null);
+        here.add(String(id));
       }
-      for (const id of Array.isArray(st.removedMessages) ? st.removedMessages : []) remember(store.present, String(id), i, false);
+      for (const id of Array.isArray(st.removedMessages) ? st.removedMessages : []) { remember(store.present, String(id), i, false); here.delete(String(id)); }
       const top = Math.max(store.highest.at(-1)?.[1] ?? -Infinity, ...(Array.isArray(st.messages) ? st.messages : []).map(([id]) => Number(id)).filter(Number.isFinite));
       store.highest.push([i, top]);
       for (const sm of Array.isArray(st.summaries) ? st.summaries : []) remember(store.summaries, sm.id, i, sm);
@@ -259,6 +267,8 @@ export function renderRecordLines({ header, log, records, end }) {
 
   const totals = { compiles: 0, dry: 0, refused: 0, other: 0, calls: 0, rounds: 0, written: 0, actions: 0 };
   const receipt = new Map();
+  const firstBoot = log.find((e) => e.kind === 'compiles' && e.at === 'boot');
+  const taken = new Set();
   const receiptBoot = new Map();
   const known = new Map();
   const byStep = new Map();
@@ -309,15 +319,20 @@ export function renderRecordLines({ header, log, records, end }) {
         }
         for (const part of ['messages', 'summaries']) if (st[part] && !Array.isArray(st[part])) { seen(e.step); at(e.step).push({ text: `  unreadable${tag} ${part}: ${st[part].unreadable ?? 'not a list'}` }); }
         for (const [id, , more] of Array.isArray(st.messages) ? st.messages : []) thinking.set(`${agent} ${id}`, more?.thinking === true);
+        const listed = Array.isArray(st.summaries) ? new Set(st.summaries.map((sm) => sm.id)) : null;
+        const gone = st.whole && listed && taken.has(agent) ? [...known.keys()].filter((k) => k.startsWith(`${agent} `)).map((k) => k.slice(agent.length + 1)).filter((id) => !listed.has(id)) : [];
+        const baseline = st.whole && e === firstBoot;
+        taken.add(agent);
         for (const sm of Array.isArray(st.summaries) ? st.summaries : []) {
           const was = known.get(`${agent} ${sm.id}`);
           const now = canonical({ level: sm.level, sources: sm.sources, content: sm.content, parent: sm.parent ?? null });
           known.set(`${agent} ${sm.id}`, now);
-          if (was === now) continue;
+          if (was === now || baseline) continue;
           seen(e.step); at(e.step).push({ text: `  wrote${agent === primary ? '' : ` [${agent}]`} ${summaryName(agent, sm.id, sm.level)} [${summaryTemplate(sm)}]` }); totals.written++;
         }
-        for (const id of st.removed ?? []) known.delete(`${agent} ${id}`);
-        if (st.removed?.length) { seen(e.step); at(e.step).push({ text: `  removed${agent === primary ? '' : ` [${agent}]`} ${st.removed.map((id) => leafName(agent, id)).join(' ')}` }); }
+        const removed = [...(st.removed ?? []), ...gone];
+        for (const id of removed) known.delete(`${agent} ${id}`);
+        if (removed.length) { seen(e.step); at(e.step).push({ text: `  removed${agent === primary ? '' : ` [${agent}]`} ${removed.map((id) => leafName(agent, id)).join(' ')}` }); }
       }
       const batch = [];
       for (const l of e.lines ?? []) {
