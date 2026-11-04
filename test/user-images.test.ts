@@ -748,6 +748,7 @@ describe('traces sent to WebUI clients', () => {
     expect(frameWithoutImageData({ type: 'trace', event: nothing } as never)).toBeNull();
     expect(frameWithoutImageData({ type: 'child-event', childName: 'kid', event: nothing } as never)).toBeNull();
     expect(frameWithoutImageData({ type: 'trace', event: cyclic } as never)).toBeNull();
+    expect(frameWithoutImageData({ type: 'trace', event: { type: 'tool:completed' }, toJSON: () => null } as never)).toBeNull();
     expect(frameWithoutImageData({ type: 'trace', event: { type: 'tool:completed', n: 1 } } as never))
       .toEqual({ type: 'trace', event: { type: 'tool:completed', n: 1 } });
   });

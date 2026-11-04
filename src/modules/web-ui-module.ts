@@ -3238,7 +3238,7 @@ export function withoutImageData(value: unknown): unknown {
  *  JSON can't carry it, or its event's JSON is nothing. */
 export function frameWithoutImageData(frame: WebUiServerMessage): WebUiServerMessage | null {
   const sent = withoutImageData(frame);
-  if (sent === undefined || ('event' in frame && !Object.hasOwn(sent as object, 'event'))) return null;
+  if (sent == null || ('event' in frame && !Object.hasOwn(sent as object, 'event'))) return null;
   return sent as WebUiServerMessage;
 }
 

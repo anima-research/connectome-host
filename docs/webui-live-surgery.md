@@ -157,8 +157,8 @@ before the message's first compile can still put its images past the depth.
 A recipe whose `imageStripDepthTokens` is 0 has no depth to check.
 
 Every host holds composer images to 3,000 px on a side, whatever its
-provider. A stored image stays in the live window and goes with every later
-request, to whichever provider the recipe names then, so the side has to be
+provider. A stored image goes with every later request while it stays in the
+live window, to whichever provider the recipe names then, so the side has to be
 one Claude's and OpenAI's APIs take in any request:
 - By Claude's vision docs
   (https://platform.claude.com/docs/en/build-with-claude/vision), a request
@@ -174,8 +174,9 @@ one Claude's and OpenAI's APIs take in any request:
   refuse an image that needs more than 30,000 patches of 32 px. A 3,000 px
   square needs 8,836.
 
-An image over either limit fails every request that carries it, so the agent
-is stuck until the image leaves the live window. Claude scales an image to at
+An image over OpenAI's limit fails every request that carries it, and one
+over Claude's stricter limit every request that carries it with more than 20
+image blocks, so the agent is stuck until the image leaves the live window. Claude scales an image to at
 most 2,576 px on its longer side before reading it, so the ceiling takes
 nothing from it.
 
