@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { perCheckReport, readExpected, runChecks, summaryNamer, workloadReport } from '../lib/strategies/report.mjs';
-import { calibrationEdge } from '../lib/strategies/checks.mjs';
+import { calibrationEdge, judgedBy } from '../lib/strategies/checks.mjs';
 
 const configuration = { name: 'H1/W1' };
 const flag = (check, step, message = 'm') => ({ check, step, message });
@@ -166,11 +166,11 @@ test('judged: every check reports how many items it judged; zero where check 3, 
 });
 
 test('a workload run that lacks a product its segments declare fails, and says which', () => {
-  const judged = { flags: [], missing: [{ segment: 'close-merge', missing: ['an L3 merge request'] }], notes: [], judged: [] };
-  const r = workloadReport({ id: 'H1/continuation', workload: 'continuation', judged, breaches: [], completed: true });
+  const judged = { flags: [], missing: [{ segment: 'close-merge', missing: ['an L3 merge request'] }], notes: [], judged: [{ check: 2, name: 'declared products', judged: 4 }] };
+  const r = workloadReport({ id: 'H1/continuation', workload: 'continuation', judged, breaches: judgedBy([], 2), completed: true });
   assert.equal(r.verdict, 'flags');
   assert.ok(r.lines.includes('- check 2, close-merge: missing an L3 merge request'));
-  const whole = workloadReport({ id: 'H1/continuation', workload: 'continuation', judged: { ...judged, missing: [] }, breaches: [], completed: true });
+  const whole = workloadReport({ id: 'H1/continuation', workload: 'continuation', judged: { ...judged, missing: [] }, breaches: judgedBy([], 2), completed: true });
   assert.equal(whole.verdict, 'pass');
 });
 
@@ -286,4 +286,17 @@ test('what check 11 couldn\'t place reaches the report as a couldn\'t-judge flag
   assert.ok(report.lines.some((l) => /check 11 compile invariants 1 \(store order couldn't place 3 of what was sent\)/.test(l)));
   assert.ok(!report.lines.some((l) => /breaks/.test(l)));
   assert.ok(report.lines.some((l) => /^- check 11 at q\.1: couldn't judge all of /.test(l)), 'the couldn\'t-judge flag itself reaches the rendered report');
+});
+
+test('a completed run\'s workload property carries its own judged count or names the check that judges it; one with neither, or naming a check that judged nothing, is a couldn\'t-judge flag', () => {
+  const judged = (counts) => ({ flags: [], missing: [], notes: [], judged: counts });
+  const report = (counts, breaches, completed = true) => workloadReport({ id: 'H1/W6', workload: 'W6', judged: judged(counts), breaches, completed });
+  const unjudged = (r) => r.flags.some((f) => f.check === 14 && f.what === 'judged-none:property');
+  assert.ok(unjudged(report([], [])), 'a plain list says nothing about what was judged');
+  const by11 = report([{ check: 11, name: 'compile invariants', judged: 40 }], judgedBy([], 11));
+  assert.equal(by11.verdict, 'pass');
+  assert.ok(by11.lines.some((l) => /check 14 property 40 \(judged by check 11\)/.test(l)), 'the report says which check judged it');
+  assert.ok(unjudged(report([{ check: 11, name: 'compile invariants', judged: 0 }], judgedBy([], 11))), 'the check it names judged nothing');
+  assert.ok(unjudged(report([], judgedBy([], 12))), 'the check it names didn\'t run');
+  assert.ok(!unjudged(report([], [], false)), 'a run that stopped early is failed for that, not for this');
 });

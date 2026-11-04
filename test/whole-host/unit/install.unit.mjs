@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installCandidate, readPacks } from '../lib/install.mjs';
@@ -55,4 +55,22 @@ test('R9: an overlay that leaves another copy of its package in the install is r
     const packs = readPacks([pack(at, '@animalabs/context-manager', '9.9.9')]);
     assert.throws(() => installCandidate({ root, packs, dir: join(at, 'candidate'), npmCi: (cwd) => npm(cwd, 'ci') }), /didn't replace every copy of @animalabs\/context-manager: .*node_modules\/holds-old\/node_modules\/@animalabs\/context-manager/);
   } finally { rmSync(at, { recursive: true, force: true }); }
+});
+
+test('a checkout file the copy can\'t read refuses the overlay run, rather than installing over an incomplete copy', () => {
+  const root = mkdtempSync(join(tmpdir(), 'root-'));
+  const dir = mkdtempSync(join(tmpdir(), 'copy-'));
+  const unreadable = join(root, 'unreadable.txt');
+  writeFileSync(join(root, 'package.json'), '{}');
+  writeFileSync(unreadable, 'x');
+  chmodSync(unreadable, 0);
+  try {
+    assert.throws(() => accessSync(unreadable, constants.R_OK), 'this test needs a file its user can\'t read');
+    const pack = { path: join(root, 'p.tgz'), name: '@animalabs/context-manager', integrity: 'sha512-x' };
+    assert.throws(() => installCandidate({ root, packs: [pack], dir, npmCi: () => { throw new Error('the copy went through'); } }), (e) => /tar/.test(e.message) && !/the copy went through/.test(e.message));
+  } finally {
+    chmodSync(unreadable, 0o644);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

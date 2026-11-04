@@ -116,8 +116,14 @@ export function workloadReport({ id, workload, owns = [], judged, breaches, comp
   const judgedFlags = judged.flags.filter((f) => !isOwned(f));
   const owned = judged.flags.length - judgedFlags.length;
   const flags = [...judgedFlags, ...breaches.map((b) => ({ check: 14, step: b.step ?? 'the run', ...(b.what ? { what: b.what } : {}), message: `${workload}'s property: ${b.message}` }))];
-  const counts = [...(judged.judged ?? []), ...(typeof breaches.judged === 'number' ? [{ check: 14, name: 'property', judged: breaches.judged }] : [])];
-  if (completed && breaches.judged === 0 && !breaches.length) flags.push({ check: 14, step: 'the run', what: 'judged-none:property', message: `couldn't judge: ${workload}'s property judged nothing, though the run completed` });
+  const by = breaches.judgedBy;
+  const byCounts = (judged.judged ?? []).filter((j) => j.check === by && typeof j.judged === 'number');
+  const count = typeof breaches.judged === 'number' ? breaches.judged : byCounts.length ? byCounts.reduce((n, j) => n + j.judged, 0) : null;
+  const counts = [...(judged.judged ?? []), ...(count === null ? [] : [{ check: 14, name: 'property', judged: count, ...(by === undefined ? {} : { besides: `judged by check ${by}` }) }])];
+  if (completed && !breaches.length && !(count > 0)) {
+    const why = by !== undefined ? `is judged by check ${by}, which ${count === null ? 'gave no count' : 'judged nothing'}` : count === null ? 'gave no judged count and names no check that judges it' : 'judged nothing';
+    flags.push({ check: 14, step: 'the run', what: 'judged-none:property', message: `couldn't judge: ${workload}'s property ${why}, though the run completed` });
+  }
   const notes = [...(judged.notes ?? []), ...(owned ? [`${owned} flag(s) are ${workload}'s by design, judged by its property (runOf owns)`] : [])];
   return perCheckReport({ configuration: { name: id }, candidate: { flags, missing: judged.missing ?? [], notes, headroom: judged.headroom, judged: counts }, expected });
 }

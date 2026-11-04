@@ -62,6 +62,11 @@ export function spawnHost({ hostDir, recipePath, dataDir, cwd, sockPath, env = {
   if (typeof child.pid === 'number') {
     installHostCleanup();
     hostGroups.add(child.pid);
+  } else {
+    child.once('error', (e) => {
+      out.push(`couldn't start the host: ${e.message}\n`);
+      child.emit('exit', e.code ?? null, null);
+    });
   }
   child.stdout.on('data', (d) => out.push(d.toString()));
   child.stderr.on('data', (d) => out.push(d.toString()));

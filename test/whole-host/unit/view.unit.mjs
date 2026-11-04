@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { changedRequests, movedIn, STEP_SUMMARY_BYTES, stepSummary, summaryTable, viewOf } from '../lib/view.mjs';
+import * as viewLib from '../lib/view.mjs';
 
 const lines = (...xs) => xs.map(([text, request = null]) => ({ text, request }));
 const text = (...xs) => `${xs.join('\n')}\n`;
@@ -32,10 +33,10 @@ test('the summary has a row per run, naming what changed, with a count it wasn\'
     { run: 'H3/W4', record: 'differs', changed: { requests: ['r3', 'r4'], added: 3, removed: 2 }, counts: {} },
   ]).split('\n');
   assert.equal(table.length, 4);
-  assert.equal(table[0], '| run | record | request compiles | refused | compressions | merges | quarantines | ledger of | raw | summarised | left out | tokens sent | invariant lines |');
-  assert.equal(table[1], '|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|', 'counts align right, the agent\'s name left');
-  assert.equal(table[2], '| H1/W1 | same | 70 | 0 | 12 | 3 | 0 | fixture | 20 | 40 | 10 | 123456 | 0 |');
-  assert.equal(table[3], '| H3/W4 | differs: 2 request(s), +3 -2 line(s) | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |');
+  assert.equal(table[0], '| run | outcome | record | request compiles | refused | compressions | merges | quarantines | ledger of | raw | summarised | left out | tokens sent | invariant lines |');
+  assert.equal(table[1], '|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|', 'counts align right, the agent\'s name left');
+  assert.equal(table[2], '| H1/W1 | ? | same | 70 | 0 | 12 | 3 | 0 | fixture | 20 | 40 | 10 | 123456 | 0 |');
+  assert.equal(table[3], '| H3/W4 | ? | differs: 2 request(s), +3 -2 line(s) | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |');
 });
 
 test('a run\'s view shows each changed request\'s record line, its ledger and its transcript, sharing what the transcripts have shown', () => {
@@ -147,4 +148,49 @@ test('a removed whole compile can\'t take the pairing of a changed compile writt
   const changed = changedRequests(committed, run);
   assert.equal(changed.was.get('r2'), '  compile + p.9, body 22222222', 'paired with the old change, not the whole compile it shares more items with');
   assert.deepEqual(changed.stopped, ['  compile p.1 p.2 p.3, body 11111111']);
+});
+
+test('a request whose line turned from a change into a whole compile pairs with its old line when no whole compile of its kind went away beside it', () => {
+  const committed = text('step a', '  compile + p.9, body 22222222', 'end ok');
+  const run = lines(['step a'], ['  compile p.1 p.2 p.9 p.10, body 33333333', 'r2'], ['end ok']);
+  const changed = changedRequests(committed, run);
+  assert.equal(changed.was.get('r2'), '  compile + p.9, body 22222222');
+  assert.deepEqual(changed.stopped, [], 'it changed form, and is still sent');
+});
+
+test('the summary says each run\'s outcome: its flags\' count, why it couldn\'t run, and how its self-check went', () => {
+  const table = summaryTable([
+    { run: 'H1/W1', outcome: 'pass', record: 'same', counts: {} },
+    { run: 'H1/W2', outcome: 'flags', flags: 2, record: 'same', counts: {} },
+    { run: 'H1/W4', outcome: 'couldnt-run', reason: 'its checkpoint failed: a|b', record: 'couldn\'t run' },
+    { run: 'H1/W5', outcome: 'pass', record: 'same', counts: {}, selfCheck: { outcome: 'differs' } },
+    { run: 'H1/W6', outcome: 'invalid', flags: 1, record: 'same', counts: {}, selfCheck: { outcome: 'couldnt-run', reason: 'the run with recording off failed: x' } },
+  ]).split('\n');
+  assert.match(table[2], /^\| H1\/W1 \| pass \| same \|/);
+  assert.match(table[3], /^\| H1\/W2 \| 2 flag\(s\) \| same \|/);
+  assert.equal(table[4].split(' | ')[1], "couldn't run: its checkpoint failed: a\\|b", 'a pipe in a reason is escaped, so the row keeps its cells');
+  assert.match(table[5], /^\| H1\/W5 \| pass; self-check differs \|/);
+  assert.match(table[6], /^\| H1\/W6 \| invalid: 1 flag\(s\); self-check couldn't run: the run with recording off failed: x \|/);
+});
+
+test('the summary says where a run\'s evidence is and what to do when anything isn\'t clean, and lists each flagged run\'s flags, at most 20 a run', () => {
+  const clean = viewLib.summaryOf({ rows: [{ run: 'H1/W1', outcome: 'pass', record: 'same', counts: {} }], flagged: [] });
+  assert.ok(!/evidence/.test(clean), 'nothing to act on, so nothing to say');
+  const flag = (i) => ({ check: 4, step: `s.${i}`, message: `m${i}` });
+  const out = viewLib.summaryOf({ rows: [{ run: 'H1/W2', outcome: 'flags', flags: 25, record: 'differs', changed: { requests: ['r1'], added: 1, removed: 1 }, counts: {} }], flagged: [{ run: 'H1/W2', flags: Array.from({ length: 25 }, (_, i) => flag(i)) }] });
+  assert.match(out, /`report\.txt`/);
+  assert.match(out, /--update-records/);
+  assert.match(out, /expected-failures\.json/);
+  assert.match(out, /\n### H1\/W2: 25 flag\(s\)\n- check 4 at s\.0: m0\n/);
+  assert.ok(out.includes('- check 4 at s.19: m19\n'));
+  assert.ok(!out.includes('m20'), 'the 21st is left to its report');
+  assert.match(out, /5 more in H1_W2\/report\.txt/);
+});
+
+test('the step summary keeps within its bytes even when the views that didn\'t fit are too many to name one by one', () => {
+  const view = (run) => ({ run, path: `${run}/view.md`, text: `${run}:${'x'.repeat(2000)}\n` });
+  const views = Array.from({ length: 30 }, (_, i) => view(`r${i}`));
+  const out = stepSummary({ table: 'T', views, budget: 1000 });
+  assert.ok(Buffer.byteLength(out) <= 1000, `${Buffer.byteLength(out)} bytes`);
+  assert.match(out, /30 views didn't fit within this summary's 1000 bytes: each is <run>\/view\.md in the job's evidence\./);
 });

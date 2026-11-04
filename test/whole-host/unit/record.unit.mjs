@@ -308,8 +308,12 @@ test('a sent compile names each new head where it changes, and its body hash mov
   assert.match(c2, /, head H:[0-9a-f]{8}, body [0-9a-f]{8}$/);
   assert.notEqual(c1.match(/H:[0-9a-f]{8}/)[0], c2.match(/H:[0-9a-f]{8}/)[0], 'the second request\'s head differs, and is named');
   assert.doesNotMatch(c3, /head H:/, 'the third request\'s head is the second\'s, so it isn\'t named again');
-  assert.notEqual(compiles([recs[0], req('a2', 2, 'q.2', head(200), 'dX'), recs[2]])[1], c2, 'a change to a compiled request\'s message moves its line');
-  assert.notEqual(compiles([recs[0], req('a2', 2, 'q.2', head(200), 'd2', '1h'), recs[2]])[1], c2, 'and so does a cache marker on it');
+  const message = compiles([recs[0], req('a2', 2, 'q.2', head(200), 'dX'), recs[2]]);
+  assert.notEqual(message[1], c2, 'a change to a compiled request\'s message moves its line');
+  assert.deepEqual([message[0], message[2]], [c1, c3], 'and no other request\'s');
+  const marker = compiles([recs[0], req('a2', 2, 'q.2', head(200), 'd2', '1h'), recs[2]]);
+  assert.notEqual(marker[1], c2, 'and so does a cache marker on it');
+  assert.deepEqual([marker[0], marker[2]], [c1, c3], 'again moving no other request\'s line');
 });
 
 test('the requests a view shows are those whose lines a rendered record moved', () => {
@@ -373,10 +377,12 @@ test('a run is unrecordable where a side sent agent requests with no request com
   const compiles = (agent, stamp) => ({ kind: 'compiles', lines: [{ kind: 'request', agent, outcome: 'compiled', ...(stamp === undefined ? {} : { stamp }) }] });
   const agentReq = (agent) => ({ kind: 'agent', agent });
   assert.equal(unrecordable([agentReq('primary')], [compiles('fixture', '12')]), null);
-  assert.match(unrecordable([agentReq('primary'), agentReq('sub')], [compiles('fixture', '12')]), /sent sub agent requests, and its log holds no request compile line/);
+  assert.match(unrecordable([agentReq('primary'), agentReq('sub')], [compiles('fixture', '12')]), /sent sub agent requests, and its log holds no compiled request line/);
   assert.match(unrecordable([agentReq('primary')], []), /sent primary agent requests/);
   assert.match(unrecordable([agentReq('primary')], [compiles('fixture')]), /1 request compile\(s\) carry no stamp/);
   assert.equal(unrecordable([], []), null, 'a run with no agent request has nothing to tell apart');
+  const refused = { kind: 'compiles', lines: [{ kind: 'request', agent: 'fixture', outcome: 'refused' }] };
+  assert.match(unrecordable([agentReq('primary')], [refused]), /sent primary agent requests, and its log holds no compiled request line/, 'a refused compile sent nothing, so no request pairs with it');
 });
 
 test('a new boot whose store reports no receipt head names none, where the boot before had one', () => {
@@ -442,10 +448,12 @@ test('no record names a version: versions go in one file, a change in them is na
   const body = renderRecord({ header, log: [], records: [], end: { ok: true } });
   assert.ok(!/0\.0\.[12]|v0\.0\.1/.test(body), 'the record carries no version');
   assert.match(body.split('\n')[0], /^# whole-host record H1\/W1, from empty$/);
-  const at = (cm) => versionsText({ release: { tag: 'v0.21.0', versions: { '@animalabs/context-manager': '0.24.0' } }, candidate: { versions: { '@animalabs/connectome-host': '0.21.0', '@animalabs/context-manager': cm } } });
-  assert.equal(at('0.24.0'), '# whole-host versions\ncheckpoint v0.21.0: context-manager 0.24.0\ncandidate: connectome-host 0.21.0, context-manager 0.24.0\n');
+  const at = (cm, { host = '0.21.0', bun = '1.4.4' } = {}) => versionsText({ release: { tag: 'v0.21.0', versions: { '@animalabs/connectome-host': '0.21.0', '@animalabs/context-manager': '0.24.0', bun } }, candidate: { versions: { '@animalabs/connectome-host': host, '@animalabs/context-manager': cm, bun } } });
+  assert.equal(at('0.24.0'), '# whole-host versions\ncheckpoint v0.21.0: connectome-host 0.21.0, context-manager 0.24.0\ncandidate: context-manager 0.24.0\n', 'it names the checkpoint release and its stack, and the candidate\'s stack, but not the candidate itself or the Bun that ran');
   assert.deepEqual(versionChanges(at('0.24.0'), at('0.24.1')), ['candidate context-manager 0.24.0 → 0.24.1']);
   assert.deepEqual(versionChanges(at('0.24.0'), at('0.24.0')), []);
+  assert.equal(at('0.24.0', { host: '0.22.0' }), at('0.24.0'), 'a release\'s version bump of the checkout changes nothing it compares');
+  assert.equal(at('0.24.0', { bun: '1.4.9' }), at('0.24.0'), 'another Bun inside the engines range changes nothing it compares');
   const pass = [{ outcome: 'pass', record: 'same' }];
   assert.equal(exitCode(pass, { versions: 'same' }), 0);
   assert.equal(exitCode(pass, { versions: 'differs' }), 1);
@@ -603,4 +611,25 @@ test('the record\'s totals count the compiles each part of check 11 couldn\'t ju
   assert.deepEqual(JSON.parse(totals.slice('totals '.length)).unjudged, { 'budget: PassthroughStrategy gives no render stats': 1, '[Subconscious] budget: PassthroughStrategy gives no render stats': 1 });
   const plain = renderRecord({ header, log, records, end: { ok: true } }).split('\n').find((l) => l.startsWith('totals '));
   assert.equal(JSON.parse(plain.slice('totals '.length)).unjudged, undefined, 'a run with every compile judged carries no such count');
+});
+
+test('a compile that sent no request keeps its place before the request its own batch compiled next, though a request logged before the batch sorts after both', () => {
+  const lg = [
+    { kind: 'request', step: 'q', request: { id: 'r9', kind: 'summariser' } },
+    { kind: 'compiles', step: 'q', blobs, lines: [
+      { seq: 1, agent: 'fixture', kind: 'dry', outcome: 'compiled', messages: [m(1, 'b1')] },
+      line(1, [m(1, 'b1'), m(4, 'b4', true)]),
+    ] },
+  ];
+  const recs = [
+    { id: 'a1', seq: 3, kind: 'agent', agent: 'primary', step: 'q', arrived: '15', messages: [] },
+    { id: 'r9', seq: 5, kind: 'summariser', step: 'q', messages: [{ blocks: [{ canaries: ['[[c:p.1.in]]'] }] }], answer: { shape: 'summary' } },
+  ];
+  const r = renderRecord({ header, log: lg, records: recs, end: { ok: true } }).split('\n');
+  const step = r.slice(r.indexOf('step q') + 1, r.indexOf('end ok'));
+  const dry = step.findIndex((l) => l.startsWith('  compile dry'));
+  const sent = step.findIndex((l) => l.startsWith('  compile ') && !l.startsWith('  compile dry'));
+  const call = step.findIndex((l) => l.startsWith('  call '));
+  assert.ok(dry >= 0 && sent >= 0 && call >= 0, step.join('\n'));
+  assert.ok(dry < sent && sent < call, `the batch's order, then the call that arrived after its request:\n${step.join('\n')}`);
 });

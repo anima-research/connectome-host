@@ -57,7 +57,8 @@ export function changedRequests(committed, lines) {
   const sentBefore = sent(before), sentAfter = sent(after);
   const bySent = lineDiff(sentBefore, sentAfter);
   const requests = [...new Set(bySent.added.map((k) => lines[k].request).filter(Boolean))];
-  const kindOf = (t) => { const m = SENT.exec(t); return m && /, body [0-9a-f]{8}$/.test(t) ? `${m[1]} ${m[2] ?? ''} ${/^ [-+=]/.test(t.slice(m[0].length)) ? 'delta' : 'whole'}` : null; };
+  const formOf = (t) => { const m = SENT.exec(t); return m && /, body [0-9a-f]{8}$/.test(t) ? { kind: `${m[1]} ${m[2] ?? ''}`, form: /^ [-+=]/.test(t.slice(m[0].length)) ? 'delta' : 'whole' } : null; };
+  const kindOf = (t) => formOf(t)?.kind ?? null;
   const was = new Map();
   const moved = new Set();
   const gone = bySent.hunks.map((h) => h.before.filter((k) => kindOf(before[k])));
@@ -87,7 +88,9 @@ export function changedRequests(committed, lines) {
   for (const [h, list] of gone.entries()) {
     const cs = came[h];
     for (const c of [...cs]) {
-      const kin = list.filter((k) => kindOf(before[k]) === kindOf(after[c]));
+      const ofKind = list.filter((k) => kindOf(before[k]) === kindOf(after[c]));
+      const sameForm = ofKind.filter((k) => formOf(before[k]).form === formOf(after[c]).form);
+      const kin = sameForm.length ? sameForm : ofKind;
       if (!kin.length) continue;
       const best = kin.reduce((a, k) => (shared(before[k], after[c]) > shared(before[a], after[c]) ? k : a));
       take(c, best);
@@ -120,11 +123,34 @@ const COLUMNS = [
 export function summaryTable(rows) {
   const cell = (v) => (v === undefined || v === null ? '?' : String(v));
   const record = (r) => (r.record === 'differs' ? `differs: ${r.changed.requests.length} request(s)${r.changed.stopped?.length ? `, ${r.changed.stopped.length} no longer sent` : ''}, +${r.changed.added} -${r.changed.removed} line(s)` : r.record ?? 'none');
+  const escaped = (t) => t.replaceAll('|', '\\|');
+  const counted = (r) => `${r.flags ?? '?'} flag(s)`;
+  const outcome = (r) => {
+    const main = r.outcome === undefined ? '?' : r.outcome === 'couldnt-run' ? `couldn't run: ${r.reason ?? 'no reason given'}` : r.outcome === 'flags' ? counted(r) : r.outcome === 'invalid' ? `invalid: ${counted(r)}` : r.outcome;
+    const self = !r.selfCheck ? '' : `; self-check ${r.selfCheck.outcome === 'couldnt-run' ? `couldn't run: ${r.selfCheck.reason ?? 'no reason given'}` : r.selfCheck.outcome}`;
+    return escaped(`${main}${self}`);
+  };
   return [
-    `| run | record | ${COLUMNS.map(([name]) => name).join(' | ')} |`,
-    `|---|---|${COLUMNS.map(([name]) => (name === 'ledger of' ? '---' : '---:')).join('|')}|`,
-    ...rows.map((r) => `| ${r.run} | ${record(r)} | ${COLUMNS.map(([, of]) => cell(of(r))).join(' | ')} |`),
+    `| run | outcome | record | ${COLUMNS.map(([name]) => name).join(' | ')} |`,
+    `|---|---|---|${COLUMNS.map(([name]) => (name === 'ledger of' ? '---' : '---:')).join('|')}|`,
+    ...rows.map((r) => `| ${r.run} | ${outcome(r)} | ${record(r)} | ${COLUMNS.map(([, of]) => cell(of(r))).join(' | ')} |`),
   ].join('\n');
+}
+
+const FLAGS_SHOWN = 20;
+
+export function summaryOf({ versionNote = null, rows, flagged = [] }) {
+  const clean = rows.every((r) => r.outcome === 'pass' && ['same', 'updated'].includes(r.record) && (!r.selfCheck || r.selfCheck.outcome === 'same'));
+  const parts = [...(versionNote ? [versionNote] : []), summaryTable(rows)];
+  if (!clean || versionNote) {
+    parts.push("Each run's `report.txt`, record and view are under its directory in this job's evidence, its name with `/` written as `_`. Where the change meant to move a request, `node test/whole-host/run.mjs --update-records` rewrites the records to commit with it. A flag that a known finding explains is an entry in `test/whole-host/expected-failures.json` (`docs/whole-host-records.md`, \"Expected failures\").");
+  }
+  for (const { run, flags } of flagged) {
+    const shown = flags.slice(0, FLAGS_SHOWN).map((f) => `- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message}`);
+    const more = flags.length > FLAGS_SHOWN ? [`- ${flags.length - FLAGS_SHOWN} more in ${run.replaceAll('/', '_')}/report.txt`] : [];
+    parts.push([`### ${run}: ${flags.length} flag(s)`, ...shown, ...more].join('\n'));
+  }
+  return parts.join('\n\n');
 }
 
 const CONTEXT_ITEMS = 2;
@@ -188,6 +214,7 @@ export function stepSummary({ table, views, budget = STEP_SUMMARY_BYTES }) {
   const bytes = (s) => Buffer.byteLength(s, 'utf8');
   const head = `${table}\n\n`;
   const notes = views.map((v) => `The view of ${v.run} (${bytes(v.text)} bytes) didn't fit within this summary's ${budget} bytes: it's ${v.path} in the job's evidence.\n`);
+  if (bytes(head) + notes.reduce((n, x) => n + bytes(x), 0) > budget) return `${head}${views.length} views didn't fit within this summary's ${budget} bytes: each is <run>/view.md in the job's evidence.\n`;
   let used = bytes(head);
   const shown = [];
   const skipped = [];

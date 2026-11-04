@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maskRunVarying, runVaryingMasker, sameBodies } from '../lib/strategies/compare.mjs';
+import * as compare from '../lib/strategies/compare.mjs';
 
 const sameAcrossRuns = (a, b) => JSON.stringify(maskRunVarying(a)) === JSON.stringify(maskRunVarying(b));
 
@@ -104,4 +105,17 @@ test('the mask keeps a key named __proto__ as the body has it, so a change to it
   const b = maskRunVarying(JSON.parse('{"tools":[{"input_schema":{"properties":{"__proto__":{"type":"number"}}}}]}'));
   assert.notEqual(JSON.stringify(a), JSON.stringify(b));
   assert.match(JSON.stringify(a), /"__proto__":\{"type":"string"\}/);
+});
+
+test('the self-check names the arm that failed, and can\'t judge where the arm with recording off recorded compiles', () => {
+  const arm = () => { const d = mkdtempSync(join(tmpdir(), 'arm-')); writeFileSync(join(d, 'r1.json'), JSON.stringify(body())); return d; };
+  const [onBodies, offBodies] = [arm(), arm()];
+  try {
+    const check = (on, off) => compare.selfCheckOf({ on, off, onBodies, offBodies });
+    assert.deepEqual(check({ ok: false, reason: 'x' }, { ok: true, log: [] }), { outcome: 'couldnt-run', reason: 'the run with recording on failed: x' });
+    assert.deepEqual(check({ ok: true }, { ok: false, reason: 'y', log: [] }), { outcome: 'couldnt-run', reason: 'the run with recording off failed: y' });
+    assert.deepEqual(check({ ok: true }, { couldnt: 'z' }), { outcome: 'couldnt-run', reason: 'the run with recording off couldn\'t run: z' });
+    assert.deepEqual(check({ ok: true }, { ok: true, log: [{ kind: 'boot' }, { kind: 'compiles' }, { kind: 'compiles' }] }), { outcome: 'couldnt-run', reason: 'the run with recording off logged 2 compile batches, so the test module recorded though its recording was off' });
+    assert.deepEqual(check({ ok: true }, { ok: true, log: [{ kind: 'boot' }] }), { outcome: 'same', requests: 1 });
+  } finally { rmSync(onBodies, { recursive: true, force: true }); rmSync(offBodies, { recursive: true, force: true }); }
 });

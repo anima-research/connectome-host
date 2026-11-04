@@ -22,7 +22,7 @@ export function installCandidate({ root, packs, dir, leaveOut = [], npmCi }) {
   mkdirSync(dir, { recursive: true });
   const inside = [dir, ...leaveOut].map((p) => relative(root, p)).filter((rel) => rel && !rel.startsWith('..') && !isAbsolute(rel));
   const excludes = ['node_modules', '.git', ...inside].map((rel) => `--exclude=./${rel}`);
-  sh('sh', ['-c', 'tar -C "$ROOT" "$@" -cf - . | tar -x -C "$DIR"', 'copy', ...excludes], { env: { ROOT: root, DIR: dir } });
+  sh('bash', ['-c', 'set -o pipefail; tar -C "$ROOT" "$@" -cf - . | tar -x -C "$DIR"', 'copy', ...excludes], { env: { ROOT: root, DIR: dir } });
   npmCi(dir);
   sh('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', ...packs.map((p) => p.path)], { cwd: dir, timeout: 900_000 });
   const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf-8')).packages ?? {};

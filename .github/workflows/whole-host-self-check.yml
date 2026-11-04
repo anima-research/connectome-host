@@ -12,6 +12,9 @@ on:
       - test/whole-host/lib/strategies/standin.mjs
       - test/whole-host/lib/strategies/prose.mjs
       - test/whole-host/run.mjs
+      - test/whole-host/lib/strategies/driver.mjs
+      - test/whole-host/lib/common.mjs
+      - package.json
       - package-lock.json
       - bun.lock
       - .github/workflows/whole-host-self-check.yml

@@ -319,18 +319,25 @@ export function renderRecordLines({ header, log, records, end }) {
         for (const id of st.removed ?? []) known.delete(`${agent} ${id}`);
         if (st.removed?.length) { seen(e.step); at(e.step).push({ text: `  removed${agent === primary ? '' : ` [${agent}]`} ${st.removed.map((id) => leafName(agent, id)).join(' ')}` }); }
       }
+      const batch = [];
       for (const l of e.lines ?? []) {
         if (l.kind === 'other') { totals.other++; continue; }
         seen(e.step);
         if (l.outcome === 'refused' || l.error) {
           totals.refused++;
           const text = typeof l.error?.message === 'string' ? (blobs.get(l.error.message) ?? l.error.message) : '';
-          at(e.step).push({ text: `  compile${l.agent === primary ? '' : ` [${l.agent}]`} refused ${l.error?.class ?? 'unknown'}${text ? ` [${template(`error-${l.error?.class ?? 'unknown'}`, String(text).replace(/\d+/g, '#'))}]` : ''}` });
+          batch.push({ text: `  compile${l.agent === primary ? '' : ` [${l.agent}]`} refused ${l.error?.class ?? 'unknown'}${text ? ` [${template(`error-${l.error?.class ?? 'unknown'}`, String(text).replace(/\d+/g, '#'))}]` : ''}` });
           continue;
         }
         if (l.kind === 'dry') totals.dry++; else totals.compiles++;
-        at(e.step).push(compileLine(l, e.boot));
+        batch.push(compileLine(l, e.boot));
       }
+      let next = null;
+      for (let k = batch.length - 1; k >= 0; k--) {
+        if (batch[k].request) next = batch[k].request;
+        else if (next) batch[k].before = next;
+      }
+      at(e.step).push(...batch);
     }
     if (e.kind === 'checkpoint') { seen(e.step); at(e.step).push({ text: `checkpoint ${e.name}` }); }
   }
@@ -339,7 +346,7 @@ export function renderRecordLines({ header, log, records, end }) {
     let key = -Infinity;
     const keyed = (byStep.get(step) ?? []).map((l, i) => {
       if (l.request && seqOf.has(l.request)) key = seqOf.get(l.request);
-      return { l, key: l.request && seqOf.has(l.request) ? seqOf.get(l.request) : key, i };
+      return { l, key: l.request && seqOf.has(l.request) ? seqOf.get(l.request) : l.before && seqOf.has(l.before) ? seqOf.get(l.before) : key, i };
     });
     keyed.sort((a, b) => a.key - b.key || a.i - b.i);
     byStep.set(step, keyed.map(({ l }) => {
@@ -357,7 +364,8 @@ export function renderRecordLines({ header, log, records, end }) {
       }
       if (l.kind === 'call') return { text: `${l.base}${sentNote('summariser', l.sent)}`, request: l.request };
       if (l.kind === 'unclassified') return { text: `${l.base}${sentNote('unclassified', l.sent)}`, request: l.request };
-      return l;
+      const { before, ...line } = l;
+      return line;
     }));
   }
   for (const step of steps) {
@@ -404,7 +412,7 @@ export function nameTemplates(templates, hash = sha12) {
 
 export function unrecordable(records, log) {
   const sideOf = (agent) => (agent === FIXTURE_AGENT ? 'primary' : 'sub');
-  const lines = log.filter((e) => e.kind === 'compiles').flatMap((e) => (e.lines ?? []).filter((l) => l.kind === 'request'));
+  const lines = log.filter((e) => e.kind === 'compiles').flatMap((e) => (e.lines ?? []).filter((l) => l.kind === 'request' && l.outcome === 'compiled'));
   const compiled = new Set(lines.map((l) => sideOf(l.agent)));
   const uncompiled = [...new Set(records.filter((r) => r.kind === 'agent').map((r) => r.agent ?? 'primary'))].filter((side) => !compiled.has(side));
   const begun = new Map();
@@ -417,7 +425,7 @@ export function unrecordable(records, log) {
   }
   const others = [...new Set(lines.map((l) => l.agent).filter((a) => a !== FIXTURE_AGENT))];
   if (others.length > 1) return `${others.join(' and ')} each made request compiles, and the stand-in tells only the fixture's requests from the rest, so the record couldn't tell one agent's requests from another's`;
-  if (uncompiled.length) return `the run sent ${uncompiled.join(' and ')} agent requests, and its log holds no request compile line from the test module for ${uncompiled.length > 1 ? 'either' : 'that side'}, so its record couldn't tell their compiles from their rounds`;
+  if (uncompiled.length) return `the run sent ${uncompiled.join(' and ')} agent requests, and its log holds no compiled request line from the test module for ${uncompiled.length > 1 ? 'either' : 'that side'}, so its record couldn't tell their compiles from their rounds`;
   const unstamped = lines.filter((l) => l.outcome === 'compiled' && !/^\d+$/.test(String(l.stamp ?? ''))).length;
   if (unstamped) return `${unstamped} request compile(s) carry no stamp from the machine's monotonic clock, which the test module reads on Linux, so the record couldn't tell their requests from rounds`;
   return null;
@@ -438,7 +446,8 @@ export function exitCode(results, { versions = 'same' } = {}) {
 const versionList = (v) => Object.entries(v ?? {}).map(([k, x]) => `${k.replace('@animalabs/', '')} ${x}`).join(', ');
 
 export function versionsText({ release, candidate }) {
-  return `# whole-host versions\ncheckpoint ${release.tag}: ${versionList(release.versions)}\ncandidate: ${versionList(candidate.versions)}\n`;
+  const without = (v, names) => Object.fromEntries(Object.entries(v ?? {}).filter(([k]) => !names.includes(k)));
+  return `# whole-host versions\ncheckpoint ${release.tag}: ${versionList(without(release.versions, ['bun']))}\ncandidate: ${versionList(without(candidate.versions, ['bun', '@animalabs/connectome-host']))}\n`;
 }
 
 export function versionChanges(committed, now) {

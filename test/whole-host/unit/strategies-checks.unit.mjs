@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { assemblies, bindingControl, budgets, compileInvariants, compileKinds, pairing, reloads, requestPairs, declaredProducts, everyTurnAnswers, wellFormed, windowsRaw, calibrationEdge, coverage, bookkeeping } from '../lib/strategies/checks.mjs';
 import { continuation, products, configurations, L3_PRODUCT } from '../lib/strategies/script.mjs';
 import { RUNS, runOf, toolBlocksLost } from '../lib/strategies/workloads.mjs';
@@ -756,8 +757,10 @@ test('check 6 counts a request as judged only where it held it to some message',
 
 test('the continuation runs from its configuration\'s prefix, which is written from empty at the length stack.json pins', () => {
   const facts = { budget: 100_000, maxTokens: 16_000 };
-  const lengths = { prefixTurns: { H1: 49, H3: 13 } };
-  for (const [config, turns] of [['H1', 49], ['H3', 13]]) {
+  const lengths = JSON.parse(readFileSync(new URL('../stack.json', import.meta.url), 'utf-8'));
+  const pinned = Object.entries(lengths.prefixTurns);
+  assert.deepEqual(pinned.map(([config]) => config).sort(), ['H1', 'H3'], 'the configurations stack.json pins a prefix length for');
+  for (const [config, turns] of pinned) {
     const cont = runOf(`${config}/continuation`, configurations(), facts, lengths);
     assert.equal(cont.from, `${config}/prefix`);
     assert.ok(Object.keys(cont.products).length > 0, 'and declares its segments\' products');
@@ -850,4 +853,24 @@ test('assemblies: a retry is in the same process, so a restarted process reusing
     { kind: 'compiles', step: 'b', boot: 2, lines: [line(6, 3, 'refused'), line(7, 3)] },
   ];
   assert.deepEqual(assemblies(log).map((l) => [l.boot, l.seq]), [[1, 3], [2, 5], [2, 7]]);
+});
+
+test('check 4 counts, beside what it judged, each request it couldn\'t judge because the final store doesn\'t hold its own input', () => {
+  const ok = { id: 'ok', step: 'c', kind: 'agent', messages: [msg('user', summaryBlock('[[s:C1]]')), msg('assistant', carrying('[[c:b.in]]', '[[c:b.r1]]')), msg('user', carrying('[[c:c.in]]'))] };
+  const gone = { id: 'gone', step: 'z', kind: 'agent', messages: [msg('user', summaryBlock('[[s:C3]]')), msg('assistant', carrying('[[c:z.in]]'))] };
+  const both = coverage([ok, gone], store);
+  assert.equal(both.judged, 1);
+  assert.equal(both.besides, '1 request not judged, as the final store doesn\'t hold its own input');
+  assert.equal(coverage([ok], store).besides, undefined, 'nothing is said where every request was judged');
+});
+
+test('check 6 counts, beside what it judged, each message of the two turns before a request that it didn\'t ask for because the final store doesn\'t hold it', () => {
+  const turns = [turnStep('a'), turnStep('b'), turnStep('c')];
+  const withoutA = { messages: ['[[c:a.in]]', '[[c:b.in]]', '[[c:b.r1]]', '[[c:c.in]]', '[[c:c.r1]]'].map((c, i) => ({ id: String(i + 1), canaries: [c] })), summaries: [] };
+  const req = { id: 'r', step: 'c', kind: 'agent', messages: [msg('user', carrying('[[c:a.in]]', '[[c:b.in]]', '[[c:b.r1]]', '[[c:c.in]]'))] };
+  const flags = windowsRaw([req], turns, [], withoutA);
+  assert.deepEqual([...flags], []);
+  assert.equal(flags.besides, '1 recent message not asked for, as the final store doesn\'t hold it');
+  const whole = { ...withoutA, messages: [{ id: '0', canaries: ['[[c:a.in]]'] }, { id: '00', canaries: ['[[c:a.r1]]'] }, ...withoutA.messages.slice(1)] };
+  assert.equal(windowsRaw([{ ...req, messages: [msg('user', carrying('[[c:a.in]]', '[[c:a.r1]]', '[[c:b.in]]', '[[c:b.r1]]', '[[c:c.in]]'))] }], turns, [], whole).besides, undefined);
 });

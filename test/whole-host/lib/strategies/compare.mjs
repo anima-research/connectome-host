@@ -37,3 +37,12 @@ export function sameBodies(onDir, offDir) {
   const field = a[i] && b[i] ? Object.keys({ ...a[i], ...b[i] }).find((k) => JSON.stringify(a[i][k]) !== JSON.stringify(b[i][k])) : null;
   return { outcome: 'differs', at: i, files: [files(onDir)[i], files(offDir)[i]], detail: `${a.length} requests with recording on, ${b.length} with it off${field ? `; its ${field} differs` : ''}` };
 }
+
+export function selfCheckOf({ on, off, onBodies, offBodies }) {
+  if (!on.ok) return { outcome: 'couldnt-run', reason: `the run with recording on failed: ${on.reason ?? 'no reason given'}` };
+  if (off.couldnt) return { outcome: 'couldnt-run', reason: `the run with recording off couldn't run: ${off.couldnt}` };
+  if (!off.ok) return { outcome: 'couldnt-run', reason: `the run with recording off failed: ${off.reason ?? 'no reason given'}` };
+  const recorded = (off.log ?? []).filter((e) => e.kind === 'compiles').length;
+  if (recorded) return { outcome: 'couldnt-run', reason: `the run with recording off logged ${recorded} compile batch${recorded === 1 ? '' : 'es'}, so the test module recorded though its recording was off` };
+  return sameBodies(onBodies, offBodies);
+}
