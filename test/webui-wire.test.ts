@@ -29,10 +29,9 @@ describe('wire.send', () => {
     expect(client.status()).toBe('connecting');
     expect(client.send({ type: 'ping' })).toBe(false);
     await until(() => client!.status() === 'open');
-    expect(client.send({ type: 'ping' })).toBe(true);
-    await until(() => frames.length >= 1);
-    await Bun.sleep(50);
-    expect(frames).toHaveLength(1);
+    expect(client.send({ type: 'user-message', content: 'after the open' })).toBe(true);
+    await until(() => frames.some((f) => JSON.parse(f).type === 'user-message'));
+    expect(frames.map((f) => JSON.parse(f).type)).toEqual(['user-message']);
   });
 
   test('is true once the socket is open, and the frame arrives', async () => {

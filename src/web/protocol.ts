@@ -846,11 +846,11 @@ export interface UserMessageImage {
  *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
  *   bounded by it, so the composer checks the whole frame too
  *   (`frameLimitNote`).
- * - `maxSidePx`: a side every model API the host sends to takes, whatever
- *   else a request carries: under the stricter limit Claude's vision docs
- *   set for a request with more than 20 image blocks, which they give as
- *   3,000 px on every platform, and under the 30,000 patches of 32 px that
- *   OpenAI's docs allow one image.
+ * - `maxSidePx`: a side Claude's and OpenAI's APIs take whatever else a
+ *   request carries: under the stricter limit Claude's vision docs set for a
+ *   request with more than 20 image blocks, which they give as 3,000 px on
+ *   every platform, and under the 30,000 patches of 32 px that OpenAI's docs
+ *   allow one image.
  *
  * A host advertises a smaller count when its recipe's live window is under 8,
  * and less base64 when its recipe keeps less live (`userImageLimits` in the

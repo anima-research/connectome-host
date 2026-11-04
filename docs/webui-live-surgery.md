@@ -159,7 +159,7 @@ A recipe whose `imageStripDepthTokens` is 0 has no depth to check.
 Every host holds composer images to 3,000 px on a side, whatever its
 provider. A stored image stays in the live window and goes with every later
 request, to whichever provider the recipe names then, so the side has to be
-one every model API takes in any request:
+one Claude's and OpenAI's APIs take in any request:
 - By Claude's vision docs
   (https://platform.claude.com/docs/en/build-with-claude/vision), a request
   with more than 20 image blocks holds every image in it to a stricter limit,
