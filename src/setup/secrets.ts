@@ -362,20 +362,46 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-/** For doctor: replaces, in a text, the values of the secrets setup stored in an install, as the list and .env
- *  hold them now, and of the provider credentials in `env`, with their names. It has only those: a value .env held
- *  earlier, which a running setup--run also replaces, isn't among them. Throws as `StoredSecrets.names` does. */
+export interface RedactedWindow {
+  text: string;
+  start: number;
+  end: number;
+  replaced: string[];
+  guessed: string[];
+}
+
+/** For a reader of part of a log: replaces, in the bytes from `from` to `to`, the values of the secrets setup
+ *  stored in an install, as the list and .env hold them now, and of the provider credentials in `env`, with their
+ *  names, as redactWindow does. A value that crosses `from` is replaced whole when the bytes hold it whole, which
+ *  they do when they start `contextBytes` before `from`, the longest value's length. It has only those values: one
+ *  .env held earlier, which a running setup--run also replaces, isn't among them. Throws as `StoredSecrets.names`
+ *  does. */
+export function storedSecretWindowRedactor(
+  workingDir: string,
+  env: Record<string, string | undefined> = process.env,
+): { contextBytes: number; redact(bytes: Buffer, from: number, to: number): RedactedWindow } {
+  const envFile = join(workingDir, '.env');
+  const { names, guessed } = secretNames(join(workingDir, '.setup'), envFile);
+  const secrets = secretValues(names, envFile, env);
+  return {
+    contextBytes: Math.max(0, ...secrets.map(({ value }) => Buffer.byteLength(value, 'utf-8'))),
+    redact(bytes, from, to) {
+      const replaced = new Set<string>();
+      const window = redactWindow(bytes, from, to, secrets, replaced);
+      return { ...window, replaced: [...replaced], guessed: guessed.filter((name) => replaced.has(name)) };
+    },
+  };
+}
+
+/** storedSecretWindowRedactor over the whole of a text. */
 export function storedSecretRedactor(
   workingDir: string,
   env: Record<string, string | undefined> = process.env,
 ): (text: string) => { text: string; replaced: string[]; guessed: string[] } {
-  const envFile = join(workingDir, '.env');
-  const { names, guessed } = secretNames(join(workingDir, '.setup'), envFile);
-  const secrets = secretValues(names, envFile, env);
+  const { redact } = storedSecretWindowRedactor(workingDir, env);
   return (text) => {
-    const replaced = new Set<string>();
     const bytes = Buffer.from(text, 'utf-8');
-    const redacted = redactWindow(bytes, 0, bytes.length, secrets, replaced).text;
-    return { text: redacted, replaced: [...replaced], guessed: guessed.filter((name) => replaced.has(name)) };
+    const { text: redacted, replaced, guessed } = redact(bytes, 0, bytes.length);
+    return { text: redacted, replaced, guessed };
   };
 }
