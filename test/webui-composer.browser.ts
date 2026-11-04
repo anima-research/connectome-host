@@ -681,9 +681,10 @@ describe('images', () => {
       const from = c.host.received.length;
       await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
       await c.page.getByText('reading 1 image').waitFor();
-      await c.box.fill('with the picture');
       await c.box.press('Enter');
       await c.page.getByText('still reading images; send again in a moment').waitFor();
+      await c.box.fill('with the picture');
+      await c.box.press('Enter');
       await releaseFileReads(c);
       await c.page.getByTitle(/^dot\.png/).waitFor();
       await until('the reading note cleared', () => c.page.getByText('still reading images; send again in a moment').count(), (n) => n === 0);

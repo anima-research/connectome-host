@@ -47,6 +47,11 @@ const history = scenario === 'history-images' ? [
     content: [{ type: 'image' }, { type: 'image' }, { type: 'text', text: 'from me' }],
     metadata: { inboundSource: { kind: 'surface', surface: 'tui', acceptedAt: 1 } },
   },
+  {
+    participant: 'user',
+    content: [{ type: 'image' }],
+    metadata: { inboundSource: { kind: 'surface', surface: 'tui', acceptedAt: 1 } },
+  },
 ] : [];
 
 function fakeFramework(name: string) {

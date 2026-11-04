@@ -317,7 +317,7 @@ describe("the TUI's numbered fork phases, through runTui", () => {
 });
 
 describe("the TUI's history replay, through runTui", () => {
-  test('a replayed image line names the speaker of the text after it, in the same colour', async () => {
+  test('a replayed image line names the speaker of the text after it, in the same colour, and an image alone still shows', async () => {
     const colors = (await play('history-images')).get('history')!.colors!;
     const fg = (text: string) => {
       const found = colors.find((c) => c.text === text);
@@ -327,5 +327,6 @@ describe("the TUI's history replay, through runTui", () => {
     expect(fg('alice in #general: [an image]')).toEqual(fg('alice in #general: from alice'));
     expect(fg('You: [2 images]')).toEqual(fg('You: from me'));
     expect(fg('alice in #general: [an image]')).not.toEqual(fg('You: [2 images]'));
+    expect(fg('You: [an image]')).toEqual(fg('You: from me'));
   }, 40000);
 });
