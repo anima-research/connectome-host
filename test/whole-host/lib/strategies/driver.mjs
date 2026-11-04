@@ -86,6 +86,13 @@ export function hostFacts({ hostDir, configuration }) {
   }
 }
 
+export async function lastTake({ boot, take, log, fail }) {
+  await take().catch((e) => {
+    log('compiles', { boot, lost: String(e?.message ?? e) });
+    fail(`boot ${boot}'s last take of the module's compiles failed: ${String(e?.message ?? e).slice(0, 500)}`);
+  });
+}
+
 export function shutdownFailure({ boot, timedOut, exited, seconds }) {
   if (timedOut) return `boot ${boot}: the host didn't exit within ${seconds} s of its shutdown`;
   if (exited && (exited.code !== 0 || exited.signal)) return `boot ${boot}: the host exited (${exited.code ?? exited.signal}) on its shutdown`;
@@ -106,7 +113,6 @@ export function hostEnv({ configuration, standinUrl, control, clock }) {
     ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_OAUTH_CREDENTIALS_FILE: undefined, ANTHROPIC_OAUTH_AUTO_REFRESH: undefined,
     MODEL: undefined, COUNT_TOKENS_MODEL: undefined,
     ...(configuration.binds ? { THINKING_BINDING_PROBE: 'off' } : {}),
-    // Set either way, so a runner's own FIXTURE_RECORD can't turn the recording arm off.
     FIXTURE_RECORD: configuration.recording === false ? 'off' : undefined,
   };
 }
@@ -274,8 +280,6 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
     b.module = true;
     timing.boots.push(Math.round(performance.now() - started));
     log('ready', { boot: b.n, ms: timing.boots.at(-1) });
-    // The store as this boot found it, before any step: the record's baseline at the run's start, and what a restart
-    // is compared with.
     await takeCompiles('boot');
     await budgetReport(b);
   }
@@ -298,13 +302,7 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
   async function shutdown() {
     const b = host;
     if (!b) return;
-    // A take that fails here loses the compiles since the last settle, so the run can't be recorded whole.
-    if (b.module) {
-      await takeCompiles().catch((e) => {
-        log('compiles', { boot: b.n, lost: String(e?.message ?? e) });
-        if (!failure) fail({ step: current?.id ?? null, reason: `boot ${b.n}'s last take of the module's compiles failed: ${String(e?.message ?? e).slice(0, 500)}` });
-      });
-    }
+    if (b.module) await lastTake({ boot: b.n, take: takeCompiles, log, fail: (reason) => fail({ step: current?.id ?? null, reason }) });
     host = null;
     b.stopping = true;
     if (!b.exited) {
@@ -423,7 +421,6 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
       await ctl.release(after, { timeoutMs: COMMAND_MS });
       log('send', { via: 'release', canary: after });
     }
-    // A step that may fail, or retries a scripted error, waits past inference:failed, which agent-framework may retry.
     const ending = step.mayFail || step.retries ? /^inference:(exhausted|aborted)$/ : /^inference:(failed|exhausted|aborted)$/;
     const ended = await until(() => eventAfter(from, (e) => e.type === 'inference:speech' || ending.test(e.type)), TURN_MS, `turn ${step.id}: its speech`);
     if (ended.e.type !== 'inference:speech' && step.mayFail) {

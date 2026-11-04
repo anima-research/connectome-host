@@ -254,7 +254,7 @@ export const WORKLOADS = {
   W4: {
     from: 'checkpoint',
     turns: 4,
-    property: 'thinking: no call this workload makes goes out parted from the thinking that led to it',
+    property: 'thinking: no call this workload makes goes out parted from the thinking that led to it, which comes ahead of it in its message',
     steps(ctx) {
       const w = writer(ctx, 'W4');
       return Array.from({ length: this.turns }, (_, i) => w.turn(i + 1, { thinking: w.between(SIZES.call), callId: () => `t${ctx.seed}_${i + 1}` }));
@@ -268,7 +268,6 @@ export const WORKLOADS = {
           const calls = m.blocks.filter((b) => b.type === 'tool_use' && own.test(String(b.toolUseId))).map((b) => b.toolUseId);
           if (!calls.length) continue;
           judged++;
-          // The thinking that led to a call comes before it in its message.
           const first = m.blocks.findIndex((b) => b.type === 'tool_use' && own.test(String(b.toolUseId)));
           if (!m.blocks.slice(0, first).some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')) out.push({ step: r.step, message: `request ${r.id}: a call went out without its thinking (${calls.join(', ')})` });
         }
@@ -308,7 +307,7 @@ export const WORKLOADS = {
   W6: {
     from: 'checkpoint',
     turns: 12,
-    property: 'tools: no request carries a mark of membrane\'s pairing repair, which would mean context-manager handed it a result without its call or a call without its result; context-manager\'s own repair marks, the designed output for the suppression it scripts, are counted beside (and check 11 judges each compile\'s pairs)',
+    property: 'tools: no request carries a mark of membrane\'s pairing repair, which would mean context-manager handed it a result without its call or a call without its result; context-manager\'s own repair marks, the designed output for the suppression it scripts, are counted beside (marks are found by their text, which the fixture\'s tool output never quotes; check 11 judges each compile\'s pairs)',
     recipe: { fixtureServer: { requestTimeoutMs: 2000 } },
     needs: { webui: true },
     steps(ctx) {
@@ -332,8 +331,8 @@ export const WORKLOADS = {
       }
       return steps;
     },
-    // Membrane repairs both shapes on the wire, so W6 judges what reached the stand-in by its repair's marks; a
-    // context-manager mark is counted, not flagged.
+    // membrane 0.8.0's normalizer repairs both shapes on the wire (normalize-tool-pairs.ts), so a request that
+    // reaches the stand-in shows them only as its repair marks.
     check(run) {
       const requests = run.records.filter((r) => r.kind === 'agent');
       const marks = requests.flatMap((r) => (r.messages ?? []).flatMap((m) => m.blocks.flatMap((b) => (b.repairs ?? []).map((mark) => ({ r, mark })))));
@@ -392,7 +391,6 @@ export const WORKLOADS = {
         }
         return withJudged(out, refused.length);
       }
-      // Where the stand-in refuses no merge, "nothing else raises one" is check 1's: it flags every alert not owned.
       return judgedBy(out, 1);
     },
   },
@@ -405,8 +403,6 @@ export const WORKLOADS = {
     recipe: (variant) => ({ agent: { strategy: { enforceBudget: variant === 'enforced' } } }),
     steps(ctx) {
       const w = writer(ctx, 'W8');
-      // A turn may end unanswered only from the first cut (before turn 5) through the two turns after the restore
-      // (before turn 13), which the property allows before it holds again; restoredWithin judges 1-4, 15 and 16.
       const underCut = (n) => n >= 5 && n <= 14;
       const budget = ctx.budget;
       const cut = (step, tokens) => w.other(`${step}.budget`, 'panel', { op: 'settings-update', params: { contextBudgetTokens: tokens, immediate: true }, edge: { reserve: ctx.reserve } });
@@ -526,8 +522,6 @@ export const WORKLOADS = {
         if (n === 9) steps.push(w.other('9.budget', 'panel', { op: 'settings-update', params: { contextBudgetTokens: Math.round(budget * 0.35), immediate: true }, edge: { reserve: ctx.reserve } }));
         if (n === 13) steps.push(w.other('13.budget', 'panel', { op: 'settings-update', params: { contextBudgetTokens: budget, immediate: true } }));
         const failFirst = n === 2 && ctx.configurationName === 'H1';
-        // A turn under the cut, before the restore, may end unanswered; H1's step 2 is retried after its scripted 529
-        // and must still answer.
         const t = w.turn(n, { more: { ...(n >= 9 && n < 13 ? { mayFail: true } : {}), ...(failFirst ? { retries: true } : {}) } });
         if (failFirst) t.replies = [{ error: { status: 529, type: 'overloaded_error', message: 'stand-in: overloaded, once' } }, ...t.replies];
         steps.push(t);
@@ -557,8 +551,8 @@ export const WORKLOADS = {
       }
       return steps;
     },
-    // context-manager keeps a placed pin until it's unpinned, and a compile whose budget can't hold the raw pins
-    // refuses with OverBudgetError (its README's pins paragraph, at the host's 0.24.0), so a cut never removes one.
+    // context-manager 0.24.0's README: "`listPins` and `unpin` manage the pins", and "A compile whose budget can't
+    // hold the raw pins beside the rest refuses with `OverBudgetError`".
     check(run, ctx) {
       const panels = entries(run, 'panel');
       const pinsAt = (step) => panels.filter((e) => e.step === `${ctx.seed}.${step}`).at(-1)?.response?.data?.pins;
@@ -590,7 +584,6 @@ function restoredWithin(run, agent, stepOf, noun) {
 }
 
 export function toolBlocksLost(run) {
-  // Every read, so a body removed before the last read is still judged in the requests that sent it.
   const reads = readsOf(run, 'messages');
   const failed = reads.find((read) => !Array.isArray(read.answer ?? []));
   if (failed) return withJudged([{ step: failed.step ?? null, message: `couldn't judge: the store's messages couldn't be read${isUnreadable(failed.answer) ? ` (${failed.answer.unreadable})` : ''}` }], 0);

@@ -947,11 +947,12 @@ test('W8 judges the restore: steps 15 and 16 compile again once 1 to 4 did, a la
   assert.deepEqual([early.judged, early[0].message], [0, 'couldn\'t judge the restore: step 2 refused, before the budget was lowered']);
 });
 
-test('W8 and W11 let a turn end unanswered only between a cut and its restore, and H1/W11\'s scripted 529 makes its step one that retries', () => {
+test('W8, H4\'s reader and W11 let a turn end unanswered only between a cut and its restore, and H1/W11\'s scripted 529 makes its step one that retries', () => {
   const steps = (w, ctx) => WORKLOADS[w].steps({ seed: 5, budget: 100_000, reserve: 4_000, configuration: {}, ...ctx });
   const failing = (list) => list.filter((s) => s.mayFail).map((s) => s.id);
   assert.deepEqual(failing(steps('W8', { configurationName: 'C6h' })), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((n) => `5.${n}`));
   assert.deepEqual(failing(steps('W11', { configurationName: 'C6h' })), [9, 10, 11, 12].map((n) => `5.${n}`));
+  assert.deepEqual(failing(steps('W8', { configurationName: 'H4' })), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((k) => `5.h${k}`), 'H4\'s reader takes W8\'s window');
   const h1 = steps('W11', { configurationName: 'H1' });
   assert.deepEqual(h1.filter((s) => s.retries).map((s) => s.id), ['5.2']);
   assert.ok(!h1.find((s) => s.id === '5.2').mayFail, 'the retried turn must still answer');

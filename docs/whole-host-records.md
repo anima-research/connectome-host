@@ -30,20 +30,21 @@ when a run couldn't run.
   invocations, keyed by everything that writes them.
 - `--self-check` drives each run a second time with the test module's
   recording off, and fails a run whose requests differ: every record rests on
-  recording changing nothing the host sends. An arm with recording off that
-  logged compile batches anyway can't be judged, nor can one whose drive
-  failed, and the summary names which arm. Where they differ, the first
-  differing pair of request bodies is kept in the run's evidence, under
-  `self-check/`. CI runs it in four shares on a pull request that changes a
-  file the test module loads; `package.json` or a lockfile, which choose the
-  stack the module runs beside; or `run.mjs`, `driver.mjs` or `common.mjs`,
-  which set up, drive and compare the two arms. A change to the host's own
-  source doesn't schedule it. Host code reaches the module only by loading it
-  as an extension (`src/extensions.ts`) and through the installed packages'
-  methods the module wraps, and the module's own awaits run no host code:
-  the clock it reads at load, and the dry compile the driver asks of
-  context-manager. What a host change does to requests, the records
-  themselves measure.
+  recording changing nothing the host sends. The driver sets `FIXTURE_RECORD`
+  for both arms, so a runner's own can't turn the recording arm off. An arm
+  with recording off that logged compile batches anyway can't be judged, nor
+  can one whose drive failed, and the summary names which arm. Where they
+  differ, the first differing pair of request bodies is kept in the run's
+  evidence, under `self-check/`. CI runs it in four shares on a pull request
+  that changes a file the test module loads; `package.json` or a lockfile,
+  which choose the stack the module runs beside; or `run.mjs`, `driver.mjs` or
+  `common.mjs`, which set up, drive and compare the two arms. A change to the
+  host's own source doesn't schedule it. Host code reaches the module only by
+  loading it as an extension (`src/extensions.ts`) and through the installed
+  packages' methods the module wraps, and the module's own awaits run no host
+  code: the clock it reads at load, and the dry compile the driver asks of
+  context-manager. What a host change does to requests, the records themselves
+  measure.
 - `--shard i/n` runs one of CI's shares, balanced by the seconds
   `stack.json` records.
 - `--workdir DIR` keeps the run's installs and stores in `DIR`, which must be
@@ -56,7 +57,9 @@ whose compiles carry no stamp is refused as couldn't-run (`record.mjs`,
 
 A run that throws while it's set up, driven or recorded, or whose checkpoint
 couldn't be made, couldn't run, with the reason in the job's log and summary;
-the other runs go on.
+the other runs go on. A run whose last take of the test module's compiles at
+a host's shutdown fails is a failed run, its record ending `end failed`, since
+it lost what was compiled after the last settle.
 
 A run that continues another starts from that run's checkpoint, written by the
 release `stack.json` names, installed from that release's own lockfile, so the
@@ -277,9 +280,15 @@ of them, and the checks' counts.
 
 - **Check 1: every turn answers.** It flags a request the stand-in refused or
   couldn't classify, an inference that failed or was exhausted, an operator
-  alert the host raised, and a checkpoint that didn't settle. A step a workload
+  alert the host raised, a checkpoint that didn't settle, and a turn whose
+  answer the host reported it couldn't route to its channel. A step a workload
   marks `mayFail` may fail by design: its failure and its context refusal are
-  its workload's property to judge.
+  its workload's property to judge. Workloads mark only the turns a budget cut
+  can make fail: W8's and H4's reader's from the first cut through the two
+  turns after the restore, which W8's property allows, and W11's from its cut
+  to its restore. A step marked `retries` meets a scripted error that
+  agent-framework retries, so check 1 owns only that `inference:failed`, and
+  the turn must still answer.
 - **Check 2: declared products.** The continuation's segments each exist to
   produce something, such as a merge, a request carrying both results with one
   an image, or a thinking-led call. Check 2 fails a segment that didn't.
@@ -379,7 +388,8 @@ of them, and the checks' counts.
 - **Check 12: reloads.** At a restart with a reload check, the dry compile
   after the boot matches the one before the shutdown: the same outcome, the
   same messages from the same stored sources with the same content, the same
-  system injections.
+  system injections. Two dry compiles that refused alike show no compile on
+  either side, so that reload is couldn't-judge.
 - **Check 13: pairing.** Every request compile reached a request: the first of
   its agent's requests to arrive at the stand-in after it, before the agent
   compiled again. The module stamps each request compile as it hands it back,
@@ -405,7 +415,10 @@ of them, and the checks' counts.
   each workload. A property either counts what it judged or names the check
   that judges it, and is then held to that check's count. A completed run
   whose property does neither, or names a check that judged nothing, is a
-  couldn't-judge flag.
+  couldn't-judge flag. The continuation names check 2, W7 without refused
+  merges check 1, which flags every alert not owned, and W9 check 12. W5
+  takes each body from every messages read, so a body removed before the
+  run's last read is still judged in the requests that sent it.
 - **Check 15: binding control.** On a model that binds thinking and takes the
   drop control, every agent request carries
   `thinking.block_binding.prefix_mismatch_behavior: drop_block`, the host's

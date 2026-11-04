@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { budgetReportDone, hostEnv, readSettle, shutdownFailure } from '../lib/strategies/driver.mjs';
+import { budgetReportDone, hostEnv, lastTake, readSettle, shutdownFailure } from '../lib/strategies/driver.mjs';
 
 const answer = ({ ready = true, pending = false, queue = 0, compressed = 30, drained = true, deferredWrites = 0, activeTurnAgents = [], parkedAdmissions = 0, ok = true } = {}) => ({
   ok,
@@ -93,4 +93,15 @@ test('R14: the self-check\'s second arm boots the test module with recording off
   const on = hostEnv({ ...base, configuration: {} });
   assert.ok('FIXTURE_RECORD' in on && on.FIXTURE_RECORD === undefined, 'the recording arm sets it to nothing');
   assert.equal({ ...{ FIXTURE_RECORD: 'off' }, ...on }.FIXTURE_RECORD, undefined, 'so a runner\'s own FIXTURE_RECORD=off, which spawnHost spreads first, can\'t turn recording off');
+});
+
+test('a last take the module refuses at a host\'s shutdown fails the run, since the compiles since the last settle are lost, and logs the loss', async () => {
+  const logged = [];
+  const failed = [];
+  const at = { boot: 2, log: (kind, fields) => logged.push({ kind, ...fields }), fail: (reason) => failed.push(reason) };
+  await lastTake({ ...at, take: async () => { throw new Error('the module stopped before flushing'); } });
+  assert.deepEqual(logged, [{ kind: 'compiles', boot: 2, lost: 'the module stopped before flushing' }]);
+  assert.deepEqual(failed, ['boot 2\'s last take of the module\'s compiles failed: the module stopped before flushing']);
+  await lastTake({ ...at, take: async () => {} });
+  assert.equal(failed.length, 1, 'a take that answers fails nothing');
 });
