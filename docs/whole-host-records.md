@@ -144,8 +144,8 @@ the lines of requests are in the order the stand-in received them:
     moves the record, though only a system block's is written out.
   - **`head H:KEY`** appears when the agent's head differs from its previous
     request's. **`body HASH`** is a hash of each message as sent, digest and
-    cache markers, so any change to what was sent that the provider would read
-    differently moves it.
+    cache markers, so a change to any of them moves it, apart from the forms
+    the record writes alike, listed after this list.
   - **`compile dry`** is a dry compile, which sends nothing.
     **`compile refused CLASS [T:…]`** is one that threw.
   - **`compile [AGENT]`** is another agent's than the fixture's own, such as a
@@ -206,12 +206,11 @@ its compression ticks settle and while a take of it reads unreadable, so what
 a take couldn't read is still reported once it can be.
 
 A request's line, with the head in force for it, changes whenever what that
-request sends changes in a way the provider would read differently. Forms the
-provider reads alike are recorded alike: an ephemeral cache marker with no TTL
-as `5m`, a string content as one text block, and `stream: false` as no
-`stream`. A head is named only on the first line of its agent's under it, so a
-later request under a changed head keeps its line, and the view still names
-it.
+request sends changes, apart from three forms the record writes alike: an
+ephemeral cache marker with no TTL and one of `5m`, a string content and one
+text block, and `stream: false` and no `stream`. A head is named only on the
+first line of its agent's under it, so a later request under a changed head
+keeps its line, and the view still names it.
 
 A line can also change when nothing its request sends does. Its delta is from
 its agent's previous compile, so a change to that compile moves it too. A
