@@ -261,7 +261,9 @@ class FakeSystemd {
         SubState: this.deactivating.has(unit) ? 'stop-sigterm' : crashing ? 'auto-restart' : running ? 'running'
           : this.exiting.has(unit) ? 'failed' : 'dead',
         NRestarts: String(this.nrestarts.get(unit) ?? 0),
-        ExecMainStartTimestamp: this.latest.has(unit) ? `@${STARTED_AT}` : '',
+        ExecMainStartTimestamp: this.latest.has(unit)
+          ? 'Mon ' + new Date(STARTED_AT * 1000).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : '',
+        MainPID: running ? '4242' : '0',
         ExecMainStatus: this.crashing.has(unit) ? '1' : this.exitStatus.get(unit) ?? '0',
         Environment: (loaded?.environment ?? []).join(' '),
         InvocationID: this.running.get(unit) ?? this.latest.get(unit) ?? '',
@@ -478,6 +480,94 @@ function nothingWritten(at: Install, unitFile = hostUnit(at)): void {
   expect(existsSync(join(at.work, '.setup', 'stored-secrets.json'))).toBe(false);
   expect(existsSync(join(at.root, 'service.json'))).toBe(false);
 }
+
+test('service operations and log excerpts work with systemd 247 timestamp styles', async () => {
+  const at = install();
+  const f = fake(at);
+  const run = f.system.run;
+  const stamp = new Date(STARTED_AT * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  f.system.run = (cmd, args, env) => {
+    if (cmd === 'systemctl' && args.includes('--timestamp=unix')) {
+      return { status: 1, stdout: '', stderr: 'Invalid value: unix.' };
+    }
+    const ran = run(cmd, args, env);
+    return cmd === 'systemctl' ? { ...ran,
+      stdout: ran.stdout.replace(/ExecMainStartTimestamp=.+/,
+        'ExecMainStartTimestamp=Mon ' + stamp + (env.TZ === 'UTC' && env.LC_ALL === 'C' ? ' UTC' : ' EST')) } : ran;
+  };
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out).toContain('  | Loaded recipe: resident');
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  expect(await runService(f.ctx(['start']), f.system)).toBe(0);
+});
+
+test('a latest invocation that ended is read with a 200-entry cap, not a lifetime read', async () => {
+  const at = install();
+  const f = fake(at);
+  f.systemd.exiting.add(HOST);
+  f.systemd.prints = () => Array.from({ length: 350 }, (_, at) => 'report ' + at);
+  const run = f.system.run;
+  let captured = 0;
+  f.system.run = (cmd, args, env) => {
+    const ran = run(cmd, args, env);
+    if (cmd === 'journalctl' && args.some((arg) => arg.startsWith('_SYSTEMD_INVOCATION_ID='))) {
+      const reports = ran.stdout.trimEnd().split('\n');
+      const n = args.indexOf('-n');
+      const kept = n < 0 ? reports : reports.slice(-Number(args[n + 1]));
+      captured = kept.length;
+      return { ...ran, stdout: kept.join('\n') + '\n' };
+    }
+    return ran;
+  };
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(captured).toBe(200);
+  expect(f.out.join('\n')).toContain('last 200 entries');
+  expect(f.out).toContain('  | report 349');
+});
+
+test('earlier-start selection reports every journal entry it cannot interpret', async () => {
+  const at = install();
+  const f = fake(at, { ready: false });
+  f.systemd.crashing.add(HOST);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  f.systemd.crashing.delete(HOST);
+  const run = f.system.run;
+  f.system.run = (cmd, args, env) => {
+    const ran = run(cmd, args, env);
+    return cmd === 'journalctl' && args.includes('json')
+      ? { ...ran, stdout: ran.stdout + '{broken\n' +
+        JSON.stringify({ MESSAGE: [255], USER_INVOCATION_ID: 'opaque' }) + '\n' +
+        JSON.stringify({ MESSAGE: 'has no invocation' }) + '\n' } : ran;
+  };
+  const checked = await checkService(at.root, f.system);
+  expect(checked.lines.join('\n')).toContain("3 journal entries couldn't be interpreted");
+});
+
+for (const verb of ['stop', 'check'] as const) test('launchd query failure is diagnosed as unknown during ' + verb, async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.out.length = 0;
+  f.err.length = 0;
+  f.systemd.launchctlFailsOnce.set('list', 'manager denied query');
+  const result = verb === 'stop' ? await runService(f.ctx(['stop']), f.system)
+    : await checkService(at.root, f.system);
+  const said = typeof result === 'number' ? f.out.concat(f.err).join('\n') : result.lines.join('\n');
+  expect(typeof result === 'number' ? result : Number(!result.passed)).toBe(1);
+  expect(said).toContain('manager denied query');
+  expect(said).not.toContain("wasn't running");
+  expect(said).not.toContain('has no com.animalabs.connectome.my-resident loaded');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an answering host outside the ' + platform + ' unit', async () => {
+  const at = install();
+  const f = fake(at, { platform });
+  f.system.openHost = async () => ({ ready: { pid: 9999, recipe: at.recipe }, close() {} }) as never;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('9999');
+  expect(f.err.join('\n')).toContain('4242');
+  expect(f.out.join('\n')).not.toContain('Its host answers:');
+});
 
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();
@@ -1541,7 +1631,7 @@ test('a shell daemon that isn\'t active fails the check, which shows its latest 
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = f.out.join('\n');
   expect(said).toContain(`${SHELL} is failed, not active: journalctl --user -u ${SHELL} shows its log`);
-  const shown = 'The journal\'s last lines from the shell daemon\'s latest start, which ended:\n  | session-server: starting\n' +
+  const shown = 'The journal\'s last lines from the shell daemon\'s latest start, which ended (last 200 entries):\n  | session-server: starting\n' +
     '  | Error: Cannot find module \'node-pty\'';
   expect(said).toContain(shown);
   expect(said.indexOf(shown)).toBeLessThan(said.indexOf('Put right what the lines above show'));
@@ -1629,7 +1719,7 @@ test('a host that keeps failing fails the install\'s check, with its restarts an
   f.systemd.prints = () => ['Loaded recipe: resident', 'Fatal error: error: Failed to start server. Is port 7340 in use?'];
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = [...f.out, ...f.err].join('\n');
-  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n  | Loaded recipe: resident\n' +
+  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended (last 200 entries):\n  | Loaded recipe: resident\n' +
     '  | Fatal error: error: Failed to start server');
   expect(said).not.toContain('  ! ');
   expect(said).toMatch(/restarted it \d+ times? since it was last started, and its process last exited with 1\./);
@@ -1912,7 +2002,7 @@ test('for a host that isn\'t active, the check shows its latest start\'s last li
   f.systemd.prints = () => ['Loaded recipe: resident', { after: 90, line: 'Missing ANTHROPIC_API_KEY. Set one in .env.' }];
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain(`connectome: ${HOST} is failed, and no host answers: `);
-  expect(f.out.join('\n')).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n' +
+  expect(f.out.join('\n')).toContain('The journal\'s last lines from the host\'s latest start, which ended (last 200 entries):\n' +
     '  | Loaded recipe: resident\n  | Missing ANTHROPIC_API_KEY. Set one in .env.');
   expect(f.out.join('\n')).not.toContain('  ! ');
 });
@@ -2857,7 +2947,7 @@ test('on macOS stop boots out the host, then its shell agent, says so of each an
     'with connectome service start.']);
   f.out.length = 0;
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
-  expect(f.out.slice(0, 2)).toEqual([`${host} wasn't running.`, `${shell} wasn't running.`]);
+  expect(f.out.slice(0, 2)).toEqual([`${host} wasn't loaded.`, `${shell} wasn't loaded.`]);
 });
 
 test('on macOS stop and start leave alone a recorded agent whose plist runs another directory, and stop one loaded with its plist gone', async () => {
@@ -2898,7 +2988,7 @@ test('on macOS stop with only the shell agent\'s plist gone says whether the hos
   rmSync(agentPlist(at, shell));
   f.out.length = 0;
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
-  expect(f.out).toEqual([`${host} wasn't running.`, `${shell} wasn't running.`, `${host}'s launch agent stays in ` +
+  expect(f.out).toEqual([`${host} wasn't loaded.`, `${shell} wasn't loaded.`, `${host}'s launch agent stays in ` +
     `${dirname(agentPlist(at))}, so launchd starts it again when resident next logs in to the Mac's graphical session.`, `${agentPlist(at, shell)}, ` +
     `${shell}'s launch agent's file, is gone, so connectome service start refuses. ${serviceRepairWords}`]);
 });

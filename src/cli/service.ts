@@ -637,13 +637,17 @@ async function stopService(ctx: CliContext, sys: ServiceSystem): Promise<number>
     if (!stopUnits(ctx, sys, env, units)) return 1;
   } else {
     for (const unit of units) {
-      const listed = sys.run('launchctl', ['list', unit.name], env);
-      if (listed.status !== 0) {
-        ctx.out(`${unit.name} wasn't running.`);
+      const state = agentState(sys, env, unit);
+      if (state.kind === 'unknown') {
+        throw new Refusal(`Whether ${unit.name} is loaded can't be told: ${state.why}. ` +
+          `Run ${cmd} service stop again once the query succeeds.`);
+      }
+      if (state.kind === 'unloaded') {
+        ctx.out(`${unit.name} wasn't loaded.`);
         continue;
       }
       await bootout(ctx, sys, env, unit, `Run ${cmd} service stop again to finish stopping its agents.`);
-      ctx.out(pidOf(listed.stdout) === undefined ? `${unit.name} wasn't running, and launchd no longer has it loaded.`
+      ctx.out(state.kind === 'loaded' ? `${unit.name} wasn't running, and launchd no longer has it loaded.`
         : `Stopped ${unit.name}.`);
     }
   }
@@ -857,14 +861,17 @@ function startAgents(ctx: CliContext, sys: ServiceSystem, env: Record<string, st
   return true;
 }
 
-type AgentState = { kind: 'unloaded' | 'loaded' } | { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
+type AgentState = { kind: 'unloaded' } | { kind: 'loaded'; exit?: string } |
+  { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
 
 function agentState(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit): AgentState {
   const listed = sys.run('launchctl', ['list', unit.name], env);
   if (listed.status === 113) return { kind: 'unloaded' };
   if (listed.status !== 0) return { kind: 'unknown', why: launchctlFailure(listed) };
   const pid = pidOf(listed.stdout);
-  return pid === undefined ? { kind: 'loaded' } : { kind: 'running', pid };
+  return pid === undefined
+    ? { kind: 'loaded', exit: /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1] }
+    : { kind: 'running', pid };
 }
 
 function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit, log: string, rotate: boolean): Ran {
@@ -1385,7 +1392,19 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
     if (!('reason' in host)) {
       const ready = host.ready;
       host.close();
-      return ready;
+      let pid: string;
+      if (record.manager === 'systemd-user') {
+        const shown = showUnit(sys, env, name, ['MainPID']);
+        if (typeof shown === 'string') return shown;
+        pid = shown.get('MainPID') ?? '0';
+      } else {
+        const state = agentState(sys, env, record.units.host);
+        if (state.kind === 'unknown') return `Whether ${name} runs the answering host can't be told: ${state.why}.`;
+        pid = state.kind === 'running' ? state.pid : '0';
+      }
+      return pid === String(ready.pid) ? ready
+        : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${pid}. ` +
+          "That answer doesn't establish that this service's host is ready.";
     }
     last = host.reason;
     if (record.manager === 'systemd-user') {
@@ -1486,19 +1505,23 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
   const latestStart = (unit: ServiceUnit, shown: Map<string, string>, active: boolean, whose: string):
     { invocation: string; started: string } | null => {
     const invocation = shown.get('InvocationID') ?? '';
-    const started = /^@(\d+)$/.exec(shown.get('ExecMainStartTimestamp') ?? '')?.[1];
+    const stamp = shown.get('ExecMainStartTimestamp') ?? '';
+    const utc = /^\w{3} (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC$/.exec(stamp);
+    const seconds = utc === null ? NaN : Date.parse(`${utc[1]}T${utc[2]}Z`) / 1000;
+    const started = Number.isFinite(seconds) ? String(seconds) : undefined;
     if (invocation === '' || started === undefined) {
       lines.push(`Its latest start isn't known, so its log isn't shown: journalctl --user -u ${unit.name} shows it.`);
       return null;
     }
     const logged = sys.run('journalctl', ['--user', `_SYSTEMD_INVOCATION_ID=${invocation}`, '--since', `@${started}`,
-      ...(active ? ['--until', `@${Number(started) + FIRST_MINUTE_S}`] : []), '-o', 'cat', '--no-pager'], env);
+      ...(active ? ['--until', `@${Number(started) + FIRST_MINUTE_S}`] : ['-n', String(ENDED_ENTRIES)]),
+      '-o', 'cat', '--no-pager'], env);
     if (logged.status !== 0) {
       fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
       return null;
     }
     if (active) log(logged.stdout, `The journal's lines from ${whose} in the first minute of its latest start`);
-    else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended`, true);
+    else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended (last ${ENDED_ENTRIES} entries)`, true);
     return { invocation, started };
   };
   if (record.manager === 'systemd-user') {
@@ -1557,14 +1580,17 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     }
   } else {
     for (const unit of [record.units.host, ...(record.units.shell ? [record.units.shell] : [])]) {
-      const listed = sys.run('launchctl', ['list', unit.name], env);
-      if (listed.status !== 0) {
+      const state = agentState(sys, env, unit);
+      if (state.kind === 'unknown') {
+        fail(`Whether launchd has ${unit.name} loaded can't be told: ${state.why}.`);
+        continue;
+      }
+      if (state.kind === 'unloaded') {
         fail(`launchd has no ${unit.name} loaded.`);
         continue;
       }
-      const pid = pidOf(listed.stdout);
-      const exit = /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1];
-      if (pid !== undefined) lines.push(`${unit.name} is running, pid ${pid}.`);
+      const exit = state.kind === 'loaded' ? state.exit : undefined;
+      if (state.kind === 'running') lines.push(`${unit.name} is running, pid ${state.pid}.`);
       else if (unit === record.units.host) {
         fail(`${unit.name} is loaded but not running${exit === undefined ? '' : `; it last exited with ${exit}`}.`);
       } else {
@@ -1595,8 +1621,10 @@ function stateOf(shown: Map<string, string>): string {
 
 function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
   properties: string[]): Map<string, string> | string {
-  const ran = sys.run('systemctl', ['--user', 'show', '--timestamp=unix', `--property=${properties.join(',')}`, '--', name],
-    env);
+  const timestamp = properties.includes('ExecMainStartTimestamp');
+  // systemd 247 ignores show's timestamp style. TZ and LC_ALL also fix its default output to numeric UTC seconds.
+  const ran = sys.run('systemctl', ['--user', 'show', ...(timestamp ? ['--timestamp=utc'] : []),
+    `--property=${properties.join(',')}`, '--', name], timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
   if (ran.status !== 0) {
     return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
       `(${systemctlLine(sys, `show ${name}`)})`;
@@ -1613,16 +1641,18 @@ function endedStart(sys: ServiceSystem, env: Record<string, string>, name: strin
     lines.push(`Its start before the latest isn't shown: journalctl --user failed: ${stderrOf(ran)}.`);
     return;
   }
-  const entries = ran.stdout.split('\n').flatMap((line) => {
-    let entry: Record<string, unknown>;
+  let unread = 0;
+  const entries = ran.stdout.split('\n').filter((line) => line.trim() !== '').flatMap((line) => {
     try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return [];
-    }
-    const id = INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
-    return typeof id === 'string' && typeof entry.MESSAGE === 'string' ? [{ id, message: entry.MESSAGE }] : [];
+      const entry = JSON.parse(line) as Record<string, unknown> | null;
+      const id = entry && INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
+      if (typeof id === 'string' && typeof entry!.MESSAGE === 'string') return [{ id, message: entry!.MESSAGE }];
+    } catch {}
+    unread++;
+    return [];
   });
+  if (unread > 0) lines.push(`${unread} journal entr${unread === 1 ? 'y' : 'ies'} couldn't be interpreted; ` +
+    'the earlier-start selection uses only the remaining entries.');
   const latest = entries.findIndex((entry) => entry.id === invocation);
   const read = `Its last ${ENDED_ENTRIES} journal entries, up to a second past its latest start,`;
   if (latest === -1) {
