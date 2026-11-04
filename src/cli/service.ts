@@ -492,7 +492,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           const loaded = stateBefore.kind === 'running' || stateBefore.kind === 'loaded';
           if (loaded) await bootout(ctx, sys, env, unit,
             'Repeat this service install command with the same recipe to load its rewritten agents.');
-          ownedOrFree(unit, manager, work, sys, env, true);
+          ownedOrFree(unit, manager, work, sys, env, loaded ? `${unit.name} was already unloaded. ` : '');
           const rotate = loaded || stateBefore.kind === 'unloaded';
           if (stateBefore.kind === 'unknown') ctx.out(`The state of ${unit.name} couldn't be read: ${stateBefore.why}. ` +
             'This run kept its log in place; it can hold earlier loads.');
@@ -1017,10 +1017,10 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
-  env: Record<string, string>, written = false): void {
+  env: Record<string, string>, afterWrite?: string): void {
   const owner = ownerOf(unit, manager, work, sys, env);
-  const effect = written ? 'The service files already written remain in place. No further unit was changed.'
-    : 'Nothing was written.';
+  const effect = afterWrite === undefined ? 'Nothing was written.'
+    : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
@@ -1181,7 +1181,8 @@ async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<strin
     await bootout(ctx, sys, env, unit, `Repeat this service install command with the same recipe to finish removing the shell daemon.`);
   }
   if (text !== null) {
-    ownedOrFree(unit, manager, work, sys, env, true);
+    ownedOrFree(unit, manager, work, sys, env, manager === 'systemd-user'
+      ? `${unit.name} was already stopped and disabled. ` : live ? `${unit.name} was already unloaded. ` : '');
     rmSync(unit.file, { force: true });
   }
   ctx.out(text === null

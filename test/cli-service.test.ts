@@ -4080,6 +4080,60 @@ test('a retiring launch agent with unreadable state keeps its record and setting
 });
 
 
+
+test('a Mac reinstall ownership refusal says the host was already unloaded', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = agentPlist(at);
+  const label = readServiceRecord(at.root)!.units.host.name;
+  const run = f.system.run;
+  let changed = '';
+  f.system.run = (command, args, env) => {
+    const ran = run(command, args, env);
+    if (command === 'launchctl' && args[0] === 'bootout' && args[1]?.endsWith('/' + label)) {
+      changed = readFileSync(file, 'utf-8').replace('<string>' + at.work + '</string>', '<string>/srv/other</string>');
+      writeFileSync(file, changed);
+    }
+    return ran;
+  };
+  f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+  expect(f.systemd.agents.has(label)).toBe(false);
+  expect(readFileSync(file, 'utf-8')).toBe(changed);
+  expect(f.err.join('\n')).toContain(label + ' was already unloaded');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' retirement ownership refusal names the shell operation already completed', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const shell = readServiceRecord(at.root)!.units.shell!;
+  writeFileSync(at.recipe, '{}');
+  const run = f.system.run;
+  let changed = '';
+  f.system.run = (command, args, env) => {
+    const ran = run(command, args, env);
+    if ((command === 'launchctl' && args[0] === 'bootout' && args[1]?.endsWith('/' + shell.name)) ||
+      (command === 'systemctl' && args.includes('disable') && args.includes(shell.name))) {
+      const old = readFileSync(shell.file, 'utf-8');
+      changed = platform === 'darwin'
+        ? old.replace('<string>' + at.work + '</string>', '<string>/srv/other</string>')
+        : old.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/other');
+      writeFileSync(shell.file, changed);
+    }
+    return ran;
+  };
+  f.out.length = f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+  expect(readFileSync(shell.file, 'utf-8')).toBe(changed);
+  expect(platform === 'darwin' ? f.systemd.agents.has(shell.name) : f.systemd.running.has(shell.name)).toBe(false);
+  if (platform === 'linux') expect(f.systemd.enabled.has(shell.name)).toBe(false);
+  expect(readServiceRecord(at.root)!.units.shell!.name).toBe(shell.name);
+  expect([...f.out, ...f.err].join('\n')).toContain(shell.name +
+    (platform === 'darwin' ? ' was already unloaded' : ' was already stopped and disabled'));
+});
+
 test('a foreign shell file written during readiness leaves the still-loaded local shell tracked', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at);
