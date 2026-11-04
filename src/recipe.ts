@@ -1732,10 +1732,7 @@ export async function loadRecipe(source: string): Promise<Recipe> {
   return (await loadRecipeDetailed(source)).recipe;
 }
 
-export async function loadRecipeDetailed(
-  source: string,
-  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {},
-): Promise<LoadedRecipe> {
+export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
   return loadRecipeDocument(await readRecipeDocument(source), source, options);
 }
 

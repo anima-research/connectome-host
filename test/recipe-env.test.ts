@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadRecipe, loadRecipeDetailed, substituteEnvVars } from '../src/recipe.js';
+import { loadRecipe, loadRecipeDocument, readRecipeDocument, substituteEnvVars } from '../src/recipe.js';
 
 describe('substituteEnvVars', () => {
   const originalEnv = process.env;
@@ -125,12 +125,13 @@ describe('loadRecipe — end-to-end with env substitution', () => {
     };
     writeFileSync(recipePath, JSON.stringify(recipe), 'utf-8');
 
-    const { recipe: loaded } = await loadRecipeDetailed(recipePath, {
+    const document = await readRecipeDocument(recipePath);
+    const { recipe: loaded } = await loadRecipeDocument(document, recipePath, {
       fetchSystemPrompt: false,
       env: { SERVICE_TOKEN: 'from-the-service', SERVICE_ONLY: 'only-there' },
     });
     expect((loaded.mcpServers!.foo as { env: Record<string, string> }).env).toEqual({ TOKEN: 'from-the-service', ONLY: 'only-there' });
-    await expect(loadRecipeDetailed(recipePath, { fetchSystemPrompt: false, env: {} })).rejects.toThrow(/SERVICE_TOKEN/);
+    await expect(loadRecipeDocument(document, recipePath, { fetchSystemPrompt: false, env: {} })).rejects.toThrow(/SERVICE_TOKEN/);
   });
 
   describe('${VAR:-default} syntax', () => {

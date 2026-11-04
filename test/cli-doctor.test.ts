@@ -207,11 +207,13 @@ async function withHost<T>(at: Install, answers: Record<string, unknown>, body: 
 }
 
 async function digestOf(at: Install): Promise<string> {
-  const { loadRecipeDetailed, recipeDigest } = await import('../src/recipe.js') as unknown as {
-    loadRecipeDetailed: (path: string, options: { env: Record<string, string> }) => Promise<{ recipe: unknown }>;
+  const { loadRecipeDocument, readRecipeDocument, recipeDigest } = await import('../src/recipe.js') as unknown as {
+    loadRecipeDocument: (document: unknown, path: string, options: { env: Record<string, string> }) => Promise<{ recipe: unknown }>;
+    readRecipeDocument: (path: string) => Promise<unknown>;
     recipeDigest: (recipe: unknown) => string;
   };
-  return recipeDigest((await loadRecipeDetailed(join(at.work, 'recipe.json'), { env: SECRETS })).recipe);
+  const path = join(at.work, 'recipe.json');
+  return recipeDigest((await loadRecipeDocument(await readRecipeDocument(path), path, { env: SECRETS })).recipe);
 }
 
 const reports = (...lines: string[]): Partial<DoctorParts> => ({ checkService: async () => ({ passed: true, lines }) });
