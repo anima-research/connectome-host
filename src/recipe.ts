@@ -46,32 +46,35 @@ export interface RecipeStrategy {
    */
   recoverLiteralThinkingWrappedCompression?: boolean;
   maxMessageTokens?: number;
-  /** Maximum live top-level image count, newest-first (default 6). Zero means up to
+  /** Maximum live image count, newest-first (default 6). Zero means up to
    *  `imageCeiling`, which also bounds a larger value. */
   maxLiveImages?: number;
-  /** Token depth from the tail beyond which top-level images become placeholders (default 30000).
+  /** Token depth from the tail beyond which images become placeholders (default 30000).
    * Zero disables depth-based stripping; surrounding text stays verbatim. */
   imageStripDepthTokens?: number;
-  /** Cumulative base64 byte budget for live top-level images (default 20 MiB). Zero
+  /** Cumulative base64 byte budget for live images (default 20 MiB). Zero
    * means up to `imageByteCeiling`, which also bounds a larger value. Count
    * and depth limits still apply. */
   maxLiveImageBytes?: number;
-  /** The most top-level images the live window keeps, whatever
-   * `maxLiveImages` says, and the most images a compression prompt carries
-   * (context-manager's default 500; the provider refuses a request with more
-   * than 600 images and documents together). Zero means no ceiling. In the
-   * window it doesn't count images nested in tool results, generated images,
-   * or what the agent framework adds to a request within a turn; a
-   * compression prompt counts every image. */
+  /** The most images the live window keeps, whatever `maxLiveImages` says,
+   * and the most images a compression prompt carries (context-manager's
+   * default 500; the provider refuses a request with more than 600 images and
+   * documents together). Zero means no ceiling. In the window it counts every
+   * image, whether top-level, nested in a tool result or generated, except
+   * one inside an opaque provider item. Within a turn, messages a tool
+   * boundary injects are held to it over their own batch where the strategy
+   * can place them, and the request they join, with the turn's tool results'
+   * images, isn't held to it until the next compile. A compression prompt
+   * counts every image. */
   imageCeiling?: number;
-  /** The most inline base64 bytes of the live window's top-level images,
-   * whatever `maxLiveImageBytes` says, and the most a compression prompt
-   * carries (context-manager's default 24 MiB, under membrane's 28 MiB
-   * request byte cap). Zero means no ceiling. An install that raises
+  /** The most inline base64 bytes of the live window's images, whatever
+   * `maxLiveImageBytes` says, and the most a compression prompt carries
+   * (context-manager's default 24 MiB, under membrane's 28 MiB request byte
+   * cap). Zero means no ceiling. An install that raises
    * `MEMBRANE_MAX_REQUEST_BYTES` raises this with it, leaving room under the
-   * cap for what it doesn't count: the messages' text, the window's images
-   * nested in tool results and its generated images, and what the agent
-   * framework adds within a turn. */
+   * cap for what it doesn't count: the messages' text and JSON, documents,
+   * images inside opaque provider items, and, until the next compile, what a
+   * turn adds, its tool results' images included. */
   imageByteCeiling?: number;
   overBudgetGraceRatio?: number;
   enforceBudget?: boolean;

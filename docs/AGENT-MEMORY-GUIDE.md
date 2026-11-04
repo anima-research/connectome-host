@@ -250,7 +250,7 @@ impressionistic with age and depth.
   off, treat aged detail as "remembered," not "look-up-able," unless you wrote
   it down. (`modules.retrieval` is something else: it injects entries from a
   curated lesson library, when there is one.)
-- **Images age out faster than text.** Only the most recent top-level images
+- **Images age out faster than text.** Only the most recent images
   stay live (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
   tail (default 30000). Inline images also share a cumulative base64 byte
   budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond
@@ -261,9 +261,13 @@ impressionistic with age and depth.
   frontdesk strategies. Zero turns the depth limit off, and lets the count or
   the bytes grow to their ceilings (`imageCeiling`, default 500 images, and
   `imageByteCeiling`, default 24 MiB), which also bound any larger value. The
-  limits and the ceilings count the top-level images in your context, not
-  images inside a tool result or generated ones, and not images added to a
-  request during a turn until your context is next compiled. A ceiling of
+  limits and the ceilings count every image in your context, whether
+  top-level, nested in a tool result or generated, except one inside an
+  opaque provider item. Within a turn, messages a tool boundary injects are
+  rendered as your next compile will send them, the limits applied over
+  their batch where the strategy can place them. The rest of what the turn
+  adds, its tool results' images included, isn't held to the limits until
+  your context is next compiled. A ceiling of
   zero is none, and higher ceilings can pass the provider's or membrane's
   request caps. Images at the default byte ceiling leave 4 MiB of
   membrane's default 28 MiB cap on a request's messages for everything else,
@@ -293,8 +297,8 @@ KV-continuity work described above.
 | `maxLiveImages` | 6 | 6 | most images kept live at once |
 | `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
 | `maxLiveImageBytes` | 20 MiB | 20 MiB | cumulative base64 size of inline images kept live, newest-first |
-| `imageCeiling` | 500 | 500 | most top-level images kept live, whatever `maxLiveImages` says |
-| `imageByteCeiling` | 24 MiB | 24 MiB | most base64 bytes of top-level images kept live, whatever `maxLiveImageBytes` says |
+| `imageCeiling` | 500 | 500 | most images kept live, whatever `maxLiveImages` says |
+| `imageByteCeiling` | 24 MiB | 24 MiB | most base64 bytes of images kept live, whatever `maxLiveImageBytes` says |
 
 The headline numbers are the tail and the budget. A small tail means rewriting
 reaches recent material sooner; a large tail (hundreds of thousands of tokens)
