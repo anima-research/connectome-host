@@ -37,6 +37,7 @@ interface NotificationWaiter {
 }
 
 export interface CodexAuthProvider {
+  /** Custom providers own login policy inside this callback. */
   getAccessToken(forceRefresh?: boolean): Promise<string>;
   getAccountId?(): string | undefined;
   readRateLimits?(): Promise<unknown>;
@@ -63,7 +64,9 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private readonly codexBinary: string;
   private readonly codexHome: string;
   private readonly loginTimeoutMs: number;
-  private readonly requireExistingLogin: boolean;
+  private requireExistingLogin: boolean;
+  private refreshAvailable = false;
+  private activeAuthChanges = 0;
   private readonly onLoginRequired: (details: { verificationUrl: string; userCode: string }) => void;
   private child: ChildProcessWithoutNullStreams | null = null;
   private lines: ReadLineInterface | null = null;
@@ -105,14 +108,58 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     return this.accountId;
   }
 
+  /** Tighten a supplied app-server's policy before the adapter acquires tokens. */
+  enforceExistingLogin(): void {
+    if (!this.requireExistingLogin && (this.authPromise || this.activeAuthChanges > 0)) {
+      throw new Error('Codex authentication is in progress. Wait for the existing operation to finish, then retry configuring existing-login-only auth.');
+    }
+    this.requireExistingLogin = true;
+  }
+
+  get existingLoginRequired(): boolean {
+    return this.requireExistingLogin;
+  }
+
+  canRefresh(): boolean {
+    return this.refreshAvailable;
+  }
+
+  existingLoginMessage(): string {
+    return 'OpenAI Codex requires an existing ChatGPT login. Host login actions are disabled. ' +
+      `Sign in with ChatGPT using CODEX_HOME=${shellQuote(this.codexHome)} ` +
+      `${shellQuote(this.codexBinary)} -c 'cli_auth_credentials_store="file"' login, then retry. ` +
+      `The host reads ${join(this.codexHome, 'auth.json')}; a keyring-only login is insufficient.`;
+  }
+
   async readRateLimits(): Promise<JsonObject> {
     await this.ensureStarted();
     return this.request('account/rateLimits/read', {});
   }
 
   async logout(): Promise<void> {
-    await this.ensureStarted();
-    await this.request('account/logout', {});
+    this.activeAuthChanges++;
+    try {
+      await this.ensureStarted();
+      await this.request('account/logout', {});
+    } finally {
+      this.activeAuthChanges--;
+    }
+  }
+
+  /** Keep the owned re-login policy stable through logout and subsequent authentication. */
+  async login(): Promise<void> {
+    if (this.requireExistingLogin) throw new Error(this.existingLoginMessage());
+    this.activeAuthChanges++;
+    try {
+      try {
+        await this.logout();
+      } catch (err) {
+        console.error('[openai-codex] logout before re-login failed; continuing:', err instanceof Error ? err.message : err);
+      }
+      await this.getAccessToken(true);
+    } finally {
+      this.activeAuthChanges--;
+    }
   }
 
   async cancelLogin(): Promise<boolean> {
@@ -151,12 +198,13 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     let account = await this.readAccount(forceRefresh);
 
     if (account?.type !== 'chatgpt') {
+      this.refreshAvailable = false;
+      this.accountId = undefined;
       if (this.requireExistingLogin) {
         throw new MembraneError({
           type: 'auth',
           retryable: false,
-          message: 'OpenAI Codex requires an existing ChatGPT login. ' +
-            'Sign in with ChatGPT using your configured Codex CLI, then retry.',
+          message: this.existingLoginMessage(),
           rawError: undefined,
         });
       }
@@ -198,6 +246,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   }
 
   private async readAccessToken(): Promise<string> {
+    this.refreshAvailable = false;
     const path = join(this.codexHome, 'auth.json');
     let text: string;
     try {
@@ -217,7 +266,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
       // on, as a cause either: a cause is printed with its error.
       throw new Error(`Codex login succeeded but ${path} isn't valid JSON.`);
     }
-    const root = parsed as { tokens?: { access_token?: unknown; account_id?: unknown } };
+    const root = parsed as { tokens?: { access_token?: unknown; account_id?: unknown; refresh_token?: unknown } };
     const token = root?.tokens?.access_token;
     if (typeof token !== 'string' || token.length === 0) {
       throw new Error(`Codex credential file ${path} does not contain tokens.access_token`);
@@ -225,6 +274,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     this.accountId = typeof root.tokens?.account_id === 'string'
       ? root.tokens.account_id
       : undefined;
+    this.refreshAvailable = typeof root.tokens?.refresh_token === 'string' && root.tokens.refresh_token.length > 0;
     return token;
   }
 
@@ -401,6 +451,8 @@ export function codexGateAuth(env: NodeJS.ProcessEnv = process.env): CodexAuthPr
 }
 
 export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig {
+  /** Supplied CodexAppServerAuth inherits the restriction. Other providers own
+   *  their getAccessToken policy; the adapter only disables host login actions. */
   authProvider?: CodexAuthProvider;
   baseURL?: string;
   fastMode?: boolean;
@@ -409,10 +461,11 @@ export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig
 export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
   override readonly name = 'openai-codex';
   private readonly auth: CodexAuthProvider;
-  private readonly requireExistingLogin: boolean;
+  private readonly requestedExistingLogin: boolean;
 
   constructor(config: CodexSubscriptionAdapterConfig = {}) {
     const auth = config.authProvider ?? new CodexAppServerAuth(config);
+    if (config.requireExistingLogin && auth instanceof CodexAppServerAuth) auth.enforceExistingLogin();
     const credentials: CredentialResolver = async ({ forceRefresh }) => {
       const token = await auth.getAccessToken(forceRefresh);
       const accountId = auth.getAccountId?.();
@@ -429,7 +482,7 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
       ),
     });
     this.auth = auth;
-    this.requireExistingLogin = config.requireExistingLogin ?? false;
+    this.requestedExistingLogin = config.requireExistingLogin ?? false;
   }
 
   async readRateLimits(): Promise<unknown> {
@@ -442,8 +495,9 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
 
   async login(): Promise<void> {
     if (this.requireExistingLogin) {
-      throw new Error('OpenAI Codex requires an existing ChatGPT login; login actions are disabled.');
+      throw new Error(this.loginDisabledReason());
     }
+    if (this.auth instanceof CodexAppServerAuth) return this.auth.login();
     if (this.auth.logout) {
       try {
         await this.auth.logout();
@@ -461,11 +515,13 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
         canRefresh: () => false,
       };
     }
+    const adapter = this;
     return {
       provider: this.name,
-      canRefresh: () => true,
+      canRefresh: () => this.auth instanceof CodexAppServerAuth ? this.auth.canRefresh() : true,
       refresh: () => this.refreshCredentials(),
-      ...(!this.requireExistingLogin ? { login: () => this.login() } : {}),
+      get login() { return adapter.requireExistingLogin ? undefined : () => adapter.login(); },
+      get loginDisabledReason() { return adapter.requireExistingLogin ? adapter.loginDisabledReason() : undefined; },
       ...(this.auth.cancelLogin ? { cancelLogin: () => this.auth.cancelLogin!() } : {}),
     };
   }
@@ -473,6 +529,34 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
   dispose(): void {
     this.auth.dispose?.();
   }
+
+  private get requireExistingLogin(): boolean {
+    return this.requestedExistingLogin || (this.auth instanceof CodexAppServerAuth && this.auth.existingLoginRequired);
+  }
+
+  private loginDisabledReason(): string {
+    return this.auth instanceof CodexAppServerAuth
+      ? this.auth.existingLoginMessage()
+      : 'OpenAI Codex requires an existing ChatGPT login; host login actions are disabled. ' +
+        'Provision an existing credential through the configured auth provider, then retry.';
+  }
+}
+
+/** Preserve the opt-in values; warn about other non-empty values without echoing them. */
+export function parseCodexRequireExistingLogin(
+  value: string | undefined,
+  warn: (message: string) => void = message => console.warn(message),
+): boolean {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true') return true;
+  if (normalized !== '' && normalized !== '0' && normalized !== 'false') {
+    warn('CODEX_REQUIRE_EXISTING_LOGIN is unrecognized; restriction is off. Use 1/true to enable or 0/false to disable.');
+  }
+  return false;
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
 function asString(value: unknown): string {

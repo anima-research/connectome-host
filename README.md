@@ -497,8 +497,10 @@ Memory sizing and compression-model settings are covered in
 
 ### ChatGPT subscription provider
 
-Install the Codex CLI, sign in with `codex login`, then select the subscription
-transport in a recipe:
+Install the Codex CLI and sign in with ChatGPT using
+`codex -c 'cli_auth_credentials_store="file"' login`, then select the
+subscription transport in a recipe. Use the host's `CODEX_BINARY` executable
+and `CODEX_HOME` directory if configured:
 
 ```json
 {
@@ -511,8 +513,33 @@ transport in a recipe:
 }
 ```
 
-Connectome asks the Codex app-server to refresh the ChatGPT login and starts a
-device-code flow if needed. No `OPENAI_API_KEY` is used for this provider. Use
+Connectome asks the Codex app-server to refresh the ChatGPT login. By default,
+it starts a device-code flow if needed on the first model call. With
+`CODEX_REQUIRE_EXISTING_LOGIN=1` (or `true`), local app-server auth refuses a
+missing or API-key account before starting device-code login. This check runs
+on the first model call, not at boot; the credential monitor can show
+`credential ok` until that call. Host login actions are disabled, so they cannot
+log out the existing session. Existing-session refresh still runs, including
+after a 401. The monitor offers Refresh token only after the app-server has
+read a refresh token from the credential file; a missing account removes that
+action. After an external CLI login, retry a model call to acquire the session.
+
+The host forces `cli_auth_credentials_store="file"` and reads
+`CODEX_HOME/auth.json` (default `~/.codex/auth.json`). A keyring-only login is
+insufficient. Use the same executable and directory when signing in, for example
+`CODEX_HOME=/absolute/path/to/.codex /path/to/codex -c 'cli_auth_credentials_store="file"' login`.
+The refusal message names the configured executable and directory.
+
+For library callers, adapter `requireExistingLogin: true` also restricts a
+supplied `CodexAppServerAuth`. Configure the restriction before starting auth or
+logout; if an operation is in progress, wait for it to finish and retry configuration.
+Earlier adapters sharing that app-server also honor its tightened policy.
+An arbitrary custom `authProvider.getAccessToken`
+callback owns its internal login and refresh policy; the adapter disables host
+login actions but cannot control flows inside that callback. Gate-token auth
+keeps its existing behavior and starts no local CLI.
+
+No `OPENAI_API_KEY` is used for this provider. Use
 `/fast on` or `/fast off` at runtime. Connectome requests Codex's Fast tier and
 warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied. Quota windows are shown
@@ -776,7 +803,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
-| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true`: require an existing ChatGPT login for local Codex auth; refuse missing or API-key accounts before device-code login. Disables host login actions, including for a custom auth provider; existing-session token refresh remains available. Gate-token auth is unchanged |
+| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true` (case-insensitive, whitespace trimmed): require an existing file-backed ChatGPT login on the first local model call; disable host login actions. Existing-session refresh and gate-token auth are unchanged. Unset, empty, `0`/`false`: off; other values warn and leave it off. Custom callbacks own their internal auth policy |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
