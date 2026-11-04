@@ -18,3 +18,6 @@
   deferred cancel dropped because the hold it was accepted for had ended:
   the epoch it was for, the one in force, the reason, and whether a note
   was lost; no text).
+  An ops observer also receives `tune-out:note-loss-untold` (a lost queued
+  note's loss notice could not be written to its author: the author, the
+  hold and the error; no text).

@@ -565,6 +565,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   // A reader fork whose framing, derive or run threw before it reported; its messages go back to the channel's next reader (agent-framework #793).
   'tune-out:reader-fork-failed': OPS,
   'tune-out:deferred-cancel-dropped': OPS,
+  'tune-out:note-loss-untold': OPS,
   'tune-out:reader-prose-delivered': ['messages', 'ops'],
   // Where the persistent subconscious's window starts, as an index ordinal.
   'tune-out:subconscious-window': OPS,
