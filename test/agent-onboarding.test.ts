@@ -3,10 +3,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { COMMANDS } from '../src/cli/connectome.ts';
 import { parseHandWrittenJson } from '../src/hand-written-json.ts';
+import { WHOLE_OUTPUT_BYTES } from '../src/modules/setup-module.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const GUIDE = readFileSync(join(ROOT, 'docs', 'AGENT-ONBOARDING.md'), 'utf-8');
-const WHOLE = 8 * 1024;
 
 function pieces(text: string): Array<{ heading: string | null; text: string }> {
   const out: Array<{ heading: string | null; text: string }> = [{ heading: null, text: '' }];
@@ -27,7 +27,7 @@ describe('the setup agent reads the guide through setup--run', () => {
     expect(HEADINGS.length).toBeGreaterThan(1);
     for (const piece of PIECES) {
       const bytes = Buffer.byteLength(piece.text);
-      expect({ section: piece.heading ?? '(opening)', bytes, whole: bytes > 0 && bytes <= WHOLE })
+      expect({ section: piece.heading ?? '(opening)', bytes, whole: bytes > 0 && bytes <= WHOLE_OUTPUT_BYTES })
         .toEqual({ section: piece.heading ?? '(opening)', bytes, whole: true });
     }
   });
