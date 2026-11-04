@@ -26,7 +26,9 @@
  * - the launcher: every other journal line, the lock, the copy and its label,
  *   and what a restore sets aside; and, run from a shell with `--go-back`, a
  *   Go back's mark (writeMark);
- * - setup: the install record;
+ * - setup: the install record; and, binding an install moved or copied
+ *   (rebind.ts), its plan and the paths of the copy's labels and the Go
+ *   backs' lists, only while it holds the lock;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
@@ -184,6 +186,11 @@ export interface InstallRecord {
   dataDir: string;
   /** State kept outside the data directory, which each update copies with it. */
   extraState: string[];
+  /** The real path of the directory that holds the install's root, which setup bound the record's places to
+   *  (rebind.ts). The entry point and the install's command refuse a record bound to another directory, so a
+   *  moved or copied install runs only once setup has bound it where it is. A record without it was written by a
+   *  release before the field, and setup's next run binds it. */
+  workingDir?: string;
 }
 
 /** How the block setup prints each run with the state kept outside the data directory opens, which the remedy
@@ -216,7 +223,7 @@ export function copyShows(those: string): string {
 /** How to put an install record right, which setup's refusals of a lost record, or of one that isn't JSON, has no
  *  version or names no data directory, end with. It holds only words true wherever it's printed. */
 export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n' +
-  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>]}\n' +
+  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>], "workingDir": "<working directory>"}\n' +
   'where <data directory> is the absolute path of the data directory its host was started with: the DATA_DIR its ' +
   'service gives it, or else the one Bun reads from the .env files in the service\'s working directory, or else ' +
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
@@ -230,6 +237,9 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   `${copyShows('which stay out of the list')} An update copies only the places the ` +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
+  'And <working directory> is the real path of the directory that holds the record\'s directory, as `realpath .` ' +
+  'prints it in that directory: the record is bound to it, and start.js and connectome refuse a record bound to ' +
+  'another.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
   'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
   'as a current that names no release. Its service can keep running ' +
@@ -359,6 +369,8 @@ export interface CopyLabel {
    *  switch to the same release left can't stand in for this one's; a label
    *  without it is no switch's copy a fallback can use. */
   mark?: string;
+  /** The id of the setup binding (RebindPlan) that last rewrote this label's paths. */
+  rebound?: string;
 }
 
 /** What a place an update copies or restores holds: a directory, a file, or
@@ -375,6 +387,8 @@ export type PlaceKind = typeof PLACE_KINDS[number];
 export interface GoBackList {
   v: 1;
   places: Array<{ path: string; name: string; before: PlaceKind; target: PlaceKind }>;
+  /** The id of the setup binding (RebindPlan) that last rewrote this list's paths. */
+  rebound?: string;
 }
 
 /** Where the Go back under `markId` lists its places (GoBackList). */

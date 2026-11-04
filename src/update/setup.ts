@@ -5,6 +5,7 @@
  * with DATA_DIR as the service gives the host (./data when it's unset):
  *
  *   DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
+ *     [--place PATH PLACE]...
  *
  * It copies the install's code into the install root as its first release,
  * points `current` at the release, records the data directory the install
@@ -20,7 +21,10 @@
  * Run again, it finishes whatever a run cut off left undone, and changes
  * nothing an earlier run finished: the release `current` names stays. With
  * --extra-state, it records the paths given in place of those recorded;
- * without, those recorded stay.
+ * without, those recorded stay. Run in an install whose record is bound to
+ * another directory, or to none, it binds the install where it is
+ * (rebind.ts), with --place giving each place it can't map by itself its
+ * place here.
  */
 import {
   existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync,
@@ -36,7 +40,11 @@ import {
 } from './contract.js';
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
 import { PACKAGE } from './install.js';
-import { HOST_ENTRY, LAUNCHER, isUnder } from './launcher.js';
+import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launcher.js';
+import {
+  bindingCheckLines, bindingOf, boundFiles, changesFiles, lockForBinding, mapPath, newPlan, removePlan, rewriteFiles,
+  workingDirOf, writePlan, type Place, type RebindPlan,
+} from './rebind.js';
 import { INSTALL_COMMAND, typedCommand, writeInstallCommand } from '../cli/install-command.js';
 
 export { ENTRY_POINT };
@@ -49,11 +57,12 @@ export function entryPointText(): string {
     '// service starts the host here with the arguments it would give the host:',
     '// the launcher of the release this install\'s data last committed on decides what',
     '// runs, and then becomes the host of the release it decided on.',
-    "import { realpathSync } from 'node:fs';",
+    "import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
     "import { dirname, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',
+    ...bindingCheckLines('connectome-host', false),
     `const launcher = join(root, 'current', ${LAUNCHER.split(sep).map((part) => `'${part}'`).join(', ')});`,
     'let launch;',
     'try {',
@@ -245,6 +254,18 @@ export interface SetupOptions {
   hostRoot: string;
   say(line: string): void;
   units(cwd: string): ServiceUnits;
+  /** Where each place a binding asks about is in this install (--place): the path the record or a label or list
+   *  names, and its place here. */
+  places?: Array<{ from: string; to: string }>;
+}
+
+function placeLine(place: Place): string {
+  const what = [
+    ...place.data ? ['its data directory'] : [],
+    ...place.extra ? ['state kept outside its data directory'] : [],
+    ...place.files.length > 0 ? [`named by ${place.files.join(' and ')}`] : [],
+  ];
+  return `  ${place.path} (${what.join('; ')})`;
 }
 
 function setupsOwn(root: string): boolean {
@@ -345,6 +366,77 @@ export function setup(options: SetupOptions): void {
   if (existing !== null && (typeof existing.dataDir !== 'string' || existing.dataDir === '')) {
     throw new ContractError(`The install record at ${paths.install} names no data directory this release can read. ${recordAgain(dataDir)}`);
   }
+  if (existing !== null && given === null &&
+    !(Array.isArray(existing.extraState) && existing.extraState.every((path) => typeof path === 'string'))) {
+    throw new ContractError(`The install record at ${paths.install} has no list of extra state this release can read. ` +
+      'Run setup again with --extra-state PATH for each place of state kept outside the data directory, such as an MCPL ' +
+      'server\'s, or, with none, set extraState to [] in the record.');
+  }
+  const ops = machineOps();
+  const entry = join(root, ENTRY_POINT);
+  const writeEntries = () => {
+    writeTextAtomic(entry, entryPointText());
+    return writeInstallCommand(root);
+  };
+  const placed = (options.places ?? []).map(({ from, to }) => ({ from, to: realOrResolved(to) }));
+  const bindingFound = existing === null ? null : bindingOf(root, given === null ? existing : { ...existing, extraState: [] });
+  if (placed.length > 0 && bindingFound?.kind !== 'bind') {
+    throw new ContractError(bindingFound?.kind === 'resume'
+      ? `A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup ` +
+        'finishes it with the places that run was given, so it takes no --place: run it again without.'
+      : `--place gives a place to a binding of a moved or copied install, and ${bindingFound === null
+        ? 'this install has no record yet' : `this install's record is bound to ${bindingFound.to}, where it is`}, so ` +
+        'there\'s nothing to bind. Run it again without.');
+  }
+  let finished: string | null = null;
+  if (bindingFound?.kind === 'resume') {
+    const { plan } = bindingFound;
+    const here = workingDirOf(root);
+    if (plan.to !== here) {
+      throw new ContractError(`A setup run binding this install to ${plan.to} was cut off before it finished, and the ` +
+        `install is in ${here} now, so the places its plan (${join(root, 'rebind.json')}) gives are another ` +
+        `directory's. Setup has changed nothing. Move the install back to ${plan.to}, run setup there, which finishes ` +
+        'that binding, and then move it.');
+    }
+    lockForBinding(root, plan.from, ops);
+    try {
+      writeEntries();
+      rewriteFiles(root, plan);
+      writeJsonAtomic(paths.install, plan.record);
+      removePlan(root);
+    } finally {
+      releaseLock(root);
+    }
+    existing = plan.record;
+    finished = `Finished binding the install at ${root} to ${here}, which a setup run cut off had begun, with the ` +
+      'places that run was given.';
+  }
+  const binding = bindingFound?.kind === 'bind' ? bindingFound : null;
+  let bindPlaces: RebindPlan['places'] = [];
+  if (binding !== null) {
+    const known = (path: string) => binding.places.some((place) => place.path === path);
+    const unknown = placed.find((place) => !known(place.from));
+    if (unknown !== undefined) {
+      throw new ContractError(`--place ${unknown.from} names no place this install's record, its copy's label or its Go ` +
+        `backs' lists name. Those it names:\n${binding.places.map(placeLine).join('\n')}`);
+    }
+    const unanswered = binding.ask.filter((place) => !placed.some((given) => given.from === place.path));
+    if (unanswered.length > 0) {
+      const opening = binding.from === null
+        ? 'This install\'s record is from a release that didn\'t record which directory an install is in, so setup ' +
+          'can\'t tell whether it was moved or copied here, or whose each place it names is'
+        : `This install's record is bound to ${binding.from}, and the install is in ${binding.to}, so it was moved or ` +
+          `copied here. Setup binds each place under ${binding.from} to the same place under ${binding.to}, and it ` +
+          'can\'t tell whether a place outside came with the install, as after a move, or is still another ' +
+          'install\'s, as after a copy';
+      throw new ContractError(`${opening}. So it needs to be told where each of these is in this install:\n` +
+        `${unanswered.map(placeLine).join('\n')}\nGive each with --place PATH PLACE, PLACE being PATH again where it's ` +
+        'this install\'s, or the path of this install\'s own. Setup has changed nothing.');
+    }
+    bindPlaces = placed;
+  }
+  const bindShape = binding === null ? null : { from: binding.from, to: binding.to, places: bindPlaces };
+  const placeHere = (path: string): string => bindShape === null ? path : mapPath(path, bindShape) ?? path;
   const writtenAfterRecord: [string, string][] = [
     [paths.journal, `${basename(paths.journal)}, its update journal,`],
     ...[ENTRY_POINT, INSTALL_COMMAND, `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`].map((name): [string, string] =>
@@ -464,17 +556,16 @@ export function setup(options: SetupOptions): void {
             `${shellWord(join('releases', '<that release>'))} ${shellWord(paths.current)}\``) + ', and run setup again.');
     }
   };
-  if (existing !== null && realOrResolved(existing.dataDir) !== dataDir) {
-    throw new ContractError(`The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an ` +
-      'install of its own: give this one another --root.');
+  const mappedData = existing === null ? null : placeHere(existing.dataDir);
+  if (existing !== null && mappedData !== null && realOrResolved(mappedData) !== dataDir) {
+    throw new ContractError(binding === null
+      ? `The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an install of its own: ` +
+        'give this one another --root.'
+      : `Bound to ${binding.to}, the install at ${root} serves ${mappedData}, the place of the data directory its ` +
+        `record names, ${existing.dataDir}, and setup was given DATA_DIR ${dataDir}. Setup has changed nothing. Run it ` +
+        `with DATA_DIR ${mappedData}, or with --place giving ${existing.dataDir} the place this install's data is in.`);
   }
   const recorded = existing?.extraState;
-  if (existing !== null && given === null &&
-    !(Array.isArray(recorded) && recorded.every((path) => typeof path === 'string'))) {
-    throw new ContractError(`The install record at ${paths.install} has no list of extra state this release can read. ` +
-      'Run setup again with --extra-state PATH for each place of state kept outside the data directory, such as an MCPL ' +
-      'server\'s, or, with none, set extraState to [] in the record.');
-  }
   if (existing !== null && current() === null) {
     const lines = readJournal(root);
     const currentWhenWritten = (line: JournalLine) =>
@@ -522,7 +613,7 @@ export function setup(options: SetupOptions): void {
     throw new ContractError(`${root} isn't empty, and holds no install record, so setup doesn't take it for an install it made. ` +
       'Choose another --root.');
   }
-  const extraState = given ?? recorded ?? [];
+  const extraState = given ?? recorded?.map(placeHere) ?? [];
 
   // A module's own path is its real one, so a host reached through a link
   // reads as wherever the link leads: the directory's own node_modules says
@@ -625,17 +716,39 @@ export function setup(options: SetupOptions): void {
         `${shellWord(join('releases', running))} ${shellWord(paths.current)}\`, and run setup again.`);
     }
   }
-  writeJsonAtomic(paths.install, { v: 1, dataDir: existing?.dataDir ?? dataDir, extraState } satisfies InstallRecord);
-  const entry = join(root, ENTRY_POINT);
-  writeTextAtomic(entry, entryPointText());
-  const command = writeInstallCommand(root);
+  const written: InstallRecord = {
+    v: 1, dataDir: binding === null ? existing?.dataDir ?? dataDir : dataDir, extraState,
+    workingDir: binding === null && existing?.workingDir !== undefined ? existing.workingDir : workingDirOf(root),
+  };
+  let command: { path: string; pathLine: string | null };
+  if (binding !== null) {
+    const plan = newPlan(binding.from, binding.to, bindPlaces, written);
+    const rewrite = changesFiles(plan, boundFiles(root));
+    const locked = binding.from !== null || rewrite;
+    if (locked) lockForBinding(root, binding.from, ops);
+    try {
+      if (rewrite) writePlan(root, plan);
+      command = writeEntries();
+      if (rewrite) rewriteFiles(root, plan);
+      writeJsonAtomic(paths.install, written);
+      if (rewrite) removePlan(root);
+    } finally {
+      if (locked) releaseLock(root);
+    }
+  } else {
+    writeJsonAtomic(paths.install, written);
+    command = writeEntries();
+  }
 
+  if (finished !== null) say(finished);
   if (settingUp) {
     say(`Set up ${root} as the install of ${readCurrent(root)} that serves ${dataDir}.`);
+  } else if (binding !== null) {
+    say(`Bound the install at ${root} to ${binding.to}, where it serves ${dataDir} and runs ${readCurrent(root)}.`);
   } else {
-    say(`The install at ${root} serves ${existing?.dataDir ?? dataDir} and runs ${readCurrent(root)}, as before.`);
+    say(`The install at ${root} serves ${written.dataDir} and runs ${readCurrent(root)}, as before.`);
   }
-  const served = existing?.dataDir ?? dataDir;
+  const served = written.dataDir;
   say(`${EXTRA_STATE_LINE}: an update copies the data directory, ${served}, and outside it only the places listed ` +
     'here, beside those it finds itself (mcpl-servers.json, the agent overlay and its fleet children\'s data ' +
     'directories):');
@@ -701,18 +814,28 @@ export function setup(options: SetupOptions): void {
   }
 }
 
-export function parseArgs(argv: string[]): { root?: string; extraState: string[] | null } {
-  const out: { root?: string; extraState: string[] | null } = { extraState: null };
+export interface SetupArgs {
+  root?: string;
+  extraState: string[] | null;
+  places: Array<{ from: string; to: string }>;
+}
+
+export function parseArgs(argv: string[]): SetupArgs {
+  const out: SetupArgs = { extraState: null, places: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg !== '--root' && arg !== '--extra-state') {
-      throw new ContractError(`Setup takes --root DIR and --extra-state PATH, not ${JSON.stringify(arg)}.`);
+    if (arg !== '--root' && arg !== '--extra-state' && arg !== '--place') {
+      throw new ContractError(`Setup takes --root DIR, --extra-state PATH and --place PATH PLACE, not ${JSON.stringify(arg)}.`);
     }
     const value = argv[++i];
     if (value === undefined) {
       throw new ContractError(`Setup's ${arg} takes ${arg === '--root' ? 'a directory' : 'a path'}, and none followed it.`);
     }
-    if (arg === '--root') out.root = value;
+    if (arg === '--place') {
+      const to = argv[++i];
+      if (to === undefined) throw new ContractError('Setup\'s --place takes a path and its place, and only the path followed it.');
+      out.places.push({ from: resolve(value), to: resolve(to) });
+    } else if (arg === '--root') out.root = value;
     else (out.extraState ??= []).push(resolve(value));
   }
   return out;
@@ -726,6 +849,7 @@ if (import.meta.main) {
       dataDir: resolve(process.env.DATA_DIR || './data'),
       root: args.root ?? join(process.cwd(), 'connectome-host'),
       extraState: args.extraState,
+      places: args.places,
       hostRoot: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'),
       say: (line) => console.log(line),
       units: (cwd) => systemdUnits(cwd),

@@ -298,7 +298,7 @@ below says. A clone updates by hand.
 `DATA_DIR` as the service gives the host:
 
 ```bash
-DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
+DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]... [--place PATH PLACE]...
 ```
 
 It copies the install as the first release of an install root,
@@ -310,6 +310,24 @@ Then have the service start the host with `bun <root>/start.js`, followed by
 the arguments it gives the host now, and restart it. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
+
+**Moving or copying an install.** Setup records the directory that holds the
+install root, and `start.js` and `connectome` refuse to run an install moved
+or copied away from it, since its record still names the places of the
+install it was. Run setup again in the new directory, the line above with
+the new `DATA_DIR`, or `<root>/connectome setup discord` for an install
+`connectome setup` made. It binds the install there: each place under the
+old directory becomes the same place under the new one, in the record, in
+the copy labels and in each Go back's list. Each place outside the
+old directory needs its place in this install: `connectome setup` asks, and
+by hand setup names each one and takes it as `--place PATH PLACE`, with
+`PLACE` the same path after a move, or the copy's own after a copy. An
+install set up before setup recorded its directory is checked for a move or
+a copy only after setup next runs there, and that run asks the same of
+every place it names, its data directory included. A binding that changes
+the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
+root first; if it's cut off, nothing starts until setup, run again, finishes
+it from the plan.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.
