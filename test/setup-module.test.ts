@@ -1786,6 +1786,30 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(readFileSync(join(made.dir, '.env'), 'utf-8')).toBe('ANTHROPIC_BASE_URL=https://gateway.example\n');
   });
 
+  test('a provider key isn\'t sent, or stored, where the list of stored secrets was damaged while it was typed, and the answer says which file', async () => {
+    let called = 0;
+    let dir = '';
+    const made = install({
+      asker: {
+        ask: async () => {
+          mkdirSync(join(dir, '.setup'), { recursive: true });
+          writeFileSync(join(dir, '.setup', 'stored-secrets.json'), '{"not": "a list"}');
+          return 'sk-ant-key';
+        },
+      },
+      fetch: (async () => { called += 1; return models(); }) as unknown as typeof fetch,
+    });
+    dir = made.dir;
+    const result = await askSecret(made.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
+    expect(result.success).toBe(false);
+    expect(result.isError).toBe(true);
+    expect(result.error).toStartWith('Nothing was stored as ANTHROPIC_API_KEY: ');
+    expect(result.error).toContain(join(dir, '.setup', 'stored-secrets.json'));
+    expect(result.error).not.toContain('sk-ant-key');
+    expect(called).toBe(0);
+    expect(existsSync(join(dir, '.env'))).toBe(false);
+  });
+
   test('a 2xx answer that isn\'t the provider\'s list stores the key as not known to work, not as accepted', async () => {
     for (const body of ['<html>Sign in</html>', '{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}']) {
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });

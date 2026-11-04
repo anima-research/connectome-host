@@ -610,7 +610,13 @@ export class SetupModule implements Module {
           `${provider.provider} is to be asked about the key isn't known. Ask the person to put that right, then ` +
           'call again.');
       }
-      key = await this.checkKey(name, value, env);
+      let hide: Secret[];
+      try {
+        hide = this.secrets().values;
+      } catch (error) {
+        return this.damaged(error, `Nothing was stored as ${name}`);
+      }
+      key = await this.checkKey(name, value, env, hide);
       if (key.kind === 'refused') {
         return failed(`${provider.provider} refused this key (${key.status}), so nothing was stored as ${name}, ` +
           'and what was ' +
@@ -649,10 +655,10 @@ export class SetupModule implements Module {
     return { success: true, data: `stored as ${name} in ${envFile}${told}` };
   }
 
-  private async checkKey(name: string, value: string, env: Map<string, string>): Promise<ProviderAnswer<null>> {
+  private async checkKey(name: string, value: string, env: Map<string, string>, hide: Secret[]): Promise<ProviderAnswer<null>> {
     const provider = PROVIDER_KEYS[name]!.provider;
     this.config.show(`Checking it with ${provider}.`);
-    const key = await checkProviderKey(name, value, { fetch: this.config.fetch, env, hide: this.secrets().values })!;
+    const key = await checkProviderKey(name, value, { fetch: this.config.fetch, env, hide })!;
     this.config.show(answerLine(provider, key, `${provider} accepted it.`, 'nothing was stored'));
     return key;
   }
