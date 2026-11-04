@@ -750,6 +750,16 @@ test('a Linux same-directory unit that is not a host is offered another working 
   expect(f.err.join('\n')).toContain('another working directory');
 });
 
+test('a check with a damaged service record gives the explicit-recipe repair instruction', async () => {
+  const at = install();
+  const f = fake(at);
+  writeFileSync(join(at.root, 'service.json'), 'not json');
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(false);
+  expect(checked.lines.join('\n')).toContain(join(at.root, 'service.json'));
+  expect(checked.lines.join('\n')).toContain('service install <recipe>');
+});
+
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();
   const f = fake(at);
@@ -2401,7 +2411,7 @@ test('on macOS the check shows its log\'s last lines, which can hold more than o
   expect(stopped).not.toContain('  ! ');
 });
 
-test('on macOS the check reads only what the agent logged since it was loaded', async () => {
+test('on macOS install rotates the earlier log before loading and checks the replacement log', async () => {
   const at = install();
   const log = join(at.work, 'logs', 'agent.log');
   mkdirSync(dirname(log), { recursive: true });
@@ -3132,7 +3142,7 @@ test('on macOS stop boots out the host, then its shell agent, says so of each an
   expect(f.out.slice(0, 2)).toEqual([`${host} wasn't loaded.`, `${shell} wasn't loaded.`]);
 });
 
-test('on macOS stop and start leave alone a recorded agent whose plist runs another directory, and stop one loaded with its plist gone', async () => {
+test('on macOS stop and start refuse another-directory configuration, and stop refuses a loaded agent with its plist gone', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);

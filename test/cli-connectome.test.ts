@@ -193,7 +193,7 @@ test('bare shows the recorded service\'s log, stop and start lines, and with non
   const { path } = writeInstallCommand(root, '');
   const none = await run(path, [], root);
   expect(none.status).toBe(0);
-  expect(none.out).toContain(`No service is set up for it yet: \`${path} service install <recipe>\` sets one up.`);
+  expect(none.out).toContain(`No service is recorded for it yet: \`${path} service install <recipe>\` sets one up.`);
   serviceRecord(root, work);
   const ran = await run(path, [], root);
   expect(ran.status).toBe(0);
@@ -234,7 +234,8 @@ test('with a service recorded and no host running, bare, send and update say to 
   writeFileSync(join(root, 'service.json'), 'not json');
   const unread = await run(path, ['send', 'hello'], root);
   expect(unread.status).toBe(1);
-  expect(unread.err).toContain('If no host is running, have its service start it with');
+  expect(unread.err).toContain(`${path} service install <recipe>`);
+  expect(unread.err).not.toContain('If no host is running, have its service start it with');
   expect(unread.err).not.toContain('    at ');
 });
 
@@ -285,6 +286,7 @@ test('bare whose host answers, with a service record it can\'t read, names the f
   expect(status).toBe(1);
   expect(out.join('\n')).toContain('Its host is running: pid 4242');
   expect(err.join('\n')).toContain(join(root, 'service.json'));
+  expect(err.join('\n')).toContain('service install <recipe>');
 });
 
 test('bare with a service record it can\'t read names the file and exits 1', async () => {
@@ -294,6 +296,7 @@ test('bare with a service record it can\'t read names the file and exits 1', asy
   const ran = await run(path, [], root);
   expect(ran.status).toBe(1);
   expect(ran.err).toContain(join(root, 'service.json'));
+  expect(ran.err).toContain(`${path} service install <recipe>`);
   expect(ran.err).not.toContain('    at ');
 });
 

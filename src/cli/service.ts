@@ -278,10 +278,10 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   const cmd = typedCommand(root, sys.env.PATH);
   let old: ServiceRecord | null = null;
   try {
-    old = readServiceRecord(root);
+    old = readServiceRecord(root, cmd);
   } catch (error) {
     if (given === undefined) {
-      ctx.err(`connectome: ${errorText(error)} ${recordAgain(cmd)}`);
+      ctx.err(`connectome: ${errorText(error)}`);
       return 1;
     }
     ctx.out(`${errorText(error)} This run replaces it with a new record once it has written a unit file.`);
@@ -587,12 +587,7 @@ async function readyAndChecked(ctx: CliContext, root: string, record: ServiceRec
 }
 
 function recordOf(root: string, cmd: string): ServiceRecord {
-  let record: ServiceRecord | null;
-  try {
-    record = readServiceRecord(root);
-  } catch (error) {
-    throw new Refusal(`${errorText(error)} ${recordAgain(cmd)}`);
-  }
+  const record = readServiceRecord(root, cmd);
   if (record === null) {
     throw new Refusal(`No service is set up for this install yet: ${cmd} service install <recipe> sets one up.`);
   }
@@ -1489,30 +1484,34 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
   }
 }
 
-export function readServiceRecord(root: string): ServiceRecord | null {
-  const path = join(root, 'service.json');
-  const record = readRecord<ServiceRecord>(path, 'service record');
-  if (record === null) return null;
-  const unit = (value: unknown) => typeof value === 'object' && value !== null &&
-    typeof (value as ServiceUnit).name === 'string' && typeof (value as ServiceUnit).file === 'string';
-  const logs = record.logs as { kind?: unknown; path?: unknown } | undefined;
-  const fits = (record.manager === 'systemd-user' || record.manager === 'launchd') &&
-    unit(record.units?.host) && (record.units.shell === undefined || unit(record.units.shell)) &&
-    Array.isArray(record.hostArgs) && record.hostArgs.length > 0 && record.hostArgs.every((arg) => typeof arg === 'string') &&
-    typeof record.workingDirectory === 'string' &&
-    (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
-  const settings = record.shellSettings;
-  const settingsFit = settings === undefined || (settings !== null && typeof settings === 'object' && !Array.isArray(settings) &&
-    Object.entries(settings).every(([name, value]) => SHELL_SETTING_NAMES.includes(name as keyof ShellSettings) &&
-      typeof value === 'string'));
-  if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
-  return record;
+export function readServiceRecord(root: string, cmd = typedCommand(root)): ServiceRecord | null {
+  try {
+    const path = join(root, 'service.json');
+    const record = readRecord<ServiceRecord>(path, 'service record');
+    if (record === null) return null;
+    const unit = (value: unknown) => typeof value === 'object' && value !== null &&
+      typeof (value as ServiceUnit).name === 'string' && typeof (value as ServiceUnit).file === 'string';
+    const logs = record.logs as { kind?: unknown; path?: unknown } | undefined;
+    const fits = (record.manager === 'systemd-user' || record.manager === 'launchd') &&
+      unit(record.units?.host) && (record.units.shell === undefined || unit(record.units.shell)) &&
+      Array.isArray(record.hostArgs) && record.hostArgs.length > 0 && record.hostArgs.every((arg) => typeof arg === 'string') &&
+      typeof record.workingDirectory === 'string' &&
+      (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
+    const settings = record.shellSettings;
+    const settingsFit = settings === undefined || (settings !== null && typeof settings === 'object' && !Array.isArray(settings) &&
+      Object.entries(settings).every(([name, value]) => SHELL_SETTING_NAMES.includes(name as keyof ShellSettings) &&
+        typeof value === 'string'));
+    if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
+    return record;
+  } catch (error) {
+    throw new ContractError(`${errorText(error)} ${recordAgain(cmd)}`);
+  }
 }
 
 export function serviceLines(root: string, path: string | undefined = process.env.PATH): string[] | null {
-  const record = readServiceRecord(root);
-  if (record === null) return null;
   const cmd = typedCommand(root, path);
+  const record = readServiceRecord(root, cmd);
+  if (record === null) return null;
   const host = record.units.host;
   const log = record.logs.kind === 'file' ? record.logs.path : join(record.workingDirectory, 'logs', 'agent.log');
   const systemd = record.manager === 'systemd-user';
@@ -1528,7 +1527,7 @@ export async function checkService(root: string, sys: ServiceSystem = machine())
   Promise<{ passed: boolean; lines: string[] }> {
   let record: ServiceRecord | null;
   try {
-    record = readServiceRecord(root);
+    record = readServiceRecord(root, typedCommand(root, sys.env.PATH));
   } catch (error) {
     return { passed: false, lines: [errorText(error)] };
   }

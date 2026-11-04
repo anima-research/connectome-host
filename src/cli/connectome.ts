@@ -223,7 +223,7 @@ function service(ctx: CliContext): number {
     return 1;
   }
   if (lines === null) {
-    ctx.out(`No service is set up for it yet: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
+    ctx.out(`No service is recorded for it yet: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
   }
   for (const line of lines ?? []) ctx.out(line);
   return 0;
@@ -437,8 +437,8 @@ function startHost(root: string, then: string): string {
   let recorded: boolean;
   try {
     recorded = readServiceRecord(root) !== null;
-  } catch {
-    recorded = false;
+  } catch (error) {
+    return `${errorText(error)}. Then ${then}.`;
   }
   return recorded
     ? `If no host is running, start it with \`${typedCommand(root)} service start\`, then ${then}.`
