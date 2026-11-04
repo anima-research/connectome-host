@@ -746,7 +746,7 @@ const NO_SERVICE = 'Nothing was armed: nothing shows that a service starts this 
 const NO_STOP = 'Nothing was armed: this host has no stop a restart can use, as in a batch run, which ends on its own. ' +
   ASK_AGAIN;
 const STOPPING_FIRST = 'the host began stopping for another reason first.';
-const STOPPING_NOW = 'Nothing was armed: this host is stopping, so a restart armed now could never begin. Ask again once ' +
+const STOPPING_NOW = 'Nothing was armed: this host is stopping, so nothing armed now could begin. Ask again once ' +
   'it has started again.';
 const settled = (host: HostQuiet): boolean => host.answered && host.drained && host.backgroundScripts === 0;
 const childHold = (hosts: HostQuiet[]): string | null => {

@@ -370,11 +370,6 @@ reasons unless the grant holds `ops` too.
   restarted onto included. If the new install then fails, what it removed
   isn't put back, and the next Update installs the newest release again.
   When the floor is above it, upgrade Bun and start the host again first.
-  An install with Bun first sets the new release's `trustedDependencies` to
-  the running Bun's default trusted list (`bun pm default-trusted`) and
-  term-sessions-mcp, the list setup writes, so it runs the install scripts
-  an install from npm runs, from whichever registry; when Bun can't give that list whole, it keeps the running
-  release's field, or none where it has none, and says so.
 - **Restart,** `/update restart`, quiesces the host and its fleet children,
   each as the web UI's Quiesce quiesces one host, and gives turns in
   progress two minutes to end. If some don't, it says who is still mid-turn,
