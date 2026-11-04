@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -11,10 +11,15 @@ import { listenForPeers } from '../lib/strategies/control.mjs';
 import { png, zlibStored } from '../lib/strategies/png.mjs';
 
 const SERVER = fileURLToPath(new URL('../lib/strategies/mcpl-server.mjs', import.meta.url));
+const ANSWER_BOUND_MS = 10_000;
+const servers = new Set();
+after(() => { for (const child of servers) child.kill('SIGKILL'); });
 
 // agent-framework opens an MCPL server with initialize, the initialized notification and the policy request.
 async function startHost({ control = '', channels = '', boot = '', answer = () => ({ result: { ok: true } }) } = {}) {
   const child = spawn(process.execPath, [SERVER], { env: { ...process.env, FIXTURE_CONTROL: control, FIXTURE_CHANNELS: channels, FIXTURE_BOOT: boot }, stdio: ['pipe', 'pipe', 'pipe'] });
+  servers.add(child);
+  child.once('exit', () => servers.delete(child));
   const fromServer = [];
   const waiting = new Map();
   let nextId = 0;
@@ -35,17 +40,30 @@ async function startHost({ control = '', channels = '', boot = '', answer = () =
           if (a && !child.stdin.destroyed) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, ...a }) + '\n');
         });
       } else {
-        waiting.get(msg.id)?.(msg);
+        const pending = waiting.get(msg.id);
         waiting.delete(msg.id);
+        if (pending) { clearTimeout(pending.timer); pending.resolve(msg); }
       }
     }
   });
-  const request = (method, params) => new Promise((resolve) => {
+  const fail = (id, error) => {
+    const pending = waiting.get(id);
+    if (!pending) return;
+    waiting.delete(id);
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  };
+  const request = (method, params) => new Promise((resolve, reject) => {
     const id = nextId++;
-    waiting.set(id, resolve);
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+    const timer = setTimeout(() => fail(id, new Error(`the server sent no answer to ${method} within ${ANSWER_BOUND_MS} ms`)), ANSWER_BOUND_MS);
+    waiting.set(id, { method, resolve, reject, timer });
+    if (child.exitCode !== null || child.signalCode !== null) fail(id, new Error(`the server had exited before ${method}`));
+    else child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   });
-  const exited = new Promise((r) => child.once('exit', r));
+  const exited = new Promise((r) => child.once('exit', (code, signal) => {
+    for (const [id, { method }] of [...waiting]) fail(id, new Error(`the server exited (${signal ?? `code ${code}`}) before answering ${method}`));
+    r();
+  }));
   const init = await request('initialize', { protocolVersion: '2024-11-05', capabilities: { experimental: { mcpl: { version: '0.5' } } }, clientInfo: { name: 'agent-framework', version: '1.0.0' } });
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   const policy = await request('featureSets/update', { effectiveCapabilities: ['tools', 'channels.register', 'channels.incoming'] });
@@ -185,9 +203,10 @@ test('S5: a command the host never answers rejects at the caller\'s bound, namin
   const h = await startHost({ control: sock.path, answer: () => null });
   try {
     await ctl.waitConnected('server', { since: 0, timeoutMs: 5000 });
-    const t0 = Date.now();
+    const t0 = performance.now();
     await assert.rejects(ctl.hostCommand({ command: 'maintain' }, { timeoutMs: 300 }), /maintain/);
-    assert.ok(Date.now() - t0 >= 300);
+    const waited = performance.now() - t0;
+    assert.ok(waited >= 280, `it rejected at the bound, not at once (${Math.round(waited)} ms)`);
   } finally { await h.stop(); await ctl.close(); sock.done(); }
 });
 
@@ -202,8 +221,8 @@ test('S6: after a restart the new server takes the commands, and the old one clo
     fresh = await startHost({ control: sock.path, answer: () => ({ result: { from: 'new' } }) });
     await ctl.waitConnected('server', { since: gen, timeoutMs: 5000 });
     await old.stop();
-    for (const until = Date.now() + 5000; ctl.closed('server') < 1;) {
-      if (Date.now() > until) assert.fail('the control saw no server connection close within 5 s');
+    for (const until = performance.now() + 5000; ctl.closed('server') < 1;) {
+      if (performance.now() > until) assert.fail('the control saw no server connection close within 5 s');
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.deepEqual(await ctl.hostCommand({ command: 'maintain' }, { timeoutMs: 5000 }), { from: 'new' });
@@ -317,8 +336,8 @@ test('S10: a call whose arguments say hold is answered only when the driver rele
     await ctl.waitConnected('server', { since: 0, timeoutMs: 5000 });
     let answered = null;
     const held = h.call({ kind: 'prose', size: 200, canary: 'CANARY-H-1', hold: true }).then((r) => { answered = r; return r; });
-    for (const until = Date.now() + 5000; !notices.length;) {
-      if (Date.now() > until) assert.fail('no held notice came within 5 s');
+    for (const until = performance.now() + 5000; !notices.length;) {
+      if (performance.now() > until) assert.fail('no held notice came within 5 s');
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.deepEqual(notices, [{ peer: 'server', notice: 'held', canary: 'CANARY-H-1' }]);
