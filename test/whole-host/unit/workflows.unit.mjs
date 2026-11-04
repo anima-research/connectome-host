@@ -34,7 +34,7 @@ const pullRequestPaths = (yaml) => {
   return paths;
 };
 
-test('pullRequestPaths reads the paths under on.pull_request.paths and nothing else', () => {
+test('pullRequestPaths reads the first paths list after on.pull_request, and not a list in the jobs', () => {
   const yaml = ['name: x', 'on:', '  pull_request:', '    paths:', '      - a.mjs', '      - b.mjs', 'jobs:', '  y:', '    steps:', '      - test/whole-host/c.mjs', ''].join('\n');
   assert.deepEqual(pullRequestPaths(yaml), ['a.mjs', 'b.mjs']);
 });

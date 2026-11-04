@@ -15,7 +15,8 @@ records, and their diff in the pull request is what to read.
 `npm run test:whole-host` runs every run, judges it, and compares each run's
 record with the committed one. It exits 0 when every run passed and every
 record matched, 1 when a run flagged something or a record differs, and 2
-when a run couldn't run.
+when a run couldn't run. A run whose `report.txt` can't be written ends the
+invocation there, as an uncaught error, which exits 1.
 
 - `--runs A,B` runs only those (`CONFIGURATION/WORKLOAD[/VARIANT]`, as
   `workloads.mjs` `RUNS` lists them).
@@ -29,10 +30,13 @@ when a run couldn't run.
   membrane or chronicle over this checkout's install, to see what a change to
   one of them does here. A host change is a change to this checkout itself.
 - `--checkpoints DIR` keeps the runs' starting checkpoints in `DIR` between
-  invocations, keyed by everything that writes them.
+  invocations, keyed by the lane, the release's versions, the run that
+  writes each, its configuration, the clock's start and its steps. The
+  environment the host inherits isn't in the key.
 - `--self-check` drives each run a second time with the test module's
   recording off, and fails a run whose request bodies differ once the
-  run-varying values a record masks are masked in both: every record rests on
+  run-varying values are masked in both, wherever they appear, cache markers
+  included, where a record writes a marker whole: every record rests on
   recording changing nothing the host sends. It compares the bodies alone,
   not the headers, path or query; the record's heads hold the path, the query
   and the `anthropic-beta` and `anthropic-version` headers. With recording off the driver
@@ -46,8 +50,9 @@ when a run couldn't run.
   runs within and around the compiles the module records, since a compile runs
   the agent's strategy, which can be the host's own, and the host's modules
   gather their context just before each request compile; `package.json` or a
-  lockfile, which choose the stack the module runs beside; or `run.mjs`,
-  `driver.mjs` or `common.mjs`, which set up, drive and compare the two arms.
+  lockfile, which choose the stack the module runs beside; `run.mjs`,
+  `driver.mjs` or `common.mjs`, which set up, drive and compare the two arms;
+  or the workflow itself.
   A host change whose effect recording happened to hide would leave every
   record as it was, so only the self-check would show it.
 - `--shard i/n` runs one of CI's shares, balanced by the seconds
@@ -66,13 +71,16 @@ when a run couldn't run.
   own merge, and the later one's stands.
 
 Records are made on Linux. The test module stamps each request compile from
-the machine's monotonic clock, which it reads there (`module.mjs`), and a run
-whose compiles carry no stamp is refused as couldn't-run (`record.mjs`,
-`unrecordable`), so elsewhere every run couldn't run.
+the machine's monotonic clock, which it reads there (`module.mjs`), under Bun
+through `clock_gettime` in `libc.so.6`. A run whose compiles carry no stamp is
+refused as couldn't-run (`record.mjs`, `unrecordable`), so every run couldn't
+run anywhere but Linux, and under Bun on a Linux whose C library isn't at
+`libc.so.6`, such as a plain musl one.
 
 A run that throws anywhere in its own work, from being set up to its
 self-check, or whose checkpoint couldn't be made, couldn't run, with the
-reason in the job's log and summary; the other runs go on. Its committed
+reason in the job's log and summary; the other runs go on, unless its
+`report.txt` can't be written, which ends the invocation. Its committed
 record is written with `--update-records` only after its last step, so a run
 that couldn't run leaves the committed one as it was. A self-check whose
 drive with recording off failed couldn't run, and one whose bodies differ
@@ -324,14 +332,20 @@ a take couldn't read is still reported once it can be.
 
 A request's line, with the head in force for it, changes whenever what that
 request sends changes, apart from what the record leaves out or writes alike
-and the run-varying values it masks by their pattern wherever they appear
-but in a cache marker, which it writes whole, the run's own text included (an
-image-ref nonce or a fork call's UUID in any other string, and the signature
-of any object typed `thinking`), a change to one of which alone moves no line. It leaves
+and the run-varying values it masks by their pattern in the messages, the
+system prompt and the digests of the tools and the body's other fields, the
+run's own text included (an image-ref nonce in any string there but a cache
+marker, which it writes whole; a fork call's UUID in the system prompt and the
+digests, though a message's or summary's text the record writes from a compile
+keeps it as it is; and the signature of any object typed `thinking`), a change to one of which alone moves no line.
+The head's other fields, the model, `max_tokens`, `tool_choice`, `thinking`,
+the tools' names, the headers, the path and the query, it writes unmasked,
+and no run puts such a value in them. It leaves
 out every header but `anthropic-beta` and `anthropic-version`, and keeps the
 betas as a set, so their order and repeats move nothing. It writes alike an
-omitted, null or empty `system`, and any other that is neither a string nor a
-list; an omitted, null or empty `tools`; a system prompt sent as a string and
+omitted or null `system`, an empty list, and any other value that is neither a
+string nor a list, while a string, the empty one included, is one text block;
+an omitted, null or empty `tools`; a system prompt sent as a string and
 as one text block, and a system block's null or missing text and an empty
 one; an omitted `thinking` and a null one; any `stream` but `true` and none;
 an ephemeral cache marker with no TTL and one of `5m`; and a message's string
@@ -339,7 +353,7 @@ content and one text block, and its null or missing content, or any that is
 neither a string nor a list, and an empty list. It writes alike an omitted and
 a null `model`, and an omitted and a null `max_tokens`, each of which the
 stand-in refuses. A `tool_choice`, even a null one, is refused as
-unclassified, as above. A head is named only on the
+unclassified, as above, and the head writes a null one as none. A head is named only on the
 first line of its agent's under it, so a later request under a changed head
 keeps its line, and the view still names it.
 
@@ -444,7 +458,9 @@ summary shows cut short, such as a thrown error, a command's output or a long
 list of names, has its whole text on the line under it, `  whole: …`; a run
 that couldn't run has its reason there, whole the same way. Two reasons are
 exceptions: a failed read's, of a store, a strategy or pins, shows its first
-200 characters, with no whole, and a self-check's that couldn't run is in the summary and the job's
+200 characters, with no whole in `report.txt`, though the run's `log.jsonl`
+keeps the whole of the test module's own reads of a store's messages, its
+summary listing, its receipt and its quarantine, and a self-check's that couldn't run is in the summary and the job's
 log but not `report.txt`, with no whole where it was cut. A host's whole
 output is each boot's `host-N.log`, in the run's directory, or in
 `checkpoints/RUN/` for the drive that writes RUN's checkpoint; a failure that
@@ -522,8 +538,10 @@ shows the host's last lines names that file.
   message of those two turns that the final store doesn't hold isn't asked
   for, and the judged line counts those. Each checkpoint tail judged counts
   as judged, and one whose last input the final store doesn't hold is counted
-  beside. It applies to the primary agent's requests, so it judges nothing for
-  H2, whose checks judge its knowledge subagent.
+  beside. Judging none is a flag only for the primary agent's requests. For
+  H2 it runs on the knowledge subagent's requests, which its checks judge, and
+  judges none of them, since the subagent's store holds no turn the window
+  asks for.
 - **Check 10: calibration edge.** A calibration multiplier at the clamp's edge
   (0.6 or 1.8) makes the run invalid, since its folds are clamped. It reads
   the multipliers in the host's health panel, at each checkpoint and at the
@@ -651,9 +669,11 @@ that the committed runs meet. Each entry has its `configuration` (a run),
 `match`: the flag's detail as its report shows it, cut where the report cuts
 it (its message, for a flag with no detail), as a literal, with each regular-expression metacharacter escaped by a
 backslash and no other escape, anchored at both ends. The harness refuses an
-entry whose match is anything else. So it covers exactly the flags showing
-that detail at its check and step: one, or several identical ones where a step
-raises the same flag once per request. Two more things are flags:
+entry whose match is anything else. So it covers exactly the flags of its
+`what` showing that detail at its check and step: one, or several identical
+ones where a step raises the same flag once per request. A flag that names no
+`what`, such as check 1's refusals and check 12's, can't be covered, since an
+entry must name one. Two more things are flags:
 
 - an entry no flag meets, which means its finding no longer shows. The change
   that fixed it removes the entry;

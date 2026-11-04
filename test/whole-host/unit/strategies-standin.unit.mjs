@@ -586,7 +586,7 @@ test('T13d: on a configuration that doesn\'t bind, thinking altered in the lates
   assert.equal((await post(s.url, next([thought, { type: 'text', text: 'first' }], opening.system, older))).status, 200, 'the page says nothing of an earlier message');
 }));
 
-test('T1: a request to count_tokens, or to any route but /v1/messages, is recorded as unclassified, naming its route, and refused', async () => {
+test('T1: a request to count_tokens, or to any route but a POST to a path ending in /v1/messages, is recorded as unclassified, naming its route, and refused', async () => {
   const s = await startStandin({ configuration: { windowTokens: 50_000 } });
   s.setStep(step('ct'));
   const body = { model: 'claude-opus-5-5', messages: [{ role: 'user', content: [{ type: 'text', text: 'user: [[c:ct.in]] count me' }] }] };

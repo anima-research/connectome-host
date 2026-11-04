@@ -6,7 +6,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.42\\.call1 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "C3h/W7/fable-no-tools",
@@ -24,7 +24,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h9\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H4/W8/unenforced",
@@ -33,7 +33,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h10\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H4/W8/unenforced",
@@ -42,7 +42,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h11\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H4/W8/unenforced",
@@ -51,7 +51,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h11\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H4/W8/unenforced",
@@ -60,7 +60,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h11\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H4/W8/unenforced",
@@ -69,7 +69,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h11\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H4/W8/unenforced",
@@ -78,7 +78,7 @@
   "what": "Subconscious:request:shape",
   "match": "^message 0: result 485515\\.h11\\.read answers no call in the message before it$",
   "finding": "anima-research/context-manager#370",
-  "reason": "The windowed reader's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "The windowed reader's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -87,7 +87,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.42\\.call2 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -96,7 +96,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.42\\.call2 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -105,7 +105,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.46\\.call1 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -114,7 +114,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.46\\.call3 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -123,7 +123,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.50\\.call1 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -132,7 +132,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.51\\.call1 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -150,7 +150,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.52\\.call1 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -159,7 +159,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.52\\.call2 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "H3/W9",
@@ -168,7 +168,7 @@
   "what": "fixture:request:shape",
   "match": "^message 0: result 442693\\.52\\.call3 answers no call in the message before it$",
   "finding": "passthrough-window-cuts-call-from-result",
-  "reason": "A passthrough strategy's window cuts a call from its result, so the first message sent is a result whose call is stored but not carried."
+  "reason": "A passthrough strategy's window cuts a call from its result, so the first message compiled is a result whose call is stored but not carried."
  },
  {
   "configuration": "C3h/W9",

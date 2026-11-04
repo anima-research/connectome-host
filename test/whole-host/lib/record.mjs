@@ -445,7 +445,7 @@ export function unrecordable(records, log) {
   if (others.length > 1) return `${others.join(' and ')} each made request compiles, and the stand-in tells only the fixture's requests from the rest, so the record couldn't tell one agent's requests from another's`;
   if (uncompiled.length) return `the run sent ${uncompiled.join(' and ')} agent requests, and its log holds no compiled request line from the test module for ${uncompiled.length > 1 ? 'either' : 'that side'}, so its record couldn't tell their compiles from their rounds`;
   const unstamped = lines.filter((l) => l.outcome === 'compiled' && !/^\d+$/.test(String(l.stamp ?? ''))).length;
-  if (unstamped) return `${unstamped} request compile(s) carry no stamp from the machine's monotonic clock, which the test module reads on Linux, so the record couldn't tell their requests from rounds`;
+  if (unstamped) return `${unstamped} request compile(s) carry no stamp from the machine's monotonic clock, which the test module reads on Linux, but under Bun not on a Linux whose C library isn't at libc.so.6, such as a plain musl one, so the record couldn't tell their requests from rounds`;
   return null;
 }
 

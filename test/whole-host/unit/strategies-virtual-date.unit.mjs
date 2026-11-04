@@ -120,7 +120,7 @@ test('D2: an advance resolves once the process reads the new time; an earlier ti
   } finally { await t.stop(); await ctl.close(); s.done(); }
 });
 
-test('D4: without a usable FIXTURE_EPOCH_MS the process does not start, and says why', { skip: noBun, timeout: 30_000 }, async () => {
+test('D4: with a FIXTURE_EPOCH_MS that isn\'t a whole number of milliseconds, the empty one included, the process does not start, and says why', { skip: noBun, timeout: 30_000 }, async () => {
   const s = setup();
   try {
     for (const env of [{ FIXTURE_EPOCH_MS: '' }, { FIXTURE_EPOCH_MS: 'tomorrow' }]) {
