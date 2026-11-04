@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
+import * as fs from 'node:fs';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
   symlinkSync, writeFileSync,
@@ -2448,6 +2449,130 @@ test('on macOS the check shows its log\'s last lines, which can hold more than o
   expect(stopped).toContain(heading);
   expect(stopped).toContain(tail);
   expect(stopped).not.toContain('  ! ');
+});
+
+
+test('the Mac host check reads only a bounded suffix of a large real log and qualifies its line counts', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const path = join(at.work, 'logs', 'agent.log');
+  const old = 'earlier report\n'.repeat(150_000);
+  const recent = Array.from({ length: 60 }, (_, i) => 'new report ' + i).join('\n\n   \n') + '\n';
+  writeFileSync(path, old + recent);
+  const readFile = fs.readFileSync;
+  const read = fs.readSync;
+  let bytesRead = 0;
+  const full = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (file === path) throw new Error('the log must be read with a bounded suffix');
+    return Reflect.apply(readFile, fs, [file, ...args]);
+  }) as typeof fs.readFileSync);
+  const suffix = spyOn(fs, 'readSync').mockImplementation(((fd: number, buffer: NodeJS.ArrayBufferView,
+    offset: number, length: number, position: number | null) => {
+    const count = read(fd, buffer, offset, Math.min(length, 997), position);
+    bytesRead += count;
+    return count;
+  }) as typeof fs.readSync);
+  let checked: Awaited<ReturnType<typeof checkService>>;
+  try {
+    checked = await checkService(at.root, f.system);
+  } finally {
+    full.mockRestore();
+    suffix.mockRestore();
+  }
+  expect(checked.passed).toBe(true);
+  expect(bytesRead).toBeGreaterThan(0);
+  expect(bytesRead).toBeLessThanOrEqual(40 * 1024 + 1);
+  const said = checked.lines.join('\n');
+  expect(said).toContain(`${Buffer.byteLength(old + recent) - 40 * 1024} earlier file bytes are outside this window`);
+  expect(said).toContain('Line counts below cover only this window');
+  expect(checked.lines.filter((line) => line.startsWith('  | '))).toEqual(
+    Array.from({ length: 40 }, (_, i) => '  | new report ' + (i + 20)));
+});
+
+for (const whose of ['host', 'shell']) test('the Mac ' + whose + ' log bounds an oversized single line and identifies its partial first line', async () => {
+  const at = install('My Resident', { shell: whose === 'shell' });
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  if (whose === 'shell') f.systemd.agents.get('com.animalabs.connectome.my-resident.shell')!.pid = null;
+  const path = join(at.work, 'logs', whose === 'host' ? 'agent.log' : 'shell.log');
+  writeFileSync(path, 'earlier prefix' + 'x'.repeat(80 * 1024) + 'visible-end');
+  const checked = await checkService(at.root, f.system);
+  const said = checked.lines.join('\n');
+  expect(said).not.toContain('earlier prefix');
+  expect(said).toContain('The first line starts partway through a file line');
+  const report = checked.lines.find((line) => line.endsWith('visible-end'))!;
+  expect(report).toBeDefined();
+  expect(Buffer.byteLength(report.slice('  | '.length))).toBe(40 * 1024);
+});
+
+for (const content of [null, '', 'a short report\n']) test('the Mac bounded file view preserves ' +
+  (content === null ? 'a missing log' : content === '' ? 'an empty log' : 'a short log'), async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const path = join(at.work, 'logs', 'agent.log');
+  if (content === null) rmSync(path, { force: true });
+  else writeFileSync(path, content);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(true);
+  const said = checked.lines.join('\n');
+  if (content === null) expect(said).toContain('isn\'t there yet');
+  else if (content === '') expect(said).toContain('nothing.');
+  else expect(checked.lines).toContain('  | a short report');
+  expect(said).not.toContain('earlier file bytes');
+});
+
+
+test('a Mac file window beginning inside a UTF8 character starts after that character without a replacement glyph', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const end = 'visible-end';
+  const padding = 'q'.repeat(40 * 1024 + 1 - 4 - end.length);
+  writeFileSync(join(at.work, 'logs', 'agent.log'), 'p'.repeat(50_000) + '🙂' + padding + end);
+  const checked = await checkService(at.root, f.system);
+  const report = checked.lines.find((line) => line.endsWith('visible-end'))!;
+  expect(report.startsWith('  | q')).toBe(true);
+  expect(report.includes('\uFFFD')).toBe(false);
+  expect(report.includes('🙂')).toBe(false);
+  expect(Buffer.byteLength(report.slice('  | '.length))).toBe(40 * 1024 - 3);
+});
+
+
+test('a Mac byte window on a line boundary reports its skipped bytes without claiming a partial line', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const prefix = 'earlier\n'.repeat(10_000);
+  const recent = 'r'.repeat(40 * 1024 - 1) + '\n';
+  writeFileSync(join(at.work, 'logs', 'agent.log'), prefix + recent);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.lines.join('\n')).toContain(Buffer.byteLength(prefix) + ' earlier file bytes');
+  expect(checked.lines.join('\n')).not.toContain('partway through a file line');
+  expect(checked.lines).toContain('  | ' + recent.trimEnd());
+});
+
+for (const credential of ['first-é-last', 'first\né-second\nlast']) test('the bounded Mac file view masks an edge-crossing ' +
+  (credential.includes('\n') ? 'multiline UTF8 credential' : 'UTF8 credential'), async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin', env: { DISCORD_TOKEN: credential } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const prefix = 'old'.repeat(20_000) + '\ncredential=';
+  const cut = Buffer.byteLength(prefix + credential.slice(0, credential.indexOf('é'))) + 1;
+  const end = '\nvisible-last\n';
+  const padding = 'q'.repeat(40 * 1024 - (Buffer.byteLength(prefix + credential + end) - cut));
+  writeFileSync(join(at.work, 'logs', 'agent.log'), prefix + credential + padding + end);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(true);
+  const reports = checked.lines.filter((line) => line.startsWith('  | ')).join('\n');
+  expect(reports.includes('first')).toBe(false);
+  expect(reports.includes('last' + padding)).toBe(false);
+  expect(reports.includes('é-')).toBe(false);
+  expect(reports.includes('\uFFFD')).toBe(false);
+  expect(checked.lines).toContain('  | visible-last');
+  expect(checked.lines.filter((line) => line.includes('<DISCORD_TOKEN>'))).toHaveLength(credential.split('\n').length);
+  expect(checked.lines.filter((line) => line.startsWith('  | '))).toHaveLength(credential.split('\n').length + 1);
 });
 
 test('on macOS install rotates the earlier log before loading and checks the replacement log', async () => {

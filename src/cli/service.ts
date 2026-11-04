@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync,
+  readSync, renameSync, rmSync, statSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -12,7 +15,9 @@ import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup
 import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { takeFileLock } from '../setup/file-lock.js';
-import { StoredSecrets, envForm, readEnvFile, removeEnvValues, storedSecretRedactor, writeEnvValue } from '../setup/secrets.js';
+import {
+  StoredSecrets, envForm, readEnvFile, removeEnvValues, storedSecretRedactor, storedSecretWindowRedactor, writeEnvValue,
+} from '../setup/secrets.js';
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
@@ -29,6 +34,7 @@ const READY_WAIT_MS = 60_000;
 const RECIPE_CHECK_MS = 60_000;
 const FIRST_MINUTE_S = 60;
 const LOG_LINES = 40;
+const LOG_BYTES = 40 * 1024;
 const ENDED_ENTRIES = 200;
 const INVOCATION_FIELDS = ['_SYSTEMD_INVOCATION_ID', 'USER_INVOCATION_ID', 'INVOCATION_ID'];
 export const EXCERPT_LEAD = "Lines starting with | are reports from the process named above each excerpt, " +
@@ -1561,6 +1567,14 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     lines.push(EXCERPT_LEAD);
     explained = true;
   };
+  const showLog = (original: string, rendered: { text: string; guessed: string[] }, what: string,
+    ended: boolean, scope?: string) => {
+    if (rendered.guessed.length > 0 && !explainedGuess) {
+      lines.push(guessedSecretsNotice(workingDirectory));
+      explainedGuess = true;
+    }
+    logLines(original, rendered.text, what, lines, ended, explain, scope);
+  };
   const log = (text: string, what: string, ended = false) => {
     let redact: ReturnType<typeof storedSecretRedactor>;
     try {
@@ -1569,12 +1583,36 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
       return;
     }
-    const redacted = redact(text);
-    if (redacted.guessed.length > 0 && !explainedGuess) {
-      lines.push(guessedSecretsNotice(workingDirectory));
-      explainedGuess = true;
+    showLog(text, redact(text), what, ended);
+  };
+  const fileLog = (path: string, what: string, missing: string) => {
+    let fd: number;
+    try {
+      fd = openSync(path, 'r');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      lines.push(missing);
+      return;
     }
-    logLines(text, redacted.text, what, lines, ended, explain);
+    try {
+      let window: ReturnType<typeof storedSecretWindowRedactor>;
+      try {
+        window = storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']);
+      } catch (error) {
+        fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
+        return;
+      }
+      const { bytes, from, offset } = readLogTail(fd, window.contextBytes);
+      const rendered = window.redact(bytes, from, bytes.length);
+      const before = offset + rendered.start;
+      const partial = before > 0 && bytes[rendered.start - 1] !== 0x0a;
+      const scope = before === 0 ? undefined : `${before} earlier file bytes are outside this window. ` +
+        (partial ? 'The first line starts partway through a file line. ' : '') +
+        'Line counts below cover only this window.';
+      showLog(bytes.toString('utf-8', rendered.start, rendered.end), rendered, what, true, scope);
+    } finally {
+      closeSync(fd);
+    }
   };
   const latestStart = (unit: ServiceUnit, shown: Map<string, string>, active: boolean, whose: string):
     { invocation: string; started: string } | null => {
@@ -1671,18 +1709,13 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         const shellLog = join(record.workingDirectory, 'logs', 'shell.log');
         fail(`${unit.name} is loaded but not running${exit === undefined ? '' : `; it last exited with ${exit}`}. ` +
           `Its log is ${shellLog}.`);
-        const text = readOr(shellLog);
-        if (text === null) lines.push(`Its log ${shellLog} isn't there.`);
-        else {
-          log(text, 'The last lines of the shell daemon\'s log file, which can hold earlier loads and more than one start',
-            true);
-        }
+        fileLog(shellLog, 'The last lines of the shell daemon\'s log file, which can hold earlier loads and more than one start',
+          `Its log ${shellLog} isn't there.`);
       }
     }
     if (record.logs.kind === 'file') {
-      const text = readOr(record.logs.path);
-      if (text === null) lines.push(`Its log ${record.logs.path} isn't there yet.`);
-      else log(text, 'The last lines of the host\'s log file, which can hold earlier loads and more than one start', true);
+      fileLog(record.logs.path, 'The last lines of the host\'s log file, which can hold earlier loads and more than one start',
+        `Its log ${record.logs.path} isn't there yet.`);
     }
   }
   return { passed, lines };
@@ -1744,18 +1777,20 @@ function endedStart(sys: ServiceSystem, env: Record<string, string>, name: strin
 }
 
 function logLines(original: string, text: string, what: string, lines: string[], ended: boolean,
-  beforeExcerpt: () => void): void {
+  beforeExcerpt: () => void, scope?: string): void {
   const rendered = text.split('\n');
   const logged = original.split('\n').map((line, at) => ({ original: line, text: rendered[at]!,
     matches: REPORT_WORDS.test(line) })).filter(({ original }) => original.trim() !== '');
   if (logged.length === 0) {
     lines.push(`${what}: nothing.`);
+    if (scope !== undefined) lines.push(`  ${scope}`);
     return;
   }
   beforeExcerpt();
   if (ended) {
     const hidden = Math.max(0, logged.length - LOG_LINES);
     lines.push(`${what}:`);
+    if (scope !== undefined) lines.push(`  ${scope}`);
     if (hidden > 0) lines.push(`  ${hidden} earlier line${hidden === 1 ? '' : 's'} not shown.`);
     for (const line of logged.slice(hidden)) lines.push(`  | ${line.text}`);
     return;
@@ -1769,6 +1804,24 @@ function logLines(original: string, text: string, what: string, lines: string[],
   });
   const hidden = shown.filter((each) => !each).length;
   if (hidden > 0) lines.push(`  ${hidden} more line${hidden === 1 ? '' : 's'} not shown.`);
+}
+
+function readLogTail(fd: number, contextBytes: number): { bytes: Buffer; from: number; offset: number } {
+  const size = fstatSync(fd).size;
+  const windowStart = Math.max(0, size - LOG_BYTES);
+  const offset = Math.max(0, windowStart - contextBytes - 1);
+  const buffer = Buffer.alloc(size - offset);
+  let read = 0;
+  while (read < buffer.length) {
+    const count = readSync(fd, buffer, read, buffer.length - read, offset + read);
+    if (count === 0) break;
+    read += count;
+  }
+  const bytes = buffer.subarray(0, read);
+  let from = Math.min(read, windowStart - offset);
+  // Buffer decoding would turn a partial UTF-8 character at the cut into a replacement character.
+  while (from < bytes.length && (bytes[from]! & 0xc0) === 0x80) from++;
+  return { bytes, from, offset };
 }
 
 function readOr(path: string): string | null {
