@@ -127,6 +127,24 @@ describe('the live push of a long message', () => {
     c.ws.close();
   });
 
+  test("a message a client isn't sent, between two runs, ends the first, so the second's entry has the index a reload gives", async () => {
+    const c = await connect();
+    (c.client as { scopes: Set<string> | null }).scopes = new Set(['messages']);
+    const already = appendedTo(c.client).length;
+    cm.addMessage('user', [{ type: 'text', text: LONG }]);
+    cm.addMessage('agent', [{ type: 'thinking', thinking: 'weighing it' }]);
+    cm.addMessage('user', [{ type: 'text', text: LONG.replace('long-echo-probe', 'second-probe') }]);
+    await Promise.resolve();
+    const live = appendedTo(c.client).slice(already);
+    expect(live).toHaveLength(2);
+    const again = await connect();
+    const last = (again.welcome.messages as Array<Record<string, unknown>>).at(-1)!;
+    expect((last.blocks as Array<{ text?: string }>)[0]!.text!.startsWith('second-probe ')).toBe(true);
+    expect(live[1]!.index).toBe(last.index);
+    again.ws.close();
+    c.ws.close();
+  });
+
   test('two runs back to back go out as two entries, in order', async () => {
     const c = await connect();
     cm.addMessage('user', [{ type: 'text', text: `first ${LONG}` }]);

@@ -602,6 +602,7 @@ export class WebUiModule implements Module {
             }
             return;
           }
+          flushRun();
           pushEntry(toWireEntry(message, index));
         } catch (err) {
           console.error('[webui] message-appended projection failed:', err);
