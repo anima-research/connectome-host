@@ -835,6 +835,9 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' explicit 
   expect(readFileSync(join(copy.work, '.env'), 'utf-8')).toBe(settings);
   expect(readServiceRecord(copy.root)!.workingDirectory).toBe(copy.work);
   expect(readServiceRecord(copy.root)!.shellSettings).toBeUndefined();
+  const notice = f.out.find((line) => line.includes('This run uses the explicit recipe'))!;
+  expect(notice).toContain("It isn't used here. This run uses the explicit recipe");
+  expect(notice).not.toContain('Name the recipe');
 });
 
 for (const platform of ['linux', 'darwin'] as const) test(platform + ' a moved service waits for explicit native retirement before replacement', async () => {
@@ -857,6 +860,9 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a moved s
   const said = [...f.out, ...f.err].join('\n');
   expect(said).toContain(previous.units.host.name);
   expect(said).toContain(platform === 'darwin' ? 'launchctl bootout' : 'systemctl --user');
+  expect(said).not.toContain('Name the recipe');
+  expect(said.indexOf('Then repeat ')).toBeGreaterThan(said.indexOf('Before replacing its record'));
+  expect(said).toEndWith(' service install <recipe>.');
   for (const unit of units) {
     expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
     if (platform === 'darwin') f.system.run('launchctl', ['bootout', 'gui/1001/' + unit.name], {});
@@ -927,6 +933,8 @@ test('an uncheckable foreign directory refuses without treating it as a missing 
   f.systemd.calls.length = f.out.length = f.err.length = 0;
   expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(1);
   expect(f.err.join('\n')).toContain("recorded directory can't be checked");
+  expect(f.err.join('\n')).not.toContain('Name the recipe');
+  expect(f.err.join('\n')).toEndWith(`Then repeat ${join(copy.root, 'connectome')} service install <recipe>.`);
   expect(f.systemd.calls).toEqual([]);
   expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
   expect(readFileSync(previous.units.host.file, 'utf-8')).toBe(file);
@@ -1538,6 +1546,7 @@ test('a service record that can\'t be read is written again when the recipe is g
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.out.join('\n')).toContain(join(at.root, 'service.json'));
   expect(f.out.join('\n')).toContain('This run replaces it with a new record once it has written a unit file.');
+  expect(f.out.join('\n')).not.toContain('Name the recipe');
   expect(readServiceRecord(at.root)!.hostArgs[0]).toBe(at.recipe);
 });
 
@@ -2526,8 +2535,8 @@ test('every command service prints spells the install\'s own command by its full
   expect(await installService(elsewhere.ctx(['install']), elsewhere.system)).toBe(2);
   expect(elsewhere.err).toEqual([`connectome: the first install needs the recipe: ${full} service install <recipe>`]);
   expect(await runService(elsewhere.ctx(['stop']), elsewhere.system)).toBe(1);
-  expect(elsewhere.err.at(-1)).toBe(`connectome: No service is set up for this install yet: ${full} service install ` +
-    '<recipe> sets one up.');
+  expect(elsewhere.err.at(-1)).toBe(`connectome: No service is recorded for this install (${join(at.root, 'service.json')}). ` +
+    `${full} service install <recipe> sets one up.`);
   expect(await installService(elsewhere.ctx(['install', at.recipe]), elsewhere.system)).toBe(0);
   expect(elsewhere.out).toContain(`  stop it: ${full} service stop`);
   expect(elsewhere.out).toContain(`  start it: ${full} service start`);
@@ -3057,8 +3066,8 @@ test('stop and start with no service recorded say how to set one up, and run not
   for (const verb of ['stop', 'start']) {
     f.err.length = 0;
     expect(await runService(f.ctx([verb]), f.system)).toBe(1);
-    expect(f.err).toEqual(['connectome: No service is set up for this install yet: connectome service install <recipe> ' +
-      'sets one up.']);
+    expect(f.err).toEqual([`connectome: No service is recorded for this install (${join(at.root, 'service.json')}). ` +
+      'connectome service install <recipe> sets one up.']);
   }
   expect(f.systemd.calls).toEqual([]);
 });
@@ -3072,7 +3081,7 @@ test('stop and start with a record that can\'t be read name the file and the way
     expect(await runService(f.ctx([verb]), f.system)).toBe(1);
     expect(f.err).toHaveLength(1);
     expect(f.err[0]).toContain(join(at.root, 'service.json'));
-    expect(f.err[0]).toEndWith('Name the recipe to write the service and its record again: connectome service install <recipe>');
+    expect(f.err[0]).toEndWith('Name the recipe to write the service and its record again: connectome service install <recipe>.');
   }
   expect(f.systemd.calls).toEqual([]);
 });

@@ -246,7 +246,7 @@ test('with a service recorded and no host running, bare, send and update say to 
   writeFileSync(join(root, 'service.json'), 'not json');
   const unread = await run(path, ['send', 'hello'], root);
   expect(unread.status).toBe(1);
-  expect(unread.err).toContain(`${path} service install <recipe>`);
+  expect(unread.err).toContain(`${path} service install <recipe>. Then send again.`);
   expect(unread.err).not.toContain('If no host is running, have its service start it with');
   expect(unread.err).not.toContain('    at ');
 });

@@ -46,7 +46,7 @@ const serviceUsage = (cmd: string) => `${cmd} service install [<recipe>] | stop 
 const RUNNING = new Set(['active', 'activating', 'reloading']);
 const STOPPING = new Set([...RUNNING, 'deactivating']);
 const recordAgain = (cmd: string) =>
-  `Name the recipe to write the service and its record again: ${cmd} service install <recipe>`;
+  `Name the recipe to write the service and its record again: ${cmd} service install <recipe>.`;
 const guessedSecretsNotice = (work: string) =>
   `The secret-name list ${join(work, '.setup', 'stored-secrets.json')} is missing, so additional .env names were ` +
   'treated as potentially secret. For later service checks, write it as a JSON list of the name of every secret, ' +
@@ -290,18 +290,18 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   }
   let old: ServiceRecord | null = null;
   try {
-    old = readServiceRecordFile(root, cmd);
+    old = readServiceRecordFile(root, cmd, given === undefined);
   } catch (error) {
     if (given === undefined) {
       ctx.err(`connectome: ${errorText(error)}`);
       return 1;
     }
-    ctx.out(`${errorText(error)} This run replaces it with a new record once it has written a unit file.`);
+    ctx.out(`${errorText(error).replace(/\.+$/, '')}. This run replaces it with a new record once it has written a unit file.`);
   }
   if (old !== null && !sameDirectory(old.workingDirectory, workingDirOf(root))) {
-    if (given === undefined) throw new Refusal(foreignServiceWords(root, old, cmd));
+    if (given === undefined) throw new Refusal(`${foreignServiceWords(root, old)} ${recordAgain(cmd)}`);
     foreignRecordReplaceable(root, old, sys, cmd);
-    ctx.out(`${foreignServiceWords(root, old, cmd)} This run uses the explicit recipe and records only this directory's units.`);
+    ctx.out(`${foreignServiceWords(root, old)} This run uses the explicit recipe and records only this directory's units.`);
     old = null;
   }
   if (given === undefined && old === null) {
@@ -312,9 +312,9 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   return install(ctx, sys, root, recipe, old, cmd);
 }
 
-function foreignServiceWords(root: string, record: ServiceRecord, cmd: string): string {
+function foreignServiceWords(root: string, record: ServiceRecord): string {
   return `The service record at ${join(root, 'service.json')} names ${record.workingDirectory}, which can't be shown ` +
-    `to be this working directory, ${workingDirOf(root)}. It isn't used here. ${recordAgain(cmd)}`;
+    `to be this working directory, ${workingDirOf(root)}. It isn't used here.`;
 }
 
 function foreignRecordReplaceable(root: string, record: ServiceRecord, sys: ServiceSystem, cmd: string): void {
@@ -322,11 +322,13 @@ function foreignRecordReplaceable(root: string, record: ServiceRecord, sys: Serv
   try {
     directory = statSync(record.workingDirectory, { throwIfNoEntry: false });
   } catch (error) {
-    throw new Refusal(`${foreignServiceWords(root, record, cmd)} Its recorded directory can't be checked: ${errorText(error)}.`);
+    throw new Refusal(`${foreignServiceWords(root, record)} Its recorded directory can't be checked: ${errorText(error)}. ` +
+      `Resolve that access problem. Then repeat ${cmd} service install <recipe>.`);
   }
   if (directory !== undefined) {
-    if (!directory.isDirectory()) throw new Refusal(`${foreignServiceWords(root, record, cmd)} ` +
-      'The recorded working-directory path is not a directory; resolve that before replacing this record.');
+    if (!directory.isDirectory()) throw new Refusal(`${foreignServiceWords(root, record)} ` +
+      'The recorded working-directory path is not a directory; resolve that before replacing this record. ' +
+      `Then repeat ${cmd} service install <recipe>.`);
     return;
   }
   const env = childEnv(sys);
@@ -336,7 +338,7 @@ function foreignRecordReplaceable(root: string, record: ServiceRecord, sys: Serv
         systemctlLine(sys, 'daemon-reload')
       : `${stopLine(sys, record.manager, unit.name)} and remove ${shellWord(unit.file)} if present`;
     const refuse = (why: string): never => {
-      throw new Refusal(`${foreignServiceWords(root, record, cmd)} The recorded directory isn't present, and ${why}. ` +
+      throw new Refusal(`${foreignServiceWords(root, record)} The recorded directory isn't present, and ${why}. ` +
         `Before replacing its record, retire ${unit.name} with its native manager and remove its file. ` +
         `If it belongs to the original install: ${next}. Then repeat ${cmd} service install <recipe>.`);
     };
@@ -660,7 +662,8 @@ async function readyAndChecked(ctx: CliContext, root: string, record: ServiceRec
 function recordOf(root: string, cmd: string): ServiceRecord {
   const record = readServiceRecord(root, cmd);
   if (record === null) {
-    throw new Refusal(`No service is set up for this install yet: ${cmd} service install <recipe> sets one up.`);
+    throw new Refusal(`No service is recorded for this install (${join(root, 'service.json')}). ` +
+      `${cmd} service install <recipe> sets one up.`);
   }
   return record;
 }
@@ -1565,12 +1568,12 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
 export function readServiceRecord(root: string, cmd = typedCommand(root)): ServiceRecord | null {
   const record = readServiceRecordFile(root, cmd);
   if (record !== null && !sameDirectory(record.workingDirectory, workingDirOf(root))) {
-    throw new ContractError(foreignServiceWords(root, record, cmd));
+    throw new ContractError(`${foreignServiceWords(root, record)} ${recordAgain(cmd)}`);
   }
   return record;
 }
 
-function readServiceRecordFile(root: string, cmd: string): ServiceRecord | null {
+function readServiceRecordFile(root: string, cmd: string, repair = true): ServiceRecord | null {
   try {
     const path = join(root, 'service.json');
     const record = readRecord<ServiceRecord>(path, 'service record');
@@ -1590,7 +1593,7 @@ function readServiceRecordFile(root: string, cmd: string): ServiceRecord | null 
     if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
     return record;
   } catch (error) {
-    throw new ContractError(`${errorText(error)} ${recordAgain(cmd)}`);
+    throw new ContractError(`${errorText(error)}${repair ? ' ' + recordAgain(cmd) : ''}`);
   }
 }
 

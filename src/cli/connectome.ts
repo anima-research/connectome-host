@@ -438,7 +438,7 @@ function startHost(root: string, then: string): string {
   try {
     recorded = readServiceRecord(root) !== null;
   } catch (error) {
-    return `${errorText(error)}. Then ${then}.`;
+    return `${errorText(error).replace(/\.+$/, '')}. Then ${then}.`;
   }
   return recorded
     ? `If no host is running, start it with \`${typedCommand(root)} service start\`, then ${then}.`
