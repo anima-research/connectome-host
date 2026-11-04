@@ -1,13 +1,14 @@
 - The Web UI's composer attaches images: pick them with `+ img`, paste them,
   or drop them on the composer. They are sent with the message and stored as
   image blocks ahead of its text, and show in the transcript like any other
-  image. The browser shrinks an image that is too big for the model API
-  (over 3.75 MB or 8000 px on a side) and converts formats the API doesn't
-  take, such as BMP, and refuses a file that is cut short, or a PNG that
-  fails its checksum; the host checks every image again and refuses,
-  saying why, a message with an image whose format, size or dimensions the
-  API would refuse, or that is cut short or a damaged PNG, so no such image
-  is stored. The browser redraws an animation as one still frame, marked
+  image, and in the TUI's history replay as a line such as
+  `You: [2 images]`. The browser shrinks an image over 3.75 MB or 3,000 px
+  on a side, converts formats the API doesn't take, such as BMP, and
+  refuses a file that is cut short, or a PNG that fails its checksum; the
+  host checks every image again and refuses, saying why, a message with an
+  image in a format the API doesn't take, over 3.75 MB or 3,000 px on a
+  side, or cut short or a damaged PNG, so no such image is stored. The
+  browser redraws an animation as one still frame, marked
   "still frame", since Claude's docs say only the first frame is used; a
   host on `openai-responses` or `openai-codex`, where OpenAI's docs list
   only non-animated GIF, refuses an animated image from any client. A
@@ -17,10 +18,12 @@
   is marked so until its echo comes. Such a row stays through a change of
   session or branch too, naming the session or branch it was sent in while
   another is shown; only `/clear`, or a reload, drops it.
-  Up to 8 images per message, and no more images or base64 than the recipe
-  keeps live (6 images by default); a recipe that can keep more than 20
-  live holds them to 3,000 px on a side, under the stricter limit the model
-  APIs apply to requests that carry that many. Images can't be routed to a
+  Up to 8 images per message, and, under the host's own strategies
+  (`autobiographical`, `frontdesk`), no more images or base64 than the
+  recipe keeps live (6 images by default). Every image is held to 3,000 px
+  on a side, which keeps it under Claude's stricter limit for a request
+  carrying more than 20 images and under OpenAI's limit of 30,000 patches an
+  image, whichever provider the recipe names later. Images can't be routed to a
   fleet child. A host whose recipe uses `passthrough`, which keeps every
   image in every request, takes no composer images. A message that would
   come near `imageStripDepthTokens` as soon as it is stored, where its
