@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
 import { listenForPeers } from '../lib/strategies/control.mjs';
 import { png, zlibStored } from '../lib/strategies/png.mjs';
+import { MAX_SIDE, MAX_TEXT } from '../lib/strategies/results.mjs';
 
 const SERVER = fileURLToPath(new URL('../lib/strategies/mcpl-server.mjs', import.meta.url));
 const ANSWER_BOUND_MS = 10_000;
@@ -140,13 +141,14 @@ test('S3: arguments the server cannot honour get an error result naming what is 
       [{ kind: 'json', size: 12, canary: 'CANARY-J' }, /size/],
       [{ kind: 'prose', size: 100 }, /canary/],
       [{ kind: 'prose', size: 1.5, canary: 'C' }, /size/],
-      [{ kind: 'prose', size: 1e9, canary: 'C' }, /size/],
+      [{ kind: 'prose', size: MAX_TEXT + 1, canary: 'C' }, /size/],
       [{ kind: 'image', canary: 'C' }, /width/],
       [{ kind: 'image', width: 0, height: 4, canary: 'C' }, /width/],
-      [{ kind: 'image', width: 2049, height: 4, canary: 'C' }, /width/],
-      [{ kind: 'image', width: 4, height: 2049, canary: 'C' }, /height/],
-      [{ kind: 'mixed', width: 2049, height: 4, size: 100, canary: 'C' }, /width/],
-      [{ kind: 'mixed', width: 4, height: 2049, size: 100, canary: 'C' }, /height/],
+      [{ kind: 'image', width: MAX_SIDE + 1, height: 4, canary: 'C' }, /width/],
+      [{ kind: 'image', width: 4, height: MAX_SIDE + 1, canary: 'C' }, /height/],
+      [{ kind: 'mixed', width: MAX_SIDE + 1, height: 4, size: 100, canary: 'C' }, /width/],
+      [{ kind: 'mixed', width: 4, height: MAX_SIDE + 1, size: 100, canary: 'C' }, /height/],
+      [{ kind: 'mixed', width: 4, height: 4, size: MAX_TEXT + 1, canary: 'C' }, /size/],
     ];
     for (const [args, names] of cases) {
       const r = await h.call(args);

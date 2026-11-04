@@ -2,8 +2,8 @@ import { png } from './png.mjs';
 import { WORDS, prose, seeded } from './prose.mjs';
 
 export const KINDS = ['prose', 'code', 'json', 'image', 'mixed'];
-const MAX_TEXT = 2_000_000;
-const MAX_SIDE = 2048;
+export const MAX_TEXT = 306_000_000;
+export const MAX_SIDE = 2708;
 
 const IDENTS = ['value', 'index', 'record', 'buffer', 'offset', 'cursor', 'result', 'total', 'entry', 'count'];
 const CALLS = ['read', 'merge', 'split', 'store', 'parse', 'apply', 'shift', 'fold'];
