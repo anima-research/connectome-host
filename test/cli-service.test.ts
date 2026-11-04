@@ -56,6 +56,16 @@ function shellPackage(work: string): void {
   }));
 }
 
+function plistFields(args: string[], fields: Record<string, string | number>, converts = true): Ran {
+  if (args[0] === '-convert') return converts ? ok(JSON.stringify(fields))
+    : { status: 1, stdout: 'invalid object in plist for destination format\n', stderr: '' };
+  if (args[0] === '-lint') return ok('fixture: OK\n');
+  const value = fields[args[1]!];
+  if (value === undefined) return { status: 1, stdout: 'No value at that key path\n', stderr: '' };
+  if (args[0] === '-type') return ok((typeof value === 'string' ? 'string' : 'integer') + '\n');
+  return ok(String(value) + '\n');
+}
+
 interface Loaded {
   workingDirectory: string;
   restart: string;
@@ -701,7 +711,7 @@ test('macOS refuses another installed agent in this working directory, including
   writeFileSync(other, 'bplist00fixture');
   const run = f.system.run;
   f.system.run = (command, args, env) => command === 'plutil'
-    ? ok(JSON.stringify({ Label: 'other.resident', WorkingDirectory: at.work }))
+    ? plistFields(args, { Label: 'other.resident', WorkingDirectory: at.work })
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(existsSync(agentPlist(at))).toBe(false);
@@ -735,7 +745,7 @@ test('a converted agent for another working directory leaves this install availa
   writeFileSync(other, 'bplist00fixture');
   const run = f.system.run;
   f.system.run = (command, args, env) => command === 'plutil'
-    ? ok(JSON.stringify({ Label: 'another.job', WorkingDirectory: at.home }))
+    ? plistFields(args, { Label: 'another.job', WorkingDirectory: at.home })
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(readFileSync(other, 'utf-8')).toBe('bplist00fixture');
@@ -759,6 +769,35 @@ test('a check with a damaged service record gives the explicit-recipe repair ins
   expect(checked.lines.join('\n')).toContain(join(at.root, 'service.json'));
   expect(checked.lines.join('\n')).toContain('service install <recipe>');
 });
+
+for (const property of ['date', 'data']) test('a valid agent with an unrelated ' + property + ' field still blocks a second host', async () => {
+  const at = install('  Résident_日本  ');
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'typed.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00 ' + property + ' fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? plistFields(args, { Label: 'older.host', WorkingDirectory: at.work }, false)
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('older.host');
+  expect(existsSync(agentPlist(at))).toBe(false);
+});
+
+for (const fields of [{ Label: 'unrelated.job' }, { Label: 'unrelated.job', WorkingDirectory: 10 }]) {
+  test('an absent or non-string WorkingDirectory is not a matching agent: ' + JSON.stringify(fields), async () => {
+    const at = install();
+    const f = fake(at, { platform: 'darwin' });
+    const other = join(at.home, 'Library', 'LaunchAgents', 'other.plist');
+    mkdirSync(dirname(other), { recursive: true });
+    writeFileSync(other, 'fixture');
+    const run = f.system.run;
+    f.system.run = (command, args, env) => command === 'plutil' ? plistFields(args, fields) : run(command, args, env);
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    expect(f.out.join('\n')).not.toContain("isn't ruled out");
+  });
+}
 
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();

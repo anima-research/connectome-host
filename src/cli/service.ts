@@ -1094,26 +1094,32 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warn(dir, errorText(error));
     return;
   }
+  const field = (path: string, key: string): string | null => {
+    const type = sys.run('plutil', ['-type', key, path], env);
+    if (type.status !== 0) {
+      const lint = sys.run('plutil', ['-lint', path], env);
+      if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
+      return null;
+    }
+    if (type.stdout !== 'string\n') return null;
+    const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
+    if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
+    // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
+    return raw.stdout.replace(/\n$/, '');
+  };
   for (const file of files.filter((file) => file.endsWith('.plist'))) {
     const path = join(dir, file);
     if (path === names.host.file || path === names.shell.file) continue;
-    const ran = sys.run('plutil', ['-convert', 'json', '-o', '-', path], env);
-    if (ran.status !== 0) {
-      warn(path, ran.stderr.trim() || ran.stdout.trim() || `plutil exited with ${ran.status}`);
-      continue;
-    }
-    let plist: Record<string, unknown>;
+    let label: string | null;
     try {
-      const parsed: unknown = JSON.parse(ran.stdout);
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a plist dictionary');
-      plist = parsed as Record<string, unknown>;
+      const directory = field(path, 'WorkingDirectory');
+      if (directory === null || realOrResolved(directory) !== realOrResolved(work)) continue;
+      label = field(path, 'Label');
     } catch (error) {
       warn(path, errorText(error));
       continue;
     }
-    if (typeof plist.WorkingDirectory !== 'string' || realOrResolved(plist.WorkingDirectory) !== realOrResolved(work)) continue;
-    const label = plist.Label;
-    if (typeof label !== 'string' || label === '') {
+    if (label === null || label === '') {
       warn(path, 'no launch-agent Label');
       continue;
     }
