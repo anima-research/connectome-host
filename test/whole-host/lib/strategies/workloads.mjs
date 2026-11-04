@@ -259,17 +259,25 @@ export const WORKLOADS = {
       const w = writer(ctx, 'W4');
       return Array.from({ length: this.turns }, (_, i) => w.turn(i + 1, { thinking: w.between(SIZES.call), callId: () => `t${ctx.seed}_${i + 1}` }));
     },
+    // W4's script gives each reply one call, with its thinking ahead of it, so each of its calls in a message needs a
+    // thinking block between the call before it and itself: membrane merges two replies left adjacent into one.
     check(run, ctx) {
       const own = new RegExp(`^t${ctx.seed}_\\d+$`);
       const out = [];
       let judged = 0;
       for (const r of run.records.filter((x) => x.kind === 'agent')) {
         for (const m of r.messages ?? []) {
-          const calls = m.blocks.filter((b) => b.type === 'tool_use' && own.test(String(b.toolUseId))).map((b) => b.toolUseId);
-          if (!calls.length) continue;
-          judged++;
-          const first = m.blocks.findIndex((b) => b.type === 'tool_use' && own.test(String(b.toolUseId)));
-          if (!m.blocks.slice(0, first).some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')) out.push({ step: r.step, message: `request ${r.id}: a call went out without its thinking (${calls.join(', ')})` });
+          let since = 0;
+          const parted = [];
+          m.blocks.forEach((b, k) => {
+            if (b.type !== 'tool_use') return;
+            if (own.test(String(b.toolUseId))) {
+              judged++;
+              if (!m.blocks.slice(since, k).some((x) => x.type === 'thinking' || x.type === 'redacted_thinking')) parted.push(b.toolUseId);
+            }
+            since = k + 1;
+          });
+          if (parted.length) out.push({ step: r.step, message: `request ${r.id}: a call went out without its thinking (${parted.join(', ')})` });
         }
       }
       return withJudged(out, judged);
@@ -298,7 +306,7 @@ export const WORKLOADS = {
       return steps;
     },
     check(run, ctx) {
-      return toolBlocksLost(run);
+      return toolBlocksLost(run, Array.from({ length: this.turns }, (_, i) => `t${ctx.seed}_${i + 1}`));
     },
   },
 
@@ -333,13 +341,17 @@ export const WORKLOADS = {
     },
     // membrane 0.8.0's normalizer repairs both shapes on the wire (normalize-tool-pairs.ts), so a request that
     // reaches the stand-in shows them only as its repair marks.
-    check(run) {
+    check(run, ctx) {
       const requests = run.records.filter((r) => r.kind === 'agent');
       const marks = requests.flatMap((r) => (r.messages ?? []).flatMap((m) => m.blocks.flatMap((b) => (b.repairs ?? []).map((mark) => ({ r, mark })))));
       const membrane = marks.filter((x) => x.mark.startsWith('membrane:'));
       const own = marks.length - membrane.length;
       const out = membrane.map(({ r, mark }) => ({ step: r.step, request: r.id, message: `request ${r.id} carries membrane's ${mark.slice('membrane:'.length)} repair mark, so context-manager handed it a call or result unpaired` }));
-      return withJudged(out, requests.length, `${requests.length} request(s), ${membrane.length} membrane repair mark(s), ${own} of context-manager's own`);
+      const held = `${ctx.seed}.2`;
+      const at = run.log.filter((e) => e.step === held);
+      if (!at.some((e) => e.kind === 'notice' && e.peer === 'server' && e.notice === 'held')) out.push({ step: held, message: 'the fixture server held no call at this step, so the call it should hold never reached it' });
+      else if (!at.some((e) => e.kind === 'ipc' && e.event?.type === 'tool:failed' && String(e.event.error ?? '').includes('didn\'t answer within'))) out.push({ step: held, message: 'the call the fixture server held never timed out at this step' });
+      return withJudged(out, requests.length + 1, `${requests.length} request(s), ${membrane.length} membrane repair mark(s), ${own} of context-manager's own, and the held call's timeout`);
     },
   },
 
@@ -559,15 +571,30 @@ export const WORKLOADS = {
       const placed = pinsAt('8.level1') ?? [];
       if (!placed.length) return withJudged([{ step: `${ctx.seed}.8.level1`, message: 'couldn\'t judge: the panel listed no pin once the last was added' }], 0);
       const named = (p) => `${p.kind}${p.level !== undefined ? ` at L${p.level}` : ''}${p.maxLevel !== undefined ? ` to L${p.maxLevel}` : ''}`;
+      const protection = (p) => JSON.stringify([p.kind, p.level, p.maxLevel, p.firstMessageId, p.lastMessageId]);
       const out = [];
       let judged = 0;
+      let before = null;
+      for (const step of ['2.level0', '2.max0', '3.result', '4.max2', '4.level1', '8.document', '8.level1']) {
+        const listed = pinsAt(step);
+        if (!Array.isArray(listed)) { out.push({ step: `${ctx.seed}.${step}`, message: 'couldn\'t judge: the panel\'s answer to this pin holds no list' }); before = null; continue; }
+        if (before) {
+          judged++;
+          const gone = before.filter((p) => !listed.some((q) => q.id === p.id));
+          const added = listed.filter((p) => !before.some((q) => q.id === p.id));
+          if (gone.length || added.length !== 1) out.push({ step: `${ctx.seed}.${step}`, message: `adding this pin listed ${added.length} new pin(s) or mark(s), and ${gone.length} listed before it are gone${gone.length ? `: ${gone.map(named).join(', ')}` : ''}` });
+        }
+        before = listed;
+      }
       for (const step of ['12.pins', '14.pins']) {
         const listed = pinsAt(step);
         if (!Array.isArray(listed)) { out.push({ step: `${ctx.seed}.${step}`, message: 'couldn\'t judge: the panel\'s pins answer holds no list' }); continue; }
         judged += placed.length;
-        const ids = new Set(listed.map((p) => p.id));
-        const gone = placed.filter((p) => !ids.has(p.id));
+        const now = new Map(listed.map((p) => [p.id, p]));
+        const gone = placed.filter((p) => !now.has(p.id));
+        const changed = placed.filter((p) => now.has(p.id) && protection(now.get(p.id)) !== protection(p));
         if (gone.length) out.push({ step: `${ctx.seed}.${step}`, message: `${gone.length} of the ${placed.length} pins and marks placed by step 8 are gone: ${gone.map(named).join(', ')}` });
+        if (changed.length) out.push({ step: `${ctx.seed}.${step}`, message: `${changed.length} of the ${placed.length} pins and marks placed by step 8 no longer protect what they did: ${changed.map((p) => `${named(p)} is now ${named(now.get(p.id))}${now.get(p.id).firstMessageId !== p.firstMessageId || now.get(p.id).lastMessageId !== p.lastMessageId ? ' over another range' : ''}`).join(', ')}` });
       }
       return withJudged(out, judged);
     },
@@ -583,7 +610,7 @@ function restoredWithin(run, agent, stepOf, noun) {
   return withJudged([15, 16].filter((n) => outcome(n) !== 'compiled').map((n) => ({ step: stepOf(n), message: `${noun} ${n}: ${outcome(n)} ${n - 13} turn(s) after the budget was restored` })), 2);
 }
 
-export function toolBlocksLost(run) {
+export function toolBlocksLost(run, calls = []) {
   const reads = readsOf(run, 'messages');
   const failed = reads.find((read) => !Array.isArray(read.answer ?? []));
   if (failed) return withJudged([{ step: failed.step ?? null, message: `couldn't judge: the store's messages couldn't be read${isUnreadable(failed.answer) ? ` (${failed.answer.unreadable})` : ''}` }], 0);
@@ -599,7 +626,10 @@ export function toolBlocksLost(run) {
   const paired = requestPairs(run.records, run.log, FIXTURE_AGENT);
   if (!paired) return withJudged([{ step: null, message: 'couldn\'t judge: the log holds no request compile line to pair with the requests' }], 0);
   const out = [];
-  let judged = 0;
+  let judged = calls.length;
+  const stored = new Set(reads.flatMap((read) => read.answer ?? []).flatMap((m) => m.blocks).filter((b) => b.type === 'tool_use' || b.type === 'tool_result').map((b) => `${b.type}:${b.id ?? b.toolUseId}`));
+  const unstored = calls.flatMap((id) => [`tool_use:${id}`, `tool_result:${id}`]).filter((key) => !stored.has(key));
+  if (unstored.length) out.push({ step: null, message: `the store holds none of these blocks of the workload's calls: ${unstored.join(', ')}` });
   for (const { line, request } of paired.pairs) {
     const sent = new Set(blocksOf(request).filter((x) => x.b.type === 'tool_use' || x.b.type === 'tool_result').map((x) => `${x.b.type}:${x.b.toolUseId}`));
     const whole = new Set((line.messages ?? []).flatMap((m) => m.sources ?? []).filter((s) => /^r:[^!]+$/.test(s)).map((s) => groupOf.get(s.slice(2))).filter(Boolean));

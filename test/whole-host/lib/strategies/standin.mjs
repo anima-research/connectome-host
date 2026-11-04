@@ -53,8 +53,11 @@ const canaryOrder = (a, b) => {
 // count about 1.3 times its estimate, so its calibration has a gap to close.
 const RATE = { prose: 2.2, code: 1.9, json: 1.65, base64: 1.35, signature: 3.3 };
 const MESSAGE_OVERHEAD = 4;
-// The provider's prompt-cache lifetimes, 5 minutes or 1 hour, and its lookback of 20 blocks before a breakpoint:
-// https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+// The provider's prompt-cache lifetimes, 5 minutes or 1 hour, and its lookback: "The lookback window is 20 blocks.
+// The system checks at most 20 positions for each breakpoint, counting the breakpoint itself as the first", where "a
+// run of consecutive `tool_use` blocks counts as one position, and so does a run of consecutive `tool_result` blocks"
+// ("How automatic prefix checking works", https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+const LOOKBACK_POSITIONS = 20;
 const FIVE_MINUTES = 5 * 60_000;
 const ONE_HOUR = 60 * 60_000;
 // The provider's minimum cacheable prompt length, by model: a shorter prefix isn't cached, even marked
@@ -143,9 +146,10 @@ const holdsImage = (blocks) => blocks.some((b) => b?.type === 'image' || (b?.typ
 function elements(body) {
   const out = [];
   let h = sha(String(body.model));
-  const push = (value, tokens, marker) => {
+  const push = (value, tokens, marker, run = null) => {
     h = sha(h + JSON.stringify(unmarked(value)));
-    out.push({ hash: h, tokens, marker });
+    const last = out.at(-1);
+    out.push({ hash: h, tokens, marker, position: !last ? 0 : run && last.run === run ? last.position : last.position + 1, run });
   };
   for (const tool of body.tools || []) push({ tool }, Math.ceil(JSON.stringify(unmarked(tool)).length / RATE.json), tool.cache_control);
   for (const block of typeof body.system === 'string' ? [{ type: 'text', text: body.system }] : body.system || []) push({ system: block }, blockTokens(block), block.cache_control);
@@ -157,7 +161,7 @@ function elements(body) {
   h = sha(h + JSON.stringify([body.thinking?.type ?? null, body.thinking?.budget_tokens ?? null, images]));
   for (const [i, m] of (body.messages || []).entries()) {
     const blocks = blocksOf(m.content);
-    blocks.forEach((block, j) => push({ message: i, role: m.role, block }, blockTokens(block) + (j === 0 ? MESSAGE_OVERHEAD : 0), block.cache_control));
+    blocks.forEach((block, j) => push({ message: i, role: m.role, block }, blockTokens(block) + (j === 0 ? MESSAGE_OVERHEAD : 0), block.cache_control, ['tool_use', 'tool_result'].includes(block.type) ? block.type : null));
   }
   if (body.cache_control && out.length) out.at(-1).marker = out.at(-1).marker ?? body.cache_control;
   return out;
@@ -190,7 +194,11 @@ function bindingIdentity(body, beforeMessage) {
 
 const THINKING_CHARS = 600;
 
-const signatureFor = (identity, thinking) => `fx1.${Buffer.from(sha(`${identity}\n${thinking}`), 'hex').toString('base64url')}`;
+// A signature is as long as one digest: its first 22 characters bind the thinking to the request ahead of it, and the
+// last 21 are the thinking's own, which the extended-thinking page says the provider verifies on every model.
+const digest64 = (text) => Buffer.from(sha(text), 'hex').toString('base64url');
+const signatureFor = (identity, thinking) => `fx1.${digest64(`${identity}\n${thinking}`).slice(0, 22)}${digest64(thinking).slice(0, 21)}`;
+const signs = (signature, thinking) => typeof signature === 'string' && signature.startsWith('fx1.') && signature.slice(4 + 22) === digest64(thinking).slice(0, 21);
 
 const systemText = (body) => (typeof body.system === 'string' ? body.system : (body.system || []).map((b) => b.text || '').join(''));
 
@@ -254,7 +262,7 @@ function normalise(body, headers, mask) {
       thinking: body.thinking ?? null,
       system: systemBlocks.map(({ type, text, cache_control: cc, ...rest }) => {
         const other = { ...(type !== 'text' ? { type: type ?? null } : {}), ...rest };
-        return { text: mask(text ?? ''), cache: cc != null ? markerOf(cc) : null, ...(Object.keys(other).length ? { other: digest(other) } : {}) };
+        return { text: mask(text ?? ''), cache: cc === undefined ? null : cc === null ? 'null' : markerOf(cc), ...(Object.keys(other).length ? { other: digest(other) } : {}) };
       }),
       tools: (body.tools || []).map((t) => ({ name: t.name, sha: digest(t) })),
       rest: Object.keys(rest).length ? digest(rest) : null,
@@ -319,7 +327,7 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     const markers = els.map((e, i) => (e.marker ? i : -1)).filter((i) => i >= 0);
     let readAt = -1;
     for (const m of markers) {
-      for (let j = m; j >= Math.max(0, m - 20); j--) {
+      for (let j = m; j >= 0 && els[m].position - els[j].position < LOOKBACK_POSITIONS; j--) {
         const entry = cache.get(els[j].hash);
         if (entry && entry.expiresAt > clock && j > readAt) readAt = j;
       }
@@ -383,6 +391,16 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     if (!drop.length) return body;
     const gone = new Set(drop.map(({ i, j }) => `${i}.${j}`));
     return { ...body, messages: body.messages.map((m, i) => (Array.isArray(m.content) ? { ...m, content: m.content.filter((_, j) => !gone.has(`${i}.${j}`)) } : m)) };
+  }
+  // The extended-thinking page: "If thinking blocks are modified, the API returns a 400 `invalid_request_error`
+  // whose message contains `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be
+  // modified" (https://platform.claude.com/docs/en/build-with-claude/extended-thinking). It says nothing of earlier
+  // messages.
+  function modifiedThinking(body) {
+    const i = body.messages.findLastIndex((m) => m.role === 'assistant');
+    if (i < 0) return null;
+    const j = blocksOf(body.messages[i].content).findIndex((b) => b.type === 'thinking' && !signs(b.signature, b.thinking ?? ''));
+    return j < 0 ? null : `messages.${i}.content.${j}: \`thinking\` or \`redacted_thinking\` blocks in the latest assistant message cannot be modified`;
   }
   function bindingRefusal(body) {
     if (dropsUnbound(body)) return null;
@@ -481,26 +499,21 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : null;
     let body = null;
     try { body = raw ? JSON.parse(raw) : null; } catch { body = null; }
-    if (req.method === 'POST' && path.endsWith('/v1/messages/count_tokens')) {
-      const out = JSON.stringify({ input_tokens: body ? countTokens(asRead(body)) : 0 });
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(out);
-      return;
-    }
-    if (!(req.method === 'POST' && path.endsWith('/v1/messages'))) return sendError(res, 404, `stand-in: no route for ${req.method} ${path}`);
     const seq = records.length + 1;
     const id = `r${seq}`;
-    const { kind, agent, reason } = classify(body);
+    const routed = req.method === 'POST' && path.endsWith('/v1/messages');
+    const { kind, agent, reason } = routed ? classify(body) : { kind: 'unclassified', reason: `it goes to ${req.method} ${path}, which no run sends and the stand-in doesn't model` };
     const mask = runVaryingMasker();
     const record = { id, seq, at: Math.round(performance.now() - t0), arrived, clock, step: step?.id ?? null, kind, ...(agent ? { agent } : {}), ...(reason ? { reason } : {}), ...(body ? normalise(body, req.headers, mask) : {}) };
-    if (query && record.head) record.head.query = query;
+    if (query !== null && record.head) record.head.query = query;
+    if (path !== '/v1/messages' && record.head) record.head.path = path;
     if (kind === 'summariser' && body) record.texts = summariserTexts(body, mask);
     records.push(record);
     if (rawDir) writeFileSync(join(rawDir, `${id}.json`), raw);
     for (const cb of listeners) cb({ id, seq, kind, step: record.step, at: record.at, clock });
     if (kind === 'unclassified') {
       record.answer = { shape: 'refused' };
-      return sendError(res, 400, `stand-in: unclassified request ${id}: ${reason}`);
+      return sendError(res, routed ? 400 : 404, `stand-in: unclassified request ${id}: ${reason}`);
     }
     if (!Number.isInteger(body.max_tokens) || body.max_tokens < 1) {
       record.refused = 'max_tokens';
@@ -514,6 +527,13 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
       record.answer = { shape: 'refused' };
       if (kind === 'agent') answered[agent]++;
       return sendError(res, 400, `prompt is too long: ${tooLong} tokens > ${config.windowTokens} maximum`);
+    }
+    const modified = modifiedThinking(body);
+    if (modified) {
+      record.refused = 'thinking-modified';
+      record.answer = { shape: 'refused' };
+      if (kind === 'agent') answered[agent]++;
+      return sendError(res, 400, modified);
     }
     const binding = bindingRefusal(body);
     if (binding) {
@@ -560,6 +580,7 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     url: `http://127.0.0.1:${server.address().port}`,
     setStep(next) { step = next; answered.primary = 0; answered.sub = 0; badQueue.push(...(next?.badAnswers || [])); },
     setClock(ms) { clock = ms; },
+    countTokens(body) { return countTokens(asRead(body)); },
     onRequest(cb) { listeners.push(cb); },
     onHeld(cb) { heldListeners.push(cb); },
     releaseHeld() { held.shift()?.(); },

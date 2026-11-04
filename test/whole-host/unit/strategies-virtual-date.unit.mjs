@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,9 @@ import { listenForPeers } from '../lib/strategies/control.mjs';
 const PRELOAD = fileURLToPath(new URL('../lib/strategies/virtual-date.mjs', import.meta.url));
 const noBun = spawnSync('bun', ['--version']).status === 0 ? false : 'bun is not on PATH';
 const EPOCH = Date.UTC(2026, 0, 5, 9, 30, 0);
+const ANSWER_BOUND_MS = 10_000;
+const children = new Set();
+after(() => { for (const child of children) child.kill('SIGKILL'); });
 
 const TARGET = `
 import { statSync } from 'node:fs';
@@ -47,6 +50,8 @@ function setup() {
 
 function startTarget(target, env) {
   const child = spawn('bun', ['--preload', PRELOAD, target], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+  children.add(child);
+  child.once('exit', () => children.delete(child));
   const lines = [];
   const waiters = [];
   let buf = '';
@@ -63,9 +68,10 @@ function startTarget(target, env) {
       waiters.shift()?.();
     }
   });
-  const read = () => new Promise((resolve) => {
+  const read = () => new Promise((resolve, reject) => {
     const want = lines.length + 1;
-    waiters.push(() => { if (lines.length >= want) resolve(lines[want - 1]); });
+    const timer = setTimeout(() => reject(new Error(`the target answered no read within ${ANSWER_BOUND_MS} ms`)), ANSWER_BOUND_MS);
+    waiters.push(() => { if (lines.length >= want) { clearTimeout(timer); resolve(lines[want - 1]); } });
     child.stdin.write('read\n');
   });
   const exited = new Promise((r) => child.once('exit', (code) => r(code)));

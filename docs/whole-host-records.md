@@ -112,9 +112,10 @@ them.
 - **`H:KEY = model …, max_tokens …, stream …, thinking …, system …, tools …`.**
   One per distinct request head, keyed by a hash of it: the model, its limits,
   `tool_choice` and `thinking` as sent, each system block as a template with
-  its cache marker (`^5m`, `^1h`) and a hash of any other field it carries
+  its cache marker (`^5m`, `^1h`, or `^null` for a `cache_control` sent as null) and a hash of any other field it carries
   (`{HASH}`), each tool by name and a hash of its whole
-  definition, the `anthropic-beta` and `anthropic-version` headers, and
+  definition, the `anthropic-beta` and `anthropic-version` headers, the
+  path where it isn't `/v1/messages` and the query where there's one, and
   `rest`, a hash of anything else on the request body, where there's any.
 
 Then each step of the run, in order, with what it made happen. Within a step,
@@ -173,8 +174,9 @@ the lines of requests are in the order the stand-in received them:
   instruction. SHAPE is the stand-in's answer.
 - **`unclassified CARRIED, head H:KEY, body HASH`**: a request the stand-in
   could tell neither as an agent's nor as the summariser's, such as one whose
-  compression instruction it doesn't recognise. Check 1 fails the run, and the
-  line lets the view show the request.
+  compression instruction it doesn't recognise, or one to any route but
+  `/v1/messages`, `count_tokens` included, which no run sends. Check 1 fails
+  the run, and the line lets the view show the request.
 - **`action COMMAND`**: a host command the workload sent.
 - **`wrote NAME [T:…]`** and **`removed NAMES`**: a summary the store added or
   changed, with its text, and those it removed. The driver takes the test
@@ -203,10 +205,18 @@ request naming two image ledgers, or a call and a result naming different
 forks, still differs from one that names one. The naming goes by the text's
 form, so a text written in that form by anything else is named the same way.
 The stand-in's thinking signatures hash the request ahead of them and the
-thinking itself. On a configuration whose model binds, a block whose
-signature no longer matches is dropped where the request asks `drop_block`,
-as the host's binding requests do, and refused otherwise
-(`standin.mjs`, `unbound` and `bindingRefusal`). The digests mask them. The
+thinking itself, and carry a digest of the thinking alone. On every
+configuration, a request whose latest assistant message holds a thinking block
+whose text no longer matches that digest is refused with the extended-thinking
+page's 400: "If thinking blocks are modified, the API returns a 400
+`invalid_request_error` whose message contains `thinking` or
+`redacted_thinking` blocks in the latest assistant message cannot be
+modified" (https://platform.claude.com/docs/en/build-with-claude/extended-thinking,
+`modifiedThinking`). The page says nothing of earlier messages. On a
+configuration whose model binds, a block whose signature no longer matches
+the request ahead of it is dropped where the request asks `drop_block`, as the
+host's binding requests do, and refused otherwise (`unbound` and
+`bindingRefusal`). The digests mask the signatures. The
 stand-in's summary of a request is seeded from the canaries it carried, and
 names the last of them, in an order of digit runs by number and the rest by
 code unit, which needs no collation data that could differ between machines.
@@ -217,8 +227,12 @@ the prompt-caching page
 thinking page's "Thinking and prompt caching"
 (https://platform.claude.com/docs/en/build-with-claude/thinking). It reads a
 request's prefix as tools, then system, then messages. It reads back the
-longest prefix it holds unexpired that ends at a cache marker or at one of the
-20 blocks before one, and writes each later marker's prefix for its own
+longest prefix it holds unexpired that ends within the page's lookback of a
+cache marker: "The system checks at most 20 positions for each breakpoint,
+counting the breakpoint itself as the first", where "a run of consecutive
+`tool_use` blocks counts as one position, and so does a run of consecutive
+`tool_result` blocks" ("How automatic prefix checking works"). It writes each
+later marker's prefix for its own
 lifetimes of 5 minutes or an hour. It doesn't write a prefix shorter than the
 model's minimum cacheable length ("Cache limitations": 4,096 tokens for Claude
 Opus 4.6 and 512 for Claude Opus 5.5), measured in its own pricing. The
@@ -356,7 +370,11 @@ that couldn't run has its reason there, whole the same way.
   turns after the restore, which W8's property allows, and W11's from its cut
   to its restore. A step marked `retries` meets a scripted error that
   agent-framework retries, so check 1 owns only that `inference:failed`, and
-  the turn must still answer.
+  the turn must still answer. Check 1 also flags a step that leaves a scripted
+  reply unused, its agent's or its subagent's, since a run that doesn't use
+  its script hasn't exercised what the script sets up, such as W9's fork. A
+  step marked `mayFail` whose failure check 1 owns is exempt: its host
+  refused before asking for the rest.
 - **Check 2: declared products.** A continuation segment that declares a
   product exists to produce it, such as a merge, a request carrying both
   results with one an image, or a thinking-led call. Check 2 fails a segment

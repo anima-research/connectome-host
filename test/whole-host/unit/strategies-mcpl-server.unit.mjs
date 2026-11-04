@@ -191,7 +191,10 @@ test('S5: a command pending when the connection closes rejects at once', { timeo
   try {
     await ctl.waitConnected('server', { since: 0, timeoutMs: 5000 });
     const pending = ctl.hostCommand({ command: 'maintain' }, { timeoutMs: 600_000 });
-    while (!h.fromServer.some((m) => m.method === 'host/command')) await new Promise((r) => setTimeout(r, 10));
+    for (const until = performance.now() + 5000; !h.fromServer.some((m) => m.method === 'host/command');) {
+      if (performance.now() > until) assert.fail('the fake host was sent no host/command within 5 s');
+      await new Promise((r) => setTimeout(r, 10));
+    }
     h.child.kill('SIGKILL');
     await assert.rejects(pending, /connection closed/);
   } finally { await h.stop(); await ctl.close(); sock.done(); }

@@ -131,6 +131,14 @@ export function everyTurnAnswers(records, log = [], script = []) {
     if (e.kind === 'settle' && e.phase === 'end' && e.settled === false) flags.push({ check: 1, step: e.step, message: 'the checkpoint did not settle' });
     if (e.kind === 'undelivered') flags.push({ check: 1, step: e.step, message: `the turn's answer never reached its channel: the host reported mcpl:speech-route-failed${e.reason ? ` (${e.reason})` : ''}` });
   }
+  for (const s of script) {
+    for (const [agent, replies] of [['primary', s.replies], ['sub', s.sub?.replies]]) {
+      if (!Array.isArray(replies) || !replies.length) continue;
+      const used = records.filter((r) => r.kind === 'agent' && r.step === s.id && (r.agent ?? 'primary') === agent).length;
+      if (used >= replies.length || (mayFail.has(s.id) && log.some((e) => e.kind === 'ipc' && e.step === s.id && owned(e)))) continue;
+      flags.push({ check: 1, step: s.id, message: `${replies.length - used} of the step's ${replies.length} scripted ${agent === 'sub' ? 'subagent ' : ''}replies went unused, so what it scripts didn't all happen` });
+    }
+  }
   return flags;
 }
 
