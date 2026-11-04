@@ -223,3 +223,26 @@ test('X13: a block\'s fields its line doesn\'t otherwise show appear beside its 
   ]);
   assert.match(transcriptOf(body([user('hello')]), generated)[0], /^system\[0\]/, 'a request with no result has no form line');
 });
+
+test('X14: a cache_control of null shows as one, apart from none, on a system block, a tool, a message, a block and a result\'s inner block, as the record and the digest tell them apart', () => {
+  const generated = generatedTexts({ steps: [turn] });
+  const of = (cc) => {
+    const marked = cc === undefined ? {} : { cache_control: cc };
+    return transcriptOf(body([
+      { role: 'user', ...marked, content: [{ type: 'text', text: 'hello', ...marked }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'time--now', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: [{ type: 'text', text: 'ok', ...marked }] }] },
+    ], { system: [{ type: 'text', text: 'You are the fixture agent.', ...marked }], tools: TOOLS.map((t) => ({ ...t, ...marked })) }), generated);
+  };
+  const none = of(undefined);
+  const nulled = of(null);
+  assert.deepEqual(nulled.filter((l) => !none.includes(l)), [
+    'system[0] [cache null]: You are the fixture agent.',
+    nulled.find((l) => l.startsWith('tool time--now')),
+    '#0 user [cache null]',
+    '  text [cache null]: hello',
+    '    text [cache null]: ok',
+  ]);
+  assert.ok(nulled.find((l) => l.startsWith('tool time--now')).startsWith('tool time--now [cache null]'));
+  assert.equal(none.length, nulled.length);
+});

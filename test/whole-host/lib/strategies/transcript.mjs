@@ -122,7 +122,7 @@ export function transcriptOf(body, generated, seen = new Set()) {
     if (v && typeof v === 'object') return `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}:${renderedJson(x)}`).join(',')}}`;
     return JSON.stringify(v ?? null);
   };
-  const cache = (b) => (b?.cache_control != null ? ` [cache ${markerOf(b.cache_control)}]` : '');
+  const cache = (b) => (b?.cache_control === null ? ' [cache null]' : b?.cache_control !== undefined ? ` [cache ${markerOf(b.cache_control)}]` : '');
   const blocksOf = (content) => (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []);
 
   const besides = (b, shown, more = {}) => {
