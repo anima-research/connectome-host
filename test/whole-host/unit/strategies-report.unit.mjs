@@ -56,7 +56,7 @@ test('the expected failures read: none without the file, and an entry missing a 
   const { what, ...noWhat } = good;
   assert.throws(() => readExpected(at([noWhat]), ['H1/W1']), /entry 0: has no what: an entry covers one kind of flag/);
   const { match, ...noMatch } = good;
-  assert.throws(() => readExpected(at([noMatch]), ['H1/W1']), /entry 0: has no match: an entry covers the flags whose whole detail/);
+  assert.throws(() => readExpected(at([noMatch]), ['H1/W1']), /entry 0: has no match: an entry covers the flags whose detail as the report shows it/);
   for (const loose of ['m$', '^m', 'm', '^m\\$', '^known|other$', '^.*$', '^m+$', '^[mn]$', '^lost \\d messages$', '^a\\sb$', '^\\w$', '^\\bm$']) assert.throws(() => readExpected(at([{ ...good, match: loose }]), ['H1/W1']), /entry 0: has a match that isn't an escaped literal between \^ and \$/, loose);
   assert.equal(readExpected(at([{ ...good, match: '^a\\.b \\(c\\) \\$5 \\\\ \\[d\\]$' }]), ['H1/W1']).length, 1, 'an escaped metacharacter or backslash is literal');
   const pins = { ...good, what: 'fixture:request:pins' };
@@ -64,7 +64,7 @@ test('the expected failures read: none without the file, and an entry missing a 
   assert.throws(() => readExpected(at([{ ...pins, match: '^x$' }, { ...pins, match: '^x$', reason: 'again' }]), ['H1/W1']), /entry 1: repeats another entry's configuration, check, step, what and match/);
 });
 
-test('an entry\'s match covers the flags whose whole detail it names: D3 and D39 at one step each cover their own, a pins flag of a third shape is a flag, and an entry whose match no flag meets fails the run', () => {
+test('an entry\'s match covers the flags whose shown detail it names: D3 and D39 at one step each cover their own, a pins flag of a third shape is a flag, and an entry whose match no flag meets fails the run', () => {
   const pins = (detail) => ({ check: 11, step: 'p.9', what: 'fixture:request:pins', detail, message: `fixture's request compile 9 breaks pins: ${detail}` });
   const entry = (finding, match) => ({ configuration: 'H1/W1', check: 11, step: 'p.9', what: 'fixture:request:pins', match, finding, reason: 'r' });
   const d3 = entry('D3', '^summary 4 sent over raw pin p1, allowing L0$');

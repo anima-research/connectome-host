@@ -385,7 +385,6 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
     }
   }
 
-  // The turn whose request is held keeps the host from draining, so settle() would wait on it.
   async function compressionIdle(request) {
     const started = performance.now();
     for (let pass = 1; ; pass++) {

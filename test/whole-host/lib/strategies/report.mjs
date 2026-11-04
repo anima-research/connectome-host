@@ -72,7 +72,7 @@ export function readExpected(path, names) {
     for (const field of ['configuration', 'step', 'finding', 'reason']) if (typeof e[field] !== 'string' || !e[field]) bad(`has no ${field}`);
     if (!Number.isInteger(e.check)) bad('has no check number');
     if (typeof e.what !== 'string' || !e.what) bad('has no what: an entry covers one kind of flag, so its check\'s flags must name their kind');
-    if (typeof e.match !== 'string' || !e.match) bad('has no match: an entry covers the flags whose whole detail (their message, where they have none) its match names, escaped and anchored');
+    if (typeof e.match !== 'string' || !e.match) bad('has no match: an entry covers the flags whose detail as the report shows it, cut where the report cuts it (their message, where they have none), its match names, escaped and anchored');
     if (!literal(e.match)) bad('has a match that isn\'t an escaped literal between ^ and $, so it could cover flags other than the one it names');
     if (!names.includes(e.configuration)) bad(`names a configuration this run has none of: ${e.configuration}`);
     const k = `${e.configuration}|${key(e)}`;

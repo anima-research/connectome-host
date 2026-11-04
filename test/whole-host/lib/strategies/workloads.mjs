@@ -4,8 +4,6 @@ import { png } from './png.mjs';
 import { hash32, prose, seeded } from './prose.mjs';
 import { CHANNEL, READER, TOOL, continuation, prefix, products } from './script.mjs';
 
-// A `document` is about six times the host's default 10,000-token message cap (framework-strategy.ts), so it's stored
-// in shards.
 const SIZES = {
   user: [450, 1800],
   call: [1200, 4500],
@@ -13,7 +11,6 @@ const SIZES = {
   reading: [9000, 12000],
   reply: [900, 3600],
   large: [45000, 60000],
-  // A reply the host's default reply ceiling (recipe-fit.ts, 16,384 tokens) holds by the stand-in's prose rate.
   largeReply: [28000, 34000],
   document: [240000, 270000],
 };
@@ -95,7 +92,6 @@ const READING_PLAN = [
 ];
 const readingTurn = (n) => READING_PLAN[(n - 1) % READING_PLAN.length];
 
-// An agent turns the tool-result guard on with `toolsets--open` on its settings, then `agent_settings`.
 function guardTurn(w, step) {
   const t = w.turn(step, { calls: 0 });
   const said = (k) => `${w.c(step, `r${k}`)} ${prose(200, `${w.id(step)}:r${k}`)}`;

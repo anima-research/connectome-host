@@ -26,8 +26,8 @@ export function compresses(manager) {
   return isUnreadable(strategy) ? strategy : !!strategy && !PASSTHROUGH.includes(strategy.constructor?.name);
 }
 
-// Nothing is masked here: agent-framework's image-ref nonce is per process, so only the record writer, which sees
-// every boot, can name the nonces alike across runs.
+// Nothing is masked here: agent-framework 0.32.0 mints its image-ref nonce per ledger, and a ledger lives as long as
+// its process, so only the record writer, which sees every boot, can name the nonces alike across runs.
 export function blobStore() {
   const sent = new Set();
   let fresh = new Map();
@@ -85,8 +85,9 @@ export function stateOf(manager) {
   return { maxLevel: plain(readable(() => manager.getMaxSummaryLevel())) };
 }
 
-// context-manager keeps the kv-unified receipt chain's head at `kvUnifiedReceipts.head`. Its acceptance time is wall
-// time and its submission id is made fresh per send, so both are left out.
+// context-manager 0.24.0 keeps the kv-unified receipt chain's head at `kvUnifiedReceipts.head`. agent-framework 0.32.0
+// gives it each send's acceptance time as wall time and a submission id made per send with the wall time in it, so
+// both are left out.
 export function receiptHeadOf(manager) {
   return plain(readable(() => {
     const head = manager.getStrategy().kvUnifiedReceipts?.head ?? null;

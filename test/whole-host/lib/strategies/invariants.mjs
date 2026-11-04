@@ -142,7 +142,6 @@ function readCompile(manager, compiled, messages, elsewhere) {
   const textOf = (m) => blocks(m).filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('');
   const sent = compiled.messages ?? [];
 
-  // A summary counts once however many messages carry it: the host sends a recalled memory as a question and its answer.
   const raw = new Map(), summariesSent = new Set();
   messages.forEach((m, i) => {
     for (const s of m.sources) {
@@ -151,15 +150,14 @@ function readCompile(manager, compiled, messages, elsewhere) {
         const body = bodyOf.get(id) ?? id;
         const copy = raw.get(body) ?? { everyShard: false, text: '', parts: [] };
         const part = { i, from: copy.text.length, to: copy.text.length + textOf(sent[i]).length };
+        // context-manager 0.24.0 marks a raw copy that doesn't carry all its body's shards `!shards`, and one whose
+        // content it altered `!content`, so a copy marked only `!content` carries every shard.
         raw.set(body, { everyShard: copy.everyShard || !(missing ?? '').split('+').includes('shards'), text: copy.text + textOf(sent[i]), parts: [...copy.parts, part] });
       } else if (s.startsWith('s:')) summariesSent.add(s.slice(2).split('@')[0]);
     }
   });
   const bySummary = new Map();
   for (const id of summariesSent) for (const leaf of leaves(id)) bySummary.set(leaf, [...(bySummary.get(leaf) ?? []), id]);
-  // A raw copy of a body holds a shard when it carries every shard (context-manager marks one that
-  // doesn't `!shards`; `!content` alone is every shard, altered), or when it carries that shard's text
-  // (a shard with no text, by any raw copy of its body), among the shards context-manager's layout names raw.
   const partlyHeld = new Set();
   const carriedIn = new Map();
   const rawStart = new Map();

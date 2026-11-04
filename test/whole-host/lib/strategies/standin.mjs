@@ -6,8 +6,8 @@ import { performance } from 'node:perf_hooks';
 import { maskRunVarying, runVaryingMasker } from './compare.mjs';
 import { prose } from './prose.mjs';
 
-// The openings of context-manager's compression instructions (autobiographical.ts, knowledge.ts) and of
-// connectome-host's frontdesk strategy (frontdesk-strategy.ts).
+// The openings of context-manager 0.24.0's compression instructions (autobiographical.ts, knowledge.ts) and of this
+// host's frontdesk strategy (src/strategies/frontdesk-strategy.ts).
 export const INSTRUCTIONS = [
   /Write the memory of events since the most recent memory system notification\./,
   /Write the memory of this slice of the log\./,
@@ -49,8 +49,7 @@ const canaryOrder = (a, b) => {
   return pa.length - pb.length;
 };
 
-// context-manager estimates prose at 2.9 characters a token and dense text at 2.3 (message-store.ts); these rates
-// count about 1.3 times its estimate, so its calibration has a gap to close.
+// context-manager 0.24.0 estimates prose at 2.9 characters a token and dense text at 2.3 (message-store.ts).
 const RATE = { prose: 2.2, code: 1.9, json: 1.65, base64: 1.35, signature: 3.3 };
 const MESSAGE_OVERHEAD = 4;
 // The provider's prompt-cache lifetimes, 5 minutes or 1 hour, and its lookback: "The lookback window is 20 blocks.
@@ -185,8 +184,8 @@ function texts(body) {
 
 const found = (strings, re) => strings.flatMap((s) => s.match(re) || []);
 
-// A signed thinking block binds to everything ahead of its message: system, tools, model, the rest of the head, and
-// the messages before it, cache markers aside.
+// The troubleshooting page: these models "accept a replayed thinking block only while the `system` prompt, `tools`,
+// and messages that preceded it are unchanged" (https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting).
 function bindingIdentity(body, beforeMessage) {
   const head = Object.fromEntries(Object.entries(body).filter(([k]) => !['messages', 'stream', 'metadata', 'system', 'tools', 'model'].includes(k)));
   return sha(JSON.stringify(sorted(unmarked({ model: body.model, system: body.system ?? null, tools: body.tools ?? null, head, messages: (body.messages || []).slice(0, beforeMessage) }))));

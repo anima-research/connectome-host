@@ -71,7 +71,10 @@ A run that throws anywhere in its own work, from being set up to its
 self-check, or whose checkpoint couldn't be made, couldn't run, with the
 reason in the job's log and summary; the other runs go on. Its committed
 record is written with `--update-records` only after its last step, so a run
-that couldn't run leaves the committed one as it was. A run whose last take of the test module's compiles at
+that couldn't run leaves the committed one as it was. A self-check whose
+drive with recording off failed couldn't run, and one whose bodies differ
+fails, but neither makes its run couldn't-run: the run's record is still
+written with `--update-records`, and the invocation exits 2 or 1. A run whose last take of the test module's compiles at
 a host's shutdown fails is a failed run, its record ending `end failed`, since
 it lost what was compiled after the last settle.
 
@@ -99,7 +102,9 @@ Then come two blocks. Each text the stack wrote is written once, in
 them.
 
 - **`T:KEY = TEXT`.** A key is the text's role, its first three words with
-  numbers as `#`, and the first 12 hex digits of the text's sha256:
+  numbers as `#`, and the first 12 hex digits of the sha256 of the text as
+  written, which for a text over 4,096 bytes is its `{ sha256, bytes, head,
+  tail }` form:
   `T:user-clock-#-#-utc-9b6932fc9102 = Clock: #:# UTC`. A key depends on its
   text alone, so a text leaving the set renames no other, and a one-word edit
   to a text renames it in every line that carries it, since each of those
@@ -174,8 +179,9 @@ the lines of requests are in the order the stand-in received them:
   instruction. SHAPE is the stand-in's answer.
 - **`unclassified CARRIED, head H:KEY, body HASH`**: a request the stand-in
   could tell neither as an agent's nor as the summariser's, such as one whose
-  compression instruction it doesn't recognise, or one to any route but
-  `/v1/messages`, `count_tokens` included, which no run sends. Check 1 fails
+  compression instruction it doesn't recognise, or one to any route but a
+  POST to a path ending in `/v1/messages`, `count_tokens` included, which no
+  run sends. Check 1 fails
   the run, and the line lets the view show the request.
 - **`action COMMAND`**: a host command the workload sent.
 - **`wrote NAME [T:…]`** and **`removed NAMES`**: a summary the store added or
@@ -268,6 +274,21 @@ model it knows no minimum for. So a host change that starts sending one stops
 the runs, naming it, rather than reading as a cache read the provider
 wouldn't give.
 
+The stand-in prices text at its own rates, prose at 2.2 characters a token and
+denser text at fewer, about 1.3 times context-manager 0.24.0's own estimate of
+2.9 and 2.3 (`message-store.ts`), so context-manager's calibration has a gap to
+close. It binds a signed thinking block to the system prompt, the tools, the
+model, the body's other fields but `stream` and `metadata`, and the messages
+before it, cache markers aside (`bindingIdentity`). The workloads size what
+they send by the host's own limits: a document is several times the host's
+default message cap of 10,000 tokens (`framework-strategy.ts`), so it's stored
+in shards, and a large reply stays within the host's default reply ceiling of
+16,384 tokens (`recipe-fit.ts`) at the stand-in's prose rate. An agent turns
+the tool-result guard on with `toolsets--open` on its settings, then
+`agent_settings`. While the stand-in holds a subagent's reply, the driver waits
+for compression to go idle by maintenance passes rather than a settle, since
+the turn whose request is held keeps the host from draining.
+
 A store read the test module couldn't make is a line of its own,
 `unreadable messages: REASON`, `unreadable summaries: REASON` or
 `unreadable receipt: REASON`. An agent that has left agent-framework's
@@ -277,11 +298,18 @@ its compression ticks settle and while a take of it reads unreadable, so what
 a take couldn't read is still reported once it can be.
 
 A request's line, with the head in force for it, changes whenever what that
-request sends changes, apart from three forms the record writes alike (an
-ephemeral cache marker with no TTL and one of `5m`, a string content and one
-text block, and `stream: false` and no `stream`) and the run-varying values it
-masks (image-ref nonces, a fork call's UUID and thinking signatures), a change
-to one of which alone moves no line. A head is named only on the
+request sends changes, apart from what the record leaves out or writes alike
+and the run-varying values it masks by their pattern wherever they appear,
+the run's own text included (an image-ref nonce or a fork call's UUID in any
+string, and the signature of any object typed `thinking`), a change to one of
+which alone moves no line. It leaves
+out every header but `anthropic-beta` and `anthropic-version`, and keeps the
+betas as a set, so their order and repeats move nothing. It writes alike an
+omitted `system` or `tools` and an empty one, a system prompt sent as a string
+and as one text block, an omitted `thinking` and a null one, any `stream` but
+`true` and none, an ephemeral cache marker with no TTL and one of `5m`, and a
+message's string content and one text block. A `tool_choice`, even a null
+one, is refused as unclassified, as above. A head is named only on the
 first line of its agent's under it, so a later request under a changed head
 keeps its line, and the view still names it.
 
@@ -322,16 +350,24 @@ what holds.
   judge; a compile it couldn't record isn't among them. `?` is a count the run
   couldn't give. Where anything isn't clean, the table is followed by where
   each run's report, record and view are in the job's evidence and what to do
-  next, then every flag of each flagged run.
+  next, then every flag of each flagged run. A missing product and a
+  calibration edge, which a report counts apart from its flags, are in the
+  run's `report.txt`.
 - **`<run>/view.md`**, for each run whose record differs or isn't committed,
   has a section for each request whose record lines changed. Each section has
-  its record line, then, for an agent's request, the ledger of where each
+  its record line in its heading, cut at 200 characters (a changed line's
+  moved items follow it whole, and a new or moved request's whole line is in
+  the record diff), then, for an agent's request, the ledger of where each
   message of its turn's compile's view went (raw, raw with its body
   incomplete, under which summary, or left out: its one unit in
   context-manager's layout, so a message sent raw shows raw even where a
   summary sent also covers it, which check 11 flags), headed "As
   context-manager compiled it", since agent-framework can still drop a row after the compile,
-  then the request as the resident received it:
+  then the request's system prompt, tools and messages as the resident
+  received them (its model, `max_tokens`, `stream`, `tool_choice`, thinking,
+  headers, path and query, and `rest`, a digest of every other body field, are
+  in the record's head line, named by key on the first request's line under
+  it):
   - the stack's words, verbatim: the system prompt, each tool's definition,
     templates, notices and framing. The run's content is marked in messages
     alone. Run content a host put into the system prompt or a tool's
@@ -367,8 +403,8 @@ what holds.
   `summary.md` itself is longer, the summary holds as much of it as fits and
   says how many flags it left out; every flag is in `summary.md` and in its
   run's `report.txt`. The evidence is each job's uploaded artifact,
-  `whole-host-out`, or `whole-host-self-check` for the self-check's shares, and
-  `--out` locally.
+  `whole-host-N` for share N, or `whole-host-self-check-N` for the
+  self-check's, and `--out` locally.
 
 ## What each run's checks judge
 
@@ -376,7 +412,10 @@ Each run's `report.txt` lists its flags, the expected failures that cover some
 of them, and the checks' counts. A flag, a note or a reason the record or the
 summary shows cut short, such as a thrown error, a command's output or a long
 list of names, has its whole text on the line under it, `  whole: …`; a run
-that couldn't run has its reason there, whole the same way. A host's whole
+that couldn't run has its reason there, whole the same way. Two reasons are
+exceptions: a failed read's, of a store, a strategy or pins, shows its first
+200 characters, with no whole, and a self-check's that couldn't run is in the summary and the job's
+log but not `report.txt`, with no whole where it was cut. A host's whole
 output is each boot's `host-N.log`, in the run's directory, or in
 `checkpoints/RUN/` for the drive that writes RUN's checkpoint; a failure that
 shows the host's last lines names that file.
@@ -404,7 +443,10 @@ shows the host's last lines names that file.
   there. A product that needs the final store, where the run has none, is
   counted beside the judged.
 - **Check 3: budgets.** It holds each request the run's agent sent, as the
-  stand-in received it, to the bound that governs it.
+  stand-in received it, to the bound that governs it. The stand-in counts
+  tokens by its own model, several percent from context-manager's estimate
+  either way, so it holds requests to the provider's window; context-manager's
+  own count against its budget is check 11's.
   - **A compiled request**, a turn's first or a stream restart's, is held to the
     model's window by the stand-in's count of its whole input.
   - **A continuation round** is held to agent-framework's stream bound by its
@@ -420,10 +462,16 @@ shows the host's last lines names that file.
     is a flag of its own.
 - **Check 4: coverage.** Every stored input and reply goes out in each request,
   raw or inside a summary sent, once, and in store order within its window.
-  It applies where the run's store was read: a run that completed under a
-  configuration that compresses (`judge.mjs`), so not H3's passthrough runs.
-  A request whose own input the final store doesn't hold isn't judged, and
-  the report's judged line counts those beside what it judged.
+  It applies where the run's store was read and holds a summary: a run that
+  completed under a configuration that compresses (`judge.mjs`), so not H3's
+  passthrough runs. A store with no summaries is check 5's `no-summaries`
+  flag, and checks 4 and 5 judge nothing of it, as in
+  C3h/W7/fable-no-tools, whose expected failure covers that flag. A request
+  whose own input the final store doesn't hold isn't judged, and the report's
+  judged line counts those beside what it judged. A subagent's inputs carry
+  canaries of their own rather than a step's `.in`, so a subagent request's
+  own input is the newest stored message it carries, and a message stored
+  after it isn't asked for.
 - **Check 5: bookkeeping.** Every summary declares only sources its
   compression request showed: the inputs and replies it covers, or the
   summaries it merges. For a subagent, whose inputs and replies carry canaries
@@ -444,7 +492,8 @@ shows the host's last lines names that file.
   message of those two turns that the final store doesn't hold isn't asked
   for, and the judged line counts those. Each checkpoint tail judged counts
   as judged, and one whose last input the final store doesn't hold is counted
-  beside.
+  beside. It applies to the primary agent's requests, so it judges nothing for
+  H2, whose checks judge its knowledge subagent.
 - **Check 10: calibration edge.** A calibration multiplier at the clamp's edge
   (0.6 or 1.8) makes the run invalid, since its folds are clamped. It reads
   the multipliers in the host's health panel, at each checkpoint and at the
@@ -465,6 +514,13 @@ shows the host's last lines names that file.
   `agent:kind:invariant`.
   - **`coverage`:** where the strategy compresses, every stored shard goes out,
     raw or under a summary sent, and no stored message goes out under two.
+    A summary sent in more than one message counts once: context-manager's
+    autobiographical strategy sends a summary as a recall pair, a question and
+    its answer. A raw copy of a body holds a shard when it carries every shard,
+    which context-manager says by not marking it `!shards`, or when it carries
+    that shard's text. Text is matched among the shards context-manager's
+    layout sends raw, where it names any of that body's, and a shard with no
+    text is held by any raw copy of its body.
     Each message covers nothing earlier than the one before it, in store order,
     except that after a head-window reset the head, which starts at the newest
     topic transition, goes first and the history from before it follows. A
@@ -562,11 +618,11 @@ couldn't-judge flag, never a pass.
 `test/whole-host/expected-failures.json` lists the flags of known findings
 that the committed runs meet. Each entry has its `configuration` (a run),
 `check`, `step` and `what`, the `finding` it belongs to and its `reason`, and a
-`match`: the flag's whole detail (its message, for a flag with no detail),
-as a literal, with each regular-expression metacharacter escaped by a
+`match`: the flag's detail as its report shows it, cut where the report cuts
+it (its message, for a flag with no detail), as a literal, with each regular-expression metacharacter escaped by a
 backslash and no other escape, anchored at both ends. The harness refuses an
-entry whose match is anything else. So it covers exactly the flags with that
-detail at its check and step: one, or several identical ones where a step
+entry whose match is anything else. So it covers exactly the flags showing
+that detail at its check and step: one, or several identical ones where a step
 raises the same flag once per request. Two more things are flags:
 
 - an entry no flag meets, which means its finding no longer shows. The change

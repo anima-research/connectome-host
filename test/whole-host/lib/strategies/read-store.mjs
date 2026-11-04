@@ -7,7 +7,7 @@ export async function readStore({ installDir, storePath, namespace, isolate = fa
   const cmEntry = join(installDir, 'node_modules', '@animalabs', 'context-manager', 'dist', 'src', 'index.js');
   const { ContextManager, AutobiographicalStrategy } = await import(pathToFileURL(cmEntry).href);
   const strategy = new AutobiographicalStrategy({ adaptiveResolution: true, autoTickOnNewMessage: false, topologyPolicy: 'report', auditOnly: true });
-  // context-manager's open takes the store's lock and can write to it, so this reads a copy.
+  // context-manager 0.24.0's `ContextManager.open` locks the store and opens it with `openOrCreate`, so a caller passes a copy.
   const cm = await ContextManager.open({ path: storePath, namespace, strategy, ...(isolate ? { isolate: true } : {}) });
   try {
     const messages = cm.getAllMessages().map(storedEntry);

@@ -291,9 +291,8 @@ function streamFreshBefore(agentRequests, r, kinds) {
   return null;
 }
 
-// The stand-in counts tokens by its own model, several percent from context-manager's estimate either way, so it holds
-// requests to the provider's window; context-manager's own count against its budget is check 11's. context-manager's
-// `planVsActual.budgetMet` is false whenever a plan sits between its soft target and its budget, so it isn't read.
+// context-manager 0.24.0 sets `planVsActual.budgetMet` to `tokens <= targetBudget` (`src/adaptive/picker.ts`), so it's
+// false whenever a plan sits between its soft target and its budget, and isn't read.
 export function budgets(records, script, log = [], { agent = FIXTURE_AGENT, streamBound = STREAM_BOUND, windowTokens } = {}) {
   const flags = [];
   const headroom = [];

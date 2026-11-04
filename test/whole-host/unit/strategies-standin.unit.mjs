@@ -530,7 +530,7 @@ test('T13: when the model binds thinking, a block whose request changed is refus
   }
 });
 
-test('T25: each request\'s record carries its head, everything it sends but its messages: the fields it names by value, and the rest in one digest, so a change in any of them shows', async () => {
+test('T25: each request\'s record carries its head, the body\'s fields but its messages, and its anthropic-beta and anthropic-version headers: the fields it names by value, and the rest in one digest', async () => {
   const s = await startStandin({ configuration: { windowTokens: 50_000 } });
   let records = null;
   try {
