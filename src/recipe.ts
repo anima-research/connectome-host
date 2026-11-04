@@ -70,11 +70,12 @@ export interface RecipeStrategy {
   /** The most inline base64 bytes of the live window's images, whatever
    * `maxLiveImageBytes` says, and the most a compression prompt carries
    * (context-manager's default 24 MiB, under membrane's 28 MiB request byte
-   * cap). Zero means no ceiling. An install that raises
-   * `MEMBRANE_MAX_REQUEST_BYTES` raises this with it, leaving room under the
-   * cap for what it doesn't count: the messages' text and JSON, documents,
-   * images inside opaque provider items, and, until the next compile, what a
-   * turn adds, its tool results' images included. */
+   * cap). Zero means no ceiling. Raising `MEMBRANE_MAX_REQUEST_BYTES` doesn't
+   * raise it; to keep more image bytes, raise it too, set `maxLiveImageBytes`
+   * to 0 or at least as high, and leave room under the cap for what the
+   * ceiling doesn't count: the messages' text and JSON, documents, images
+   * inside opaque provider items, and, until the next compile, what a turn
+   * adds, its tool results' images included. */
   imageByteCeiling?: number;
   overBudgetGraceRatio?: number;
   enforceBudget?: boolean;
