@@ -16,8 +16,8 @@ describe('fitByRedraw', () => {
   test('starts at the largest size the side limit allows', async () => {
     const r = recording(() => ({ bytes: 1000 }));
     const fit = await fitByRedraw(10000, 5000, USER_IMAGE_LIMITS, r.redraw);
-    expect(r.asked).toEqual([[8000, 4000]]);
-    expect(fit).toMatchObject({ ok: true, w: 8000, h: 4000 });
+    expect(r.asked).toEqual([[3000, 1500]]);
+    expect(fit).toMatchObject({ ok: true, w: 3000, h: 1500 });
   });
 
   test("a host's smaller side limit is the one fitted to", async () => {
@@ -27,10 +27,10 @@ describe('fitByRedraw', () => {
   });
 
   test('a size the browser draws no image at is tried again smaller', async () => {
-    const r = recording((w) => (w > 3000 ? null : { bytes: 1000 }));
+    const r = recording((w) => (w > 2000 ? null : { bytes: 1000 }));
     const fit = await fitByRedraw(8000, 8000, USER_IMAGE_LIMITS, r.redraw);
-    expect(r.asked.map(([w]) => w)).toEqual([8000, 5600, 3920, 2744]);
-    expect(fit).toMatchObject({ ok: true, w: 2744, h: 2744 });
+    expect(r.asked.map(([w]) => w)).toEqual([3000, 2100, 1470]);
+    expect(fit).toMatchObject({ ok: true, w: 1470, h: 1470 });
   });
 
   test('a redraw over the base64 limit is tried again smaller', async () => {

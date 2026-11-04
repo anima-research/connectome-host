@@ -310,7 +310,7 @@ describe('composer images over the WebSocket', () => {
   test('an image the model API would refuse is answered with the reason, and nothing is pushed', async () => {
     const before = pushed.length;
     const r = await send({ content: 'big', images: [{ mediaType: 'image/png', data: FIX.png8001x1 }] });
-    expect(r.error).toBe('message not sent: the image is 8001×1; the model API takes at most 8000 px on a side. Shrink it to 8000 px or less on its longer side.');
+    expect(r.error).toBe('message not sent: the image is 8001×1, over the 3,000 px on a side an image may have here. Shrink it to 3,000 px or less on its longer side.');
     expect(pushed.length).toBe(before);
   });
 

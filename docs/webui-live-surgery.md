@@ -78,8 +78,8 @@ base64 characters each (3.75 MB, within the per-image limit Claude's vision
 docs give everywhere the model is served, the strictest being Bedrock's 5 MB
 of base64: https://platform.claude.com/docs/en/build-with-claude/vision), 12 MiB of
 base64 image data per message
-(about 9 MiB of image files), leaving room for its text, and 8000 px on a
-side, the most those docs give for one image. A whole message, text and images, travels in one WebSocket frame of
+(about 9 MiB of image files), leaving room for its text, and 3,000 px on a
+side (below). A whole message, text and images, travels in one WebSocket frame of
 at most 16 MiB (`MAX_WS_FRAME_BYTES`, the host's
 `maxPayloadLength`). The host closes a socket that sends a larger frame,
 with no refusal, so the composer measures each message's frame first and
@@ -154,21 +154,34 @@ a calibration change from a provider reply, or messages stored after it,
 before the message's first compile can still put its images past the depth.
 A recipe whose `imageStripDepthTokens` is 0 has no depth to check.
 
-By Claude's vision docs
-(https://platform.claude.com/docs/en/build-with-claude/vision), a request
-carrying more than 20 images meets a stricter per-image dimension limit than
-8000 px, and every image in it counts: earlier turns' images and those in
-tool results too. Where that limit is enforced, an image over it fails every
-request that carries it alongside 20 others, so the agent is stuck until the
-image leaves the live window. The docs don't give the stricter limit's
-value, which a refusal states; they give 3,000 px on a side as under it on
-every platform. Probes on 2026-10-13 and 2026-10-19 found the Anthropic API
-accepting 21 and 101 images with one of them at 2100 px, within the 3,000
-the docs now give; the host follows the docs' bound for every platform. With the default `maxLiveImages` of 6 no request gets there. A
-host whose recipe can keep more than 20 images live (`maxLiveImages` past 20
-or set to 0, or a strategy an extension registers) holds composer images to
-3,000 px on a side. A message also takes no more images than the live window
-keeps, since the rest would never reach the model.
+Every host holds composer images to 3,000 px on a side, whatever its
+provider. A stored image stays in the live window and goes with every later
+request, to whichever provider the recipe names then, so the side has to be
+one every model API takes in any request:
+- By Claude's vision docs
+  (https://platform.claude.com/docs/en/build-with-claude/vision), a request
+  with more than 20 image blocks holds every image in it to a stricter limit,
+  and 3,000 px on a side stays under it on every platform. Earlier turns'
+  images and those in tool results count, and on Amazon Bedrock and Claude
+  Models on Google Cloud so do document blocks. The live window bounds its
+  own images, but not documents, images a module adds outside it, or what a
+  strategy an extension registers keeps, so the host can't know when a
+  request passes 20.
+- By OpenAI's (https://developers.openai.com/api/docs/guides/images-vision),
+  its newest models keep an image's own size at the default detail and
+  refuse an image that needs more than 30,000 patches of 32 px. A 3,000 px
+  square needs 8,836.
+
+An image over either limit fails every request that carries it, so the agent
+is stuck until the image leaves the live window. Claude scales an image to at
+most 2,576 px on its longer side before reading it, so the ceiling takes
+nothing from it.
+
+Under the host's own strategies, `autobiographical` and `frontdesk`, a message
+also takes no more images than the live window keeps, and, where the recipe
+sets `maxLiveImageBytes`, no more base64, since the rest would never reach
+the model. A strategy an extension registers gets the defaults, since the
+host can't read its window.
 
 A host whose recipe uses `passthrough` doesn't take composer images: it
 keeps every image in every request, so a few large ones would carry each

@@ -26,17 +26,6 @@ export type UserImageCheck =
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 /**
- * The most images a request may carry at the full side limit, by Anthropic's
- * vision docs: past it, every image in the request is held to a stricter
- * limit, and those docs say a side of no more than 3,000 px stays under it on
- * every platform.
- * https://platform.claude.com/docs/en/build-with-claude/vision
- */
-const MANY_IMAGES = 20;
-/** The side the docs give for a request past `MANY_IMAGES`. */
-const MANY_IMAGES_SIDE_PX = 3000;
-
-/**
  * How many images a recipe's strategy keeps live at once, or `undefined` where
  * the host knows no count: `passthrough`, `maxLiveImages: 0`, or a strategy an
  * extension registers.
@@ -118,7 +107,7 @@ export function hostImageLimits(liveImages: number | undefined, liveBytes?: numb
     maxCount: unbounded ? L.maxCount : Math.min(L.maxCount, liveImages),
     maxBase64Chars: liveBytes ? Math.min(L.maxBase64Chars, liveBytes) : L.maxBase64Chars,
     maxTotalBase64Chars: liveBytes ? Math.min(L.maxTotalBase64Chars, liveBytes) : L.maxTotalBase64Chars,
-    maxSidePx: unbounded || liveImages > MANY_IMAGES ? Math.min(L.maxSidePx, MANY_IMAGES_SIDE_PX) : L.maxSidePx,
+    maxSidePx: L.maxSidePx,
   };
 }
 
@@ -183,10 +172,11 @@ export function userImageBlocks(
       return { ok: false, error: `${which} is animated, and OpenAI's docs don't say ${provider} takes animated images; send a still image` };
     }
     if (size.width > L.maxSidePx || size.height > L.maxSidePx) {
-      const why = L.maxSidePx < USER_IMAGE_LIMITS.maxSidePx
-        ? `this host can carry more than ${MANY_IMAGES} images in one request, where the model APIs hold every image to a stricter limit, and ${L.maxSidePx} px on a side stays under it`
-        : `the model API takes at most ${L.maxSidePx} px on a side`;
-      return { ok: false, error: `${which} is ${size.width}×${size.height}; ${why}. Shrink it to ${L.maxSidePx} px or less on its longer side.` };
+      return {
+        ok: false,
+        error: `${which} is ${size.width}×${size.height}, over the ${count(L.maxSidePx)} px on a side an image may have here. ` +
+          `Shrink it to ${count(L.maxSidePx)} px or less on its longer side.`,
+      };
     }
     blocks.push({ type: 'image', source: { type: 'base64', data, mediaType } });
   }

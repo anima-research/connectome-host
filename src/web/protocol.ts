@@ -846,14 +846,18 @@ export interface UserMessageImage {
  *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
  *   bounded by it, so the composer checks the whole frame too
  *   (`frameLimitNote`).
- * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
- *   By the docs, a request carrying more than 20 images has a stricter limit
- *   on every image in it, so a host whose recipe can keep more than 20 live
- *   advertises a smaller side, as it does a smaller count when its live
- *   window is under 8 (`userImageLimits` in the welcome).
+ * - `maxSidePx`: a side every model API the host sends to takes, whatever
+ *   else a request carries: under the stricter limit Claude's vision docs
+ *   set for a request with more than 20 image blocks, which they give as
+ *   3,000 px on every platform, and under the 30,000 patches of 32 px that
+ *   OpenAI's docs allow one image.
  *
- * The per-image limits are Claude's vision docs':
+ * A host advertises a smaller count when its recipe's live window is under 8,
+ * and less base64 when its recipe keeps less live (`userImageLimits` in the
+ * welcome).
+ *
  * https://platform.claude.com/docs/en/build-with-claude/vision
+ * https://developers.openai.com/api/docs/guides/images-vision
  */
 export interface UserImageLimits {
   maxCount: number;
@@ -866,7 +870,7 @@ export const USER_IMAGE_LIMITS: Readonly<UserImageLimits> = {
   maxCount: 8,
   maxBase64Chars: 5_000_000,
   maxTotalBase64Chars: 12 * 1024 * 1024,
-  maxSidePx: 8000,
+  maxSidePx: 3000,
 };
 
 /** The limits to fit and check composer images against: each one a host

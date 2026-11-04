@@ -3,7 +3,7 @@
  * before anything is stored, and the TUI module storing them as image blocks.
  *
  * Fixtures are real files PIL wrote at 3×2 (so a swapped width and height
- * shows), plus 8000×1 / 8001×1 PNGs either side of the model API's limit.
+ * shows), plus 8000×1 / 8001×1 PNGs.
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -391,10 +391,15 @@ describe('userImageBlocks', () => {
     });
   });
 
-  test('8000 px on a side is taken, 8001 is refused with the size', () => {
-    expect(userImageBlocks([{ mediaType: 'image/png', data: FIX.png8000x1! }]).ok).toBe(true);
-    const r = userImageBlocks([{ mediaType: 'image/png', data: FIX.png8001x1! }]);
-    expect(r).toEqual({ ok: false, error: 'the image is 8001×1; the model API takes at most 8000 px on a side. Shrink it to 8000 px or less on its longer side.' });
+  test('3,000 px on a side is taken, 3,001 is refused with the size, and so is the 8000×1 the model API alone would take', () => {
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3000, 1).toString('base64') }]).ok).toBe(true);
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(1, 3000).toString('base64') }]).ok).toBe(true);
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3001, 1).toString('base64') }])).toEqual({
+      ok: false,
+      error: 'the image is 3001×1, over the 3,000 px on a side an image may have here. Shrink it to 3,000 px or less on its longer side.',
+    });
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(1, 3001).toString('base64') }]).ok).toBe(false);
+    expect(userImageBlocks([{ mediaType: 'image/png', data: FIX.png8000x1! }]).ok).toBe(false);
   });
 
   test('what is not an image is refused, naming which one', () => {
@@ -465,12 +470,7 @@ describe('userImageBlocks', () => {
     expect(userImageBlocks(seven.slice(0, 6), six).ok).toBe(true);
 
     const many = hostImageLimits(liveImageWindow({ type: 'autobiographical', maxLiveImages: 24 }));
-    expect(many).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 3000 });
-    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3000, 1).toString('base64') }], many).ok).toBe(true);
-    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3001, 1).toString('base64') }], many)).toEqual({
-      ok: false,
-      error: 'the image is 3001×1; this host can carry more than 20 images in one request, where the model APIs hold every image to a stricter limit, and 3000 px on a side stays under it. Shrink it to 3000 px or less on its longer side.',
-    });
+    expect(many).toEqual(USER_IMAGE_LIMITS);
   });
 });
 
@@ -484,11 +484,12 @@ describe("a host's image limits, from its recipe's live window", () => {
     expect(liveImageWindow({ type: 'from-an-extension' })).toBeUndefined();
   });
 
-  test('a message takes no more images than the window keeps, and past 20 each side is held to 3000 px', () => {
+  test('a message takes no more images than the window keeps, and every window holds each side to 3,000 px', () => {
+    expect(USER_IMAGE_LIMITS.maxSidePx).toBe(3000);
     expect(hostImageLimits(3)).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 3 });
     expect(hostImageLimits(20)).toEqual(USER_IMAGE_LIMITS);
-    expect(hostImageLimits(21)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 3000 });
-    expect(hostImageLimits(undefined)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 3000 });
+    expect(hostImageLimits(21)).toEqual(USER_IMAGE_LIMITS);
+    expect(hostImageLimits(undefined)).toEqual(USER_IMAGE_LIMITS);
   });
 
   test('a message takes no more base64 than the window keeps, where the recipe sets that', () => {
