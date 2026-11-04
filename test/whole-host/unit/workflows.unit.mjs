@@ -40,3 +40,8 @@ test('the self-check runs on a change to any file the test module loads, which t
   assert.ok(loaded.length > 1, 'the module\'s imports were followed');
   assert.deepEqual(loaded.filter((f) => !paths.includes(f)), [], 'each loaded file is a path that schedules the check');
 });
+
+test('the self-check also runs on a change to the lockfiles, which choose the stack the module runs beside, and to run.mjs, which drives and compares its two arms', () => {
+  const paths = pullRequestPaths(readFileSync(join(ROOT, '.github/workflows/whole-host-self-check.yml'), 'utf-8'));
+  for (const p of ['package-lock.json', 'bun.lock', 'test/whole-host/run.mjs']) assert.ok(paths.includes(p), `${p} schedules the self-check`);
+});

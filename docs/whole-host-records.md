@@ -27,7 +27,10 @@ when a run couldn't run.
   recording changing nothing the host sends. Where they differ, the first
   differing pair of request bodies is kept in the run's evidence, under
   `self-check/`. CI runs it in four shares on a pull request that changes a
-  file the test module loads.
+  file the test module loads, a lockfile, which chooses the stack the module
+  runs beside, or `run.mjs`, which drives and compares the two arms. A change
+  to the host's own source doesn't schedule it: the records themselves
+  measure what a host change does to requests.
 - `--shard i/n` runs one of CI's shares, balanced by the seconds
   `stack.json` records.
 

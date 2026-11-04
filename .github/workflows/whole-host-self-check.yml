@@ -11,6 +11,9 @@ on:
       - test/whole-host/lib/strategies/compare.mjs
       - test/whole-host/lib/strategies/standin.mjs
       - test/whole-host/lib/strategies/prose.mjs
+      - test/whole-host/run.mjs
+      - package-lock.json
+      - bun.lock
       - .github/workflows/whole-host-self-check.yml
 
 permissions:
