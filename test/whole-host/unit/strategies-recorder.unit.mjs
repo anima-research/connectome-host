@@ -30,7 +30,7 @@ test('storeDelta: a take with no earlier one lists the whole store and says so; 
   assert.equal(first.out.whole, true);
   assert.equal(first.changed, true);
   const empty = storeDelta(manager([]), undefined, blobs);
-  assert.deepEqual([empty.out, empty.changed], [{ whole: true }, true], 'an empty store too, so a restart that lost everything still says what it lists');
+  assert.deepEqual([empty.out, empty.changed], [{ whole: true, messages: [], summaries: [] }, true], 'an empty store too, with its empty lists, so a restart that lost everything says it holds nothing');
   const later = storeDelta(manager([{ id: 1, content: [text('[[c:a.r1]] hello')] }]), first.seen, blobs);
   assert.deepEqual([later.out, later.changed], [{}, false]);
 });

@@ -95,6 +95,17 @@ test('ledgerOf names a summary by its level and its first and last covered messa
   assert.equal(ledgerOf([{ kind: 'compiles', lines: [before], blobs: {} }], before)[1], '- in L2(-) (2): #1–#3 (2)', 'a summary no store holds');
 });
 
+test('ledgerOf takes a restart\'s whole listing as its store: a message it lacks no longer anchors names', () => {
+  const layout = { memberIds: ['3'], units: [{ k: 'r', t: 1 }] };
+  const before = { agent: 'fixture', layout }, after = { agent: 'fixture', layout };
+  const log = [
+    { kind: 'compiles', step: 'a', boot: 1, lines: [before], store: { fixture: { whole: true, messages: [['1', ['[[c:a.in]]']], ['2', ['[[c:b.in]]']], ['3', []]], summaries: [] } }, blobs: {} },
+    { kind: 'compiles', step: 'b', at: 'boot', boot: 2, lines: [after], store: { fixture: { whole: true, messages: [['1', ['[[c:a.in]]']], ['3', []]], summaries: [] } }, blobs: {} },
+  ];
+  assert.deepEqual(ledgerOf(log, before)[0], '- raw (1): b.in+1');
+  assert.deepEqual(ledgerOf(log, after)[0], '- raw (1): a.in+1', 'the restart\'s listing lacks message 2, so message 3 follows a.in');
+});
+
 test('ledgerOf names a restored message in its place in the store, not after the messages that follow it, and a summary over it by its ends in store order', () => {
   const layout = { memberIds: ['3'], units: [{ k: 'r', t: 1 }] };
   const line = { agent: 'fixture', layout };

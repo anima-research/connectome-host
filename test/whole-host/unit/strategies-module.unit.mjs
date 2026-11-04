@@ -180,6 +180,59 @@ test('module: a reader\'s compile judges the members of its view another agent\'
   assert.equal('slots' in module.lines[1], false, 'a compile no other slot supplied names none');
 });
 
+test('module: an agent that has left is kept while any read of it fails, a receipt that fails the same way twice included', async () => {
+  const registered = [];
+  const managers = new Map();
+  const [module, Own] = harness({ listAgents: () => registered.map((name) => ({ name })), getAgent: (name) => (registered.includes(name) ? { getContextManager: () => managers.get(name) } : null) });
+  const sub = new Own();
+  managers.set('sub', sub);
+  registered.push('sub');
+  module.agentOf.set(sub, 'sub');
+  await sub.compile();
+  await module.answer({ op: 'take' });
+  registered.length = 0;
+  sub.getStrategy = () => ({ get kvUnifiedReceipts() { throw new Error('busy'); } });
+  const once = await module.answer({ op: 'take' });
+  assert.deepEqual(once.store.sub.receiptHead, { unreadable: 'busy' }, 'the premise: its receipt couldn\'t be read');
+  const twice = await module.answer({ op: 'take' });
+  assert.equal(twice.store.sub, undefined, 'the same failure again reports nothing new');
+  sub.getStrategy = () => ({});
+  const read = await module.answer({ op: 'take' });
+  assert.deepEqual(read.store.sub, { receiptHead: null }, 'it was still kept, so the read that succeeds is reported');
+  assert.deepEqual((await module.answer({ op: 'take' })).store, {}, 'then forgotten');
+});
+
+test('module: a dry compile asked for answers with its own compile\'s line, though another dry compile finishes first', async () => {
+  class Held extends Manager {
+    async compile(...args) { if (this.hold) await this.hold; return super.compile(...args); }
+  }
+  const module = new HarnessModule(null);
+  module.wrapManagerCompile(Held.prototype);
+  const slow = new Held();
+  const quick = new Held();
+  module.framework = { getAgent: (name) => ({ getContextManager: () => (name === 'slow' ? slow : quick) }) };
+  module.agentOf.set(slow, 'slow');
+  module.agentOf.set(quick, 'quick');
+  let release;
+  slow.hold = new Promise((resolve) => { release = resolve; });
+  const asked = module.answer({ op: 'dry-compile', agent: 'slow', budget: { maxTokens: 1_000 } });
+  await quick.compile({ maxTokens: 1_000 }, undefined, { dryRun: true });
+  release();
+  const { seq } = await asked;
+  assert.deepEqual(module.lines.map((l) => l.agent), ['quick', 'slow'], 'the premise: the other dry compile finished first');
+  assert.equal(seq, module.lines.find((l) => l.agent === 'slow').seq, 'its own compile\'s line, not the one that finished first');
+});
+
+test('module: a derivation that can\'t be read matches no branch, so no other slot is read for that compile', () => {
+  const other = new Manager();
+  other.messages = [{ id: 9, sequence: 9, content: [{ type: 'text', text: 'elsewhere' }] }];
+  other.getDerivation = () => { throw new Error('busy'); };
+  const [module, Own] = harness({ listAgents: () => [{ name: 'other' }], getAgent: () => ({ getContextManager: () => other }) });
+  const compiling = new Own();
+  compiling.getDerivation = () => { throw new Error('busy'); };
+  assert.deepEqual(module.elsewhere(compiling, ['9']).found, [], 'two unreadable derivations aren\'t one branch');
+});
+
 test('module: another slot is read only on the compiling manager\'s branch, so a fork\'s copy of a message never stands for the resident\'s', () => {
   const resident = new Manager();
   resident.messages = [{ id: 9, sequence: 9, content: [{ type: 'text', text: 'as stored' }] }];

@@ -653,6 +653,18 @@ test('a whole listing at the run\'s first boot is the store as the run began, wr
   assert.match(section('q.3').find((l) => l.startsWith('  compile')), /L1\(a\.in\+1\)/, 'and past message 1 once the restart\'s listing lacks 2');
 });
 
+test('a restart\'s whole listing of an empty store reports every summary it held as removed', () => {
+  const sum = (id, sources, content) => ({ id, level: 1, sourceLevel: 0, sources, parent: null, content });
+  const lg = [
+    { kind: 'compiles', step: null, at: 'boot', boot: 1, blobs: { s1: { participant: 'summary', content: 'one' } }, store: { fixture: { whole: true, messages: [['1', ['[[c:a.in]]']]], summaries: [sum('L1-1', ['1'], 's1')] } }, lines: [] },
+    { kind: 'compiles', step: 'q.1', at: 'boot', boot: 2, blobs: {}, store: { fixture: { whole: true, messages: [], summaries: [] } }, lines: [] },
+  ];
+  const r = renderRecord({ header, log: lg, records: [], end: { ok: true } }).split('\n');
+  const at = r.indexOf('step q.1');
+  assert.ok(at >= 0, r.join('\n'));
+  assert.ok(r[at + 1]?.startsWith('  removed L1('), r.join('\n'));
+});
+
 test('a request\'s head line names its URL\'s query when it has one', () => {
   const head = { model: 'm', maxTokens: 100, toolChoice: null, thinking: null, system: [], tools: [], rest: null };
   const req = (id, query) => ({ id, arrived: '11', kind: 'agent', agent: 'primary', step: 'q.1', stream: true, head: { ...head, ...(query ? { query } : {}) }, messages: [{ role: 'user', digest: 'd1', blocks: [{ type: 'text', canaries: ['[[c:q.1.in]]'] }] }], answer: { shape: 'reply' } });

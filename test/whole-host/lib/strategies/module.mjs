@@ -201,7 +201,7 @@ export class HarnessModule {
     const branchOf = (m) => { const d = readable(() => m.getDerivation?.() ?? null); return isUnreadable(d) ? undefined : d?.branch ?? null; };
     const branch = branchOf(manager);
     for (const other of others) {
-      if (branchOf(other) !== branch) continue;
+      if (branch === undefined || branchOf(other) !== branch) continue;
       if (!wanted.size) break;
       const messages = readable(() => other.getAllMessages());
       if (isUnreadable(messages)) continue;
@@ -271,7 +271,7 @@ export class HarnessModule {
     const delta = storeDelta(manager, this.seen.get(name), this.blobs);
     this.seen.set(name, delta.seen);
     if (delta.changed) store[name] = delta.out;
-    return Object.values(delta.out).some(isUnreadable);
+    return delta.unread;
   }
 
   async answer(msg) {
@@ -330,7 +330,7 @@ export class HarnessModule {
         const budget = msg.budget ?? (typeof agent.compileBudget === 'function' ? agent.compileBudget() : undefined);
         const before = this.seq;
         await agent.getContextManager().compile(budget, undefined, { dryRun: true }).catch(() => null);
-        return { seq: this.lines.find((l) => l.seq > before && l.kind === 'dry')?.seq ?? null };
+        return { seq: this.lines.find((l) => l.seq === before + 1 && l.kind === 'dry')?.seq ?? null };
       }
       default:
         throw Object.assign(new Error(`the harness module has no op ${JSON.stringify(msg.op)}`), { code: -32601 });

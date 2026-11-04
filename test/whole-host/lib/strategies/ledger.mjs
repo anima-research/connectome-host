@@ -8,6 +8,8 @@ function namesAt(log, line) {
     if (e.kind !== 'compiles') continue;
     for (const [name, store] of Object.entries(e.store ?? {})) {
       if (!stores.has(name)) { stores.set(name, new Map()); summaries.set(name, new Map()); }
+      if (store?.whole && Array.isArray(store.messages)) stores.get(name).clear();
+      if (store?.whole && Array.isArray(store.summaries)) summaries.get(name).clear();
       for (const [id, canaries] of Array.isArray(store?.messages) ? store.messages : []) stores.get(name).set(String(id), canaries?.[0] ?? null);
       for (const id of store?.removedMessages ?? []) stores.get(name).delete(String(id));
       for (const s of Array.isArray(store?.summaries) ? store.summaries : []) summaries.get(name).set(String(s.id), s);
