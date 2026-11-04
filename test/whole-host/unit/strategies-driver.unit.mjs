@@ -90,5 +90,7 @@ test('R13: a host\'s shutdown fails the run when it doesn\'t exit in time or exi
 test('R14: the self-check\'s second arm boots the test module with recording off, and every other run with it on', () => {
   const base = { standinUrl: 'http://127.0.0.1:1', control: '/tmp/c', clock: 5 };
   assert.equal(hostEnv({ ...base, configuration: { recording: false } }).FIXTURE_RECORD, 'off');
-  assert.equal('FIXTURE_RECORD' in hostEnv({ ...base, configuration: {} }), false);
+  const on = hostEnv({ ...base, configuration: {} });
+  assert.ok('FIXTURE_RECORD' in on && on.FIXTURE_RECORD === undefined, 'the recording arm sets it to nothing');
+  assert.equal({ ...{ FIXTURE_RECORD: 'off' }, ...on }.FIXTURE_RECORD, undefined, 'so a runner\'s own FIXTURE_RECORD=off, which spawnHost spreads first, can\'t turn recording off');
 });

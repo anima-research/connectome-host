@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startStandin, tokensSent } from '../lib/strategies/standin.mjs';
+import { repairMarks, startStandin, tokensSent } from '../lib/strategies/standin.mjs';
 
 const TOOLS = [{ name: 'time--now', description: 'now', input_schema: { type: 'object', properties: {} } }];
 const NOTE = '[host note: this message arrived over IPC and carries no channel locus.]';
@@ -715,3 +715,45 @@ test('T18: each message in a record has a digest that a cache marker on any of i
   } finally { if (!records) await standin.close(); }
 });
 
+
+test('a thinking block\'s signature covers its own text too, so a block whose thinking a host changed is refused where the model binds', () => withStandin({ binds: true }, async (s) => {
+  s.setStep({ ...step('g', [{ thinking: 'plan', calls: [{ name: 'fixture--result', input: { size: 300, kind: 'prose', canary: '[[c:g.call1]]' } }] }, { text: 'ok' }, { text: 'ok' }]), canaries: ['[[c:g.in]]', '[[c:g.call1]]'] });
+  const opening = agentBody({ canary: '[[c:g.in]]' });
+  const first = (await post(s.url, opening)).json;
+  const call = first.content.find((b) => b.type === 'tool_use');
+  const next = (reply) => ({
+    ...opening, messages: [
+      opening.messages[0],
+      { role: 'assistant', content: reply },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `[[c:g.call1]] ${prose(280)}` }] }] },
+    ],
+  });
+  assert.equal((await post(s.url, next(first.content))).status, 200, 'the block as it was minted is taken');
+  const altered = first.content.map((b) => (b.type === 'thinking' ? { ...b, thinking: `${b.thinking} (trimmed)` } : b));
+  const r = await post(s.url, next(altered));
+  assert.equal(r.status, 400);
+  assert.match(r.json.error.message, /Invalid `signature` in `thinking` block/);
+}));
+
+test('a request\'s head keeps its URL\'s query, so a move to an endpoint that adds one moves the record', async () => {
+  const s = await startStandin({ configuration: { windowTokens: 50_000 } });
+  let records = null;
+  try {
+    s.setStep({ ...step('t', [{ text: 'a' }, { text: 'b' }]), canaries: ['[[c:t.in]]'] });
+    const base = agentBody({ canary: '[[c:t.in]]', stream: false });
+    assert.equal((await post(s.url, base)).status, 200);
+    assert.equal((await post(s.url, base, '/v1/messages?beta=true')).status, 200);
+    records = await s.close();
+  } finally { if (!records) await s.close(); }
+  assert.deepEqual(records.map((r) => r.head.query ?? null), [null, 'beta=true']);
+});
+
+test('repair marks: membrane\'s textified results and pending result, and context-manager\'s dropped-block, moved-result and stub texts, each by who wrote it', () => {
+  assert.deepEqual(repairMarks('text', 'user: [orphan tool_result for toolu_1]: out; [duplicate tool_result for toolu_2, an error]: x'), ['membrane:orphan', 'membrane:duplicate']);
+  assert.deepEqual(repairMarks('tool_result', '[pending]'), ['membrane:pending']);
+  assert.deepEqual(repairMarks('text', 'a reply that says [pending] in passing'), [], 'only a result that is nothing but `[pending]` is membrane\'s');
+  assert.deepEqual(repairMarks('text', 'user: [tool call omitted]'), ['context-manager:omitted']);
+  assert.deepEqual(repairMarks('text', '[tool result moved during context repair]'), ['context-manager:moved']);
+  assert.deepEqual(repairMarks('tool_result', '[this call\'s result isn\'t shown in this context. If you need its output and the tool only reads, call it again; you\'ll get what it returns now.]'), ['context-manager:stub']);
+  assert.deepEqual(repairMarks('text', 'plain words'), []);
+});

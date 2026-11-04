@@ -225,6 +225,7 @@ export function renderRecordLines({ header, log, records, end }) {
     }).join(' ') || '-'}`,
     `tools ${(h.tools ?? []).map((t) => `${t.name}:${String(t.sha).slice(0, 8)}`).join(' ') || '-'}`,
     ...(h.headers ? [`headers beta ${(h.headers.beta ?? []).join('+') || '-'} version ${h.headers.version ?? '-'}`] : []),
+    ...(h.query ? [`query ${h.query}`] : []),
     ...(h.rest ? [`rest ${String(h.rest).slice(0, 8)}`] : []),
   ].join(', ');
   const messagesOf = (r) => (r.messages ?? []).map((m) => ({ role: m.role, digest: m.digest, cache: (m.blocks ?? []).map((b) => (b.contentCache ? [b.cache ?? null, b.contentCache] : b.cache ?? null)) }));

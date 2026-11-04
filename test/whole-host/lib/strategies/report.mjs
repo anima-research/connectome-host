@@ -119,7 +119,7 @@ export function workloadReport({ id, workload, owns = [], judged, breaches, comp
   const by = breaches.judgedBy;
   const byCounts = (judged.judged ?? []).filter((j) => j.check === by && typeof j.judged === 'number');
   const count = typeof breaches.judged === 'number' ? breaches.judged : byCounts.length ? byCounts.reduce((n, j) => n + j.judged, 0) : null;
-  const counts = [...(judged.judged ?? []), ...(count === null ? [] : [{ check: 14, name: 'property', judged: count, ...(by === undefined ? {} : { besides: `judged by check ${by}` }) }])];
+  const counts = [...(judged.judged ?? []), ...(count === null ? [] : [{ check: 14, name: 'property', judged: count, ...(by !== undefined ? { besides: `judged by check ${by}` } : breaches.besides ? { besides: breaches.besides } : {}) }])];
   if (completed && !breaches.length && !(count > 0)) {
     const why = by !== undefined ? `is judged by check ${by}, which ${count === null ? 'gave no count' : 'judged nothing'}` : count === null ? 'gave no judged count and names no check that judges it' : 'judged nothing';
     flags.push({ check: 14, step: 'the run', what: 'judged-none:property', message: `couldn't judge: ${workload}'s property ${why}, though the run completed` });

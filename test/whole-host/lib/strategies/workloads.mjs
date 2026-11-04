@@ -1,4 +1,4 @@
-import { FIXTURE_AGENT, assemblies, requestPairs, withJudged } from './checks.mjs';
+import { FIXTURE_AGENT, assemblies, judgedBy, requestPairs, withJudged } from './checks.mjs';
 import { isUnreadable } from './invariants.mjs';
 import { png } from './png.mjs';
 import { hash32, prose, seeded } from './prose.mjs';
@@ -155,7 +155,7 @@ function tunedOut(w, steps, count, o = {}) {
       ...held,
       tags: ['chat:addressed'],
       reader: 'Subconscious',
-      ...(o.mayFail ? { mayFail: true } : {}),
+      ...(o.mayFail?.(k) ? { mayFail: true } : {}),
       replies: [],
       sub: {
         marker: READER,
@@ -202,7 +202,7 @@ export const WORKLOADS = {
     from: 'prefix',
     property: 'each segment produces what it exists to produce (check 2)',
     steps: () => continuation(),
-    check: () => [],
+    check: () => judgedBy([], 2),
     products: (configuration) => products(configuration),
   },
 
@@ -218,7 +218,7 @@ export const WORKLOADS = {
       return steps;
     },
     check(run, ctx) {
-      if (!summarises(ctx.configuration)) return [];
+      if (!summarises(ctx.configuration)) return withJudged([{ step: null, message: 'couldn\'t judge: the property needs a configuration that summarises, and this one doesn\'t' }], 0);
       const last = readsOf(run, 'state').at(-1);
       if (!last) return withJudged([{ step: null, message: 'couldn\'t judge: the run logged no state read' }], 0);
       const got = last.answer?.maxLevel;
@@ -229,7 +229,7 @@ export const WORKLOADS = {
   W2: {
     from: null,
     turns: 70,
-    property: 'reads: reading-sized tool results compress as they come; its end reaches L3 (the store is ready after each turn, which the driver\'s settle requires)',
+    property: 'reads: a store of reading-sized tool results, attachments and a paste reaches L3 by its end (the store is ready after each turn, which the driver\'s settle requires)',
     steps(ctx) {
       const w = writer(ctx, 'W2');
       const steps = [];
@@ -268,7 +268,9 @@ export const WORKLOADS = {
           const calls = m.blocks.filter((b) => b.type === 'tool_use' && own.test(String(b.toolUseId))).map((b) => b.toolUseId);
           if (!calls.length) continue;
           judged++;
-          if (!m.blocks.some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')) out.push({ step: r.step, message: `request ${r.id}: a call went out without its thinking (${calls.join(', ')})` });
+          // The thinking that led to a call comes before it in its message.
+          const first = m.blocks.findIndex((b) => b.type === 'tool_use' && own.test(String(b.toolUseId)));
+          if (!m.blocks.slice(0, first).some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')) out.push({ step: r.step, message: `request ${r.id}: a call went out without its thinking (${calls.join(', ')})` });
         }
       }
       return withJudged(out, judged);
@@ -306,7 +308,7 @@ export const WORKLOADS = {
   W6: {
     from: 'checkpoint',
     turns: 12,
-    property: 'tools: no request carries a tool result without its call before it, or a call without its result after it but in the last message',
+    property: 'tools: no request carries a mark of membrane\'s pairing repair, which would mean context-manager handed it a result without its call or a call without its result; context-manager\'s own repair marks, the designed output for the suppression it scripts, are counted beside (and check 11 judges each compile\'s pairs)',
     recipe: { fixtureServer: { requestTimeoutMs: 2000 } },
     needs: { webui: true },
     steps(ctx) {
@@ -330,9 +332,15 @@ export const WORKLOADS = {
       }
       return steps;
     },
-    // Membrane repairs both shapes on the wire (normalize-tool-pairs.ts), so check 11's `shape` on the compiles judges.
-    check() {
-      return [];
+    // Membrane repairs both shapes on the wire, so W6 judges what reached the stand-in by its repair's marks; a
+    // context-manager mark is counted, not flagged.
+    check(run) {
+      const requests = run.records.filter((r) => r.kind === 'agent');
+      const marks = requests.flatMap((r) => (r.messages ?? []).flatMap((m) => m.blocks.flatMap((b) => (b.repairs ?? []).map((mark) => ({ r, mark })))));
+      const membrane = marks.filter((x) => x.mark.startsWith('membrane:'));
+      const own = marks.length - membrane.length;
+      const out = membrane.map(({ r, mark }) => ({ step: r.step, request: r.id, message: `request ${r.id} carries membrane's ${mark.slice('membrane:'.length)} repair mark, so context-manager handed it a call or result unpaired` }));
+      return withJudged(out, requests.length, `${requests.length} request(s), ${membrane.length} membrane repair mark(s), ${own} of context-manager's own`);
     },
   },
 
@@ -384,7 +392,8 @@ export const WORKLOADS = {
         }
         return withJudged(out, refused.length);
       }
-      return out;
+      // Where the stand-in refuses no merge, "nothing else raises one" is check 1's: it flags every alert not owned.
+      return judgedBy(out, 1);
     },
   },
 
@@ -396,12 +405,15 @@ export const WORKLOADS = {
     recipe: (variant) => ({ agent: { strategy: { enforceBudget: variant === 'enforced' } } }),
     steps(ctx) {
       const w = writer(ctx, 'W8');
+      // A turn may end unanswered only from the first cut (before turn 5) through the two turns after the restore
+      // (before turn 13), which the property allows before it holds again; restoredWithin judges 1-4, 15 and 16.
+      const underCut = (n) => n >= 5 && n <= 14;
       const budget = ctx.budget;
       const cut = (step, tokens) => w.other(`${step}.budget`, 'panel', { op: 'settings-update', params: { contextBudgetTokens: tokens, immediate: true }, edge: { reserve: ctx.reserve } });
       if (ctx.configurationName === 'H4') {
         const forReader = (step, tokens) => { const c = cut(step, tokens); return { ...c, params: { ...c.params, agent: 'Subconscious' } }; };
         const steps = [];
-        tunedOut(w, steps, this.turns, { mayFail: true, before: { 5: [forReader('h5', Math.round(budget * 0.6))], 9: [forReader('h9', edge(ctx))], 13: [forReader('h13', budget)] } });
+        tunedOut(w, steps, this.turns, { mayFail: underCut, before: { 5: [forReader('h5', Math.round(budget * 0.6))], 9: [forReader('h9', edge(ctx))], 13: [forReader('h13', budget)] } });
         return steps;
       }
       const steps = [];
@@ -409,7 +421,7 @@ export const WORKLOADS = {
         if (n === 5) steps.push(cut(n, Math.round(budget * 0.6)));
         if (n === 9) steps.push(cut(n, edge(ctx)));
         if (n === 13) steps.push(cut(n, budget));
-        steps.push(w.turn(n, { more: { mayFail: true } }));
+        steps.push(w.turn(n, underCut(n) ? { more: { mayFail: true } } : {}));
       }
       return steps;
     },
@@ -422,7 +434,7 @@ export const WORKLOADS = {
   W9: {
     from: 'checkpoint',
     turns: 20,
-    property: 'lifecycle: a store closed and reopened sends the request it sent before',
+    property: 'lifecycle: a store closed and reopened compiles the request it compiled before it closed (check 12, on dry compiles either side of the restart)',
     needs: { webui: true, subagents: true },
     steps(ctx) {
       const w = writer(ctx, 'W9');
@@ -498,15 +510,13 @@ export const WORKLOADS = {
       }
       return steps;
     },
-    check() {
-      return [];
-    },
+    check: () => judgedBy([], 12),
   },
 
   W11: {
     from: 'checkpoint',
     turns: 14,
-    property: 'protections: pins and document marks an operator puts on older messages hold through a budget cut and a restore (the pins invariant reads each compile)',
+    property: 'protections: pins and document marks an operator puts on older messages stay placed through a budget cut and a restore, as context-manager\'s pins promise (a compile that can\'t hold them refuses instead), and the pins invariant holds each compile to them',
     steps(ctx) {
       const w = writer(ctx, 'W11');
       const budget = ctx.budget;
@@ -516,7 +526,9 @@ export const WORKLOADS = {
         if (n === 9) steps.push(w.other('9.budget', 'panel', { op: 'settings-update', params: { contextBudgetTokens: Math.round(budget * 0.35), immediate: true }, edge: { reserve: ctx.reserve } }));
         if (n === 13) steps.push(w.other('13.budget', 'panel', { op: 'settings-update', params: { contextBudgetTokens: budget, immediate: true } }));
         const failFirst = n === 2 && ctx.configurationName === 'H1';
-        const t = w.turn(n, { more: { mayFail: true } });
+        // A turn under the cut, before the restore, may end unanswered; H1's step 2 is retried after its scripted 529
+        // and must still answer.
+        const t = w.turn(n, { more: { ...(n >= 9 && n < 13 ? { mayFail: true } : {}), ...(failFirst ? { retries: true } : {}) } });
         if (failFirst) t.replies = [{ error: { status: 529, type: 'overloaded_error', message: 'stand-in: overloaded, once' } }, ...t.replies];
         steps.push(t);
         switch (n) {
@@ -535,14 +547,35 @@ export const WORKLOADS = {
             steps.push(pin('8.document', { storeAt: 0.20 }, { storeAt: 0.20 }, { kind: 'document', maxLevel: 1 }));
             steps.push(pin('8.level1', { canary: w.c(1, 'in') }, { canary: w.c(1, 'r2') }, { level: 1 }));
             break;
+          case 12:
+          case 14:
+            steps.push(w.other(`${n}.pins`, 'panel', { op: 'pins', params: {} }));
+            break;
           default:
             break;
         }
       }
       return steps;
     },
-    check() {
-      return [];
+    // context-manager keeps a placed pin until it's unpinned, and a compile whose budget can't hold the raw pins
+    // refuses with OverBudgetError (its README's pins paragraph, at the host's 0.24.0), so a cut never removes one.
+    check(run, ctx) {
+      const panels = entries(run, 'panel');
+      const pinsAt = (step) => panels.filter((e) => e.step === `${ctx.seed}.${step}`).at(-1)?.response?.data?.pins;
+      const placed = pinsAt('8.level1') ?? [];
+      if (!placed.length) return withJudged([{ step: `${ctx.seed}.8.level1`, message: 'couldn\'t judge: the panel listed no pin once the last was added' }], 0);
+      const named = (p) => `${p.kind}${p.level !== undefined ? ` at L${p.level}` : ''}${p.maxLevel !== undefined ? ` to L${p.maxLevel}` : ''}`;
+      const out = [];
+      let judged = 0;
+      for (const step of ['12.pins', '14.pins']) {
+        const listed = pinsAt(step);
+        if (!Array.isArray(listed)) { out.push({ step: `${ctx.seed}.${step}`, message: 'couldn\'t judge: the panel\'s pins answer holds no list' }); continue; }
+        judged += placed.length;
+        const ids = new Set(listed.map((p) => p.id));
+        const gone = placed.filter((p) => !ids.has(p.id));
+        if (gone.length) out.push({ step: `${ctx.seed}.${step}`, message: `${gone.length} of the ${placed.length} pins and marks placed by step 8 are gone: ${gone.map(named).join(', ')}` });
+      }
+      return withJudged(out, judged);
     },
   },
 };
@@ -557,16 +590,19 @@ function restoredWithin(run, agent, stepOf, noun) {
 }
 
 export function toolBlocksLost(run) {
-  const read = readsOf(run, 'messages').at(-1);
-  const messages = read?.answer ?? [];
-  if (!Array.isArray(messages)) return withJudged([{ step: read.step ?? null, message: `couldn't judge: the store's messages couldn't be read${isUnreadable(messages) ? ` (${messages.unreadable})` : ''}` }], 0);
+  // Every read, so a body removed before the last read is still judged in the requests that sent it.
+  const reads = readsOf(run, 'messages');
+  const failed = reads.find((read) => !Array.isArray(read.answer ?? []));
+  if (failed) return withJudged([{ step: failed.step ?? null, message: `couldn't judge: the store's messages couldn't be read${isUnreadable(failed.answer) ? ` (${failed.answer.unreadable})` : ''}` }], 0);
   const toolIds = new Map();
-  for (const m of messages) {
+  const groupOf = new Map();
+  for (const m of reads.flatMap((read) => read.answer ?? [])) {
+    if (!groupOf.has(m.id)) groupOf.set(m.id, m.bodyGroupId ?? m.id);
     if (!m.bodyGroupId) continue;
-    const ids = m.blocks.filter((b) => b.type === 'tool_use' || b.type === 'tool_result').map((b) => `${b.type}:${b.id ?? b.toolUseId}`);
-    if (ids.length) toolIds.set(m.bodyGroupId, [...(toolIds.get(m.bodyGroupId) ?? []), ...ids]);
+    const ids = toolIds.get(m.bodyGroupId) ?? new Set();
+    for (const b of m.blocks) if (b.type === 'tool_use' || b.type === 'tool_result') ids.add(`${b.type}:${b.id ?? b.toolUseId}`);
+    if (ids.size) toolIds.set(m.bodyGroupId, ids);
   }
-  const groupOf = new Map(messages.map((m) => [m.id, m.bodyGroupId ?? m.id]));
   const paired = requestPairs(run.records, run.log, FIXTURE_AGENT);
   if (!paired) return withJudged([{ step: null, message: 'couldn\'t judge: the log holds no request compile line to pair with the requests' }], 0);
   const out = [];
@@ -577,7 +613,7 @@ export function toolBlocksLost(run) {
     for (const key of whole) {
       if (!toolIds.has(key)) continue;
       judged++;
-      const lost = toolIds.get(key).filter((id) => !sent.has(id));
+      const lost = [...toolIds.get(key)].filter((id) => !sent.has(id));
       if (lost.length) out.push({ step: request.step, message: `request ${request.id}: ${key} went out whole but without its tool blocks ${[...new Set(lost)].join(', ')}` });
     }
   }

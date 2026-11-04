@@ -37,7 +37,19 @@ function requestedLevel(instruction) {
 export const CANARY = /\[\[c:[^\]\s]+\]\]/g;
 export const SUMMARY = /\[\[s:M[0-9a-f]{8}\]\]/g;
 
-const canaryOrder = (a, b) => a.localeCompare(b, 'en', { numeric: true });
+// Digit runs by number and the rest by code unit, so the order needs no collation data: on the 3,479 canaries of
+// the committed runs it is the order `localeCompare(b, 'en', { numeric: true })` gave.
+const canaryOrder = (a, b) => {
+  const pa = a.match(/\d+|\D+/g) ?? [];
+  const pb = b.match(/\d+|\D+/g) ?? [];
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const [x, y] = [pa[i], pb[i]];
+    if (x === y) continue;
+    if (/^\d/.test(x) && /^\d/.test(y) && BigInt(x) !== BigInt(y)) return BigInt(x) < BigInt(y) ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return pa.length - pb.length;
+};
 
 // context-manager estimates prose at 2.9 characters a token and dense text at 2.3 (message-store.ts); these rates
 // count about 1.3 times its estimate, so its calibration has a gap to close.
@@ -167,7 +179,9 @@ function bindingIdentity(body, beforeMessage) {
 
 const THINKING_CHARS = 600;
 
-const signatureFor = (identity) => `fx1.${Buffer.from(identity, 'hex').toString('base64url')}`;
+// A signature covers what's ahead of its message and its own thinking, as the provider's does: either changed, it no
+// longer matches.
+const signatureFor = (identity, thinking) => `fx1.${Buffer.from(sha(`${identity}\n${thinking}`), 'hex').toString('base64url')}`;
 
 const systemText = (body) => (typeof body.system === 'string' ? body.system : (body.system || []).map((b) => b.text || '').join(''));
 
@@ -184,6 +198,20 @@ export const markerOf = (cc) => (cc && typeof cc === 'object' && cc.type === 'ep
 
 const headerValues = (v) => (Array.isArray(v) ? v : v === undefined ? [] : [v]).flatMap((x) => String(x).split(',')).map((x) => x.trim()).filter(Boolean);
 
+// What a request's tool pairs went through, by the marks the repairs write, at the stack's locked versions:
+// membrane 0.8.0's normalizer textifies a result with no call before it or a second one for a call, and answers a
+// call left without one with `[pending]` (normalize-tool-pairs.ts:546, :641, :968); context-manager 0.24.0's
+// pairing repair leaves `[tool call omitted]` for blocks it drops, a moved result's note and a stub for a call whose
+// result it hasn't (autobiographical.ts:19390, :19500, :19319; normalize-tool-messages.ts:133).
+export function repairMarks(type, text) {
+  const out = [];
+  for (const m of text.matchAll(/\[(orphan|duplicate) tool_result for [^\]\n]*\]/g)) out.push(`membrane:${m[1]}`);
+  if (type === 'tool_result' && text === '[pending]') out.push('membrane:pending');
+  for (const m of text.matchAll(/\[tool call omitted\]|\[tool result moved during context repair\]/g)) out.push(m[0] === '[tool call omitted]' ? 'context-manager:omitted' : 'context-manager:moved');
+  if (type === 'tool_result' && text.startsWith('[this call\'s result isn\'t shown in this context.')) out.push('context-manager:stub');
+  return out;
+}
+
 function normalise(body, headers, mask) {
   const block = (b) => {
     const text = b.type === 'text' ? b.text || '' : b.type === 'tool_result' ? texts({ messages: [{ content: [b] }] }).join('') : '';
@@ -192,6 +220,7 @@ function normalise(body, headers, mask) {
     const summaries = text.match(SUMMARY); if (summaries) out.summaries = summaries;
     // agent-framework's placeholder for an image it no longer sends: `[image: image/png, ~691KB, ref img_k7x3q2_7]`.
     const placeholders = text.match(/\[image: [^\]]*\]/g); if (placeholders) out.placeholders = placeholders.length;
+    const repairs = repairMarks(b.type, text); if (repairs.length) out.repairs = repairs;
     if (b.type === 'tool_use') out.toolUseId = b.id;
     if (b.type === 'tool_result') {
       out.toolUseId = b.tool_use_id;
@@ -331,7 +360,7 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     const out = [];
     for (const [i, m] of body.messages.entries()) {
       for (const [j, b] of blocksOf(m.content).entries()) {
-        if (b.type === 'thinking' && b.signature !== signatureFor(bindingIdentity(body, i))) out.push({ i, j });
+        if (b.type === 'thinking' && b.signature !== signatureFor(bindingIdentity(body, i), b.thinking ?? '')) out.push({ i, j });
       }
     }
     return out;
@@ -397,7 +426,7 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     const identity = bindingIdentity(body, body.messages.length);
     const content = [];
     const thinking = reply.thinking ?? (config.thinks ? prose(THINKING_CHARS, parseInt(bindingIdentity(maskRunVarying(body), body.messages.length).slice(0, 8), 16)) : undefined);
-    if (thinking !== undefined) content.push({ type: 'thinking', thinking, signature: signatureFor(identity) });
+    if (thinking !== undefined) content.push({ type: 'thinking', thinking, signature: signatureFor(identity, thinking) });
     if (reply.text !== undefined) content.push({ type: 'text', text: reply.text });
     for (const call of reply.calls || []) content.push({ type: 'tool_use', id: call.id ?? `toolu_fx${String(++toolNumber).padStart(6, '0')}`, name: call.name, input: call.input });
     const stop = reply.stop ?? ((reply.calls || []).length ? 'tool_use' : 'end_turn');
@@ -434,7 +463,10 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
   }
 
   function handle(req, res, raw, arrived) {
-    const path = (req.url || '').split('?')[0];
+    const url = req.url || '';
+    const path = url.split('?')[0];
+    // A query selects an endpoint's behaviour (the SDK's beta messages add `?beta=true`), so the head keeps one.
+    const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : null;
     let body = null;
     try { body = raw ? JSON.parse(raw) : null; } catch { body = null; }
     if (req.method === 'POST' && path.endsWith('/v1/messages/count_tokens')) {
@@ -449,6 +481,7 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     const { kind, agent, reason } = classify(body);
     const mask = runVaryingMasker();
     const record = { id, seq, at: Math.round(performance.now() - t0), arrived, clock, step: step?.id ?? null, kind, ...(agent ? { agent } : {}), ...(reason ? { reason } : {}), ...(body ? normalise(body, req.headers, mask) : {}) };
+    if (query && record.head) record.head.query = query;
     if (kind === 'summariser' && body) record.texts = summariserTexts(body, mask);
     records.push(record);
     if (rawDir) writeFileSync(join(rawDir, `${id}.json`), raw);

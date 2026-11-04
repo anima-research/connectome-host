@@ -87,8 +87,10 @@ export function reloads(log = []) {
     const [before, after] = [e.before, e.after].map((at) => (at?.seq == null ? null : lines.get(`${at.boot}:${at.seq}`) ?? null));
     const step = e.step;
     if (!before || !after) { flags.push({ check: 12, step, message: `couldn't judge the reload: the log holds no dry compile line ${!before ? 'before the restart' : 'after it'}` }); continue; }
-    judged++;
     const [a, b] = [shape(before), shape(after)];
+    // Two refusals alike show no compile either side, so they judge nothing.
+    if (a.outcome === 'refused' && b.outcome === 'refused' && a.error === b.error) { flags.push({ check: 12, step, message: `couldn't judge the reload: the dry compile refused (${a.error}) both before the restart and after it` }); continue; }
+    judged++;
     if (a.outcome !== b.outcome || a.error !== b.error) { flags.push({ check: 12, step, message: `after the restart the dry compile ${b.outcome === 'refused' ? `refused (${b.error})` : 'compiled'}, where before it ${a.outcome === 'refused' ? `refused (${a.error})` : 'compiled'}` }); continue; }
     const n = Math.max(a.messages.length, b.messages.length);
     const at = [...Array(n).keys()].find((i) => JSON.stringify(a.messages[i]) !== JSON.stringify(b.messages[i]));
@@ -111,7 +113,11 @@ export function judgedBy(flags, check) {
 
 export function everyTurnAnswers(records, log = [], script = []) {
   const mayFail = new Set(script.filter((s) => s.mayFail).map((s) => s.id));
-  const owned = (e) => mayFail.has(e.step) && (/^inference:(failed|exhausted)$/.test(e.event?.type ?? '') || (e.event?.type === 'ops:alert' && e.event.kind === 'context-refusal'));
+  const retries = new Set(script.filter((s) => s.retries).map((s) => s.id));
+  // A step that may fail owns its turn's failure; one that retries a scripted error owns only the failure
+  // agent-framework retries, and must still answer.
+  const owned = (e) => (mayFail.has(e.step) && (/^inference:(failed|exhausted)$/.test(e.event?.type ?? '') || (e.event?.type === 'ops:alert' && e.event.kind === 'context-refusal')))
+    || (retries.has(e.step) && e.event?.type === 'inference:failed');
   const flags = [];
   withJudged(flags, records.length);
   for (const r of records) {
@@ -123,6 +129,7 @@ export function everyTurnAnswers(records, log = [], script = []) {
     if (e.kind === 'ipc' && /^inference:(failed|exhausted)$/.test(e.event?.type ?? '')) flags.push({ check: 1, step: e.step, message: `${e.event.type}: ${e.event.error ?? e.event.reason ?? ''}`.trim() });
     if (e.kind === 'ipc' && e.event?.type === 'ops:alert') flags.push({ check: 1, step: e.step, what: e.event.kind, message: `the host raised an operator alert, ${e.event.kind}: ${e.event.message ?? ''}`.trim() });
     if (e.kind === 'settle' && e.phase === 'end' && e.settled === false) flags.push({ check: 1, step: e.step, message: 'the checkpoint did not settle' });
+    if (e.kind === 'undelivered') flags.push({ check: 1, step: e.step, message: `the turn's answer never reached its channel: the host reported mcpl:speech-route-failed${e.reason ? ` (${e.reason})` : ''}` });
   }
   return flags;
 }

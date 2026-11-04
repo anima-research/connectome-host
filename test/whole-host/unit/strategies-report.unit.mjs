@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { perCheckReport, readExpected, runChecks, summaryNamer, workloadReport } from '../lib/strategies/report.mjs';
-import { calibrationEdge, judgedBy } from '../lib/strategies/checks.mjs';
+import { calibrationEdge, judgedBy, withJudged } from '../lib/strategies/checks.mjs';
 
 const configuration = { name: 'H1/W1' };
 const flag = (check, step, message = 'm') => ({ check, step, message });
@@ -299,4 +299,10 @@ test('a completed run\'s workload property carries its own judged count or names
   assert.ok(unjudged(report([{ check: 11, name: 'compile invariants', judged: 0 }], judgedBy([], 11))), 'the check it names judged nothing');
   assert.ok(unjudged(report([], judgedBy([], 12))), 'the check it names didn\'t run');
   assert.ok(!unjudged(report([], [], false)), 'a run that stopped early is failed for that, not for this');
+});
+
+test('a workload property\'s own note beside its count reaches the report, as W6 counts the repair marks it judged', () => {
+  const r = workloadReport({ id: 'C8h/W6', workload: 'W6', judged: { flags: [], missing: [], notes: [], judged: [] }, breaches: withJudged([], 34, '34 request(s), 0 membrane repair mark(s), 20 of context-manager\'s own'), completed: true });
+  assert.equal(r.verdict, 'pass');
+  assert.ok(r.lines.some((l) => /check 14 property 34 \(34 request\(s\), 0 membrane repair mark\(s\), 20 of context-manager's own\)/.test(l)), r.lines.join('\n'));
 });

@@ -652,3 +652,15 @@ test('a whole listing at the run\'s first boot is the store as the run began, wr
   assert.match(section('q.1').find((l) => l.startsWith('  compile')), /L1\(b\.in\+1\)/, 'message 4, which L1-4 covers, is named past message 2 while 2 is held');
   assert.match(section('q.3').find((l) => l.startsWith('  compile')), /L1\(a\.in\+1\)/, 'and past message 1 once the restart\'s listing lacks 2');
 });
+
+test('a request\'s head line names its URL\'s query when it has one', () => {
+  const head = { model: 'm', maxTokens: 100, toolChoice: null, thinking: null, system: [], tools: [], rest: null };
+  const req = (id, query) => ({ id, arrived: '11', kind: 'agent', agent: 'primary', step: 'q.1', stream: true, head: { ...head, ...(query ? { query } : {}) }, messages: [{ role: 'user', digest: 'd1', blocks: [{ type: 'text', canaries: ['[[c:q.1.in]]'] }] }], answer: { shape: 'reply' } });
+  const lg = [
+    { kind: 'compiles', step: 'q.1', blobs: { u1: text('[[c:q.1.in]] a') }, lines: [line(1, [m(1, 'u1')])] },
+    { kind: 'request', step: 'q.1', request: { id: 'a1', kind: 'agent' } },
+  ];
+  const heads = (r) => renderRecord({ header, log: lg, records: [r], end: { ok: true } }).split('\n').filter((l) => l.startsWith('H:'));
+  assert.ok(heads(req('a1', 'beta=true'))[0].endsWith(', query beta=true'), heads(req('a1', 'beta=true'))[0]);
+  assert.ok(!heads(req('a1', null))[0].includes('query'));
+});
