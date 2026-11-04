@@ -7,7 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { ipcConnect, send, sleep, spawnHost, stopHost } from '../common.mjs';
 import { lineReader, listenForPeers } from './control.mjs';
 import { openWebUi } from './webui.mjs';
-import { cutError, cutText } from './cut.mjs';
+import { cutError, cutText, cutThrow } from './cut.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER = join(HERE, 'mcpl-server.mjs');
@@ -83,7 +83,7 @@ export function hostFacts({ hostDir, configuration }) {
   try {
     return JSON.parse(line);
   } catch {
-    throw new Error(`couldn't read the installed host's recipe facts (bun exited ${r.status}): ${(r.stderr || r.stdout || '').trim().slice(-2000)}`);
+    throw cutThrow((cut) => `couldn't read the installed host's recipe facts (bun exited ${r.status}): ${cut((r.stderr || r.stdout || '').trim(), -2000)}`);
   }
 }
 
@@ -174,8 +174,11 @@ export function readSettle(answer, previous, ticks = {}) {
 
 class RunFailure extends Error {}
 
-export async function runScript({ steps, configuration, standin, hostDir, facts, work, storeDir, epoch, logPath }) {
+export async function runScript({ steps, configuration, standin, hostDir, facts, work, storeDir, epoch, logPath, hostLogs = { dir: work, at: null } }) {
   mkdirSync(work, { recursive: true });
+  mkdirSync(hostLogs.dir, { recursive: true });
+  const hostLogOf = (b) => (hostLogs.at ? `${hostLogs.at}/host-${b.n}.log` : `host-${b.n}.log`);
+  const ending = (b, out) => `its whole output is ${hostLogOf(b)} in the evidence, and its last lines are:\n${tail(out)}`;
   mkdirSync(storeDir, { recursive: true });
   const t0 = performance.now();
   const wall = () => Math.round((performance.now() - t0) * 10) / 10;
@@ -261,7 +264,7 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
     child.once('exit', (code, signal) => {
       b.exited = { code, signal };
       log('exit', { boot: b.n, code, signal, expected: b.stopping });
-      if (!b.stopping) fail({ step: current?.id ?? null, reason: `the host exited (${code ?? signal}) ${tail(out)}` });
+      if (!b.stopping) fail({ step: current?.id ?? null, reason: `the host exited (${code ?? signal}); ${ending(b, out)}` });
       poke();
     });
     await until(() => existsSync(sockPath), BOOT_MS, `boot ${b.n}: the host's IPC socket`, { pollMs: 50 });
@@ -317,13 +320,13 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
         await exitWithin(b.child, SHUTDOWN_MS);
       }
       const why = shutdownFailure({ boot: b.n, timedOut, exited: b.exited, seconds: SHUTDOWN_MS / 1000 });
-      if (why) fail({ step: current?.id ?? null, reason: `${why} ${tail(b.out)}` });
+      if (why) fail({ step: current?.id ?? null, reason: `${why}; ${ending(b, b.out)}` });
     }
     try { b.sock?.destroy(); } catch {}
     b.webui?.close();
     stopHost(b.child);
-    writeFileSync(join(work, `host-${b.n}.log`), b.out.join(''));
-    log('shutdown', { boot: b.n, hostLog: join(work, `host-${b.n}.log`) });
+    writeFileSync(join(hostLogs.dir, `host-${b.n}.log`), b.out.join(''));
+    log('shutdown', { boot: b.n, hostLog: hostLogOf(b) });
   }
 
   const eventAfter = (from, test) => host.events.slice(from).find(({ e }) => test(e));
@@ -641,7 +644,7 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
   } catch (e) {
     const c = e instanceof RunFailure ? { shown: e.message } : cutText((cut) => cut(String(e?.stack || e), 3000));
     if (!failure) fail({ step: current?.id ?? null, reason: c.shown, ...(c.full ? { full: c.full } : {}) });
-    if (host) log('host-output', { boot: host.n, tail: tail(host.out) });
+    if (host) log('host-output', { boot: host.n, hostLog: hostLogOf(host), tail: tail(host.out) });
   } finally {
     await shutdown();
     await ctl.close();

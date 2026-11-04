@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, sh } from './lib/common.mjs';
 import { installCandidate, readPacks } from './lib/install.mjs';
@@ -80,7 +80,7 @@ const expected = (() => {
 const slug = (id) => id.replaceAll('/', '_');
 const readJsonLines = (path) => (existsSync(path) ? readFileSync(path, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
-async function drive(job, side, { storeDir, epoch, dir, scratch = dir, rawDir = null }) {
+async function drive(job, side, { storeDir, epoch, dir, scratch = dir, rawDir = null, hostLogs = { dir, at: relative(out, dir) } }) {
   const facts = hostFacts({ hostDir: side.hostDir, configuration: job.configuration });
   const configuration = asRun(job.configuration, facts);
   rmSync(dir, { recursive: true, force: true });
@@ -93,7 +93,7 @@ async function drive(job, side, { storeDir, epoch, dir, scratch = dir, rawDir = 
   let run;
   let records;
   try {
-    run = await runScript({ steps, configuration, standin, hostDir: side.hostDir, facts, work: join(scratch, 'work'), storeDir, epoch, logPath });
+    run = await runScript({ steps, configuration, standin, hostDir: side.hostDir, facts, work: join(scratch, 'work'), storeDir, epoch, logPath, hostLogs });
   } finally {
     records = await standin.close();
   }
@@ -126,7 +126,9 @@ async function makeCheckpoint(from) {
     const dir = kept ? `${kept}.writing-${process.pid}` : join(work, 'checkpoints', slug(from));
     rmSync(dir, { recursive: true, force: true });
     let d;
-    try { d = await drive(job, release, { storeDir: join(dir, 'store'), epoch: EPOCH, dir, rawDir: join(dir, 'raw') }); } catch (e) { if (kept) rmSync(dir, { recursive: true, force: true }); throw e; }
+    const hostLogs = { dir: join(out, 'checkpoints', slug(from)), at: `checkpoints/${slug(from)}` };
+    rmSync(hostLogs.dir, { recursive: true, force: true });
+    try { d = await drive(job, release, { storeDir: join(dir, 'store'), epoch: EPOCH, dir, rawDir: join(dir, 'raw'), hostLogs }); } catch (e) { if (kept) rmSync(dir, { recursive: true, force: true }); throw e; }
     mkdirSync(join(dir, 'answers'), { recursive: true });
     for (const f of readdirSync(join(dir, 'raw'))) if (/^r\d+\.answer\.json$/.test(f)) renameSync(join(dir, 'raw', f), join(dir, 'answers', f));
     rmSync(join(dir, 'raw'), { recursive: true, force: true });

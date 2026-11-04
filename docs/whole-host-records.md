@@ -364,9 +364,12 @@ what holds.
 
 Each run's `report.txt` lists its flags, the expected failures that cover some
 of them, and the checks' counts. A flag, a note or a reason the record or the
-summary shows cut short, such as a thrown error, a host's output or a long
+summary shows cut short, such as a thrown error, a command's output or a long
 list of names, has its whole text on the line under it, `  whole: …`; a run
-that couldn't run has its reason there, whole the same way.
+that couldn't run has its reason there, whole the same way. A host's whole
+output is each boot's `host-N.log`, in the run's directory, or in
+`checkpoints/RUN/` for the drive that writes RUN's checkpoint; a failure that
+shows the host's last lines names that file.
 
 - **Check 1: every turn answers.** It flags a request the stand-in refused or
   couldn't classify, an inference that failed or was exhausted, an operator
