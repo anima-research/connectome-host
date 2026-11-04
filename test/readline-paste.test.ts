@@ -109,6 +109,18 @@ test('a SIGTERM turns bracketed paste off, then dies of the signal when nothing 
   rl.close();
 });
 
+test('a SIGINT or a SIGHUP sent to the host turns bracketed paste off too, then dies of its signal when nothing else handles it', async () => {
+  for (const signal of ['SIGINT', 'SIGHUP']) {
+    const { signals, rl, settle, shown } = terminal();
+    signals.emit(signal);
+    await settle();
+    expect(shown().endsWith(PASTE_OFF), signal).toBe(true);
+    expect(signals.killed, signal).toEqual([[4242, signal]]);
+    expect(['SIGTERM', 'SIGINT', 'SIGHUP'].map((each) => signals.listenerCount(each)), signal).toEqual([0, 0, 0]);
+    rl.close();
+  }
+});
+
 test('a SIGTERM something else in the process handles turns bracketed paste off and leaves the signal to it', async () => {
   const { signals, rl, settle, shown } = terminal();
   const other: string[] = [];

@@ -10,7 +10,7 @@ import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { readServiceRecord, serviceCommand, serviceLines } from './service.js';
-import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, setup } from './setup.js';
+import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup } from './setup.js';
 
 export interface CliContext {
   root: string | null;
@@ -124,7 +124,7 @@ function usage(print: (line: string) => void, typed = INSTALL_COMMAND): void {
   print(`  ${typed}`);
   print('      Which install this is, its release, whether its host is running, and its update state.');
   for (const command of COMMANDS) {
-    print(`  ${command.usage.replace(/^connectome(?= |$)/, typed)}`);
+    print(`  ${command.usage.replace(/^connectome(?= |$)/, () => typed)}`);
     print(`      ${command.summary}`);
     for (const word of command.words ?? []) print(`        ${word}`);
   }
@@ -149,13 +149,13 @@ async function fromPackage(argv: string[]): Promise<number> {
     return ran.status ?? 1;
   }
   if (isHelp(word)) {
-    usage(io.out);
+    usage(io.out, packageCommand());
     return 0;
   }
   if (word === 'setup') return setup({ root, argv: argv.slice(1), ...io });
   if (word !== undefined && !COMMANDS.some((each) => each.name === word)) {
     io.err(`connectome: there's no command ${word}.`);
-    usage(io.err);
+    usage(io.err, packageCommand());
     return 2;
   }
   if (existsSync(join(root, 'install.json'))) {
@@ -231,7 +231,7 @@ function service(ctx: CliContext): number {
     return 1;
   }
   if (lines === null) {
-    ctx.out(`No service is set up for it yet: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
+    ctx.out(`No service is recorded for it yet: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
   }
   for (const line of lines ?? []) ctx.out(line);
   return 0;
@@ -445,8 +445,8 @@ function startHost(root: string, then: string): string {
   let recorded: boolean;
   try {
     recorded = readServiceRecord(root) !== null;
-  } catch {
-    recorded = false;
+  } catch (error) {
+    return `${errorText(error).replace(/\.+$/, '')}. Then ${then}.`;
   }
   return recorded
     ? `If no host is running, start it with \`${typedCommand(root)} service start\`, then ${then}.`
