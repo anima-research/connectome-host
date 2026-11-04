@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
-  symlinkSync, writeFileSync,
+  renameSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -38,7 +38,7 @@ function install(name = 'My Resident', options: { shell?: boolean; home?: string
   mkdirSync(root, { recursive: true });
   mkdirSync(data, { recursive: true });
   mkdirSync(join(work, 'node_modules', '@animalabs', 'connectome-host'), { recursive: true });
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: data, extraState: [], workingDir: work }));
   writeFileSync(join(root, 'start.js'), '');
   writeFileSync(join(root, 'connectome'), '#!/bin/sh\n', { mode: 0o755 });
   const recipe = join(work, 'resident.json');
@@ -761,6 +761,202 @@ test('a Linux same-directory unit that is not a host is offered another working 
   expect(f.err.join('\n')).toContain('another working directory');
 });
 
+
+for (const platform of ['linux', 'darwin'] as const) for (const form of ['legacy', 'invalid', 'moved', 'copied']) {
+  test(platform + ' new service refuses an install record not bound here: ' + form, async () => {
+    const at = install();
+    const path = join(at.root, 'install.json');
+    const installed = JSON.parse(readFileSync(path, 'utf-8'));
+    if (form === 'legacy') delete installed.workingDir;
+    else installed.workingDir = form === 'invalid' ? 10 : form === 'moved' ? join(at.home, 'gone') : at.home;
+    writeFileSync(path, JSON.stringify(installed));
+    const f = fake(at, { platform });
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+    expect(f.systemd.calls).toEqual([]);
+    expect(f.loads).toEqual([]);
+    expect(existsSync(join(at.root, 'service.json'))).toBe(false);
+    expect(existsSync(join(at.work, '.env'))).toBe(false);
+    expect(f.err.join('\n')).toContain(path);
+    expect(f.err.join('\n')).toContain('setup');
+    expect(f.err.join('\n')).toContain(at.work);
+  });
+}
+
+for (const platform of ['linux', 'darwin'] as const) for (const action of ['start', 'stop', 'install', 'status', 'check']) {
+  test(platform + ' a foreign service record cannot supply ordinary ' + action, async () => {
+    const at = install('Original', { shell: true });
+    const f = fake(at, { platform });
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    const copy = install('Copy', { home: at.home });
+    const bytes = readFileSync(join(at.root, 'service.json'), 'utf-8');
+    writeFileSync(join(copy.root, 'service.json'), bytes);
+    f.systemd.calls.length = f.out.length = f.err.length = 0;
+    let said: string;
+    if (action === 'status') {
+      let error: unknown;
+      try { serviceLines(copy.root); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(Error);
+      said = String(error);
+    } else if (action === 'check') {
+      const checked = await checkService(copy.root, f.system);
+      expect(checked.passed).toBe(false);
+      said = checked.lines.join('\n');
+    } else {
+      expect(await runService({ ...f.ctx([action]), root: copy.root }, f.system)).toBe(1);
+      said = [...f.out, ...f.err].join('\n');
+    }
+    expect(said).toContain(at.work);
+    expect(said).toContain(copy.work);
+    expect(said).toContain('service install <recipe>');
+    expect(f.systemd.calls).toEqual([]);
+    expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
+  });
+}
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' explicit copy install leaves the original service and inherited settings alone', async () => {
+  const at = install('Original', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const units = [previous.units.host, previous.units.shell!];
+  const files = units.map((unit) => readFileSync(unit.file, 'utf-8'));
+  const settings = readFileSync(join(at.work, '.env'), 'utf-8');
+  const copy = install('Copy', { home: at.home });
+  writeFileSync(join(copy.root, 'service.json'), readFileSync(join(at.root, 'service.json')));
+  writeFileSync(join(copy.work, '.env'), settings);
+  f.systemd.calls.length = 0;
+  expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(0);
+  for (const [i, unit] of units.entries()) {
+    expect(readFileSync(unit.file, 'utf-8')).toBe(files[i]!);
+    expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
+    expect(f.systemd.calls.some((line) => /\b(stop|disable|restart|bootout|kickstart)\b/.test(line) && line.includes(unit.name))).toBe(false);
+  }
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(settings);
+  expect(readFileSync(join(copy.work, '.env'), 'utf-8')).toBe(settings);
+  expect(readServiceRecord(copy.root)!.workingDirectory).toBe(copy.work);
+  expect(readServiceRecord(copy.root)!.shellSettings).toBeUndefined();
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a moved service waits for explicit native retirement before replacement', async () => {
+  const at = install('Original', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const units = [previous.units.host, previous.units.shell!];
+  const moved = join(at.home, 'Moved');
+  renameSync(at.work, moved);
+  const root = join(moved, 'connectome-host');
+  const recipe = join(moved, 'resident.json');
+  writeFileSync(join(root, 'install.json'), JSON.stringify({
+    v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved,
+  }));
+  const before = readFileSync(join(root, 'service.json'), 'utf-8');
+  f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(1);
+  expect(readFileSync(join(root, 'service.json'), 'utf-8')).toBe(before);
+  const said = [...f.out, ...f.err].join('\n');
+  expect(said).toContain(previous.units.host.name);
+  expect(said).toContain(platform === 'darwin' ? 'launchctl bootout' : 'systemctl --user');
+  for (const unit of units) {
+    expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
+    if (platform === 'darwin') f.system.run('launchctl', ['bootout', 'gui/1001/' + unit.name], {});
+    else f.system.run('systemctl', ['--user', 'stop', unit.name], {});
+    rmSync(unit.file);
+  }
+  if (platform === 'linux') f.system.run('systemctl', ['--user', 'daemon-reload'], {});
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(0);
+  expect(readServiceRecord(root)!.workingDirectory).toBe(moved);
+});
+
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a missing old file does not settle a moved service native state', async () => {
+  const at = install('Original');
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const unit = previous.units.host;
+  const moved = join(at.home, 'Moved');
+  renameSync(at.work, moved);
+  const root = join(moved, 'connectome-host');
+  const recipe = join(moved, 'resident.json');
+  writeFileSync(join(root, 'install.json'), JSON.stringify({
+    v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved,
+  }));
+  rmSync(unit.file);
+  const before = readFileSync(join(root, 'service.json'), 'utf-8');
+  f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(1);
+  expect([...f.out, ...f.err].join('\n')).toContain(unit.name);
+  expect(readFileSync(join(root, 'service.json'), 'utf-8')).toBe(before);
+  expect(platform === 'darwin' ? f.systemd.agents.has(unit.name) : f.systemd.running.has(unit.name)).toBe(true);
+  const run = f.system.run;
+  let queried = 0;
+  f.system.run = (command, args, env) => {
+    if ((platform === 'linux' && command === 'systemctl' && args.includes('show') && args.includes(unit.name)) ||
+      (platform === 'darwin' && command === 'launchctl' && args[0] === 'list' && args[1] === unit.name)) {
+      queried++;
+      return { status: 5, stdout: '', stderr: 'original state query denied' };
+    }
+    return run(command, args, env);
+  };
+  f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(1);
+  expect(queried).toBe(1);
+  expect([...f.out, ...f.err].join('\n')).toContain('original state query denied');
+  expect(readFileSync(join(root, 'service.json'), 'utf-8')).toBe(before);
+  f.system.run = run;
+  if (platform === 'darwin') f.system.run('launchctl', ['bootout', 'gui/1001/' + unit.name], {});
+  else {
+    f.system.run('systemctl', ['--user', 'stop', unit.name], {});
+    f.system.run('systemctl', ['--user', 'daemon-reload'], {});
+  }
+  expect(await installService({ ...f.ctx(['install', recipe]), root }, f.system)).toBe(0);
+});
+
+test('an uncheckable foreign directory refuses without treating it as a missing old directory', async () => {
+  const at = install('Original');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const previous = readServiceRecord(at.root)!;
+  const file = readFileSync(previous.units.host.file, 'utf-8');
+  const copy = install('Copy', { home: at.home });
+  const loop = join(at.home, 'uncheckable');
+  symlinkSync(loop, loop);
+  const bytes = JSON.stringify({ ...previous, workingDirectory: loop });
+  writeFileSync(join(copy.root, 'service.json'), bytes);
+  f.systemd.calls.length = f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain("recorded directory can't be checked");
+  expect(f.systemd.calls).toEqual([]);
+  expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
+  expect(readFileSync(previous.units.host.file, 'utf-8')).toBe(file);
+  expect(f.systemd.running.has(previous.units.host.name)).toBe(true);
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' existing service start and stop keep legacy install-record compatibility', async () => {
+  const at = install();
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: at.data, extraState: [] }));
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  expect(await runService(f.ctx(['start']), f.system)).toBe(0);
+});
+
+test('service identity and new-install binding accept an alias of the same directory', async () => {
+  const at = install();
+  const alias = join(at.home, 'Alias');
+  symlinkSync(at.work, alias);
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({
+    v: 1, dataDir: at.data, extraState: [], workingDir: alias,
+  }));
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const record = readServiceRecord(at.root)!;
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, workingDirectory: alias }));
+  expect(serviceLines(join(alias, 'connectome-host'))).not.toBeNull();
+  expect((await checkService(join(alias, 'connectome-host'), f.system)).passed).toBe(true);
+});
+
 test('a check with a damaged service record gives the explicit-recipe repair instruction', async () => {
   const at = install();
   const f = fake(at);
@@ -819,7 +1015,7 @@ test('the host\'s unit gives the host the data directory install.json names', as
   const at = install();
   const kept = join(dirname(at.work), 'kept data');
   mkdirSync(kept);
-  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: kept, extraState: [] }));
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: kept, extraState: [], workingDir: at.work }));
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(readFileSync(hostUnit(at), 'utf-8')).toContain(`Environment="DATA_DIR=${kept}"\n`);
@@ -837,7 +1033,7 @@ test('an install without install.json is refused, writing nothing', async () => 
 
 test('an install whose install.json names its data directory by no absolute path is refused, writing nothing', async () => {
   const at = install('My Resident', { shell: true });
-  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: 'data', extraState: [] }));
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: 'data', extraState: [], workingDir: at.work }));
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('not an absolute path');

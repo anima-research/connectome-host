@@ -9,10 +9,11 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ContractError, INSTALL_ROOT_ENV, RESTART_EXIT_CODE, installPaths, pendingGoBack, readCurrent, readJournal, readMark,
-  readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type JournalLine, type Mark,
+  readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type InstallRecord, type JournalLine, type Mark,
 } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
 import { shellWord } from '../update/launcher.js';
+import { boundHere, sameDirectory, workingDirOf } from '../update/rebind.js';
 import { lingerOf } from '../setup/linger.js';
 import { takeFileLock } from '../setup/file-lock.js';
 import {
@@ -282,9 +283,14 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   const given = ctx.argv[1];
   const root = ctx.root!;
   const cmd = typedCommand(root, sys.env.PATH);
+  const installed = readRecord<InstallRecord>(installPaths(root).install, 'install record');
+  if (installed === null || !boundHere(installed, root)) {
+    throw new Refusal(`The install record at ${installPaths(root).install} isn't bound to ${workingDirOf(root)}. ` +
+      `Run ${cmd} setup here to confirm each recorded place, then repeat this service install command.`);
+  }
   let old: ServiceRecord | null = null;
   try {
-    old = readServiceRecord(root, cmd);
+    old = readServiceRecordFile(root, cmd);
   } catch (error) {
     if (given === undefined) {
       ctx.err(`connectome: ${errorText(error)}`);
@@ -292,12 +298,66 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
     }
     ctx.out(`${errorText(error)} This run replaces it with a new record once it has written a unit file.`);
   }
+  if (old !== null && !sameDirectory(old.workingDirectory, workingDirOf(root))) {
+    if (given === undefined) throw new Refusal(foreignServiceWords(root, old, cmd));
+    foreignRecordReplaceable(root, old, sys, cmd);
+    ctx.out(`${foreignServiceWords(root, old, cmd)} This run uses the explicit recipe and records only this directory's units.`);
+    old = null;
+  }
   if (given === undefined && old === null) {
     ctx.err(`connectome: the first install needs the recipe: ${cmd} service install <recipe>`);
     return 2;
   }
   const recipe = given === undefined ? old!.hostArgs[0]! : /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
   return install(ctx, sys, root, recipe, old, cmd);
+}
+
+function foreignServiceWords(root: string, record: ServiceRecord, cmd: string): string {
+  return `The service record at ${join(root, 'service.json')} names ${record.workingDirectory}, which can't be shown ` +
+    `to be this working directory, ${workingDirOf(root)}. It isn't used here. ${recordAgain(cmd)}`;
+}
+
+function foreignRecordReplaceable(root: string, record: ServiceRecord, sys: ServiceSystem, cmd: string): void {
+  let directory: ReturnType<typeof statSync> | undefined;
+  try {
+    directory = statSync(record.workingDirectory, { throwIfNoEntry: false });
+  } catch (error) {
+    throw new Refusal(`${foreignServiceWords(root, record, cmd)} Its recorded directory can't be checked: ${errorText(error)}.`);
+  }
+  if (directory !== undefined) {
+    if (!directory.isDirectory()) throw new Refusal(`${foreignServiceWords(root, record, cmd)} ` +
+      'The recorded working-directory path is not a directory; resolve that before replacing this record.');
+    return;
+  }
+  const env = childEnv(sys);
+  for (const unit of unitsOf(record)) {
+    const next = record.manager === 'systemd-user'
+      ? `${stopLine(sys, record.manager, unit.name)}, remove ${shellWord(unit.file)} if present, then ` +
+        systemctlLine(sys, 'daemon-reload')
+      : `${stopLine(sys, record.manager, unit.name)} and remove ${shellWord(unit.file)} if present`;
+    const refuse = (why: string): never => {
+      throw new Refusal(`${foreignServiceWords(root, record, cmd)} The recorded directory isn't present, and ${why}. ` +
+        `Before replacing its record, retire ${unit.name} with its native manager and remove its file. ` +
+        `If it belongs to the original install: ${next}. Then repeat ${cmd} service install <recipe>.`);
+    };
+    try {
+      if (lstatSync(unit.file, { throwIfNoEntry: false }) !== undefined) refuse(`its file ${unit.file} is still there`);
+    } catch (error) {
+      if (error instanceof Refusal) throw error;
+      refuse(`its file ${unit.file} can't be checked: ${errorText(error)}`);
+    }
+    if (record.manager === 'systemd-user') {
+      const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState']);
+      if (typeof shown === 'string') return refuse(shown);
+      if (shown.get('LoadState') !== 'not-found' || !['inactive', 'failed'].includes(shown.get('ActiveState') ?? '')) {
+        refuse(`systemd still holds ${unit.name} (${stateOf(shown)})`);
+      }
+    } else {
+      const state = agentState(sys, env, unit);
+      if (state.kind === 'unknown') refuse(`its loaded state can't be read: ${state.why}`);
+      if (state.kind !== 'unloaded') refuse(`launchd still has ${unit.name} loaded`);
+    }
+  }
 }
 
 interface ShellPlan {
@@ -1503,6 +1563,14 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
 }
 
 export function readServiceRecord(root: string, cmd = typedCommand(root)): ServiceRecord | null {
+  const record = readServiceRecordFile(root, cmd);
+  if (record !== null && !sameDirectory(record.workingDirectory, workingDirOf(root))) {
+    throw new ContractError(foreignServiceWords(root, record, cmd));
+  }
+  return record;
+}
+
+function readServiceRecordFile(root: string, cmd: string): ServiceRecord | null {
   try {
     const path = join(root, 'service.json');
     const record = readRecord<ServiceRecord>(path, 'service record');
