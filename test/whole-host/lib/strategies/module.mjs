@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { connect } from 'node:net';
 import { lineReader } from './control.mjs';
 import { isUnreadable, readable } from './invariants.mjs';
+import { cutError } from './cut.mjs';
 import { namingCanaries, messageNames } from './names.mjs';
 import { blobStore, compiledLine, messagesOf, plain, refusedLine, stateOf, storeDelta } from './recorder.mjs';
 
@@ -151,7 +152,8 @@ export class HarnessModule {
     try {
       line = { ...head, ...body() };
     } catch (error) {
-      line = { ...head, outcome: 'unrecordable', reason: String(error?.message ?? error).slice(0, 300) };
+      const { shown, full } = cutError(error, 300);
+      line = { ...head, outcome: 'unrecordable', reason: shown, ...(full ? { full } : {}) };
     }
     this.lines.push(line);
     return line;

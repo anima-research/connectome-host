@@ -262,7 +262,7 @@ test('the report\'s note names a summary of a call-only message by the call\'s c
 });
 
 test('a clamp edge check 10 finds makes the report invalid, as found, not as a test spells it', () => {
-  const at = (m) => ({ kind: 'checkpoint', step: 'c.cm.cp', name: 'n', health: { contextComposition: { fixture: { calibration: { multiplier: m } } } } });
+  const at = (m) => ({ kind: 'checkpoint', step: 'c.cm.cp', name: 'n', health: { data: { contextComposition: { fixture: { calibration: { multiplier: m } } } } } });
   const flags = calibrationEdge([at(1.8)]);
   const r = perCheckReport({ configuration, candidate: { flags, missing: [] } });
   assert.equal(r.verdict, 'invalid');
@@ -305,4 +305,22 @@ test('a workload property\'s own note beside its count reaches the report, as W6
   const r = workloadReport({ id: 'C8h/W6', workload: 'W6', judged: { flags: [], missing: [], notes: [], judged: [] }, breaches: withJudged([], 34, '34 request(s), 0 membrane repair mark(s), 20 of context-manager\'s own'), completed: true });
   assert.equal(r.verdict, 'pass');
   assert.ok(r.lines.some((l) => /check 14 property 34 \(34 request\(s\), 0 membrane repair mark\(s\), 20 of context-manager's own\)/.test(l)), r.lines.join('\n'));
+});
+
+test('the report prints a flag\'s and a note\'s whole text under it, where the shown text is cut', () => {
+  const flags = [{ check: 4, step: 's.1', message: 'm: a b …', full: 'm: a b c d' }, { check: 1, step: 's.2', message: 'short' }];
+  const r = perCheckReport({ configuration, candidate: { flags, missing: [], notes: [{ message: 'n: x …', full: 'n: x y z' }, 'plain note'] } });
+  const at = r.lines.indexOf('- check 4 at s.1: m: a b …');
+  assert.ok(at >= 0);
+  assert.equal(r.lines[at + 1], '  whole: m: a b c d');
+  const next = r.lines.indexOf('- check 1 at s.2: short');
+  assert.ok(!r.lines[next + 1]?.startsWith('  whole:'), 'a text shown whole has no whole line');
+  const note = r.lines.indexOf('- n: x …');
+  assert.equal(r.lines[note + 1], '  whole: n: x y z');
+  assert.ok(r.lines.includes('- plain note'));
+});
+
+test('the report returns each check\'s judged count, which the record writes', () => {
+  const judged = [{ check: 1, name: 'every turn answers', judged: 3 }];
+  assert.deepEqual(perCheckReport({ configuration, candidate: { flags: [], missing: [], judged } }).judged, judged);
 });

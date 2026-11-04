@@ -52,7 +52,6 @@ test('check 3 flags roles out of turn and calls parted from their results, eithe
   const twice = { id: 'twice', step: 's', kind: 'agent', messages: [msg('user', text()), msg('user', text())] };
   const orphan = { id: 'orphan', step: 's', kind: 'agent', messages: [msg('user', text()), msg('assistant', text()), msg('user', result('a'))] };
   const unanswered = { id: 'unanswered', step: 's', kind: 'summariser', messages: [msg('assistant', call('a')), msg('user', text()), msg('assistant', text()), msg('user', text())] };
-  // A call in the last message is the model's own turn to come, and waits for nothing.
   const lastCall = { id: 'last', step: 's', kind: 'agent', messages: [msg('user', text()), msg('assistant', call('a'))] };
   const flags = wellFormed([ok, twice, orphan, unanswered, lastCall]);
   assert.deepEqual(flags.map((f) => f.request), ['twice', 'orphan', 'unanswered']);
@@ -108,7 +107,6 @@ test('check 6 holds only a segment\'s last request to the head its checkpoint re
   const stored = (...canaries) => ({ canaries });
   const store = { messages: [stored(), stored('[[c:p.1.in]]'), stored('[[c:p.1.r1]]'), stored('[[c:p.2.in]]'), stored('[[c:p.2.r1]]'), ...['a.in', 'a.r1', 'b.in', 'b.r1', 'b.r2', 'c.in', 'c.r1', 'd.in'].map((c) => stored(`[[c:${c}]]`))], summaries: [] };
   const log = [{ kind: 'checkpoint', name: 's', health: { data: { contextComposition: { fixture: { head: { messages: 3, tokens: 50 }, tail: { messages: 0, tokens: 0 } } } } } }];
-  // c's compile had a head of two messages, so p.1.r1 reached it inside P1; by the checkpoint the head had grown to three.
   const early = { id: 'early', step: 'c', kind: 'agent', messages: [msg('user', carrying('[[c:p.1.in]]')), msg('assistant', summaryBlock('[[s:P1]]')), msg('user', carrying('[[c:a.in]]', '[[c:a.r1]]', '[[c:b.in]]', '[[c:b.r1]]', '[[c:b.r2]]', '[[c:c.in]]'))] };
   const last = { id: 'last', step: 'd', kind: 'agent', messages: [msg('user', carrying('[[c:p.1.in]]', '[[c:p.1.r1]]')), msg('assistant', summaryBlock('[[s:P2]]')), msg('user', carrying('[[c:b.in]]', '[[c:b.r1]]', '[[c:b.r2]]', '[[c:c.in]]', '[[c:c.r1]]', '[[c:d.in]]'))] };
   const lastLost = { ...last, id: 'last-lost', messages: [msg('user', carrying('[[c:p.1.in]]')), ...last.messages.slice(1)] };
@@ -190,7 +188,6 @@ test('check 5: a summary declares only what its request showed, a child by its n
   assert.deepEqual(flags.map((f) => f.request), ['[[s:C2]]']);
   const childUnseen = bookkeeping([shown('[[s:C3]]', ['[[c:a.in]]', '[[c:b.in]]', '[[c:b.r1]]'])], store);
   assert.match(childUnseen[0].message, /L1-1/);
-  // A level above shown its grandchildren's numbers, as an L3 merge is shown L1 memories.
   const l3store = { ...store, summaries: [...store.summaries, { id: 'L3-1', level: 3, sourceLevel: 2, sourceIds: ['L2-1'], number: '[[s:C4]]', covers: ['[[c:a.in]]', '[[c:a.r1]]', '[[c:b.in]]', '[[c:b.r1]]'] }] };
   assert.deepEqual(bookkeeping([shown('[[s:C4]]', [], ['[[s:C1]]', '[[s:C2]]'])], l3store), []);
   assert.equal(bookkeeping([shown('[[s:C4]]', [], ['[[s:C1]]'])], l3store).length, 1);
@@ -627,7 +624,6 @@ test('check 11: each breach a compile line carries is a flag, named by agent, ki
   assert.equal(besides.besides, 'budget couldn\'t be judged in 2, as PassthroughStrategy gives no render stats; 1 read an invariant needed failed');
 });
 
-// K3b and K6b: a store whose head window was reset at a topic transition (context-manager's marker).
 const resetStore = {
   messages: [
     { id: 'm1', canaries: ['[[c:a.in]]'] }, { id: 'm2', canaries: ['[[c:a.r1]]'] },
@@ -647,7 +643,6 @@ test('K3b: after a head-window reset, store order holds within the head window a
   const swappedRest = { id: 'swapped-rest', step: 'c', kind: 'agent', messages: [msg('user', carrying('[[c:b.in]]')), msg('assistant', carrying('[[c:b.r1]]')), msg('user', carrying('[[c:c.in]]'), summaryBlock('[[s:C1]]'))] };
   const order = (r) => coverage([r], resetStore, resetScript, headOf3).filter((f) => /store order/.test(f.message)).map((f) => f.request);
   assert.deepEqual([correct, swappedHead, swappedRest].flatMap(order), ['swapped-head', 'swapped-rest']);
-  // With no head size reported, the request splits at its head's start alone: what was stored from there on, and what was stored before.
   const unsized = (r) => coverage([r], resetStore).filter((f) => /store order/.test(f.message)).map((f) => f.request);
   assert.deepEqual([correct, swappedHead, swappedRest].flatMap(unsized), ['swapped-head']);
 });
@@ -659,7 +654,6 @@ test('check 4 holds only a segment\'s last request to the head its checkpoint re
   };
   const script = [...resetScript, turnStep('d')];
   const headOf2 = [panel('s', { head: 2, tail: 0 })];
-  // c's compile had a head of three messages (m3, b.in, b.r1); by the checkpoint it had shrunk to two.
   const early = { id: 'early', step: 'c', kind: 'agent', messages: [msg('user', carrying('[[c:b.in]]')), msg('assistant', carrying('[[c:b.r1]]')), msg('user', summaryBlock('[[s:C1]]'), carrying('[[c:c.in]]'))] };
   const last = { id: 'last', step: 'd', kind: 'agent', messages: [msg('user', carrying('[[c:b.in]]')), msg('user', summaryBlock('[[s:C1]]')), msg('assistant', carrying('[[c:b.r1]]')), msg('user', carrying('[[c:c.in]]')), msg('assistant', carrying('[[c:c.r1]]')), msg('user', carrying('[[c:d.in]]'))] };
   const lastSwapped = { ...last, id: 'last-swapped', messages: [msg('user', carrying('[[c:b.in]]')), msg('assistant', carrying('[[c:b.r1]]')), msg('user', summaryBlock('[[s:C1]]')), ...last.messages.slice(3)] };
@@ -682,7 +676,6 @@ test('K3: check 4 flags a request whose raw messages and summaries don\'t run in
   const merge = { id: 'merge', step: 'c', kind: 'agent', messages: [msg('user', summaryBlock('[[s:C3]]')), msg('user', carrying('[[c:c.in]]'))] };
   const swapped = { id: 'swapped', step: 'c', kind: 'agent', messages: [msg('user', summaryBlock('[[s:C2]]', '[[s:C1]]')), msg('user', carrying('[[c:c.in]]'))] };
   const rawFirst = { id: 'raw-first', step: 'c', kind: 'agent', messages: [msg('user', carrying('[[c:c.in]]')), msg('user', summaryBlock('[[s:C3]]'))] };
-  // A raw message inside a summary's span is there twice, which check 4 names as that, not as out of order.
   const twice = { id: 'twice', step: 'c', kind: 'agent', messages: [msg('user', summaryBlock('[[s:C3]]')), msg('user', carrying('[[c:b.in]]', '[[c:c.in]]'))] };
   const flags = [inOrder, merge, swapped, rawFirst, twice].flatMap((r) => coverage([r], store)).filter((f) => /store order/.test(f.message));
   assert.deepEqual(flags.map((f) => f.request), ['swapped', 'raw-first']);
@@ -696,8 +689,6 @@ test('K4: check 6 holds a segment\'s last request to the raw tail the host repor
   const without = (c) => all.filter((x) => x !== c);
   const req = (id, step, canaries) => ({ id, step, kind: 'agent', messages: [msg('user', carrying(...canaries))] });
   const log = [panel('s', { head: 1, tail: 7 })];
-  // The tail's 7 newest before c's request: p.r1 .. b.r1, the clock row, c.in. c.r1 came after it.
-  // Held to that tail, b's request would need q.r1; it isn't the request the panel describes.
   assert.deepEqual(windowsRaw([req('b-early', 'b', without('[[c:q.r1]]')), req('ok', 'c', all)], script, log, store), []);
   const folded = windowsRaw([req('folded', 'c', without('[[c:p.r1]]'))], script, log, store);
   assert.deepEqual(folded.map((f) => [f.check, f.request]), [[6, 'folded']], 'p.r1 is past the two turns before c, inside the reported tail');
@@ -999,4 +990,39 @@ test('check 12 can\'t judge a reload whose dry compiles refused alike on both si
   assert.deepEqual([moved.judged, moved.map((f) => f.message)], [1, ['after the restart the dry compile compiled, where before it refused (OverBudgetError)']]);
   const same = reloads(log(line('compiled'), line('compiled')));
   assert.deepEqual([same.length, same.judged], [0, 1]);
+});
+
+test('check 5 counts the answers and sources it can\'t judge beside what it judged, never skipping them silently', () => {
+  const shown = (number, canaries, summaries = []) => ({ id: number, step: 's', kind: 'summariser', answer: { summary: number }, sent: { canaries, summaries } });
+  const gone = bookkeeping([shown('[[s:C1]]', ['[[c:a.in]]', '[[c:a.r1]]']), shown('[[s:C9]]', ['[[c:a.in]]'])], store);
+  assert.match(gone.besides ?? '', /^1 summariser answer not judged, as the final store doesn't hold its summary/);
+  const blank = { ...store, messages: store.messages.map((m) => ({ ...m, canaries: [] })) };
+  const unknown = bookkeeping([shown('[[s:C1]]', ['[[c:a.in]]', '[[c:a.r1]]'])], blank);
+  assert.match(unknown.besides ?? '', /source(s)? not judged, as nothing (it covers|they cover) carries a canary to tell by/);
+});
+
+test('check 2 counts the products it couldn\'t judge for want of a store, rather than leaving them out of its count', () => {
+  const script = [{ id: 's.1', segment: 'seg' }];
+  const wanted = { seg: [{ name: 'a request', test: () => true }, { name: 'a stored merge', fromStore: () => true }] };
+  const records = [{ id: 'r1', step: 's.1', kind: 'agent', messages: [] }];
+  const none = declaredProducts(records, script, wanted, null);
+  assert.equal(none.judged, 1);
+  assert.equal(none.besides, '1 product not judged, as it needs the final store and the run has none');
+  assert.equal(declaredProducts(records, script, wanted, { messages: [], summaries: [] }).besides, undefined);
+});
+
+
+test('check 6 counts each checkpoint tail it judges, and counts one it can\'t place in the final store beside them', () => {
+  const script = [turnStep('a'), turnStep('b', 2), turnStep('c'), turnStep('d')];
+  const stored = (...canaries) => ({ canaries });
+  const all = ['a.in', 'a.r1', 'b.in', 'b.r1', 'b.r2', 'c.in', 'c.r1', 'd.in'];
+  const storeOf = (names) => ({ messages: [stored(), stored('[[c:p.1.in]]'), stored('[[c:p.1.r1]]'), ...names.map((c) => stored(`[[c:${c}]]`))], summaries: [] });
+  const log = [{ kind: 'checkpoint', name: 's', health: { data: { contextComposition: { fixture: { head: { messages: 3, tokens: 50 }, tail: { messages: 0, tokens: 0 } } } } } }];
+  const head = msg('user', carrying('[[c:p.1.in]]', '[[c:p.1.r1]]'));
+  const full = { id: 'ok', step: 'd', kind: 'agent', messages: [head, msg('assistant', summaryBlock('[[s:P1]]')), msg('user', carrying('[[c:b.in]]', '[[c:b.r1]]', '[[c:b.r2]]', '[[c:c.in]]', '[[c:c.r1]]', '[[c:d.in]]'))] };
+  const placed = windowsRaw([full], script, log, storeOf(all));
+  const lost = windowsRaw([full], script, log, storeOf(all.filter((c) => c !== 'd.in')));
+  assert.equal(placed.judged, lost.judged + 1, 'a tail it judges counts');
+  assert.ok(!/checkpoint tail/.test(placed.besides ?? ''));
+  assert.match(lost.besides ?? '', /1 checkpoint tail not judged, as the final store doesn't hold its last input/);
 });

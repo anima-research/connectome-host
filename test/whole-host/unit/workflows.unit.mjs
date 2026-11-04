@@ -11,8 +11,8 @@ const localImports = (file, seen = new Set()) => {
   seen.add(file);
   const source = readFileSync(file, 'utf-8');
   const specs = [
-    ...source.matchAll(/^(?:import|export)\b[^'";]*?\bfrom\s*['"](\.{1,2}\/[^'"]+)['"]/gm),
-    ...source.matchAll(/^import\s*['"](\.{1,2}\/[^'"]+)['"]/gm),
+    ...source.matchAll(/^[ \t]*(?:import|export)\b[^'";]*?\bfrom\s*['"](\.{1,2}\/[^'"]+)['"]/gm),
+    ...source.matchAll(/^[ \t]*import\s*['"](\.{1,2}\/[^'"]+)['"]/gm),
     ...source.matchAll(/\bimport\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g),
   ].map(([, spec]) => spec);
   for (const spec of specs) localImports(resolve(dirname(file), spec), seen);
@@ -53,14 +53,14 @@ test('the self-check also runs on a change to what chooses the stack the module 
   for (const p of ['package.json', 'package-lock.json', 'bun.lock', 'test/whole-host/run.mjs', 'test/whole-host/lib/strategies/driver.mjs', 'test/whole-host/lib/common.mjs']) assert.ok(paths.includes(p), `${p} schedules the self-check`);
 });
 
-test('the files the test module loads are followed through re-exports, dynamic imports and imports over several lines', () => {
+test('the files the test module loads are followed through re-exports, dynamic imports, imports over several lines and indented ones', () => {
   const dir = mkdtempSync(join(tmpdir(), 'imports-'));
   try {
     const files = {
-      'a.mjs': "import {\n  one,\n  two,\n} from './b.mjs';\nexport { three } from './c.mjs';\nexport * from './d.mjs';\nconst late = await import('./e.mjs');\nimport './f.mjs';\n",
-      'b.mjs': "export const notAnImport = './g.mjs';\n", 'c.mjs': '', 'd.mjs': '', 'e.mjs': '', 'f.mjs': "import { x } from 'node:fs';\n",
+      'a.mjs': "import {\n  one,\n  two,\n} from './b.mjs';\nexport { three } from './c.mjs';\nexport * from './d.mjs';\nconst late = await import('./e.mjs');\nimport './f.mjs';\n  import { y } from './h.mjs';\n  export { z } from './i.mjs';\n",
+      'b.mjs': "export const notAnImport = './g.mjs';\n", 'c.mjs': '', 'd.mjs': '', 'e.mjs': '', 'f.mjs': "import { x } from 'node:fs';\n", 'h.mjs': '', 'i.mjs': '',
     };
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
-    assert.deepEqual([...localImports(join(dir, 'a.mjs'))].map((f) => relative(dir, f)).sort(), ['a.mjs', 'b.mjs', 'c.mjs', 'd.mjs', 'e.mjs', 'f.mjs']);
+    assert.deepEqual([...localImports(join(dir, 'a.mjs'))].map((f) => relative(dir, f)).sort(), ['a.mjs', 'b.mjs', 'c.mjs', 'd.mjs', 'e.mjs', 'f.mjs', 'h.mjs', 'i.mjs']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

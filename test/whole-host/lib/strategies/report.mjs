@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { bindingControl, budgets, compileInvariants, compilingAgents, ofSide, pairing, withJudged, reloads, declaredProducts, everyTurnAnswers, wellFormed, windowsRaw, coverage, bookkeeping, calibrationEdge, FIXTURE_AGENT, STREAM_BOUND } from './checks.mjs';
 import { messageNames, spanName } from './names.mjs';
+import { cutText } from './cut.mjs';
+
+const noteOf = (write) => {
+  const { shown, full } = cutText(write);
+  return full ? { message: shown, full } : shown;
+};
 
 export function runChecks({ records, log, script, products, store, agent = FIXTURE_AGENT, side = agent === FIXTURE_AGENT ? 'primary' : 'sub', streamBound = STREAM_BOUND, windowTokens, binds = false, adaptive = false }) {
   const own = ofSide(side);
@@ -13,7 +19,7 @@ export function runChecks({ records, log, script, products, store, agent = FIXTU
   const sharing = compilingAgents(log).filter((a) => a !== FIXTURE_AGENT);
   const parts = [
     { check: 1, name: 'every turn answers', flags: everyTurnAnswers(records, log, script) },
-    { check: 2, name: 'declared products', flags: [], judged: missing.judged, applies: declared > 0 ? `the run declares ${declared} product(s)` : null },
+    { check: 2, name: 'declared products', flags: withJudged([], missing.judged, missing.besides ?? null), judged: missing.judged, applies: declared > 0 ? `the run declares ${declared} product(s)` : null },
     { check: 3, name: 'request shape', flags: wellFormed(records) },
     { check: 3, name: 'budgets', flags: budget.flags, judged: budget.judged, applies: budget.requests > 0 ? `the run's agent made ${budget.requests} request(s)` : null },
     ...(store ? [{ check: 4, name: 'coverage', flags: coverage(records, store, script, log, { agent, side }), applies: ownRequests > 0 ? `a store was read and the run's agent made ${ownRequests} request(s)` : null }] : []),
@@ -38,7 +44,7 @@ export function runChecks({ records, log, script, products, store, agent = FIXTU
   }));
   const flags = [...parts.flatMap((p) => p.flags), ...unjudged];
   const unmarked = (store?.summaries ?? []).filter((s) => !s.number).map(summaryNamer(store));
-  const notes = [...budget.notes, ...(unmarked.length ? [`check 5 doesn't judge ${unmarked.length} stored summar${unmarked.length === 1 ? 'y' : 'ies'} with no stand-in mark, which context-manager wrote without a summariser request: ${unmarked.slice(0, 5).join(', ')}`] : [])];
+  const notes = [...budget.notes, ...(unmarked.length ? [noteOf((cut) => `check 5 doesn't judge ${unmarked.length} stored summar${unmarked.length === 1 ? 'y' : 'ies'} with no stand-in mark, which context-manager wrote without a summariser request: ${cut(unmarked, 5)}`)] : [])];
   return { flags, missing, headroom: budget.headroom, notes, judged };
 }
 
@@ -102,13 +108,14 @@ export function perCheckReport({ configuration, candidate, expected = [] }) {
   if (invalid.length) lines.push(`INVALID: ${invalid[0].message}${invalid.length > 1 ? ` (and ${invalid.length - 1} more)` : ''}. Its folds are clamped folds, not a store's.`);
   const findings = [...new Set(covered.map((c) => c.finding))];
   lines.push(`${configuration.name}: ${verdict === 'pass' ? 'no flags' : `${flags.length} flag(s), ${missing.length} missing product(s)`}${covered.length ? `, ${covered.length} expected (${findings.join(', ')})` : ''}.`);
-  for (const f of flags) lines.push(`- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message}`);
-  for (const { f, finding } of covered) lines.push(`- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message} [expected: ${finding}]`);
+  const whole = (x) => (x.full ? [`  whole: ${x.full}`] : []);
+  for (const f of flags) lines.push(`- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message}`, ...whole(f));
+  for (const { f, finding } of covered) lines.push(`- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message} [expected: ${finding}]`, ...whole(f));
   for (const m of missing) lines.push(`- check 2, ${m.segment}: missing ${m.name}`);
-  for (const n of candidate.notes ?? []) lines.push(`- ${n}`);
+  for (const n of candidate.notes ?? []) lines.push(`- ${n.message ?? n}`, ...(n.full ? [`  whole: ${n.full}`] : []));
   if (candidate.judged?.length) lines.push(`- judged: ${candidate.judged.map((j) => `check ${j.check} ${j.name} ${j.judged ?? '?'}${j.besides ? ` (${j.besides})` : ''}`).join(', ')}`);
   if (candidate.headroom?.length) lines.push(`- budget headroom, each segment's least: ${candidate.headroom.map((h) => `${h.segment} ${h.bound - h.tokens} of ${h.bound}${h.kind === 'continuation' ? ' (a stream\'s fresh input through a continuation round, against the stream bound)' : ' (a compiled request\'s whole input, against the model\'s window)'}`).join(', ')}`);
-  return { verdict, lines, invalid, flags, expected: covered.map((c) => c.f), missing };
+  return { verdict, lines, invalid, flags, expected: covered.map((c) => c.f), missing, judged: candidate.judged ?? [] };
 }
 
 export function workloadReport({ id, workload, owns = [], judged, breaches, completed, expected = [] }) {

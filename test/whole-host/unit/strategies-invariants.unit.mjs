@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkCompile } from '../lib/strategies/invariants.mjs';
+import * as invariantsLib from '../lib/strategies/invariants.mjs';
 const text = (t) => ({ type: 'text', text: t });
 const call = (id) => ({ type: 'tool_use', id, name: 'look', input: {} });
 const result = (id) => ({ type: 'tool_result', toolUseId: id, content: 'seen' });
@@ -494,4 +495,13 @@ test('check 11 names a stored message whose only block is a call by the canary i
   } finally {
     for (const m of callOnly) if (!STORE.includes(m)) byId.delete(m.id);
   }
+});
+
+test('a failed read keeps its first 200 characters as its reason, its whole message beside them, and still reads as unreadable', () => {
+  const failed = invariantsLib.readable(() => { throw new Error(`${'x'.repeat(250)}END`); });
+  assert.equal(failed.unreadable.length, 200);
+  assert.ok(failed.full.endsWith('END'));
+  assert.equal(invariantsLib.isUnreadable(failed), true);
+  assert.equal(invariantsLib.isUnreadable({ unreadable: 'short' }), true);
+  assert.equal(invariantsLib.isUnreadable({ unreadable: 'x', other: 1 }), false, 'anything else beside the reason is a value, not a failed read');
 });

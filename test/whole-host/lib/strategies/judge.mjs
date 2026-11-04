@@ -7,6 +7,7 @@ import { readStore } from './read-store.mjs';
 import { runChecks } from './report.mjs';
 import { FIXTURE_AGENT, STREAM_BOUND } from './checks.mjs';
 import { products } from './script.mjs';
+import { cutMessage } from './cut.mjs';
 
 const agentOf = (configuration) => configuration.agent?.name ?? FIXTURE_AGENT;
 
@@ -51,7 +52,7 @@ export async function judge({ records, log, script, storeCopy, configuration, in
   const read = readers.readStore ?? readStore;
   const audit = readers.audit ?? auditTopology;
   const flags = [];
-  if (!run?.ok) flags.push({ check: 1, step: 'the run', message: `the run failed: ${run?.failure?.reason ?? run?.failure ?? 'no reason given'}` });
+  if (!run?.ok) flags.push({ check: 1, step: 'the run', message: `the run failed: ${run?.failure?.reason ?? run?.failure ?? 'no reason given'}`, ...(run?.failure?.full ? { full: `the run failed: ${run.failure.full}` } : {}) });
   let store = null;
   let target;
   try {
@@ -74,8 +75,8 @@ export async function judge({ records, log, script, storeCopy, configuration, in
     const audited = isolate
       ? { status: store?.violations?.length ? 2 : 0, output: (store?.violations ?? []).join('\n') }
       : audit({ installDir, storePath: storeCopy, namespace });
-    if (audited.status === 2) flags.push({ check: 5, step: 'the run', message: `audit-topology found violations: ${audited.output.trim().slice(0, 600)}` });
-    else if (audited.status !== 0) throw new Error(`audit-topology couldn't run (exit ${audited.status}): ${audited.output.trim().slice(0, 600)}`);
+    if (audited.status === 2) flags.push({ check: 5, step: 'the run', ...cutMessage((cut) => `audit-topology found violations: ${cut(audited.output.trim(), 600)}`) });
+    else if (audited.status !== 0) throw new Error(`audit-topology couldn't run (exit ${audited.status}): ${audited.output.trim()}`);
   } else if (configuration.summarises !== false && run?.ok) {
     throw new Error('the run succeeded but left no store copy to judge');
   }

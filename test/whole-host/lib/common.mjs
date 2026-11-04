@@ -75,7 +75,6 @@ export function spawnHost({ hostDir, recipePath, dataDir, cwd, sockPath, env = {
 
 export function parseArgs(argv) {
   const opt = (name, def) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : def; };
-  const opts = (name) => argv.flatMap((a, i) => (a === `--${name}` && i + 1 < argv.length ? [argv[i + 1]] : []));
   const flag = (name) => argv.includes(`--${name}`);
-  return { opt, opts, flag };
+  return { opt, flag };
 }

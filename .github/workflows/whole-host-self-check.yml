@@ -9,6 +9,7 @@ on:
       - test/whole-host/lib/strategies/names.mjs
       - test/whole-host/lib/strategies/control.mjs
       - test/whole-host/lib/strategies/compare.mjs
+      - test/whole-host/lib/strategies/cut.mjs
       - test/whole-host/lib/strategies/standin.mjs
       - test/whole-host/lib/strategies/prose.mjs
       - test/whole-host/run.mjs

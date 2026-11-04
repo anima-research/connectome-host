@@ -1,19 +1,22 @@
 import { runVaryingMasker } from './compare.mjs';
+import { cutMessage } from './cut.mjs';
 import { CANARY } from './standin.mjs';
 
 export function declaredProducts(records, script, products, store = null) {
   const segmentOf = new Map(script.map((s) => [s.id, s.segment]));
   const out = [];
   let judged = 0;
+  let storeless = 0;
   for (const [segment, wanted] of Object.entries(products)) {
     if (!script.some((s) => s.segment === segment)) continue;
     const mine = records.filter((r) => segmentOf.get(r.step) === segment);
     const judgeable = wanted.filter((p) => !p.fromStore || store !== null);
+    storeless += wanted.length - judgeable.length;
     judged += judgeable.length;
     const missing = judgeable.filter((p) => (p.fromStore ? !p.fromStore(store) : !mine.some((r) => p.test(r, mine)))).map((p) => p.name);
     if (missing.length) out.push({ segment, missing });
   }
-  return withJudged(out, judged);
+  return withJudged(out, judged, storeless ? `${storeless} product${storeless === 1 ? '' : 's'} not judged, as ${storeless === 1 ? 'it needs' : 'they need'} the final store and the run has none` : null);
 }
 
 export function compileInvariants(log = []) {
@@ -29,8 +32,8 @@ export function compileInvariants(log = []) {
         if (v.invariant === 'unreadable') unread++;
       }
       for (const u of line.unjudged ?? []) unjudged.set(u, (unjudged.get(u) ?? 0) + 1);
-      if (line.outcome === 'unrecordable') flags.push({ check: 11, step: e.step, what: `${line.agent}:${line.kind}:unrecordable`, message: `the harness module couldn't record ${line.agent}'s ${line.kind} compile ${line.seq}: ${line.reason}` });
-      for (const v of line.violations ?? []) flags.push({ check: 11, step: e.step, what: `${line.agent}:${line.kind}:${v.invariant}`, detail: v.detail, message: COULDNT.has(v.invariant) ? `couldn't judge all of ${line.agent}'s ${line.kind} compile ${line.seq}: ${v.detail}` : `${line.agent}'s ${line.kind} compile ${line.seq} breaks ${v.invariant}: ${v.detail}` });
+      if (line.outcome === 'unrecordable') flags.push({ check: 11, step: e.step, what: `${line.agent}:${line.kind}:unrecordable`, message: `the harness module couldn't record ${line.agent}'s ${line.kind} compile ${line.seq}: ${line.reason}`, ...(line.full ? { full: `the harness module couldn't record ${line.agent}'s ${line.kind} compile ${line.seq}: ${line.full}` } : {}) });
+      for (const v of line.violations ?? []) flags.push({ check: 11, step: e.step, what: `${line.agent}:${line.kind}:${v.invariant}`, detail: v.detail, ...(v.full ? { full: v.full } : {}), message: COULDNT.has(v.invariant) ? `couldn't judge all of ${line.agent}'s ${line.kind} compile ${line.seq}: ${v.detail}` : `${line.agent}'s ${line.kind} compile ${line.seq} breaks ${v.invariant}: ${v.detail}` });
     }
   }
   const besides = [
@@ -57,8 +60,8 @@ export function bindingControl(records) {
 export function pairing(records, log = [], agent = FIXTURE_AGENT) {
   const paired = requestPairs(records, log, agent);
   if (!paired) return withJudged([], 0);
-  if (paired.disagree?.length) return withJudged([{ check: 13, step: 'the run', what: `${agent}:disagree`, message: `couldn't judge ${agent}'s pairing: by the clock ${paired.disagree.slice(0, 4).join(', ')} pair, but the request doesn't end on the compile's last canary, so the two processes' stamps may not share a clock` }], null);
-  if (paired.unstamped.length) return withJudged([{ check: 13, step: 'the run', what: `${agent}:unstamped`, message: `couldn't judge ${agent}'s pairing: ${paired.unstamped.slice(0, 4).join(', ')}${paired.unstamped.length > 4 ? ` and ${paired.unstamped.length - 4} more` : ''} carry no clock stamp to order by` }], null);
+  if (paired.disagree?.length) return withJudged([{ check: 13, step: 'the run', what: `${agent}:disagree`, ...cutMessage((cut) => `couldn't judge ${agent}'s pairing: by the clock ${cut(paired.disagree, 4)} pair, but the request doesn't end on the compile's last canary, so the two processes' stamps may not share a clock`) }], null);
+  if (paired.unstamped.length) return withJudged([{ check: 13, step: 'the run', what: `${agent}:unstamped`, ...cutMessage((cut, whole) => `couldn't judge ${agent}'s pairing: ${cut(paired.unstamped, 4)}${!whole && paired.unstamped.length > 4 ? ` and ${paired.unstamped.length - 4} more` : ''} carry no clock stamp to order by`) }], null);
   return withJudged(paired.unpaired.map((l) => ({ check: 13, step: l.step ?? 'the run', what: `${agent}:unpaired`, message: `${agent}'s request compile ${l.seq} (assembly ${l.assembly}) went out in no request: none arrived at the stand-in after it and before the agent's next compile, so agent-framework never sent it, or the pairing went wrong` })), paired.pairs.length + paired.unpaired.length);
 }
 
@@ -406,7 +409,7 @@ export function windowsRaw(records, script, log, store, { agent = FIXTURE_AGENT,
     if (heldTo) judged++;
   }
   if (!store) return withJudged(flags, judged);
-  const besides = gone.size ? `${gone.size} recent message${gone.size === 1 ? '' : 's'} not asked for, as the final store doesn't hold ${gone.size === 1 ? 'it' : 'them'}` : null;
+  let tailsGone = 0;
   const stepOf = new Map(script.map((s) => [s.id, s]));
   for (const { segment, request, n, composition } of lastRequests(records, script, log, agent)) {
     if (!request) continue;
@@ -417,13 +420,18 @@ export function windowsRaw(records, script, log, store, { agent = FIXTURE_AGENT,
     const storedBefore = new Set([`[[c:${request.step}.in]]`, ...earlier.map((_, k) => `[[c:${request.step}.r${k + 1}]]`), ...earlier.flatMap((reply) => (reply.calls ?? []).map((c) => c.input?.canary))]);
     let at = -1;
     store.messages.forEach((m, i) => { if (m.canaries.some((c) => storedBefore.has(c))) at = i; });
-    if (at < 0) continue;
+    if (at < 0) { tailsGone++; continue; }
+    judged++;
     const tail = store.messages.slice(Math.max(0, at - size + 1), at + 1).flatMap((m) => m.canaries.filter(conversational));
     const carried = new Set((request.messages || []).flatMap((m) => m.blocks).flatMap((b) => b.canaries || []));
     const lost = tail.filter((c) => !carried.has(c));
     if (lost.length) flags.push({ check: 6, step: request.step, request: request.id, message: `the reported tail's ${lost.join(' ')} isn't raw` });
   }
-  return withJudged(flags, judged, besides);
+  const besides = [
+    ...(gone.size ? [`${gone.size} recent message${gone.size === 1 ? '' : 's'} not asked for, as the final store doesn't hold ${gone.size === 1 ? 'it' : 'them'}`] : []),
+    ...(tailsGone ? [`${tailsGone} checkpoint tail${tailsGone === 1 ? '' : 's'} not judged, as the final store doesn't hold ${tailsGone === 1 ? 'its' : 'their'} last input`] : []),
+  ];
+  return withJudged(flags, judged, besides.length ? besides.join('; ') : null);
 }
 
 // context-manager prunes older tool results by design, so only inputs and replies must stay.
@@ -490,8 +498,8 @@ export function coverage(records, store, script = [], log = [], { agent = FIXTUR
     const wanted = [...order.slice(0, ownInput + 1), ...(sub ? [] : Array.from({ length: n - 1 }, (_, k) => `[[c:${r.step}.r${k + 1}]]`))];
     const missing = wanted.filter((c) => !count.has(c));
     const twice = wanted.filter((c) => count.get(c) > 1);
-    if (missing.length) flags.push({ check: 4, step: r.step, request: r.id, what: 'not-reached', message: `${missing.length} stored message(s) reach the request neither raw nor in a summary: ${missing.slice(0, 5).join(' ')}${missing.length > 5 ? ' …' : ''}` });
-    if (twice.length) flags.push({ check: 4, step: r.step, request: r.id, what: 'more-than-once', message: `${twice.length} message(s) reach the request more than once: ${twice.slice(0, 5).join(' ')}${twice.length > 5 ? ' …' : ''}` });
+    if (missing.length) flags.push({ check: 4, step: r.step, request: r.id, what: 'not-reached', ...cutMessage((cut, whole) => `${missing.length} stored message(s) reach the request neither raw nor in a summary: ${cut(missing, 5, ' ')}${!whole && missing.length > 5 ? ' …' : ''}`) });
+    if (twice.length) flags.push({ check: 4, step: r.step, request: r.id, what: 'more-than-once', ...cutMessage((cut, whole) => `${twice.length} message(s) reach the request more than once: ${cut(twice, 5, ' ')}${!whole && twice.length > 5 ? ' …' : ''}`) });
   }
   return withJudged(flags, judged, inputGone ? `${inputGone} request${inputGone === 1 ? '' : 's'} not judged, as the final store doesn't hold ${inputGone === 1 ? 'its' : 'their'} own input` : null);
 }
@@ -501,6 +509,8 @@ export function bookkeeping(records, store, { side = 'primary' } = {}) {
   const flags = [];
   let judged = 0;
   let written = 0;
+  let answersGone = 0;
+  let sourcesUnknown = 0;
   const byNumber = new Map(store.summaries.filter((s) => s.number).map((s) => [s.number, s]));
   const byId = new Map(store.summaries.map((s) => [s.id, s]));
   const messages = new Map(store.messages.map((m) => [m.id, m]));
@@ -508,10 +518,10 @@ export function bookkeeping(records, store, { side = 'primary' } = {}) {
     const number = r.kind === 'summariser' ? r.answer?.summary : null;
     if (!number) continue;
     const s = byNumber.get(number);
-    if (!s) continue;
+    if (!s) { answersGone++; continue; }
     written++;
     const unread = s.sourceIds.filter((id) => !(s.sourceLevel === 0 ? messages.has(id) : byId.has(id)));
-    if (unread.length) { flags.push({ check: 5, step: r.step, request: r.id, what: 'unread-source', message: `summary ${number} (${s.id}) has ${unread.length} source(s) the store read doesn't hold: ${unread.slice(0, 5).join(', ')}` }); continue; }
+    if (unread.length) { flags.push({ check: 5, step: r.step, request: r.id, what: 'unread-source', ...cutMessage((cut) => `summary ${number} (${s.id}) has ${unread.length} source(s) the store read doesn't hold: ${cut(unread, 5)}`) }); continue; }
     const sentCanaries = new Set(r.sent?.canaries || []);
     const sentSummaries = new Set(r.sent?.summaries || []);
     const shown = (child, seen = new Set()) => {
@@ -528,21 +538,25 @@ export function bookkeeping(records, store, { side = 'primary' } = {}) {
     for (const id of s.sourceIds) {
       if (s.sourceLevel === 0) {
         const own = messages.get(id).canaries.filter(counted);
-        if (!own.length) continue;
+        if (!own.length) { sourcesUnknown++; continue; }
         held++;
         if (own.some((c) => !sentCanaries.has(c))) unseen.push(id);
       } else {
         const seenAs = shown(byId.get(id));
-        if (seenAs === 'unknown') continue;
+        if (seenAs === 'unknown') { sourcesUnknown++; continue; }
         held++;
         if (seenAs === 'unseen') unseen.push(id);
       }
     }
     if (held) judged++;
-    if (unseen.length) flags.push({ check: 5, step: r.step, request: r.id, message: `summary ${number} (${s.id}, L${s.level}) declares ${unseen.length} source(s) its request didn't show: ${unseen.slice(0, 5).join(', ')}` });
+    if (unseen.length) flags.push({ check: 5, step: r.step, request: r.id, ...cutMessage((cut) => `summary ${number} (${s.id}, L${s.level}) declares ${unseen.length} source(s) its request didn't show: ${cut(unseen, 5)}`) });
   }
   Object.defineProperty(flags, 'written', { value: written, enumerable: false });
-  return withJudged(flags, judged);
+  const besides = [
+    ...(answersGone ? [`${answersGone} summariser answer${answersGone === 1 ? '' : 's'} not judged, as the final store doesn't hold ${answersGone === 1 ? 'its' : 'their'} summary`] : []),
+    ...(sourcesUnknown ? [`${sourcesUnknown} source${sourcesUnknown === 1 ? '' : 's'} not judged, as nothing ${sourcesUnknown === 1 ? 'it covers' : 'they cover'} carries a canary to tell by`] : []),
+  ];
+  return withJudged(flags, judged, besides.length ? besides.join('; ') : null);
 }
 
 function multipliers(value, out = []) {

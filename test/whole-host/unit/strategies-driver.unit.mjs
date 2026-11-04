@@ -105,3 +105,12 @@ test('a last take the module refuses at a host\'s shutdown fails the run, since 
   await lastTake({ ...at, take: async () => {} });
   assert.equal(failed.length, 1, 'a take that answers fails nothing');
 });
+
+test('a lost last take whose error is too long to show whole fails the run with its first 500 characters, and its whole message beside them', async () => {
+  const failed = [];
+  const message = `${'y'.repeat(600)}END`;
+  await lastTake({ boot: 3, log: () => {}, fail: (reason) => failed.push(reason), take: async () => { throw new Error(message); } });
+  const [f] = failed;
+  assert.equal(f.reason, `boot 3's last take of the module's compiles failed: ${message.slice(0, 500)}`);
+  assert.equal(f.full, `boot 3's last take of the module's compiles failed: ${message}`);
+});

@@ -137,18 +137,14 @@ export function summaryTable(rows) {
   ].join('\n');
 }
 
-const FLAGS_SHOWN = 20;
-
-export function summaryOf({ versionNote = null, rows, flagged = [] }) {
+export function summaryOf({ versionNote = null, rows, flagged = [], overlay = '' }) {
   const clean = rows.every((r) => r.outcome === 'pass' && ['same', 'updated'].includes(r.record) && (!r.selfCheck || r.selfCheck.outcome === 'same'));
   const parts = [...(versionNote ? [versionNote] : []), summaryTable(rows)];
   if (!clean || versionNote) {
-    parts.push("Each run's `report.txt`, record and view are under its directory in this job's evidence, its name with `/` written as `_`. Where the change meant to move a request, `node test/whole-host/run.mjs --update-records` rewrites the records to commit with it. A flag that a known finding explains is an entry in `test/whole-host/expected-failures.json` (`docs/whole-host-records.md`, \"Expected failures\").");
+    parts.push("Each run's `report.txt`, record and view are under its directory in this job's evidence, its name with `/` written as `_`. Where the change meant to move a request, `node test/whole-host/run.mjs --update-records" + (overlay ? ` --overlay ${overlay}` : '') + "` rewrites the records to commit with it. A flag that a known finding explains is an entry in `test/whole-host/expected-failures.json` (`docs/whole-host-records.md`, \"Expected failures\").");
   }
   for (const { run, flags } of flagged) {
-    const shown = flags.slice(0, FLAGS_SHOWN).map((f) => `- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message}`);
-    const more = flags.length > FLAGS_SHOWN ? [`- ${flags.length - FLAGS_SHOWN} more in ${run.replaceAll('/', '_')}/report.txt`] : [];
-    parts.push([`### ${run}: ${flags.length} flag(s)`, ...shown, ...more].join('\n'));
+    parts.push([`### ${run}: ${flags.length} flag(s)`, ...flags.map((f) => `- check ${f.check} at ${f.step}${f.request ? ` (${f.request})` : ''}: ${f.message}`)].join('\n'));
   }
   return parts.join('\n\n');
 }
@@ -212,6 +208,21 @@ export function viewOf({ run, record, changed, lines, transcript, ledger }) {
 
 export function stepSummary({ table, views, budget = STEP_SUMMARY_BYTES }) {
   const bytes = (s) => Buffer.byteLength(s, 'utf8');
+  const cutNote = (n) => `${n} more flag(s) didn't fit within this summary's ${budget} bytes: they're in summary.md and each run's report.txt in the job's evidence.\n`;
+  const viewsNote = `${views.length} views didn't fit within this summary's ${budget} bytes: each is <run>/view.md in the job's evidence.\n`;
+  if (bytes(`${table}\n\n`) + bytes(viewsNote) > budget) {
+    const lines = table.split('\n');
+    const flagLines = lines.filter((l) => l.startsWith('- check ')).length;
+    const kept = [];
+    let used = bytes(cutNote(flagLines)) + bytes(viewsNote) + 2;
+    for (const l of lines) {
+      if (used + bytes(l) + 1 > budget) break;
+      kept.push(l);
+      used += bytes(l) + 1;
+    }
+    const cut = flagLines - kept.filter((l) => l.startsWith('- check ')).length;
+    return `${kept.join('\n')}\n\n${cutNote(cut)}${views.length ? viewsNote : ''}`;
+  }
   const head = `${table}\n\n`;
   const notes = views.map((v) => `The view of ${v.run} (${bytes(v.text)} bytes) didn't fit within this summary's ${budget} bytes: it's ${v.path} in the job's evidence.\n`);
   if (bytes(head) + notes.reduce((n, x) => n + bytes(x), 0) > budget) return `${head}${views.length} views didn't fit within this summary's ${budget} bytes: each is <run>/view.md in the job's evidence.\n`;

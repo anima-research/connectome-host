@@ -173,7 +173,7 @@ test('the summary says each run\'s outcome: its flags\' count, why it couldn\'t 
   assert.match(table[6], /^\| H1\/W6 \| invalid: 1 flag\(s\); self-check couldn't run: the run with recording off failed: x \|/);
 });
 
-test('the summary says where a run\'s evidence is and what to do when anything isn\'t clean, and lists each flagged run\'s flags, at most 20 a run', () => {
+test('the summary says where a run\'s evidence is and what to do when anything isn\'t clean, and lists every flag of each flagged run', () => {
   const clean = viewLib.summaryOf({ rows: [{ run: 'H1/W1', outcome: 'pass', record: 'same', counts: {} }], flagged: [] });
   assert.ok(!/evidence/.test(clean), 'nothing to act on, so nothing to say');
   const flag = (i) => ({ check: 4, step: `s.${i}`, message: `m${i}` });
@@ -183,8 +183,26 @@ test('the summary says where a run\'s evidence is and what to do when anything i
   assert.match(out, /expected-failures\.json/);
   assert.match(out, /\n### H1\/W2: 25 flag\(s\)\n- check 4 at s\.0: m0\n/);
   assert.ok(out.includes('- check 4 at s.19: m19\n'));
-  assert.ok(!out.includes('m20'), 'the 21st is left to its report');
-  assert.match(out, /5 more in H1_W2\/report\.txt/);
+  assert.ok(out.includes('- check 4 at s.24: m24'), 'no count of flags is left out of the summary');
+  assert.ok(!/more in/.test(out));
+});
+
+test('the summary\'s --update-records command carries the --overlay its run had, so following it records the same candidate', () => {
+  const rows = [{ run: 'H1/W2', outcome: 'pass', record: 'differs', changed: { requests: ['r1'], added: 1, removed: 1 }, counts: {} }];
+  assert.match(viewLib.summaryOf({ rows, overlay: 'cm.tgz,af.tgz' }), /`node test\/whole-host\/run\.mjs --update-records --overlay cm\.tgz,af\.tgz`/);
+  assert.match(viewLib.summaryOf({ rows }), /`node test\/whole-host\/run\.mjs --update-records`/);
+});
+
+test('the step summary cuts its table only at GitHub\'s limit, and says how many flags it left out and where they are', () => {
+  const flagLines = Array.from({ length: 40 }, (_, i) => `- check 4 at s.${i}: ${'x'.repeat(40)}`);
+  const table = ['| run |', '|---|', '| H1/W2 |', '', '### H1/W2: 40 flag(s)', ...flagLines].join('\n');
+  const whole = stepSummary({ table, views: [], budget: 100_000 });
+  assert.ok(whole.includes('- check 4 at s.39:'), 'within the limit, every flag is shown');
+  const out = stepSummary({ table, views: [], budget: 1000 });
+  assert.ok(Buffer.byteLength(out) <= 1000);
+  const shown = out.split('\n').filter((l) => l.startsWith('- check ')).length;
+  assert.ok(shown > 0 && shown < 40);
+  assert.match(out, new RegExp(`${40 - shown} more flag\\(s\\) didn't fit within this summary's 1000 bytes: they're in summary\\.md and each run's report\\.txt`));
 });
 
 test('the step summary keeps within its bytes even when the views that didn\'t fit are too many to name one by one', () => {

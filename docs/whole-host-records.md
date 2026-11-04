@@ -4,7 +4,7 @@
 through a set of workload runs, and keeps one record per run in
 `test/whole-host/records/`. Each run's recipe loads the host's context
 strategy and the fixture's own MCPL server. It turns off the subagents
-module (H2 turns it back on), the lessons, retrieval, wake and workspace
+module (H2's configuration and W9's workload turn it back on), the lessons, retrieval, wake and workspace
 modules, cache keepalive and the context maintenance timer (`driver.mjs`'s
 recipe, `script.mjs`'s configurations). A record says what every request the
 run sent carried. A change that moves what those requests carry changes the
@@ -29,7 +29,8 @@ when a run couldn't run.
 - `--checkpoints DIR` keeps the runs' starting checkpoints in `DIR` between
   invocations, keyed by everything that writes them.
 - `--self-check` drives each run a second time with the test module's
-  recording off, and fails a run whose requests differ: every record rests on
+  recording off, and fails a run whose requests differ once the run-varying
+  values a record masks are masked in both: every record rests on
   recording changing nothing the host sends. With recording off the driver
   sets `FIXTURE_RECORD=off`, and otherwise leaves it unset, dropping a
   runner's own, so a runner's setting can't turn the recording arm off. An arm
@@ -49,16 +50,28 @@ when a run couldn't run.
 - `--shard i/n` runs one of CI's shares, balanced by the seconds
   `stack.json` records.
 - `--workdir DIR` keeps the run's installs and stores in `DIR`, which must be
-  empty or new, since each run starts from a clean install and a fresh store.
+  empty or new, since the release is installed there and every run's store
+  starts there. The candidate is this checkout's own install unless
+  `--overlay` is given, when it's installed there too.
+- `--out DIR` chooses where each run's record, `report.txt` and view are
+  written, and `run.json` and `summary.md`; it's `DIR/out` under the work
+  directory when not given.
+- `--update-seconds` merges this invocation's seconds, each run's and each
+  checkpoint's, over the ones `stack.json` records, which `--shard` balances
+  by. It writes the file through a temporary one, so an interrupted write
+  leaves the old file whole. Two invocations writing at once each keep their
+  own merge, and the later one's stands.
 
 Records are made on Linux. The test module stamps each request compile from
 the machine's monotonic clock, which it reads there (`module.mjs`), and a run
 whose compiles carry no stamp is refused as couldn't-run (`record.mjs`,
 `unrecordable`), so elsewhere every run couldn't run.
 
-A run that throws while it's set up, driven or recorded, or whose checkpoint
-couldn't be made, couldn't run, with the reason in the job's log and summary;
-the other runs go on. A run whose last take of the test module's compiles at
+A run that throws anywhere in its own work, from being set up to its
+self-check, or whose checkpoint couldn't be made, couldn't run, with the
+reason in the job's log and summary; the other runs go on. Its committed
+record is written with `--update-records` only after its last step, so a run
+that couldn't run leaves the committed one as it was. A run whose last take of the test module's compiles at
 a host's shutdown fails is a failed run, its record ending `end failed`, since
 it lost what was compiled after the last settle.
 
@@ -177,8 +190,9 @@ the lines of requests are in the order the stand-in received them:
 
 The record ends with `end ok` or `end failed`, then each agent's last receipt,
 `receipt AGENT #SEQ changes LEAF/KIND/LEVEL/LAST …` (`LEAF/removed` for a leaf
-it removed), and `totals`. An agent whose last reported receipt head is none,
-or couldn't be read, has no receipt line.
+it removed), `totals`, and `judged`, each check's count of what it judged,
+so a drop in a count that stays above zero moves a line. An agent whose last
+reported receipt head is none, or couldn't be read, has no receipt line.
 
 Image refs carry a nonce agent-framework mints for each process, so the record
 names each nonce by the order it first appears (`img_na_1`, `img_nb_1`), and
@@ -238,9 +252,11 @@ its compression ticks settle and while a take of it reads unreadable, so what
 a take couldn't read is still reported once it can be.
 
 A request's line, with the head in force for it, changes whenever what that
-request sends changes, apart from three forms the record writes alike: an
+request sends changes, apart from three forms the record writes alike (an
 ephemeral cache marker with no TTL and one of `5m`, a string content and one
-text block, and `stream: false` and no `stream`. A head is named only on the
+text block, and `stream: false` and no `stream`) and the run-varying values it
+masks (image-ref nonces, a fork call's UUID and thinking signatures), a change
+to one of which alone moves no line. A head is named only on the
 first line of its agent's under it, so a later request under a changed head
 keeps its line, and the view still names it.
 
@@ -281,8 +297,7 @@ what holds.
   judge; a compile it couldn't record isn't among them. `?` is a count the run
   couldn't give. Where anything isn't clean, the table is followed by where
   each run's report, record and view are in the job's evidence and what to do
-  next, then each flagged run's flags, at most 20 a run, with the rest in its
-  `report.txt`.
+  next, then every flag of each flagged run.
 - **`<run>/view.md`**, for each run whose record differs or isn't committed,
   has a section for each request whose record lines changed. Each section has
   its record line, then, for an agent's request, the ledger of where each
@@ -313,14 +328,23 @@ what holds.
     than repeated, and so is any other stack text of 200 characters or more;
     a shorter one always shows.
 - **On GitHub,** the job's summary holds `summary.md`'s text and then as many
-  views as fit within its 1 MiB, naming each one that didn't fit and where it
-  is in the evidence the job keeps, or, where even those names wouldn't fit,
-  saying how many didn't.
+  views as fit within its 1 MiB, GitHub's limit for one step's summary
+  ("Step isolation and limits" in its workflow commands reference), naming
+  each one that didn't fit and where it is in the evidence the job keeps, or,
+  where even those names wouldn't fit, saying how many didn't. Where
+  `summary.md` itself is longer, the summary holds as much of it as fits and
+  says how many flags it left out; every flag is in `summary.md` and in its
+  run's `report.txt`. The evidence is each job's uploaded artifact,
+  `whole-host-out`, or `whole-host-self-check` for the self-check's shares, and
+  `--out` locally.
 
 ## What each run's checks judge
 
 Each run's `report.txt` lists its flags, the expected failures that cover some
-of them, and the checks' counts.
+of them, and the checks' counts. A flag, a note or a reason the record or the
+summary shows cut short, such as a thrown error, a host's output or a long
+list of names, has its whole text on the line under it, `  whole: …`; a run
+that couldn't run has its reason there, whole the same way.
 
 - **Check 1: every turn answers.** It flags a request the stand-in refused or
   couldn't classify, an inference that failed or was exhausted, an operator
@@ -333,9 +357,13 @@ of them, and the checks' counts.
   to its restore. A step marked `retries` meets a scripted error that
   agent-framework retries, so check 1 owns only that `inference:failed`, and
   the turn must still answer.
-- **Check 2: declared products.** The continuation's segments each exist to
-  produce something, such as a merge, a request carrying both results with one
-  an image, or a thinking-led call. Check 2 fails a segment that didn't.
+- **Check 2: declared products.** A continuation segment that declares a
+  product exists to produce it, such as a merge, a request carrying both
+  results with one an image, or a thinking-led call. Check 2 fails a segment
+  that didn't. A configuration can declare no product for a segment, as one
+  that doesn't summarise does for its merges, and check 2 then judges nothing
+  there. A product that needs the final store, where the run has none, is
+  counted beside the judged.
 - **Check 3: budgets.** It holds each request the run's agent sent, as the
   stand-in received it, to the bound that governs it.
   - **A compiled request**, a turn's first or a stream restart's, is held to the
@@ -365,7 +393,9 @@ of them, and the checks' counts.
   judged; nor is a merge of such a summary when neither its number nor its
   sources' numbers were sent, since a merge can carry it as its sources raw.
   Where the store holds a summary a summariser request wrote and check 5
-  judged none, that's a couldn't-judge flag. A source the store read doesn't
+  judged none, that's a couldn't-judge flag. A summariser answer whose summary
+  the final store doesn't hold, and a source nothing of which carries a canary
+  to tell by, are counted beside the judged. A source the store read doesn't
   hold is a flag. A summary context-manager wrote with no summariser request,
   such as a quiet stretch's, carries no stand-in mark, so check 5 can't judge
   it, and the report's notes name it.
@@ -373,7 +403,9 @@ of them, and the checks' counts.
   own, less what an operator suppressed before it, and each segment's last
   request the head and the raw tail the host reported at its checkpoint. A
   message of those two turns that the final store doesn't hold isn't asked
-  for, and the judged line counts those.
+  for, and the judged line counts those. Each checkpoint tail judged counts
+  as judged, and one whose last input the final store doesn't hold is counted
+  beside.
 - **Check 10: calibration edge.** A calibration multiplier at the clamp's edge
   (0.6 or 1.8) makes the run invalid, since its folds are clamped. It reads
   the multipliers in the host's health panel, at each checkpoint and at the

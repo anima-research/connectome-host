@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { namingCanaries, messageNames, shortCanary, spanName } from './names.mjs';
 import { CANARY } from './standin.mjs';
+import { cutError, cutText } from './cut.mjs';
 
 export function canonicalJSON(value) {
   if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? 'null' : canonicalJSON(v))).join(',')}]`;
@@ -49,11 +50,17 @@ export function readable(read) {
     const value = read();
     return value === undefined ? { unreadable: 'returned undefined' } : value;
   } catch (err) {
-    return { unreadable: String(err?.message ?? err).slice(0, 200) };
+    const { shown, full } = cutError(err, 200);
+    return { unreadable: shown, ...(full ? { full } : {}) };
   }
 }
 
-export const isUnreadable = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof v.unreadable === 'string';
+const detailOf = (write) => {
+  const { shown, full } = cutText(write);
+  return { detail: shown, ...(full ? { full } : {}) };
+};
+
+export const isUnreadable = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && typeof v.unreadable === 'string' && Object.keys(v).every((k) => k === 'unreadable' || k === 'full');
 
 export function readSummaries(manager, name = (id) => String(id)) {
   const listed = readable(() => manager.getSummariesInRange({}));
@@ -87,10 +94,12 @@ function readCompile(manager, compiled, messages, elsewhere) {
     return ownName(id) ?? foundName(String(id)) ?? String(id);
   };
   const laidOut = Array.isArray(layout?.memberIds) && Array.isArray(layout?.units);
+  const unfoundText = unfound.length ? cutText((cut) => `view members no registered agent's slot holds: ${cut(unfound, 8)}`) : null;
   const failed = [
     ...(laidOut ? [] : ['the compile gave no layout, so its view\'s members beyond its own slot weren\'t read']),
-    ...(unfound.length ? [`view members no registered agent's slot holds: ${unfound.slice(0, 8).join(', ')}`] : []),
+    ...(unfoundText ? [unfoundText.shown] : []),
   ];
+  const wholeOf = new Map(unfoundText?.full ? [[unfoundText.shown, unfoundText.full]] : []);
   const layoutRaw = new Set();
   if (laidOut) {
     let at = 0;
@@ -181,14 +190,14 @@ function readCompile(manager, compiled, messages, elsewhere) {
     const copy = raw.get(body);
     return !!copy && (copy.everyShard || partlyHeld.has(String(m.id)));
   };
-  return { stored, inOrder, bodyOf, membersOf, sequenceOf, leaves, blocks, textOf, sent, raw, bySummary, held, failed, carriedIn, rawStart, nameOf };
+  return { stored, inOrder, bodyOf, membersOf, sequenceOf, leaves, blocks, textOf, sent, raw, bySummary, held, failed, wholeOf, carriedIn, rawStart, nameOf };
 }
 
 export function checkCompile(manager, budget, compiled, messages, { compresses = true, elsewhere } = {}) {
   const out = [];
   const read = readCompile(manager, compiled, messages, elsewhere);
   if (isUnreadable(read)) return [{ invariant: 'unreadable', detail: `getAllMessages: ${read.unreadable}; no invariant was judged` }];
-  const { stored, inOrder, bodyOf, membersOf, sequenceOf, leaves, blocks, textOf, sent, raw, bySummary, held, failed, carriedIn, rawStart, nameOf } = read;
+  const { stored, inOrder, bodyOf, membersOf, sequenceOf, leaves, blocks, textOf, sent, raw, bySummary, held, failed, wholeOf, carriedIn, rawStart, nameOf } = read;
   const bySequence = new Map(stored.map((m) => [m.sequence, String(m.id)]));
   const summaryNames = new Map();
   const summaryName = (id) => {
@@ -238,9 +247,9 @@ export function checkCompile(manager, budget, compiled, messages, { compresses =
       beside.push(`${nameOf(m.id)} raw beside ${under.map(summaryName).join(', ')}`);
     }
   }
-  if (uncovered.length) out.push({ invariant: 'coverage', detail: `${uncovered.length} stored bodies in no message sent: ${uncovered.slice(0, 8).join(', ')}` });
-  if (twice.length) out.push({ invariant: 'coverage', detail: `${twice.length} stored messages under two summaries sent: ${twice.slice(0, 4).join('; ')}` });
-  if (beside.length) out.push({ invariant: 'beside-sources', detail: `${beside.length} stored messages sent raw beside a summary of them: ${beside.slice(0, 4).join('; ')}` });
+  if (uncovered.length) out.push({ invariant: 'coverage', ...detailOf((cut) => `${uncovered.length} stored bodies in no message sent: ${cut(uncovered, 8)}`) });
+  if (twice.length) out.push({ invariant: 'coverage', ...detailOf((cut) => `${twice.length} stored messages under two summaries sent: ${cut(twice, 4, '; ')}`) });
+  if (beside.length) out.push({ invariant: 'beside-sources', ...detailOf((cut) => `${beside.length} stored messages sent raw beside a summary of them: ${cut(beside, 4, '; ')}`) });
 
   const unplaced = [];
   const firstCarried = (i, head) => {
@@ -389,7 +398,7 @@ export function checkCompile(manager, budget, compiled, messages, { compresses =
       }
     }
   }
-  for (const f of failed) out.push({ invariant: 'unreadable', detail: `${f}; what depends on it wasn't judged` });
+  for (const f of failed) out.push({ invariant: 'unreadable', detail: `${f}; what depends on it wasn't judged`, ...(wholeOf.get(f) ? { full: `${wholeOf.get(f)}; what depends on it wasn't judged` } : {}) });
   return Object.defineProperty(dedupe(out), 'unjudged', { value: unjudged, enumerable: false });
 }
 

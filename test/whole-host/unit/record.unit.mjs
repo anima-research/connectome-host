@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { changedRequests } from '../lib/view.mjs';
+import * as recordLib from '../lib/record.mjs';
 
 const header = { configuration: 'H1/W1', release: { tag: 'v0.0.1', versions: { '@animalabs/connectome-host': '0.0.1' } }, from: 'empty', candidate: { versions: { '@animalabs/connectome-host': '0.0.2' } } };
 const text = (t) => ({ participant: 'user', content: [{ type: 'text', text: t }] });
@@ -675,4 +676,21 @@ test('a request\'s head line names its URL\'s query when it has one', () => {
   const heads = (r) => renderRecord({ header, log: lg, records: [r], end: { ok: true } }).split('\n').filter((l) => l.startsWith('H:'));
   assert.ok(heads(req('a1', 'beta=true'))[0].endsWith(', query beta=true'), heads(req('a1', 'beta=true'))[0]);
   assert.ok(!heads(req('a1', null))[0].includes('query'));
+});
+
+test('versions.txt is updated only when every run was updated, by name: a list that repeats one run and leaves out another is not every run', () => {
+  const every = ['a', 'b', 'c'];
+  const updated = (run) => ({ run, record: 'updated' });
+  assert.equal(recordLib.everyRunUpdated(every, [updated('a'), updated('b'), updated('c')]), true);
+  assert.equal(recordLib.everyRunUpdated(every, [updated('a'), updated('b'), updated('b')]), false);
+  assert.equal(recordLib.everyRunUpdated(every, [updated('a'), updated('b'), { run: 'c', record: 'same' }]), false);
+});
+
+test('a record ends with each check\'s judged count, so a drop that stays above zero moves a line', () => {
+  const judged = [{ check: 1, name: 'every turn answers', judged: 12 }, { check: 4, name: 'coverage', judged: 7 }, { check: 13, name: 'pairing fixture', judged: null }];
+  const text = renderRecord({ header, log: [], records: [], end: { ok: true }, judged });
+  const tail = text.trimEnd().split('\n').slice(-2);
+  assert.match(tail[0], /^totals /);
+  assert.equal(tail[1], 'judged 1 every turn answers 12, 4 coverage 7, 13 pairing fixture ?');
+  assert.ok(!/^judged /m.test(renderRecord({ header, log: [], records: [], end: { ok: true } })), 'a record made with no counts has no judged line');
 });
