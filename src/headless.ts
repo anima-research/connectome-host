@@ -252,9 +252,9 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // agent-framework traces inference:completed also when an end-turn tool
   // ends a stream after its tool round, traces inference:stream_resumed only
   // when it gives a live stream its tool results, marks a start `silent`
-  // for a wake that must not surface prose (a silent heartbeat), and discards
-  // a refused attempt with an empty text token, the only empty text token
-  // membrane's streams give.
+  // for a wake that must not surface prose (a silent heartbeat), and traces
+  // an empty text token of its own to discard a refused attempt's text;
+  // membrane's streams give no empty text chunk.
   let currentSpeech = '';
   let roundOpen = false;
   let silentStream = false;

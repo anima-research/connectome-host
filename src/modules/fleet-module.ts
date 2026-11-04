@@ -1696,7 +1696,8 @@ export class FleetModule implements Module {
         error: `Nothing was relayed: the latest inference round this host saw from '${input.from}' ended without ` +
           'tool calls, outside a silent heartbeat, and had no text in it, so there was nothing to pass on. ' +
           (unreachable === null
-            ? `fleet--send gives '${input.from}' something to answer, and fleet--relay passes on its reply once it has.`
+            ? `fleet--send gives '${input.from}' something to answer, and fleet--relay passes on its reply once such a ` +
+              'round has text in it.'
             : `'${input.from}' ${unreachable}.`),
       };
     }

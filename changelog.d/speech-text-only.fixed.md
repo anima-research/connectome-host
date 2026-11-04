@@ -14,6 +14,12 @@
   the thinking, and now says on stderr that the agent's turn ended without
   saying anything, as it already did with thinking off. A turn that ends on
   a tool, such as `skip_reply`, still sends no frame.
+- With refusal retries on, a headless host's `inference:speech` no longer
+  carries a refused attempt's text. agent-framework discards a refused
+  attempt with an empty text token, which the host skipped, so a refused
+  "No" and its retried "Yes" went out as "NoYes". The frame now carries the
+  retried attempt's text alone, and so do what `connectome send` prints and
+  what `fleet--relay` hands on.
 - A headless host no longer sends `inference:speech` for a silent
   heartbeat's turn, which agent-framework marks `silent` as a wake that
   must not surface prose. `fleet--relay` handed that text to another
