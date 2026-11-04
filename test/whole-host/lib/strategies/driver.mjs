@@ -174,10 +174,10 @@ export function readSettle(answer, previous, ticks = {}) {
 
 class RunFailure extends Error {}
 
-export async function runScript({ steps, configuration, standin, hostDir, facts, work, storeDir, epoch, logPath, hostLogs = { dir: work, at: null } }) {
+export async function runScript({ steps, configuration, standin, hostDir, facts, work, storeDir, epoch, logPath, hostLogs }) {
   mkdirSync(work, { recursive: true });
   mkdirSync(hostLogs.dir, { recursive: true });
-  const hostLogOf = (b) => (hostLogs.at ? `${hostLogs.at}/host-${b.n}.log` : `host-${b.n}.log`);
+  const hostLogOf = (b) => `${hostLogs.at}/host-${b.n}.log`;
   const ending = (b, out) => `its whole output is ${hostLogOf(b)} in the evidence, and its last lines are:\n${tail(out)}`;
   mkdirSync(storeDir, { recursive: true });
   const t0 = performance.now();
