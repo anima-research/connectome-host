@@ -270,6 +270,12 @@ export class TtsRelayModule implements Module {
   private onTraceEvent(event: TraceEvent): void {
     switch (event.type) {
       case 'inference:published': {
+        // The relay speaks for one server's channels, the one its edits go to: a
+        // channel id on another server may be the same string for another channel.
+        if (event.serverId !== (this.config.editServerId ?? 'discord')) break;
+        // A message with no words is never voiced, so it can't be the one interrupted.
+        const content = event.text.replace(/^\n+/, '');
+        if (!content.trim()) break;
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
         // edit targets come from inference:published.
         this.published.push({
@@ -285,8 +291,6 @@ export class TtsRelayModule implements Module {
         // Only published prose is voiced: agent-framework's contract for a
         // relay that voices the agent's prose. Each message is a whole text
         // block, so the client voices its last sentence when it's posted.
-        const content = event.text.replace(/^\n+/, '');
-        if (!content.trim()) break;
         const block = {
           channelId: rawChannelId(event.channelId),
           ...this.identity(event.agentName),

@@ -164,11 +164,22 @@ describe('what the relay is given to voice', () => {
     ]);
     const blocks = received.filter((m) => m.blockType !== undefined);
     expect(blocks.every((m) => m.blockType === 'text')).toBe(true);
+    expect(blocks.filter((m) => m.type === 'block_start').map((m) => m.channelId)).toEqual(['123', '456', '123']);
     expect(blocks.filter((m) => m.type === 'chunk').map((m) => [m.channelId, m.text, m.visible])).toEqual([
       ['123', 'The ferry leaves at noon.', true], ['456', 'Take the coast road.', true], ['123', 'Or wait for the bus.', true],
     ]);
     expect(blocks.filter((m) => m.type === 'block_complete').map((m) => [m.channelId, m.content])).toEqual([
       ['123', 'The ferry leaves at noon.'], ['456', 'Take the coast road.'], ['123', 'Or wait for the bus.'],
     ]);
+  }, 30_000);
+
+  test("a message published to another server isn't voiced", async () => {
+    const { received, emit } = await harness();
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:published', serverId: 'zulip', channelId: 'zulip:stream:123', inferenceId: 'i1', index: 0, text: 'Over on the other server.', messageId: 'z1' });
+    emit({ type: 'inference:published', serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1', index: 1, text: 'Here on Discord.', messageId: 'd1' });
+    await waitFor(() => received.some((m) => m.type === 'block_complete'), 'the Discord message');
+    expect(JSON.stringify(received)).not.toContain('Over on the other server.');
+    expect(received.filter((m) => m.type === 'chunk').map((m) => [m.channelId, m.text])).toEqual([['123', 'Here on Discord.']]);
   }, 30_000);
 });

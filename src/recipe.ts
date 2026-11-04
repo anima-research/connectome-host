@@ -1328,7 +1328,7 @@ export interface RecipeTtsRelay {
   userId?: string;
   /** Display name stamped on stream events. Defaults to the agent's name. */
   username?: string;
-  /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
+  /** MCPL server whose channels the relay voices, and which owns `edit_message` for interruption trims. Default 'discord'. */
   editServerId?: string;
   reconnectIntervalMs?: number;
   /** Drop a context note when an interruption trims a posted message. Default true. */

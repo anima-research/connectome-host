@@ -78,6 +78,22 @@ describe('what an interruption may edit', () => {
     expect(edited()).toEqual(['m-first']);
   });
 
+  test('a message published to another server is passed over', async () => {
+    const { trace, interrupt, edited } = relayOnTraces();
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'zulip', channelId: 'zulip:stream:42', inferenceId: 'i1', index: 1, text: 'Over on the other server.', messageId: 'm-zulip' });
+    await interrupt('Something the words never matched');
+    expect(edited()).toEqual(['m-prose']);
+  });
+
+  test('a published message with no words is passed over', async () => {
+    const { trace, interrupt, edited } = relayOnTraces();
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 1, text: '\n\n', messageId: 'm-blank' });
+    await interrupt('Something the words never matched');
+    expect(edited()).toEqual(['m-prose']);
+  });
+
   test('with only routed announcements in the channel, nothing is edited', async () => {
     const { trace, interrupt, edited } = relayOnTraces();
     trace({ type: 'mcpl:speech-routed', conversationId: 'fable', channelId: 'g:42', text: 'Going to sleep for an hour.', messageId: 'm-sleep' });
