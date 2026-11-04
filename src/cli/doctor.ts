@@ -138,8 +138,8 @@ export async function doctor(
     const known = (from: Record<string, string | undefined>): Secret[] => storedSecrets(work, from);
     secrets = [...secrets, ...known(process.env)];
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
-    env = serviceEnv(work, root, managerEnv(service, [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV,
-      ...(document === null ? [] : namesIn(document))], parts), parts.envLimitMs);
+    env = serviceEnv(work, root, managerEnv(service, [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID',
+      'DISCORD_FILTERS_FILE', ...(document === null ? [] : namesIn(document))], parts), parts.envLimitMs);
     secrets = [...secrets, ...known(env)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
   } catch (error) {

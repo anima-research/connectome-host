@@ -1301,6 +1301,21 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.out).toContain('fit claude-setenv-model\'s window');
   });
 
+  test('on launchd, the Discord check of a server given the host\'s whole environment reads the scope launchd gives', async () => {
+    const at = install({
+      manager: 'launchd',
+      recipe: { ...RECIPE(''), mcpServers: {
+        discord: { command: '/x/node_modules/.bin/discord-mcpl', inheritEnv: true },
+        shell: RECIPE('').mcpServers.shell,
+      } },
+    });
+    const manager = fakeManager(at.work, { launchd: { DISCORD_GUILD_ID: '100', DISCORD_FILTERS_FILE: 'filters-from-launchd.json' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { launchctl: manager.path }));
+    expect(manager.calls()).toEqual(expect.arrayContaining(['getenv DISCORD_GUILD_ID', 'getenv DISCORD_FILTERS_FILE']));
+    expect(r.out).toContain(`${join(at.work, 'filters-from-launchd.json')} (DISCORD_FILTERS_FILE) isn't there.`);
+    expect(r.out).toContain('The scope discord-mcpl starts with, from DISCORD_GUILD_ID:');
+  });
+
   test('the service\'s own settings in its unit or plist win over what its manager gives', async () => {
     for (const manager of ['systemd-user', 'launchd'] as const) {
       const at = install({
