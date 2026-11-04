@@ -1,5 +1,5 @@
 import { describe, test, expect, afterAll } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../src/cli/connectome.js';
@@ -154,15 +154,44 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
   return path;
 }
 
+let managers = 0;
+
+function fakeManager(dir: string, opts: { env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true } = {}) {
+  const at = join(dir, `manager-${++managers}`);
+  mkdirSync(join(at, 'values'), { recursive: true });
+  writeFileSync(join(at, 'environment'), (opts.env ?? []).map((line) => `${line}\n`).join(''));
+  for (const [name, value] of Object.entries(opts.launchd ?? {})) writeFileSync(join(at, 'values', name), `${value}\n`);
+  const path = join(at, 'manager');
+  writeFileSync(path, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${join(at, 'calls')}`,
+    ...(opts.hangs ? ['exec sleep 30'] : []),
+    ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
+    `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
+    `if [ "$1" = getenv ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'values')}/$2" ]; then cat "${join(at, 'values')}/$2"; fi; exit 0; fi`,
+    'echo "unexpected: $*" >&2',
+    'exit 2',
+  ].join('\n') + '\n');
+  chmodSync(path, 0o755);
+  const calls = (): string[] => existsSync(join(at, 'calls'))
+    ? readFileSync(join(at, 'calls'), 'utf-8').split('\n').filter(Boolean) : [];
+  return { path, calls };
+}
+
 async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[] = []) {
   const out: string[] = [];
   const err: string[] = [];
+  const manager = fakeManager(at.work).path;
   const status = await doctor({ root: at.root, argv, out: (l) => out.push(l), err: (l) => err.push(l) }, {
     fetch: discordFetch,
     checkService: async () => ({ passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] }),
     python: fakePython(at.work),
     hostLimitMs: 60_000,
     ladderLimitMs: 60_000,
+    systemctl: manager,
+    launchctl: manager,
+    envLimitMs: 60_000,
+    recipeLimitMs: 60_000,
     ...parts,
   });
   return { status, out: out.join('\n'), err: err.join('\n') };
@@ -176,6 +205,16 @@ async function withHost<T>(at: Install, answers: Record<string, unknown>, body: 
     host.stop();
   }
 }
+
+async function digestOf(at: Install): Promise<string> {
+  const { loadRecipeDetailed, recipeDigest } = await import('../src/recipe.js') as unknown as {
+    loadRecipeDetailed: (path: string, options: { env: Record<string, string> }) => Promise<{ recipe: unknown }>;
+    recipeDigest: (recipe: unknown) => string;
+  };
+  return recipeDigest((await loadRecipeDetailed(join(at.work, 'recipe.json'), { env: SECRETS })).recipe);
+}
+
+const reports = (...lines: string[]): Partial<DoctorParts> => ({ checkService: async () => ({ passed: true, lines }) });
 
 function expectNoSecret(text: string): void {
   for (const value of Object.values(SECRETS)) expect(text).not.toContain(value);
@@ -909,8 +948,10 @@ describe('connectome doctor', () => {
     writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({
       ...RECIPE(at.work), agent: { name: 'ember', model: 'claude-haiku-4-5', systemPrompt: '' },
     }));
+    const recipeDigest = await digestOf(at);
     const counted = (tokens: number) => ({ ...HEALTHY_HOST, 'count-check': {
       ...COUNTED, agent: { ...COUNTED.agent, model: 'claude-haiku-4-5' }, beside: { tokens, source: 'count_tokens' }, budget: 168_000,
+      recipeDigest,
     } });
     const fits = await withHost(at, counted(20_000), () => run(at));
     expect(fits.out).toContain('✓ It fits claude-haiku-4-5\'s window with about 28,384 tokens to spare, by context-manager\'s ' +
@@ -1197,5 +1238,216 @@ describe('connectome doctor', () => {
       process.stdout.write = write;
     }
     expect(said.join('')).toContain('The host takes one client at a time, so doctor\'s connection to it closes another command\'s.');
+  });
+});
+
+describe('connectome doctor: the environment the service gets from its manager', () => {
+  test('on systemd, what the user manager gives the service counts: a value only it holds is withheld, a listed name only it gives isn\'t missing, and the recipe loads and is judged with its names and MODEL', async () => {
+    const at = install({
+      stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MANAGER_SECRET'],
+      recipe: { ...RECIPE(''), agent: { name: 'ember', model: 'claude-recipe-model', systemPrompt: 'hi ${MANAGER_NAME}' } },
+    });
+    const manager = fakeManager(at.work, {
+      env: ['MANAGER_SECRET=manager-secret-value', 'MANAGER_NAME=from-the-manager', 'MODEL=claude-manager-model'],
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      systemctl: manager.path, ...reports('| the journal says manager-secret-value'),
+    }));
+    expect(manager.calls()).toEqual(['--user show-environment']);
+    expect(r.out).toContain('| the journal says <MANAGER_SECRET>');
+    expect(r.out).not.toContain('manager-secret-value');
+    expect(r.out).not.toMatch(/MANAGER_SECRET is in setup's list of stored secrets \(.*\), and no file Bun reads/);
+    expect(r.out).toMatch(/✓ .*recipe\.json loads\./);
+    expect(r.out).toContain('fit claude-manager-model\'s window');
+  });
+
+  test('on systemd, a value the manager prints quoted, with escapes, is read as the manager holds it', async () => {
+    const quoted = 'it\'s a "quoted" \\ value\twith\na\u0001control and café';
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'QUOTED_SECRET', 'PLAIN_SECRET'] });
+    const manager = fakeManager(at.work, {
+      env: ['QUOTED_SECRET=$\'it\\\'s a "quoted" \\\\ value\\twith\\na\\001control and café\'', 'PLAIN_SECRET=plain=value'],
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      systemctl: manager.path, ...reports(`| the journal says ${quoted} and plain=value`),
+    }));
+    expect(r.out).toContain('| the journal says <QUOTED_SECRET> and <PLAIN_SECRET>');
+    expect(r.out).not.toContain('plain=value');
+    expect(r.out).not.toContain('a "quoted"');
+  });
+
+  test('on launchd, each name doctor withholds or reads is asked of launchd, and what setenv gives counts as the service\'s', async () => {
+    const at = install({
+      manager: 'launchd',
+      stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'SETENV_SECRET'],
+      recipe: { ...RECIPE(''), agent: { name: 'ember', model: 'claude-recipe-model', systemPrompt: 'hi ${SETENV_NAME}' } },
+    });
+    const manager = fakeManager(at.work, {
+      launchd: { SETENV_SECRET: 'setenv-secret-value', SETENV_NAME: 'from-setenv', MODEL: 'claude-setenv-model' },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      launchctl: manager.path, ...reports('| the log says setenv-secret-value'),
+    }));
+    const asked = manager.calls();
+    for (const name of ['SETENV_SECRET', 'SETENV_NAME', 'MODEL', 'MCPL_AGENT_OVERLAY_FILE', 'ANTHROPIC_API_KEY', 'DISCORD_TOKEN']) {
+      expect(asked).toContain(`getenv ${name}`);
+    }
+    expect(asked).not.toContain('--user show-environment');
+    expect(r.out).toContain('| the log says <SETENV_SECRET>');
+    expect(r.out).not.toContain('setenv-secret-value');
+    expect(r.out).not.toMatch(/SETENV_SECRET is in setup's list of stored secrets \(.*\), and no file Bun reads/);
+    expect(r.out).toMatch(/✓ .*recipe\.json loads\./);
+    expect(r.out).toContain('fit claude-setenv-model\'s window');
+  });
+
+  test('the service\'s own settings in its unit or plist win over what its manager gives', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const at = install({
+        manager,
+        recipe: { ...RECIPE(''), agent: { name: 'ember', model: 'claude-sup-${CONNECTOME_SUPERVISED}', systemPrompt: 'hi' } },
+      });
+      const given = fakeManager(at.work, { env: ['CONNECTOME_SUPERVISED=0'], launchd: { CONNECTOME_SUPERVISED: '0' } });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: given.path, launchctl: given.path }));
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('fit claude-sup-1\'s window')]);
+    }
+  });
+
+  test('a manager that can\'t be asked stops doctor, with its own error, as it stops when it can\'t read which values are secret', async () => {
+    for (const [manager, asked] of [['systemd-user', 'systemctl --user show-environment'], ['launchd', 'launchctl getenv']] as const) {
+      const at = install({ manager });
+      const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+      const r = await run(at, { systemctl: failing.path, launchctl: failing.path });
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(asked)]);
+      expect(r.out).toContain('can\'t be read: Failed to connect to bus: No medium found');
+      expect(r.out).toContain('Doctor stops here: it can\'t tell which values are secret, so it prints no check\'s output.');
+      expect(r.out).not.toContain('The unit connectome-test.service is active');
+      expect(r.status).toBe(1);
+    }
+  });
+
+  test('a manager that doesn\'t answer within the limit stops doctor, saying so', async () => {
+    const at = install();
+    const slow = fakeManager(at.work, { hangs: true });
+    const r = await run(at, { systemctl: slow.path, envLimitMs: 300 });
+    expect(r.out).toContain('systemctl --user show-environment failed, so what the user manager gives the service can\'t be ' +
+      'read: it didn\'t answer within 0.3 s');
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.status).toBe(1);
+  });
+
+  test('the manager the service record names is asked, and no other: none without a record', async () => {
+    const none = install();
+    rmSync(join(none.root, 'service.json'));
+    const unasked = fakeManager(none.work);
+    await run(none, { systemctl: unasked.path, launchctl: unasked.path });
+    expect(unasked.calls()).toEqual([]);
+    const launchd = install({ manager: 'launchd' });
+    const asked = fakeManager(launchd.work);
+    await run(launchd, { systemctl: asked.path, launchctl: asked.path });
+    expect(asked.calls().length).toBeGreaterThan(0);
+    expect(asked.calls().every((call) => call.startsWith('getenv '))).toBe(true);
+    const systemd = install();
+    const user = fakeManager(systemd.work);
+    await run(systemd, { systemctl: user.path, launchctl: user.path });
+    expect(user.calls()).toEqual(['--user show-environment']);
+  });
+});
+
+describe('connectome doctor: its waits, its remedies and its last line', () => {
+  test('a Bun that doesn\'t finish reading the service\'s environment within its limit stops doctor, which says so', async () => {
+    const at = install();
+    writeFileSync(join(at.work, 'hang.ts'), 'Bun.sleepSync(10_000);\n');
+    writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./hang.ts"]\n');
+    const r = await run(at, { envLimitMs: 500 });
+    expect(r.out).toContain(`Bun didn't finish reading the service's environment in ${at.work} within 0.5 s`);
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.status).toBe(1);
+  }, 30_000);
+
+  test('a recipe, or its system prompt, fetched from a URL that doesn\'t answer within the limit is a problem, and doctor goes on', async () => {
+    const silent = Bun.serve({ port: 0, hostname: '127.0.0.1', idleTimeout: 0, fetch: () => new Promise<Response>(() => {}) });
+    try {
+      const url = `http://127.0.0.1:${silent.port}/recipe.json`;
+      const at = install();
+      const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
+      writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, hostArgs: [url] }));
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { recipeLimitMs: 300 }));
+      expect(r.out).toContain(`✗ ${url} didn't load within 0.3 s: the fetch of it didn't answer in time.`);
+      expect(r.out).toContain('Discord isn\'t checked: which servers run is in the recipe, which didn\'t load.');
+      const prompt = install({ recipe: { ...RECIPE(''), agent: { name: 'ember', systemPrompt: `http://127.0.0.1:${silent.port}/prompt` } } });
+      const p = await withHost(prompt, HEALTHY_HOST, () => run(prompt, { recipeLimitMs: 300 }));
+      expect(p.out).toMatch(/✗ \S+recipe\.json didn't load within 0\.3 s: the fetch of its system prompt didn't answer in time\./);
+      expect(p.out).toMatch(/Doctor found \d+ problems?, marked ✗\./);
+    } finally {
+      silent.stop(true);
+    }
+  }, 15_000);
+
+  test('a listed secret that a file Bun reads before .env empties is said empty, and the remedy names the files that come before .env', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
+    writeFileSync(join(at.work, '.env.local'), 'LONELY_SECRET=\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`✗ LONELY_SECRET is in setup's list of stored secrets and is empty in the service's environment: ` +
+      `give it its value in ${join(at.work, '.env')} and restart the service. Another of the files Bun reads there, such ` +
+      'as .env.local or .env.development, or the service\'s own environment, comes before .env where it sets the name: ' +
+      'where one sets it empty, give it its value there.');
+  });
+
+  test('the remedy for a COUNT_TOKENS_MODEL that answers 404, and for a listed secret nothing gives, names the files that come before .env', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], drop: ['LONELY_SECRET'] });
+    const r = await withHost(at, { ...HEALTHY_HOST, 'count-check': {
+      ...COUNTED, agent: { ...COUNTED.agent, source: 'count_tokens_failed_404' },
+    } }, () => run(at));
+    const before = 'Another of the files Bun reads there, such as .env.local or .env.development, or the service\'s own ' +
+      'environment, comes before .env where it sets the name: ';
+    expect(r.out).toContain(`since the host reads it when it starts. ${before}where one sets it, set it there instead.`);
+    expect(r.out).toContain(`take it out of that list. ${before}where one sets it empty, give it its value there.`);
+  });
+
+  test('a DISCORD_TOKEN stored with its prefix, or with whitespace after it, is withheld in the form Discord is sent too', async () => {
+    for (const stored of [`Bot ${SECRETS.DISCORD_TOKEN}`, `${SECRETS.DISCORD_TOKEN}  `]) {
+      const at = install({ env: { DISCORD_TOKEN: stored } });
+      const quoting = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+        new URL(String(input)).pathname.endsWith('/applications/@me')
+          ? Response.json({ message: `Unknown token ${SECRETS.DISCORD_TOKEN}`, code: 50014 }, { status: 400 })
+          : discordFetch(input, init)) as typeof fetch;
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: quoting }));
+      expect([stored, r.out]).toEqual([stored, expect.stringContaining('Unknown token <DISCORD_TOKEN>')]);
+      expectNoSecret(r.out + r.err);
+    }
+  });
+
+  test('with no host answering, doctor that finds no problem says the host\'s checks weren\'t made', async () => {
+    const at = install();
+    const stopped = await run(at, {
+      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped.'], stopped: true }),
+      python: fakePython(at.work, { end: 'clean' }),
+    });
+    expect(stopped.out).toMatch(/Doctor found no problem, though the host's checks weren't made, as said above\.$/);
+    expect(stopped.status).toBe(0);
+    const unladdered = await run(at, {
+      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped.'], stopped: true }),
+      python: null,
+    });
+    expect(unladdered.out).toMatch(/Doctor found no problem, though the host's checks weren't made and the ladder didn't run, as said above\.$/);
+  });
+
+  test('with the recipe edited since the host started, the fit is the load\'s, by estimate, and says why', async () => {
+    const at = install();
+    writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({
+      ...RECIPE(at.work), agent: { name: 'ember', model: 'claude-haiku-4-5', systemPrompt: '' },
+    }));
+    const recipeDigest = await digestOf(at);
+    writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({
+      ...RECIPE(at.work), description: 'edited since the host started, with the same model and budget',
+      agent: { name: 'ember', model: 'claude-haiku-4-5', systemPrompt: '' },
+    }));
+    const r = await withHost(at, { ...HEALTHY_HOST, 'count-check': {
+      ...COUNTED, agent: { ...COUNTED.agent, model: 'claude-haiku-4-5' }, beside: { tokens: 20_000, source: 'count_tokens' },
+      budget: 168_000, recipeDigest,
+    } }, () => run(at));
+    expect(r.out).toContain('✓ It fits claude-haiku-4-5\'s window.\n  The system prompt and tools the host sends weren\'t ' +
+      'counted (the recipe doesn\'t load now as it did for the running host, as an edit since its start can leave it), so ' +
+      'this is the check the host makes at load, by estimate.');
+    expect(r.out).not.toContain('to spare');
   });
 });

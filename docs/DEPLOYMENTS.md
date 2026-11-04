@@ -167,7 +167,9 @@ the working directory):
   `append:` path in the unit file's text, a commented line included, else from
   `INSTALL_DIR/logs/agent.log` unless that was last written before the unit
   started, else from the unit's journal (its last 2,000 lines). Recent
-  failures also come from `INSTALL_DIR/logs/failures.log`. Chronicle ingest
+  failures also come from `INSTALL_DIR/logs/failures.log`, every record but
+  the subscription GC's `subscription-gc-close`, which `connectome doctor`
+  names apart. Chronicle ingest
   comes from the active session's `records.log`, as `sessions.json` names it,
   and the Discord stages from `DATA_DIR/discord-mcpl-debug.log`, which
   discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. A stage the
