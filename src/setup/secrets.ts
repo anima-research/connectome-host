@@ -330,10 +330,11 @@ export function storedSecretRedactor(
   workingDir: string,
   env: Record<string, string | undefined> = process.env,
   preserveLineBreaks = false,
+  additionalNames: readonly string[] = [],
 ): (text: string) => { text: string; replaced: string[]; guessed: string[] } {
   const envFile = join(workingDir, '.env');
   const { names, guessed } = secretNames(join(workingDir, '.setup'), envFile);
-  const secrets = secretValues(names, envFile, env);
+  const secrets = secretValues([...names, ...additionalNames], envFile, env);
   return (text) => {
     const replaced = new Set<string>();
     const bytes = Buffer.from(text, 'utf-8');

@@ -230,24 +230,23 @@ export async function runService(ctx: CliContext, sys: ServiceSystem = machine()
   const [verb, ...rest] = ctx.argv;
   if (verb === 'install' && rest.length <= 1) return installService(ctx, sys);
   if ((verb === 'stop' || verb === 'start') && rest.length === 0) {
-    try {
-      return await withServiceLock(ctx, () => (verb === 'stop' ? stopService : startService)(ctx, sys));
-    } catch (error) {
-      if (!(error instanceof Refusal) && !(error instanceof ContractError)) throw error;
-      ctx.err(`connectome: ${error.message}`);
-      return 1;
-    }
+    return serviceRun(ctx, () => (verb === 'stop' ? stopService : startService)(ctx, sys));
   }
   ctx.err(`Usage: ${serviceUsage(typedCommand(ctx.root!, sys.env.PATH))}`);
   return 2;
 }
 
 export async function installService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
+  return serviceRun(ctx, () => installWithRecord(ctx, sys));
+}
+
+async function serviceRun(ctx: CliContext, run: () => Promise<number>): Promise<number> {
   try {
-    return await withServiceLock(ctx, () => installWithRecord(ctx, sys));
+    return await withServiceLock(ctx, run);
   } catch (error) {
-    if (!(error instanceof Refusal) && !(error instanceof ContractError)) throw error;
-    ctx.err(`connectome: ${error.message}`);
+    ctx.err(`connectome: ${error instanceof Refusal || error instanceof ContractError ? error.message
+      : `Service command failed: ${errorText(error)}. Files or units may already have changed. ` +
+        "Inspect this install's files and service-manager state, resolve the error, then repeat this command."}`);
     return 1;
   }
 }
@@ -287,14 +286,8 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
     ctx.err(`connectome: the first install needs the recipe: ${cmd} service install <recipe>`);
     return 2;
   }
-  try {
-    const recipe = given === undefined ? old!.hostArgs[0]! : /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
-    return await install(ctx, sys, root, recipe, old, cmd);
-  } catch (error) {
-    if (!(error instanceof Refusal) && !(error instanceof ContractError)) throw error;
-    ctx.err(`connectome: ${error.message}`);
-    return 1;
-  }
+  const recipe = given === undefined ? old!.hostArgs[0]! : /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
+  return install(ctx, sys, root, recipe, old, cmd);
 }
 
 interface ShellPlan {
@@ -483,8 +476,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
             'Repeat this service install command with the same recipe to load its rewritten agents.');
           ownedOrFree(unit, manager, work, sys, env, true);
           const rotate = loaded || stateBefore.kind === 'unloaded';
-          if (!rotate) ctx.out(`The state of ${unit.name} couldn't be read, so this run kept its log in place; ` +
-            'it can hold earlier loads.');
+          if (stateBefore.kind === 'unknown') ctx.out(`The state of ${unit.name} couldn't be read: ${stateBefore.why}. ` +
+            'This run kept its log in place; it can hold earlier loads.');
           const ran = loadAgent(sys, env, unit, unit === names.host ? logPath : join(work, 'logs', 'shell.log'), rotate);
           if (ran.status !== 0) {
             const state = agentState(sys, env, unit);
@@ -838,12 +831,13 @@ function startAgents(ctx: CliContext, sys: ServiceSystem, env: Record<string, st
   const states = order.map((unit) => agentState(sys, env, unit));
   if (states.at(-1)!.kind !== 'running') for (const line of updateState(root, 'this start')) ctx.out(line);
   for (const [at, unit] of order.entries()) {
-    if (states[at]!.kind === 'running') {
+    const state = states[at]!;
+    if (state.kind === 'running') {
       ctx.out(`${unit.name} was already running, so it wasn't started again.`);
       continue;
     }
-    if (states[at]!.kind === 'unknown') {
-      ctx.out(`${unit.name}'s state couldn't be read from launchd, so this start kept its log in place. ` +
+    if (state.kind === 'unknown') {
+      ctx.out(`${unit.name}'s state couldn't be read from launchd: ${state.why}. This start kept its log in place. ` +
         "It may hold lines from an earlier load.");
     }
     const ran = states[at]!.kind === 'loaded'
@@ -898,8 +892,8 @@ function insideNeither(sys: ServiceSystem, manager: ServiceRecord['manager'],
 }
 
 function installRedactor(work: string, sys: ServiceSystem, token?: string): ReturnType<typeof storedSecretRedactor> {
-  const stored = storedSecretRedactor(work, sys.env);
-  return (text) => stored(token === undefined ? text : text.replaceAll(token, '<SESSION_SERVER_TOKEN>'));
+  return storedSecretRedactor(work, token ? { ...sys.env, SESSION_SERVER_TOKEN: token } : sys.env,
+    false, ['SESSION_SERVER_TOKEN']);
 }
 
 function recipeProblem(loaded: Exclude<RecipeLoad, { loads: true }>, work: string, sys: ServiceSystem,
@@ -1153,7 +1147,7 @@ async function bootout(ctx: CliContext, sys: ServiceSystem, env: Record<string, 
   const ran = sys.run('launchctl', ['bootout', target], env);
   if (ran.status !== 0) {
     throw new Refusal('launchctl bootout ' + target + ' failed: ' + launchctlFailure(ran) + '. ' +
-      unit.name + ' is still loaded as it was. ' + next);
+      next);
   }
   const started = sys.now();
   const until = started + READY_WAIT_MS;
@@ -1209,6 +1203,10 @@ async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise
   const file = join(work, '.env');
   const known = readEnvFile(file);
   let port = known.get('SESSION_SERVER_PORT');
+  if (port && (!/^\d+$/.test(port) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) {
+    throw new Refusal(`SESSION_SERVER_PORT in ${file} is ${JSON.stringify(port)}, not an integer from 1 to 65535. ` +
+      'Set a TCP port in that range, then repeat this service install command. Nothing was written.');
+  }
   const newPort = !port;
   for (let candidate = SHELL_PORTS.first; candidate <= SHELL_PORTS.last && !port; candidate++) {
     if (await sys.portFree(candidate)) port = String(candidate);
@@ -1490,7 +1488,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
   const log = (text: string, what: string, ended = false) => {
     let redact: ReturnType<typeof storedSecretRedactor>;
     try {
-      redact = storedSecretRedactor(workingDirectory, sys.env, true);
+      redact = storedSecretRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']);
     } catch (error) {
       fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
       return;

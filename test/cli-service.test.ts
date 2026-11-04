@@ -569,6 +569,77 @@ for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an 
   expect(f.out.join('\n')).not.toContain('Its host answers:');
 });
 
+for (const port of ['0', '65536', '3.1', 'word', '-1']) test('an invalid stored shell port is refused before writing units: ' + port, async () => {
+  const at = install('My Resident', { shell: true });
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_PORT=' + port + '\n');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(JSON.stringify(port));
+  expect(existsSync(hostUnit(at))).toBe(false);
+  expect(existsSync(shellUnit(at))).toBe(false);
+});
+
+for (const operation of ['install', 'start']) test('an unknown launchd state includes its reason while ' + operation + ' preserves logs and attempts loading', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  if (operation === 'start') {
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  }
+  const log = join(at.work, 'logs', 'agent.log');
+  mkdirSync(dirname(log), { recursive: true });
+  writeFileSync(log, 'earlier-load');
+  const run = f.system.run;
+  let once = true;
+  f.system.run = (cmd, args, env) => {
+    if (cmd === 'launchctl' && args[0] === 'list' && existsSync(agentPlist(at)) && once) {
+      once = false;
+      return { status: 77, stdout: '', stderr: 'unknown-state detail' };
+    }
+    return run(cmd, args, env);
+  };
+  f.out.length = 0;
+  expect(await runService(f.ctx(operation === 'start' ? ['start'] : ['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain('unknown-state detail');
+  expect(readFileSync(log, 'utf-8')).toBe('earlier-load');
+});
+
+test('an unexpected log-rotation error reports partial effects and releases the lock for retry', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const log = join(at.work, 'logs', 'agent.log');
+  mkdirSync(log + '.previous', { recursive: true });
+  writeFileSync(join(log + '.previous', 'occupied'), 'keep');
+  writeFileSync(log, 'earlier-load');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('may already have changed');
+  expect(f.err.join('\n')).toContain('repeat this command');
+  rmSync(log + '.previous', { recursive: true });
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+});
+
+test('an empty external shell token leaves whole-credential diagnostic masking intact', async () => {
+  const at = install();
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_TOKEN=""\n');
+  const f = fake(at, { env: { ANTHROPIC_API_KEY: 'provider-opaque-value' },
+    recipeLoad: { loads: false, words: 'credential provider-opaque-value refused' } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('<ANTHROPIC_API_KEY>');
+  expect(f.err.join('\n')).not.toContain('<SESSION_SERVER_TOKEN>');
+});
+
+test('service logs mask an external shell token omitted from an existing secret-name list', async () => {
+  const at = install();
+  mkdirSync(join(at.work, '.setup'));
+  writeFileSync(join(at.work, '.setup', 'stored-secrets.json'), '[]');
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_TOKEN=external-opaque-value\n');
+  const f = fake(at);
+  f.systemd.prints = () => ['shell credential=external-opaque-value'];
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain('<SESSION_SERVER_TOKEN>');
+  expect(f.out.join('\n')).not.toContain('external-opaque-value');
+});
+
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();
   const f = fake(at);
@@ -2410,7 +2481,7 @@ test('a shell daemon that isn\'t active and whose latest start isn\'t known name
     'shows it.');
 });
 
-test('on macOS a launch agent launchctl won\'t boot out is refused, saying it\'s still loaded as it was', async () => {
+test('on macOS a failed bootout reports the native failure without asserting the agent state', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -2418,7 +2489,8 @@ test('on macOS a launch agent launchctl won\'t boot out is refused, saying it\'s
   writeFileSync(second, '{}');
   f.systemd.launchctlFailsOnce.set('bootout', 'Boot-out failed: 5: Input/output error');
   expect(await installService(f.ctx(['install', second]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('is still loaded as it was');
+  expect(f.err.join('\n')).toContain('Boot-out failed: 5: Input/output error');
+  expect(f.err.join('\n')).not.toContain('is still loaded as it was');
   expect(f.systemd.bootstraps).toHaveLength(1);
 });
 
@@ -3011,7 +3083,7 @@ test('on macOS a bootout that fails is said, with the agents stopped before it, 
   expect(await runService(f.ctx(['stop']), f.system)).toBe(1);
   expect(f.out).toEqual([`Stopped ${host}.`]);
   expect(f.err).toEqual([`connectome: launchctl bootout gui/1001/${shell} failed: Boot-out failed: 5: Input/output ` +
-    `error. ${shell} is still loaded as it was. Run connectome service stop again to finish stopping its agents.`]);
+    'error. Run connectome service stop again to finish stopping its agents.']);
 });
 
 test('on macOS start loads the shell agent, then the host\'s, setting each log aside first, starts one loaded but not running, and checks the service', async () => {
@@ -3908,7 +3980,9 @@ test('an unexpected planning error releases the service guard before a retry', a
   const f = fake(at);
   const portFree = f.system.portFree;
   f.system.portFree = async () => { throw new Error('port probe interrupted'); };
-  await expect(installService(f.ctx(['install', at.recipe]), f.system)).rejects.toThrow('port probe interrupted');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('port probe interrupted');
+  expect(f.err.join('\n')).toContain('repeat this command');
   nothingWritten(at);
   f.system.portFree = portFree;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
