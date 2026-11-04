@@ -13,7 +13,10 @@ test('a write before a name\'s anchor, or in another store, renames nothing; a w
   const map = { 7: '[[c:a.in]]', 14: '[[c:a.r1]]' };
   const before = messageNames([7, 9, 12, 14], canaries(map));
   const earlier = messageNames([5, 7, 9, 12, 14], canaries(map));
-  assert.deepEqual([9, 12, 14].map(earlier), [9, 12, 14].map(before), 'one more id ahead of the anchor, as a shifted id count would make');
+  assert.deepEqual([9, 12, 14].map(earlier), [9, 12, 14].map(before), 'one more message ahead of the anchor');
+  const shifted = messageNames([8, 10, 13, 15], canaries({ 8: '[[c:a.in]]', 15: '[[c:a.r1]]' }));
+  assert.deepEqual([8, 10, 13, 15].map(shifted), [7, 9, 12, 14].map(before), 'every id one higher, as a write in another store makes, and the same names');
+  assert.deepEqual([7, 9, 12, 14].map(before), ['a.in', 'a.in+1', 'a.in+2', 'a.r1']);
   const between = messageNames([7, 8, 9, 12, 14], canaries(map));
   assert.deepEqual([9, 12].map(between), ['a.in+2', 'a.in+3']);
 });

@@ -221,8 +221,15 @@ test('store order takes a partial copy\'s shards from context-manager\'s layout 
   try {
     const m = manager({ messages: body, summaries: { U: { sourceIds: ['5'] }, T: { sourceIds: ['6'] } } });
     const [compiled, messages] = compile(['r:1', 'r:2', 'r:3', 'r:4', 's:U@1', 's:T@1', ['r:5!shards', [text('same words')]]]);
-    compiled.provenance.layout = { memberIds: ['1', '2', '3', '4', '5', '6', '7'], units: [{ k: 'r', t: 1 }, { k: 'r', t: 1 }, { k: 'r', t: 1 }, { k: 'r', t: 1 }, { k: 's', n: 1, sm: [['U', 1, 'llm', 0, 5]] }, { k: 's', n: 1, sm: [['T', 1, 'llm', 0, 5]] }, { k: 'r', t: 1, p: 1 }] };
+    const layout = { memberIds: ['1', '2', '3', '4', '5', '6', '7'], units: [{ k: 'r', t: 1 }, { k: 'r', t: 1 }, { k: 'r', t: 1 }, { k: 'r', t: 1 }, { k: 's', n: 1, sm: [['U', 1, 'llm', 0, 5]] }, { k: 's', n: 1, sm: [['T', 1, 'llm', 0, 5]] }, { k: 'r', t: 1, p: 1 }] };
+    compiled.provenance.layout = layout;
     assert.deepEqual(checkCompile(m, BUDGET, compiled, messages), []);
+    const [early, earlyMessages] = compile(['r:1', 'r:2', 'r:3', 'r:4', ['r:5!shards', [text('same words')]], 's:U@1', 's:T@1']);
+    early.provenance.layout = layout;
+    assert.deepEqual(named(checkCompile(m, BUDGET, early, earlyMessages)), [
+      ['coverage', 'message 5 covers from start+5, before message 4\'s start+7'],
+      ['coverage', 'message 6 covers from start+6, before message 4\'s start+7'],
+    ], 'the same copy sent before the summaries is out of order, at its raw shard, so both summaries after it are flagged');
   } finally {
     for (const m of body) if (!STORE.includes(m)) byId.delete(m.id);
   }
@@ -248,8 +255,12 @@ test('store order: a partial copy\'s shards are assigned to the messages that ca
   for (const m of body) byId.set(m.id, m);
   try {
     const [compiled, messages] = compile(['r:1', 'r:2', 'r:3', 'r:4', ['r:5!shards', [text('same words')]], ['r:5!shards', [text('other words')]], ['r:5!shards', [text('same words')]]]);
-    compiled.provenance.layout = { memberIds: ['1', '2', '3', '4', '5', '6', '7'], units: ['1', '2', '3', '4', '5', '6', '7'].map(() => ({ k: 'r', t: 1, p: 1 })) };
+    const layout = { memberIds: ['1', '2', '3', '4', '5', '6', '7'], units: ['1', '2', '3', '4', '5', '6', '7'].map(() => ({ k: 'r', t: 1, p: 1 })) };
+    compiled.provenance.layout = layout;
     assert.deepEqual(checkCompile(manager({ messages: body }), BUDGET, compiled, messages), []);
+    const [swapped, swappedMessages] = compile(['r:1', 'r:2', 'r:3', 'r:4', ['r:5!shards', [text('other words')]], ['r:5!shards', [text('same words')]], ['r:5!shards', [text('same words')]]]);
+    swapped.provenance.layout = layout;
+    assert.deepEqual(named(checkCompile(manager({ messages: body }), BUDGET, swapped, swappedMessages)), [['coverage', 'message 5 covers from start+5, before message 4\'s start+6']], 'a copy carrying an earlier shard after one carrying a later shard is out of order');
   } finally {
     for (const m of body) if (!STORE.includes(m)) byId.delete(m.id);
   }

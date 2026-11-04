@@ -256,7 +256,8 @@ test('module: a compile is judged against the store as it stands when the compil
   held.messages = [];
   module.agentOf.set(held, 'fixture');
   const compiling = held.compile({ maxTokens: 1_000, reserveForResponse: 0 });
-  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 1_000 && !release; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(release, 'the premise: the wrapped compile called the held one, which is waiting');
   held.messages = [{ id: 2, sequence: 2, content: [{ type: 'text', text: '[[c:a.r1]] stored meanwhile' }] }];
   release();
   await compiling;
