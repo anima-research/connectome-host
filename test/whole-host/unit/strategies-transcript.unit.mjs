@@ -4,7 +4,7 @@ import { png } from '../lib/strategies/png.mjs';
 import { prose } from '../lib/strategies/prose.mjs';
 import { toolResult } from '../lib/strategies/results.mjs';
 import { TOOL } from '../lib/strategies/script.mjs';
-import { generatedTexts, transcriptOf } from '../lib/strategies/transcript.mjs';
+import { RESULT_FORM, generatedTexts, transcriptOf } from '../lib/strategies/transcript.mjs';
 
 const TOOLS = [{ name: 'time--now', description: 'Returns the time.', input_schema: { type: 'object', properties: {} } }];
 const IN = '[[c:x.1.in]]';
@@ -138,7 +138,7 @@ test('X5: thinking shows signed or not with the run\'s thinking marked, a call i
     `  tool_use toolu_1 ${TOOL}: {"kind":"prose","size":900,"canary":"[[c:x.3.call1]]"}`,
     `  tool_use toolu_2 subagent--spawn: {"task":"⟪[[c:x.3.task]] ${task.length} chars: ${head(task, '[[c:x.3.task]] '.length)}⟫"}`,
     '#1 user',
-    '  tool_result toolu_1 [cache 1h]',
+    '  tool_result toolu_1 (no is_error) (content as blocks) [cache 1h]',
     `    text: ⟪[[c:x.3.call1]] 900 chars: ${head(resultText, '[[c:x.3.call1]] '.length)}⟫`,
     `    image: image/png 4×3, ${Buffer.from(image, 'base64').length} bytes`,
   ]);
@@ -174,12 +174,12 @@ test('X7: a per-process image ref nonce and a fork call\'s UUID are masked, so t
   assert.deepEqual(one, two);
   assert.ok(one.includes('  text: [image: image/png, ~1KB, ref img_N1_7]'));
   assert.ok(one.includes('  tool_use fork-fork-x-UUID1 subagent--fork: {}'));
-  assert.ok(one.includes('  tool_result fork-fork-x-UUID1 (content as a string)'));
+  assert.ok(one.includes('  tool_result fork-fork-x-UUID1 (no is_error)'));
   const crossed = of('img_k7x3q2_7', '0f8e2c1a-1b2c-4d5e-8f90-a1b2c3d4e5f6', '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d');
-  assert.ok(crossed.includes('  tool_result fork-fork-x-UUID2 (content as a string)'), 'a result answering another fork is named apart');
+  assert.ok(crossed.includes('  tool_result fork-fork-x-UUID2 (no is_error)'), 'a result answering another fork is named apart');
 });
 
-test('X13: a block\'s fields its line doesn\'t otherwise show appear beside its type, masked as the message\'s digest masks them, and a result whose content went as a string says so', () => {
+test('X13: a block\'s fields its line doesn\'t otherwise show appear beside its type, masked as the message\'s digest masks them, and a result departing from the form the transcript\'s first line states says how', () => {
   const generated = generatedTexts({ steps: [turn] });
   const image = png(4, 3, () => 1);
   const lines = transcriptOf(body([
@@ -195,19 +195,31 @@ test('X13: a block\'s fields its line doesn\'t otherwise show appear beside its 
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: image, extra: 4 }, extra: 5 },
       ] },
       { type: 'tool_result', tool_use_id: 'toolu_1', is_error: true, content: 'failed' },
+      { type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: 'fine' },
+      { type: 'tool_result', tool_use_id: 'toolu_1', content: 'bare' },
+      { type: 'tool_result', tool_use_id: 'toolu_1', is_error: 'no', content: 'odd' },
     ] },
   ]), generated);
-  assert.deepEqual(lines.slice(-11), [
+  assert.equal(lines[0], RESULT_FORM);
+  assert.equal(RESULT_FORM, 'Results below went with their content as a string and is_error: false, unless a line says otherwise.');
+  assert.deepEqual(lines.slice(-17), [
     '#0 assistant',
     '  thinking signed {"extra":1}: plan',
     '  redacted_thinking {"extra":2}: 4 chars',
     '  text {"citations":[{"ref":"img_N1_7"}]}: hello',
     '  tool_use toolu_1 time--now {"caller":{"type":"direct"}}: {}',
     '#1 user',
-    '  tool_result toolu_1 {"is_error":false}',
+    '  tool_result toolu_1 (content as blocks)',
     '    text [cache 5m] {"extra":3}: ok',
     `    image {"extra":5,"source":{"extra":4}}: image/png 4×3, ${Buffer.from(image, 'base64').length} bytes`,
-    '  tool_result toolu_1 (error) (content as a string)',
+    '  tool_result toolu_1 (error)',
     '    text: failed',
+    '  tool_result toolu_1',
+    '    text: fine',
+    '  tool_result toolu_1 (no is_error)',
+    '    text: bare',
+    '  tool_result toolu_1 {"is_error":"no"}',
+    '    text: odd',
   ]);
+  assert.match(transcriptOf(body([user('hello')]), generated)[0], /^system\[0\]/, 'a request with no result has no form line');
 });

@@ -350,8 +350,12 @@ what holds.
     words;
   - a message's fields besides its role and content, shown beside its role,
     and a block's fields besides those its line shows, shown beside its type,
-    each masked as the message's digest masks it, with a result whose content
-    went as a string rather than as blocks saying so;
+    each masked as the message's digest masks it. A transcript of a request
+    holding a result opens with the form agent-framework sends results in,
+    content as a string with `is_error: false`, which nearly every result in
+    the runs takes. A result in that form is unmarked, and one departing from
+    it says how, as `(content as blocks)` or `(no is_error)`, since the digest
+    tells those forms apart and a mark on every line would show no change;
   - a tool's definition already shown in that view is named again rather
     than repeated, and so is any other stack text of 200 characters or more;
     a shorter one always shows.

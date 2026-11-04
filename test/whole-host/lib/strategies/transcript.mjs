@@ -94,6 +94,8 @@ function runPart({ e, from, length }, { texts }) {
   return `⟪${name} ${span}: ${headOf(said)}⟫`;
 }
 
+export const RESULT_FORM = 'Results below went with their content as a string and is_error: false, unless a line says otherwise.';
+
 export function transcriptOf(body, generated, seen = new Set()) {
   const lines = [];
   const mask = runVaryingMasker();
@@ -146,10 +148,15 @@ export function transcriptOf(body, generated, seen = new Set()) {
         return emit(indent, `image${cache(b)}${besides(b, ['type', 'source', 'cache_control'], Object.keys(fromSource).length ? { source: fromSource } : {})}`, `${src.media_type}${size ? ` ${size.width}×${size.height}` : ''}, ${count(bytes)} bytes`);
       }
       case 'tool_use': return emit(indent, `tool_use ${mask(String(b.id))} ${b.name}${cache(b)}${besides(b, ['type', 'id', 'name', 'input', 'cache_control'])}`, renderedJson(b.input ?? {}));
-      case 'tool_result':
-        emit(indent, `tool_result ${mask(String(b.tool_use_id))}${b.is_error === true ? ' (error)' : ''}${typeof b.content === 'string' ? ' (content as a string)' : ''}${cache(b)}${besides(b, ['type', 'tool_use_id', 'content', 'cache_control', ...(b.is_error === true ? ['is_error'] : [])])}`);
+      case 'tool_result': {
+        const form = [
+          ...(b.is_error === true ? ['(error)'] : 'is_error' in b ? [] : ['(no is_error)']),
+          ...(typeof b.content === 'string' ? [] : Array.isArray(b.content) ? ['(content as blocks)'] : b.content === undefined ? ['(no content)'] : [`(content ${JSON.stringify(mask(b.content))})`]),
+        ];
+        emit(indent, `tool_result ${mask(String(b.tool_use_id))}${form.map((f) => ` ${f}`).join('')}${cache(b)}${besides(b, ['type', 'tool_use_id', 'content', 'cache_control', ...(b.is_error === true || b.is_error === false ? ['is_error'] : [])])}`);
         for (const inner of blocksOf(b.content)) block(inner, indent + 1);
         return undefined;
+      }
       default: {
         const { cache_control: _c, ...rest } = b;
         return emit(indent, `${b.type}${cache(b)}`, stack(null, JSON.stringify(rest)));
@@ -172,5 +179,6 @@ export function transcriptOf(body, generated, seen = new Set()) {
     emit(0, `#${i} ${role}${cache(m)}${Object.keys(envelope).length ? ` ${JSON.stringify(mask(envelope))}` : ''}`);
     for (const b of blocksOf(m.content)) block(b, 1);
   });
+  if ((body.messages ?? []).some((m) => blocksOf(m.content).some((b) => b?.type === 'tool_result'))) lines.unshift(RESULT_FORM);
   return lines;
 }
