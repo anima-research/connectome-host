@@ -212,11 +212,19 @@ page's 400: "If thinking blocks are modified, the API returns a 400
 `invalid_request_error` whose message contains `thinking` or
 `redacted_thinking` blocks in the latest assistant message cannot be
 modified" (https://platform.claude.com/docs/en/build-with-claude/extended-thinking,
-`modifiedThinking`). The page says nothing of earlier messages. On a
-configuration whose model binds, a block whose signature no longer matches
-the request ahead of it is dropped where the request asks `drop_block`, as the
-host's binding requests do, and refused otherwise (`unbound` and
-`bindingRefusal`). The digests mask the signatures. The
+`modifiedThinking`). Where the model binds, the stand-in checks every
+assistant message's thinking this way, refusing an
+edited block with that error's wording at its own index. That wording names
+the latest message, and applying it to any message is the stand-in's own
+reading of the troubleshooting page, which says that where a signature
+"didn't verify", "`prefix_mismatch_behavior` doesn't apply. Edited thinking
+text returns a different error", without limiting that error to the latest
+message (https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting).
+Where the model doesn't bind, only the latest message is checked. On a
+configuration whose model binds, a block whose text verifies but whose
+signature no longer matches the request ahead of it is dropped where the
+request asks `drop_block`, as the host's binding requests do, and refused
+otherwise (`unbound` and `bindingRefusal`). The digests mask the signatures. The
 stand-in's summary of a request is seeded from the canaries it carried, and
 names the last of them, in an order of digit runs by number and the rest by
 code unit, which needs no collation data that could differ between machines.

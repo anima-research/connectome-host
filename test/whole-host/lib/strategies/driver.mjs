@@ -87,12 +87,12 @@ export function hostFacts({ hostDir, configuration }) {
   }
 }
 
-export async function lastTake({ boot, take, log, fail }) {
+export async function lastTake({ boot, take, log, fail, step = null }) {
   await take().catch((e) => {
     log('compiles', { boot, lost: String(e?.message ?? e) });
     const { shown, full } = cutError(e, 500);
     const said = `boot ${boot}'s last take of the module's compiles failed: `;
-    fail(full ? { step: null, reason: `${said}${shown}`, full: `${said}${full}` } : `${said}${shown}`);
+    fail({ step, reason: `${said}${shown}`, ...(full ? { full: `${said}${full}` } : {}) });
   });
 }
 
@@ -306,7 +306,7 @@ export async function runScript({ steps, configuration, standin, hostDir, facts,
   async function shutdown() {
     const b = host;
     if (!b) return;
-    if (b.module) await lastTake({ boot: b.n, take: takeCompiles, log, fail: (reason) => fail({ step: current?.id ?? null, reason }) });
+    if (b.module) await lastTake({ boot: b.n, take: takeCompiles, log, fail, step: current?.id ?? null });
     host = null;
     b.stopping = true;
     if (!b.exited) {

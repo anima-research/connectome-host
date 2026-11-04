@@ -394,13 +394,21 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
   }
   // The extended-thinking page: "If thinking blocks are modified, the API returns a 400 `invalid_request_error`
   // whose message contains `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be
-  // modified" (https://platform.claude.com/docs/en/build-with-claude/extended-thinking). It says nothing of earlier
-  // messages.
+  // modified" (https://platform.claude.com/docs/en/build-with-claude/extended-thinking). The troubleshooting page:
+  // where a signature "didn't verify: it was truncated, altered, or sent back empty", "`prefix_mismatch_behavior`
+  // doesn't apply. Edited thinking text returns a different error. See A 400 error says thinking blocks cannot be
+  // modified" (https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting), which doesn't limit
+  // edited text to the latest message. So where the model binds, and earlier thinking is replayed, an edited block in
+  // any assistant message is refused with that error's wording, and the binding check sees only blocks whose text
+  // verifies; elsewhere only the latest message is checked.
   function modifiedThinking(body) {
-    const i = body.messages.findLastIndex((m) => m.role === 'assistant');
-    if (i < 0) return null;
-    const j = blocksOf(body.messages[i].content).findIndex((b) => b.type === 'thinking' && !signs(b.signature, b.thinking ?? ''));
-    return j < 0 ? null : `messages.${i}.content.${j}: \`thinking\` or \`redacted_thinking\` blocks in the latest assistant message cannot be modified`;
+    const last = body.messages.findLastIndex((m) => m.role === 'assistant');
+    for (const [i, m] of body.messages.entries()) {
+      if (m.role !== 'assistant' || (i !== last && !config.binds)) continue;
+      const j = blocksOf(m.content).findIndex((b) => b.type === 'thinking' && !signs(b.signature, b.thinking ?? ''));
+      if (j >= 0) return `messages.${i}.content.${j}: \`thinking\` or \`redacted_thinking\` blocks in the latest assistant message cannot be modified`;
+    }
+    return null;
   }
   function bindingRefusal(body) {
     if (dropsUnbound(body)) return null;

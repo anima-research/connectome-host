@@ -98,10 +98,10 @@ test('R14: the self-check\'s second arm boots the test module with recording off
 test('a last take the module refuses at a host\'s shutdown fails the run, since the compiles since the last settle are lost, and logs the loss', async () => {
   const logged = [];
   const failed = [];
-  const at = { boot: 2, log: (kind, fields) => logged.push({ kind, ...fields }), fail: (reason) => failed.push(reason) };
+  const at = { boot: 2, step: '5.3', log: (kind, fields) => logged.push({ kind, ...fields }), fail: (f) => failed.push(f) };
   await lastTake({ ...at, take: async () => { throw new Error('the module stopped before flushing'); } });
   assert.deepEqual(logged, [{ kind: 'compiles', boot: 2, lost: 'the module stopped before flushing' }]);
-  assert.deepEqual(failed, ['boot 2\'s last take of the module\'s compiles failed: the module stopped before flushing']);
+  assert.deepEqual(failed, [{ step: '5.3', reason: 'boot 2\'s last take of the module\'s compiles failed: the module stopped before flushing' }], 'the run\'s own failure, as the shutdown passes the run\'s fail straight through');
   await lastTake({ ...at, take: async () => {} });
   assert.equal(failed.length, 1, 'a take that answers fails nothing');
 });
@@ -109,8 +109,10 @@ test('a last take the module refuses at a host\'s shutdown fails the run, since 
 test('a lost last take whose error is too long to show whole fails the run with its first 500 characters, and its whole message beside them', async () => {
   const failed = [];
   const message = `${'y'.repeat(600)}END`;
-  await lastTake({ boot: 3, log: () => {}, fail: (reason) => failed.push(reason), take: async () => { throw new Error(message); } });
-  const [f] = failed;
-  assert.equal(f.reason, `boot 3's last take of the module's compiles failed: ${message.slice(0, 500)}`);
-  assert.equal(f.full, `boot 3's last take of the module's compiles failed: ${message}`);
+  await lastTake({ boot: 3, step: '5.3', log: () => {}, fail: (f) => failed.push(f), take: async () => { throw new Error(message); } });
+  assert.deepEqual(failed, [{
+    step: '5.3',
+    reason: `boot 3's last take of the module's compiles failed: ${message.slice(0, 500)}`,
+    full: `boot 3's last take of the module's compiles failed: ${message}`,
+  }]);
 });

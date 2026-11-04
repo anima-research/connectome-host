@@ -877,28 +877,37 @@ test('T18: each message in a record has a digest that a cache marker on any of i
 });
 
 
-test('where the model binds, thinking a host changed is refused: in the latest assistant message with the page\'s 400, as on every configuration, and in an earlier one for its signature', () => withStandin({ binds: true }, async (s) => {
-  s.setStep({ ...step('g', [{ thinking: 'plan', calls: [{ name: 'fixture--result', input: { size: 300, kind: 'prose', canary: '[[c:g.call1]]' } }] }, { text: 'ok' }, { text: 'ok' }, { text: 'ok' }]), canaries: ['[[c:g.in]]', '[[c:g.call1]]'] });
-  const opening = agentBody({ canary: '[[c:g.in]]' });
-  const first = (await post(s.url, opening)).json;
-  const call = first.content.find((b) => b.type === 'tool_use');
-  const next = (reply) => ({
-    ...opening, messages: [
-      opening.messages[0],
-      { role: 'assistant', content: reply },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `[[c:g.call1]] ${prose(280)}` }] }] },
-    ],
-  });
-  assert.equal((await post(s.url, next(first.content))).status, 200, 'the block as it was minted is taken');
-  const altered = first.content.map((b) => (b.type === 'thinking' ? { ...b, thinking: `${b.thinking} (trimmed)` } : b));
-  const r = await post(s.url, next(altered));
-  assert.equal(r.status, 400);
-  assert.match(r.json.error.message, /^messages\.1\.content\.0: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified$/);
-  const later = { ...next(altered), messages: [...next(altered).messages, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, { role: 'user', content: [{ type: 'text', text: 'user: [[c:g.in]] and then' }] }] };
-  const earlier = await post(s.url, later);
-  assert.equal(earlier.status, 400);
-  assert.match(earlier.json.error.message, /^messages\.1\.content\.0: Invalid `signature` in `thinking` block/);
-}));
+test('T13e: where the model binds, thinking a host edited is refused with the page\'s 400 in any assistant message, under the drop control too, and a block whose text verifies but whose request changed is still refused, or set aside under the drop control', async () => {
+  const DROP = { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } };
+  const modified = (i) => `messages.${i}.content.0: \`thinking\` or \`redacted_thinking\` blocks in the latest assistant message cannot be modified`;
+  for (const control of [false, true]) {
+    await withStandin({ binds: true }, async (s) => {
+      s.setStep({ ...step('g', [{ thinking: 'plan', calls: [{ name: 'fixture--result', input: { size: 300, kind: 'prose', canary: '[[c:g.call1]]' } }] }, ...Array.from({ length: 6 }, () => ({ text: 'ok' }))]), canaries: ['[[c:g.in]]', '[[c:g.call1]]'] });
+      const opening = { ...agentBody({ canary: '[[c:g.in]]' }), ...(control ? { thinking: DROP } : {}) };
+      const first = (await post(s.url, opening)).json;
+      const call = first.content.find((b) => b.type === 'tool_use');
+      const next = (reply, prefix = opening.messages[0], more = []) => ({
+        ...opening, messages: [
+          prefix,
+          { role: 'assistant', content: reply },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `[[c:g.call1]] ${prose(280)}` }] }] },
+          ...more,
+        ],
+      });
+      const later = [{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, { role: 'user', content: [{ type: 'text', text: 'user: [[c:g.in]] and then' }] }];
+      assert.equal((await post(s.url, next(first.content))).status, 200, 'the block as it was minted is taken');
+      const altered = first.content.map((b) => (b.type === 'thinking' ? { ...b, thinking: `${b.thinking} (trimmed)` } : b));
+      const latest = await post(s.url, next(altered));
+      assert.deepEqual([latest.status, latest.json.error?.message], [400, modified(1)], 'edited in the latest assistant message');
+      const earlier = await post(s.url, next(altered, opening.messages[0], later));
+      assert.deepEqual([earlier.status, earlier.json.error?.message], [400, modified(1)], 'edited in an earlier one');
+      const changedPrefix = { role: 'user', content: [{ type: 'text', text: 'user: [[c:g.in]] something else entirely' }] };
+      const moved = await post(s.url, next(first.content, changedPrefix, later));
+      if (control) assert.equal(moved.status, 200, 'its text verifies, so only its request changed, and the drop control sets it aside');
+      else assert.deepEqual([moved.status, moved.json.error?.message], [400, 'messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation.']);
+    });
+  }
+});
 
 test('a request\'s head keeps its URL\'s query, so a move to an endpoint that adds one moves the record', async () => {
   const s = await startStandin({ configuration: { windowTokens: 50_000 } });
