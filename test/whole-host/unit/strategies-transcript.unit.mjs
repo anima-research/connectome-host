@@ -174,7 +174,40 @@ test('X7: a per-process image ref nonce and a fork call\'s UUID are masked, so t
   assert.deepEqual(one, two);
   assert.ok(one.includes('  text: [image: image/png, ~1KB, ref img_N1_7]'));
   assert.ok(one.includes('  tool_use fork-fork-x-UUID1 subagent--fork: {}'));
-  assert.ok(one.includes('  tool_result fork-fork-x-UUID1'));
+  assert.ok(one.includes('  tool_result fork-fork-x-UUID1 (content as a string)'));
   const crossed = of('img_k7x3q2_7', '0f8e2c1a-1b2c-4d5e-8f90-a1b2c3d4e5f6', '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d');
-  assert.ok(crossed.includes('  tool_result fork-fork-x-UUID2'), 'a result answering another fork is named apart');
+  assert.ok(crossed.includes('  tool_result fork-fork-x-UUID2 (content as a string)'), 'a result answering another fork is named apart');
+});
+
+test('X13: a block\'s fields its line doesn\'t otherwise show appear beside its type, masked as the message\'s digest masks them, and a result whose content went as a string says so', () => {
+  const generated = generatedTexts({ steps: [turn] });
+  const image = png(4, 3, () => 1);
+  const lines = transcriptOf(body([
+    { role: 'assistant', content: [
+      { type: 'thinking', thinking: 'plan', signature: 'fx1.abc', extra: 1 },
+      { type: 'redacted_thinking', data: 'abcd', extra: 2 },
+      { type: 'text', text: 'hello', citations: [{ ref: 'img_k7x3q2_7' }] },
+      { type: 'tool_use', id: 'toolu_1', name: 'time--now', input: {}, caller: { type: 'direct' } },
+    ] },
+    { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: [
+        { type: 'text', text: 'ok', cache_control: { type: 'ephemeral' }, extra: 3 },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: image, extra: 4 }, extra: 5 },
+      ] },
+      { type: 'tool_result', tool_use_id: 'toolu_1', is_error: true, content: 'failed' },
+    ] },
+  ]), generated);
+  assert.deepEqual(lines.slice(-11), [
+    '#0 assistant',
+    '  thinking signed {"extra":1}: plan',
+    '  redacted_thinking {"extra":2}: 4 chars',
+    '  text {"citations":[{"ref":"img_N1_7"}]}: hello',
+    '  tool_use toolu_1 time--now {"caller":{"type":"direct"}}: {}',
+    '#1 user',
+    '  tool_result toolu_1 {"is_error":false}',
+    '    text [cache 5m] {"extra":3}: ok',
+    `    image {"extra":5,"source":{"extra":4}}: image/png 4×3, ${Buffer.from(image, 'base64').length} bytes`,
+    '  tool_result toolu_1 (error) (content as a string)',
+    '    text: failed',
+  ]);
 });

@@ -123,25 +123,31 @@ export function transcriptOf(body, generated, seen = new Set()) {
   const cache = (b) => (b?.cache_control != null ? ` [cache ${markerOf(b.cache_control)}]` : '');
   const blocksOf = (content) => (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []);
 
+  const besides = (b, shown, more = {}) => {
+    const other = { ...Object.fromEntries(Object.entries(b).filter(([k]) => !shown.includes(k))), ...more };
+    return Object.keys(other).length ? ` ${JSON.stringify(mask(other))}` : '';
+  };
+
   const block = (b, indent) => {
     switch (b.type) {
-      case 'text': return emit(indent, `text${cache(b)}`, rendered(b.text ?? ''));
+      case 'text': return emit(indent, `text${cache(b)}${besides(b, ['type', 'text', 'cache_control'])}`, rendered(b.text ?? ''));
       case 'thinking': {
         const said = b.thinking ?? '';
-        return emit(indent, `thinking${cache(b)} ${typeof b.signature === 'string' && b.signature ? 'signed' : 'unsigned'}`, rendered(said));
+        return emit(indent, `thinking${cache(b)} ${typeof b.signature === 'string' && b.signature ? 'signed' : 'unsigned'}${besides(b, ['type', 'thinking', 'signature', 'cache_control'])}`, rendered(said));
       }
-      case 'redacted_thinking': return emit(indent, `redacted_thinking${cache(b)}`, `${count((b.data ?? '').length)} chars`);
+      case 'redacted_thinking': return emit(indent, `redacted_thinking${cache(b)}${besides(b, ['type', 'data', 'cache_control'])}`, `${count((b.data ?? '').length)} chars`);
       case 'image': {
         const src = b.source ?? {};
-        if (src.type !== 'base64') return emit(indent, `image${cache(b)}`, JSON.stringify(mask(src)));
+        if (src.type !== 'base64') return emit(indent, `image${cache(b)}${besides(b, ['type', 'source', 'cache_control'])}`, JSON.stringify(mask(src)));
         const data = src.data ?? '';
         const size = pngSize(data);
         const bytes = Math.floor((data.length * 3) / 4) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
-        return emit(indent, `image${cache(b)}`, `${src.media_type}${size ? ` ${size.width}×${size.height}` : ''}, ${count(bytes)} bytes`);
+        const fromSource = Object.fromEntries(Object.entries(src).filter(([k]) => !['type', 'media_type', 'data'].includes(k)));
+        return emit(indent, `image${cache(b)}${besides(b, ['type', 'source', 'cache_control'], Object.keys(fromSource).length ? { source: fromSource } : {})}`, `${src.media_type}${size ? ` ${size.width}×${size.height}` : ''}, ${count(bytes)} bytes`);
       }
-      case 'tool_use': return emit(indent, `tool_use ${mask(String(b.id))} ${b.name}${cache(b)}`, renderedJson(b.input ?? {}));
+      case 'tool_use': return emit(indent, `tool_use ${mask(String(b.id))} ${b.name}${cache(b)}${besides(b, ['type', 'id', 'name', 'input', 'cache_control'])}`, renderedJson(b.input ?? {}));
       case 'tool_result':
-        emit(indent, `tool_result ${mask(String(b.tool_use_id))}${b.is_error ? ' (error)' : ''}${cache(b)}`);
+        emit(indent, `tool_result ${mask(String(b.tool_use_id))}${b.is_error === true ? ' (error)' : ''}${typeof b.content === 'string' ? ' (content as a string)' : ''}${cache(b)}${besides(b, ['type', 'tool_use_id', 'content', 'cache_control', ...(b.is_error === true ? ['is_error'] : [])])}`);
         for (const inner of blocksOf(b.content)) block(inner, indent + 1);
         return undefined;
       default: {

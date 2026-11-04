@@ -345,7 +345,10 @@ what holds.
     very characters the run text goes on with, those characters show inside
     the span. A change there still shows, as a different span and the changed
     words;
-  - a message's fields besides its role and content, shown beside its role;
+  - a message's fields besides its role and content, shown beside its role,
+    and a block's fields besides those its line shows, shown beside its type,
+    each masked as the message's digest masks it, with a result whose content
+    went as a string rather than as blocks saying so;
   - a tool's definition already shown in that view is named again rather
     than repeated, and so is any other stack text of 200 characters or more;
     a shorter one always shows.
