@@ -185,8 +185,9 @@ isn't in context, so the digests name each such UUID the same way. So a
 request naming two image ledgers, or a call and a result naming different
 forks, still differs from one that names one. The naming goes by the text's
 form, so a text written in that form by anything else is named the same way.
-The stand-in's thinking signatures hash the request ahead of them, so the
-digests mask them.
+The stand-in's thinking signatures hash the request ahead of them and the
+thinking itself, and on a configuration whose model binds, the stand-in
+refuses a block whose signature no longer matches. The digests mask them.
 
 A store read the test module couldn't make is a line of its own,
 `unreadable messages: REASON`, `unreadable summaries: REASON` or

@@ -179,8 +179,6 @@ function bindingIdentity(body, beforeMessage) {
 
 const THINKING_CHARS = 600;
 
-// A signature covers what's ahead of its message and its own thinking, as the provider's does: either changed, it no
-// longer matches.
 const signatureFor = (identity, thinking) => `fx1.${Buffer.from(sha(`${identity}\n${thinking}`), 'hex').toString('base64url')}`;
 
 const systemText = (body) => (typeof body.system === 'string' ? body.system : (body.system || []).map((b) => b.text || '').join(''));
