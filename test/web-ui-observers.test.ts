@@ -1384,6 +1384,7 @@ describe('traces with observers connected', () => {
     dashboard.ws.send(JSON.stringify({ type: 'observer-hello', identity: helloFor(kp, `127.0.0.1:${port}`) }));
     await dashboard.until('welcome');
     emitTrace!(event());
+    fleet.handleFleetEvent('kid', event());
     expect(serialized).toBe(0);
 
     const operator = { origin: `http://127.0.0.1:${port}`, authorization: BASIC };
