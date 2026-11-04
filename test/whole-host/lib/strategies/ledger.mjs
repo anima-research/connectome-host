@@ -82,7 +82,6 @@ export function ledgerOf(log, line) {
 }
 
 export function moduleCounts(log, records, agent = FIXTURE_AGENT) {
-  // Each request compile call counts, so a refusal whose retry in the same assembly compiled counts as one of each.
   const calls = log.filter((e) => e.kind === 'compiles').flatMap((e) => (e.lines ?? []).filter((l) => l.kind === 'request'));
   const summariser = records.filter((r) => r.kind === 'summariser');
   const quarantine = new Map();

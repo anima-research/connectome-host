@@ -89,8 +89,6 @@ export class HarnessModule {
     for (const method of AGENT_COMPILES) {
       const original = proto[method];
       if (typeof original !== 'function' || original[WRAPPED]) continue;
-      // The context marks the request's compile only while the call is open: work it started that compiles after
-      // it settles isn't the request's.
       const wrapped = function (...args) {
         const caller = { agent: this.name, manager: this.getContextManager(), assembly: ++module.assemblies, open: true };
         const close = () => { caller.open = false; };
@@ -269,7 +267,6 @@ export class HarnessModule {
     this.sock = sock;
   }
 
-  // Whether any part of the take was unreadable, so a later take is still owed what this one couldn't read.
   takeDelta(store, name, manager) {
     const delta = storeDelta(manager, this.seen.get(name), this.blobs);
     this.seen.set(name, delta.seen);

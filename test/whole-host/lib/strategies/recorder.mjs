@@ -102,9 +102,6 @@ export function receiptHeadOf(manager) {
   }));
 }
 
-// A take with no earlier one for the manager in this process (`seen` undefined) lists the whole store and says so
-// (`whole`): the run's first take of it, or the first after a host restart, which the record compares with what it
-// already knows of the agent.
 export function storeDelta(manager, seen, blobs) {
   const out = {};
   if (seen === undefined) {

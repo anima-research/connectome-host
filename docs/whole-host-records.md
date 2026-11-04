@@ -30,8 +30,9 @@ when a run couldn't run.
   invocations, keyed by everything that writes them.
 - `--self-check` drives each run a second time with the test module's
   recording off, and fails a run whose requests differ: every record rests on
-  recording changing nothing the host sends. The driver sets `FIXTURE_RECORD`
-  for both arms, so a runner's own can't turn the recording arm off. An arm
+  recording changing nothing the host sends. With recording off the driver
+  sets `FIXTURE_RECORD=off`, and otherwise leaves it unset, dropping a
+  runner's own, so a runner's setting can't turn the recording arm off. An arm
   with recording off that logged compile batches anyway can't be judged, nor
   can one whose drive failed, and the summary names which arm. Where they
   differ, the first differing pair of request bodies is kept in the run's
@@ -163,13 +164,15 @@ the lines of requests are in the order the stand-in received them:
   line lets the view show the request.
 - **`action COMMAND`**: a host command the workload sent.
 - **`wrote NAME [T:…]`** and **`removed NAMES`**: a summary the store added or
-  changed, with its text, and those it removed. The driver reads each store
-  whole at every boot, before any step. What it lists at the first boot is
-  the store as the run began, so a checkpoint's summaries aren't written.
-  What it lists after a restart is compared with what the record knew, so a
-  summary the reloaded store lacks is `removed` at the restart's step, and a
-  message it lacks names nothing from then on. An agent first seen later in
-  the run, such as a subagent, has every summary it holds written.
+  changed, with its text, and those it removed. The driver takes the test
+  module's compiles as each boot becomes ready, before the steps that follow
+  it, and a manager's first take in a process lists its store whole. What it
+  lists at the first boot is the store as the run began, so a checkpoint's
+  summaries aren't written. What it lists after a restart is compared with
+  what the record knew, so a summary the reloaded store lacks is `removed` at
+  the restart's step, and a message it lacks names nothing from then on. An
+  agent first seen later in the run, such as a subagent, has every summary it
+  holds written.
 - **`checkpoint NAME`**: where the script took a checkpoint.
 
 The record ends with `end ok` or `end failed`, then each agent's last receipt,
@@ -189,11 +192,18 @@ The stand-in's thinking signatures hash the request ahead of them and the
 thinking itself. On a configuration whose model binds, a block whose
 signature no longer matches is dropped where the request asks `drop_block`,
 as the host's binding requests do, and refused otherwise
-(`standin.mjs`, `unbound` and `bindingRefusal`). The digests mask them.
+(`standin.mjs`, `unbound` and `bindingRefusal`). The digests mask them. The
+stand-in's summary of a request is seeded from the canaries it carried, and
+names the last of them, in an order of digit runs by number and the rest by
+code unit, which needs no collation data that could differ between machines.
 
 A store read the test module couldn't make is a line of its own,
 `unreadable messages: REASON`, `unreadable summaries: REASON` or
-`unreadable receipt: REASON`.
+`unreadable receipt: REASON`. An agent that has left agent-framework's
+registry, which deregisters an ephemeral agent at its run's end without
+closing its manager, is read from the manager kept from its compiles, until
+its compression ticks settle and while a take of it reads unreadable, so what
+a take couldn't read is still reported once it can be.
 
 A request's line, with the head in force for it, changes whenever what that
 request sends changes in a way the provider would read differently. Forms the
@@ -403,6 +413,9 @@ of them, and the checks' counts.
   agent's `compileWithInjections` or `compileContext`: only at a stream's
   start, a restart included (at the context budget, or the tool-result guard's
   retry), with a compile refused and repeated within one start counted once.
+  A compile is the request's only while agent-framework's call that assembles
+  the request is open; one that work the call started makes after the call
+  settles isn't the request's.
   Nothing in agent-framework's or connectome-host's own code calls
   `compileContext` or the direct inference API. A request compile that didn't
   go out while the agent's stream still had a round to send would pair with

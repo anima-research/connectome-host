@@ -37,8 +37,6 @@ function requestedLevel(instruction) {
 export const CANARY = /\[\[c:[^\]\s]+\]\]/g;
 export const SUMMARY = /\[\[s:M[0-9a-f]{8}\]\]/g;
 
-// Digit runs by number and the rest by code unit, so the order needs no collation data: on the 3,479 canaries of
-// the committed runs it is the order `localeCompare(b, 'en', { numeric: true })` gave.
 const canaryOrder = (a, b) => {
   const pa = a.match(/\d+|\D+/g) ?? [];
   const pb = b.match(/\d+|\D+/g) ?? [];
