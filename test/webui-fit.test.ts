@@ -66,6 +66,7 @@ describe('the notes', () => {
     expect(fitNote({ w: 2000, h: 1500, flattened: true }, { ...from, to: 'image/jpeg' }))
       .toBe('shrunk from 4000×3000 to 2000×1500 to fit, as a JPEG on white, which flattens any transparency');
     expect(fitNote({ w: 4000, h: 3000, flattened: false }, { ...from, type: 'image/bmp' })).toBe('converted from image/bmp to image/webp');
+    expect(fitNote({ w: 4000, h: 3000, flattened: false }, { ...from, type: 'image/webp' })).toBe('re-encoded as image/webp to fit');
   });
 
   test('a limit is given in base64 characters, exactly', () => {

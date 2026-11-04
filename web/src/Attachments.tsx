@@ -32,15 +32,6 @@ function readDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-/** A read of a picked file, which fails when the file changed or went away after it was picked. */
-async function readPicked<T>(name: string, read: () => Promise<T>): Promise<T> {
-  try {
-    return await read();
-  } catch {
-    throw new Error(`${name} couldn't be read; attach it again`);
-  }
-}
-
 async function loadImage(file: Blob): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(file);
   try {
@@ -77,10 +68,19 @@ async function redraw(img: HTMLImageElement, w: number, h: number): Promise<{ bl
 export async function prepareImage(file: File, limits: UserImageLimits): Promise<Attachment> {
   const L = limits;
   const name = file.name || 'pasted image';
+  // The file is read once, here: it can change or go away after it was
+  // picked, so what's drawn and sent is these bytes.
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch {
+    throw new Error(`${name} couldn't be read; attach it again`);
+  }
+  const bytes = new Uint8Array(buffer);
   // The type by the bytes, as the host reads it: a browser takes the type
   // from the file name.
-  const bytes = new Uint8Array(await readPicked(name, () => file.arrayBuffer()));
   const sniffed = sniffImageType(bytes);
+  const read = new Blob([buffer], { type: sniffed ?? file.type });
   // A browser draws what it has of a cut-short or damaged image.
   if (sniffed) {
     const damage = imageDamage(bytes, sniffed);
@@ -89,7 +89,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   const animated = sniffed !== undefined && isAnimated(bytes, sniffed);
   let img: HTMLImageElement;
   try {
-    img = await loadImage(file);
+    img = await loadImage(read);
   } catch {
     throw new Error(sniffed
       ? `${name} can't be drawn by this browser: it may be damaged, or in a form this browser can't decode; attach an intact copy, or convert it to PNG or JPEG`
@@ -99,8 +99,8 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   const height = img.naturalHeight;
   if (!width || !height) throw new Error(`${name} has no size to draw it at`);
 
-  if (sniffed && !animated && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(file.size) <= L.maxBase64Chars) {
-    const dataUrl = await readPicked(name, () => readDataUrl(file));
+  if (sniffed && !animated && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(bytes.length) <= L.maxBase64Chars) {
+    const dataUrl = await readDataUrl(read);
     const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
     return {
       id: `att${++attachmentSeq}`,
@@ -137,6 +137,21 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
 /** Whether a file may be an image: its type says so, or the browser didn't
  *  recognise its type, which is then empty, and its bytes decide. */
 export const mayBeImage = (f: File): boolean => f.type.startsWith('image/') || f.type === '';
+
+/** The files that are images: those whose type says so, and those of an
+ *  empty type whose first bytes are an image's. A folder's read fails. */
+export async function imageFiles(files: File[]): Promise<File[]> {
+  const kept = await Promise.all(files.map(async (f) => {
+    if (f.type.startsWith('image/')) return true;
+    if (f.type !== '') return false;
+    try {
+      return sniffImageType(new Uint8Array(await f.slice(0, 12).arrayBuffer())) !== undefined;
+    } catch {
+      return false;
+    }
+  }));
+  return files.filter((_, i) => kept[i]);
+}
 
 export function pastedImages(data: DataTransfer | null): File[] {
   if (!data) return [];

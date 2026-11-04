@@ -35,7 +35,7 @@ export function fitNote(fit: { w: number; h: number; flattened: boolean }, from:
   const alsoConverted = !fit.flattened && from.type !== from.to ? ` and ${converted}` : '';
   const what = fit.w !== from.width || fit.h !== from.height
     ? `shrunk from ${from.width}×${from.height} to ${fit.w}×${fit.h}${alsoConverted} to fit`
-    : converted;
+    : from.type === from.to ? `re-encoded as ${from.to} to fit` : converted;
   return fit.flattened ? `${what}, as a JPEG on white, which flattens any transparency` : what;
 }
 

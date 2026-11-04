@@ -22,7 +22,7 @@ import {
   type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
 } from './Health';
 import { BranchPanel } from './Branches';
-import { AttachmentStrip, dragHasFiles, mayBeImage, pastedImages, prepareImage, type Attachment } from './Attachments';
+import { AttachmentStrip, dragHasFiles, imageFiles, pastedImages, prepareImage, type Attachment } from './Attachments';
 import {
   isSyntheticId, markUnconfirmed, newCorrId, placeOf, refusedNote, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries,
   settleRefusal, unsentMark,
@@ -1240,7 +1240,7 @@ export function App() {
     setSendNote(null);
     if (preparing() === 0) setFileNotes([]);
     const notes: string[] = [];
-    const images = files.filter(mayBeImage);
+    const images = await imageFiles(files);
     if (images.length < files.length) notes.push(`${files.length - images.length} file(s) skipped: only images can be attached`);
     let overCount = 0;
     setPreparing((n) => n + images.length);

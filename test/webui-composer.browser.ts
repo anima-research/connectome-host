@@ -588,13 +588,22 @@ describe('a message is never lost', () => {
     });
   });
 
-  test("a welcome in a protocol this client doesn't speak marks a send still waiting for its echo not confirmed", async () => {
+  test("a welcome in a protocol this client doesn't speak marks a send still waiting for its echo not confirmed, and leaves a refused one as it was", async () => {
     await withComposer(async (c) => {
-      await send(c, 'quince');
+      await refusedWithDraft(c, 'apple');
+      const quince = await send(c, 'quince');
       expect(await rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count()).toBe(0);
       c.host.welcomeAgain({ protocolVersion: WEB_PROTOCOL_VERSION + 1 });
       await c.page.getByText(/^Protocol mismatch/).waitFor();
       await until('the unconfirmed mark', () => rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count(), (n) => n === 1);
+      expect(await rowsOf(c.page, 'apple').getByText(REFUSED).count()).toBe(1);
+      expect(await rowsOf(c.page, 'apple').getByText('refused by the scripted host').count()).toBe(1);
+      c.host.welcomeAgain();
+      await until('the banner gone', () => c.page.getByText(/^Protocol mismatch/).count(), (n) => n === 0);
+      expect(await rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count()).toBe(1);
+      c.host.append('quince', quince.corrId!);
+      await until('the echo in place of the row', () => c.page.getByText(UNCONFIRMED).count(), (n) => n === 0);
+      expect(await rowsOf(c.page, 'quince').count()).toBe(1);
     });
   });
 
@@ -779,20 +788,22 @@ describe('images', () => {
     }, { init: FAIL_GONE_READS });
   });
 
-  test("an image dropped or pasted with a file type the browser doesn't recognise is read by its bytes", async () => {
+  test("a file dropped or pasted with a type the browser doesn't recognise is read by its bytes, and one that isn't an image is skipped", async () => {
     await withComposer(async (c) => {
-      const untyped = (how: 'drop' | 'paste', name: string): Promise<void> => c.box.evaluate((box, [b64, how, name]) => {
+      const untyped = (how: 'drop' | 'paste', files: Array<[string, string]>): Promise<void> => c.box.evaluate((box, [files, how]) => {
         const dt = new DataTransfer();
-        dt.items.add(new File([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], name, { type: '' }));
+        for (const [name, b64] of files) dt.items.add(new File([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], name, { type: '' }));
         box.dispatchEvent(how === 'drop'
           ? new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })
           : new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      }, [DOT_PNG.toString('base64'), how, name] as const);
-      await untyped('drop', 'dot.unknown');
+      }, [files, how] as const);
+      const png = DOT_PNG.toString('base64');
+      await untyped('drop', [['dot.unknown', png], ['notes.unknown', Buffer.from('not an image at all').toString('base64')]]);
       await c.page.getByTitle(/^dot\.unknown/).waitFor();
-      await untyped('paste', 'pasted.unknown');
+      await c.page.getByText('1 file(s) skipped: only images can be attached').waitFor();
+      expect(await c.page.getByText(/notes\.unknown/).count()).toBe(0);
+      await untyped('paste', [['pasted.unknown', png]]);
       await c.page.getByTitle(/^pasted\.unknown/).waitFor();
-      expect(await c.page.getByText(/skipped/).count()).toBe(0);
       const frame = await send(c, 'by its bytes');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/png', 'image/png']);
     });
