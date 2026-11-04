@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { repairMarks, startStandin, tokensSent } from '../lib/strategies/standin.mjs';
+import { countTokens, repairMarks, startStandin, tokensSent } from '../lib/strategies/standin.mjs';
 
 const TOOLS = [{ name: 'time--now', description: 'now', input_schema: { type: 'object', properties: {} } }];
 const NOTE = '[host note: this message arrived over IPC and carries no channel locus.]';
@@ -26,7 +26,7 @@ const prose = (n, seed = 1) => {
   return s.slice(0, n);
 };
 
-function agentBody({ canary, history = [], model = 'claude-sonnet-4-5', stream = true, max_tokens = 2048, tail = [], extra = {} }) {
+function agentBody({ canary, history = [], model = 'claude-opus-5-5', stream = true, max_tokens = 2048, tail = [], extra = {} }) {
   return {
     model, max_tokens, stream, system: 'You are the fixture agent.', tools: TOOLS,
     messages: [...history, { role: 'user', content: [{ type: 'text', text: `user: ${canary} ${prose(300)}` }, { type: 'text', text: NOTE }, ...tail] }],
@@ -34,7 +34,7 @@ function agentBody({ canary, history = [], model = 'claude-sonnet-4-5', stream =
   };
 }
 
-function summariserBody({ canaries = ['[[c:x.1]]'], summaries = [], instruction = CHAT, model = 'claude-sonnet-4-5', max_tokens = 16000, textChars = 400 }) {
+function summariserBody({ canaries = ['[[c:x.1]]'], summaries = [], instruction = CHAT, model = 'claude-opus-5-5', max_tokens = 16000, textChars = 400 }) {
   const messages = [];
   for (const s of summaries) {
     messages.push({ role: 'user', content: [{ type: 'text', text: 'Context Manager: [CM] Recall memory L2-6.' }] });
@@ -118,7 +118,7 @@ test('T1/T3: a tool round\'s second request is the step\'s when its last message
   const first = await post(s.url, agentBody({ canary: '[[c:t.in]]' }));
   const call = first.json.content.find((b) => b.type === 'tool_use');
   const second = {
-    model: 'claude-sonnet-4-5', max_tokens: 2048, stream: true, system: 'You are the fixture agent.', tools: TOOLS,
+    model: 'claude-opus-5-5', max_tokens: 2048, stream: true, system: 'You are the fixture agent.', tools: TOOLS,
     messages: [
       { role: 'user', content: [{ type: 'text', text: 'user: [[c:t.in]] go' }] },
       { role: 'assistant', content: first.json.content },
@@ -367,9 +367,86 @@ test('T12: a cache entry is the model\'s own', () => withStandin({}, async (s) =
   s.setStep(step('cm', [{ text: 'a' }, { text: 'b' }]));
   const h = [{ role: 'user', content: [{ type: 'text', text: prose(4000, 5), cache_control: { type: 'ephemeral' } }] }, { role: 'assistant', content: [{ type: 'text', text: 'x' }] }];
   await post(s.url, agentBody({ canary: '[[c:cm.in]]', history: h }));
-  const other = await post(s.url, agentBody({ canary: '[[c:cm.in]]', history: h, model: 'claude-opus-4-5' }));
+  const other = await post(s.url, agentBody({ canary: '[[c:cm.in]]', history: h, model: 'claude-opus-4-6' }));
   assert.equal(other.json.usage.cache_read_input_tokens, 0);
 }));
+
+test('T12: the messages cache keys on the thinking configuration\'s mode and budget, and the tools and system caches don\'t', () => withStandin({}, async (s) => {
+  s.setStep(step('tk', Array.from({ length: 6 }, (_, i) => ({ text: `r${i}` }))));
+  const ask = async (thinking) => {
+    const body = agentBody({ canary: '[[c:tk.in]]', history: [
+      { role: 'user', content: [{ type: 'text', text: `user: ${prose(4000, 5)}` }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'stored reply', cache_control: { type: 'ephemeral' } }] },
+    ], extra: thinking ? { thinking } : {} });
+    body.system = [{ type: 'text', text: `You are the fixture agent. ${prose(3000, 9)}`, cache_control: { type: 'ephemeral' } }];
+    const r = await post(s.url, body);
+    assert.equal(r.status, 200);
+    return r.json.usage;
+  };
+  const first = await ask(null);
+  assert.ok(first.cache_creation_input_tokens > 0 && first.cache_read_input_tokens === 0, 'premise: the system and the messages are written');
+  const whole = (await ask(null)).cache_read_input_tokens;
+  assert.equal(whole, first.cache_creation_input_tokens, 'premise: the same request reads both');
+  const adaptive = await ask({ type: 'adaptive' });
+  assert.ok(adaptive.cache_read_input_tokens > 0 && adaptive.cache_read_input_tokens < whole, `a new mode reads the system's prefix only (${adaptive.cache_read_input_tokens} of ${whole})`);
+  assert.equal((await ask({ type: 'adaptive', display: 'summarized' })).cache_read_input_tokens, whole, 'the same mode with another display reads what it wrote');
+  assert.equal((await ask({ type: 'enabled', budget_tokens: 1024 })).cache_read_input_tokens, adaptive.cache_read_input_tokens, 'another mode reads the system\'s prefix only');
+  assert.equal((await ask({ type: 'enabled', budget_tokens: 2048 })).cache_read_input_tokens, adaptive.cache_read_input_tokens, 'and so does another budget');
+}));
+
+test('T12: the messages cache keys on whether any image is sent, in a message or a tool result, and the tools and system caches don\'t', () => withStandin({}, async (s) => {
+  s.setStep(step('im', Array.from({ length: 6 }, (_, i) => ({ text: `r${i}` }))));
+  const IMAGE = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+  const ask = async (tail) => {
+    const body = agentBody({ canary: '[[c:im.in]]', tail, history: [
+      { role: 'user', content: [{ type: 'text', text: `user: ${prose(4000, 5)}` }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'stored reply', cache_control: { type: 'ephemeral' } }] },
+    ] });
+    body.system = [{ type: 'text', text: `You are the fixture agent. ${prose(3000, 9)}`, cache_control: { type: 'ephemeral' } }];
+    const r = await post(s.url, body);
+    assert.equal(r.status, 200);
+    return r.json.usage;
+  };
+  const first = await ask([]);
+  const whole = (await ask([])).cache_read_input_tokens;
+  assert.ok(whole > 0 && whole === first.cache_creation_input_tokens, 'premise: the same request reads what the first wrote');
+  const inResult = await ask([{ type: 'tool_result', tool_use_id: 'x', content: [IMAGE] }]);
+  assert.ok(inResult.cache_read_input_tokens > 0 && inResult.cache_read_input_tokens < whole, `an image in a tool result after the marker reads the system's prefix only (${inResult.cache_read_input_tokens} of ${whole})`);
+  assert.equal((await ask([IMAGE])).cache_read_input_tokens, whole, 'an image in a message reads what that request wrote');
+  assert.equal((await ask([])).cache_read_input_tokens, whole, 'and the request without one still reads its own');
+}));
+
+test('T12: a marked prefix shorter than its model\'s minimum isn\'t written: 4,096 tokens for Claude Opus 4.6, 512 for Claude Opus 5.5', () => withStandin({}, async (s) => {
+  s.setStep(step('mn', Array.from({ length: 8 }, (_, i) => ({ text: `r${i}` }))));
+  const marked = (model, chars) => agentBody({ canary: '[[c:mn.in]]', model, history: [{ role: 'user', content: [{ type: 'text', text: `user: ${prose(chars, 4)}` }] }, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }], tail: [{ type: 'text', text: 'end', cache_control: { type: 'ephemeral' } }] });
+  for (const [model, minimum, under, over] of [['claude-opus-4-6', 4096, 7000, 10_000], ['claude-opus-5-5', 512, 200, 1600]]) {
+    const short = marked(model, under);
+    const long = marked(model, over);
+    assert.ok(countTokens(short) < minimum && countTokens(long) >= minimum, `premise: ${countTokens(short)} under ${minimum}, ${countTokens(long)} not`);
+    const shortUsage = (await post(s.url, short)).json.usage;
+    assert.equal(shortUsage.cache_creation_input_tokens, 0, `${model}: a ${countTokens(short)}-token prefix isn't written`);
+    assert.equal(shortUsage.input_tokens, countTokens(short), 'and goes as input');
+    assert.equal((await post(s.url, short)).json.usage.cache_read_input_tokens, 0, 'so nothing reads it');
+    assert.equal((await post(s.url, long)).json.usage.cache_creation_input_tokens, countTokens(long), `${model}: a ${countTokens(long)}-token prefix is written`);
+  }
+}));
+
+test('T1/T12: a request carrying a field the stand-in\'s cache doesn\'t model, or naming a model it knows no minimum for, is refused as unclassified, naming it; its record keeps its head', async () => {
+  const s = await startStandin({ configuration: { windowTokens: 50_000 } });
+  let records = null;
+  try {
+    s.setStep(step('uf'));
+    for (const [extra, named] of [[{ tool_choice: { type: 'auto' } }, '`tool_choice`'], [{ speed: 'fast' }, '`speed`'], [{ output_config: { effort: 'high' } }, '`output_config`'], [{ model: 'claude-sonnet-4-5' }, 'claude-sonnet-4-5']]) {
+      const r = await post(s.url, agentBody({ canary: '[[c:uf.in]]', extra }));
+      assert.equal(r.status, 400);
+      assert.ok(r.json.error.message.includes(named), `${r.json.error.message} names ${named}`);
+    }
+    records = await s.close();
+  } finally { if (!records) await s.close(); }
+  assert.deepEqual(records.map((r) => r.kind), ['unclassified', 'unclassified', 'unclassified', 'unclassified']);
+  assert.deepEqual(records[0].head.toolChoice, { type: 'auto' });
+  assert.match(records[1].head.rest, /^[0-9a-f]{16}$/);
+});
 
 test('T13: when the model binds thinking, a block whose request changed is refused, or set aside uncounted under the drop control; otherwise it\'s taken', async () => {
   const DROP = { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } };
@@ -427,10 +504,10 @@ test('T25: each request\'s record carries its head, everything it sends but its 
       { ...base, tools: base.tools.map((t, i) => (i === 0 ? { ...t, description: `${t.description} (changed)` } : t)) },
       { ...base, system: [{ type: 'text', text: base.system, cache_control: { type: 'ephemeral', ttl: '1h' } }] },
       { ...base, thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } } },
-      { ...base, tool_choice: { type: 'auto' }, metadata: { user_id: 'u' } },
+      { ...base, metadata: { user_id: 'u' } },
     ];
     for (const v of variants) assert.equal((await post(s.url, v)).status, 200);
-    assert.equal((await post(s.url, { ...base, tool_choice: { type: 'auto' }, metadata: { user_id: 'v' } })).status, 200);
+    assert.equal((await post(s.url, { ...base, metadata: { user_id: 'v' } })).status, 200);
     assert.equal((await post(s.url, base, '/v1/messages', { 'anthropic-beta': 'b2-2026, b1-2026,b2-2026' })).status, 200);
     assert.equal((await post(s.url, { ...base, system: [{ type: 'text', text: base.system, citations: { enabled: true } }] })).status, 200);
     assert.equal((await post(s.url, { ...base, system: [{ type: 'text', text: base.system, citations: { enabled: false } }] })).status, 200);
@@ -444,7 +521,6 @@ test('T25: each request\'s record carries its head, everything it sends but its 
   assert.notEqual(tool.head.tools[0].sha, same.head.tools[0].sha, 'a tool\'s description moves its definition\'s digest');
   assert.deepEqual(system.head.system, [{ text: same.head.system[0].text, cache: '1h' }], 'a system block keeps its text and its marker');
   assert.deepEqual(thinking.head.thinking, { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
-  assert.deepEqual(more.head.toolChoice, { type: 'auto' });
   assert.equal(same.head.rest, null, 'nothing else on the body');
   assert.match(more.head.rest, /^[0-9a-f]{16}$/, 'a field no part names is still digested');
   assert.notEqual(otherUser.head.rest, more.head.rest, 'by its value');
@@ -534,7 +610,7 @@ test('T7/T14/T15: summariser requests are answered at once, every arrival is rep
   const records = await s.close();
   const [summ, agent] = records;
   assert.equal(agent.kind, 'agent');
-  assert.equal(agent.model, 'claude-sonnet-4-5');
+  assert.equal(agent.model, 'claude-opus-5-5');
   assert.equal(agent.maxTokens, 2048);
   assert.equal(agent.stream, true);
   assert.equal(agent.system.chars, 'You are the fixture agent.'.length);
@@ -553,8 +629,9 @@ test('T28: with a raw directory, each answer\'s content goes beside its request 
     const s = await startStandin({ configuration: { windowTokens: 50_000 }, rawDir });
     s.setStep(step('w', [{ text: '[[c:w.r1]] noted', thinking: 'a thought' }, { text: '[[c:w.r2]] again' }]));
     const summBody = summariserBody({ canaries: ['[[c:w.in]]'] });
-    const marked = agentBody({ canary: '[[c:w.in]]' });
+    const marked = agentBody({ canary: '[[c:w.in]]', history: [{ role: 'user', content: [{ type: 'text', text: `user: ${prose(2000, 4)}` }] }, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }] });
     marked.messages.at(-1).content.at(-1).cache_control = { type: 'ephemeral' };
+    assert.ok(countTokens(marked) >= 512, 'premise: the marked prefix is over the model\'s minimum');
     const refusedBody = agentBody({ canary: '[[c:other.in]]' });
     const summ = await post(s.url, summBody);
     const agent = await post(s.url, marked);
@@ -694,7 +771,7 @@ test('T18: each message in a record has a digest that a cache marker on any of i
   let records = null;
   try {
     standin.setStep({ ...step('d', [{ text: '[[c:d.r1]] calling', calls: [{ name: 'fixture--result', input: { size: 300, kind: 'prose', canary: '[[c:d.call1]]' } }, { name: 'fixture--result', input: { size: 300, kind: 'prose', canary: '[[c:d.call2]]' } }] }, { text: '[[c:d.r2]] done' }, { text: '[[c:d.r3]] again' }]), canaries: ['[[c:d.in]]', '[[c:d.call1]]'] });
-    const head = { model: 'claude-sonnet-4-5', max_tokens: 2048, stream: true, system: 'You are the fixture agent.', tools: TOOLS };
+    const head = { model: 'claude-opus-5-5', max_tokens: 2048, stream: true, system: 'You are the fixture agent.', tools: TOOLS };
     const opening = (ref, marked) => ({ role: 'user', content: [{ type: 'text', text: `user: [[c:d.in]] look at ${ref}`, ...(marked ? { cache_control: { type: 'ephemeral' } } : {}) }] });
     const first = await post(standin.url, { ...head, messages: [opening('img_abc123_4', false)] });
     const ids = first.json.content.filter((b) => b.type === 'tool_use').map((b) => b.id);

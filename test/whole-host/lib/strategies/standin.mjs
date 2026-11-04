@@ -57,6 +57,12 @@ const MESSAGE_OVERHEAD = 4;
 // https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 const FIVE_MINUTES = 5 * 60_000;
 const ONE_HOUR = 60 * 60_000;
+// The provider's minimum cacheable prompt length, by model: a shorter prefix isn't cached, even marked
+// ("Cache limitations", https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+const CACHE_MINIMUM = { 'claude-opus-4-6': 4096, 'claude-opus-5-5': 512 };
+// The same page's "What invalidates the cache" also keys the messages cache on `tool_choice` and
+// `output_config.effort`, and the system and messages caches on `speed`.
+const UNMODELLED = ['tool_choice', 'speed', 'output_config'];
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const sorted = (v) => (Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v);
@@ -131,6 +137,7 @@ const unmarked = (v) => {
   return Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'cache_control').map(([k, x]) => [k, k === 'input' ? x : unmarked(x)]));
 };
 const blocksOf = (content) => (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []);
+const holdsImage = (blocks) => blocks.some((b) => b?.type === 'image' || (b?.type === 'tool_result' && holdsImage(blocksOf(b.content))));
 
 // The provider caches a request's prefix in the order it reads it: tools, then system, then messages.
 function elements(body) {
@@ -142,6 +149,12 @@ function elements(body) {
   };
   for (const tool of body.tools || []) push({ tool }, Math.ceil(JSON.stringify(unmarked(tool)).length / RATE.json), tool.cache_control);
   for (const block of typeof body.system === 'string' ? [{ type: 'text', text: body.system }] : body.system || []) push({ system: block }, blockTokens(block), block.cache_control);
+  // Changing the thinking configuration (its mode and budget_tokens), or adding or removing images anywhere in the
+  // prompt, invalidates the messages cache; the page names no model that renders thinking ahead of tools and system
+  // ("What invalidates the cache", and "Thinking and prompt caching" at
+  // https://platform.claude.com/docs/en/build-with-claude/thinking).
+  const images = (body.messages || []).some((m) => holdsImage(blocksOf(m.content)));
+  h = sha(h + JSON.stringify([body.thinking?.type ?? null, body.thinking?.budget_tokens ?? null, images]));
   for (const [i, m] of (body.messages || []).entries()) {
     const blocks = blocksOf(m.content);
     blocks.forEach((block, j) => push({ message: i, role: m.role, block }, blockTokens(block) + (j === 0 ? MESSAGE_OVERHEAD : 0), block.cache_control));
@@ -283,7 +296,7 @@ export function tokensSent(records) {
 const summariserTexts = (body, mask) => (body.messages || []).flatMap((m) => blocksOf(m.content).filter((b) => b.type === 'text' && !(b.text || '').match(CANARY)).map((b) => mask(b.text || '')));
 
 export async function startStandin({ configuration, rawDir = null, refuseMerges = false, rejectMerges = false }) {
-  const config = { minCacheTokens: 0, ...configuration };
+  const config = { ...configuration };
   const t0 = performance.now();
   const records = [];
   const listeners = [];
@@ -319,7 +332,7 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
     const split = { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 };
     let written = read;
     for (const m of markers) {
-      if (m <= readAt || cum[m] < config.minCacheTokens) continue;
+      if (m <= readAt || cum[m] < CACHE_MINIMUM[body.model]) continue;
       const ttl = els[m].marker.ttl === '1h' ? ONE_HOUR : FIVE_MINUTES;
       cache.set(els[m].hash, { expiresAt: clock + ttl, ttl });
       split[ttl === ONE_HOUR ? 'ephemeral_1h_input_tokens' : 'ephemeral_5m_input_tokens'] += cum[m] - written;
@@ -331,6 +344,9 @@ export async function startStandin({ configuration, rawDir = null, refuseMerges 
 
   function classify(body) {
     if (!body || typeof body !== 'object' || !Array.isArray(body.messages) || body.messages.length === 0) return { kind: 'unclassified', reason: 'no messages' };
+    const unmodelled = UNMODELLED.find((k) => Object.hasOwn(body, k));
+    if (unmodelled) return { kind: 'unclassified', reason: `it carries \`${unmodelled}\`, which the stand-in's prompt cache doesn't model` };
+    if (CACHE_MINIMUM[body.model] === undefined) return { kind: 'unclassified', reason: `the stand-in knows no minimum cacheable length for the model ${body.model}` };
     if (body.max_tokens === 0) return { kind: 'unclassified', reason: 'max_tokens 0, the shape of a cache keepalive refresh' };
     const last = body.messages.at(-1);
     const lastBlock = blocksOf(last.content).at(-1);

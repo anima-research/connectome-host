@@ -197,6 +197,38 @@ stand-in's summary of a request is seeded from the canaries it carried, and
 names the last of them, in an order of digit runs by number and the rest by
 code unit, which needs no collation data that could differ between machines.
 
+The stand-in prices the prompt cache by its own model of the provider's, from
+the prompt-caching page
+(https://platform.claude.com/docs/en/build-with-claude/prompt-caching) and the
+thinking page's "Thinking and prompt caching"
+(https://platform.claude.com/docs/en/build-with-claude/thinking). It reads a
+request's prefix as tools, then system, then messages. It reads back the
+longest prefix it holds unexpired that ends at a cache marker or at one of the
+20 blocks before one, and writes each later marker's prefix for its own
+lifetimes of 5 minutes or an hour. It doesn't write a prefix shorter than the
+model's minimum cacheable length ("Cache limitations": 4,096 tokens for Claude
+Opus 4.6 and 512 for Claude Opus 5.5), measured in its own pricing. The
+messages' prefixes key on the thinking configuration, its mode and
+`budget_tokens`, which the prompt-caching page says is rendered into the
+prompt, so changing it always invalidates the messages cache. Tools and
+system don't key on it: that page says they're invalidated too "on models
+that render the configuration ahead of them", and neither page names one.
+The key is the configuration as sent, so a request that sends its model's
+default explicitly reads as a change, where the thinking page says setting a
+parameter to its default is the same as omitting it. The messages' prefixes
+also key on whether the request sends any image, in a message or a tool
+result, since the prompt-caching page says adding or removing images anywhere
+in the prompt invalidates the messages cache.
+
+The prompt-caching page's "What invalidates the cache" also keys the
+messages cache on `tool_choice` and `output_config.effort`, and the system
+and messages caches on `speed`. No run sends any of them, so the stand-in
+refuses a request that carries `tool_choice`, `speed` or `output_config` as
+unclassified, naming the field, and the run fails. It does the same for a
+model it knows no minimum for. So a host change that starts sending one stops
+the runs, naming it, rather than reading as a cache read the provider
+wouldn't give.
+
 A store read the test module couldn't make is a line of its own,
 `unreadable messages: REASON`, `unreadable summaries: REASON` or
 `unreadable receipt: REASON`. An agent that has left agent-framework's
