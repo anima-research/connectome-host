@@ -117,3 +117,4 @@ step 321741.20
   compile + 321741.20.r1 [T:user-tool-result-withheld-2ad3e56344a8], body 7eb677eb
 end ok
 totals {"actions":3,"calls":1,"compiles":42,"dry":6,"other":1,"refused":0,"rounds":7,"unjudged":{"budget: PassthroughStrategy gives no render stats":47},"written":0}
+judged 1 every turn answers 50, 2 declared products 0, 3 request shape 50, 3 budgets 48, 6 windows raw 46, 10 calibration edge 0, 11 compile invariants 49, 12 reloads 1, 13 pairing fixture 41, 13 pairing fork-321741-d1-1767690002000 1, 14 property 1

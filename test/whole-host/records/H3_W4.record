@@ -19,3 +19,4 @@ step 375550.4
   round + 375550.4.r1 375550.4.call1, body 7d396461
 end ok
 totals {"actions":0,"calls":0,"compiles":4,"dry":0,"other":0,"refused":0,"rounds":4,"unjudged":{"budget: PassthroughStrategy gives no render stats":4},"written":0}
+judged 1 every turn answers 8, 2 declared products 0, 3 request shape 8, 3 budgets 8, 6 windows raw 6, 10 calibration edge 0, 11 compile invariants 4, 12 reloads 0, 13 pairing fixture 4, 14 property 16

@@ -190,3 +190,4 @@ step 265160.21
 end ok
 receipt fixture #91 changes 265160.20.r1/raw/0/91 265160.20.call1/raw/0/91 265160.20.r2/raw/0/91 265160.20.r2+1/raw/0/91 265160.21.in/raw/0/91
 totals {"actions":0,"calls":20,"compiles":21,"dry":0,"other":0,"refused":0,"rounds":21,"written":10}
+judged 1 every turn answers 62, 2 declared products 0, 3 request shape 62, 3 budgets 42, 4 coverage 42, 5 bookkeeping 5, 6 windows raw 40, 10 calibration edge 1, 11 compile invariants 21, 12 reloads 0, 13 pairing fixture 21, 14 property 62

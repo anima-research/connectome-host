@@ -549,3 +549,4 @@ step 527191.70
 end ok
 receipt fixture #70 changes 527191.69.r1/raw/0/70 527191.69.call1/raw/0/70 527191.69.r2/raw/0/70 527191.69.call2/raw/0/70 527191.69.r3/raw/0/70 527191.69.call3/raw/0/70 527191.69.r4/raw/0/70 527191.69.r4+1/raw/0/70 527191.70.in/raw/0/70
 totals {"actions":0,"calls":87,"compiles":70,"dry":0,"other":0,"refused":0,"rounds":122,"written":87}
+judged 1 every turn answers 279, 2 declared products 0, 3 request shape 279, 3 budgets 192, 4 coverage 192, 5 bookkeeping 87, 6 windows raw 188, 10 calibration edge 1, 11 compile invariants 70, 12 reloads 0, 13 pairing fixture 70, 14 property 1

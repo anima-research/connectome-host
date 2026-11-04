@@ -347,3 +347,4 @@ step 405389.20
   wrote L2(405389.14.r2-405389.15.r2+1) [T:summary-l2-3fc4af14f0c0]
 end ok
 totals {"actions":3,"calls":40,"compiles":29,"dry":6,"other":1,"refused":0,"rounds":23,"written":41}
+judged 1 every turn answers 92, 2 declared products 0, 3 request shape 92, 3 budgets 51, 4 coverage 49, 5 bookkeeping 35, 6 windows raw 49, 10 calibration edge 1, 11 compile invariants 36, 12 reloads 1, 13 pairing fixture 28, 13 pairing fork-405389-d1-1767690002000 1, 14 property 1

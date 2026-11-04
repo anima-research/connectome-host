@@ -140,3 +140,4 @@ step 232330.14
 end ok
 receipt fixture #84 changes 232330.13.r1/raw/0/84 232330.13.call1/raw/0/84 232330.13.r2/raw/0/84 232330.13.r2+1/raw/0/84 232330.14.in/raw/0/84
 totals {"actions":0,"calls":7,"compiles":15,"dry":0,"other":0,"refused":0,"rounds":14,"written":7}
+judged 1 every turn answers 36, 2 declared products 0, 3 request shape 36, 3 budgets 28, 4 coverage 29, 5 bookkeeping 4, 6 windows raw 27, 10 calibration edge 1, 11 compile invariants 15, 12 reloads 0, 13 pairing fixture 15, 14 property 20

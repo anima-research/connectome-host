@@ -126,3 +126,4 @@ step 310022.12
   round + 310022.12.r1 310022.12.call1 310022.12.call2, body 0293d75b
 end ok
 totals {"actions":0,"calls":7,"compiles":12,"dry":3,"other":0,"refused":0,"rounds":15,"written":7}
+judged 1 every turn answers 34, 2 declared products 0, 3 request shape 34, 3 budgets 27, 4 coverage 27, 5 bookkeeping 4, 6 windows raw 24, 10 calibration edge 1, 11 compile invariants 15, 12 reloads 0, 13 pairing fixture 12, 14 property 28

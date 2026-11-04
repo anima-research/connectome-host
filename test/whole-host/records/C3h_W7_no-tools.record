@@ -92,3 +92,4 @@ step 634200.32
   compile + 634200.31.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.32.in ^ 4, body d3adb2b7
 end ok
 totals {"actions":0,"calls":2,"compiles":32,"dry":0,"other":0,"refused":0,"rounds":0,"written":2}
+judged 1 every turn answers 34, 2 declared products 0, 3 request shape 34, 3 budgets 32, 4 coverage 32, 5 bookkeeping 2, 6 windows raw 31, 10 calibration edge 1, 11 compile invariants 32, 12 reloads 0, 13 pairing fixture 32, 14 property 34

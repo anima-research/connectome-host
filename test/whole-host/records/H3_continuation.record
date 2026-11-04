@@ -41,3 +41,4 @@ step c.debt
 checkpoint debt
 end ok
 totals {"actions":1,"calls":0,"compiles":8,"dry":0,"other":0,"refused":0,"rounds":7,"unjudged":{"budget: PassthroughStrategy gives no render stats":8},"written":0}
+judged 1 every turn answers 15, 2 declared products 4, 3 request shape 15, 3 budgets 15, 6 windows raw 14, 10 calibration edge 0, 11 compile invariants 8, 12 reloads 0, 13 pairing fixture 8, 14 property 4

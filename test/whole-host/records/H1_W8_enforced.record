@@ -155,3 +155,4 @@ step 883651.16
 end ok
 receipt fixture #85 changes 883651.15.r1/raw/0/85 883651.15.call1/raw/0/85 883651.15.r2/raw/0/85 883651.15.r2+1/raw/0/85 883651.16.in/raw/0/85
 totals {"actions":0,"calls":8,"compiles":15,"dry":0,"other":0,"refused":4,"rounds":15,"written":8}
+judged 1 every turn answers 38, 2 declared products 0, 3 request shape 38, 3 budgets 30, 4 coverage 30, 5 bookkeeping 4, 6 windows raw 28, 10 calibration edge 1, 11 compile invariants 15, 12 reloads 0, 13 pairing fixture 15, 14 property 2

@@ -170,3 +170,4 @@ step 384373.21
   wrote L1(384373.7.r3-384373.8.call1) [T:summary-l1-ca8a4127a850]
 end ok
 totals {"actions":0,"calls":31,"compiles":21,"dry":0,"other":0,"refused":0,"rounds":38,"written":16}
+judged 1 every turn answers 90, 2 declared products 0, 3 request shape 90, 3 budgets 59, 4 coverage 59, 5 bookkeeping 16, 6 windows raw 55, 10 calibration edge 1, 11 compile invariants 21, 12 reloads 0, 13 pairing fixture 21, 14 property 15

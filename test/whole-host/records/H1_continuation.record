@@ -133,3 +133,4 @@ checkpoint debt
 end ok
 receipt fixture #57 changes c.think.r1/raw/0/57 c.think.call1/raw/0/57 c.think.r2/raw/0/57 c.think.r2+1/raw/0/57 c.debt.in/raw/0/57
 totals {"actions":1,"calls":22,"compiles":8,"dry":0,"other":0,"refused":0,"rounds":7,"written":19}
+judged 1 every turn answers 37, 2 declared products 12, 3 request shape 37, 3 budgets 15, 4 coverage 15, 5 bookkeeping 19, 6 windows raw 19, 10 calibration edge 5, 11 compile invariants 8, 12 reloads 0, 13 pairing fixture 8, 14 property 12

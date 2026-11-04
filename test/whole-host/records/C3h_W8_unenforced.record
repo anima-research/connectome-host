@@ -95,3 +95,4 @@ step 680755.16
   round + 680755.16.r1 680755.16.call1, body a6e98be9
 end ok
 totals {"actions":0,"calls":7,"compiles":16,"dry":0,"other":0,"refused":0,"rounds":16,"written":7}
+judged 1 every turn answers 39, 2 declared products 0, 3 request shape 39, 3 budgets 32, 4 coverage 32, 5 bookkeeping 7, 6 windows raw 30, 10 calibration edge 1, 11 compile invariants 16, 12 reloads 0, 13 pairing fixture 16, 14 property 2

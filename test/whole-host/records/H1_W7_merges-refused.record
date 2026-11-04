@@ -233,3 +233,4 @@ step 638122.21
 end ok
 receipt fixture #91 changes 638122.20.r1/raw/0/91 638122.20.call1/raw/0/91 638122.20.r2/raw/0/91 638122.20.call2/raw/0/91 638122.20.r3/raw/0/91 638122.20.call3/raw/0/91 638122.20.r4/raw/0/91 638122.20.r4+1/raw/0/91 638122.21.in/raw/0/91
 totals {"actions":0,"calls":36,"compiles":21,"dry":0,"other":0,"refused":0,"rounds":38,"written":21}
+judged 1 every turn answers 95, 2 declared products 0, 3 request shape 95, 3 budgets 59, 4 coverage 59, 5 bookkeeping 16, 6 windows raw 55, 10 calibration edge 1, 11 compile invariants 21, 12 reloads 0, 13 pairing fixture 21, 14 property 15
