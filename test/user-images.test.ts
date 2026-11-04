@@ -12,7 +12,7 @@ import { imageLimitsFrom, isClientMessage, USER_IMAGE_LIMITS } from '../src/web/
 import { hostImageLimits, liveImageBytes, liveImageWindow, userImageBlocks } from '../src/web/user-images.js';
 import { imageDamage, imageSize, isAnimated, sniffImageType } from '../src/web/image-bytes.js';
 import { TuiModule } from '../src/modules/tui-module.js';
-import { coalesceAndFlatten, toWireEntry, withoutImageData } from '../src/modules/web-ui-module.js';
+import { coalesceAndFlatten, frameWithoutImageData, toWireEntry, withoutImageData } from '../src/modules/web-ui-module.js';
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/user-images.json', import.meta.url), 'utf-8')) as Record<string, string>;
 const bytes = (key: string): Buffer => Buffer.from(FIX[key]!, 'base64');
@@ -744,6 +744,12 @@ describe('traces sent to WebUI clients', () => {
     expect(withoutImageData(cyclic)).toBeUndefined();
     expect(withoutImageData({ type: 'tool:completed', n: 10n })).toBeUndefined();
     expect(withoutImageData({ type: 'tool:completed', toJSON: () => undefined })).toBeUndefined();
+    const nothing = { type: 'tool:completed', toJSON: () => undefined };
+    expect(frameWithoutImageData({ type: 'trace', event: nothing } as never)).toBeNull();
+    expect(frameWithoutImageData({ type: 'child-event', childName: 'kid', event: nothing } as never)).toBeNull();
+    expect(frameWithoutImageData({ type: 'trace', event: cyclic } as never)).toBeNull();
+    expect(frameWithoutImageData({ type: 'trace', event: { type: 'tool:completed', n: 1 } } as never))
+      .toEqual({ type: 'trace', event: { type: 'tool:completed', n: 1 } });
   });
 });
 

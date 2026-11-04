@@ -3234,9 +3234,12 @@ export function withoutImageData(value: unknown): unknown {
   return sent;
 }
 
-function frameWithoutImageData(frame: WebUiServerMessage): WebUiServerMessage | null {
+/** A frame as a client gets it, or null when it has nothing to send: when
+ *  JSON can't carry it, or its event's JSON is nothing. */
+export function frameWithoutImageData(frame: WebUiServerMessage): WebUiServerMessage | null {
   const sent = withoutImageData(frame);
-  return sent === undefined ? null : sent as WebUiServerMessage;
+  if (sent === undefined || ('event' in frame && !Object.hasOwn(sent as object, 'event'))) return null;
+  return sent as WebUiServerMessage;
 }
 
 /** The image shapes: a content block's ({ source: { data } }), a tool
