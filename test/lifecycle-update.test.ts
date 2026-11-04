@@ -670,7 +670,7 @@ test('an operator who quiesces this host after the children\'s look, before the 
 });
 
 for (const [fromLook, when] of [[1, 'at the children\'s look'], [2, 'at the switch\'s own quiesce']] as const) {
-  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, it stays armed, and check names the child's hold`, async () => {
+  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, this host is quiesced only if the switch's own quiesce began, it stays armed, and check names the child's hold`, async () => {
     const { root } = installRunning0141(['0.15.0']);
     const { fleet } = fleetChild({ busy: false, operator: { reason: 'maintenance', fromLook } });
     const host = residentHost({ root, fleet });
@@ -679,6 +679,7 @@ for (const [fromLook, when] of [[1, 'at the children\'s look'], [2, 'at the swit
     expect(readMark(root)).toBeNull();
     expect(host.stops).toEqual([]);
     expect(host.serving()).toBe(true);
+    expect(host.calls.includes('quiesce')).toBe(fromLook === 2);
     expect(host.update.armedSwitch()).not.toBeNull();
     const check = text(await host.call({ action: 'check' }));
     expect(check).toContain('kid');

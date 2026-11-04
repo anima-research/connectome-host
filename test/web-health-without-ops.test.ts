@@ -188,7 +188,7 @@ describe("the update section, with health and without ops", () => {
           at: '2026-10-22T11:30:00.000Z', waited: 'a host didn\'t answer: ECONNRESET at /srv/root/sock.',
           hosts: [
             { host: 'kid', answered: false, why: 'the socket said ECONNRESET' },
-            { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2 },
+            { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2, operatorHold: { reason: 'moving /srv/root' } },
           ],
         },
       },
@@ -202,7 +202,7 @@ describe("the update section, with health and without ops", () => {
       ...armed.armed!, lastTry: {
         at: '2026-10-22T11:30:00.000Z', waited: '', hosts: [
           { host: 'kid', answered: false, why: '' },
-          { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2 },
+          { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2, operatorHold: { reason: '' } },
         ],
       },
     });
