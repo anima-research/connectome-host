@@ -10,3 +10,7 @@
   presentation release of agent-framework #844: a write a surgery's hold
   kept whose store threw at the release, named by its agent and the
   write's external id, never its text), as it receives `message:removed`.
+  An ops observer also receives `gate:suppressed` (a suppress rule's name,
+  the event type, server and channel; no content) and
+  `gate:suppression-review` (counts and verdicts per rule), from
+  agent-framework's event suppression (#975).

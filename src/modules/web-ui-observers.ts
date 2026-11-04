@@ -541,6 +541,8 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   // gate:decision is.
   'gate:onboarding-offered': OPS,
   'gate:onboarding-decided': OPS,
+  'gate:suppressed': OPS,
+  'gate:suppression-review': OPS,
   'gate:held-dropped': OPS,
   // Admission and the Dendrite registry (agent-framework#546): a decision is
   // an ops fact; an agent's creation, end, interruption, orphaning and
