@@ -53,6 +53,9 @@ export interface ServiceUnit {
   file: string;
 }
 
+const SHELL_SETTING_NAMES = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'] as const;
+type ShellSettings = Partial<Record<(typeof SHELL_SETTING_NAMES)[number], string>>;
+
 export interface ServiceRecord {
   v: 1;
   manager: 'systemd-user' | 'launchd';
@@ -60,6 +63,7 @@ export interface ServiceRecord {
   hostArgs: string[];
   workingDirectory: string;
   logs: { kind: 'journal' } | { kind: 'file'; path: string };
+  shellSettings?: ShellSettings;
 }
 
 export interface Ran {
@@ -340,7 +344,13 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const hostEnv: Array<[string, string]> = [...hostVars, [SUPERVISED_ENV, '1'], [INSTALL_ROOT_ENV, realOrResolved(root)]];
   const loaderEnv = { HOME: sys.home, USER: sys.user, LOGNAME: sys.user, ...Object.fromEntries(hostEnv) };
   const envBefore = readOr(envFile);
-  const externalToken = readEnvFile(envFile).get('SESSION_SERVER_TOKEN');
+  const knownSettings = readEnvFile(envFile);
+  const externalToken = knownSettings.get('SESSION_SERVER_TOKEN');
+  const ownedSettings: ShellSettings = {};
+  for (const name of SHELL_SETTING_NAMES) {
+    const value = old?.shellSettings?.[name];
+    if (value !== undefined && value === knownSettings.get(name)) ownedSettings[name] = value;
+  }
   const source = sys.readRecipe(recipe, work, loaderEnv);
   if (source.loads !== true) recipeProblem(source, work, sys, externalToken);
   const wantsShell = source.shell;
@@ -397,6 +407,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     hostArgs,
     workingDirectory: work,
     logs: manager === 'systemd-user' ? { kind: 'journal' } : { kind: 'file', path: logPath },
+    shellSettings: ownedSettings,
   };
   const previousShell = old?.units.shell;
   const retiring = shell === null && (previousShell?.name === names.shell.name ||
@@ -417,7 +428,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       touched = true;
     };
     try {
-      if (shell !== null) keepShellSettings(ctx, sys, work, shell);
+      if (shell !== null) keepShellSettings(ctx, sys, work, shell, ownedSettings);
       if (manager === 'systemd-user') {
         if (texts.shell !== null) {
           writeUnit(names.shell, texts.shell);
@@ -522,7 +533,12 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         writeJsonAtomic(join(root, 'service.json'), withoutShell, 0o600);
         retained = false;
       }
-      if (!wantsShell) dropShellSettings(ctx, work);
+      if (!wantsShell) {
+        dropShellSettings(ctx, work, ownedSettings);
+        const withoutSettings = { ...record };
+        delete withoutSettings.shellSettings;
+        writeJsonAtomic(join(root, 'service.json'), withoutSettings, 0o600);
+      }
     }
     if (!passed) {
       const before = old?.hostArgs[0];
@@ -1221,7 +1237,8 @@ async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise
     : { bin, port, token: randomBytes(32).toString('hex'), newPort, newToken: true };
 }
 
-function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, shell: ShellPlan): void {
+function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, shell: ShellPlan,
+  owned: ShellSettings): void {
   const file = join(work, '.env');
   const mode = existsSync(file) ? statSync(file).mode & 0o777 : 0o600;
   try {
@@ -1241,9 +1258,10 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
     ctx.out(`${file} ${shell.newToken ? 'is to hold' : 'holds'} the shell daemon's token and was open to others than ` +
       `${sys.user} (mode ${mode.toString(8)}), so it's now readable by ${sys.user} alone.`);
   }
-  const keep = (name: string, value: string) => {
+  const keep = (name: keyof ShellSettings, value: string) => {
     try {
       writeEnvValue(file, name, value);
+      owned[name] = value;
     } catch (error) {
       throw new Refusal(`${name} can't be written to ${file}: ${errorText(error)}. No unit was written.`);
     }
@@ -1259,17 +1277,20 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-function dropShellSettings(ctx: CliContext, work: string): void {
-  const names = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
+function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings): void {
   const stored = new StoredSecrets(join(work, '.setup'));
   try {
+    const current = readEnvFile(join(work, '.env'));
+    const remove = SHELL_SETTING_NAMES.filter((name) => owned[name] !== undefined && current.get(name) === owned[name]);
+    const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
     stored.names();
-    const envChanged = removeEnvValues(join(work, '.env'), names);
-    const storedChanged = stored.forget(names);
-    ctx.out("No shell daemon was set up: the recipe runs no shell client and uses neither shell setting." +
-      (envChanged || storedChanged ? " Removed its token and port from .env and setup's stored secrets." : ''));
+    removeEnvValues(join(work, '.env'), remove);
+    stored.forget(remove);
+    ctx.out('No shell daemon was set up: the recipe runs no shell client and uses neither shell setting.');
+    if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
+    for (const name of keep) ctx.out(`Kept ${name} in .env: its current value isn't recorded as written by this service.`);
   } catch (error) {
-    throw new Refusal("The recipe needs no shell daemon, but its token and port couldn't be removed from .env and " +
+    throw new Refusal("The recipe needs no shell daemon, but its recorded settings couldn't be removed from .env and " +
       "setup's stored secrets: " + errorText(error));
   }
 }
@@ -1434,7 +1455,11 @@ export function readServiceRecord(root: string): ServiceRecord | null {
     Array.isArray(record.hostArgs) && record.hostArgs.length > 0 && record.hostArgs.every((arg) => typeof arg === 'string') &&
     typeof record.workingDirectory === 'string' &&
     (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
-  if (!fits) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
+  const settings = record.shellSettings;
+  const settingsFit = settings === undefined || (settings !== null && typeof settings === 'object' && !Array.isArray(settings) &&
+    Object.entries(settings).every(([name, value]) => SHELL_SETTING_NAMES.includes(name as keyof ShellSettings) &&
+      typeof value === 'string'));
+  if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
   return record;
 }
 

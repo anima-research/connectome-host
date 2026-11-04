@@ -640,6 +640,59 @@ test('service logs mask an external shell token omitted from an existing secret-
   expect(f.out.join('\n')).not.toContain('external-opaque-value');
 });
 
+test('a first no-shell install preserves external settings and names what it kept', async () => {
+  const at = install();
+  const before = 'SESSION_SERVER_TOKEN=external-value\nSESSION_SERVER_PORT=3200\n';
+  writeFileSync(join(at.work, '.env'), before);
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
+  expect(f.out.join('\n')).toContain('Kept SESSION_SERVER_TOKEN');
+  expect(f.out.join('\n')).toContain('SESSION_SERVER_PORT');
+  expect(f.out.join('\n')).toContain("isn't recorded as written by this service");
+});
+
+test('a managed shell preserves inherited settings when later retired', async () => {
+  const at = install('My Resident', { shell: true });
+  const before = 'SESSION_SERVER_TOKEN=external-value\nSESSION_SERVER_PORT=3200\n';
+  writeFileSync(join(at.work, '.env'), before);
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(at.recipe, '{}');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(existsSync(shellUnit(at))).toBe(false);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
+});
+
+test('a re-run carries ownership of generated settings until a later no-shell install removes them', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const before = readFileSync(join(at.work, '.env'), 'utf-8');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
+  writeFileSync(at.recipe, '{}');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(false);
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_PORT')).toBe(false);
+});
+
+test('retirement keeps a changed token but removes the generated port still owned by the service', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = join(at.work, '.env');
+  writeFileSync(file, readFileSync(file, 'utf-8').replace(/SESSION_SERVER_TOKEN=.*\n/, 'SESSION_SERVER_TOKEN=independent-value\n'));
+  writeFileSync(at.recipe, '{}');
+  f.out.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  const values = readEnvFile(file);
+  expect(values.get('SESSION_SERVER_TOKEN')).toBe('independent-value');
+  expect(values.has('SESSION_SERVER_PORT')).toBe(false);
+  expect(f.out.join('\n')).toContain('Kept SESSION_SERVER_TOKEN');
+  expect(f.out.join('\n')).not.toContain('independent-value');
+});
+
 test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
   const at = install();
   const f = fake(at);
@@ -3252,7 +3305,7 @@ test('an installed shell package alone gives a no-shell recipe no daemon or sett
   expect(existsSync(join(at.work, '.env'))).toBe(false);
 });
 
-test('removing the shell from a recipe removes its daemon and both settings, retaining other setup values', async () => {
+test('removing the shell retires its daemon while retaining changed token lines and unrelated settings', async () => {
   const at = install('My Resident', { shell: true });
   writeFileSync(at.recipe, JSON.stringify({ mcpServers: { shell: { command: 'terminal-sessions-mcp' } } }));
   const f = fake(at);
@@ -3268,11 +3321,14 @@ test('removing the shell from a recipe removes its daemon and both settings, ret
   expect(f.systemd.enabled.has(SHELL)).toBe(false);
   expect(existsSync(shellUnit(at))).toBe(false);
   expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
-  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe('# keep this comment\nDISCORD_TOKEN="keep-this"\n');
-  expect(new StoredSecrets(join(at.work, '.setup')).names()).toEqual(['DISCORD_TOKEN']);
+  const kept = '# keep this comment\nDISCORD_TOKEN="keep-this"\n' +
+    'SESSION_SERVER_TOKEN="old-token"\nSESSION_SERVER_TOKEN="last-token"\n';
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(kept);
+  expect(new Set(new StoredSecrets(join(at.work, '.setup')).names()))
+    .toEqual(new Set(['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN']));
   expect(f.out.join('\n')).toContain('the recipe runs no shell client');
   expect(await installService(f.ctx(['install']), f.system)).toBe(0);
-  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe('# keep this comment\nDISCORD_TOKEN="keep-this"\n');
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(kept);
 });
 
 test('a recipe requesting a shell without the package gets an explanation and keeps external daemon settings', async () => {
