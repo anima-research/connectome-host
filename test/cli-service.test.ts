@@ -3534,6 +3534,7 @@ test('an installed shell package alone gives a no-shell recipe no daemon or sett
   expect(existsSync(shellUnit(at))).toBe(false);
   expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
   expect(existsSync(join(at.work, '.env'))).toBe(false);
+  expect(f.out.join('\n')).not.toContain('To bring it back');
 });
 
 test('removing the shell retires its daemon while retaining changed token lines and unrelated settings', async () => {
@@ -3557,7 +3558,7 @@ test('removing the shell retires its daemon while retaining changed token lines 
   expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(kept);
   expect(new Set(new StoredSecrets(join(at.work, '.setup')).names()))
     .toEqual(new Set(['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN']));
-  expect(f.out.join('\n')).toContain('the recipe runs no shell client');
+  expect(f.out.join('\n')).toContain('the recipe source names no shell client or shell setting');
   expect(await installService(f.ctx(['install']), f.system)).toBe(0);
   expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(kept);
 });
@@ -4080,6 +4081,24 @@ test('a retiring launch agent with unreadable state keeps its record and setting
 });
 
 
+
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' shell retirement explains how an explicit recipe brings its daemon back', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  const source = readFileSync(at.recipe, 'utf-8');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(at.recipe, '{}');
+  f.out.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
+  expect(f.out.join('\n')).toContain('To bring it back, run connectome service install <recipe>');
+  expect(f.out.join('\n')).toContain('SESSION_SERVER_TOKEN or SESSION_SERVER_PORT in its source');
+  writeFileSync(at.recipe, source);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readServiceRecord(at.root)!.units.shell).toBeDefined();
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(true);
+});
 
 test('a Mac reinstall ownership refusal says the host was already unloaded', async () => {
   const at = install();

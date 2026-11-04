@@ -535,6 +535,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
             'Use a native stop instruction only if that unit belongs to this install.');
         }
       }
+      if (retiring !== undefined) {
+        ctx.out(`A managed shell daemon needs term-sessions-mcp installed in ${work}. ` +
+          `To bring it back, run ${cmd} service install <recipe> with a recipe that names the shell client or ` +
+          'SESSION_SERVER_TOKEN or SESSION_SERVER_PORT in its source.');
+      }
       if (retained) {
         const withoutShell = { ...recorded, units: { host: recorded.units.host } };
         writeJsonAtomic(join(root, 'service.json'), withoutShell, 0o600);
@@ -1340,11 +1345,11 @@ function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings):
     stored.names();
     removeEnvValues(join(work, '.env'), remove);
     stored.forget(remove);
-    ctx.out('No shell daemon was set up: the recipe runs no shell client and uses neither shell setting.');
+    ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
     if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
     for (const name of keep) ctx.out(`Kept ${name} in .env: its current value isn't recorded as written by this service.`);
   } catch (error) {
-    throw new Refusal("The recipe needs no shell daemon, but its recorded settings couldn't be removed from .env and " +
+    throw new Refusal("No shell daemon was requested, but its recorded settings couldn't be removed from .env and " +
       "setup's stored secrets: " + errorText(error));
   }
 }
