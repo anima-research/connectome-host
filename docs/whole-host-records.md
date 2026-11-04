@@ -186,8 +186,10 @@ request naming two image ledgers, or a call and a result naming different
 forks, still differs from one that names one. The naming goes by the text's
 form, so a text written in that form by anything else is named the same way.
 The stand-in's thinking signatures hash the request ahead of them and the
-thinking itself, and on a configuration whose model binds, the stand-in
-refuses a block whose signature no longer matches. The digests mask them.
+thinking itself. On a configuration whose model binds, a block whose
+signature no longer matches is dropped where the request asks `drop_block`,
+as the host's binding requests do, and refused otherwise
+(`standin.mjs`, `unbound` and `bindingRefusal`). The digests mask them.
 
 A store read the test module couldn't make is a line of its own,
 `unreadable messages: REASON`, `unreadable summaries: REASON` or
