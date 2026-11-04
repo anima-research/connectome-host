@@ -9,7 +9,7 @@ import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/u
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, setup } from './setup.js';
+import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup } from './setup.js';
 
 export interface CliContext {
   root: string | null;
@@ -114,7 +114,7 @@ function usage(print: (line: string) => void, typed = INSTALL_COMMAND): void {
   print(`  ${typed}`);
   print('      Which install this is, its release, whether its host is running, and its update state.');
   for (const command of COMMANDS) {
-    print(`  ${command.usage.replace(/^connectome(?= |$)/, typed)}`);
+    print(`  ${command.usage.replace(/^connectome(?= |$)/, () => typed)}`);
     print(`      ${command.summary}`);
     for (const word of command.words ?? []) print(`        ${word}`);
   }
@@ -139,13 +139,13 @@ async function fromPackage(argv: string[]): Promise<number> {
     return ran.status ?? 1;
   }
   if (isHelp(word)) {
-    usage(io.out);
+    usage(io.out, packageCommand());
     return 0;
   }
   if (word === 'setup') return setup({ root, argv: argv.slice(1), ...io });
   if (word !== undefined && !COMMANDS.some((each) => each.name === word)) {
     io.err(`connectome: there's no command ${word}.`);
-    usage(io.err);
+    usage(io.err, packageCommand());
     return 2;
   }
   if (existsSync(join(root, 'install.json'))) {

@@ -44,6 +44,8 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
 // cuts the answer, and stderr's tail with it, for ordinary output: one dense in what JSON escapes, or in short
 // secrets under long names, can still pass it.
 const KEPT_BYTES = 4 * 1024;
+/** The longest a stream's output comes back whole: past it, setup--run gives its head and tail. */
+export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
 
@@ -90,7 +92,7 @@ class Capture {
     const all = this.full ? Buffer.concat(this.full) : null;
     const whole = (): Stream =>
       ({ bytes: this.total, text: redactWindow(all!, 0, all!.length, secrets, replaced).text, cut: false });
-    if (all && all.length <= 2 * KEPT_BYTES) return whole();
+    if (all && all.length <= WHOLE_OUTPUT_BYTES) return whole();
     const head = all ?? this.head;
     const tail = all ?? this.tail;
     const longest = all ? 0 : Math.max(0, ...secrets.map(({ value }) => Buffer.byteLength(value)));
@@ -394,7 +396,10 @@ export class SetupModule implements Module {
       this.asking = turn.catch(() => {});
       return turn;
     }
-    if (call.name === 'check_model') return this.checkModel(call.input as { name?: unknown; model?: unknown });
+    if (call.name === 'check_model') {
+      // Once a secret being asked for is stored or refused, so it checks the key stored then.
+      return this.asking.then(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
+    }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
   }
@@ -440,7 +445,11 @@ export class SetupModule implements Module {
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);
-    const env = withoutSecrets(this.config.env, [...atLaunch.names, 'BASH_ENV']);
+    // Setup's own variables are for its host alone: a resident started from a command serves its own data directory
+    // and checks for updates as its service would.
+    const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
+    const env = withoutSecrets(this.config.env,
+      [...atLaunch.names, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
     const child = spawn('bash', ['--norc', '-c', input.command], {
       cwd: this.config.dir,
       env,
@@ -643,7 +652,7 @@ export class SetupModule implements Module {
   private async checkKey(name: string, value: string, env: Map<string, string>): Promise<ProviderAnswer<null>> {
     const provider = PROVIDER_KEYS[name]!.provider;
     this.config.show(`Checking it with ${provider}.`);
-    const key = await checkProviderKey(name, value, { fetch: this.config.fetch, env })!;
+    const key = await checkProviderKey(name, value, { fetch: this.config.fetch, env, hide: this.secrets().values })!;
     this.config.show(answerLine(provider, key, `${provider} accepted it.`, 'nothing was stored'));
     return key;
   }
@@ -676,7 +685,13 @@ export class SetupModule implements Module {
         'person for it with setup--ask_secret first.');
     }
     this.config.show(`Checking ${shown(model)} with ${provider}.`);
-    const listed = await listModels(name, key, { fetch: this.config.fetch, env })!;
+    let hide: Secret[];
+    try {
+      hide = this.secrets().values;
+    } catch (error) {
+      return this.damaged(error, 'Nothing was checked');
+    }
+    const listed = await listModels(name, key, { fetch: this.config.fetch, env, hide })!;
     if (listed.kind === 'unsendable') {
       const words = `The key stored as ${name} holds a character a request header can't carry, so it can't be a key`;
       this.config.show(`${words}.`);

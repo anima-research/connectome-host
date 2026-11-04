@@ -6,12 +6,13 @@ import {
 import { constants, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
-import { parseEnv } from 'node:util';
 import { Database } from 'bun:sqlite';
 import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
 import { ANTHROPIC_API, checkKey, originOf, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
-import { EnvFormError, envForm, readEnvFile, unwritableValue, writeEnvValue } from '../setup/secrets.js';
+import {
+  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, writeEnvValue,
+} from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type SetupState } from '../setup/state.js';
 import { makeSpawnHelperExecutable } from '../setup/node-pty.js';
@@ -24,7 +25,7 @@ import {
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, installCommandOf } from './install-command.js';
+import { INSTALL_COMMAND, installCommandOf, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
@@ -61,8 +62,13 @@ function packageJson(): PackageJson {
 }
 
 /** The line that sets a resident up with this version of the host. */
+/** The command that runs this release of the package where no install's own command does. */
+export function packageCommand(): string {
+  return `bunx ${PACKAGE}@${packageJson().version}`;
+}
+
 export function firstLine(): string {
-  return `bunx ${PACKAGE}@${packageJson().version} setup ${SURFACE}`;
+  return `${packageCommand()} setup ${SURFACE}`;
 }
 
 const RESIDENT = 'A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of ' +
@@ -189,7 +195,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const version = pkg.version;
 
   if (ctx.argv.length !== 1 || ctx.argv[0] !== SURFACE) {
-    err(`Usage: ${SETUP_USAGE}`);
+    err(`Usage: ${existsSync(join(root, INSTALL_COMMAND)) ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}`
+      : firstLine()}`);
     err('Discord is the one surface setup sets a resident up on.');
     return 2;
   }
@@ -240,8 +247,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     if (typeof answered === 'number') return answered === -1 ? stoppedElsewhere() : answered;
     return await makeResidentDirectory(world, home, answered, { out, err }) ?? stoppedElsewhere();
   }
-  const env = withoutDotEnv(world.env, world.cwd);
-
   mkdirSync(setupDir, { recursive: true, mode: 0o700 });
   const lock = takeSetupLock(join(setupDir, 'setup.lock'));
   if (lock === null) {
@@ -297,7 +302,17 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     writeJsonAtomic(statePath, state, 0o600);
     kept = true;
-    return await installAndStart(ctx, world, { dir, root, pkg, version, state, env, stopped });
+    let env: Record<string, string | undefined>;
+    let shell: Record<string, string>;
+    try {
+      env = withoutDotEnv(world.env, world.cwd);
+      shell = exportedOf(world.env, env, world.cwd);
+    } catch (error) {
+      err(`${(error as Error).message}. Setup keeps what Bun reads from the dotenv files in ${world.cwd} away from ` +
+        'its agent, so it must read them: put that right, and run setup again.');
+      return 1;
+    }
+    return await installAndStart(ctx, world, { dir, root, pkg, version, state, env, shell, stopped });
   } finally {
     lock.release();
   }
@@ -362,9 +377,9 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
 async function installAndStart(
   ctx: CliContext & { root: string },
   world: SetupWorld,
-  { dir, root, pkg, version, state, env, stopped }: {
+  { dir, root, pkg, version, state, env, shell, stopped }: {
     dir: string; root: string; pkg: PackageJson; version: string; state: SetupState;
-    env: Record<string, string | undefined>; stopped: () => number;
+    env: Record<string, string | undefined>; shell: Record<string, string>; stopped: () => number;
   },
 ): Promise<number> {
   const { out, err } = ctx;
@@ -437,6 +452,11 @@ async function installAndStart(
   const untrusted = Array.isArray(trusted)
     ? addTrusted(join(dir, 'package.json'), [...trusted, ...HOST_TRUSTED])
     : trusted.reason;
+  if (untrusted !== null) {
+    out(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} ` +
+      `(${untrusted}), so Bun runs no install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
+      'registry it may run none of the others\'.');
+  }
 
   // A package counts as installed once package.json declares it: a bun add that fails partway leaves packages in
   // node_modules that it never declares (probed with Bun 1.4.4).
@@ -575,10 +595,15 @@ async function installAndStart(
   if (settingUp) {
     out(`This install's own command is ${command.path}.`);
     if (command.pathLine !== null) {
-      out('Nothing setup or its agent does needs its directory on your PATH, so you need it there only to type plain ' +
-        `\`connectome\`. For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it ` +
-        'there:');
-      out(`  ${command.pathLine}`);
+      const needs = 'Nothing setup or its agent does needs its directory on your PATH, so you need it there only to ' +
+        'type plain `connectome`.';
+      // The line is a Bourne shell's; other shells, such as fish and tcsh, set PATH their own way.
+      if (env.SHELL === undefined || ['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(basename(env.SHELL))) {
+        out(`${needs} For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it there:`);
+        out(`  ${command.pathLine}`);
+      } else {
+        out(`${needs} For that, put ${root} on your PATH as your shell sets it, and in its startup file to keep it there.`);
+      }
     }
   }
   if (settingUp) {
@@ -630,7 +655,7 @@ async function installAndStart(
   if (baseUrl === null) return 1;
   const exportedWins = 'A host started from a shell that exports another takes the exported one, since Bun gives an ' +
     'exported variable precedence over .env.';
-  if (env.ANTHROPIC_BASE_URL !== undefined && (env.ANTHROPIC_BASE_URL || undefined) !== baseUrl) {
+  if (shell.ANTHROPIC_BASE_URL !== undefined && (shell.ANTHROPIC_BASE_URL || undefined) !== baseUrl) {
     out(`Setup checks the key at, and gives its agent, ${baseUrl === undefined
       ? `Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL`
       : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${originOf(baseUrl)}`}, not the one exported in this ` +
@@ -639,11 +664,11 @@ async function installAndStart(
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
   let key: string | null = storedKey ?? null;
   let fromDotEnv = key !== null;
-  if (key === null && env.ANTHROPIC_API_KEY) {
+  if (key === null && shell.ANTHROPIC_API_KEY) {
     const use = await yesNo(world, `An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup ` +
       `writes it to ${envFile}, readable by you alone. (yes/no) `);
     if (use === null) return stopped();
-    if (use) key = env.ANTHROPIC_API_KEY;
+    if (use) key = shell.ANTHROPIC_API_KEY;
   }
   for (;;) {
     if (key === null) {
@@ -694,13 +719,13 @@ async function installAndStart(
     return 1;
   }
   out(`The key works, and it's in ${envFile}.`);
-  if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== key) {
+  if (shell.ANTHROPIC_API_KEY !== undefined && shell.ANTHROPIC_API_KEY !== key) {
     out(`The ANTHROPIC_API_KEY exported in this shell isn't the one setup checked and keeps in ${envFile}. ${exportedWins} ` +
       'Unset it in this shell, and in any other you start a host from, so that such a host doesn\'t take it.');
   }
   const oauth = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE'];
   const throughOAuth = 'signs in through OAuth, not with an ANTHROPIC_API_KEY, though setup\'s agent uses the key.';
-  const exported = oauth.filter((name) => env[name]);
+  const exported = oauth.filter((name) => shell[name]);
   if (exported.length > 0) {
     out(`${exported.join(' and ')} ${exported.length === 1 ? 'is' : 'are'} exported in this shell, so a host started ` +
       `from it ${throughOAuth} Unset ${exported.length === 1 ? 'it' : 'them'} in any shell you start a host from, for ` +
@@ -735,10 +760,14 @@ async function installAndStart(
   out(commandsShownNote(dir));
   out(`Starting setup's agent. It speaks first. /quit leaves the conversation, and ` +
     `\`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\` picks it up where it stopped.`);
-  const started = Date.now();
+  const finishedAt = () => {
+    const read = readSetupState(join(dir, '.setup', 'setup-state.json'));
+    return 'state' in read ? read.state.finished : undefined;
+  };
+  const before = finishedAt();
   const agentStatus = await world.startAgent(launch);
-  const after = readSetupState(join(dir, '.setup', 'setup-state.json'));
-  const finished = 'state' in after && after.state.finished !== undefined && Date.parse(after.state.finished) >= started;
+  const after = finishedAt();
+  const finished = after !== undefined && after !== before;
   out(finished
     ? `Setup is finished. To change something it set up, run setup again: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`
     : `To go on with setup where it stopped: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`);
@@ -790,25 +819,26 @@ function takeSetupLock(file: string): { release(): void } | null {
   return { release: () => held.close() };
 }
 
-// Every file Bun 1.4.4 can read by default from the directory it starts in, whichever mode: .env.<mode>.local,
-// .env.local (not under test), .env.<mode> and .env, where mode is production or test as NODE_ENV says, and
-// development otherwise. All of them, since the NODE_ENV setup sees can itself be one a file gave, which doesn't
-// change the set Bun read. Each is read in whatever form it's in, not setup's alone, with node:util's parseEnv, which
-// Bun 1.4.4 implements as its loader reads a file but for `$`: it keeps `\$`, which the loader reads as `$`, and
-// doesn't expand `$NAME` (probed).
-const DOTENV_FILES = ['.env', '.env.local', ...['development', 'production', 'test'].flatMap((mode) => [`.env.${mode}`, `.env.${mode}.local`])];
-
+// What Bun read from the directory's dotenv files, which are the resident's, stays out of the agent's environment and
+// its commands': each name any of them gives, in any mode, since NODE_ENV can itself be one a file gave. By name, as
+// Bun puts in $NAME as it reads, so a value read there needn't match the file's text. A name the person also
+// exported goes too, with its exported value.
 function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Record<string, string | undefined> {
-  const files = DOTENV_FILES.map((name) => {
-    try {
-      return parseEnv(readFileSync(join(cwd, name), 'utf-8'));
-    } catch {
-      return {};
-    }
-  });
-  const read = (file: NodeJS.Dict<string>, name: string) =>
-    (Object.hasOwn(file, name) ? file[name] : undefined)?.replace(/\\\$/g, '$');
-  return Object.fromEntries(Object.entries(env).filter(([name, value]) => !files.some((file) => read(file, name) === value)));
+  const names = new Set(dotenvNames(cwd));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
+}
+
+// What the shell setup was started from exported, for what setup says of it: the rest of what Bun gave setup, and
+// each name a dotenv file gives whose value isn't one the files give it, since an exported value wins over theirs.
+function exportedOf(given: Record<string, string | undefined>, rest: Record<string, string | undefined>, cwd: string):
+  Record<string, string> {
+  const fromFiles = dotenvValues(cwd, rest);
+  const exported: Record<string, string> = {};
+  for (const [name, value] of Object.entries(given)) {
+    if (value === undefined) continue;
+    if (Object.hasOwn(rest, name) || !fromFiles.get(name)?.has(value)) exported[name] = value;
+  }
+  return exported;
 }
 
 function setupModel(path: string): { model: string } | { damage: string | null } {

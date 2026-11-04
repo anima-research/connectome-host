@@ -8,7 +8,7 @@ import {
   splitMixedToolMessages,
 } from '../scripts/import-claudeai-export.js';
 import type { ContentBlock } from '@animalabs/membrane';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import { SessionManager } from '../src/session-manager.js';
@@ -394,6 +394,17 @@ describe('the person\'s name', () => {
 
   test('is the full_name of the one user the export\'s users.json gives, trimmed', () => {
     expect(personNameOf(exportWith(JSON.stringify([{ uuid: 'u1', full_name: ' Walk Three ', email_address: 'w@example.invalid', verified_phone_number: null }])))).toBe('Walk Three');
+  });
+
+  test('--person with no name after it is refused, writing nothing, rather than taking the next option as the name', () => {
+    const dir = exportWith(null);
+    writeFileSync(join(dir, 'conversations.json'), '[]');
+    const out = join(dir, 'out');
+    const ran = Bun.spawnSync([process.execPath, join(import.meta.dir, '..', 'scripts', 'import-claudeai-export.ts'), dir,
+      '--out', out, '--no-interactive', '--person', '--dry-run'], { stdin: 'ignore' });
+    expect(ran.exitCode).toBe(1);
+    expect(ran.stderr.toString()).toContain('--person needs the name to give the person\'s turns: --person <name>');
+    expect(existsSync(out)).toBe(false);
   });
 
   test('is "user" where users.json is missing, isn\'t JSON, names no one, more than one, or a blank name', () => {
