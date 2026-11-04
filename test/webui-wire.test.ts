@@ -24,10 +24,15 @@ const until = async (cond: () => boolean, ms = 2000): Promise<void> => {
 };
 
 describe('wire.send', () => {
-  test('is false, and sends nothing, before the socket is open', () => {
+  test('is false, and sends nothing, before the socket is open', async () => {
     client = createWireClient({ url: `ws://127.0.0.1:${server.port}/ws` });
     expect(client.status()).toBe('connecting');
     expect(client.send({ type: 'ping' })).toBe(false);
+    await until(() => client!.status() === 'open');
+    expect(client.send({ type: 'ping' })).toBe(true);
+    await until(() => frames.length >= 1);
+    await Bun.sleep(50);
+    expect(frames).toHaveLength(1);
   });
 
   test('is true once the socket is open, and the frame arrives', async () => {
