@@ -707,7 +707,8 @@ export function setup(options: SetupOptions): void {
     }
   }
   const written: InstallRecord = {
-    v: 1, dataDir: binding === null ? existing?.dataDir ?? dataDir : dataDir, extraState, workingDir: workingDirOf(root),
+    v: 1, dataDir: binding === null ? existing?.dataDir ?? dataDir : dataDir, extraState,
+    workingDir: binding === null && existing?.workingDir !== undefined ? existing.workingDir : workingDirOf(root),
   };
   let command: { path: string; pathLine: string | null };
   if (binding !== null) {

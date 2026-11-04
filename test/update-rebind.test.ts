@@ -228,8 +228,24 @@ describe('binding an install to the directory it is in', () => {
     said = [];
     setup(options(install));
     expect(said[0]).toBe(`The install at ${rootOf(install)} serves ${join(install, 'data')} and runs 0.10.2, as before.`);
-    expect(record(install)!.workingDir).toBe(install);
+    expect(record(install)!.workingDir).toBe(spelling);
     expect(readFileSync(join(rootOf(install), 'copy', 'copy.json'), 'utf-8')).toBe(files);
+  });
+
+  test('a setup run on a record bound through a link keeps its spelling, so once the link is gone the entry refuses, and setup binds it, mapping its places', () => {
+    setup(options(install));
+    const spelling = join(dir, 'spelling');
+    symlinkSync(install, spelling);
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(spelling, 'data'), extraState: [], workingDir: spelling });
+    setup(options(install));
+    expect(record(install)).toEqual({ v: 1, dataDir: join(spelling, 'data'), extraState: [], workingDir: spelling });
+    rmSync(spelling);
+    const refused = startOf(install);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain(`its record is bound to ${spelling}, and it's in ${install}, so it was moved or copied here`);
+    setup(options(install));
+    expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: install });
+    expect(startOf(install).exitCode).toBe(0);
   });
 
   test('--place is refused where there is nothing to bind, and where it names no place the install names', () => {
