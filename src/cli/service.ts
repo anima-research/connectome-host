@@ -1574,8 +1574,8 @@ export function readServiceRecord(root: string, cmd = typedCommand(root)): Servi
 }
 
 function readServiceRecordFile(root: string, cmd: string, repair = true): ServiceRecord | null {
+  const path = join(root, 'service.json');
   try {
-    const path = join(root, 'service.json');
     const record = readRecord<ServiceRecord>(path, 'service record');
     if (record === null) return null;
     const unit = (value: unknown) => typeof value === 'object' && value !== null &&
@@ -1593,7 +1593,9 @@ function readServiceRecordFile(root: string, cmd: string, repair = true): Servic
     if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
     return record;
   } catch (error) {
-    throw new ContractError(`${errorText(error)}${repair ? ' ' + recordAgain(cmd) : ''}`);
+    const why = error instanceof ContractError ? errorText(error)
+      : `The service record at ${path} can't be read: ${errorText(error).replace(/\.+$/, '')}.`;
+    throw new ContractError(`${why}${repair ? ' ' + recordAgain(cmd) : ''}`);
   }
 }
 

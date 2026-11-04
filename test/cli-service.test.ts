@@ -965,6 +965,40 @@ test('service identity and new-install binding accept an alias of the same direc
   expect((await checkService(join(alias, 'connectome-host'), f.system)).passed).toBe(true);
 });
 
+test('a service record path that is a directory names the path before its repair instruction', async () => {
+  const at = install();
+  const f = fake(at);
+  const path = join(at.root, 'service.json');
+  mkdirSync(path);
+  const checked = await checkService(at.root, f.system);
+  expect(checked.passed).toBe(false);
+  const line = checked.lines.join('\n');
+  expect(line).toContain("The service record at " + path + " can't be read: ");
+  expect(line).toContain('. Name the recipe');
+  expect(line).toEndWith(' service install <recipe>.');
+});
+
+test('a foreign record naming a regular file refuses before its repeat instruction', async () => {
+  const at = install('Original');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const original = readServiceRecord(at.root)!;
+  const copy = install('Copy', { home: at.home });
+  const path = join(at.home, 'not-a-directory');
+  writeFileSync(path, 'file');
+  const bytes = JSON.stringify({ ...original, workingDirectory: path });
+  writeFileSync(join(copy.root, 'service.json'), bytes);
+  f.systemd.calls.length = f.out.length = f.err.length = 0;
+  expect(await installService({ ...f.ctx(['install', copy.recipe]), root: copy.root }, f.system)).toBe(1);
+  const line = f.err.join('\n');
+  expect(line).toContain('not a directory; resolve that before replacing this record.');
+  expect(line).not.toContain('Name the recipe');
+  expect(line).toEndWith('Then repeat ' + join(copy.root, 'connectome') + ' service install <recipe>.');
+  expect(f.systemd.calls).toEqual([]);
+  expect(readFileSync(join(copy.root, 'service.json'), 'utf-8')).toBe(bytes);
+  expect(f.systemd.running.has(original.units.host.name)).toBe(true);
+});
+
 test('a check with a damaged service record gives the explicit-recipe repair instruction', async () => {
   const at = install();
   const f = fake(at);
