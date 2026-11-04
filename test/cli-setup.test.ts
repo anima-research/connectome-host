@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import {
-  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
-  lstatSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
+  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
+  statSync, lstatSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -124,11 +124,17 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
       const record = join(root, 'install.json');
       let before: string | null = null;
       if (existsSync(record)) {
-        const served = (JSON.parse(readFileSync(record, 'utf-8')) as { dataDir: string }).dataDir;
-        if (realpathSync(served) !== realpathSync(dataDir)) {
-          return { status: 1, stdout: '', stderr: `connectome-host setup: The install at ${root} serves ${served}, not ${dataDir}.\n` };
+        const recorded = JSON.parse(readFileSync(record, 'utf-8')) as { dataDir: string; workingDir?: string };
+        const here = dirname(realpathSync(root));
+        const runs = () => basename(readlinkSync(join(root, 'current')));
+        if (recorded.workingDir !== here) {
+          writeFileSync(record, JSON.stringify({ ...recorded, dataDir, workingDir: here }));
+          before = `Bound the install at ${root} to ${here}, where it serves ${dataDir} and runs ${runs()}.`;
+        } else if (realpathSync(recorded.dataDir) !== realpathSync(dataDir)) {
+          return { status: 1, stdout: '', stderr: `connectome-host setup: The install at ${root} serves ${recorded.dataDir}, not ${dataDir}.\n` };
+        } else {
+          before = `The install at ${root} serves ${recorded.dataDir} and runs ${runs()}, as before.`;
         }
-        before = `The install at ${root} serves ${served} and runs ${basename(readlinkSync(join(root, 'current')))}, as before.`;
       }
       const release = script.release ?? VERSION;
       const scope = join(root, 'releases', release, 'node_modules', '@animalabs');
@@ -144,7 +150,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
         symlinkSync(join('releases', release), join(root, 'current'));
         const extraState = keptOutsideLines(script.installSetupSays ?? '').filter((line) => line.startsWith('  ') && line !== '  none')
           .map((line) => line.slice(2));
-        writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState }));
+        writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState, workingDir: dirname(realpathSync(root)) }));
         writeFileSync(join(root, ENTRY_POINT), entryPointText());
       }
       writeInstallCommand(root, options.env.PATH);
@@ -1868,7 +1874,7 @@ test('run again on an install, setup uses the data directory the install records
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
   const elsewhere = directory();
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [], workingDir: dir }));
   rmSync(join(dir, 'data'), { recursive: true });
   const again = world(dir);
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
@@ -1877,6 +1883,75 @@ test('run again on an install, setup uses the data directory the install records
   expect(existsSync(join(dir, 'data'))).toBe(false);
   expect(text(again.seen.out)).not.toContain('first release');
   expect(text(again.seen.out)).toContain(`Checking the install at ${root}.`);
+});
+
+const ownSetup = (seen: Seen): { argv: string[]; dataDir: string | undefined } => {
+  const at = seen.ran.findIndex((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')));
+  return { argv: args(seen.ran[at]!).slice(1), dataDir: seen.options[at]!.env.DATA_DIR };
+};
+const besideIt = (dir: string, name: string): string => {
+  const path = join(dirname(dir), `${basename(dir)}-${name}`);
+  made.push(path);
+  return path;
+};
+
+test('an install moved here whose places were all under its old directory is bound with no question, its own setup given the data directory here', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const again = world(moved);
+  expect(await runSetup(moved, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([]);
+  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(moved, 'connectome-host')], dataDir: join(moved, 'data') });
+  expect(text(again.seen.out)).toContain(`This install's record is bound to ${dir}, and the install is in ${moved}, so it was moved or copied here. Setup binds it here: each place under ${dir} becomes the same place under ${moved}.`);
+});
+
+test('a copy with a place outside its old directory asks where that place is in this install, naming it, and gives its own setup the answer', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const outside = join(directory(), 'state.json');
+  writeFileSync(outside, 'the original\'s');
+  const record = join(dir, 'connectome-host', 'install.json');
+  writeFileSync(record, JSON.stringify({ ...JSON.parse(readFileSync(record, 'utf-8')), extraState: [outside] }));
+  const copy = besideIt(dir, 'copy');
+  expect(Bun.spawnSync(['cp', '-a', dir, copy]).exitCode).toBe(0);
+  const own = join(copy, 'state.json');
+  const again = world(copy, { answers: [own] });
+  expect(await runSetup(copy, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([`${outside} (state kept outside its data directory): `]);
+  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(copy, 'connectome-host'), '--place', outside, own], dataDir: join(copy, 'data') });
+  expect(text(again.seen.out)).toContain(`It asks about each place outside ${dir}, since it can't tell whether that came with the install, as after a move, or is still the other install's, as after a copy. Press Enter where a place is this install's, or type the path of this install's own, as after a copy.`);
+});
+
+test('a record from before workingDir asks about each place it names, its data directory too: Enter keeps one, and a data directory that isn\'t there is asked again', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const record = join(dir, 'connectome-host', 'install.json');
+  writeFileSync(record, JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
+  const again = world(dir, { answers: ['nowhere', ''] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  const question = `${join(dir, 'data')} (its data directory): `;
+  expect(again.seen.asked).toEqual([question, question]);
+  expect(text(again.seen.out)).toContain(`${join(dir, 'nowhere')} isn't a directory, and the data directory has to be one that's there`);
+  expect(ownSetup(again.seen)).toEqual({
+    argv: ['--root', join(dir, 'connectome-host'), '--place', join(dir, 'data'), join(dir, 'data')], dataDir: join(dir, 'data'),
+  });
+});
+
+test('a binding a setup run cut off is finished with the places that run was given, asking nothing', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = join(dir, 'connectome-host');
+  writeFileSync(join(root, 'rebind.json'), JSON.stringify({
+    v: 1, id: 'plan-1', from: null, to: dir, places: [],
+    record: { v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir },
+  }));
+  const again = world(dir);
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([]);
+  expect(text(again.seen.out)).toContain(`A setup run binding this install to ${dir} was cut off before it finished, so setup finishes it, with the places that run was given.`);
+  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root], dataDir: join(dir, 'data') });
 });
 
 test('an install whose recorded data directory has gone is refused by its own setup, not given a new one', async () => {

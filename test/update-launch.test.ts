@@ -160,3 +160,57 @@ describe('a start, end to end', () => {
     expect(() => readFileSync(marker)).toThrow();
   });
 });
+
+describe('the binding check, before any release loads', () => {
+  const copyTo = (to: string) => expect(Bun.spawnSync(['cp', '-a', install, to]).exitCode).toBe(0);
+  const startIn = (at: string, ...args: string[]) => {
+    const run = Bun.spawnSync([process.execPath, join(at, 'connectome-host', ENTRY_POINT), ...args], {
+      cwd: at, env: { ...process.env, DATA_DIR: join(at, 'data'), MARKER: marker }, stderr: 'pipe',
+    });
+    return { exitCode: run.exitCode ?? -1, stderr: run.stderr.toString() };
+  };
+
+  test('a copy\'s start, and its --go-back, are refused before its launcher runs, naming both directories and setup; once setup binds it, it starts on its own data', () => {
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const copyRoot = join(copy, 'connectome-host');
+    for (const args of [[], ['--go-back']]) {
+      const run = startIn(copy, ...args);
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain(`connectome-host: nothing runs in this install, since its record is bound to ${install}, and it's in ${copy}, so it was moved or copied here`);
+      expect(run.stderr).toContain(`run \`${join(copyRoot, 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
+    }
+    expect(existsSync(marker)).toBe(false);
+    expect(readJournal(copyRoot)).toEqual([]);
+    expect(existsSync(installPaths(copyRoot).lock)).toBe(false);
+    setup({
+      cwd: copy, dataDir: join(copy, 'data'), root: copyRoot, extraState: null,
+      hostRoot: join(copy, 'node_modules', '@animalabs', 'connectome-host'),
+      say: () => {}, units: () => ({ found: [], unasked: [], unresolved: [], defaulted: [] }),
+    });
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.10.2', root: copyRoot, cwd: copy });
+  });
+
+  test('a record from before workingDir starts as it did', () => {
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] });
+    expect(start().exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8')).version).toBe('0.10.2');
+  });
+
+  test('a copy from before workingDir, made while the original\'s host ran, meets the lock that came with it, which names that case and setup', () => {
+    const host = Bun.spawn(['sleep', '120']);
+    try {
+      writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] });
+      writeFileSync(installPaths(root).lock, JSON.stringify({ v: 1, pid: host.pid, bootId: null, at: '2026-11-04T00:00:00.000Z' }));
+      const copy = join(dir, 'copy');
+      copyTo(copy);
+      const run = startIn(copy);
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain(`process ${host.pid}, since 2026-11-04T00:00:00.000Z. An install runs one host at a time. If that process is this install's host, stop it first. If this install is a copy, made while another install's host ran, the lock came with the copy: run setup here first, which binds the copy to its own places and removes a lock it can show came with it, and then remove the lock file if it's still there.`);
+    } finally {
+      host.kill();
+    }
+  });
+});
