@@ -375,7 +375,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [],
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: 'the held reply',
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -386,7 +386,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
   ]);
   expect(child.socket).toBeNull();
   expect(child.events).toEqual([]);
-  expect(child.lastCompletedSpeech).toBeUndefined();
+  expect(child.lastCompletedSpeech).toBe('the held reply');
 }, 30_000);
 
 test('after a failed connect, fleet--await tries to connect once before it waits', async () => {
@@ -604,6 +604,37 @@ test("fleet--relay passes on only a reply made since this host's connection to t
   expect(unreachable.success).toBe(false);
   expect(unreachable.error).toContain('may not be the latest');
   expect(sibling.texts()).not.toContain('the reply before the loss');
+}, 30_000);
+
+test('a held reply with no text is forgotten by a connect, as any reply is', async () => {
+  const { fleet, call, launch } = setup();
+  fleet.reopenWindowMs = 100;
+  const leaf = await launch('leaf');
+  await launch('sibling');
+  await leaf.reply('');
+  expect((await call('relay', { from: 'leaf', to: 'sibling' })).error).toContain('had no text in it');
+  await leaf.cut();
+  await until(() => leaf.connections() === 2 && leaf.child.socket !== null, 'the parent connecting again');
+  expect(leaf.child.lastCompletedSpeech).toBeUndefined();
+  expect((await call('relay', { from: 'leaf', to: 'sibling' })).error)
+    .toContain("hasn't finished a reply since this host's connection to it last opened");
+}, 30_000);
+
+test("a held reply with no text is refused as empty while this host can't reach the child, saying why it can't", async () => {
+  const { call, launch, failed } = setup();
+  const leaf = await launch('leaf');
+  const sibling = await launch('sibling');
+  await leaf.reply('');
+  await leaf.signal('unlink', 'unlinked');
+  await leaf.cut();
+  await until(() => failed('leaf') === 1, 'the failed attempt');
+  const relayed = await call('relay', { from: 'leaf', to: 'sibling' });
+  expect(relayed.error).toStartWith(
+    "Nothing was relayed: the latest inference round this host saw from 'leaf' ended without tool calls, outside a " +
+    "silent heartbeat, and had no text in it, so there was nothing to pass on. 'leaf' is ready, but its connection " +
+    'to this host closed, and connecting to it again failed: ',
+  );
+  expect(sibling.texts()).toBe('');
 }, 30_000);
 
 test('after a failed connect, fleet--relay from the child tries once to connect to it', async () => {

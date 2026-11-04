@@ -83,6 +83,8 @@ test("a turn that ends on an end-turn tool sends no inference:speech, so the ear
     const calls = frames.filter((f) => f.type === 'inference:tool_calls_yielded')
       .flatMap((f) => (f.calls as Array<{ name: string }>).map((call) => call.name));
     expect(calls).toEqual(['skip_reply']);
+    const yielded = frames.findIndex((f) => f.type === 'inference:tool_calls_yielded');
+    expect(frames.slice(yielded).some((f) => f.type === 'inference:completed')).toBe(true);
     expect(frames.filter((f) => f.type === 'inference:turn_ended')).toHaveLength(1);
     expect(frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual([REPLY]);
   }, { CHILD_REPLY: 'then-skip' });
@@ -112,6 +114,9 @@ for (const [mode, what] of [['then-silent', 'that speaks'], ['then-silent-tool',
       expect(frames.filter((f) => f.type === 'inference:started').map((f) => f.silent === true)).toEqual([false, true, false]);
       const silent = frames.slice(frames.findIndex((f) => f.type === 'inference:started' && f.silent === true));
       const silentEnd = silent.findIndex((f) => f.type === 'inference:completed');
+      const nextStart = silent.findIndex((f, at) => at > 0 && f.type === 'inference:started');
+      expect(silentEnd).toBeGreaterThan(0);
+      expect(silentEnd).toBeLessThan(nextStart);
       const heard = silent.slice(0, silentEnd);
       expect(heard.filter((f) => f.type === 'inference:tokens' && f.blockType === 'text').map((f) => f.content).join('')).toContain('Private self-check.');
       expect(heard.some((f) => f.type === 'inference:tool_calls_yielded')).toBe(mode === 'then-silent-tool');
