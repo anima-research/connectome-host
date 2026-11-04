@@ -137,4 +137,4 @@ step 773012.14
   wrote L1(593484.69.in+11-593484.69.in+14) [T:summary-l1-12f9d86e92da]
 end ok
 totals {"actions":0,"calls":7,"compiles":13,"dry":0,"other":0,"refused":4,"rounds":13,"written":7}
-judged 1 every turn answers 33, 2 declared products 0, 3 request shape 33, 3 budgets 26, 4 coverage 26, 5 bookkeeping 4, 6 windows raw 24, 10 calibration edge 1, 11 compile invariants 13, 12 reloads 0, 13 pairing fixture 13, 14 property 20
+judged 1 every turn answers 33, 2 declared products 0, 3 request shape 33, 3 budgets 26, 4 coverage 26, 5 bookkeeping 4, 6 windows raw 24, 10 calibration edge 1, 11 compile invariants 13, 12 reloads 0, 13 pairing fixture 13, 14 property 21
