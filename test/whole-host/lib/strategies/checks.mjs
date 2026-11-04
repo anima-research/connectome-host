@@ -104,6 +104,11 @@ export function withJudged(flags, judged, besides = null) {
   return flags;
 }
 
+export function judgedBy(flags, check) {
+  Object.defineProperty(flags, 'judgedBy', { value: check, enumerable: false });
+  return flags;
+}
+
 export function everyTurnAnswers(records, log = [], script = []) {
   const mayFail = new Set(script.filter((s) => s.mayFail).map((s) => s.id));
   const owned = (e) => mayFail.has(e.step) && (/^inference:(failed|exhausted)$/.test(e.event?.type ?? '') || (e.event?.type === 'ops:alert' && e.event.kind === 'context-refusal'));
