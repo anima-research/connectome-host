@@ -331,8 +331,8 @@ describe('fleet refusals name what the agent can do', () => {
     const { fleet, call, launch } = setup({ sigtermEscalationMs: 2_000 });
     const steps = (name: string) => `Nothing was relayed: '${name}' hasn't finished a reply since this host's ` +
       'connection to it last opened. A reply counts once one of its inference rounds ends without tool calls, ' +
-      `outside a silent heartbeat, and fleet--relay passes it on then; if '${name}' has nothing to answer, ` +
-      'fleet--send gives it something.';
+      `outside a silent heartbeat, and fleet--relay passes it on then if that round has text in it; if '${name}' ` +
+      'has nothing to answer, fleet--send gives it something.';
     expect((await launch('dst')).success).toBe(true);
     expect((await launch('busy')).success).toBe(true);
     expect((await call('relay', { from: 'busy', to: 'dst' })).error).toBe(steps('busy'));

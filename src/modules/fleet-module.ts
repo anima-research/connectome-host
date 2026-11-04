@@ -954,7 +954,8 @@ export class FleetModule implements Module {
         description:
           "Forward the source child's most recent completed speech since this host's connection to it last opened " +
           'to the target child as a text message. ' +
-          'Speech is the text from an inference round that did not end in tool calls (the child\'s "final answer" from its last turn). ' +
+          'Speech is the text of the source\'s latest inference round that ended without tool calls, outside a silent ' +
+          'heartbeat, so after a silent heartbeat it is an earlier turn\'s. When that round had no text, nothing is relayed. ' +
           'A source that has exited can still be relayed (useful for "pass on the dead child\'s last findings"). ' +
           'A running source this host can\'t reach isn\'t, since a reply this host holds from it may not be its latest. ' +
           'Target child must be running. ' +
@@ -1687,15 +1688,18 @@ export class FleetModule implements Module {
     const fromChild = this.children.get(input.from)!;
 
     const speech = fromChild.lastCompletedSpeech;
+    const unreachable = this.unreachable(fromChild);
     if (speech === '') {
       return {
         success: false,
         isError: true,
         error: `Nothing was relayed: the latest inference round this host saw from '${input.from}' ended without ` +
-          'tool calls, outside a silent heartbeat, had no text in it, so there was nothing to pass on.',
+          'tool calls, outside a silent heartbeat, and had no text in it, so there was nothing to pass on. ' +
+          (unreachable === null
+            ? `fleet--send gives '${input.from}' something to answer, and fleet--relay passes on its reply once it has.`
+            : `'${input.from}' ${unreachable}.`),
       };
     }
-    const unreachable = this.unreachable(fromChild);
     if (speech && unreachable !== null && (fromChild.status === 'ready' || fromChild.status === 'starting')) {
       return {
         success: false,
@@ -1717,8 +1721,8 @@ export class FleetModule implements Module {
             (unreachable !== null
               ? `, and it ${unreachable}.`
               : `. A reply counts once one of its inference rounds ends without tool calls, outside a silent ` +
-                `heartbeat, and fleet--relay ` +
-                `passes it on then; if '${input.from}' has nothing to answer, fleet--send gives it something.`)
+                `heartbeat, and fleet--relay passes it on then if that round has text in it; if '${input.from}' ` +
+                `has nothing to answer, fleet--send gives it something.`)
           : `Nothing was relayed: '${input.from}' has no finished reply on record, since its subscription ` +
             `(${fromChild.subscription.join(', ') || 'empty'}) leaves out inference:speech, so its replies never ` +
             `reach this host. fleet--restart keeps that subscription, ` +
