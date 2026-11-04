@@ -216,29 +216,6 @@ describe('subagents are Dendrite agents', () => {
     } finally { await h.cleanup(); }
   }, 30_000);
 
-  test('a resume of a subagent whose resident has been locked since runs disabled, as a new launch would', async () => {
-    let calls = 0;
-    const h = await harness({ responseGenerator: () => { calls++; if (calls === 1) throw new Error('the provider is unavailable'); return 'resumed and finished'; } });
-    try {
-      const configs: Array<Record<string, unknown>> = [];
-      const fw = h.framework as unknown as Record<string, (...args: unknown[]) => unknown>;
-      for (const [method, at] of [['createEphemeralAgent', 0], ['resumeAgent', 1]] as const) {
-        const original = fw[method]!.bind(h.framework);
-        fw[method] = (...args: unknown[]) => { configs.push(args[at] as Record<string, unknown>); return original(...args); };
-      }
-      const first = await h.call('spawn', { name: 'later-locked', systemPrompt: 'p', task: 'first pass', sync: true });
-      expect(first.success).toBe(false);
-      (h.framework.getAgent('parent') as unknown as { proseRouting: string }).proseRouting = 'locked';
-      expect((await h.call('resume', { name: 'later-locked' })).success).toBe(true);
-      await h.until(() => (h.recordOf('later-locked')?.incarnation ?? 0) === 2 && h.recordOf('later-locked')!.ended !== undefined, 'the second incarnation ends');
-      const [launched, resumed] = configs as [Record<string, unknown>, Record<string, unknown>];
-      expect(launched.proseRouting).toBe('locus');
-      expect(resumed.proseRouting).toBe('disabled');
-    } finally {
-      await h.cleanup();
-    }
-  });
-
   test('a resumed run is created with the thinking binding, window and summary voice its launch was created with', async () => {
     const cases = [
       { provider: 'anthropic', model: undefined, binding: { binds: true, dropBlock: true } },

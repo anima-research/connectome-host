@@ -3097,11 +3097,9 @@ export class SubagentModule implements Module {
       let resuming: ReturnType<AgentFramework['resumeAgent']> | undefined;
       let created: Awaited<ReturnType<AgentFramework['resumeAgent']>>;
       try {
-        // A resume follows its parent as it is now: a resident locked since
-        // the launch has its subagents run disabled, as a new launch would.
-        const parentLocked = framework.getAgent(parentAgentName)?.proseRouting === 'locked';
-        const resumed = parentLocked ? { ...launch, proseRouting: 'disabled' as const } : launch;
-        resuming = framework.resumeAgent(record.name, this.agentConfig(resumed, record.name));
+        // A resume runs as it was launched, which its orientation in the
+        // context it resumes from describes (agentConfig never runs locked).
+        resuming = framework.resumeAgent(record.name, this.agentConfig(launch, record.name));
         created = await Promise.race([resuming, cancel.promise]);
       } catch (err) {
         if (err instanceof SubagentTerminated) {
