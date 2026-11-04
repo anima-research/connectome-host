@@ -200,6 +200,19 @@ agent-framework's README, which its package ships
 doesn't know, or a value that isn't a finite number above 0, stops the load,
 naming it.
 
+`messageQuietPeriod`, at the recipe's top level, is agent-framework's message
+quiet period (`FrameworkConfig.messageQuietPeriod`, agent-framework#856),
+passed to the framework as written: an idle agent's turn waits while message
+wakes for it keep arriving, so a burst (a caption and its attachments, a
+reply split into several messages) starts one turn instead of one per part.
+`quietMs` is how long after the burst's newest message the turn starts, and
+`maxWaitMs` (default 30000) caps the wait from its oldest; each channel's
+burst is held on its own clock, so chatter in one channel neither delays
+another's turn nor takes its reply. `{"quietMs": 1500}` waits 1.5 s of
+quiet. Left out, no turn waits. A key it doesn't know, a missing `quietMs`,
+or a value that isn't a finite number of ms (0 or more) stops the load,
+naming it. An agent-framework without the option ignores the key.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is

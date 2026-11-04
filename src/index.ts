@@ -533,6 +533,9 @@ agents: [agentConfig],
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
     inferenceBounds: recipe.inferenceBounds,
+    // Passed by spread, as the heartbeat is: an agent-framework without the
+    // option (agent-framework#856) reads nothing it doesn't know.
+    ...(recipe.messageQuietPeriod !== undefined ? { messageQuietPeriod: recipe.messageQuietPeriod } : {}),
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
