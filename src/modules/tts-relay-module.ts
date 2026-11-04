@@ -270,10 +270,9 @@ export class TtsRelayModule implements Module {
   private onTraceEvent(event: TraceEvent): void {
     switch (event.type) {
       case 'inference:published': {
-        // The relay speaks for one server's channels, the one its edits go to: a
-        // channel id on another server may be the same string for another channel.
+        // The relay takes one server's raw channel ids, the server its edits go to.
+        // Another server's channel id can cut down to the same raw id.
         if (event.serverId !== (this.config.editServerId ?? 'discord')) break;
-        // A message with no words is never voiced, so it can't be the one interrupted.
         const content = event.text.replace(/^\n+/, '');
         if (!content.trim()) break;
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
