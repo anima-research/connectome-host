@@ -229,48 +229,22 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
  *  accepted (the mechanism the Agent SDK's system-prompt-append uses). */
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-/** How many runs of failures an adapter remembers, those begun latest. A run
- *  is a cache lineage's failed calls until a call on it succeeds or an hour
- *  passes with none failing (FAILING_RUN_GAP_MS); keepalive pokes, cancelled
- *  calls, and failed calls whose request is missing or can't be serialized
- *  count for neither. */
 const FAILING_RUNS_REMEMBERED = 256;
 
-/** The most of its failing requests one log can write in full at once, in
- *  UTF-8 bytes, whatever else differs between them: a budget that refills
- *  at this much per FAILED_REQUEST_COPY_REFILL_MS, so a long-running
- *  process can still keep a fresh failure after routine ones have spent it,
- *  while what failing requests' copies add to the file stays bounded per
- *  day. */
 const FAILED_REQUEST_COPY_BUDGET = 64 * 1024 * 1024;
 
-/** How long an empty budget for failing requests takes to refill whole. It
- *  refills continuously, in proportion to the time passed. */
 const FAILED_REQUEST_COPY_REFILL_MS = 24 * 60 * 60 * 1000;
 
-/** How long a run of failures on a lineage lasts after its last failed call.
- *  membrane's default retry delays are at most five minutes, so a call's
- *  retries stay one run, and so do a storm's turns while they come within an
- *  hour of each other, while a lineage that comes back later, as a
- *  reconnecting server's tool set does, starts a new one. A recipe whose
- *  retry delays pass an hour, or turns more than an hour apart, split a storm
- *  into runs: one more copy of each kind per run, within the budget. */
+/** membrane's default retry delays are at most five minutes, so a call's
+ *  retries fall within one run. */
 const FAILING_RUN_GAP_MS = 60 * 60 * 1000;
 
-/** A failing request written in full: its lineage's run, its kind of error,
- *  its size against the budget, and its hash, which the run's later notes
- *  of that kind name as their copy. */
 type Written = { lineage: string | undefined; kind: string; bytes: number; requestSha256: string };
 
-/** A lineage's run of failures, from the first that reached the copy
- *  decision: for each kind of error it has written a failing request of in
- *  full, the first such request's hash, and when it last failed. */
 type FailingRun = { kinds: Map<string, string>; lastFailureAt: number };
 
-/** The kind of failure a run keeps one copy of: membrane's error type, or
- *  for an error without a type its name, with the HTTP status when there is
- *  one, since membrane types every 5xx as `server` (a 500 can be an invalid
- *  request). */
+/** membrane types every 5xx as `server`, and a 500 can be an invalid request,
+ *  so the kind carries the HTTP status. */
 function failureKind(fields: Record<string, unknown> | undefined): string {
   const name = (fields?.error as { name?: unknown } | undefined)?.name;
   const type = typeof fields?.errorType === 'string' ? fields.errorType : `untyped ${typeof name === 'string' ? name : ''}`;
@@ -752,58 +726,23 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
-  /** The cache lineages (model, system and tools) failing since a call on
-   *  them, a turn or complete(), last succeeded, within FAILING_RUN_GAP_MS of their last failure,
-   *  each with its run: the FAILING_RUNS_REMEMBERED whose runs began latest,
-   *  oldest first, those that have ended dropped first (followRun), so the
-   *  map can't grow with every lineage a long process meets. A storm repeats
-   *  its lineage, not its request: membrane's retries resend one request,
-   *  but each turn adds the framework's failure marker and new messages, and
-   *  a running subagent's status line its clock. One
-   *  OAuth 429 storm wrote a ~4.4MB request per retry and grew a single
-   *  llm-calls file to 687MB. */
+  /** Keyed by lineage, not request: agent-framework adds its failure marker
+   *  and new messages to each turn's request. */
   private readonly failingRuns = new Map<string, FailingRun>();
-  /** The budget for failing requests this log, one per process, writes in
-   *  full: at most failedCopyBudget bytes at once, refilled at that much per
-   *  FAILED_REQUEST_COPY_REFILL_MS (failedCopyRoomNow). */
   private readonly failedCopyBudget = FAILED_REQUEST_COPY_BUDGET;
-  /** The budget's room, in bytes, as of failedCopyRefilledAt; undefined
-   *  before the first failing request, when the budget is whole. */
   private failedCopyRoom: number | undefined;
   private failedCopyRefilledAt = 0;
-  /** Whether a copy refused for the budget has been told on stderr since the
-   *  last copy written: one line per spell with no room, not one per record. */
   private budgetRefusalTold = false;
 
-  /** An error record's request fields. Whatever the error, a cancelled call
-   *  apart, the first failing request of each kind (failureKind) in a
-   *  lineage's run of failures that the budget has room for, and whose
-   *  record the line bound leaves whole, is kept whole, since any
-   *  failure, a 429 included (see
-   *  OAUTH_SYSTEM_IDENTITY), can be the request's doing, and a run's first
-   *  failure of a kind is where its cause shows. The run's later failures of
-   *  that kind, and any whose request the log's budget for failing requests
-   *  (FAILED_REQUEST_COPY_BUDGET, refilled over FAILED_REQUEST_COPY_REFILL_MS)
-   *  has no room for now, record the request's size in `rawRequestOmitted`
-   *  instead (a repeat with its run's copy's hash, `copySha256`, which is
-   *  that copy's record's `requestSha256`), as a cancelled call (membrane's `abort`) always does, since a
-   *  cancellation is never the request's doing; it leaves its lineage's run
-   *  as it was. A request with no lineage is held to the budget alone. Each
-   *  complete or stream error record whose request can be serialized
-   *  carries `requestSha256`, unless the line bound cuts it to its head, so
-   *  identical requests show as such. `remember` is what to note once the
-   *  record is appended whole. LLM_CALLS_FULL_PAYLOADS=1 keeps every call's
-   *  request, this one included. */
   private errorRequestFields(rawRequest: unknown, lineage: string | undefined, kind: string, aborted: boolean): {
     fields: Record<string, unknown>;
     remember?: Written;
   } {
     if (rawRequest == null) return { fields: { rawRequest } };
     let text: string | undefined;
-    try { text = JSON.stringify(rawRequest); } catch { /* unserializable: no hash */ }
+    try { text = JSON.stringify(rawRequest); } catch { }
     if (typeof text !== 'string') return { fields: { rawRequest } };
     const requestSha256 = createHash('sha256').update(text).digest('hex');
-    // UTF-8 bytes, not UTF-16 code units: non-ASCII text would read smaller.
     const bytes = Buffer.byteLength(text, 'utf8');
     if (this.fullPayloads) return { fields: { rawRequest, requestSha256 } };
     const omitted = (because: string) => ({
@@ -835,21 +774,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       return omitted(`this log's budget for failing requests in full (${this.failedCopyBudget} bytes, refilled at that `
         + 'much a day) has no room for this one now');
     }
-    // Noted only once its record is written whole: a record the line bound cut
-    // has no copy, so the run's next failure of the kind tries again, as one
-    // the budget refused does.
     return { fields: { rawRequest, requestSha256 }, remember: { lineage, kind, bytes, requestSha256 } };
   }
 
-  /** A lineage's run, started now if none is going on, which makes this
-   *  failure its first: one whose last failure is older than
-   *  FAILING_RUN_GAP_MS has ended. Every failed call that comes here counts
-   *  as the run's latest, whether or not its request is kept, so a run
-   *  begins at its first failure, not at its first copy. A cancelled call,
-   *  one whose request is missing or can't be serialized, a keepalive poke's
-   *  failure, and every call with LLM_CALLS_FULL_PAYLOADS=1 don't come here.
-   *  A run's latest failure never moves back: a clock stepped back would
-   *  otherwise end the run early once it came forward again. */
   private followRun(lineage: string): FailingRun {
     const now = Date.now();
     const run = this.failingRuns.get(lineage);
@@ -857,12 +784,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       run.lastFailureAt = Math.max(run.lastFailureAt, now);
       return run;
     }
-    // A run that has ended starts again, last in begun-latest order.
     if (run) this.failingRuns.delete(lineage);
     const started: FailingRun = { kinds: new Map(), lastFailureAt: now };
     this.failingRuns.set(lineage, started);
     if (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
-      // Runs that have ended go first, then those begun earliest.
       for (const [other, otherRun] of this.failingRuns) {
         if (now - otherRun.lastFailureAt > FAILING_RUN_GAP_MS) this.failingRuns.delete(other);
       }
@@ -873,9 +798,6 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     return started;
   }
 
-  /** The budget's room now: what was left at the last refill, plus what the
-   *  time since has refilled at failedCopyBudget per
-   *  FAILED_REQUEST_COPY_REFILL_MS, up to the whole budget. */
   private failedCopyRoomNow(): number {
     const now = Date.now();
     const room = this.failedCopyRoom === undefined
@@ -883,14 +805,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       : Math.min(this.failedCopyBudget,
         this.failedCopyRoom + (Math.max(0, now - this.failedCopyRefilledAt) * this.failedCopyBudget) / FAILED_REQUEST_COPY_REFILL_MS);
     this.failedCopyRoom = room;
-    // Never moved back: a clock stepped back would otherwise credit the same
-    // stretch again once it came forward.
     this.failedCopyRefilledAt = Math.max(this.failedCopyRefilledAt, now);
     return room;
   }
 
-  /** One stderr line the first time the budget refuses a copy since the last
-   *  copy written, so a spent budget shows outside the records too. */
   private tellBudgetRefusal(bytes: number): void {
     if (this.budgetRefusalTold) return;
     this.budgetRefusalTold = true;
@@ -904,20 +822,15 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     } catch { /* never throw from logging */ }
   }
 
-  /** Notes a failing request as written in full: its bytes against the
-   *  budget, and its hash as its kind's copy in its lineage's run, which
-   *  followRun began at the run's first failure. */
   private rememberFailedRequest({ lineage, kind, bytes, requestSha256 }: Written): void {
     this.failedCopyRoom = this.failedCopyRoomNow() - bytes;
     this.budgetRefusalTold = false;
     if (lineage !== undefined) this.failingRuns.get(lineage)?.kinds.set(kind, requestSha256);
   }
 
-  /** A call's success on a lineage, a turn's or complete()'s, ends its run
-   *  of failures, and only its own: one adapter serves every caller. A
-   *  keepalive poke's doesn't: a poke replays a request derived from the
-   *  lineage's latest one the provider began answering, with max_tokens 0
-   *  and no stream, so it can succeed while every new call fails. */
+  /** Not called for a keepalive poke: membrane's poke replays the lineage's
+   *  latest request the provider began answering, with max_tokens 0 and no
+   *  stream, so it can succeed while every new call fails. */
   private endFailingRun(lineage: unknown): void {
     if (typeof lineage === 'string') this.failingRuns.delete(lineage);
   }
@@ -990,7 +903,6 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         record = { ...head, ...ids, summaryUnavailable: true, ...errorFields };
       }
       const saved = this.log(record);
-      // A failing request's copy counts only once its record is written whole.
       if (remember !== undefined && saved.written && saved.kept === 'whole') this.rememberFailedRequest(remember);
       if (anomaly) {
         try {
