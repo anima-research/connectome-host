@@ -378,6 +378,16 @@ export class AgentTreeReducer {
     this.callIdIndex.clear();
   }
 
+  /** Drops a finished tool call's route, for an owner that outlives many of them. */
+  forgetCall(callId: string): void {
+    this.callIdIndex.delete(callId);
+  }
+
+  /** Drops an agent that ended, for an owner that outlives many of them. */
+  forgetAgent(name: string): void {
+    this.nodes.delete(name);
+  }
+
   getSnapshot(): AgentTreeSnapshot {
     return {
       asOfTs: Date.now(),

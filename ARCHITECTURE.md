@@ -293,7 +293,9 @@ All three surfaces share two layers, so they cannot drift apart:
 makeup/coverage/curve/preview, MCPL status, media — run in-process by the
 WebUI and inside a child on a fleet `panel-request`). The agent tree shown by
 both UIs is folded from trace events by `src/state/agent-tree-reducer.ts`,
-one reducer per process.
+one reducer per process. `src/state/agent-phases.ts` runs the same reducer on
+the server for observers holding `health`, who see each agent's phase without
+the traces it comes from.
 
 - **TUI** — chat with streaming, thinking and tool lines (Ctrl+V for
   verbose); a fleet tree of local subagents, fleet children and their agents
