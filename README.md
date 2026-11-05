@@ -211,7 +211,9 @@ burst is held on its own clock, so chatter in one channel neither delays
 another's turn nor takes its reply. `{"quietMs": 1500}` waits 1.5 s of
 quiet. Left out, no turn waits. A key it doesn't know, a missing `quietMs`,
 or a value that isn't a finite number of ms (0 or more) stops the load,
-naming it. An agent-framework without the option ignores the key.
+naming it, and so does setting it beside `speech.locus: "latest-inbound"`,
+which agent-framework refuses too. An agent-framework without the option
+ignores the key.
 
 ### Prose routing
 

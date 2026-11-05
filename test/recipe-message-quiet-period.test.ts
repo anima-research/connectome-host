@@ -39,4 +39,10 @@ describe('messageQuietPeriod at load', () => {
       expect(() => validateRecipe({ ...RECIPE, messageQuietPeriod: value })).toThrow(message);
     }
   });
+
+  test("refuses the option with speech.locus 'latest-inbound', as agent-framework's create does", () => {
+    expect(() => validateRecipe({ ...RECIPE, messageQuietPeriod: { quietMs: 1500 }, speech: { locus: 'latest-inbound' } }))
+      .toThrow("messageQuietPeriod can't be used with speech.locus \"latest-inbound\"");
+    expect(validateRecipe({ ...RECIPE, messageQuietPeriod: { quietMs: 1500 }, speech: { locus: 'delivery' } }).messageQuietPeriod).toEqual({ quietMs: 1500 });
+  });
 });

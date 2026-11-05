@@ -3481,6 +3481,12 @@ export function validateRecipe(raw: unknown): Recipe {
     if (speech.locus !== undefined && speech.locus !== 'delivery' && speech.locus !== 'latest-inbound') {
       throw new Error('Recipe speech.locus must be "delivery" or "latest-inbound".');
     }
+    // agent-framework refuses the pair at create (agent-framework#856): under
+    // latest-inbound a held message would become a turn's fallback locus.
+    // Refused here too, so the recipe never reaches that error.
+    if (speech.locus === 'latest-inbound' && obj.messageQuietPeriod !== undefined) {
+      throw new Error("Recipe messageQuietPeriod can't be used with speech.locus \"latest-inbound\": a held message would become a turn's fallback locus. Use the default \"delivery\" locus.");
+    }
   }
 
   if (obj.tuneOut !== undefined) {
