@@ -47,7 +47,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   `cancelled`, or idle. A fleet parent on an earlier release can show a
   child's `attempt-failed` agent in a plain colour and leave it out of its
   count of running agents. On a fleet child running agent-framework older
-  than 0.27.0, a held turn whose retry is dropped ends with no event, so it
+  than 0.26.2, a held turn whose retry is dropped ends with no event, so it
   shows `attempt-failed`, and counts as running, until that agent's next
   attempt starts. On one older than 0.22.3, an agent stopped through
   `Agent.cancelStream` shows `failed`.
