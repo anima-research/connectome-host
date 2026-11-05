@@ -126,13 +126,23 @@ stream, and decides where and how loudly each alert kind is told.
 
 Off-path refusals with subject `host` are process notices about individual calls.
 They include the model, category, message count, and input-token count. A burst
-shares one `quietMs` window and posts its latest diagnostics. The notice is
-consumed after every configured status channel hears it (immediately if there
-are none); a later refusal starts fresh delivery. Failed delivery stays pending
+shares one `quietMs` window and posts its latest diagnostics. Each configured
+status channel also has a `renotifyMs` floor (30 minutes by default) between
+successfully acknowledged process posts, including across consumed notices and
+reconnects. Diagnostics coalesce to the latest message during that cooldown;
+a delayed or broken channel does not postpone another channel. A later refusal,
+such as Monday followed by Friday, starts fresh delivery after the floor.
+
+Delivery follows an at-least-once retry policy: failed delivery stays pending
 for a later refusal, reconnect, or framework replacement, without an automatic
-retry loop. These notices produce no recovery line, agent reply, or context
-marker, and a reply-tier override is capped at status. Agent inference success
-does not establish recovery of an auxiliary call.
+retry loop. An unknown outcome or exception can mean the post succeeded but its
+response was lost. Retrying can therefore duplicate a post; the acknowledged
+rate bound does not bound these ambiguous-delivery duplicates. The notice is
+consumed after every configured status channel acknowledges it (immediately if
+there are none). These notices produce no recovery line, agent reply, or context
+marker, and a reply-tier override is capped at status. The displayed subject
+remains `host`, with an internal identity separate from an agent named `host`.
+Agent inference success does not establish recovery of an auxiliary call.
 
 Other episodes close on the kind's `-clear` alert, or, for framework kinds with no
 clear (`hard-down`, agent refusals), on the agent's next completed inference; an
