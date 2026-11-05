@@ -1,0 +1,186 @@
+import { describe, expect, test } from 'bun:test';
+import { escapeActs, escapeLine, formatWireEvent, peekEndColor, peekEndLine, rootTurnEnd, rootTurnStep } from '../src/tui.js';
+import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
+
+describe('rootTurnEnd', () => {
+  test('every stream end gives a turn that is showing something to show', () => {
+    for (const type of STREAM_END_TRACES) {
+      expect(rootTurnEnd({ type, error: 'x' }, true)).not.toBeNull();
+    }
+  });
+
+  test('a normal end and a turn a tool ended both go idle and show a backgrounded turn', () => {
+    expect(rootTurnEnd({ type: 'inference:completed' }, true)).toEqual({ status: 'idle', background: 'show' });
+    expect(rootTurnEnd({ type: 'inference:turn_ended' }, true)).toEqual({ status: 'idle', background: 'show' });
+  });
+
+  test("a failed attempt shows its error and leaves the turn going, cutting a backgrounded turn's output back to the attempt's start", () => {
+    expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, true)).toEqual({
+      status: 'attempt-failed', background: 'cut', line: { text: 'Error: overloaded', tone: 'error' },
+    });
+  });
+
+  test("an end whose error is empty or missing says 'Unknown error'", () => {
+    expect(rootTurnEnd({ type: 'inference:failed', error: '' }, true)?.line?.text).toBe('Error: Unknown error');
+    expect(rootTurnEnd({ type: 'inference:exhausted' }, true)?.line?.text).toBe('(turn ended: Unknown error)');
+  });
+
+  test('an abort goes idle and names its reason when it has one', () => {
+    expect(rootTurnEnd({ type: 'inference:aborted', reason: 'quiesce_abandoned' }, true)).toEqual({
+      status: 'idle', background: 'drop', line: { text: '(turn aborted: quiesce_abandoned)', tone: 'note' },
+    });
+    expect(rootTurnEnd({ type: 'inference:aborted' }, true)?.line?.text).toBe('(turn aborted)');
+  });
+
+  test('an exhausted stream that nothing ended before shows as a failure, with the framework\'s words', () => {
+    // agent-framework sends inference:exhausted alone, as "Stream aborted: <reason>",
+    // for a stream aborted other than by a stop, which ends with `aborted`.
+    expect(rootTurnEnd({ type: 'inference:exhausted', error: 'Stream aborted: timeout' }, true)).toEqual({
+      status: 'error', background: 'drop', line: { text: '(turn ended: Stream aborted: timeout)', tone: 'error' },
+    });
+  });
+
+  test('an end while no turn is showing adds nothing, but a failed attempt', () => {
+    for (const type of STREAM_END_TRACES) {
+      if (type !== 'inference:failed') expect(rootTurnEnd({ type, error: 'x' }, false)).toBeNull();
+    }
+    expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, false)).toEqual({
+      status: 'attempt-failed', background: 'cut', line: { text: 'Error: overloaded', tone: 'error' },
+    });
+  });
+
+  test('a trace that is not a stream end changes nothing', () => {
+    for (const type of ['inference:started', 'inference:stream_resumed', 'inference:tokens', 'inference:stream_restarted']) {
+      expect(rootTurnEnd({ type }, true)).toBeNull();
+    }
+  });
+});
+
+describe('rootTurnStep', () => {
+  test('a failed attempt leaves the turn showing, and the end that follows ends it, once', () => {
+    let step = rootTurnStep(false, { type: 'inference:started' });
+    expect(step).toEqual({ showing: true, end: null });
+    step = rootTurnStep(step.showing, { type: 'inference:failed', error: 'overloaded' });
+    expect(step.showing).toBe(true);
+    expect(step.end?.status).toBe('attempt-failed');
+    step = rootTurnStep(step.showing, { type: 'inference:exhausted', error: 'overloaded' });
+    expect(step.showing).toBe(false);
+    expect(step.end?.status).toBe('error');
+    step = rootTurnStep(step.showing, { type: 'inference:aborted' });
+    expect(step).toEqual({ showing: false, end: null });
+  });
+
+  test('a stop after a failed attempt ends the turn idle', () => {
+    const failed = rootTurnStep(true, { type: 'inference:failed', error: 'held' });
+    expect(rootTurnStep(failed.showing, { type: 'inference:aborted', reason: 'shutdown' }).end).toEqual({
+      status: 'idle', background: 'drop', line: { text: '(turn aborted: shutdown)', tone: 'note' },
+    });
+  });
+
+  test('a failed attempt the TUI saw no start for shows the turn, so its end shows', () => {
+    const failed = rootTurnStep(false, { type: 'inference:failed', error: 'held' });
+    expect(failed.showing).toBe(true);
+    expect(rootTurnStep(failed.showing, { type: 'inference:exhausted', error: 'held' }).end?.status).toBe('error');
+  });
+
+  test('each of the four turn ends ends a turn that is showing', () => {
+    for (const type of ['inference:completed', 'inference:turn_ended', 'inference:aborted', 'inference:exhausted']) {
+      const step = rootTurnStep(true, { type, error: 'x' });
+      expect(step.showing).toBe(false);
+      expect(step.end).not.toBeNull();
+    }
+  });
+
+  test('a retry\'s start shows the turn again after a failure', () => {
+    const failed = rootTurnStep(true, { type: 'inference:failed', error: 'overloaded' });
+    const retry = rootTurnStep(failed.showing, { type: 'inference:started' });
+    expect(retry.showing).toBe(true);
+    expect(rootTurnStep(retry.showing, { type: 'inference:completed' }).end).toEqual({ status: 'idle', background: 'show' });
+  });
+
+  test('a running turn\'s tool calls and resumed stream show it, so its own end shows', () => {
+    for (const type of ['inference:tool_calls_yielded', 'inference:stream_resumed']) {
+      const running = rootTurnStep(false, { type });
+      expect(running).toEqual({ showing: true, end: null });
+      expect(rootTurnStep(running.showing, { type: 'inference:completed' }).end).toEqual({ status: 'idle', background: 'show' });
+    }
+  });
+
+  test('any other trace leaves the flag as it is', () => {
+    for (const showing of [true, false]) {
+      for (const type of ['inference:tokens', 'inference:content_block', 'inference:usage', 'tool:started']) {
+        expect(rootTurnStep(showing, { type })).toEqual({ showing, end: null });
+      }
+    }
+  });
+});
+
+describe("a fleet child's peek log", () => {
+  test("shows each of a stream's ends but its completion as a subagent's peek does, a lone exhausted as a failure with its error", () => {
+    const ends = [
+      { type: 'inference:turn_ended' },
+      { type: 'inference:aborted', reason: 'user' },
+      { type: 'inference:failed', error: 'overloaded' },
+      { type: 'inference:exhausted', error: 'Stream aborted: timeout' },
+    ];
+    for (const end of ends) {
+      const line = peekEndLine(end)!;
+      expect(formatWireEvent(end as never)).toEqual({ text: line.text, color: peekEndColor(line.tone) });
+    }
+    expect(formatWireEvent({ type: 'inference:exhausted', error: 'Stream aborted: timeout' } as never)).toEqual({
+      text: '✗ turn ended: Stream aborted: timeout', color: '#cc0000',
+    });
+    expect(formatWireEvent({ type: 'inference:completed' } as never)).toEqual({ text: '─ inference completed ─', color: '#555555' });
+  });
+
+  test('a peek shows a failure in red, a stop in yellow and a turn a tool ended in grey', () => {
+    expect(peekEndColor('error')).toBe('#cc0000');
+    expect(peekEndColor('warn')).toBe('#cccc00');
+    expect(peekEndColor('dim')).toBe('#555555');
+  });
+});
+
+describe('peekEndLine', () => {
+  test("each of a subagent stream's ends but its completion shows its own line in the peek view", () => {
+    expect(peekEndLine({ type: 'inference:turn_ended' })).toEqual({ text: '── turn ended by a tool ──', tone: 'dim' });
+    expect(peekEndLine({ type: 'inference:aborted', reason: 'user' })).toEqual({ text: '✗ turn aborted: user', tone: 'warn' });
+    expect(peekEndLine({ type: 'inference:aborted' })).toEqual({ text: '✗ turn aborted', tone: 'warn' });
+    expect(peekEndLine({ type: 'inference:aborted', reason: '' })).toEqual({ text: '✗ turn aborted', tone: 'warn' });
+    expect(peekEndLine({ type: 'inference:failed', error: 'overloaded' })).toEqual({ text: '✗ inference failed: overloaded', tone: 'error' });
+    expect(peekEndLine({ type: 'inference:exhausted', error: 'Unknown error' })).toEqual({ text: '✗ turn ended: Unknown error', tone: 'error' });
+    expect(peekEndLine({ type: 'inference:completed' })).toBeNull();
+    expect(peekEndLine({ type: 'inference:tokens' })).toBeNull();
+  });
+
+  test("an end whose error is missing or empty says 'Unknown error'", () => {
+    expect(peekEndLine({ type: 'inference:failed' })).toEqual({ text: '✗ inference failed: Unknown error', tone: 'error' });
+    expect(peekEndLine({ type: 'inference:exhausted', error: '' })).toEqual({ text: '✗ turn ended: Unknown error', tone: 'error' });
+  });
+});
+
+describe('escapeLine', () => {
+  test("Escape's line for each outcome, and whether it shows the turn as ended itself", () => {
+    expect(escapeLine('aborted', '')).toEqual({ text: null, endsTurn: false });
+    expect(escapeLine('aborted', '2 subagents stopped')).toEqual({ text: '  (2 subagents stopped)', endsTurn: false });
+    expect(escapeLine('deferred', '')).toEqual({ text: '  (interrupting: the turn stops as soon as it can be aborted)', endsTurn: false });
+    expect(escapeLine('deferred', '1 subagent stopped'))
+      .toEqual({ text: '  (interrupting: the turn stops as soon as it can be aborted; 1 subagent stopped)', endsTurn: false });
+    expect(escapeLine('idle', '')).toEqual({ text: '  (no turn interrupted)', endsTurn: true });
+    expect(escapeLine('idle', '1 subagent stopped')).toEqual({ text: '  (no turn interrupted — 1 subagent stopped)', endsTurn: true });
+  });
+});
+
+describe('escapeActs', () => {
+  test('Escape acts while the status line shows a turn, not when idle or while the host switches sessions', () => {
+    for (const running of [false, true]) {
+      expect(escapeActs('idle', running)).toBe(false);
+      expect(escapeActs('switching', running)).toBe(false);
+      for (const status of ['thinking', 'tools', 'background', 'queued']) expect(escapeActs(status, running)).toBe(true);
+    }
+  });
+
+  test('on an error, only while the follower has the root\'s turn running, whatever set the error', () => {
+    expect(escapeActs('error', true)).toBe(true);
+    expect(escapeActs('error', false)).toBe(false);
+  });
+});

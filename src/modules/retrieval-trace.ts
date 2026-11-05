@@ -25,6 +25,7 @@ export type RetrievalTraceOutcome =
   | 'no-concepts'
   | 'no-candidates'
   | 'no-relevant-lessons'
+  | 'too-large'
   | 'injected'
   | 'error';
 
@@ -53,10 +54,8 @@ export interface RetrievalCandidateTrace extends RetrievalLessonTrace {
 
 export interface RetrievalStageTrace {
   systemPrompt: string;
-  /** Exact user input. Omitted from default HTTP views. */
   input?: string;
   rawOutput?: string;
-  /** Provider-returned content blocks, including any opaque/redacted reasoning blocks. */
   responseContent?: unknown[];
   responseContentTruncation?: RetrievalProviderTruncation;
   parsedValues?: string[];
@@ -102,7 +101,6 @@ export interface RetrievalTrace {
     hash: string;
     messageCount: number;
     messageIds: string[];
-    /** Rendered recent conversation. Omitted from default HTTP views. */
     input?: string;
   };
   cache: {
@@ -141,7 +139,6 @@ export interface RetrievalTraceListOptions {
   includeInputs?: boolean;
 }
 
-/** Structural interface used by WebUiModule to avoid importing RetrievalModule. */
 export interface RetrievalTraceSource {
   getRetrievalTraces(options?: RetrievalTraceListOptions): RetrievalTrace[];
 }
@@ -490,11 +487,12 @@ function candidateMatches(concepts: string[], lesson: Lesson): RetrievalCandidat
   return matches;
 }
 
-/**
- * Mutable handle for one retrieval run. Every mutation is guarded so tracing
- * can never make retrieval fail; a malformed trace is less important than the
- * inference it observes.
- */
+function stripPayloadARunMayHold(trace: RetrievalTrace): void {
+  const id = trace.id;
+  for (const key of Object.keys(trace)) Reflect.deleteProperty(trace, key);
+  Object.assign(trace, { id });
+}
+
 export class RetrievalTraceRun {
   private finished = false;
 
@@ -512,7 +510,6 @@ export class RetrievalTraceRun {
     try {
       this.store.update(this.trace, fn);
     } catch {
-      // Observability is strictly fail-open.
     }
   }
 
@@ -653,7 +650,6 @@ export class RetrievalTraceRun {
     try {
       this.store.finish(this.trace, outcome, error);
     } catch {
-      // Observability is strictly fail-open.
     }
   }
 }
@@ -780,11 +776,7 @@ export class RetrievalTraceStore {
         this.sizes.delete(oldest);
         if (Number.isFinite(size)) this.payloadBytes -= size;
         else this.recalculatePayloadBytes();
-        // A still-running RetrievalTraceRun may retain this object. Strip its
-        // payload as part of eviction so concurrent active runs cannot bypass
-        // the store's memory bound; the ID remains available for provenance.
-        for (const key of Object.keys(oldest)) Reflect.deleteProperty(oldest, key);
-        Object.assign(oldest, { id: evictedId });
+        stripPayloadARunMayHold(oldest);
       } while (this.traces.length > this.capacity || this.totalEncodedBytes() > this.byteBudget);
       if (evicted.size === 0) break;
       this.rewriteEvictedProvenance(evicted);

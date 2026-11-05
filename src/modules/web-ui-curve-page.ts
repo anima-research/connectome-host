@@ -1,20 +1,7 @@
 /**
- * The context-curve page served at GET /curve (web-ui-module).
- *
- * Self-contained HTML: fetches /debug/context/curve (same origin, same basic
- * auth) and renders (a) an XY plot of cumulative raw-history tokens vs
- * cumulative rendered context tokens — each segment one compiled entry, slope
- * = local compression rate, colored by fold level — and (b) the full raw
- * compiled window, filterable by kind. Both themes; no external resources.
- *
- * Born 2026-07-12 during the mythos inversion incident: the curve makes a
- * misallocated resolution profile visible at a glance (an inversion reads as
- * a flat shelf right before the tail; depth debt as a too-steep middle).
- *
  * This is a template literal, which would take a backslash escape or a ${ in
  * it before the browser saw it, so it holds neither, and the page is served
- * as written. test/web-ui-page-scripts.test.ts checks that its text is the
- * template as written, and parses its script.
+ * as written.
  */
 export const CURVE_PAGE_HTML = `<!doctype html>
 <html lang="en">

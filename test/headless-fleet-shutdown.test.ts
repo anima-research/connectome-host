@@ -1,8 +1,9 @@
 import { test, expect, spyOn } from 'bun:test';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
-import { connect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { join } from 'node:path';
+import { connectWhenAccepting } from './ipc-connect.js';
 import { FleetModule } from '../src/modules/fleet-module.ts';
 
 const fixture = join(import.meta.dir, 'mock-headless-fleet-shutdown-child.ts');
@@ -45,7 +46,7 @@ for (const mode of ['caller-deadline', 'detach']) {
       pid = JSON.parse(readFileSync(join(dir, 'child-pid.json'), 'utf8')).pid;
       expect(Number.isSafeInteger(pid) && pid! > 0).toBe(true);
       expect(alive(pid!)).toBe(true);
-      socket = connect(join(dir, 'ipc.sock'));
+      socket = await connectWhenAccepting(join(dir, 'ipc.sock'));
       await new Promise<void>((resolve, reject) => {
         let buffer = '';
         socket!.setEncoding('utf8');
@@ -81,8 +82,6 @@ for (const mode of ['caller-deadline', 'detach']) {
       await closed;
       if (pid === undefined && existsSync(join(dir, 'child-pid.json'))) pid = JSON.parse(readFileSync(join(dir, 'child-pid.json'), 'utf8')).pid;
       if (pid !== undefined && alive(pid)) {
-        // Bind cleanup to this exact fixture and unique launch argument before
-        // signaling a detached PID; never use a broad process match.
         const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
         if (!command.includes(fixture) || !command.includes(join(dir, 'fixture-recipe.json'))) {
           throw new Error(`Refusing cleanup of changed PID ${pid}`);

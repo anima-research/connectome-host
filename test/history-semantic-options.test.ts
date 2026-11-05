@@ -1,9 +1,3 @@
-/**
- * src/history-semantic.ts — the createFramework seam for modules.history
- * (Anarchid #1, #2, #9 on PR #144): namespace is always per-session, an
- * explicit namespace is a PREFIX, host-only keys never reach the framework,
- * and a configured-but-missing semantic_search tool fails startup.
- */
 import { describe, test, expect } from 'bun:test';
 import { HistoryModule } from '@animalabs/agent-framework';
 import { historyModuleOptions, assertSemanticSearchRegistered } from '../src/history-semantic.js';

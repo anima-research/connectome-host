@@ -1,11 +1,5 @@
-/**
- * Synesthete — auto-generates evocative session names via a quick Haiku call.
- *
- * Called after a few user messages in an auto-named session. Produces a
- * 2–4 word name that captures the session's topic/mood.
- */
-
 import type { Membrane } from '@animalabs/membrane';
+import { storedInjectionMarkOf } from '@animalabs/agent-framework';
 
 const DEFAULT_EXAMPLES = [
   'Context Window Budgeting',
@@ -28,10 +22,22 @@ ${exampleList}
 Respond with ONLY the name, nothing else. No quotes, no explanation.`;
 }
 
-/**
- * Generate a session name from conversation content.
- * Returns the generated name, or null if the call fails.
- */
+export function namingSummary(
+  messages: ReadonlyArray<{ participant: string; content: ReadonlyArray<{ type: string; text?: unknown }>; metadata?: unknown }>,
+): string {
+  return messages
+    .filter(m => m.content.some(b => b.type === 'text') && storedInjectionMarkOf(m.metadata) === undefined)
+    .slice(0, 6)
+    .map(m => {
+      const text = m.content
+        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+        .map(b => b.text)
+        .join(' ');
+      return `${m.participant}: ${text.slice(0, 200)}`;
+    })
+    .join('\n');
+}
+
 export async function generateSessionName(
   membrane: Membrane,
   conversationSummary: string,
@@ -59,7 +65,6 @@ export async function generateSessionName(
       .join('')
       .trim();
 
-    // Sanity check: should be short and non-empty
     if (!text || text.length > 60 || text.includes('\n')) return null;
     return text;
   } catch {

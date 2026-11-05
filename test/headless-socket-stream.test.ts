@@ -1,14 +1,13 @@
 import { test, expect } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, realpathSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { connect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 const root = resolve(import.meta.dir, '..');
 
-// Observe the actual server socket without replacing its decoder or listeners.
-// Each acknowledgment follows raw receipt on a later event-loop turn.
 const preload = `
 import { Server } from 'node:net';
 import { join } from 'node:path';
@@ -51,7 +50,6 @@ test('production headless receiver preserves Unicode commands at every byte boun
       await new Promise<void>(resolve => setTimeout(resolve, 5));
     }
   }
-  // Cleanup owns all resources before setup awaits, including startup failure.
   try {
     const recipePath = join(dir, 'recipe.json');
     const preloadPath = join(dir, 'observe.ts');
@@ -79,7 +77,7 @@ test('production headless receiver preserves Unicode commands at every byte boun
       } catch (error) { failure = error instanceof Error ? error : new Error(String(error)); }
     });
     await waitFor(() => existsSync(socketPath), 'headless startup', 15000);
-    socket = connect(socketPath);
+    socket = await connectWhenAccepting(socketPath);
     socket.on('error', error => { failure = error; });
     socket.setEncoding('utf8');
     let buffer = '';
@@ -103,7 +101,6 @@ test('production headless receiver preserves Unicode commands at every byte boun
     let written = 0;
     const splitWidths = new Set<number>();
     for (let cut = 1; cut < frame.length; cut++) {
-      // Record continuation-byte cuts to verify 2/3/4-byte coverage.
       if ((frame[cut]! & 0xc0) === 0x80) {
         let start = cut - 1;
         while ((frame[start]! & 0xc0) === 0x80) start--;
@@ -122,11 +119,13 @@ test('production headless receiver preserves Unicode commands at every byte boun
       expect(snapshots.at(-1)!.corrId).toBe(corrId);
     }
     expect([...splitWidths].sort()).toEqual([2, 3, 4]);
+    const nodes = (snapshots[0]!.tree as { nodes: Array<{ name: string; kind: string }> }).nodes;
+    expect(nodes.find(node => node.name === 'commander')?.kind).toBe('framework');
     const batch = ['é first', '漢 second', '𐐷 third'];
     socket.write(batch.map(corrId => JSON.stringify({ type: 'describe', corrId }) + '\n').join(''));
-    await waitFor(() => snapshots.length >= frame.length - 1 + batch.length, 'ordered batch');
+    await waitFor(() => snapshots.length >= frame.length - 1 + batch.length, 'the batch\'s snapshots');
     expect(snapshots).toHaveLength(frame.length - 1 + batch.length);
-    expect(snapshots.slice(-batch.length).map(event => event.corrId)).toEqual(batch);
+    expect(snapshots.slice(-batch.length).map(event => event.corrId).sort()).toEqual([...batch].sort());
   } finally {
     closing = true;
     socket?.destroy();

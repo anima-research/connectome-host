@@ -1,8 +1,3 @@
-/**
- * /nudge — admin-level: run inference on the agent's CURRENT context without
- * adding any message or event. Thin shim over framework.nudgeAgent(); these
- * tests pin the argument pass-through and the operator-facing wording.
- */
 import { describe, expect, test } from 'bun:test';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { handleCommand } from '../src/commands.js';

@@ -1,10 +1,3 @@
-/**
- * MCPL RFC-008 §6 on the operator surfaces: `/tools` (TUI, readline, web UI
- * and headless share handleCommand) and the `tool-classes` panel op behind
- * `GET /debug/tool-classes`, against a real AgentFramework configured the way
- * index.ts configures it (toolClassConfig), plus stubs for the edges the real
- * framework can't produce here (MCPL rows, a build without the listing).
- */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,9 +10,6 @@ import { handleCommand } from '../src/commands.js';
 import { formatToolClassRows, toolClassConfig, type ToolClassRow } from '../src/tool-lifecycle-config.js';
 import { buildMcplSnapshot, runPanelOp } from '../src/web/panel-data.js';
 
-/** A module whose tools fall under each class source: `lessons--*` is in
- *  HOST_TOOL_CLASSES (memory), `probe--note` is overridden by the recipe,
- *  `probe--misc` is unclassed. */
 function probeModule(name: string, tools: string[]): Module {
   return {
     name,
@@ -79,10 +69,8 @@ describe('/tools', () => {
     expect(row('probe--note')).toBe('probe--note notes operator override');
     expect(row('lessons--recall')).toBe('lessons--recall memory host table');
     expect(row('probe--misc')).toBe('probe--misc - unclassed');
-    // Sorted by tool name.
     const tools = lines.slice(2).filter((l) => /^ {2}\S+ {2,}/.test(l)).map((l) => l.trim().split(/\s+/)[0]!);
     expect(tools).toEqual([...tools].sort());
-    // The unclassed footnote says what unclassed means and how to fix it.
     expect(lines.at(-1)).toContain('toolClassOverrides');
   });
 
@@ -97,7 +85,6 @@ describe('/tools', () => {
     const fw = { listToolClasses: (agent?: string) => { asked.push(agent); return rows; } };
     expect(texts('/tools Custom Import', fw)[0]).toBe('--- Tool classes: 1 tool (Custom Import) ---');
     texts('/tools', fw);
-    // Surrounding whitespace is not part of the name; whitespace alone is no name.
     texts('/tools resident ', fw);
     texts('/tools   ', fw);
     expect(asked).toEqual(['Custom Import', undefined, 'resident', undefined]);
@@ -172,7 +159,6 @@ describe('tool-classes panel op (GET /debug/tool-classes)', () => {
     const snap = buildMcplSnapshot(app()) as { toolClasses?: ToolClassRow[] };
     const op = await runPanelOp(app(), 'tool-classes');
     expect(snap.toolClasses).toEqual((op as { data: { tools: ToolClassRow[] } }).data.tools);
-    // An older framework: the field is omitted rather than empty.
     const bare = buildMcplSnapshot({ framework: {} as never, recipe: {} as never });
     expect('toolClasses' in bare).toBe(false);
   });

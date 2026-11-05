@@ -1,47 +1,26 @@
-/**
- * Observer identity for the webui — the M2 layer of connectome
- * docs/observability.md.
- *
- * An observer is an Archipelago layer-0 principal: an ed25519 keypair,
- * human device or agent or service. Authorization is a per-agent grant file
- * (data/observers.json) that is hot-reloaded on mtime (the proven
- * discord-filters pattern: atomic tmp+rename writes, parse errors keep the
- * previous state; removing the file revokes every grant in it) and editable
- * by the agent itself through the observers
- * module's tools — interiority access is a consent question, so the agent
- * holds the pen.
- *
- * The handshake is challenge-less: the client signs a statement binding the
- * Host it connected to + a fresh timestamp (replay/relay-proof, no extra
- * round trip):
- *
- *   sign( "connectome-observer|v1|<host>|<timestamp>" )
- *
- * The server verifies signature, freshness (±5 min), and that the key has a
- * live grant — then the connection carries that grant's scope mask.
- */
 import { readFileSync, renameSync, statSync, lstatSync, realpathSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createPublicKey, verify as cryptoVerify, randomBytes } from 'node:crypto';
+import { parseHandWrittenJson } from '../hand-written-json.js';
 
-/** Scope = event-family mask. See docs/observability.md §4. */
+/** Scope = event-family mask. */
 export const OBSERVER_SCOPES = ['health', 'ops', 'messages', 'tools', 'thinking', 'debug'] as const;
 export type ObserverScope = typeof OBSERVER_SCOPES[number];
 
 export interface ObserverGrant {
-  /** `ed25519:<base64url of the raw 32-byte public key>`. The registry holds
-   *  each usable grant's key in this canonical form (canonicalKey); the file
-   *  may spell the same key in either base64 alphabet, padded or not. */
+  /** `ed25519:<base64url of the raw 32-byte public key>`. The file may spell
+   *  the same key in either base64 alphabet, padded or not. */
   key: string;
   /** Human-readable label. Testimony, not identity — never treat as verified naming. */
   label: string;
   scopes: ObserverScope[];
-  /** Expiry, as the tools write it an ISO timestamp or null. The file may
-   *  hold any value Date.parse reads, which verifyHello reads the same way;
-   *  absent, null, empty or any other falsy value means no expiry. */
+  /** Expiry: as the tools write it, a date in ECMAScript's own form, alone
+   *  or with a time and a zone (Z or an offset), or null. The file may hold
+   *  any value Date.parse reads; absent, null, empty or any other falsy value
+   *  means no expiry. */
   expires?: string | null;
-  /** Protected grants cannot be revoked via the agent-facing tools
-   *  (recipe-designated operator baseline). File edits can still remove them. */
+  /** Protected grants cannot be revoked via the agent-facing tools, nor
+   *  made by them. File edits can still remove them. */
   protected?: boolean;
 }
 
@@ -63,6 +42,13 @@ export interface ObserverHelloIdentity {
 
 const FRESHNESS_MS = 5 * 60_000;
 
+/**
+ * The statement an observer signs with its ed25519 key:
+ * `connectome-observer|v1|<host>|<timestamp>`, binding the Host it connected
+ * to and a fresh timestamp. The server checks the signature, freshness
+ * (±5 min) and that the key has a live grant; the connection then carries
+ * that grant's scopes.
+ */
 export function observerStatement(host: string, timestamp: string): string {
   return `connectome-observer|v1|${host}|${timestamp}`;
 }
@@ -75,11 +61,6 @@ function b64urlToBuf(s: string): Buffer | null {
   }
 }
 
-/** A key in canonical form: `ed25519:` and its 32 bytes as unpadded
- *  base64url. Either base64 alphabet, padded or not, reads as the same key,
- *  as b64urlToBuf decodes it; anything that isn't `ed25519:` and 32 bytes
- *  gives null. Grants are compared, and hellos looked up, in this form, so
- *  one key never counts as two. */
 export function canonicalKey(key: unknown): string | null {
   if (typeof key !== 'string' || !key.startsWith('ed25519:')) return null;
   const body = key.slice('ed25519:'.length);
@@ -88,56 +69,37 @@ export function canonicalKey(key: unknown): string | null {
   return raw && raw.length === 32 ? `ed25519:${raw.toString('base64url')}` : null;
 }
 
-/** Raw 32-byte ed25519 public key → node KeyObject (SPKI DER wrap). */
 export function ed25519PublicKey(raw: Buffer) {
   const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
   return createPublicKey({ key: Buffer.concat([SPKI_PREFIX, raw]), format: 'der', type: 'spki' });
 }
 
-// ---------------------------------------------------------------------------
-// File ops — the discord-mcpl filters.ts pattern, verbatim mechanics.
-// ---------------------------------------------------------------------------
-
-/** A grants file as read. A file that parses is read grant by grant: `file`
- *  holds the grants the host can use, `problems` names each entry it can't,
- *  and `doc` is the document as found, so a writer can change one entry and
- *  keep every other entry and field. A file that isn't valid JSON may be an
- *  editor's save read halfway, so it's told apart from one that can't be
- *  read or isn't a grants file at all. */
 export type ObserversFileRead =
   | { kind: 'ok'; file: ObserversFile; problems: string[]; doc: GrantsDocument }
   | { kind: 'missing' }
   | { kind: 'unparsed'; problem: string }
-  /** `readFailed`: reading the file failed, which may not happen again. */
-  | { kind: 'unreadable'; problem: string; readFailed?: true };
+  | { kind: 'unreadable'; problem: string; readFailed?: true; code?: string };
 
-/** A grants document as found: an object whose `observers` entries may be
- *  of any shape, with whatever other fields it holds. */
 export type GrantsDocument = Record<string, unknown> & { observers: unknown[] };
 
-/** `problem` completes a sentence whose subject is the file, such as
- *  "isn't valid JSON (…)". This never throws: the registry reads the file
- *  from a timer, where a throw would end the process. */
 export function readObserversFile(path: string): ObserversFileRead {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
-      // A link whose target is gone reads as ENOENT too, but the path is
-      // there, and writing would replace the link rather than make a first file.
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT') {
+      // A link whose target is gone reads as ENOENT too.
       return isLink(path)
         ? { kind: 'unreadable', problem: `is a link to a file that can't be read (${errorText(err)})`, readFailed: true }
         : { kind: 'missing' };
     }
-    return { kind: 'unreadable', problem: `can't be read (${errorText(err)})`, readFailed: true };
+    return { kind: 'unreadable', problem: `can't be read (${errorText(err)})`, readFailed: true, ...(typeof code === 'string' ? { code } : {}) };
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseHandWrittenJson(text);
   } catch (err) {
-    // Only a syntax error can be a save read halfway. A parse that gives out
-    // on a value nested too deep means the file can't be checked.
     return err instanceof SyntaxError
       ? { kind: 'unparsed', problem: `isn't valid JSON (${errorText(err)})` }
       : { kind: 'unreadable', problem: `can't be checked (${errorText(err)})` };
@@ -145,14 +107,11 @@ export function readObserversFile(path: string): ObserversFileRead {
   return checkObserversFile(parsed);
 }
 
-/** A parsed grants document read as readObserversFile reads a file. Never
- *  throws. */
 export function checkObserversFile(parsed: unknown): Exclude<ObserversFileRead, { kind: 'missing' | 'unparsed' }> {
   try {
     return checkGrants(parsed);
   } catch (err) {
-    // The checks read plain JSON values, but one nested deeply enough still
-    // overflows JSON.stringify.
+    // JSON.stringify overflows on a value nested deeply enough.
     return { kind: 'unreadable', problem: `can't be checked (${errorText(err)})` };
   }
 }
@@ -174,13 +133,9 @@ function checkGrants(parsed: unknown): Exclude<ObserversFileRead, { kind: 'missi
   if (!Array.isArray(observers)) return { kind: 'unreadable', problem: 'has an "observers" that isn\'t a list' };
   const usable: ObserverGrant[] = [];
   const problems: string[] = [];
-  // verifyHello takes the first grant for a key, so a later one for the same
-  // key would never apply: an operator who added a narrower grant to restrict
-  // a key would get the wider one without a word.
   const firstFor = new Map<string, number>();
   for (const [i, g] of (observers as unknown[]).entries()) {
     const wrong = entryProblems(i, g);
-    // Two spellings of one key are one key.
     const key = canonicalKey(g && typeof g === 'object' ? (g as { key?: unknown }).key : undefined);
     if (key !== null) {
       const first = firstFor.get(key);
@@ -193,8 +148,6 @@ function checkGrants(parsed: unknown): Exclude<ObserversFileRead, { kind: 'missi
   return { kind: 'ok', file: { observers: usable }, problems, doc: { ...found, observers } };
 }
 
-/** What makes one entry unusable, each naming the entry by position and
- *  label; none for a grant the host can use. */
 function entryProblems(i: number, g: unknown): string[] {
   if (!g || typeof g !== 'object') return [`grant ${i + 1} isn't an object`];
   const grant = g as { key?: unknown; label?: unknown; scopes?: unknown; expires?: unknown };
@@ -205,9 +158,6 @@ function entryProblems(i: number, g: unknown): string[] {
   } else if (canonicalKey(grant.key) === null) {
     problems.push(`${which} has a key that doesn't decode to 32 bytes`);
   }
-  // verifyHello reads a falsy expiry as no end, and expires a grant once
-  // Date.parse(expires) is past, so an expiry it can't parse would never
-  // take effect. This check reads it the same way.
   const { expires } = grant;
   if (expires && !Number.isFinite(parseDate(expires))) {
     problems.push(`${which} has an expiry that isn't a date: ${shown(expires)}`);
@@ -217,7 +167,6 @@ function entryProblems(i: number, g: unknown): string[] {
     return problems;
   }
   if (grant.scopes.length === 0) {
-    // A grant of nothing would still turn the observer gate on.
     problems.push(`${which} has no scopes`);
     return problems;
   }
@@ -231,8 +180,8 @@ function entryProblems(i: number, g: unknown): string[] {
   return problems;
 }
 
-/** Date.parse, which converts an object through its own toString or valueOf
- *  and throws when neither can be called; such a value is no date. */
+/** Date.parse converts an object through its toString or valueOf, and
+ *  throws when it can call neither. */
 function parseDate(value: unknown): number {
   try {
     return Date.parse(value as string);
@@ -241,13 +190,11 @@ function parseDate(value: unknown): number {
   }
 }
 
-/** A value as a problem quotes it: as JSON, except a number JSON can't hold,
- *  which JSON.stringify would show as null. */
+/** JSON.stringify shows a non-finite number as null. */
 function shown(value: unknown): string {
   return typeof value === 'number' && !Number.isFinite(value) ? String(value) : JSON.stringify(value);
 }
 
-/** An entry as the problems name it: by position, and by label if it has one. */
 function entryName(i: number, g: unknown): string {
   const label = g && typeof g === 'object' ? (g as { label?: unknown }).label : undefined;
   return `grant ${i + 1}${typeof label === 'string' ? ` (${JSON.stringify(label)})` : ''}`;
@@ -261,8 +208,6 @@ function jsonKind(value: unknown): string {
   return String(value);
 }
 
-/** The usable grants, or null for a file that's missing, can't be read or
- *  checked, isn't valid JSON or isn't a grants file. */
 export function loadObserversFile(path: string): ObserversFile | null {
   const read = readObserversFile(path);
   return read.kind === 'ok' ? read.file : null;
@@ -273,28 +218,21 @@ function errorText(err: unknown): string {
 }
 
 export function saveObserversFile(path: string, file: ObserversFile): void {
-  // Through a link, write the file it points to, so the link stays a link.
   const target = isLink(path) ? realpathSync(path) : path;
   mkdirSync(dirname(target), { recursive: true });
   const tmp = `${target}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, keepNonFinite, 2) + '\n');
-  renameSync(tmp, target); // atomic — mtime pollers never read a half-write
+  renameSync(tmp, target); // atomic: a reader never sees half a write
 }
 
-/** JSON has no Infinity: a number too large for it, such as 1e309, parses as
- *  Infinity, and JSON.stringify writes that as null. An expiry the viewer
- *  can't read would come back as no expiry, and the grant would admit its
- *  key with no end. Written as text instead, every such value keeps its
- *  meaning to both readers: "Infinity" is no date, no scope and no key,
- *  and is as truthy as Infinity. */
+/** JSON has no Infinity: a number too large for it, such as 1e309, parses
+ *  as Infinity, and JSON.stringify writes that as null. */
 function keepNonFinite(_key: string, value: unknown): unknown {
   return typeof value === 'number' && !Number.isFinite(value) ? String(value) : value;
 }
 
-/** What the registry compares between checks: the file's mtime, ctime,
- *  inode and size, so a file replaced by one with the same mtime (cp -p,
- *  rsync -t) or made unreadable in place (chmod) reads as changed. When the
- *  stat fails, why, as the log names it. */
+/** cp -p and rsync -t keep a file's mtime, and chmod changes only its
+ *  ctime. */
 export function observersFileStat(path: string): { sig: string } | { problem: string } {
   try {
     const s = statSync(path);
@@ -302,16 +240,12 @@ export function observersFileStat(path: string): { sig: string } | { problem: st
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') {
-      // A link whose target is gone stats as missing too, but the path is there.
+      // A link whose target is gone stats as missing too.
       return { problem: isLink(path) ? `is a link to a file that can't be read (${code})` : 'is gone' };
     }
     return { problem: `can't be read (${code ?? (err instanceof Error ? err.message : String(err))})` };
   }
 }
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
 
 export interface VerifyResult {
   grant: ObserverGrant;
@@ -320,37 +254,33 @@ export interface VerifyResult {
 
 export class ObserverRegistry {
   private file: ObserversFile | null = null;
-  /** The file as the last read found it (observersFileStat), or null to
-   *  read it again at the next check. */
   private lastSig: string | null = null;
-  /** Whether the file was there when last found, so its removal is said
-   *  once, whatever the file held. */
   private present = false;
-  /** Checks in a row that haven't found the file. */
   private misses = 0;
   private poll: ReturnType<typeof setInterval> | null = null;
-  /** The last problem logged, so a file read again at every check is named
-   *  once rather than every 3 s. */
   private lastSaid: string | null = null;
 
-  /** `pollMs` is how often the file is checked; tests shorten it. */
   constructor(private readonly path: string, private readonly pollMs = 3000) {}
 
-  start(): void {
+  start(onCheck?: () => void): void {
     const at = observersFileStat(this.path);
     this.present = 'sig' in at;
-    // A file that's there but can't be reached is named once, as a check
-    // names it; a host that never had the file says nothing.
     if ('problem' in at && at.problem !== 'is gone') {
       this.say(`[webui-observers] ${this.path} ${at.problem} — admitting no grants from it`);
     }
     if ('sig' in at) this.load(at.sig, readObserversFile(this.path), 'start');
-    this.poll = setInterval(() => this.check(), this.pollMs);
+    this.poll = setInterval(() => {
+      this.check();
+      if (!onCheck) return;
+      try {
+        onCheck();
+      } catch (err) {
+        console.error(`[webui-observers] after a check: ${errorText(err)}`);
+      }
+    }, this.pollMs);
     this.poll.unref();
   }
 
-  /** One check of the file: read it again if it changed, and take no grants
-   *  from it once it's gone. */
   private check(): void {
     const at = observersFileStat(this.path);
     if ('problem' in at) {
@@ -359,9 +289,8 @@ export class ObserverRegistry {
     }
     if (at.sig !== this.lastSig) {
       const read = readObserversFile(this.path);
-      // Gone between the stat and the read: a miss, as a failed stat is.
-      if (read.kind === 'missing') {
-        this.missed('is gone');
+      if (read.kind === 'missing' || (read.kind === 'unreadable' && read.readFailed === true)) {
+        this.missed(read.kind === 'missing' ? 'is gone' : read.problem);
         return;
       }
       this.load(at.sig, read, 'reload');
@@ -370,11 +299,6 @@ export class ObserverRegistry {
     this.present = true;
   }
 
-  /** A check that didn't find the file. It gives no grants, as the tools
-   *  read a missing file, once two checks in a row haven't found it. The
-   *  host's and the tools' writes are atomic renames, so they never leave it
-   *  missing; an editor's save that removes the file before writing it does,
-   *  for milliseconds, and is back by the next check, so it changes nothing. */
   private missed(problem: string): void {
     if (++this.misses < 2) return;
     this.lastSig = null;
@@ -385,11 +309,6 @@ export class ObserverRegistry {
     }
   }
 
-  /** Take what a read of the file gives. A read that failed, a file gone
-   *  between the stat and the read at start, or JSON a save in progress
-   *  left half-written, is read again at the next check, since the write
-   *  that finishes it can leave the stat as it was; anything else waits for
-   *  the file to change. */
   private load(sig: string, read: ObserversFileRead, when: 'start' | 'reload'): void {
     const again = read.kind === 'unparsed' || read.kind === 'missing'
       || (read.kind === 'unreadable' && read.readFailed === true);
@@ -397,12 +316,6 @@ export class ObserverRegistry {
     this.take(read, when);
   }
 
-  /** Take what a read of the file gives. A file that parses gives exactly its
-   *  usable grants, and the log names each entry it can't use. A file that
-   *  isn't valid JSON keeps the grants a reload had, since an editor's save
-   *  can be read halfway and the next check reads it whole; at start it gives
-   *  none. Anything else gives none, and says so, a file removed between the
-   *  stat and the read included. */
   private take(read: ObserversFileRead, when: 'start' | 'reload'): void {
     const where = `[webui-observers] ${this.path}`;
     const say = (line: string) => this.say(line);
@@ -424,7 +337,6 @@ export class ObserverRegistry {
     else say(`${where} ${read.problem} — admitting no grants from it`);
   }
 
-  /** Log a problem once while it lasts. */
   private say(line: string): void {
     if (line !== this.lastSaid) console.error(line);
     this.lastSaid = line;
@@ -434,8 +346,6 @@ export class ObserverRegistry {
     if (this.poll) clearInterval(this.poll);
   }
 
-  /** True when at least one live grant exists — gates the whole feature:
-   *  no grants ⇒ webui behaves exactly as before this layer existed. */
   active(): boolean {
     return (this.file?.observers.length ?? 0) > 0;
   }
@@ -444,11 +354,13 @@ export class ObserverRegistry {
     return this.file?.observers ?? [];
   }
 
-  /**
-   * Verify an observer-hello identity envelope against the live grants.
-   * Returns the grant + scope set, or null (with a stderr reason — auth
-   * failures on a headless box must be diagnosable).
-   */
+  liveScopes(key: string, now = Date.now()): Set<ObserverScope> | null {
+    const grant = this.grants().find((g) => g.key === key);
+    if (!grant) return null;
+    if (grant.expires && Date.parse(grant.expires) < now) return null;
+    return new Set(grant.scopes);
+  }
+
   verifyHello(identity: ObserverHelloIdentity, hostHeader: string, now = Date.now()): VerifyResult | null {
     const fail = (why: string): null => {
       console.error(`[webui-observers] hello rejected (${identity?.id ?? 'no-id'}): ${why}`);
@@ -461,8 +373,6 @@ export class ObserverRegistry {
     if (!Number.isFinite(ts)) return fail('bad timestamp');
     if (Math.abs(now - ts) > FRESHNESS_MS) return fail('stale timestamp');
 
-    // The registry holds canonical keys, so a client's spelling of its key
-    // finds the grant however the file spelled it.
     const key = canonicalKey(identity.id);
     if (!key) return fail('malformed public key');
     const grant = this.grants().find((g) => g.key === key);
@@ -488,36 +398,26 @@ export class ObserverRegistry {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sessions — short-lived bearer tokens minted after WS auth so the SPA can
-// hit /debug/* and /healthz over plain HTTP. The WS is the authentication
-// event; HTTP rides it.
-// ---------------------------------------------------------------------------
-
 const SESSION_TTL_MS = 12 * 60 * 60_000;
 
 export interface ObserverSession {
   scopes: Set<ObserverScope>;
-  /**
-   * Full sessions carry OPERATOR authority (equivalent to basic auth): the
-   * WS upgrade treats the connection as a full client, not a read-only
-   * observer. Minted only by /auth/basic after a successful password
-   * challenge. Exists because browsers reliably attach cookies to WebSocket
-   * upgrades but (Chrome, notably) do NOT attach cached basic-auth
-   * credentials — without this, password sign-in loops back to the gate.
-   */
   full: boolean;
 }
 
 export class ObserverSessions {
-  private sessions = new Map<string, ObserverSession & { expiresAt: number }>();
+  private sessions = new Map<string, ObserverSession & { expiresAt: number; key?: string }>();
 
-  mint(scopes: Set<ObserverScope>, opts?: { full?: boolean }): string {
-    // Opportunistic sweep — the map stays tiny (one entry per auth event).
+  mint(scopes: Set<ObserverScope>, opts: { full: true } | { key: string }): string {
     const now = Date.now();
     for (const [t, s] of this.sessions) if (s.expiresAt < now) this.sessions.delete(t);
     const token = randomBytes(32).toString('hex');
-    this.sessions.set(token, { scopes, full: opts?.full ?? false, expiresAt: now + SESSION_TTL_MS });
+    this.sessions.set(token, {
+      scopes,
+      full: 'full' in opts,
+      expiresAt: now + SESSION_TTL_MS,
+      key: 'key' in opts ? opts.key : undefined,
+    });
     return token;
   }
 
@@ -527,9 +427,29 @@ export class ObserverSessions {
     if (!s || s.expiresAt < Date.now()) return null;
     return { scopes: s.scopes, full: s.full };
   }
+
+  narrowToGrants(liveScopes: (key: string) => Set<ObserverScope> | null): number {
+    const now = Date.now();
+    let ended = 0;
+    for (const [token, s] of this.sessions) {
+      if (s.key === undefined || s.expiresAt < now || narrow(s, liveScopes(s.key))) continue;
+      this.sessions.delete(token);
+      ended++;
+    }
+    return ended;
+  }
 }
 
-/** Extract the observer session token from a request (cookie `fkm_obs`). */
+function narrow(s: { scopes: Set<ObserverScope> }, live: Set<ObserverScope> | null): boolean {
+  if (!live) return false;
+  if ([...s.scopes].some((scope) => !live.has(scope))) {
+    const kept = new Set([...s.scopes].filter((scope) => live.has(scope)));
+    if (kept.size === 0) return false;
+    s.scopes = kept;
+  }
+  return true;
+}
+
 export function sessionTokenFromRequest(req: Request): string | null {
   const cookie = req.headers.get('cookie');
   if (!cookie) return null;
@@ -537,34 +457,229 @@ export function sessionTokenFromRequest(req: Request): string | null {
   return m ? m[1]! : null;
 }
 
-// ---------------------------------------------------------------------------
-// Scope filtering — pure projections of wire data through a grant's mask
-// (docs/observability.md §4). Kept here (not in the module) so they are
-// unit-testable without the webui's process-level server singleton.
-// ---------------------------------------------------------------------------
+import { AGENT_TREE_SCOPES, type CallLedgerSnapshot, type StreamEndedMessage, type WebUiServerMessage, type WelcomeMessage, type WelcomeMessageEntry } from '../web/protocol.js';
+import { STREAM_END_TRACES } from '../state/turn-trace.js';
 
-import type { WelcomeMessage, WelcomeMessageEntry } from '../web/protocol.js';
+export const FULL_CLIENTS_ONLY = 'full-clients-only';
 
-/** Which scope a trace event requires. Token deltas map by blockType;
- *  ops/mcpl lifecycle → 'ops'; usage → 'health'; the rest is conversation
- *  lifecycle → 'messages'. */
-export function traceRequiredScope(event: { type: string }): ObserverScope {
-  const t = event.type;
-  if (t.startsWith('ops:') || t.startsWith('mcpl:')) return 'ops';
-  if (t === 'usage:updated') return 'health';
-  if (t === 'inference:tokens' || t === 'inference:content_block') {
-    const bt = (event as { blockType?: string }).blockType;
-    if (bt === 'thinking') return 'thinking';
-    if (bt === 'tool_call' || bt === 'tool_result') return 'tools';
-    return 'messages';
+export type FrameScopes = readonly ObserverScope[] | typeof FULL_CLIENTS_ONLY;
+
+const MESSAGES: FrameScopes = ['messages'];
+const TOOLS: FrameScopes = ['messages', 'tools'];
+const THINKING: FrameScopes = ['messages', 'thinking'];
+const HEALTH: FrameScopes = ['health'];
+const OPS: FrameScopes = ['ops'];
+const TOOLS_AND_OPS: FrameScopes = ['messages', 'tools', 'ops'];
+const ALL_BUT_DEBUG: FrameScopes = AGENT_TREE_SCOPES;
+
+export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
+  // The conversation and its turns.
+  'message:added': MESSAGES,
+  'message:removed': MESSAGES,
+  'inference:started': MESSAGES,
+  'inference:turn_ended': MESSAGES,
+  // The messages injected into a turn.
+  'inference:stream_resumed': MESSAGES,
+  // Branch names.
+  'undo:completed': MESSAGES,
+  'redo:completed': MESSAGES,
+  // A turn's end, and a restart for its context budget, carry token counts.
+  'inference:completed': ['messages', 'health'],
+  'inference:stream_restarted': ['messages', 'health'],
+  // Token deltas and content blocks, by the block they're in (traceScopes);
+  // this is a text block's.
+  'inference:tokens': MESSAGES,
+  'inference:content_block': MESSAGES,
+  // Tool calls, their inputs and their results.
+  'inference:tool_calls_yielded': TOOLS,
+  'tool:started': TOOLS,
+  'tool:completed': TOOLS,
+  // A failed call's error, a dropped call's result, and a call an operator
+  // made for the agent, are ops besides.
+  'tool:failed': TOOLS_AND_OPS,
+  'tool:result_dropped': TOOLS_AND_OPS,
+  'puppet:tool-call': TOOLS_AND_OPS,
+  // Whole process events and module responses: messages, thinking blocks,
+  // tool results and their errors, and a module's own payload and response,
+  // which are opaque and so can hold health and ops data too.
+  'process:received': ALL_BUT_DEBUG,
+  'process:completed': ALL_BUT_DEBUG,
+  // Usage and serving state.
+  'usage:updated': HEALTH,
+  'inference:usage': HEALTH,
+  'host:quiesce': HEALTH,
+  'host:resume': HEALTH,
+  'host:quiesced_boot': HEALTH,
+  'inference:waiting': HEALTH,
+  // Alerts: failures and refusals, the gate's decisions, modules coming and
+  // going, MCPL servers and conversations, and what operators did.
+  'ops:alert': OPS,
+  // The operator log's entry, with what the operator acted on and set.
+  'operator:action': OPS,
+  'inference:failed': OPS,
+  'inference:exhausted': OPS,
+  // Why a turn was stopped. A client with messages and without ops gets
+  // stream-ended in its place.
+  'inference:aborted': ['messages', 'ops'],
+  'inbound:observer-failed': OPS,
+  'inference:request_dropped': OPS,
+  'inference:request_stale': OPS,
+  'tool:spill_failed': OPS,
+  'module:batch_hook_failed': OPS,
+  'module:added': OPS,
+  'module:removed': OPS,
+  'gate:policy-matched': OPS,
+  'gate:config-error': OPS,
+  'gate:debounce-delivered': OPS,
+  'gate:config-reloaded': OPS,
+  'gate:decision': OPS,
+  'gate:held-dropped': OPS,
+  // Admission and the Dendrite registry (agent-framework#546): a decision is
+  // an ops fact; an agent's creation, end, interruption, orphaning and
+  // reparenting are the host's health as the tree shows it, and ops; mail
+  // traces carry ids and routes, never content; a reader fork's run and the
+  // report it delivers are the tune-out's ops, the report a message too.
+  'admission:decided': OPS,
+  'dendrite:agent-created': ['health', 'ops'],
+  'dendrite:agent-ended': ['health', 'ops'],
+  'dendrite:agent-interrupted': ['health', 'ops'],
+  'dendrite:agent-orphaned': ['health', 'ops'],
+  'dendrite:agent-reparented': ['health', 'ops'],
+  'dendrite:activation-cancelled': ['health', 'ops'],
+  'dendrite:early-traces-dropped': OPS,
+  'dendrite:mail-held': OPS,
+  'dendrite:mail-deferred': OPS,
+  'dendrite:mail-delivered': OPS,
+  'tune-out:reader-fork': OPS,
+  // A reader fork whose framing, derive or run threw before it reported; its messages go back to the channel's next reader (agent-framework #793).
+  'tune-out:reader-fork-failed': OPS,
+  'tune-out:reader-prose-delivered': ['messages', 'ops'],
+  'gate:wake-line-omitted': OPS,
+  'gate:policy-added': OPS,
+  'gate:policy-removed': OPS,
+  'gate:config-reconciled': OPS,
+  'gate:shadow-warnings': OPS,
+  'gate:judge-verdict': ['health', 'ops'],
+  'mcpl:push-event-rejected': OPS,
+  'mcpl:channel-incoming-rejected': OPS,
+  'mcpl:empty-content-dropped': OPS,
+  // Content context-manager won't store, refused where it would be written:
+  // the server or module, the event and the places in it, none of the content.
+  'mcpl:malformed-content-refused': OPS,
+  'process:response-refused': OPS,
+  'mcpl:coalescing': OPS,
+  'mcpl:request-handler-error': OPS,
+  'mcpl:server-stderr': OPS,
+  'mcpl:server-connect-failed': OPS,
+  'mcpl:server-reconnected': OPS,
+  'mcpl:server-closed': OPS,
+  'mcpl:server-error': OPS,
+  'mcpl:policy-refused': OPS,
+  'mcpl:feature-set-disabled': OPS,
+  'mcpl:tool-pattern-unmatched': OPS,
+  'mcpl:orphaned-response': OPS,
+  'mcpl:manifest-change-receipt': OPS,
+  'mcpl:conversation-spawned': OPS,
+  'mcpl:conversation-spawn-failed': OPS,
+  'mcpl:conversation-unrouted': OPS,
+  'mcpl:conversation-binding-orphaned': OPS,
+  'mcpl:conversation-closed': OPS,
+  'mcpl:conversation-disposed': OPS,
+  'mcpl:speech-route-failed': OPS,
+  'mcpl:channels-register': OPS,
+  'mcpl:channel-descriptor-rejected': OPS,
+  'mcpl:channels-changed': OPS,
+  'mcpl:channels-incoming': OPS,
+  'mcpl:channel-lazy-registered': ['messages', 'ops'],
+  'mcpl:channel-reconcile-failed': OPS,
+  'mcpl:channel-open-substituted': OPS,
+  'mcpl:channel-reconcile-skipped': OPS,
+  'mcpl:channel-opened-by-send': OPS,
+  'mcpl:channel-open-failed': OPS,
+  'mcpl:state_registered': OPS,
+  'mcpl:checkpoint_recorded': OPS,
+  'mcpl:state_rollback': OPS,
+  'mcpl:push_event': OPS,
+  'mcpl:inference_start': ['health', 'ops'],
+  'mcpl:inference_fail': ['health', 'ops'],
+  'mcpl:inference_complete': ['health', 'ops'],
+  'tune-out:entered': OPS,
+  'tune-out:cancelled': OPS,
+  'tune-out:timer-failed': OPS,
+  'tune-out:ack-failed': OPS,
+  // Held speech's delivery: held, resent, dismissed, with no text.
+  'prose:drafts-held': OPS,
+  'prose:draft-resent': OPS,
+  'prose:drafts-dismissed': OPS,
+  // The routed prose, verbatim.
+  'mcpl:speech-routed': ['messages', 'ops'],
+  // The prose published to an MCPL server's channel, chunk by chunk and whole
+  // at its end, with the server and channel: what the agent said, and where,
+  // with no outcome, so messages alone, as the model's own text is.
+  'inference:published': MESSAGES,
+  'inference:published_complete': MESSAGES,
+};
+
+/** agent-framework's token deltas and content blocks name their block's
+ *  type. */
+export function traceScopes(event: { type: string; blockType?: unknown; model?: unknown }): FrameScopes {
+  if (event.type === 'mcpl:inference_fail' && event.model === null) return OPS;
+  if (event.type === 'inference:tokens' || event.type === 'inference:content_block') {
+    if (event.blockType === 'text') return MESSAGES;
+    if (event.blockType === 'thinking') return THINKING;
+    if (event.blockType === 'tool_call' || event.blockType === 'tool_result') return TOOLS;
+    return FULL_CLIENTS_ONLY;
   }
-  if (t.startsWith('tool:')) return 'tools';
-  return 'messages';
+  return Object.hasOwn(TRACE_SCOPES, event.type) ? TRACE_SCOPES[event.type]! : FULL_CLIENTS_ONLY;
 }
 
-/** Project a wire entry through a scope mask: null when the observer may not
- *  see messages at all; otherwise thinking/tool blocks are elided per scope.
- *  Filtering, not rewriting — the wire is already typed blocks. */
+const TREES: readonly ObserverScope[] = AGENT_TREE_SCOPES;
+
+export function childEventScopes(event: { type?: unknown }): FrameScopes {
+  const type = typeof event.type === 'string' ? event.type : '';
+  if (type === 'lifecycle') return HEALTH;
+  if (type === 'snapshot') return TREES;
+  if (type === 'inference:speech') return ['messages', 'thinking', 'tools'];
+  if (type === 'stream-ended') return MESSAGES;
+  return traceScopes({ ...(event as Record<string, unknown>), type });
+}
+
+export function frameScopes(frame: WebUiServerMessage): FrameScopes {
+  switch (frame.type) {
+    case 'trace':
+      return traceScopes(frame.event);
+    case 'child-event':
+      return childEventScopes(frame.event);
+    case 'usage':
+    case 'call-ledger':
+    case 'credential-state':
+    case 'host-mode':
+      return ['health'];
+    case 'inbound-trigger':
+    case 'branch-changed':
+    case 'stream-ended':
+      return ['messages'];
+    default:
+      return FULL_CLIENTS_ONLY;
+  }
+}
+
+export function streamEndedFor(event: { type: string; agentName?: unknown }): StreamEndedMessage | null {
+  if (!STREAM_END_TRACES.has(event.type)) return null;
+  return typeof event.agentName === 'string'
+    ? { type: 'stream-ended', agentName: event.agentName }
+    : { type: 'stream-ended' };
+}
+
+export function clientHolds(
+  client: { auth: string; scopes: Set<ObserverScope> | null },
+  scopes: FrameScopes,
+): boolean {
+  if (client.auth === 'full') return true;
+  if (client.auth !== 'observer' || client.scopes === null || scopes === FULL_CLIENTS_ONLY) return false;
+  return scopes.every((scope) => client.scopes!.has(scope));
+}
+
 export function filterEntryForScopes(
   entry: WelcomeMessageEntry,
   scopes: Set<ObserverScope>,
@@ -574,33 +689,143 @@ export function filterEntryForScopes(
   const blocks = entry.blocks.filter((b) => {
     if ((b.kind === 'thinking' || b.kind === 'redacted_thinking') && !scopes.has('thinking')) return false;
     if ((b.kind === 'tool_use' || b.kind === 'tool_result') && !scopes.has('tools')) return false;
+    if (b.kind === 'media' && b.toolUseId !== undefined && !scopes.has('tools')) return false;
     return true;
   });
+  if (blocks.length === 0 && entry.blocks.length > 0) return null;
   return { ...entry, blocks };
 }
 
-/** Project a welcome through an observer's scope mask. Without 'messages'
- *  the entire conversation payload (entries + agent trees, which carry
- *  streaming buffers) is emptied — a health/ops observer like the fleet hub
- *  gets structure and usage, never content. Without 'health' the telemetry
- *  fields (usage / perAgentCost / callLedger) are masked too: their live
- *  frames (`usage`, `call-ledger`) are gated on 'health', and the welcome
- *  must refuse exactly what the stream refuses — otherwise a messages-only
- *  observer reads model IDs, per-call costs, and raw provider errors on
- *  connect that it is denied a second later. */
+export type KeptStrings =
+  | true
+  | ((holder: Readonly<Record<string, unknown>>) => boolean)
+  | { readonly [key: string]: KeptStrings };
+
+export function keepNamedStrings(value: unknown, kept: KeptStrings | undefined): unknown {
+  if (kept === true) return value;
+  if (typeof value === 'string') return '';
+  if (value === null || typeof value !== 'object') return value;
+  const spec = typeof kept === 'object' ? kept : undefined;
+  if (Array.isArray(value)) return value.map((item) => keepNamedStrings(item, spec));
+  const holder = value as Record<string, unknown>;
+  const out: Record<string, unknown> = Object.create(null);
+  for (const [key, item] of Object.entries(holder)) {
+    let child = spec && (Object.hasOwn(spec, key) ? spec[key] : spec['*']);
+    if (typeof child === 'function') child = child(holder) ? true : undefined;
+    out[key] = keepNamedStrings(item, child);
+  }
+  return out;
+}
+
+export const LEDGER_STRINGS: KeptStrings = {
+  rows: {
+    id: true,
+    timestamp: true,
+    kind: true,
+    originEstimate: true,
+    model: true,
+    cache: { ttls: true, effectiveTtl: true },
+    cost: { currency: true, grade: true, pricingVersion: true },
+    verdict: true,
+    cause: (row) => row.verdict !== 'ERROR',
+    stopReason: true,
+  },
+  summary: { cost: { currency: true, pricingVersion: true } },
+};
+
+export const CREDENTIAL_STRINGS = {
+  agent: true,
+  kind: true,
+  provider: true,
+  windows: true,
+  actions: true,
+  login: true,
+  lastAction: { id: true },
+} satisfies KeptStrings;
+
+export const UPDATE_STRINGS = {
+  running: true,
+  check: { at: true, candidate: true, costs: { version: true }, bunFloorUnmet: true },
+  installing: true,
+  lastInstall: { version: true, at: true },
+  installed: true,
+  goBack: { to: true, since: true },
+  restart: { to: true, why: true, phase: true, hosts: { host: true, activeTurnAgents: true } },
+  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true },
+} satisfies KeptStrings;
+
+export const HEALTH_STRINGS: KeptStrings = {
+  at: true,
+  gate: { inferring: true },
+  activeStreams: true,
+  agents: {
+    name: true,
+    status: true,
+    providerAdmission: {
+      lastRecovery: { stopReason: true },
+      providerWaits: { model: true, until: true, setAt: true },
+    },
+    refusalStats: { lastCategory: true },
+  },
+  credential: CREDENTIAL_STRINGS,
+  compressionQuarantine: {
+    '*': {
+      keys: true,
+      spans: { chunkSourceHash: true, firstMessageId: true, lastMessageId: true, latestOutcome: true },
+    },
+  },
+  compressionDebt: { '*': { state: true, failure: true, mergeQuarantineKeys: true, mergeHeldIds: true } },
+  loadRepair: {
+    '*': {
+      namespace: true,
+      stateId: true,
+      dropped: { id: true, reason: true, sourceRange: { first: true, last: true, firstAt: true, lastAt: true } },
+    },
+  },
+  contextComposition: {
+    '*': { planVsActual: { solver: true, ceiling: true, foldDiff: { runs: { firstChunkId: true, lastChunkId: true } } } },
+  },
+  contextCompositionNotKept: true,
+  runtimeSettings: {
+    '*': { sameRoundThinkTextPolicy: true, sameRoundThinkTextPolicySource: true, transition: true, transitionReason: true },
+  },
+  callLedger: LEDGER_STRINGS,
+  update: UPDATE_STRINGS,
+};
+
+export const QUOTA_STRINGS: KeptStrings = {
+  provider: true,
+  windows: { key: true, label: true, model: true },
+};
+
+export function frameWithoutFailureText(frame: WebUiServerMessage): WebUiServerMessage {
+  switch (frame.type) {
+    case 'call-ledger':
+      return { ...frame, ledger: keepNamedStrings(frame.ledger, LEDGER_STRINGS) as CallLedgerSnapshot };
+    case 'credential-state':
+      return keepNamedStrings(frame, { type: true, scope: true, ...CREDENTIAL_STRINGS }) as WebUiServerMessage;
+    default:
+      return frame;
+  }
+}
+
 export function scopeWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>): WelcomeMessage {
   const emptyTree = { asOfTs: Date.now(), nodes: [], callIdIndex: {} };
   const scoped: WelcomeMessage = { ...welcome };
   if (!scopes.has('health')) {
     delete scoped.callLedger;
     delete scoped.perAgentCost;
-    // `usage` is required by the wire type, so it is zeroed rather than
-    // dropped (matches the emptied-not-deleted style of the fields below).
+    delete scoped.hostMode;
     scoped.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    scoped.agents = welcome.agents.map((agent) => ({ ...agent, model: '' }));
+  } else if (!scopes.has('ops') && welcome.callLedger) {
+    scoped.callLedger = keepNamedStrings(welcome.callLedger, LEDGER_STRINGS) as CallLedgerSnapshot;
   }
   if (!scopes.has('messages')) {
     return {
       ...scoped,
+      session: { ...welcome.session, name: '' },
+      branch: { ...welcome.branch, name: '' },
       messages: [],
       history: { startIndex: welcome.history.totalCount, totalCount: welcome.history.totalCount },
       localTree: emptyTree,
@@ -612,10 +837,39 @@ export function scopeWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>
     messages: welcome.messages
       .map((e) => filterEntryForScopes(e, scopes))
       .filter((e): e is WelcomeMessageEntry => e !== null),
-    // Agent trees replay tool calls + streaming thinking; only full
-    // interiority scopes get them.
-    ...(scopes.has('thinking') && scopes.has('tools')
+    ...(TREES.every((scope) => scopes.has(scope))
       ? {}
       : { localTree: emptyTree, childTrees: [] }),
   };
+}
+
+export interface ObserverConnection {
+  auth: string;
+  observerKey?: string;
+  label?: string;
+  scopes: Set<ObserverScope> | null;
+  ws: { close(code?: number, reason?: string): void };
+}
+
+/** A grant that's gone or expired closes its connections with 4401, which a
+ *  client takes as final, as for a refused hello; a narrowed grant closes
+ *  them with 4403, and the client connects again with the new scopes. */
+export function closeConnectionsWithoutGrant(
+  connections: Iterable<ObserverConnection>,
+  registry: Pick<ObserverRegistry, 'liveScopes'>,
+): number {
+  let closed = 0;
+  for (const c of connections) {
+    if (c.auth !== 'observer') continue;
+    const live = c.observerKey === undefined ? null : registry.liveScopes(c.observerKey);
+    if (live && [...(c.scopes ?? [])].every((scope) => live.has(scope))) continue;
+    try {
+      if (live) c.ws.close(4403, 'observer grant narrowed');
+      else c.ws.close(4401, 'observer grant gone or expired');
+      closed++;
+    } catch (err) {
+      console.error(`[webui-observers] observer connection couldn't be closed: ${c.label ?? 'no grant'} (${errorText(err)}); each check tries again while its grant is gone, expired or narrowed`);
+    }
+  }
+  return closed;
 }

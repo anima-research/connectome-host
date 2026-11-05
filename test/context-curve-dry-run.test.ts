@@ -1,12 +1,4 @@
-/**
- * The context curve panel shows a compile and never sends it, so the compile
- * is a dry run (Ada-1017's finding for context-manager #155). These tests pin
- * what the host controls: the arguments the curve compiles with, the verdict
- * it reports, a summary's first and last dates, and that every strategy the
- * host defines passes the dry run through to the select it extends. What a
- * dry run spares the resident is context-manager's to test.
- */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { AutobiographicalStrategy } from '@animalabs/context-manager';
 import { buildContextCurve, type PanelAppRef } from '../src/web/panel-data.js';
 import { FrontdeskStrategy } from '../src/strategies/frontdesk-strategy.js';
@@ -38,7 +30,6 @@ function appWith(
 
 const said = (id: string, timestamp: unknown): StoredMessage => ({ id, timestamp, content: [{ type: 'text', text: 'said' }] });
 
-/** The curve's one entry when the compiled context is a single summary of `messages`. */
 async function summaryEntry(messages: StoredMessage[]) {
   const text = 'what was said';
   const app = appWith(
@@ -52,6 +43,10 @@ async function summaryEntry(messages: StoredMessage[]) {
 }
 
 describe('the context curve', () => {
+  const originalModel = process.env.MODEL;
+  beforeEach(() => { delete process.env.MODEL; });
+  afterEach(() => { if (originalModel === undefined) delete process.env.MODEL; else process.env.MODEL = originalModel; });
+
   test('compiles as a dry run, at the live budget', async () => {
     const calls: unknown[][] = [];
     const app = appWith(async (...args: unknown[]) => {
@@ -63,15 +58,41 @@ describe('the context curve', () => {
 
     expect(calls).toEqual([[{ maxTokens: 150_000, reserveForResponse: 8_000 }, undefined, { dryRun: true }]]);
     expect(curve.totals).toEqual({ entries: 1, rendered: 2, rawCovered: 2 });
-    expect(curve.verdict).toBeNull();   // no feasibility preview on this framework
+    expect(curve.verdict).toBeNull();
+  });
+
+  test("without a live budget it falls back to the recipe's effective budget, the 300k default when unset", async () => {
+    const calls: unknown[][] = [];
+    const app = appWith(async (...args: unknown[]) => {
+      calls.push(args);
+      return { messages: [] };
+    });
+    (app.framework as unknown as { getAgentRuntimeSettings: () => unknown }).getAgentRuntimeSettings = () => ({});
+
+    await buildContextCurve(app, 'scout');
+    (app.recipe.agent as { contextBudgetTokens?: number }).contextBudgetTokens = 180_000;
+    await buildContextCurve(app, 'scout');
+
+    expect(calls.map((c) => (c[0] as { maxTokens: number }).maxTokens)).toEqual([300_000, 180_000]);
+  });
+
+  test("without a live budget, the default it falls back to is the running model's, MODEL first", async () => {
+    const calls: unknown[][] = [];
+    const app = appWith(async (...args: unknown[]) => {
+      calls.push(args);
+      return { messages: [] };
+    });
+    (app.framework as unknown as { getAgentRuntimeSettings: () => unknown }).getAgentRuntimeSettings = () => ({});
+    Object.assign(app.recipe.agent, { model: 'claude-opus-4-6', systemPrompt: '' });
+    process.env.MODEL = 'claude-haiku-4-5';
+    const curve = await buildContextCurve(app, 'scout');
+    expect((calls[0]![0] as { maxTokens: number }).maxTokens).toBe(200_000 - 32_000);
+    expect(curve.budget).toEqual({ maxTokens: 200_000 - 32_000, reserveForResponse: 8_000 });
   });
 
   test("a summary's first and last dates are its messages' earliest and latest by time", async () => {
-    // The store gives timestamps as Dates, which the default sort orders by
-    // their text, weekday first: these fall out of time order that way in
-    // every time zone, and by day of the month too. The latest is ISO text,
-    // which the curve takes as well, and a timestamp that's missing, null or
-    // not a time is left out.
+    // The default sort orders Dates by their text, weekday first, so these fall
+    // out of time order that way.
     const wednesday = new Date('2026-10-14T12:00:00Z');
     const friday = new Date('2026-10-16T12:00:00Z');
     const monday = new Date('2026-11-02T12:00:00Z');
@@ -113,9 +134,7 @@ describe('the context curve', () => {
         atDescentTarget: false,
       });
     }
-    // Asked at the curve's own budget, the live one.
     expect(asked).toEqual([['scout', 150_000], ['scout', 150_000], ['scout', 150_000]]);
-    // A preview that throws, or has no verdict, leaves the plot without one.
     for (const preview of [() => { throw new Error('zz'); }, () => null]) {
       const curve = await buildContextCurve(appWith(compile, preview), 'scout');
       expect(curve.verdict).toBeNull();

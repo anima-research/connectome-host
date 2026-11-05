@@ -1,21 +1,7 @@
-/**
- * ContextDocument — the agent's compiled context rendered in the MAIN pane, as
- * a readable, navigable document.
- *
- * Combines GET /debug/context (the flat compiled messages) with
- * /debug/context/makeup (segment token/message counts) to partition the flat
- * list into Head | Middle | Recent zones (render order is head, then the folded
- * middle, then the verbatim tail — the makeup counts give the boundaries). A
- * sticky timeline at the top is a clickable minimap: each zone is sized by its
- * token share and scrolls the document to that section. Summary recall-pairs in
- * the middle are styled distinctly.
- */
-
 import { createEffect, createSignal, on, For, Show } from 'solid-js';
+import { isChildScope } from '@conhost/web/protocol';
 import { MediaView } from './Surgery';
 
-/** One compiled message. `sourceMessageId` is the chronicle id when the
- *  entry is a raw message (strategies stamp it); summaries have none. */
 interface Msg { participant?: string; role?: string; content: unknown; sourceMessageId?: string }
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -26,15 +12,12 @@ interface Stats {
 
 const fmt = (n: number) => n.toLocaleString();
 const estTokens = (s: string) => Math.round(s.length / 3.6);
-const SUMMARY_LABELS = ['What do you remember', 'Context Manager'];
+const CONTEXT_MANAGER_SUMMARY_LABELS = ['What do you remember', 'Context Manager'];
 
 type Block = { type?: string; text?: string; name?: string; input?: unknown; content?: unknown; is_error?: boolean; thinking?: string };
 
 const TOOL_INPUT_PREVIEW = 600;
 
-/** Render one content block as text. Every block type the API can put in a
- *  message gets a visible form — a box whose blocks all map to '' is what an
- *  operator reads as "empty context", which is never true. */
 function blockText(b: unknown): string {
   if (!b || typeof b !== 'object') return String(b ?? '');
   const blk = b as Block;
@@ -62,8 +45,6 @@ function textOf(c: unknown): string {
   return String(c ?? '');
 }
 
-/** Inline images in the compiled message (the request ships them as base64
- *  — exactly what the model sees), including ones nested in tool results. */
 function imagesOf(c: unknown): Array<{ mediaType: string; dataUrl: string }> {
   if (!Array.isArray(c)) return [];
   const out: Array<{ mediaType: string; dataUrl: string }> = [];
@@ -82,8 +63,6 @@ function imagesOf(c: unknown): Array<{ mediaType: string; dataUrl: string }> {
   return out;
 }
 
-/** Coarse message kind for the box header: tool traffic gets labelled so a
- *  tool-heavy stretch of context reads as what it is. */
 function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
   if (!Array.isArray(c)) return null;
   const types = new Set(c.map((b) => (b && typeof b === 'object' ? (b as Block).type : undefined)));
@@ -94,24 +73,27 @@ function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
 
 export function ContextDocument(props: {
   scope?: string;
+  session: string | null;
   scrollRoot?: () => HTMLElement | undefined;
-  /** Show "roll back to here" on raw-message boxes (host supports it, local scope, operator). */
   canRollback?: boolean;
-  onRollback?: (messageId: string, preview: string) => void;
+  onRollback?: (messageId: string, preview: string, chosenIn: string | null) => void;
 }) {
   const [msgs, setMsgs] = createSignal<Msg[]>([]);
+  const [msgsSession, setMsgsSession] = createSignal<string | null>(null);
   const [stats, setStats] = createSignal<Stats | null>(null);
   const [exact, setExact] = createSignal<number | null>(null);
   const [err, setErr] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
 
-  /** Fleet-child scopes route through the host's ?scope= proxy. */
   const query = () => props.scope && props.scope !== 'local'
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
 
+  let latestLoad = 0;
   const load = async () => {
-    const scopeAtStart = props.scope;
+    const thisLoad = ++latestLoad;
+    const superseded = () => thisLoad !== latestLoad;
+    const local = !isChildScope(props.scope);
     setLoading(true); setErr(null);
     try {
       const q = query();
@@ -124,21 +106,26 @@ export function ContextDocument(props: {
         throw new Error(body?.error ?? `context HTTP ${ctxRes.status}`);
       }
       const ctx = await ctxRes.json();
-      if (props.scope !== scopeAtStart) return; // scope switched mid-flight
+      if (superseded()) return;
+      const servedIn = typeof ctx?.sessionId === 'string' ? ctx.sessionId : null;
+      if (local && servedIn !== props.session) return;
       setMsgs((ctx?.request?.messages ?? []) as Msg[]);
-      if (mkRes.ok) { const mk = await mkRes.json(); setStats(mk.stats); setExact(mk.exactTotalTokens); }
+      setMsgsSession(servedIn);
+      if (mkRes.ok) {
+        const mk = await mkRes.json();
+        if (superseded()) return;
+        setStats(mk.stats); setExact(mk.exactTotalTokens);
+      }
     } catch (e) {
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setErr(e instanceof Error ? e.message : String(e));
-    } finally { setLoading(false); }
+    } finally { if (!superseded()) setLoading(false); }
   };
-  // Initial load AND scope-switch refetch, clearing the stale document first.
-  createEffect(on(() => props.scope, () => {
-    setMsgs([]); setStats(null); setExact(null); setErr(null);
+  createEffect(on(() => [props.scope, props.session], () => {
+    setMsgs([]); setMsgsSession(null); setStats(null); setExact(null); setErr(null);
     void load();
   }));
 
-  // Zone boundaries from the makeup counts (render order: head | middle | tail).
   const headN = () => stats()?.head.messages ?? 0;
   const tailN = () => stats()?.tail.messages ?? 0;
   const midStart = () => headN();
@@ -165,12 +152,11 @@ export function ContextDocument(props: {
   const isSummary = (m: Msg) => {
     const who = m.participant ?? '';
     const t = textOf(m.content);
-    return SUMMARY_LABELS.some((l) => who.includes('Context Manager') || t.startsWith(l));
+    return CONTEXT_MANAGER_SUMMARY_LABELS.some((l) => who.includes('Context Manager') || t.startsWith(l));
   };
 
   return (
     <div class="text-sm text-neutral-300">
-      {/* sticky timeline minimap */}
       <div class="sticky top-0 z-10 bg-neutral-950/95 backdrop-blur border-b border-neutral-800 pb-2 mb-3 -mx-1 px-1">
         <div class="flex items-center justify-between text-[11px] font-mono text-neutral-500 mb-1">
           <span>
@@ -200,7 +186,6 @@ export function ContextDocument(props: {
 
       <Show when={err()}><div class="text-rose-400 font-mono text-xs px-1">error: {err()}</div></Show>
 
-      {/* the document */}
       <div class="space-y-2 px-1">
         <For each={msgs()}>
           {(m, i) => {
@@ -232,7 +217,7 @@ export function ContextDocument(props: {
                           type="button"
                           class="opacity-40 group-hover:opacity-100 focus:opacity-100 px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 transition-opacity"
                           title="roll back: make this message the tail of the live branch"
-                          onClick={() => props.onRollback?.(m.sourceMessageId!, `${who}: ${t.replace(/\s+/g, ' ').slice(0, 90)}`)}
+                          onClick={() => props.onRollback?.(m.sourceMessageId!, `${who}: ${t.replace(/\s+/g, ' ').slice(0, 90)}`, msgsSession())}
                         >⏪ roll back to here</button>
                       </Show>
                       <span class="text-neutral-600">~{fmt(estTokens(t) + images.length * 1600)} tok</span>

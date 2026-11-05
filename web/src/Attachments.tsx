@@ -4,8 +4,9 @@
  * message is sent.
  */
 import { For, Show } from 'solid-js';
-import { USER_IMAGE_LIMITS } from '@conhost/web/protocol';
-import { imageDamage, sniffImageType } from '@conhost/web/image-bytes';
+import type { UserImageLimits } from '@conhost/web/protocol';
+import { imageDamage, isAnimated, sniffImageType } from '@conhost/web/image-bytes';
+import { ANIMATED_REDRAWN_NOTE, base64Length, fitByRedraw, fitNote, noFitReason } from './fit';
 
 export interface Attachment {
   id: string;
@@ -16,14 +17,11 @@ export interface Attachment {
   /** data: URL for the thumbnail and the sent message's own row. */
   dataUrl: string;
   /** What was done to fit it, when it was not sent as picked. */
-  adjusted?: 'shrunk' | 'converted';
-  /** Says what `adjusted` did, in words for the thumbnail's tooltip. */
+  adjusted?: 'shrunk' | 'converted' | 'still frame';
   note?: string;
 }
 
 let attachmentSeq = 0;
-
-const base64Length = (bytes: number): number => 4 * Math.ceil(bytes / 3);
 
 function readDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -50,56 +48,59 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number): P
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 
-/** Redraw at w×h as WebP, or JPEG on a white ground where the browser can't
- *  write WebP (Safari hands back PNG instead). */
-async function redraw(img: HTMLImageElement, w: number, h: number): Promise<Blob> {
+async function redraw(img: HTMLImageElement, w: number, h: number): Promise<{ blob: Blob; flattened: boolean } | null> {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('this browser has no 2D canvas to resize with');
+  if (!ctx) return null;
   ctx.drawImage(img, 0, 0, w, h);
+  // Safari's canvas writes PNG when asked for WebP.
   const webp = await canvasBlob(canvas, 'image/webp', 0.9);
-  if (webp && webp.type === 'image/webp') return webp;
+  if (webp && webp.type === 'image/webp') return { blob: webp, flattened: false };
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0, w, h);
   const jpeg = await canvasBlob(canvas, 'image/jpeg', 0.9);
-  if (!jpeg) throw new Error('the browser could not re-encode it');
-  return jpeg;
+  return jpeg ? { blob: jpeg, flattened: true } : null;
 }
 
-/**
- * Read a file as an attachment that fits the limits. One that already fits is
- * sent byte for byte; one that is too big, too large on a side, or in a format
- * the model APIs don't take (BMP, SVG, …) is redrawn smaller as WebP/JPEG.
- * A PNG, JPEG, GIF or WebP that is cut short or damaged is refused, not
- * redrawn: the browser draws what it has of one, and would send that as if
- * it were the picture. Throws with a reason the composer shows.
- */
-export async function prepareImage(file: File): Promise<Attachment> {
-  const L = USER_IMAGE_LIMITS;
+export async function prepareImage(file: File, limits: UserImageLimits): Promise<Attachment> {
+  const L = limits;
   const name = file.name || 'pasted image';
+  // The file is read once, here: it can change or go away after it was
+  // picked, so what's drawn and sent is these bytes.
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch {
+    throw new Error(`${name} couldn't be read; attach it again`);
+  }
+  const bytes = new Uint8Array(buffer);
   // The type by the bytes, as the host reads it: a browser takes the type
   // from the file name.
-  const bytes = new Uint8Array(await file.arrayBuffer());
   const sniffed = sniffImageType(bytes);
+  const read = new Blob([buffer], { type: sniffed ?? file.type });
+  // A browser draws what it has of a cut-short or damaged image.
   if (sniffed) {
     const damage = imageDamage(bytes, sniffed);
-    if (damage) throw new Error(`${name} ${damage}`);
+    if (damage) throw new Error(`${name} ${damage}; attach a whole copy`);
   }
+  const animated = sniffed !== undefined && isAnimated(bytes, sniffed);
   let img: HTMLImageElement;
   try {
-    img = await loadImage(file);
+    img = await loadImage(read);
   } catch {
-    throw new Error(`${name} can't be read as an image`);
+    throw new Error(sniffed
+      ? `${name} can't be drawn by this browser: it may be damaged, or in a form this browser can't decode; attach an intact copy, or convert it to PNG or JPEG`
+      : `${name} isn't in a format this browser can read; convert it to PNG or JPEG`);
   }
   const width = img.naturalWidth;
   const height = img.naturalHeight;
   if (!width || !height) throw new Error(`${name} has no size to draw it at`);
 
-  if (sniffed && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(file.size) <= L.maxBase64Chars) {
-    const dataUrl = await readDataUrl(file);
+  if (sniffed && !animated && width <= L.maxSidePx && height <= L.maxSidePx && base64Length(bytes.length) <= L.maxBase64Chars) {
+    const dataUrl = await readDataUrl(read);
     const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
     return {
       id: `att${++attachmentSeq}`,
@@ -110,27 +111,22 @@ export async function prepareImage(file: File): Promise<Attachment> {
     };
   }
 
-  let scale = Math.min(1, L.maxSidePx / Math.max(width, height));
-  for (let attempt = 0; attempt < 6; attempt++, scale *= 0.7) {
-    const w = Math.max(1, Math.round(width * scale));
-    const h = Math.max(1, Math.round(height * scale));
-    const blob = await redraw(img, w, h);
-    if (base64Length(blob.size) > L.maxBase64Chars) continue;
-    const dataUrl = await readDataUrl(blob);
-    const resized = w !== width || h !== height;
-    return {
-      id: `att${++attachmentSeq}`,
-      name,
-      mediaType: blob.type,
-      data: dataUrl.slice(dataUrl.indexOf(',') + 1),
-      dataUrl,
-      adjusted: resized ? 'shrunk' : 'converted',
-      note: resized
-        ? `shrunk from ${width}×${height} to ${w}×${h} to fit`
-        : `converted from ${file.type || 'an unknown type'} to ${blob.type}`,
-    };
-  }
-  throw new Error(`${name} is still over ${(L.maxBase64Chars / 1_000_000).toFixed(1)} MB after shrinking`);
+  const fit = await fitByRedraw(width, height, L, (w, h) => redraw(img, w, h));
+  if (!fit.ok) throw new Error(noFitReason(name, fit, L));
+  const dataUrl = await readDataUrl(fit.blob);
+  return {
+    id: `att${++attachmentSeq}`,
+    name,
+    mediaType: fit.blob.type,
+    data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+    dataUrl,
+    adjusted: animated ? 'still frame' : fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
+    note: animated && fit.w === width && fit.h === height && !fit.flattened && sniffed === fit.blob.type
+      ? ANIMATED_REDRAWN_NOTE
+      : animated
+        ? `${fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
+        : fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type }),
+  };
 }
 
 /**
@@ -138,10 +134,29 @@ export async function prepareImage(file: File): Promise<Attachment> {
  * spreadsheet cells come with a picture of themselves) is a text paste, and
  * yields nothing here.
  */
+/** Whether a file may be an image: its type says so, or the browser didn't
+ *  recognise its type, which is then empty, and its bytes decide. */
+export const mayBeImage = (f: File): boolean => f.type.startsWith('image/') || f.type === '';
+
+/** The files that are images: those whose type says so, and those of an
+ *  empty type whose first bytes are an image's. A folder's read fails. */
+export async function imageFiles(files: File[]): Promise<File[]> {
+  const kept = await Promise.all(files.map(async (f) => {
+    if (f.type.startsWith('image/')) return true;
+    if (f.type !== '') return false;
+    try {
+      return sniffImageType(new Uint8Array(await f.slice(0, 12).arrayBuffer())) !== undefined;
+    } catch {
+      return false;
+    }
+  }));
+  return files.filter((_, i) => kept[i]);
+}
+
 export function pastedImages(data: DataTransfer | null): File[] {
   if (!data) return [];
   if (data.getData('text/plain').trim()) return [];
-  return [...data.files].filter((f) => f.type.startsWith('image/'));
+  return [...data.files].filter(mayBeImage);
 }
 
 /** Whether a drag carries files, so the composer should accept the drop. */
@@ -166,7 +181,9 @@ export function AttachmentStrip(props: {
               class="block h-16 max-w-[8rem] object-contain rounded border border-neutral-800 bg-neutral-900"
             />
             <Show when={a.adjusted}>
-              <span class="absolute bottom-0.5 left-0.5 px-1 rounded bg-neutral-950/80 text-[9px] font-mono text-amber-300">{a.adjusted}</span>
+              {(label) => (
+                <span class="absolute bottom-0.5 left-0.5 px-1 rounded bg-neutral-950/80 text-[9px] font-mono text-amber-300">{label()}</span>
+              )}
             </Show>
             <button
               type="button"

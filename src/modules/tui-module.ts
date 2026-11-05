@@ -1,10 +1,3 @@
-/**
- * TuiModule — handles external-message events from the TUI/CLI.
- *
- * Converts them to context messages and triggers inference.
- * Follows the same pattern as ApiModule's handleMessage().
- */
-
 import type {
   Module,
   ModuleContext,
@@ -42,13 +35,9 @@ export class TuiModule implements Module {
     const blocks: ContentBlock[] = operatorBlocks(content)
       ?? [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }];
 
-    // IPC/headless wakes carry no channel locus: the wake clears any
-    // active-channel routing, so a plain-prose reply is NOT delivered to the
-    // sender — it either falls back to the agent's home/default publish
-    // channel (possibly the wrong audience) or strands in the chronicle
-    // (routeSpeech: "no locus"). Agents can't see that from the message
-    // itself, so tell them explicitly; otherwise they write replies into the
-    // void (labclaude's stranded "Ack, ops" reply, 2026-07-09).
+    // agent-framework routes plain prose by channel, and an IPC wake carries
+    // none: a turn it opens takes the agent's home or default publish channel as
+    // its locus, or none, and a wake during an open turn keeps that turn's locus.
     if (source === 'headless') {
       blocks.push({
         type: 'text',
@@ -61,11 +50,13 @@ export class TuiModule implements Module {
       });
     }
 
+    const corrId = (event as { metadata?: { corrId?: unknown } }).metadata?.corrId;
     const response: EventResponse = {
       addMessages: [
         {
           participant: 'user',
           content: blocks,
+          ...(typeof corrId === 'string' && corrId.length > 0 ? { metadata: { webuiCorrId: corrId } } : {}),
         },
       ],
     };
