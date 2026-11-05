@@ -107,7 +107,7 @@ describe('what each client is sent', () => {
             },
             lastInference: { startedAt: 1, failedAt: 2, lastError: TEXT.lastError },
             refusalStats: { total: 1, byCategory: { policy: 1 }, lastAt: 3, lastCategory: 'policy' },
-            upcomingWakes: [{ at: 9, kind: 'heartbeat', certain: true }],
+            upcomingWakes: [{ at: 9, kind: 'heartbeat', certain: true, note: TEXT.wait }],
           }],
         }),
       },
@@ -466,15 +466,16 @@ describe('what each client is sent', () => {
     const steps = [
       { agentName: 'main', phase: 'sending', since: 5 },
       { agentName: 'main', phase: 'streaming', since: 6 },
+      { agentName: 'main', phase: 'invoking', since: 7 },
     ];
     host.emitTrace({ type: 'inference:started', agentName: 'main', timestamp: 5, channelId });
     host.emitTrace({ type: 'inference:tokens', agentName: 'main', timestamp: 6, blockType: 'text', content: 'words' });
     // What a call's input names is no agent: it isn't reported, or a health client could read it.
     const named = 'a-name-the-agent-wrote-in-a-tool-call';
-    host.emitTrace({ type: 'inference:tool_calls_yielded', agentName: 'other', timestamp: 6, calls: [{ id: 'c1', name: 'subagent--spawn', input: { name: named } }] });
+    host.emitTrace({ type: 'inference:tool_calls_yielded', agentName: 'main', timestamp: 7, calls: [{ id: 'c1', name: 'subagent--spawn', input: { name: named } }] });
     await host.fence(Object.values(c));
     const expected = steps.map((step) => ({ type: 'agent-phase', ...step }));
-    const now = { main: { phase: 'streaming', since: 6 } };
+    const now = { main: { phase: 'invoking', since: 7 } };
     for (const conn of [c.operator, c.dashboard, c.everything]) {
       expect(conn.framesOf('agent-phase')).toEqual(expected);
       expect(conn.framesOf('welcome').at(-1)!.agentPhases).toEqual(now);
@@ -501,7 +502,7 @@ describe('what each client is sent', () => {
     const token = (c.dashboard.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
     const res = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { cookie: `fkm_obs=${token}` } });
     const body = (await res.json()) as { agents: Array<{ upcomingWakes: unknown }> };
-    expect(body.agents[0]!.upcomingWakes).toEqual([{ at: 9, kind: 'heartbeat', certain: true }]);
+    expect(body.agents[0]!.upcomingWakes).toEqual([{ at: 9, kind: 'heartbeat', certain: true, note: '' }]);
     expect(JSON.stringify(body)).not.toContain(TEXT.lastError);
   });
 

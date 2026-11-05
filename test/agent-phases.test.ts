@@ -15,6 +15,7 @@ describe('AgentPhases', () => {
     expect(phases.apply(started('main', 2))).toEqual([{ agentName: 'main', phase: 'sending', since: 2 }]);
     expect(phases.apply(tokens('main', 3))).toEqual([{ agentName: 'main', phase: 'streaming', since: 3 }]);
     expect(phases.apply(tokens('main', 4))).toEqual([]);
+    expect(phases.snapshot().main).toEqual({ phase: 'streaming', since: 3 });
     expect(phases.apply(yielded('main', 'c1', 5))).toEqual([{ agentName: 'main', phase: 'invoking', since: 5 }]);
     expect(phases.apply({ type: 'tool:started', callId: 'c1', timestamp: 6 } as never)).toEqual([{ agentName: 'main', phase: 'executing', since: 6 }]);
     expect(phases.apply({ type: 'tool:completed', callId: 'c1', timestamp: 7 } as never)).toEqual([]);
@@ -32,15 +33,17 @@ describe('AgentPhases', () => {
       seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
       return Math.floor((seed / 0x80000000) * n);
     };
+    const agents = ['main', 'other'];
     for (let run = 0; run < 200; run++) {
-      const phases = new AgentPhases(['main']);
+      const phases = new AgentPhases(agents);
       const tree = new AgentTreeReducer();
-      tree.seedFrameworkAgents(['main']);
+      tree.seedFrameworkAgents(agents);
       // A call's id is unique and it finishes once, so its events only follow its yield.
       const open: string[] = [];
       for (let i = 1; i <= 40; i++) {
         const type = types[next(types.length)]!;
-        const event: Record<string, unknown> = { type, agentName: 'main', timestamp: i, error: 'x', callId: 'never-yielded' };
+        const agentName = agents[next(agents.length)]!;
+        const event: Record<string, unknown> = { type, agentName, timestamp: i, error: 'x', callId: 'never-yielded' };
         if (type === 'inference:tool_calls_yielded') {
           const id = `c${run}-${i}`;
           open.push(id);
@@ -48,11 +51,14 @@ describe('AgentPhases', () => {
         } else if (type.startsWith('tool:') && open.length > 0) {
           const at = next(open.length);
           event.callId = open[at];
+          delete event.agentName; // Tool events name only the call.
           if (type !== 'tool:started') open.splice(at, 1);
         }
         phases.apply(event as never);
         tree.applyEvent(event as never);
-        expect(`${run}/${i} ${type}: ${phases.snapshot().main!.phase}`).toBe(`${run}/${i} ${type}: ${tree.getNode('main')!.phase}`);
+        for (const name of agents) {
+          expect(`${run}/${i} ${type} ${name}: ${phases.snapshot()[name]!.phase}`).toBe(`${run}/${i} ${type} ${name}: ${tree.getNode(name)!.phase}`);
+        }
       }
     }
   });
@@ -86,6 +92,8 @@ describe('AgentPhases', () => {
       { type: 'tool:started', callId: 'c1', timestamp: 6 },
       { type: 'inference:exhausted', agentName: 'a-fork', error: 'x', timestamp: 7 },
       { type: 'inference:aborted', agentName: 'a-fork', timestamp: 8 },
+      { type: 'inference:tokens', agentName: 'a-fork', timestamp: 9 },
+      yielded('a-fork', 'c2', 10),
     ]) {
       expect(phases.apply(late as never)).toEqual([]);
     }

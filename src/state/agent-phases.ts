@@ -38,8 +38,9 @@ interface Tracked extends AgentPhaseState {
  * That reducer guesses nodes from tool calls so a page can draw them, naming
  * them with whatever the call's input says, and it keeps them for good. That's
  * content a `health` client may not read, and growth a host can't afford. So an
- * agent is here from its first turn, by the name the framework gives it, until
- * it ends. A fleet child reports its own, in its own process.
+ * agent is here from the framework's binding or its first turn, by the name the
+ * framework gives it, until it ends. A fleet child reports its own, in its own
+ * process.
  */
 export class AgentPhases {
   private readonly phases = new Map<string, Tracked>();
