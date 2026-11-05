@@ -918,7 +918,7 @@ only where its next request would pass the window, and a fresh compile carries t
   `anomaly` field and one `[llm-calls] … ANOMALY …` stderr line), and on the first failure of
   each kind of error (its type, or for an untyped error its name, with its HTTP status when it has
   one) that the budget below has room for and the line bound leaves whole, in a run of failures on
-  a cache lineage, from its first failure until a call on it succeeds or an hour passes with
+  a cache lineage, from its first failure until a call on it succeeds or more than an hour passes with
   no failed call on it, keepalive pokes, cancelled calls, and failed calls whose request is missing or
   can't be serialized counting for neither (later failures of
   that kind carry `requestSha256`, the request's size under `rawRequestOmitted`, and, once that

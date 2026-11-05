@@ -3,8 +3,8 @@
   name, with its HTTP status when it has one) in a run of failures on its
   cache lineage (model, system and tools) that the budget below has room for
   and the 16 MiB line bound leaves whole. A run begins at its first failure,
-  and a call's success on that lineage, or an hour with no failed call on
-  it, ends it; keepalive pokes, cancelled calls, and failed calls whose
+  and a call's success on that lineage, or more than an hour with no failed
+  call on it, ends it; keepalive pokes, cancelled calls, and failed calls whose
   request is missing or can't be serialized count for neither.
   The run's later failures of that kind, such as each retry or each turn of
   a rate-limit storm, record the request's size under `rawRequestOmitted`,
@@ -22,4 +22,5 @@
   it, and a cancelled call (membrane's `abort`) keeps none. One OAuth 429
   storm had grown a single log to 687MB. A request membrane rejects before sending (such as an unsupported
   prefill) is now kept too, from the error. `LLM_CALLS_FULL_PAYLOADS=1`
-  still keeps the full request of every call, failures included.
+  still keeps the full request of every call, failures included, within the
+  16 MiB line bound.
