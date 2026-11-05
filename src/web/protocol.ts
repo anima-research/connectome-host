@@ -712,8 +712,8 @@ export interface HostModeSnapshot {
  * began, with no content. `sending` runs from a turn's start, through its hooks
  * and context compile, until its first token or a failed attempt. `health`'s, so
  * that a dashboard can show it without being granted the traces it comes from.
- * An agent that ends gets a last frame with how it ended, and leaves the
- * snapshots after it. Covers this process's agents, not a fleet child's.
+ * An agent that ends leaves the snapshots after it, with a last frame if ending
+ * changed its phase. Covers this process's agents, not a fleet child's.
  */
 export interface AgentPhaseMessage {
   type: 'agent-phase';
