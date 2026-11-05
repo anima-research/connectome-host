@@ -358,7 +358,11 @@ surgery and still uses its own branch stacks.
   That rule is the Anthropic writer's: the run's other failures carry the
   request's `requestSha256`, its size under `rawRequestOmitted`, and, once
   the run's copy of that kind is written, its hash as
-  `rawRequestOmitted.copySha256`. The first failing
+  `rawRequestOmitted.copySha256`. A request at or over the 16 MiB line bound
+  by itself carries its size the same way at every failure. One just under
+  the bound whose record still passes it is cut to fit, carries `truncated`
+  instead of `rawRequestOmitted`, and is tried whole again at the run's next
+  failure of that kind. The first failing
   request the budget has no room for, since the last one written, prints
   one stderr line.
 - **Ops alerts** (agent-framework) — compression quarantine, refusal streaks,

@@ -259,6 +259,26 @@ test('a request whose record the line bound cut is tried whole again, not noted 
   }
 }, 30_000);
 
+test('a request at or over the line bound by itself is noted with its size at every failure, and a smaller one of its kind is still kept', async () => {
+  const over = { model: 'claude-fable-5', messages: [{ role: 'user', content: 'x'.repeat(16 * 1024 * 1024) }] };
+  const adapter = newAdapter();
+  failWith(rateLimitError('429'), over);
+  const records = await errorRecords('stream', 2, adapter);
+  expect(records).toHaveLength(2);
+  for (const rec of records) {
+    expect(rec.rawRequest).toBeUndefined();
+    expect(rec.truncated).toBeUndefined();
+    expect(rec.requestSha256).toBe(sha(over));
+    expect(rec.rawRequestOmitted).toEqual({
+      bytes: Buffer.byteLength(JSON.stringify(over), 'utf8'),
+      reason: expect.stringContaining('the request alone is at or over the 16 MiB line bound, so no record of it can be written whole'),
+    });
+  }
+  const small = { model: 'claude-fable-5', messages: [{ role: 'user', content: 'small' }] };
+  failWith(rateLimitError('429'), small);
+  expect((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest).toEqual(small);
+}, 30_000);
+
 test('the memory keeps the latest 256 runs: the oldest is written whole again, the newest noted', async () => {
   const adapter = newAdapter();
   for (let n = 0; n <= 256; n++) {

@@ -923,7 +923,10 @@ only where its next request would pass the window, and a fresh compile carries t
   can't be serialized counting for neither (later failures of
   that kind carry `requestSha256`, the request's size under `rawRequestOmitted`, and, once that
   kind's copy is written, the run's copy's hash as
-  `rawRequestOmitted.copySha256`, its record's `requestSha256`; the latest 256 lineages' runs are
+  `rawRequestOmitted.copySha256`, its record's `requestSha256`; a request at or over the 16 MiB
+  line bound by itself carries its size so at every failure, and one just under it whose record
+  still passes the bound is cut, carries `truncated` instead, and is tried whole again at the run's
+  next failure of that kind; the latest 256 lineages' runs are
   remembered, runs that have ended dropped first; at most 64 MiB of such copies per log at once, refilled at 64 MiB a day, and the
   first one refused for it since the last one written prints one `[llm-calls]` stderr line; an
   anomalous response's copy isn't charged to it; a cancelled call, membrane's `abort`, keeps

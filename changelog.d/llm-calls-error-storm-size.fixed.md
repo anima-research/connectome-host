@@ -11,7 +11,10 @@
   with the hash of the run's copy of that kind as `copySha256` once that
   copy is written, and each complete or stream error record whose request
   can be serialized carries `requestSha256`, unless the line bound cuts the
-  record to its head. The adapter remembers the runs of the 256 lineages
+  record to its head. A request at or over the line bound by itself records
+  its size so at every failure; one just under it whose record still passes
+  the bound is cut, carries `truncated` instead, and is tried whole again at
+  the run's next failure of that kind. The adapter remembers the runs of the 256 lineages
   whose runs began latest, dropping runs that have ended first, and a log
   writes at most 64 MiB of such copies at once, refilled at 64 MiB a day:
   the first copy refused for it since the last one written prints one

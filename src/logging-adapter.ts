@@ -63,7 +63,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
-import { serializeRecordOutcome, type RecordKept } from './logging-record.js';
+import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -826,6 +826,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         + `since it began following this run (it follows the runs of the ${FAILING_RUNS_REMEMBERED} lineages whose runs began `
         + 'latest), unless the file was rotated, truncated or removed since');
       return { fields: { ...note.fields, rawRequestOmitted: { ...note.fields.rawRequestOmitted, copySha256 } } };
+    }
+    if (bytes >= MAX_RECORD_BYTES) {
+      return omitted('the request alone is at or over the 16 MiB line bound, so no record of it can be written whole');
     }
     if (bytes > this.failedCopyRoomNow()) {
       this.tellBudgetRefusal(bytes);
