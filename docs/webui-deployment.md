@@ -232,7 +232,7 @@ travel over the WebSocket.
 | `/healthz` | health JSON: gate state, queued work, per-agent status and last inference |
 | `/quota` | subscription quota windows (`{"subscription": false}` on API keys) |
 | `/media/<messageId>/<block>[?agent=]` | one inline transcript image |
-| `/files/<mount>/<path>` | a workspace file. `403` for: a path no mount holds or one leading out of its mount; one its mount's `include` doesn't cover; one in another mount's directory nested in it (refused from agent-framework's release with anima-research/agent-framework#460), or reached through a link into one (from the release with anima-research/agent-framework#468); a file that is itself a link, on a mount that doesn't follow links (its `followSymlinks`, off unless the recipe sets it), or one reached through such a link among its directories (refused from agent-framework's release with anima-research/agent-framework#468); and one whose canonical path leaves its mount. `404` for a file the read can't give, such as one in a mount whose directory has gone, until agent-framework's release with anima-research/agent-framework#533. `503` with no workspace, or for a mount the read refuses as unavailable, which from that release includes a mount whose directory has gone |
+| `/files/<mount>/<path>` | a workspace file, with `X-Content-Type-Options: nosniff` and a sandboxing `Content-Security-Policy` under which an HTML or SVG file runs no script. Such a page shows its text and inline styles, stylesheets from the Web UI's `/files/`, and images, fonts, audio and video from its `/files/` or `data:` URLs. Its scripts, forms, frames that load a page, a link that opens a new window, and a download it starts stay off, and it loads nothing from another host, nor from a Web UI route other than `/files/` and the static app shell; a plain link in it still navigates the tab. A download from a file's own `/files/` URL isn't affected. `403` for: a path no mount holds or one leading out of its mount; one its mount's `include` doesn't cover; one in another mount's directory nested in it (refused from agent-framework's release with anima-research/agent-framework#460), or reached through a link into one (from the release with anima-research/agent-framework#468); a file that is itself a link, on a mount that doesn't follow links (its `followSymlinks`, off unless the recipe sets it), or one reached through such a link among its directories (refused from agent-framework's release with anima-research/agent-framework#468); and one whose canonical path leaves its mount. `404` for a file the read can't give, such as one in a mount whose directory has gone, until agent-framework's release with anima-research/agent-framework#533. `503` with no workspace, or for a mount the read refuses as unavailable, which from that release includes a mount whose directory has gone |
 | `/curve` | the context-curve page (reads `/debug/context/curve`) |
 | `/debug/context` and `/debug/context/{makeup,coverage,curve,preview,maintenance}` | context debugging — see [`debug-context-api.md`](./debug-context-api.md) |
 | `/debug/retrieval[/view]` | retrieval traces — see [`retrieval-traces.md`](./retrieval-traces.md) |
@@ -241,6 +241,11 @@ travel over the WebSocket.
 `/healthz`, `/quota`, `/media/…`, `/debug/tool-classes` and the `/debug/context*` routes accept
 `?scope=<child>` to answer for a fleet child instead (proxied over the fleet
 IPC). Unknown `/debug/*` paths get a JSON `404`.
+
+The SPA's files (`dist/web`, or the module's `staticDir`) are the Web UI's
+own code and are served without `/files/`'s sandbox, so keep them, and the
+host's checkout, out of any workspace mount an agent can write: an HTML file
+an agent wrote there would run with the operator's authority.
 
 ## Verifying the deployment
 
