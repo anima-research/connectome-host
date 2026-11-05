@@ -566,6 +566,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'tune-out:reader-fork-failed': OPS,
   'tune-out:deferred-cancel-dropped': OPS,
   'tune-out:note-loss-untold': OPS,
+  'tune-out:stop-unrecorded': OPS,
   'tune-out:reader-prose-delivered': ['messages', 'ops'],
   // Where the persistent subconscious's window starts, as an index ordinal.
   'tune-out:subconscious-window': OPS,

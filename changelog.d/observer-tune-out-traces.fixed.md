@@ -21,3 +21,7 @@
   An ops observer also receives `tune-out:note-loss-untold` (a lost queued
   note's loss notice could not be written to its author: the author, the
   hold and the error; no text).
+  An ops observer also receives `tune-out:stop-unrecorded` (a boot found a
+  hold on record that the last stop's stamp didn't cover and told the
+  persistent subconscious: the hold, its epoch and what the store showed of
+  the note — delivered, the caller's own ask, or unknown; no text).
