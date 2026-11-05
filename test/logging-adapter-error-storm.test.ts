@@ -674,6 +674,35 @@ test("a run's place among the 256 counts from its first failure, even one the bu
   });
 }, 30_000);
 
+test('a run begun again after more than an hour goes last in begun-latest order, so the bound drops the run begun earliest instead', async () => {
+  const adapter = newAdapter();
+  let now = Date.parse('2026-10-21T09:00:00Z');
+  const fail = async (name: string, content: string) => {
+    setSystemTime(new Date(now));
+    failWith(rateLimitError('429'), ofLineage(name, content));
+    return (await errorRecords('stream', 1, adapter)).at(-1)!;
+  };
+  try {
+    // a's run begins first; 255 more begin half an hour later.
+    await fail('a', 'first');
+    now += 30 * 60_000;
+    for (let n = 0; n < 255; n++) await fail(`agent ${n}`, 'first');
+    // 61 minutes after its first failure a's run has ended, and a fails again:
+    // its new run begins now, after all of theirs, which are still going.
+    now += 31 * 60_000;
+    expect((await fail('a', 'again')).rawRequest).toEqual(ofLineage('a', 'again'));
+    // A 257th lineage passes the bound with no run ended: agent 0's, begun
+    // earliest, goes, and a's is kept.
+    now += 60_000;
+    await fail('agent 255', 'first');
+    now += 60_000;
+    expect((await fail('a', 'after')).rawRequestOmitted).toMatchObject({ copySha256: sha(ofLineage('a', 'again')) });
+    expect((await fail('agent 0', 'after')).rawRequest).toEqual(ofLineage('agent 0', 'after'));
+  } finally {
+    setSystemTime();
+  }
+}, 30_000);
+
 test('past the bound of 256 runs, runs that have ended are dropped before a live one', async () => {
   const adapter = newAdapter();
   let now = Date.parse('2026-10-21T09:00:00Z');
