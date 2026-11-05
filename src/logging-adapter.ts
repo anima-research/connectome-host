@@ -822,7 +822,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         + 'by size and hash. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request '
         + "of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, "
         + 'not for leaving on.');
-    } catch { /* never throw from logging */ }
+    } catch { }
   }
 
   private rememberFailedRequest({ lineage, kind, bytes, requestSha256 }: Written): void {
