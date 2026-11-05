@@ -12,8 +12,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 - `agent.retry` now reaches framework-wide turn retries as well as other
   provider calls (#470). Partial overrides preserve the framework's turn
-  defaults: 13 overloaded sends per policy cycle unless
-  `overloaded.maxRetries` is specified,
+  defaults: at least 13 overloaded sends per policy cycle, or `maxRetries`
+  if that's more, unless `overloaded.maxRetries` is specified,
   stated-wait ceilings of at least 10 minutes, and one fresh call after a
   stream deadline cut. The ceilings apply to subagent runs; residents and
   conversation forks hold the provider's full stated wait before the policy
@@ -36,7 +36,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   until a provider's limit lifts, no longer shows as failed in the Web UI
   and the TUI. Its node in the agent trees, a subagent's row, and the TUI's
   status line for the host's own agent show `attempt-failed` until its next
-  attempt starts or its turn ends, the tree's in a colour of its own. The
+  attempt starts or its turn ends, the tree's in a colour of its own, except
+  the TUI tree's row for the host's own agent. The
   Web UI shows the failure's error when you hover over the phase, and the
   TUI on a fleet child's agent detail. A turn the TUI had moved to the
   background stays there through a failed attempt, and when it returns it
@@ -48,7 +49,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   count of running agents. On a fleet child running agent-framework older
   than 0.27.0, a held turn whose retry is dropped ends with no event, so it
   shows `attempt-failed`, and counts as running, until that agent's next
-  attempt starts.
+  attempt starts. On one older than 0.22.3, an agent stopped through
+  `Agent.cancelStream` shows `failed`.
 
 - **Dependencies:** `@opentui/core` moves to `^0.2.16` (from `^0.1.82`). From
   0.2.1 it depends on `diff` 9.0.0 and no longer on `jimp`, so installing the
