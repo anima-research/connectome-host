@@ -734,6 +734,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private failedCopyRefilledAt = 0;
   private budgetRefusalTold = false;
 
+  /** A rate-limit error's request is kept like any other's: Anthropic answers
+   *  an OAuth request whose first system block isn't OAUTH_SYSTEM_IDENTITY with
+   *  a masked 429. */
   private errorRequestFields(rawRequest: unknown, lineage: string | undefined, kind: string, aborted: boolean): {
     fields: Record<string, unknown>;
     remember?: Written;
