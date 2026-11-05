@@ -6,6 +6,71 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.22.0 — 2026-11-05
+
+### Changed
+
+- `agent.retry` now reaches framework-wide turn retries as well as other
+  provider calls (#470). Partial overrides preserve the framework's turn
+  defaults: 13 overloaded sends per policy cycle unless
+  `overloaded.maxRetries` is specified,
+  stated-wait ceilings of at least 10 minutes, and one fresh call after a
+  stream deadline cut. The ceilings apply to subagent runs; residents and
+  conversation forks hold the provider's full stated wait before the policy
+  runs. Omitted or empty retry settings and non-turn retry behavior are unchanged.
+
+- **The onboarding guide recommends code execution for every resident.** Its
+  recipe skeleton includes `"codeExecution": { "enabled": true }`, with a section
+  on what agent-framework's `code_execution` does (JavaScript that calls the
+  agent's own tools in a QuickJS isolate; calls and intermediate results stay out
+  of the context), its defaults, the cost of turning it on for a running resident
+  (one full cache write), and the security note's caveat (no operating-system
+  sandbox; containment is the engine's). The built-in default recipe still leaves
+  it off. `index.ts` now passes the setting to `AgentFramework.create` through
+  `codeExecutionOption(recipe)` in `framework-agent-config.ts`, with tests that
+  the tool is offered when it is on and not when it is off or absent.
+
+### Fixed
+
+- An agent whose model call failed and is being tried again, or is held
+  until a provider's limit lifts, no longer shows as failed in the Web UI
+  and the TUI. Its node in the agent trees, a subagent's row, and the TUI's
+  status line for the host's own agent show `attempt-failed` until its next
+  attempt starts or its turn ends, the tree's in a colour of its own. The
+  Web UI shows the failure's error when you hover over the phase, and the
+  TUI on a fleet child's agent detail. A turn the TUI had moved to the
+  background stays there through a failed attempt, and when it returns it
+  shows what its earlier rounds wrote and the retry's answer, without the
+  failed attempt's words. A turn that ends failed shows `failed` with its
+  last error, or an error in the TUI's status line; one a stop ends shows
+  `cancelled`, or idle. A fleet parent on an earlier release can show a
+  child's `attempt-failed` agent in a plain colour and leave it out of its
+  count of running agents. On a fleet child running agent-framework older
+  than 0.27.0, a held turn whose retry is dropped ends with no event, so it
+  shows `attempt-failed`, and counts as running, until that agent's next
+  attempt starts.
+
+- **Dependencies:** `@opentui/core` moves to `^0.2.16` (from `^0.1.82`). From
+  0.2.1 it depends on `diff` 9.0.0 and no longer on `jimp`, so installing the
+  host no longer brings the versions of `diff`, `file-type` and `zod` 3 that
+  published advisories cover. The Web UI is built with `dompurify` 3.4.17 and
+  `solid-js` 1.9.18, whose `seroval` is 1.6.12, and the repository's lockfiles
+  take `undici` 6.29.1, each within its existing range.
+
+- **Web UI:** `/files/<mount>/<path>` serves a workspace file with
+  `X-Content-Type-Options: nosniff` and a sandboxing
+  `Content-Security-Policy` (`sandbox allow-same-origin`, without
+  `allow-scripts`). An HTML or SVG file an agent wrote no longer runs script
+  when the operator opens it, where before its script ran on the Web UI's
+  origin and could reach `/ws` with the operator's authority. Such a page
+  still shows its text and inline styles, stylesheets from the Web UI's
+  `/files/`, and images, fonts, audio and video from its `/files/` or
+  `data:` URLs. Its scripts, forms, frames that load a page, a link in it
+  that opens a new window, and a download it starts no longer work, and it
+  loads nothing from another host, nor from a Web UI route other than
+  `/files/` and the static app shell; a plain link in it still navigates the
+  tab. A download from a file's own `/files/` URL isn't affected.
+
 ## 0.21.0 — 2026-10-31
 
 ### Breaking
