@@ -327,6 +327,21 @@ const NOT_LOOPBACK = 'Forbidden: without basicAuth this Web UI answers only loop
 
 const HOST_FORM = /^(\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d+)?$/i;
 
+/** `/files/`'s policy, as two policies a browser enforces both of: the first
+ *  sandboxes the page without scripts and lets it load images, media, fonts
+ *  and styles only from `'self'` (this origin, or its https form), `data:` or
+ *  inline; the second only from a path under `/files/`. So a load must be from
+ *  `/files/` on this host.
+ *  The second names its schemes, since WebKit doesn't match a `*` host source
+ *  without one. serveWorkspaceFile says why. */
+const FILES_PATH = 'http://*:*/files/ https://*:*/files/';
+const WORKSPACE_FILE_CSP = [
+  "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; "
+    + "style-src 'self' 'unsafe-inline'; sandbox allow-same-origin",
+  `default-src 'none'; img-src ${FILES_PATH} data:; media-src ${FILES_PATH} data:; `
+    + `font-src ${FILES_PATH} data:; style-src ${FILES_PATH} 'unsafe-inline'`,
+].join(', ');
+
 const unbracketed = (name: string) => name.replace(/^\[(.*)\]$/, '$1');
 
 function namesLoopback(host: string | null): boolean {
@@ -1327,7 +1342,28 @@ export class WebUiModule implements Module {
     if (!ws) return new Response('Workspace not mounted', { status: 503 });
     try {
       const { bytes, realPath } = await ws.readFileFromDisk(mountPrefixed);
-      return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': mimeFor(realPath) } });
+      // A workspace file is the agent's to write, and this route serves it on
+      // the Web UI's own origin. The sandbox, without allow-scripts, runs no
+      // script in an HTML or SVG file, and script-src falls back to
+      // default-src 'none', so such a file can't open /ws. Forms, frames
+      // that load a URL, popups and downloads started from the page stay off
+      // too. The page may load images, media, fonts and stylesheets from
+      // /files/ on this host, so a report shows its own pictures and styling. Not
+      // from the rest of the origin: a GET there can do work, as
+      // /debug/context?injections=1 runs inference and hooks, and the page
+      // would send it just by being opened. (A /files/ path spelt with a
+      // percent-escape, such as /%66iles/, passes the policy but reaches the
+      // static route, which only reads the SPA's files.) allow-same-origin
+      // lets those loads carry the operator's session cookie: without it the
+      // page's origin is opaque, its requests are cross-site, and the
+      // SameSite=Lax cookie isn't sent.
+      return new Response(bytes as Uint8Array<ArrayBuffer>, {
+        headers: {
+          'content-type': mimeFor(realPath),
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': WORKSPACE_FILE_CSP,
+        },
+      });
     } catch (err) {
       const read = err instanceof WorkspaceReadError ? err : null;
       if (read && ['unknown_mount', 'traversal', 'outside_include', 'other_mount', 'symlink', 'parent_symlink', 'escape'].includes(read.code)) {
