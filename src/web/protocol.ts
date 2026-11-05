@@ -122,7 +122,7 @@ export interface WelcomeMessage {
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
   hostMode?: HostModeSnapshot;
-  /** Each agent's phase now, by name (see AgentPhaseMessage). Left out for a client without `health`. */
+  /** Each of this process's agents' phase now, by name (see AgentPhaseMessage). Left out for a client without `health`. */
   agentPhases?: Record<string, AgentPhaseState>;
   /** Cumulative session-wide token usage at connect time. */
   usage: TokenUsage;
@@ -710,8 +710,10 @@ export interface HostModeSnapshot {
 /**
  * An agent's phase changed: the tree's word for what it's doing, and when it
  * began, with no content. `sending` runs from a turn's start, through its hooks
- * and context compile, to its first token. `health`'s, so that a dashboard can
- * show it without being granted the traces it comes from.
+ * and context compile, until its first token or a failed attempt. `health`'s, so
+ * that a dashboard can show it without being granted the traces it comes from.
+ * An agent that ends gets a last frame with how it ended, and leaves the
+ * snapshots after it. Covers this process's agents, not a fleet child's.
  */
 export interface AgentPhaseMessage {
   type: 'agent-phase';
