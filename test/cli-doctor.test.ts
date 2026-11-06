@@ -1301,6 +1301,37 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.out).toContain('fit claude-setenv-model\'s window');
   });
 
+  test('on launchd, a name a dotenv value puts in, and NODE_ENV, are asked of launchd, so a stored secret built from launchd\'s value is withheld', async () => {
+    const at = install({ manager: 'launchd', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'BUILT_TOKEN'] });
+    writeFileSync(join(at.work, '.env.local'), 'BUILT_TOKEN=$TOKEN_PART\n');
+    const manager = fakeManager(at.work, { launchd: { TOKEN_PART: 'launchd-part-value' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      launchctl: manager.path, ...reports('| the log says launchd-part-value'),
+    }));
+    expect(manager.calls()).toContain('getenv TOKEN_PART');
+    expect(manager.calls()).toContain('getenv NODE_ENV');
+    expect(r.out).toContain('| the log says <BUILT_TOKEN>');
+    expect(r.out).not.toContain('launchd-part-value');
+  });
+
+  test('on launchd, a name put in with a default, and each name its default puts in, are asked of launchd too', async () => {
+    const at = install({ manager: 'launchd', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'BUILT_TOKEN'] });
+    writeFileSync(join(at.work, '.env.local'), [
+      'BUILT_TOKEN=${TOKEN_PART:-$FALLBACK_PART}',
+      'LITERAL=${NOT_ASKED_A-x}${NOT_ASKED_B:=x}${NOT_ASKED_C:+x}${NOT_ASKED_D:?x}',
+      '',
+    ].join('\n'));
+    const manager = fakeManager(at.work, { launchd: { TOKEN_PART: 'launchd-part-value' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      launchctl: manager.path, ...reports('| the log says launchd-part-value'),
+    }));
+    expect(manager.calls()).toContain('getenv TOKEN_PART');
+    expect(manager.calls()).toContain('getenv FALLBACK_PART');
+    expect(manager.calls().filter((call) => call.includes('NOT_ASKED'))).toEqual([]);
+    expect(r.out).toContain('| the log says <BUILT_TOKEN>');
+    expect(r.out).not.toContain('launchd-part-value');
+  });
+
   test('on launchd, the Discord check of a server given the host\'s whole environment reads the scope launchd gives', async () => {
     const at = install({
       manager: 'launchd',
