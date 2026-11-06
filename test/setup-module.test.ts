@@ -2177,6 +2177,25 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(result.success, result.error).toBe(true);
   });
 
+  test('once the module is stopping, check_model asks the provider nothing, and says so, even waiting behind an open question', async () => {
+    const asked: string[] = [];
+    const fetchFn = (async (url: string) => { asked.push(String(url)); return models('gpt-6.1-terra'); }) as unknown as typeof fetch;
+    const stopped = install({ envFile: 'OPENAI_API_KEY="sk-openai-key"\n', fetch: fetchFn });
+    await stopped.module.stop();
+    const refused = await checkModel(stopped.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
+    expect(refused.error).toBe('The host is stopping, so setup--check_model checks nothing, and calling it again won\'t change that.');
+    let answer: ((value: string | null) => void) | undefined;
+    const waiting = install({ envFile: 'OPENAI_API_KEY="sk-openai-key"\n', fetch: fetchFn, asker: { ask: () => new Promise<string | null>((resolve) => { answer = resolve; }) } });
+    const open = askSecret(waiting.module, { name: 'OTHER_TOKEN', purpose: 'x' });
+    const behind = checkModel(waiting.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
+    while (answer === undefined) await Bun.sleep(1);
+    await waiting.module.stop();
+    answer(null);
+    await open;
+    expect((await behind).error).toBe('The host is stopping, so setup--check_model checks nothing, and calling it again won\'t change that.');
+    expect(asked).toEqual([]);
+  });
+
   test('a provider key the provider refuses is not stored, leaving what was stored before', async () => {
     for (const [name, provider, status] of [['OPENAI_API_KEY', 'OpenAI', 401], ['ANTHROPIC_API_KEY', 'Anthropic', 401], ['OPENROUTER_API_KEY', 'OpenRouter', 403]] as const) {
       const made = install({

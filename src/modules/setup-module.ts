@@ -673,6 +673,7 @@ export class SetupModule implements Module {
   }
 
   private async checkModel(input: { name?: unknown; model?: unknown }): Promise<ToolResult> {
+    if (this.stopping) return failed('The host is stopping, so setup--check_model checks nothing, and calling it again won\'t change that.');
     const { name, model } = input;
     if (typeof name !== 'string' || typeof model !== 'string' || model.trim() === '') {
       return failed('setup--check_model needs a name, the one the key is stored as, and a model.');
