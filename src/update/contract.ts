@@ -238,12 +238,13 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
   'records only those. A record written this way doesn\'t say which directory the install was set up in, so setup ' +
   'takes each place under the directory that holds the record\'s directory as this install\'s, unless another ' +
-  'install\'s root lies between, and asks where each other place is in this install: `connectome setup discord` ' +
-  'asks about each in turn, and a setup run by hand lists them, each to be given with --place PATH PLACE. Then it ' +
-  'writes the record, start.js and connectome again, ' +
-  'or says what else stops it first, such as a current that names no release. Its service can keep running ' +
-  'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
-  'again: its next start runs start.js, whose launcher reads the record.';
+  'install\'s root lies between, and asks where each other place is in this install (a place inside another goes ' +
+  'with it): `connectome setup discord` asks about each in turn, and a setup run by hand lists them, each to be ' +
+  'given with --place PATH PLACE. Then it writes the record, start.js and connectome again, or says what else stops ' +
+  'it first, such as a current that names no release. Its service can keep running while you write the record, ' +
+  'since a running host doesn\'t read it. Where setup then has to rewrite a copy label or Go back list, or bind a ' +
+  'place to a new path, it needs the host stopped, and says so. Don\'t restart or update the host until setup has ' +
+  'run again: its next start runs start.js, whose launcher reads the record.';
 
 /** mark.json, written by the host's Restart, or by the launcher's Go back
  *  from a shell (writeMark). */
