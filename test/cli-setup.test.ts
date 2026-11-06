@@ -580,7 +580,7 @@ test('a first run with a gateway in .env says the gateway may charge otherwise t
   expect(text(made.seen.out)).toContain('A gateway at ANTHROPIC_BASE_URL may charge otherwise.');
 });
 
-test('the PATH advice names the file the person\'s shell reads: ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS', async () => {
+test('the PATH advice names ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS, and the shell\'s own startup file for another', async () => {
   for (const [shell, platform, file] of [['/bin/zsh', 'linux', '~/.zshrc'], ['/bin/bash', 'linux', '~/.bashrc'], ['/bin/bash', 'darwin', '~/.bash_profile'], ['/bin/dash', 'linux', 'your shell\'s startup file']] as const) {
     const dir = directory();
     const answers = platform === 'darwin' ? ['no', 'yes'] : ['no', ''];
