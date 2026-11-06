@@ -1208,14 +1208,21 @@ function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; 
       `${steps.join('; and ')}. If ${others.length === 1 ? 'it runs' : 'they run'} something other than a host, give ` +
       `${them} another working directory instead. Then repeat this service install command with the same recipe. Nothing was written.`);
   }
-  for (const id of listed.defaulted) {
-    ctx.out(`${id} sets no working directory, so it runs in its systemd manager's default, which is ${work}. Most ` +
-      'units that do are no host\'s, so it isn\'t checked. If it runs a host, two hosts would serve this install\'s ' +
-      'data: give it a working directory of its own, or take it away.');
+  const few = listed.defaulted.length === 1;
+  if (listed.defaulted.length > 0) {
+    ctx.out(`${listed.defaulted.join(', ')} ${few ? 'sets' : 'set'} no working directory, so ${few ? 'it runs' :
+      'they run'} in ${few ? 'its' : 'their'} systemd manager's default, which is ${work}. Most units that do are no ` +
+      `host's, so ${few ? 'it isn\'t' : 'they aren\'t'} checked. If ${few ? 'it runs' : 'one of them runs'} a host, two ` +
+      'hosts would serve this install\'s data: give it a working directory of its own, or take it away.');
   }
-  for (const unit of listed.unresolved) {
-    ctx.out(`The working directory of ${unit.id}, a ${unit.scope} unit, couldn't be resolved, so whether it runs a ` +
-      `host from ${work} can't be told, and one that does isn't ruled out.`);
+  const one = listed.unresolved.length === 1;
+  const scoped = (['user', 'system'] as const).flatMap((scope) => {
+    const ids = listed.unresolved.filter((unit) => unit.scope === scope).map((unit) => unit.id);
+    return ids.length === 0 ? [] : [`the ${scope} unit${ids.length === 1 ? '' : 's'} ${ids.join(', ')}`];
+  }).join(' and ');
+  if (listed.unresolved.length > 0) {
+    ctx.out(`The working director${one ? 'y' : 'ies'} of ${scoped} couldn't be resolved, so whether ` +
+      `${one ? 'it runs' : 'one of them runs'} a host from ${work} can't be told, and one that does isn't ruled out.`);
   }
 }
 

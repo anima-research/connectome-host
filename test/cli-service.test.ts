@@ -1443,7 +1443,7 @@ test('a user unit whose working directory can\'t be resolved is named once, and 
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   const named = [...f.out, ...f.err].filter((line) => line.includes('elsewhere-agent.service'));
   expect(named).toHaveLength(1);
-  expect(named[0]).toContain('The working directory of elsewhere-agent.service, a user unit, couldn\'t be resolved');
+  expect(named[0]).toContain('The working directory of the user unit elsewhere-agent.service couldn\'t be resolved');
   expect(f.systemd.starts.map((start) => start.unit)).toContain(HOST);
 });
 
@@ -1456,7 +1456,7 @@ test('a system unit whose working directory can\'t be resolved is named once, an
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   const named = [...f.out, ...f.err].filter((line) => line.includes('elsewhere-agent.service'));
   expect(named).toHaveLength(1);
-  expect(named[0]).toContain('The working directory of elsewhere-agent.service, a system unit, couldn\'t be resolved');
+  expect(named[0]).toContain('The working directory of the system unit elsewhere-agent.service couldn\'t be resolved');
   expect(f.systemd.starts.map((start) => start.unit)).toContain(HOST);
 });
 
@@ -4900,23 +4900,21 @@ test('a blank original line inside a masked credential consumes no excerpt slot'
   expect(checked.lines.join('\n')).not.toMatch(/first-part|last-part/);
 });
 
-test('a unit in its manager\'s default directory, which is this install, and one whose directory can\'t be resolved are each named', async () => {
+test('a unit in its manager\'s default directory, which is this install, is named, and units whose directory can\'t be resolved get one note', async () => {
   const base = install();
   const at = { ...base, home: base.work };
   const f = fake(at);
-  const locked = join(base.home, 'locked');
-  mkdirSync(locked);
+  const loop = join(dirname(base.home), 'loop');
+  symlinkSync(loop, loop);
   f.systemd.otherUnits.push({ id: 'old-host.service', workingDirectory: `!${at.work}` });
-  f.systemd.otherUnits.push({ id: 'hidden.service', workingDirectory: join(locked, 'inside') });
-  chmodSync(locked, 0o000);
-  try {
-    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  } finally {
-    chmodSync(locked, 0o700);
-  }
-  const said = f.out.join('\n');
-  expect(said).toContain(`old-host.service sets no working directory, so it runs in its systemd manager's default, which is ${at.work}.`);
-  expect(said).toContain("The working directory of hidden.service, a user unit, couldn't be resolved");
+  f.systemd.otherUnits.push({ id: 'hidden.service', workingDirectory: join(loop, 'inside') });
+  f.systemd.otherUnits.push({ id: 'hidden-two.service', workingDirectory: join(loop, 'other') });
+  f.systemd.otherUnits.push({ id: 'system-hidden.service', workingDirectory: join(loop, 'srv'), scope: 'system' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).toContain(`old-host.service sets no working directory, so it runs in its systemd manager's default, which is ${at.work}.`);
+  expect(f.out.filter((line) => line.includes('hidden'))).toEqual([`The working directories of the user units hidden.service, ` +
+    `hidden-two.service and the system unit system-hidden.service couldn't be resolved, so whether one of them runs a host ` +
+    `from ${at.work} can't be told, and one that does isn't ruled out.`]);
 });
 
 test('a stored shell port held by something other than this install\'s shell daemon is refused, and reused settings are named', async () => {
