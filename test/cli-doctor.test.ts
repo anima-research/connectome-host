@@ -2064,4 +2064,21 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).toContain('the unit logged <DISCORD_TOKEN>');
     expect(r.out).not.toContain(literal);
   });
+
+  test.skipIf(process.getuid?.() === 0)('a data directory under a directory this user can\'t search is said as one that can\'t be looked at, not as gone', async () => {
+    const at = install();
+    const locked = join(at.work, 'locked');
+    mkdirSync(join(locked, 'data'), { recursive: true });
+    writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(locked, 'data'), extraState: [] }));
+    chmodSync(locked, 0o000);
+    try {
+      const r = await run(at);
+      expect(r.out).toContain(`✗ The install record names ${join(locked, 'data')} as the resident's data directory, and it ` +
+        'can\'t be looked at (');
+      expect(r.out).toContain('), so whether it\'s there can\'t be told.');
+      expect(r.out).not.toContain('and it isn\'t there');
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
 });

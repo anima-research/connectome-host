@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -294,10 +294,14 @@ export async function doctor(
       }
       host.subscribe([]);
     }
-    if (dataDir !== null && !existsSync(dataDir)) {
+    const dataState = dataDir === null ? null : pathState(dataDir);
+    if (dataState === 'gone') {
       report.problem(`The install record names ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
         'the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
         'have it, or ask for help, before starting the service.');
+    } else if (dataState !== null && dataState !== 'there') {
+      report.problem(`The install record names ${dataDir} as the resident's data directory, and it can't be looked at ` +
+        `(${dataState.why}), so whether it's there can't be told.`);
     }
     const running = host;
     const asked = (op: keyof typeof CHECKS): Promise<HostEvent | null> | null =>
@@ -793,6 +797,16 @@ async function within<T>(limitMs: number, work: Promise<T>, late: string): Promi
 
 function namesIn(document: RecipeDocument): string[] {
   return [...JSON.stringify(document.raw).matchAll(new RegExp(ENV_REFERENCE, 'g'))].map(([, name]) => name!);
+}
+
+function pathState(path: string): 'there' | 'gone' | { why: string } {
+  try {
+    statSync(path);
+    return 'there';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'gone' : { why: errorText(error).replace(/\.$/, '') };
+  }
 }
 
 function withSentForms(secret: Secret): Secret[] {
