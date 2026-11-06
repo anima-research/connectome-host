@@ -774,7 +774,8 @@ test('macOS refuses another installed agent in this working directory, including
   expect(f.err.join('\n')).toContain(other);
   expect(f.err.join('\n')).toContain('other.resident');
   expect(f.err.join('\n')).toContain('another working directory');
-  expect(f.err.join('\n')).toContain('launchctl bootout');
+  expect(f.err.join('\n')).toContain(`launchctl bootout gui/1001 ${other} if launchctl print finds it, ` +
+    'then remove that plist.');
 });
 
 test('an unreadable LaunchAgents plist is named with its reason rather than ruled out', async () => {
@@ -5086,6 +5087,8 @@ test('macOS refuses another plist with this install\'s host label and working di
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(existsSync(agentPlist(at))).toBe(false);
   expect(f.err.join('\n')).toContain(`${other} has the label com.animalabs.connectome.my-resident`);
+  expect(f.err.join('\n')).toContain(`launchctl bootout gui/1001 ${other} if launchctl print ` +
+    'gui/1001/com.animalabs.connectome.my-resident finds it, then remove that plist.');
 });
 
 test('a directory at service.json is named, and an explicit install refuses before writing any unit', async () => {
