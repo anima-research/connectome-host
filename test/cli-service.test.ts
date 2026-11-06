@@ -5340,3 +5340,41 @@ test('a reinstall keeps a recorded shell setting this release doesn\'t know, for
   expect(await installService(f.ctx(['install']), f.system)).toBe(0);
   expect(JSON.parse(readFileSync(file, 'utf-8')).shellSettings).toEqual({ SESSION_SERVER_HOST: 'localhost' });
 });
+
+test('a unit systemd skipped for an unmet condition fails the check, naming how to see which, and the service isn\'t stopped', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  const statuses = f.systemd.loaded.get(HOST)!.statuses as Record<string, string>;
+  Object.assign(statuses, { ConditionResult: 'no', ConditionTimestamp: 'Fri 2026-11-06 17:13:00 UTC' });
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`${HOST} is inactive (dead): systemd skipped its last start, since a condition its unit or a ` +
+    `drop-in sets wasn't met: \`systemctl --user status ${HOST}\` names it.`);
+  Object.assign(statuses, { ConditionResult: 'no', ConditionTimestamp: '' });
+  const never = await checkService(at.root, f.system, true);
+  expect([never.passed, never.stopped]).toEqual([true, true]);
+});
+
+test.skipIf(process.getuid?.() === 0)('a unit file this user can\'t look at is said as that, not as gone, by the check and by start', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  const dir = dirname(hostUnit(at));
+  chmodSync(dir, 0o000);
+  try {
+    const fine = await checkService(at.root, f.system, true);
+    expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+    expect(fine.lines.join('\n')).toContain(`${hostUnit(at)}, ${HOST}'s unit file, can't be looked at, so whether it's there ` +
+      'can\'t be told: ');
+    expect(fine.lines.join('\n')).not.toContain('is gone');
+    f.err.length = 0;
+    expect(await runService(f.ctx(['start']), f.system)).not.toBe(0);
+    expect(f.err.join('\n')).toMatch(/unit file, can't be looked at \(.*\), so whether it's there can't be told\. Nothing was started\./);
+    expect(f.err.join('\n')).not.toContain('is gone');
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+});

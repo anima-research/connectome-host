@@ -800,11 +800,21 @@ function stopUnits(ctx: CliContext, sys: ServiceSystem, env: Record<string, stri
 }
 
 function startsAgain(record: ServiceRecord, sys: ServiceSystem, env: Record<string, string>, cmd: string): string[] {
-  const gone = unitsOf(record).find((unit) => !existsSync(unit.file));
+  const gone = unitsOf(record).find((unit) => unitFileState(unit.file) === 'gone');
   if (gone === undefined) return [startsByItself(record, sys, env, true, cmd)];
   const refuses = `${gone.file}, ${gone.name}'s ${fileOf(record.manager)}, is gone, so ${cmd} service start ` +
     `refuses. ${serviceRepair(cmd)}`;
   return gone === record.units.host ? [refuses] : [startsByItself(record, sys, env, false, cmd), refuses];
+}
+
+function unitFileState(file: string): 'there' | 'gone' | { why: string } {
+  try {
+    statSync(file);
+    return 'there';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'gone' : { why: errorText(error).replace(/\.$/, '') };
+  }
 }
 
 function startsByItself(record: ServiceRecord, sys: ServiceSystem, env: Record<string, string>,
@@ -890,9 +900,14 @@ async function startService(ctx: CliContext, sys: ServiceSystem): Promise<number
       'whoever runs this machine to run it from a terminal outside it, such as over ssh.');
   }
   for (const unit of units) {
-    if (!existsSync(unit.file)) {
+    const state = unitFileState(unit.file);
+    if (state === 'gone') {
       throw new Refusal(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)} ` +
         'Nothing was started.');
+    }
+    if (state !== 'there') {
+      throw new Refusal(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, can't be looked at (${state.why}), so ` +
+        'whether it\'s there can\'t be told. Nothing was started.');
     }
   }
   const env = childEnv(sys);
@@ -1892,16 +1907,23 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     }
   };
   const units = unitsOf(record);
-  const gone = units.filter((unit) => !existsSync(unit.file));
-  for (const unit of gone) {
-    fail(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)}`);
+  let unseen = 0;
+  for (const unit of units) {
+    const state = unitFileState(unit.file);
+    if (state === 'there') continue;
+    unseen += 1;
+    fail(state === 'gone' ? `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)}`
+      : `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, can't be looked at, so whether it's there can't be told: ` +
+        `${state.why}.`);
   }
   if (record.manager === 'systemd-user') {
     const shownAll = units.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
       'NRestarts', 'ExecMainStartTimestamp', 'ExecMainStatus', 'Environment', 'WorkingDirectory', 'InvocationID',
-      RESTART_PROPERTIES]));
-    stopped = stoppedIsFine && gone.length === 0 && shownAll.every((shown) => typeof shown !== 'string' &&
-      shown.get('LoadState') === 'loaded' && shown.get('ActiveState') === 'inactive');
+      'ConditionResult', 'ConditionTimestamp', RESTART_PROPERTIES]));
+    const skipped = (shown: Map<string, string>): boolean =>
+      shown.get('ConditionResult') === 'no' && (shown.get('ConditionTimestamp') ?? '') !== '';
+    stopped = stoppedIsFine && unseen === 0 && shownAll.every((shown) => typeof shown !== 'string' &&
+      shown.get('LoadState') === 'loaded' && shown.get('ActiveState') === 'inactive' && !skipped(shown));
     for (const [index, unit] of units.entries()) {
       const shown = shownAll[index]!;
       if (typeof shown === 'string') {
@@ -1925,7 +1947,10 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         lines.push(`${unit.name} is ${state} again: ${restarted}.`);
       } else {
         if (active) lines.push(`${unit.name} is ${state}.`);
-        else if (stopped) lines.push(`${unit.name} is stopped: systemd shows it ${state}.`);
+        else if (skipped(shown)) {
+          fail(`${unit.name} is ${state}: systemd skipped its last start, since a condition its unit or a drop-in sets ` +
+            `wasn't met: \`systemctl --user status ${unit.name}\` names it.`);
+        } else if (stopped) lines.push(`${unit.name} is stopped: systemd shows it ${state}.`);
         else if (unit === record.units.host) fail(`${unit.name} is ${state}, not active.`);
         else fail(`${unit.name} is ${state}, not active: journalctl --user -u ${unit.name} shows its log.`);
         const exited = active || (shown.get('ExecMainStartTimestamp') ?? '') === '' ? ''
@@ -1958,7 +1983,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     }
   } else {
     const states = units.map((unit) => agentState(sys, env, unit));
-    stopped = stoppedIsFine && gone.length === 0 && states.every((state) => state.kind === 'unloaded');
+    stopped = stoppedIsFine && unseen === 0 && states.every((state) => state.kind === 'unloaded');
     for (const [index, unit] of units.entries()) {
       const state = states[index]!;
       if (stopped) {
