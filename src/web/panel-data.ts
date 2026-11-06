@@ -1106,8 +1106,8 @@ async function countTokens(
     }
     const j = (await res.json()) as { input_tokens?: number };
     return { tokens: j.input_tokens ?? null, source: 'count_tokens' };
-  } catch {
-    return { tokens: null, source: 'count_tokens_error' };
+  } catch (error) {
+    return { tokens: null, source: (error as Error | undefined)?.name === 'TimeoutError' ? 'count_tokens_timeout' : 'count_tokens_error' };
   }
 }
 

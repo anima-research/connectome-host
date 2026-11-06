@@ -349,14 +349,14 @@ describe('count-check, with a stand-in for the framework', () => {
     }
   });
 
-  test('a count that doesn\'t answer within its limit is reported as failed when the limit runs out', async () => {
+  test('a count that doesn\'t answer within its limit is reported as timed out when the limit runs out', async () => {
     let asked = 0;
     const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => { asked += 1; return new Promise<Response>(() => undefined); } });
     try {
       setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
       const check = await buildCountCheck(appWith('claude-agent-test', { type: 'passthrough' }), 300);
       expect(asked).toBe(1);
-      expect(check.agent.source).toBe('count_tokens_error');
+      expect(check.agent.source).toBe('count_tokens_timeout');
     } finally {
       server.stop(true);
     }

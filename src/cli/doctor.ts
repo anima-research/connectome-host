@@ -536,8 +536,9 @@ function countFailure(source: string): string {
   }
   const status = /^count_tokens_failed_(\d+)$/.exec(source)?.[1];
   if (status !== undefined) return `count_tokens answered ${status}`;
+  if (source === 'count_tokens_timeout') return 'the count_tokens request didn\'t answer within 30 s';
   if (source === 'count_tokens_error') {
-    return 'the count_tokens request failed, didn\'t answer within 30 s, or answered with what couldn\'t be read';
+    return 'the count_tokens request failed, or answered with what couldn\'t be read';
   }
   return source;
 }

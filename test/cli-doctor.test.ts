@@ -864,7 +864,7 @@ describe('connectome doctor', () => {
       ...HEALTHY_HOST,
       'count-check': { agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_error' }, compression: null },
     }, () => run(at));
-    expect(r.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: the count_tokens request failed, didn't answer within 30 s, or answered with what couldn't be read\./);
+    expect(r.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: the count_tokens request failed, or answered with what couldn't be read\./);
 
     const none = install();
     const r2 = await withHost(none, {
