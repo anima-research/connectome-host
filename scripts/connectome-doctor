@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import builtins
 import json
 import os
 import re
@@ -95,18 +96,22 @@ def withheld(text):
     return "".join(out)
 
 
+def print(*args, **kwargs):
+    builtins.print(*(withheld(str(a)) for a in args), **kwargs)
+
+
 def run(cmd, timeout=15, no_match=None):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
     except Exception as e:
-        return None, withheld(str(e))
+        return None, str(e)
     if r.returncode == no_match and not r.stderr.strip():
         return "", None
     if r.returncode != 0:
-        said = withheld(r.stderr).strip().splitlines()
+        said = r.stderr.strip().splitlines()
         return None, said[-1] if said else f"exit {r.returncode}"
-    return withheld(r.stdout), None
+    return r.stdout, None
 
 
 def read_text(path, last=None, start=0):
@@ -118,10 +123,10 @@ def read_text(path, last=None, start=0):
             f.seek(start)
             text = f.read().decode("utf-8", "replace")
     except Exception as e:
-        return None, withheld(getattr(e, "strerror", None) or str(e))
+        return None, getattr(e, "strerror", None) or str(e)
     if last is not None and start > 0:
         text = text.split("\n", 1)[1] if "\n" in text else ""
-    return withheld(text), None
+    return text, None
 
 
 args = []
@@ -268,7 +273,7 @@ else:
     ln = last_in_dbg(r"handleDiscordMessage:enter")
     if ln:
         enter_ts = parse_iso(ln.split(" ", 1)[0])
-        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"(.{0,40})', ln)
+        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"(.{0,40})', withheld(ln))
         if mm:
             enter_detail = f"#{mm.group(1)}: {mm.group(2)}…"
     ln = last_in_dbg(r'gateway:message-create-drop (?!.*"reason":"self-authored")')
@@ -276,7 +281,7 @@ else:
         dts = parse_iso(ln.split(" ", 1)[0])
         reason = dbg_fields(ln).get("reason")
         if dts and NOW - dts < 3600 and isinstance(reason, str):
-            enter_detail = f"{enter_detail}  last filter drop {age(dts)}: {withheld(reason)}".strip()
+            enter_detail = f"{enter_detail}  last filter drop {age(dts)}: {reason}".strip()
     ln = last_in_dbg(r"handleDiscordMessage:(sent|forwarding)")
     if ln:
         fwd_ts = parse_iso(ln.split(" ", 1)[0])
@@ -285,7 +290,7 @@ else:
     stages_note = None
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
-        mm = re.search(r'"reason":"([^"]*)"', ln)
+        mm = re.search(r'"reason":"([^"]*)"', withheld(ln))
         if dts and NOW - dts < 3600 and mm:
             stages_note = f"last drop {age(dts)}: {mm.group(1)}"
     if stages_note:
@@ -309,7 +314,7 @@ if os.path.lexists(session_index):
             raise ValueError("it isn't a JSON object")
     except Exception as e:
         ingest_unknown = True
-        why = withheld(getattr(e, "strerror", None) or str(e))
+        why = getattr(e, "strerror", None) or str(e)
         rec_detail = f"sessions.json can't be read as the host's session index ({why}), so which session is active isn't known"
     else:
         active_session = index.get("activeSessionId")
@@ -320,10 +325,10 @@ if os.path.lexists(session_index):
             try:
                 os.stat(path)
             except (FileNotFoundError, NotADirectoryError):
-                rec_detail = f"the active session, {withheld(active_session)}, has no records.log"
+                rec_detail = f"the active session, {active_session}, has no records.log"
             except OSError as e:
                 ingest_unknown = True
-                rec_detail = f"{withheld(path)} can't be read ({withheld(e.strerror or str(e))})"
+                rec_detail = f"{path} can't be read ({e.strerror or str(e)})"
             else:
                 records = path
 else:
@@ -334,7 +339,7 @@ else:
     except OSError as e:
         held = []
         ingest_unknown = True
-        rec_detail = f"{sessions_dir} can't be listed ({withheld(e.strerror or str(e))})"
+        rec_detail = f"{sessions_dir} can't be listed ({e.strerror or str(e)})"
     if held:
         ingest_unknown = True
         rec_detail = "no sessions.json names the active session"
@@ -342,7 +347,7 @@ if records:
     data, why = read_text(records, last=8_000_000)
     if why is not None:
         ingest_unknown = True
-        rec_detail = f"{withheld(records)} can't be read ({why})"
+        rec_detail = f"{records} can't be read ({why})"
     data = data or ""
     last_msg = None
     for mm in re.finditer(r'\{"record_id":\d+,"global_sequence":\d+,"state_id":"messages".*?"timestamp":(\d+)\}', data):
@@ -353,17 +358,17 @@ if records:
         size = 0
     if last_msg is None and why is None and size > 0:
         ingest_unknown = True
-        rec_detail = (f"the last 8 MB of {withheld(records)} hold no message record in the JSON-lines form this "
+        rec_detail = (f"the last 8 MB of {records} hold no message record in the JSON-lines form this "
                       "ladder reads")
     if last_msg:
         rec_ts = int(last_msg.group(1)) / 1_000_000  # store stamps in microseconds
         arr = re.search(r"\[([0-9,]{40,})\]", last_msg.group(0))
         if arr:
             try:
-                payload = withheld(bytes(int(x) for x in arr.group(1).split(",")).decode("utf-8", "replace"))
+                payload = bytes(int(x) for x in arr.group(1).split(",")).decode("utf-8", "replace")
                 trig = '"triggered":true' in payload
-                pm = re.search(r'"participant":"([^"]*)"', payload)
-                cm = re.search(r'"channelName":"([^"]*)"', payload)
+                pm = re.search(r'"participant":"([^"]*)"', withheld(payload))
+                cm = re.search(r'"channelName":"([^"]*)"', withheld(payload))
                 rec_detail = (f"{'triggered=true' if trig else 'triggered=false (gate skip)'}"
                               + (f"  #{cm.group(1)}" if cm else "")
                               + (f"  by {pm.group(1)}" if pm else ""))
@@ -454,7 +459,7 @@ if llm_files:
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
-            llm_detail = f"{stop}{C_RED}err={err_text(err)[:80] or '(no text)'}{C_OFF}"
+            llm_detail = f"{stop}{C_RED}err={withheld(err_text(err))[:80] or '(no text)'}{C_OFF}"
         else:
             llm_detail = stop.strip() or "answered"
         if sr == "refusal":
@@ -479,7 +484,7 @@ if discord_unknown:
     unknown |= {DISCORD_SEEN, DISCORD_FORWARD}
 if not os.path.isdir(data_dir):
     unknown |= {INGEST, INFERENCE}
-    stages = [(name, ts, f"there's no data directory at {withheld(data_dir)}" if name in (INGEST, INFERENCE) else detail)
+    stages = [(name, ts, f"there's no data directory at {data_dir}" if name in (INGEST, INFERENCE) else detail)
               for name, ts, detail in stages]
 unsure = set()
 failed = set()
@@ -604,7 +609,7 @@ for where, found, why in sources:
     elif found:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:
-            print(f"  {C_RED}{ln[:150]}{C_OFF}")
+            print(f"  {C_RED}{withheld(ln)[:150]}{C_OFF}")
     else:
         print(f"recent failures in {where}: {C_GRN}none found{C_OFF}")
 times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
@@ -702,7 +707,8 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
                   f"catches{C_OFF}")
 
 if findings_json:
-    print("connectome-doctor findings: " + json.dumps([{"text": w, "counts": counts} for w, counts in WARNINGS]))
+    builtins.print("connectome-doctor findings: " + json.dumps([{"text": withheld(w), "counts": counts}
+                                                             for w, counts in WARNINGS]))
     sys.exit(0)
 print()
 if WARNINGS:

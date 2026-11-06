@@ -883,6 +883,28 @@ describe('what the ladder withholds', () => {
     expect(out).not.toContain('Zq9');
   });
 
+  test('a value it withholds is still read as what it is: a call row with that value in it counts, and a channel\'s auto-close stays one', async () => {
+    const at = await install({ listens: true });
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
+      timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', cached: true, rawResponse: { stop_reason: 'end_turn' } })}\n`);
+    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({
+      kind: 'subscription-gc-close', channelId: '101', at: new Date().toISOString(), limitChars: 4000, restore: 'channel_open' })}\n`);
+    const withhold = JSON.stringify([['FIRST', 'true'], ['SECOND', 'gc-close']]);
+    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
+    expect(out).toMatch(/o inference \(llm call\) .*stop=end_turn/);
+    expect(out).not.toContain('unreadable');
+    expect(out).toMatch(/recent failures in .*failures\.log: none found/);
+  });
+
+  test('what it prints from its own arguments and commands is withheld too', async () => {
+    const at = await install({ listens: true });
+    const name = at.work.split('/').at(-1)!;
+    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['PATHNAME', name], ['STATE', 'running']]) });
+    expect(out).toContain('<PATHNAME>');
+    expect(out).toContain('active/<STATE>');
+    expect(out).not.toContain(name);
+  });
+
   test('a CONNECTOME_DOCTOR_WITHHOLD it can\'t read stops the ladder before it reads anything', async () => {
     const at = await install({ listens: true });
     const { out, status } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: '{"DISCORD_TOKEN":"x"}' });
