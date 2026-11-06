@@ -312,17 +312,18 @@ class FakeSystemd {
       args.includes(flag) ? Number(args[args.indexOf(flag) + 1]!.replace(/^@/, '')) : otherwise;
     const within = (entry: { after: number }) =>
       STARTED_AT + entry.after >= bound('--since', -Infinity) && STARTED_AT + entry.after <= bound('--until', Infinity);
+    const last = args.includes('-n') ? Number(args[args.indexOf('-n') + 1]) : Infinity;
     const match = args.find((arg) => arg.startsWith('_SYSTEMD_INVOCATION_ID='));
     if (match !== undefined) {
       const invocation = match.slice('_SYSTEMD_INVOCATION_ID='.length);
-      const entries = this.journal.filter((entry) => entry.own && entry.invocation === invocation).filter(within);
+      const entries = this.journal.filter((entry) => entry.own && entry.invocation === invocation).filter(within)
+        .slice(-last);
       return ok(entries.map((entry) => `${entry.line}\n`).join(''));
     }
     if (!args.includes('-u') || args[args.indexOf('-o') + 1] !== 'json') {
       return { status: 1, stdout: '', stderr: `journalctl: the fake doesn't answer ${args.join(' ')}` };
     }
     const unit = args[args.indexOf('-u') + 1]!;
-    const last = args.includes('-n') ? Number(args[args.indexOf('-n') + 1]) : Infinity;
     const entries = this.journal.filter((entry) => entry.unit === unit).filter(within).slice(-last);
     return ok(entries.map((entry) => `${JSON.stringify({ MESSAGE: entry.line,
       [entry.own ? '_SYSTEMD_INVOCATION_ID' : 'USER_INVOCATION_ID']: entry.invocation })}\n`).join(''));
@@ -537,28 +538,40 @@ test('service operations and log excerpts work with systemd 247 timestamp styles
   expect(await runService(f.ctx(['start']), f.system)).toBe(0);
 });
 
-test('a latest invocation that ended is read with a 200-entry cap, not a lifetime read', async () => {
+test('a latest invocation that ended is read only as far back as its last lines and the context their redaction needs', async () => {
   const at = install();
-  const f = fake(at);
+  const f = fake(at, { env: { PATH: `${at.root}:/usr/bin:/bin`, DISCORD_TOKEN: 'two\nlines' } });
   f.systemd.exiting.add(HOST);
   f.systemd.prints = () => Array.from({ length: 350 }, (_, at) => 'report ' + at);
   const run = f.system.run;
-  let captured = 0;
+  const asked: number[] = [];
   f.system.run = (cmd, args, env) => {
-    const ran = run(cmd, args, env);
     if (cmd === 'journalctl' && args.some((arg) => arg.startsWith('_SYSTEMD_INVOCATION_ID='))) {
-      const reports = ran.stdout.trimEnd().split('\n');
-      const n = args.indexOf('-n');
-      const kept = n < 0 ? reports : reports.slice(-Number(args[n + 1]));
-      captured = kept.length;
-      return { ...ran, stdout: kept.join('\n') + '\n' };
+      asked.push(Number(args[args.indexOf('-n') + 1]));
     }
-    return ran;
+    return run(cmd, args, env);
   };
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(captured).toBe(200);
-  expect(f.out.join('\n')).toContain('last 200 entries');
+  expect(asked.length).toBeGreaterThan(0);
+  expect(new Set(asked)).toEqual(new Set([41]));
+  const said = f.out.join('\n');
+  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n  Its earlier lines aren\'t shown.');
   expect(f.out).toContain('  | report 349');
+  expect(f.out).toContain('  | report 310');
+  expect(f.out).not.toContain('  | report 309');
+});
+
+test('the first of an ended start\'s shown journal lines is redacted with the line before it that a secret began in', async () => {
+  const at = install();
+  const f = fake(at, { env: { PATH: `${at.root}:/usr/bin:/bin`, DISCORD_TOKEN: 'first-half\nsecond-half' } });
+  f.systemd.exiting.add(HOST);
+  f.systemd.prints = () => [...Array.from({ length: 30 }, (_, at) => 'early ' + at), 'first-half', 'second-half',
+    ...Array.from({ length: 39 }, (_, at) => 'late ' + at)];
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const said = f.out.join('\n');
+  expect(said).toContain('  | late 38');
+  expect(said).not.toContain('second-half');
+  expect(said).not.toContain('first-half');
 });
 
 test('earlier-start selection reports every journal entry it cannot interpret', async () => {
@@ -2183,7 +2196,7 @@ test('a shell daemon that isn\'t active fails the check, which shows its latest 
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = f.out.join('\n');
   expect(said).toContain(`${SHELL} is failed, not active: journalctl --user -u ${SHELL} shows its log`);
-  const shown = 'The journal\'s last lines from the shell daemon\'s latest start, which ended (last 200 entries):\n  | session-server: starting\n' +
+  const shown = 'The journal\'s last lines from the shell daemon\'s latest start, which ended:\n  | session-server: starting\n' +
     '  | Error: Cannot find module \'node-pty\'';
   expect(said).toContain(shown);
   expect(said.indexOf(shown)).toBeLessThan(said.indexOf('Put right what the lines above show'));
@@ -2271,7 +2284,7 @@ test('a host that keeps failing fails the install\'s check, with its restarts an
   f.systemd.prints = () => ['Loaded recipe: resident', 'Fatal error: error: Failed to start server. Is port 7340 in use?'];
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = [...f.out, ...f.err].join('\n');
-  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended (last 200 entries):\n  | Loaded recipe: resident\n' +
+  expect(said).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n  | Loaded recipe: resident\n' +
     '  | Fatal error: error: Failed to start server');
   expect(said).not.toContain('  ! ');
   expect(said).toMatch(/restarted it \d+ times? since it was last started, and its process last exited with 1\./);
@@ -2422,7 +2435,7 @@ test('when the start before the latest left no lines, the newest earlier start t
   expect(before).not.toContain(`start ${start - 1}:`);
   f.systemd.journal = f.systemd.journal.filter((entry) => entry.invocation === latest);
   expect((await checkService(at.root, f.system)).lines)
-    .toContain('Its last 200 journal entries, up to a second past its latest start, hold no earlier start of it.');
+    .toContain('Its journal entries up to a second past its latest start hold no earlier start of it.');
 });
 
 test('a start newer than the one the check read is never taken as the one that ended', async () => {
@@ -2450,7 +2463,7 @@ test('with none of the latest start\'s entries in the journal, which start ended
   const latest = f.systemd.latest.get(HOST)!;
   f.systemd.journal = f.systemd.journal.filter((entry) => entry.invocation !== latest);
   const said = (await checkService(at.root, f.system)).lines;
-  expect(said).toContain('Its last 200 journal entries, up to a second past its latest start, hold none of that start\'s, so ' +
+  expect(said).toContain('Its journal entries up to a second past its latest start hold none of that start\'s, so ' +
     'which start ended before it can\'t be told.');
   expect(said.join('\n')).not.toContain('which ended');
 });
@@ -2554,7 +2567,7 @@ test('for a host that isn\'t active, the check shows its latest start\'s last li
   f.systemd.prints = () => ['Loaded recipe: resident', { after: 90, line: 'Missing ANTHROPIC_API_KEY. Set one in .env.' }];
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain(`connectome: ${HOST} is failed, and no host answers: `);
-  expect(f.out.join('\n')).toContain('The journal\'s last lines from the host\'s latest start, which ended (last 200 entries):\n' +
+  expect(f.out.join('\n')).toContain('The journal\'s last lines from the host\'s latest start, which ended:\n' +
     '  | Loaded recipe: resident\n  | Missing ANTHROPIC_API_KEY. Set one in .env.');
   expect(f.out.join('\n')).not.toContain('  ! ');
 });
@@ -2755,7 +2768,7 @@ test('on macOS the check shows its log\'s last lines, which can hold more than o
     'Loaded recipe: resident'].join('\n');
   writeFileSync(join(at.work, 'logs', 'agent.log'), log);
   const heading = 'The last lines of the host\'s log file, which can hold earlier loads and more than one start:\n' +
-    '  5 earlier lines not shown.\n  | line 3\n';
+    `  ${Buffer.byteLength(log.slice(0, log.indexOf('line 3\n')))} earlier file bytes are outside this window.\n  | line 3\n`;
   const tail = '  | line 40\n  | Fatal error: error: it stopped again\n  | Loaded recipe: resident';
   const running = await checkService(at.root, f.system);
   expect(running.passed).toBe(true);
@@ -2773,7 +2786,7 @@ test('on macOS the check shows its log\'s last lines, which can hold more than o
 });
 
 
-test('the Mac host check reads only a bounded suffix of a large real log and qualifies its line counts', async () => {
+test('the Mac host check reads a large log back only as far as its last lines, and names the bytes before them', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin' });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -2803,28 +2816,26 @@ test('the Mac host check reads only a bounded suffix of a large real log and qua
   }
   expect(checked.passed).toBe(true);
   expect(bytesRead).toBeGreaterThan(0);
-  expect(bytesRead).toBeLessThanOrEqual(40 * 1024 + 1);
+  expect(bytesRead).toBeLessThan(2 * 64 * 1024);
   const said = checked.lines.join('\n');
-  expect(said).toContain(`${Buffer.byteLength(old + recent) - 40 * 1024} earlier file bytes are outside this window`);
-  expect(said).toContain('Line counts below cover only this window');
+  const shownFrom = Buffer.byteLength(old + recent.slice(0, recent.indexOf('new report 20')));
+  expect(said).toContain(`${shownFrom} earlier file bytes are outside this window.`);
+  expect(said).not.toContain('Line counts');
   expect(checked.lines.filter((line) => line.startsWith('  | '))).toEqual(
     Array.from({ length: 40 }, (_, i) => '  | new report ' + (i + 20)));
 });
 
-for (const whose of ['host', 'shell']) test('the Mac ' + whose + ' log bounds an oversized single line and identifies its partial first line', async () => {
+for (const whose of ['host', 'shell']) test('the Mac ' + whose + ' log shows a long last line whole', async () => {
   const at = install('My Resident', { shell: whose === 'shell' });
   const f = fake(at, { platform: 'darwin' });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   if (whose === 'shell') f.systemd.agents.get('com.animalabs.connectome.my-resident.shell')!.pid = null;
   const path = join(at.work, 'logs', whose === 'host' ? 'agent.log' : 'shell.log');
-  writeFileSync(path, 'earlier prefix' + 'x'.repeat(80 * 1024) + 'visible-end');
+  const line = 'earlier prefix' + 'x'.repeat(200 * 1024) + 'visible-end';
+  writeFileSync(path, line);
   const checked = await checkService(at.root, f.system);
-  const said = checked.lines.join('\n');
-  expect(said).not.toContain('earlier prefix');
-  expect(said).toContain('The first line starts partway through a file line');
-  const report = checked.lines.find((line) => line.endsWith('visible-end'))!;
-  expect(report).toBeDefined();
-  expect(Buffer.byteLength(report.slice('  | '.length))).toBe(40 * 1024);
+  expect(checked.lines).toContain('  | ' + line);
+  expect(checked.lines.join('\n')).not.toContain('earlier file bytes');
 });
 
 for (const content of [null, '', 'a short report\n']) test('the Mac bounded file view preserves ' +
@@ -2845,23 +2856,7 @@ for (const content of [null, '', 'a short report\n']) test('the Mac bounded file
 });
 
 
-test('a Mac file window beginning inside a UTF8 character starts after that character without a replacement glyph', async () => {
-  const at = install();
-  const f = fake(at, { platform: 'darwin' });
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  const end = 'visible-end';
-  const padding = 'q'.repeat(40 * 1024 + 1 - 4 - end.length);
-  writeFileSync(join(at.work, 'logs', 'agent.log'), 'p'.repeat(50_000) + '🙂' + padding + end);
-  const checked = await checkService(at.root, f.system);
-  const report = checked.lines.find((line) => line.endsWith('visible-end'))!;
-  expect(report.startsWith('  | q')).toBe(true);
-  expect(report.includes('\uFFFD')).toBe(false);
-  expect(report.includes('🙂')).toBe(false);
-  expect(Buffer.byteLength(report.slice('  | '.length))).toBe(40 * 1024 - 3);
-});
-
-
-test('a Mac byte window on a line boundary reports its skipped bytes without claiming a partial line', async () => {
+test('a Mac file view starts at the first of its last 40 nonblank lines, and names the bytes before it', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin' });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -2869,31 +2864,26 @@ test('a Mac byte window on a line boundary reports its skipped bytes without cla
   const recent = 'r'.repeat(40 * 1024 - 1) + '\n';
   writeFileSync(join(at.work, 'logs', 'agent.log'), prefix + recent);
   const checked = await checkService(at.root, f.system);
-  expect(checked.lines.join('\n')).toContain(Buffer.byteLength(prefix) + ' earlier file bytes');
-  expect(checked.lines.join('\n')).not.toContain('partway through a file line');
+  expect(checked.lines.join('\n')).toContain(Buffer.byteLength('earlier\n'.repeat(10_000 - 39)) + ' earlier file bytes');
+  expect(checked.lines.filter((line) => line === '  | earlier')).toHaveLength(39);
   expect(checked.lines).toContain('  | ' + recent.trimEnd());
 });
 
-for (const credential of ['first-é-last', 'first\né-second\nlast']) test('the bounded Mac file view masks an edge-crossing ' +
-  (credential.includes('\n') ? 'multiline UTF8 credential' : 'UTF8 credential'), async () => {
+test('the Mac file view masks a multiline UTF8 credential that begins before its first shown line', async () => {
+  const credential = 'first\né-second\nlast';
   const at = install();
   const f = fake(at, { platform: 'darwin', env: { DISCORD_TOKEN: credential } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  const prefix = 'old'.repeat(20_000) + '\ncredential=';
-  const cut = Buffer.byteLength(prefix + credential.slice(0, credential.indexOf('é'))) + 1;
-  const end = '\nvisible-last\n';
-  const padding = 'q'.repeat(40 * 1024 - (Buffer.byteLength(prefix + credential + end) - cut));
-  writeFileSync(join(at.work, 'logs', 'agent.log'), prefix + credential + padding + end);
+  const visible = Array.from({ length: 39 }, (_, at) => 'visible ' + at + '\n').join('');
+  writeFileSync(join(at.work, 'logs', 'agent.log'), 'old\n'.repeat(20_000) + 'credential=' + credential + '-tail\n' + visible);
   const checked = await checkService(at.root, f.system);
   expect(checked.passed).toBe(true);
   const reports = checked.lines.filter((line) => line.startsWith('  | ')).join('\n');
-  expect(reports.includes('first')).toBe(false);
-  expect(reports.includes('last' + padding)).toBe(false);
+  expect(reports.includes('last')).toBe(false);
   expect(reports.includes('é-')).toBe(false);
   expect(reports.includes('\uFFFD')).toBe(false);
-  expect(checked.lines).toContain('  | visible-last');
-  expect(checked.lines.filter((line) => line.includes('<DISCORD_TOKEN>'))).toHaveLength(credential.split('\n').length);
-  expect(checked.lines.filter((line) => line.startsWith('  | '))).toHaveLength(credential.split('\n').length + 1);
+  expect(checked.lines).toContain('  | visible 38');
+  expect(checked.lines.some((line) => line.includes('<DISCORD_TOKEN>-tail'))).toBe(true);
 });
 
 test('on macOS install rotates the earlier log before loading and checks the replacement log', async () => {

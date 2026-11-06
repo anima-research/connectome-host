@@ -39,8 +39,9 @@ const READY_WAIT_MS = 60_000;
 const RECIPE_CHECK_MS = 60_000;
 const FIRST_MINUTE_S = 60;
 const LOG_LINES = 40;
-const LOG_BYTES = 40 * 1024;
-const ENDED_ENTRIES = 200;
+// How far back the first read of a log file's end reaches. Each later read reaches twice as far, until it holds the
+// lines an excerpt shows: a step, which bounds nothing.
+const TAIL_STEP_BYTES = 64 * 1024;
 const INVOCATION_FIELDS = ['_SYSTEMD_INVOCATION_ID', 'USER_INVOCATION_ID', 'INVOCATION_ID'];
 export const EXCERPT_LEAD = "Lines starting with | are reports from the process named above each excerpt, " +
   "not findings of this check. Current known secret values are redacted; older or unrecorded credentials can remain. " +
@@ -1794,14 +1795,39 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       const { bytes, from, offset } = readLogTail(fd, window.contextBytes);
       const rendered = window.redact(bytes, from, bytes.length);
       const before = offset + rendered.start;
-      const partial = before > 0 && bytes[rendered.start - 1] !== 0x0a;
-      const scope = before === 0 ? undefined : `${before} earlier file bytes are outside this window. ` +
-        (partial ? 'The first line starts partway through a file line. ' : '') +
-        'Line counts below cover only this window.';
+      const scope = before === 0 ? undefined : `${before} earlier file bytes are outside this window.`;
       showLog(bytes.toString('utf-8', rendered.start, rendered.end), rendered, what, true, scope);
     } finally {
       closeSync(fd);
     }
+  };
+  // How many lines before an excerpt's first a secret it holds could start in, so that a read of the journal holds
+  // them too; null, said, when the install's secrets can't all be known.
+  const secretLines = (what: string): number | null => {
+    try {
+      return storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']).contextLines;
+    } catch (error) {
+      fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
+      return null;
+    }
+  };
+  // An ended start's last lines, from a read of its journal that ends with them. A read that holds the whole start is
+  // shown as log shows it; one that doesn't is redacted with the lines before its last LOG_LINES, and shown from them.
+  const tail = (text: string, what: string, whole: boolean) => {
+    if (whole) {
+      log(text, what, true);
+      return;
+    }
+    let window: ReturnType<typeof storedSecretWindowRedactor>;
+    try {
+      window = storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']);
+    } catch (error) {
+      fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
+      return;
+    }
+    const bytes = Buffer.from(text, 'utf-8');
+    const rendered = window.redact(bytes, Math.max(0, linesStart(bytes, LOG_LINES, false)), bytes.length);
+    showLog(bytes.toString('utf-8', rendered.start, rendered.end), rendered, what, true, 'Its earlier lines aren\'t shown.');
   };
   const latestStart = (unit: ServiceUnit, shown: Map<string, string>, active: boolean, whose: string):
     { invocation: string; started: string } | null => {
@@ -1814,16 +1840,33 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       lines.push(`Its latest start isn't known, so its log isn't shown: journalctl --user -u ${unit.name} shows it.`);
       return null;
     }
-    const logged = sys.run('journalctl', ['--user', `_SYSTEMD_INVOCATION_ID=${invocation}`, '--since', `@${started}`,
-      ...(active ? ['--until', `@${Number(started) + FIRST_MINUTE_S}`] : ['-n', String(ENDED_ENTRIES)]),
-      '-o', 'cat', '--no-pager'], env);
-    if (logged.status !== 0) {
-      fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
-      return null;
+    const read = (more: string[]) => sys.run('journalctl', ['--user', `_SYSTEMD_INVOCATION_ID=${invocation}`, '--since',
+      `@${started}`, ...more, '-o', 'cat', '--no-pager'], env);
+    if (active) {
+      const logged = read(['--until', `@${Number(started) + FIRST_MINUTE_S}`]);
+      if (logged.status !== 0) {
+        fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
+        return null;
+      }
+      log(logged.stdout, `The journal's lines from ${whose} in the first minute of its latest start`);
+      return { invocation, started };
     }
-    if (active) log(logged.stdout, `The journal's lines from ${whose} in the first minute of its latest start`);
-    else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended (last ${ENDED_ENTRIES} entries)`, true);
-    return { invocation, started };
+    const what = `The journal's last lines from ${whose}'s latest start, which ended`;
+    const context = secretLines(what);
+    if (context === null) return { invocation, started };
+    for (let asked = LOG_LINES + context; ; asked *= 2) {
+      const logged = read(['-n', String(asked)]);
+      if (logged.status !== 0) {
+        fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
+        return null;
+      }
+      // Each entry is at least a line, so fewer lines than entries asked for means the start had no more.
+      const whole = (logged.stdout === '' ? 0 : logged.stdout.replace(/\n$/, '').split('\n').length) < asked;
+      if (whole || tailHolds(logged.stdout, context)) {
+        tail(logged.stdout, what, whole);
+        return { invocation, started };
+      }
+    }
   };
   if (record.manager === 'systemd-user') {
     for (const unit of [record.units.host, ...(record.units.shell ? [record.units.shell] : [])]) {
@@ -1876,7 +1919,8 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       }
       const start = latestStart(unit, shown, active, 'the host');
       if (start !== null && restarts > 0 && active) {
-        endedStart(sys, env, unit.name, start.invocation, start.started, lines, log);
+        const context = secretLines('The journal\'s last lines about the newest earlier start it holds, which ended');
+        if (context !== null) endedStart(sys, env, unit.name, start.invocation, start.started, context, lines, tail);
       }
     }
   } else {
@@ -1931,39 +1975,70 @@ function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
 }
 
 function endedStart(sys: ServiceSystem, env: Record<string, string>, name: string, invocation: string, started: string,
-  lines: string[], log: (text: string, what: string, ended: boolean) => void): void {
-  const ran = sys.run('journalctl', ['--user', '-u', name, '--until', `@${Number(started) + 1}`, '-n', String(ENDED_ENTRIES),
-    '-o', 'json', `--output-fields=MESSAGE,${INVOCATION_FIELDS.join(',')}`, '--no-pager'], env);
-  if (ran.status !== 0) {
-    lines.push(`Its start before the latest isn't shown: journalctl --user failed: ${stderrOf(ran)}.`);
+  context: number, lines: string[], tail: (text: string, what: string, whole: boolean) => void): void {
+  for (let asked = LOG_LINES + context + 1; ; asked *= 2) {
+    // --all: without it, journalctl's json gives a field over 4096 bytes as null.
+    const ran = sys.run('journalctl', ['--user', '-u', name, '--until', `@${Number(started) + 1}`, '-n', String(asked),
+      '-o', 'json', '--all', `--output-fields=MESSAGE,${INVOCATION_FIELDS.join(',')}`, '--no-pager'], env);
+    if (ran.status !== 0) {
+      lines.push(`Its start before the latest isn't shown: journalctl --user failed: ${stderrOf(ran)}.`);
+      return;
+    }
+    const given = ran.stdout.split('\n').filter((line) => line.trim() !== '');
+    const all = given.length < asked;
+    let unread = 0;
+    const entries = given.flatMap((line) => {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown> | null;
+        const id = entry && INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
+        if (typeof id === 'string' && typeof entry!.MESSAGE === 'string') return [{ id, message: entry!.MESSAGE }];
+      } catch {}
+      unread++;
+      return [];
+    });
+    // The latest start's entries end the read, so a read without them shows they aren't there.
+    const latest = entries.findIndex((entry) => entry.id === invocation);
+    const earlier = latest === -1 ? [] : entries.slice(0, latest);
+    const ended = earlier.at(-1)?.id;
+    // An entry of another start before the ended one's shows the read reaches back past that start's beginning.
+    const whole = all || earlier.some((entry) => entry.id !== ended);
+    const its = earlier.filter((entry) => entry.id === ended).map((entry) => entry.message).join('\n');
+    if (latest !== -1 && !all && (ended === undefined || (!whole && !tailHolds(its, context)))) continue;
+    if (unread > 0) lines.push(`${unread} journal entr${unread === 1 ? 'y' : 'ies'} couldn't be interpreted; ` +
+      'the earlier-start selection uses only the remaining entries.');
+    const held = 'Its journal entries up to a second past its latest start';
+    if (latest === -1) {
+      lines.push(`${held} hold none of that start's, so which start ended before it can't be told.`);
+      return;
+    }
+    if (ended === undefined) {
+      lines.push(`${held} hold no earlier start of it.`);
+      return;
+    }
+    tail(its, 'The journal\'s last lines about the newest earlier start it holds, which ended', whole);
     return;
   }
-  let unread = 0;
-  const entries = ran.stdout.split('\n').filter((line) => line.trim() !== '').flatMap((line) => {
-    try {
-      const entry = JSON.parse(line) as Record<string, unknown> | null;
-      const id = entry && INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
-      if (typeof id === 'string' && typeof entry!.MESSAGE === 'string') return [{ id, message: entry!.MESSAGE }];
-    } catch {}
-    unread++;
-    return [];
-  });
-  if (unread > 0) lines.push(`${unread} journal entr${unread === 1 ? 'y' : 'ies'} couldn't be interpreted; ` +
-    'the earlier-start selection uses only the remaining entries.');
-  const latest = entries.findIndex((entry) => entry.id === invocation);
-  const read = `Its last ${ENDED_ENTRIES} journal entries, up to a second past its latest start,`;
-  if (latest === -1) {
-    lines.push(`${read} hold none of that start's, so which start ended before it can't be told.`);
-    return;
+}
+
+// Whether a text that ends with its last LOG_LINES nonblank lines also holds the `context` lines before them.
+function tailHolds(text: string, context: number): boolean {
+  const bytes = Buffer.from(text, 'utf-8');
+  const at = linesStart(bytes, LOG_LINES, false);
+  return at >= 0 && bytes.subarray(0, at).toString('utf-8').split('\n').length - 1 >= context;
+}
+
+// Where the last `count` nonblank lines of `bytes` begin, or -1 when it holds fewer. With `cut`, its first line may have
+// begun before it, so that line isn't counted.
+function linesStart(bytes: Buffer, count: number, cut: boolean): number {
+  let seen = 0;
+  for (let end = bytes.length; ;) {
+    const newline = end === 0 ? -1 : bytes.lastIndexOf(0x0a, end - 1);
+    if (newline === -1 && cut) return -1;
+    if (bytes.toString('utf-8', newline + 1, end).trim() !== '') seen++;
+    if (seen === count) return newline + 1;
+    if (newline === -1) return -1;
+    end = newline;
   }
-  const earlier = entries.slice(0, latest);
-  const ended = earlier.at(-1)?.id;
-  if (ended === undefined) {
-    lines.push(`${read} hold no earlier start of it.`);
-    return;
-  }
-  log(earlier.filter((entry) => entry.id === ended).map((entry) => entry.message).join('\n'),
-    'The journal\'s last lines about the newest earlier start it holds, which ended', true);
 }
 
 function logLines(original: string, text: string, what: string, lines: string[], ended: boolean,
@@ -1998,20 +2073,29 @@ function logLines(original: string, text: string, what: string, lines: string[],
 
 function readLogTail(fd: number, contextBytes: number): { bytes: Buffer; from: number; offset: number } {
   const size = fstatSync(fd).size;
-  const windowStart = Math.max(0, size - LOG_BYTES);
+  let windowStart = 0;
+  for (let step = TAIL_STEP_BYTES; ; step *= 2) {
+    const start = Math.max(0, size - step);
+    const at = linesStart(readAt(fd, start, size), LOG_LINES, start > 0);
+    if (at >= 0) {
+      windowStart = start + at;
+      break;
+    }
+    if (start === 0) break;
+  }
   const offset = Math.max(0, windowStart - contextBytes - 1);
-  const buffer = Buffer.alloc(size - offset);
+  return { bytes: readAt(fd, offset, size), from: windowStart - offset, offset };
+}
+
+function readAt(fd: number, from: number, to: number): Buffer {
+  const buffer = Buffer.alloc(to - from);
   let read = 0;
   while (read < buffer.length) {
-    const count = readSync(fd, buffer, read, buffer.length - read, offset + read);
+    const count = readSync(fd, buffer, read, buffer.length - read, from + read);
     if (count === 0) break;
     read += count;
   }
-  const bytes = buffer.subarray(0, read);
-  let from = Math.min(read, windowStart - offset);
-  // Buffer decoding would turn a partial UTF-8 character at the cut into a replacement character.
-  while (from < bytes.length && (bytes[from]! & 0xc0) === 0x80) from++;
-  return { bytes, from, offset };
+  return buffer.subarray(0, read);
 }
 
 function readOr(path: string): string | null {

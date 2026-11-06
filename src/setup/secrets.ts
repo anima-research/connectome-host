@@ -404,7 +404,8 @@ export interface RedactedWindow {
 
 /** For a reader of part of a log: replaces, in the bytes from `from` to `to`, current values collected for this
  *  install's secret names and additionalNames from its dotenv files and env, with their names, as redactWindow does. A value that crosses `from` is replaced whole when the bytes hold it whole, which
- *  they do when they start `contextBytes` before `from`, the longest value's length. It has only those values: one
+ *  they do when they start `contextBytes` before `from`, the longest value's length, or, for a text read by lines,
+ *  `contextLines` lines before it, the most line breaks a value holds. It has only those values: one
  *  .env held earlier, which a running setup--run also replaces, isn't among them. Throws as `StoredSecrets.names`
  *  does. */
 export function storedSecretWindowRedactor(
@@ -412,12 +413,13 @@ export function storedSecretWindowRedactor(
   env: Record<string, string | undefined> = process.env,
   preserveLineBreaks = false,
   additionalNames: readonly string[] = [],
-): { contextBytes: number; redact(bytes: Buffer, from: number, to: number): RedactedWindow } {
+): { contextBytes: number; contextLines: number; redact(bytes: Buffer, from: number, to: number): RedactedWindow } {
   const envFile = join(workingDir, '.env');
   const { names, guessed } = secretNames(join(workingDir, '.setup'), envFile);
   const secrets = secretValues([...names, ...additionalNames], envFile, env);
   return {
     contextBytes: Math.max(0, ...secrets.map(({ value }) => Buffer.byteLength(value, 'utf-8'))),
+    contextLines: Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1)),
     redact(bytes, from, to) {
       const replaced = new Set<string>();
       const window = redactWindow(bytes, from, to, secrets, replaced, preserveLineBreaks);
