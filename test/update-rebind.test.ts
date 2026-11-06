@@ -555,6 +555,29 @@ describe('binding an install to the directory it is in', () => {
     expect(why).toContain(`serves ${join(moved, 'data')}, the place of the data directory its record names, ${join(install, 'data')}, and setup was given DATA_DIR ${join(dir, 'other-data')}. Setup has changed nothing.`);
     expect(record(moved)!.workingDir).toBe(install);
   });
+
+  test.skipIf(process.getuid?.() === 0)('a copy\'s label or the set-aside directory this user can\'t read is refused as one setup can\'t bind, saying why, and nothing changes', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    const unreadable = [join(root, 'copy', 'copy.json'), join(root, 'set-aside')];
+    const said = unreadable.map((path) => {
+      fs.chmodSync(path, 0o000);
+      try {
+        return refusal(() => setup(options(moved)));
+      } finally {
+        fs.chmodSync(path, path.endsWith('.json') ? 0o644 : 0o755);
+      }
+    });
+    expect(said.map((why) => why.split(' (EACCES')[0])).toEqual([
+      `The copy's label at ${unreadable[0]} can't be read`, `${unreadable[1]} can't be listed`,
+    ]);
+    for (const why of said) expect(why).toEndWith('so setup can\'t bind the places it names to this directory, and has changed nothing.');
+    expect(record(moved)!.workingDir).toBe(install);
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+  });
 });
 
 describe('a binding cut off', () => {

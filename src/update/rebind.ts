@@ -78,7 +78,9 @@ export function boundFiles(root: string, underWay: string | null = null): BoundF
       if (entry.isDirectory()) found.push({ path: join(setAside, entry.name, 'places.json'), kind: 'list' });
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw unbindable(`${setAside} can't be listed (${(error as Error).message})`, setAside);
+    }
   }
   const files: BoundFile[] = [];
   for (const { path, kind } of found) {
@@ -86,8 +88,9 @@ export function boundFiles(root: string, underWay: string | null = null): BoundF
     try {
       value = readRecord<CopyLabel | GoBackList>(path, kind === 'label' ? "copy's label" : "Go back's list of places");
     } catch (error) {
-      if (!(error instanceof ContractError)) throw error;
-      throw unbindable(error.message.replace(/\.+$/, ''), path);
+      throw unbindable(error instanceof ContractError ? error.message.replace(/\.+$/, '')
+        : `The ${kind === 'label' ? "copy's label" : "Go back's list of places"} at ${path} can't be read ` +
+          `(${(error as Error).message})`, path);
     }
     if (value === null) continue;
     const paths = pathsIn(value, kind);
