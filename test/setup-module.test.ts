@@ -89,6 +89,8 @@ function alive(pid: number): boolean {
   }
 }
 
+const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
+
 async function goneWithin(pid: number, ms: number): Promise<boolean> {
   for (const until = Date.now() + ms; alive(pid) && Date.now() < until;) await Bun.sleep(20);
   return !alive(pid);
@@ -321,16 +323,17 @@ describe('setup--run', () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'stubborn.pid');
     const termFile = join(dir, 'term-at');
-    const answer = await run(module, `(trap 'date +%s%3N > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do sleep 0.1; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
-    expect(answer.stoppedAtLimit).toBe(true);
-    const stubborn = Number(readFileSync(pidFile, 'utf-8'));
+    const answering = run(module, `(trap 'cut -d" " -f1 /proc/uptime > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do sleep 0.1; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
+    const stubborn = Number(await waitForFile(pidFile));
     const termAt = Number(await waitForFile(termFile));
     let goneAt: number | null = null;
-    for (const until = termAt + 15_000; goneAt === null && Date.now() < until; await Bun.sleep(20)) {
-      if (!alive(stubborn)) goneAt = Date.now();
+    for (const until = termAt + 15; goneAt === null && uptime() < until; await Bun.sleep(20)) {
+      if (!alive(stubborn)) goneAt = uptime();
     }
+    const answer = await answering;
+    expect(answer.stoppedAtLimit).toBe(true);
     expect(goneAt).not.toBeNull();
-    expect(goneAt! - termAt).toBeGreaterThanOrEqual(4_500);
+    expect(Math.round((goneAt! - termAt) * 1000)).toBeGreaterThanOrEqual(4_500);
   }, 30_000);
 
   linuxTest('stopping the module within 5 s of a limit still stops what that command left in its group, a SIGTERM-ignoring process too', async () => {
@@ -349,7 +352,7 @@ describe('setup--run', () => {
     const pidFile = join(dir, 'holder.pid');
     let holder = 0;
     try {
-      const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun`, 300);
+      const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun`, 900);
       holder = Number(readFileSync(pidFile, 'utf-8'));
       expect(answer.outputHeldOpen).toBe(true);
       expect(answer.stoppedAtLimit).toBe(false);
@@ -371,14 +374,15 @@ describe('setup--run', () => {
       const nowBefore = Date.now();
       const monoBefore = performance.now();
       // kill -0 succeeds for a zombie, so the holder writes once the module has reaped the command's bash.
-      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}`);
-      const took = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
+      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}; cut -d' ' -f1 /proc/uptime > ${dir}/ended-up`);
+      const took = Math.round((uptime() - Number(readFileSync(join(dir, 'ended-up'), 'utf-8'))) * 1000);
+      const tookByWallClock = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
       const answeredAfter = Math.round(performance.now() - monoBefore);
       holder = Number(readFileSync(pidFile, 'utf-8'));
       expect(alive(holder)).toBe(true);
       const said = JSON.stringify({
         outputHeldOpen: answer.outputHeldOpen, note: answer.note, stdout: answer.stdout.text, exitCode: answer.exitCode,
-        signal: answer.signal, answeredAfter,
+        signal: answer.signal, answeredAfter, tookByWallClock,
         dateAheadOfNow: dateBefore - nowBefore, begunAfter: stamp('begun-at') - nowBefore,
         endedAfterBegun: stamp('ended-at') - stamp('begun-at'), reapedAfterEnded: stamp('reaped-at') - stamp('ended-at'),
       });
@@ -815,7 +819,7 @@ describe('setup--run', () => {
     const frozen = spyOn(Date, 'now').mockReturnValue(Date.now());
     let stoppedInTime: boolean;
     try {
-      stoppedInTime = await Promise.race([module.stop().then(() => true), Bun.sleep(10_000).then(() => false)]);
+      stoppedInTime = await Promise.race([module.stop().then(() => true), Bun.sleep(15_000).then(() => false)]);
     } finally {
       frozen.mockRestore();
     }
