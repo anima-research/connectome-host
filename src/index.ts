@@ -747,7 +747,8 @@ async function runPiped(app: AppContext) {
   });
   traces.follow(app.framework);
   let afterSwitch = async (_switched: boolean): Promise<void> => {};
-  // agent-framework's processNextEvent starts a turn for each event it pops.
+  // agent-framework starts a turn for an event it pops while the agent is idle; events that come while a turn runs
+  // are answered together, in the turn after it.
   let lastMessage: Promise<void> = Promise.resolve();
   let session = 0;
   let conversationEnded = false;

@@ -1,8 +1,8 @@
 /**
  * agent-framework 0.32.0's traces don't say which events started a turn, so a line's wait counts from when the host
- * takes the line in. It starts a turn for every line the host queued while the agent was busy, so a line taken in
- * during a turn waits for the turn after it. It may retry a failed turn, or hold it and run it again, so
- * `inference:failed` doesn't end a wait.
+ * takes the line in. Lines the host queued while a turn ran are answered together, in the turn after it, so a line
+ * taken in during a turn waits for the turn after it. The framework may retry a failed turn, or hold it and run it
+ * again, so `inference:failed` doesn't end a wait.
  */
 
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES, traceError } from './state/turn-trace.js';
