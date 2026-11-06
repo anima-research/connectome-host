@@ -83,7 +83,7 @@ function withCommands(recipe: boolean) {
   return { dir, root, run };
 }
 
-test('the command sends setup to current\'s CLI when its release has the setup agent\'s recipe, and otherwise to the working directory\'s package\'s; every other word to current\'s', () => {
+test('the command sends setup to current\'s CLI when its release has the setup agent\'s recipe, and otherwise to the working directory\'s package\'s; update to current\'s', () => {
   const has = withCommands(true);
   expect(has.run('setup', 'discord').ran).toEqual({ who: 'current', root: has.root, argv: ['setup', 'discord'] });
   const lacks = withCommands(false);
@@ -91,7 +91,7 @@ test('the command sends setup to current\'s CLI when its release has the setup a
   expect(lacks.run('update').ran).toEqual({ who: 'current', root: lacks.root, argv: ['update'] });
 });
 
-test('a record bound to another directory, or a binding\'s plan standing, refuses every word but setup before any CLI loads', () => {
+test('a record bound to another directory refuses the bare command, update and send, and a binding\'s plan standing refuses update, each before any CLI loads, while setup runs in both', () => {
   const { dir, root, run } = withCommands(true);
   const elsewhere = join(dirname(dir), 'elsewhere');
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(elsewhere, 'data'), extraState: [], workingDir: elsewhere }));
@@ -110,7 +110,7 @@ test('a record bound to another directory, or a binding\'s plan standing, refuse
   expect(run('setup', 'discord').ran?.who).toBe('current');
 });
 
-test('a record from before workingDir runs every word as it did', () => {
+test('a record from before workingDir runs update as it did', () => {
   const { dir, root, run } = withCommands(true);
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
   expect(run('update').ran?.who).toBe('current');
