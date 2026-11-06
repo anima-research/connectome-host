@@ -8,14 +8,14 @@ import { TtsRelayModule } from '../src/modules/tts-relay-module.js';
 
 type Interruption = { channelId: string; spokenText: string; reason: 'user_speech' | 'manual' | 'timeout'; timestamp: number };
 
-function relayWith(answer: Record<string, unknown>) {
+function relayWith(answer: Record<string, unknown>, config: { editServerId?: string } = {}) {
   const notes: string[] = [];
   const calls: Array<{ name: string; input: unknown }> = [];
   const ctx = {
     callTool: async (call: { name: string; input: unknown }) => { calls.push({ name: call.name, input: call.input }); return answer; },
     addMessage: (_role: string, content: Array<{ text: string }>) => { notes.push(content.map((b) => b.text).join('')); },
   } as unknown as ModuleContext;
-  const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
+  const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't', ...config });
   const inner = module as unknown as {
     ctx: ModuleContext;
     published: Array<{ rawChannelId: string; mcplChannelId: string; messageId?: string; text: string; at: number }>;
@@ -39,6 +39,12 @@ describe('an interruption\'s edit of the posted message', () => {
     const { notes, interrupt } = relayWith({ success: true, data: [{ type: 'text', text: 'edited' }] });
     await interrupt();
     expect(notes).toEqual(['[voice] Your message was interrupted by user speech — only this much was voiced, and the posted message was trimmed to match: "The ferry leaves at noon"']);
+  });
+
+  test('with editServerId set, the edit goes to that server\'s edit_message', async () => {
+    const { calls, interrupt } = relayWith({ success: true }, { editServerId: 'discord-main' });
+    await interrupt();
+    expect(calls.map((c) => c.name)).toEqual(['mcpl--discord-main--edit_message']);
   });
 });
 
@@ -89,7 +95,7 @@ describe('what an interruption may edit', () => {
   test('a published message with no words is passed over', async () => {
     const { trace, interrupt, edited } = relayOnTraces();
     trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
-    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 1, text: '\n\n', messageId: 'm-blank' });
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 1, text: '\n \t\n', messageId: 'm-blank' });
     await interrupt('Something the words never matched');
     expect(edited()).toEqual(['m-prose']);
   });

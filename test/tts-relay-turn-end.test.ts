@@ -149,7 +149,7 @@ describe('what the relay is given to voice', () => {
     publish('discord:guild:456', 1, 'Take the coast road.');
     // agent-framework 0.32.0 can send a turn's publish after its inference:completed.
     emit({ type: 'inference:completed' });
-    publish(CHANNEL, 2, '\n\n');
+    publish(CHANNEL, 2, '\n \t\n');
     publish(CHANNEL, 3, '\n\nOr wait for the bus.');
     await waitFor(() => received.filter((m) => m.type === 'block_complete').length === 3, 'the third message');
 
