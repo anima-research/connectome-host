@@ -74,6 +74,8 @@
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.
 - A subagent run that ends on a tool call, with no speech, answers with the
-  newest text its window holds: a text row an undo or a shed took out of
+  newest text its window holds that isn't the user's or a stored
+  injection's (and `(no text output)` when there is none): a text row an
+  undo or a shed took out of
   it, or one stored and never shown to it (another agent's mail held out of
   it past the run's end), was the answer.
