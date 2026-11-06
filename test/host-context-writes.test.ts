@@ -161,8 +161,9 @@ describe('/newtopic', () => {
     }
   });
 
-  // The summary a bare /newtopic gives back is to be passed as its text,
-  // line breaks and all (#485 bot review 2, finding 17).
+  // `/newtopic <text>` stores its text as given, line breaks included, as
+  // the TUI and the Web UI send a multi-line one (#485 bot review 2,
+  // finding 17).
   test('given its text, stores it as given, its line breaks and spacing included', async () => {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     const h = await bootPresentedHost({ agents: ['clerk'], agentConfig: () => ({ strategy }), prefix: 'newtopic-lines-' });
