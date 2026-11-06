@@ -231,12 +231,12 @@ const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
 const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
 const SESSIONS = join(dirname(resolve(DATA_DIR)), 'sessions');
-if (existsSync(DATA_DIR) || existsSync(SESSIONS)) {
-  console.error(`${existsSync(DATA_DIR) ? DATA_DIR : SESSIONS} already exists: this data directory holds a store or sessions (stage 2).`);
-  process.exit(1);
-}
 if (existsSync(INDEX)) {
   console.error(`${INDEX} exists: a host's first start or an import wrote it, and no start migrates a seed written now (stage 2).`);
+  process.exit(1);
+}
+if (existsSync(DATA_DIR) || existsSync(SESSIONS)) {
+  console.error(`${existsSync(DATA_DIR) ? DATA_DIR : SESSIONS} already exists: this data directory holds a store or sessions (stage 2).`);
   process.exit(1);
 }
 const bundle = JSON.parse(readFileSync(src, 'utf8'));
