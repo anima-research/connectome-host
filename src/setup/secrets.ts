@@ -124,6 +124,15 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
   const values = new Map<string, Set<string>>();
   const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
   if (names.length === 0) return values;
+  if (env.BUN_OPTIONS) {
+    const naming = [...new Set(DOTENV_MODES.flatMap(dotenvFiles))]
+      .find((file) => /\$\{?BUN_OPTIONS\b/.test(envText(join(dir, file))));
+    if (naming !== undefined) {
+      throw new Error(`${join(dir, naming)} expands BUN_OPTIONS, which the environment sets, and setup reads the ` +
+        'dotenv files without it, since Bun would apply it to that read, so what a value built from it holds ' +
+        'can\'t be told');
+    }
+  }
   const given: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined && name !== 'BUN_OPTIONS' && name !== 'NODE_ENV') given[name] = value;

@@ -359,6 +359,22 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('<MY_PATH> <MY_TOKEN>\n');
   });
 
+  test('where the environment sets BUN_OPTIONS and a dotenv file expands it, a command runs nothing, since setup reads the files without it', async () => {
+    const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
+    writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=prefix${BUN_OPTIONS}suffix\n');
+    const result = await runCall(module, `${process.execPath} -e 'console.log(process.env.MY_TOKEN)'`);
+    expect(result.success).toBe(false);
+    expect(result.error).toStartWith(`setup--run ran nothing: ${join(dir, '.env.local')} expands BUN_OPTIONS, which the environment sets`);
+    expect(JSON.stringify(result)).not.toContain('prefix--smolsuffix');
+    const plain = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
+    writeFileSync(join(plain.dir, '.env.local'), 'MY_TOKEN=plain-token-value\n');
+    expect((await run(plain.module, 'echo plain-token-value')).stdout.text).toBe('<MY_TOKEN>\n');
+    const sets = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
+    writeFileSync(join(sets.dir, '.env.local'), 'BUN_OPTIONS=--preload=./no-such-preload.ts\nMY_TOKEN=set-token-value\n');
+    listSecrets(sets.module, 'MY_TOKEN');
+    expect((await run(sets.module, 'echo set-token-value')).stdout.text).toBe('<MY_TOKEN>\n');
+  });
+
   test('a stored secret a command changes in .env and prints in that same command is shown by its name', async () => {
     const { module } = install({ envFile: 'DISCORD_TOKEN="old-token-value"\n' });
     listSecrets(module, 'DISCORD_TOKEN');
