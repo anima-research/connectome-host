@@ -687,6 +687,7 @@ export function frameScopes(frame: WebUiServerMessage): FrameScopes {
     case 'call-ledger':
     case 'credential-state':
     case 'host-mode':
+    case 'agent-phase':
       return ['health'];
     case 'inbound-trigger':
     case 'branch-changed':
@@ -802,7 +803,9 @@ export const HEALTH_STRINGS: KeptStrings = {
       providerWaits: { model: true, until: true, setAt: true },
     },
     refusalStats: { lastCategory: true },
+    upcomingWakes: { kind: true },
   },
+  agentPhases: { '*': { phase: true } },
   credential: CREDENTIAL_STRINGS,
   compressionQuarantine: {
     '*': {
@@ -852,6 +855,7 @@ export function scopeWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>
     delete scoped.callLedger;
     delete scoped.perAgentCost;
     delete scoped.hostMode;
+    delete scoped.agentPhases;
     scoped.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     scoped.agents = welcome.agents.map((agent) => ({ ...agent, model: '' }));
   } else if (!scopes.has('ops') && welcome.callLedger) {

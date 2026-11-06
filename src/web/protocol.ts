@@ -35,6 +35,8 @@
  */
 
 import type { Line } from '../output-line.js';
+import type { AgentPhaseState } from '../state/agent-phases.js';
+import type { AgentPhase } from '../state/agent-tree-reducer.js';
 
 export const WEB_PROTOCOL_VERSION = 3;
 
@@ -120,6 +122,8 @@ export interface WelcomeMessage {
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
   hostMode?: HostModeSnapshot;
+  /** Each of this process's agents' phase now, by name (see AgentPhaseMessage). Left out for a client without `health`. */
+  agentPhases?: Record<string, AgentPhaseState>;
   /** Cumulative session-wide token usage at connect time. */
   usage: TokenUsage;
   /** Per-agent cost breakdown for the parent process, present when the
@@ -728,6 +732,21 @@ export interface HostModeSnapshot {
   detail?: Record<string, unknown>;
 }
 
+/**
+ * An agent's phase changed: the tree's word for what it's doing, and when it
+ * began, with no content. `sending` runs from a turn's start, through its hooks
+ * and context compile, until its first token or a failed attempt. `health`'s, so
+ * that a dashboard can show it without being granted the traces it comes from.
+ * An agent that ends leaves the snapshots after it, with a last frame if ending
+ * changed its phase. Covers this process's agents, not a fleet child's.
+ */
+export interface AgentPhaseMessage {
+  type: 'agent-phase';
+  agentName: string;
+  phase: AgentPhase;
+  since: number;
+}
+
 export interface HostModeMessage {
   type: 'host-mode';
   corrId?: string;
@@ -815,6 +834,7 @@ export type WebUiServerMessage =
   | ObserverAuthRequiredMessage
   | ObserverAckMessage
   | HostModeMessage
+  | AgentPhaseMessage
   | SurgeryResultMessage
   | OperatorLogMessage
   | ErrorMessage;

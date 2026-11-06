@@ -125,6 +125,7 @@ describe('what each client is sent', () => {
             },
             lastInference: { startedAt: 1, failedAt: 2, lastError: TEXT.lastError },
             refusalStats: { total: 1, byCategory: { policy: 1 }, lastAt: 3, lastCategory: 'policy' },
+            upcomingWakes: [{ at: 9, kind: 'heartbeat', certain: true, note: TEXT.wait }],
           }],
         }),
       },
@@ -474,6 +475,53 @@ describe('what each client is sent', () => {
       expect(conn.framesOf('host-mode')).toEqual([]);
       expect(conn.framesOf('call-ledger')).toEqual([]);
     }
+  });
+
+  test('a phase reaches whoever holds health, live, in the welcome and from /healthz, and no one else', async () => {
+    host.rebind();
+    const c = await everyone();
+    const channelId = 'a-channel-only-messages-may-read';
+    const steps = [
+      { agentName: 'main', phase: 'sending', since: 5 },
+      { agentName: 'main', phase: 'streaming', since: 6 },
+      { agentName: 'main', phase: 'invoking', since: 7 },
+    ];
+    host.emitTrace({ type: 'inference:started', agentName: 'main', timestamp: 5, channelId });
+    host.emitTrace({ type: 'inference:tokens', agentName: 'main', timestamp: 6, blockType: 'text', content: 'words' });
+    // What a call's input names is no agent: it isn't reported, or a health client could read it.
+    const named = 'a-name-the-agent-wrote-in-a-tool-call';
+    host.emitTrace({ type: 'inference:tool_calls_yielded', agentName: 'main', timestamp: 7, calls: [{ id: 'c1', name: 'subagent--spawn', input: { name: named } }] });
+    await host.fence(Object.values(c));
+    const expected = steps.map((step) => ({ type: 'agent-phase', ...step }));
+    const now = { main: { phase: 'invoking', since: 7 } };
+    for (const conn of [c.operator, c.dashboard, c.everything]) {
+      expect(conn.framesOf('agent-phase')).toEqual(expected);
+      expect(conn.framesOf('welcome').at(-1)!.agentPhases).toEqual(now);
+    }
+    for (const conn of [c.reader, c.interior]) {
+      expect(conn.framesOf('agent-phase')).toEqual([]);
+      expect(conn.framesOf('welcome').at(-1)!.agentPhases).toBeUndefined();
+    }
+    expect(JSON.stringify(c.dashboard.framesOf('agent-phase'))).not.toContain(channelId);
+    expect(JSON.stringify(c.dashboard.frames.filter((f) => f.type === 'agent-phase' || f.type === 'welcome'))).not.toContain(named);
+    const token = (c.dashboard.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+    const res = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { cookie: `fkm_obs=${token}` } });
+    expect(((await res.json()) as { agentPhases: unknown }).agentPhases).toEqual(now);
+    // A new binding starts over, and each client's next welcome says so.
+    host.rebind();
+    await host.fence(Object.values(c));
+    expect((c.dashboard.framesOf('welcome').at(-1)!.agentPhases as { main: { phase: string } }).main.phase).toBe('idle');
+    const after = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { authorization: BASIC } });
+    expect(((await after.json()) as { agentPhases: { main: { phase: string } } }).agentPhases.main.phase).toBe('idle');
+  });
+
+  test("a health observer keeps an upcoming wake's kind, with its failure text gone", async () => {
+    const c = await everyone();
+    const token = (c.dashboard.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+    const res = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { cookie: `fkm_obs=${token}` } });
+    const body = (await res.json()) as { agents: Array<{ upcomingWakes: unknown }> };
+    expect(body.agents[0]!.upcomingWakes).toEqual([{ at: 9, kind: 'heartbeat', certain: true, note: '' }]);
+    expect(JSON.stringify(body)).not.toContain(TEXT.lastError);
   });
 
   test("a client that holds health and not ops gets health without failure text: the call ledger live and in the welcome, and /healthz and /quota, the host's and a child's", async () => {
