@@ -80,15 +80,21 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
   const url = base + (base.endsWith('/') ? 'v1/messages' : '/v1/messages');
   const host = new URL(url).host;
   const urls = [...new Set([url, new URL(url).href, base, new URL(base).href])].sort((a, b) => b.length - a.length);
+  const path = new URL(base).pathname.replace(/\/+$/, '') === '' ? null : new URL(url).pathname;
   // fetch sends a header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's
   // host gets it back lowercased, so the key is matched in any letter case.
   const keys = [...new Set([key, key.trim()])].filter((each) => each.trim() !== '').sort((a, b) => b.length - a.length)
     .map((each) => new RegExp(each.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
   const quote = (words: string) => {
     for (const each of urls) words = words.split(each).join(origin);
+    if (path !== null) words = words.split(path).join('<the request\'s path>');
     for (const each of keys) words = words.replace(each, '<ANTHROPIC_API_KEY>');
     return sentence(words);
   };
+  const notAllowed = set
+    ? `Ask whoever runs ${origin}, or manages the key's account there, to allow it, or use a key that can make that call.`
+    : 'This key isn\'t allowed to make it: ask whoever manages its account at console.anthropic.com to allow it, or use a ' +
+      'key from an account that can.';
   const where = set
     ? `and ANTHROPIC_BASE_URL, which leads to ${origin} now`
     : `ANTHROPIC_BASE_URL is empty or absent in .env, so the call went to Anthropic's own ${origin}`;
@@ -158,7 +164,8 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
           `whole${set ? `, and that it's a key ${origin} accepts` : ', from console.anthropic.com\'s API keys'}.`, true);
       }
       if (streamed.type === 'permission_error') {
-        return failed(`${host} refused this call in its stream (permission_error).${words}`, true);
+        return failed(`${host} refused this call, one message to ${model}, in its stream (permission_error).${words} ` +
+          `${notAllowed}`, true);
       }
       return failed(`${host} answered, but its stream ended in an error.${words} So the key isn't known to work. ` +
         (streamed.type === 'overloaded_error' ? 'Try again in a few minutes.' : 'Try again shortly.'), false);
@@ -190,7 +197,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       return failed(`${host} refused the key (401).${quoted} Check that it was copied whole` +
         `${set ? `, and that it's a key ${origin} accepts` : ', from console.anthropic.com\'s API keys'}.`, true);
     case 403:
-      return failed(`${host} refused this call (403).${quoted}`, true);
+      return failed(`${host} refused this call, one message to ${model} (403).${quoted} ${notAllowed}`, true);
     case 404:
       return failed(set
         ? `${host} found nothing for ${model} (404).${quoted} Either this key can't use ` +

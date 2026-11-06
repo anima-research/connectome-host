@@ -212,7 +212,7 @@ describe("the key's one real call", () => {
   test("each refusal names its cause and the server's own words, never the key, and says whether another key may help", async () => {
     for (const [status, words, anotherKeyMayHelp] of [
       [401, 'refused the key (401)', true],
-      [403, 'refused this call (403)', true],
+      [403, 'refused this call, one message to claude-x (403)', true],
       [404, 'found nothing for claude-x (404)', true],
       [529, 'overloaded (529)', false],
       [500, 'answered 500', false],
@@ -334,6 +334,29 @@ describe("the key's one real call", () => {
       expect(cause(result), choice).not.toContain('sk-ant-in-a-header');
       expect(cause(result), choice).toContain('<ANTHROPIC_API_KEY>');
     }
+  });
+
+  test('a refusal of the call says what to ask for: of Anthropic\'s console with no ANTHROPIC_BASE_URL, of whoever runs its origin with one', async () => {
+    const denied = (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'not allowed' } }, { status: 403 })) as unknown as typeof fetch;
+    const direct = await checkKey({ key: 'sk-ant-k', model: 'claude-x', fetch: denied });
+    expect(cause(direct)).toBe('api.anthropic.com refused this call, one message to claude-x (403). It said: "not allowed". This key isn\'t ' +
+      'allowed to make it: ask whoever manages its account at console.anthropic.com to allow it, or use a key from an account that can.');
+    const through = await checkKey({ key: 'sk-ant-k', model: 'claude-x', baseUrl: 'https://gw.example', fetch: denied });
+    expect(cause(through)).toBe('gw.example refused this call, one message to claude-x (403). It said: "not allowed". Ask whoever runs ' +
+      'https://gw.example, or manages the key\'s account there, to allow it, or use a key that can make that call.');
+    const streamed = await checkKey({ key: 'sk-ant-stream', model: 'm', baseUrl: at('streamdenied') });
+    expect(cause(streamed)).toContain('refused this call, one message to m, in its stream (permission_error). It said: "not allowed". Ask whoever runs ');
+  });
+
+  test('words quoting the path of a request to an ANTHROPIC_BASE_URL with a path of its own show it as the request\'s path', async () => {
+    const quoting = (async (url: string) => Response.json(
+      { type: 'error', error: { type: 'not_found_error', message: `Cannot POST ${new URL(url).pathname}` } }, { status: 404 },
+    )) as unknown as typeof fetch;
+    const withPath = await checkKey({ key: 'sk-ant-k', model: 'm', baseUrl: 'https://gw.example/private-path', fetch: quoting });
+    expect(cause(withPath)).not.toContain('private-path');
+    expect(cause(withPath)).toContain('It said: "Cannot POST <the request\'s path>".');
+    const without = await checkKey({ key: 'sk-ant-k', model: 'm', baseUrl: 'https://gw.example', fetch: quoting });
+    expect(cause(without)).toContain('It said: "Cannot POST /v1/messages".');
   });
 
   test('words quoting ANTHROPIC_BASE_URL show only where it leads', async () => {
