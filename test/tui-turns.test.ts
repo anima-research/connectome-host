@@ -429,6 +429,53 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(times(same, 'Done.')).toBe(1);
     expect(same).toContain('(undone) Done.');
   }, 90000);
+
+  // A shed while the turn is backgrounded marks the operator's message in
+  // place, and the turn's rounds once they are drawn, with no copy below
+  // (#485 bot review 4, finding 1).
+  test("a shed while the turn is backgrounded marks the operator's message in place, and the turn's lines as it returns, drawing no copy", async () => {
+    const steps = await play('undone-background-shed');
+    const shed = steps.get('shed while backgrounded')!;
+    expect(times(shed.frame, 'and the fifth?')).toBe(1);
+    expect(shed.frame).toMatch(/\(undone\) \d\d:\d\d You: and the fifth\?/);
+    expect(shed.colours['You: and the fifth?']).toBe(DIM_GRAY);
+    expect(times(shed.frame, 'Counting the')).toBe(1);
+    expect(shed.frame).not.toContain('ledgers now.');
+    expect(shed.frame).not.toContain('[tools] tally');
+    const returned = steps.get('returned')!.frame;
+    expect(times(returned, 'and the fifth?')).toBe(1);
+    expect(returned).toMatch(/\(undone\) \d\d:\d\d You: and the fifth\?/);
+    for (const words of ['Counting the', 'ledgers now.']) {
+      expect(times(returned, words)).toBe(1);
+      expect(returned).toContain(`(undone) ${words}`);
+    }
+    expect(times(returned, 'There are three.')).toBe(1);
+    expect(returned).not.toContain('(undone) There are three.');
+    expect(returned).not.toContain('[tools] tally');
+  }, 40000);
+
+  // Every message the operator sends is echoed, and stored, in order: the
+  // first row takes the first echo though a turn ends between the two rows'
+  // stores (#485 bot review 4, finding 4).
+  test("the same message sent twice: an undo of the first one's turn marks the first echo", async () => {
+    const undone = await frameOf('undone-queued', 'undone');
+    const echoes = undone.split('\n').filter((line) => line.includes('You: once more'));
+    expect(echoes).toHaveLength(2);
+    expect(echoes[0]).toContain('(undone)');
+    expect(echoes[1]).not.toContain('(undone)');
+    expect(undone).toContain('(undone) the first answer');
+    expect(undone).not.toContain('(undone) the second answer');
+  }, 40000);
+
+  // A turn that keeps more lines than the scrollback holds before its end
+  // links them: the first rounds' rows, whose lines the scrollback took
+  // down, aren't drawn again (#485 bot review 4, finding 5).
+  test("a turn of more rounds than the scrollback holds: an undo of its first round draws nothing again, and an undone row with no line is drawn", async () => {
+    const undone = await frameOf('undone-long-turn', 'undone');
+    expect(undone).toContain('(undone) a twelfth ledger');
+    expect(undone).not.toContain('round 0');
+    expect(undone).not.toContain('(undone) [tools]');
+  }, 90000);
 });
 
 describe("the TUI's branch moves, through runTui", () => {

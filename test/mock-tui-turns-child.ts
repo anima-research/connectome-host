@@ -159,6 +159,8 @@ async function pressed(press: () => void, what: string): Promise<void> {
 
 const escape = (): Promise<void> => pressed(() => mockInput.pressEscape(), 'Escape');
 
+const times = (text: string, part: string): number => text.split(part).length - 1;
+
 async function frame(): Promise<string> {
   await renderOnce();
   return captureCharFrame();
@@ -700,6 +702,84 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('Done.'), 'the reply');
     await step('same words, pushed out');
+  } else if (scenario === 'undone-background-shed') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // The operator's message, stored as its turn starts, and the turn's
+    // first round, backgrounded mid-stream with Ctrl+B.
+    await command('and the fifth?');
+    await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'and the fifth?' }] });
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'Counting the ', blockType: 'text' });
+    await until(async () => (await frame()).includes('Counting the'), 'the words before the press');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'ledgers now.', blockType: 'text' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'text', text: 'Counting the ledgers now.' }, { type: 'tool_use', id: 't1', name: 'tally', input: {} }],
+    });
+    first.send('inference:stream_resumed');
+    // A refused request's shed takes out the rows it carried, with no
+    // window:undone (agent-framework's wasCarried), while the turn is
+    // backgrounded (#485 bot review 4, finding 1).
+    undoneRows.add('u2');
+    undoneRows.add('a2');
+    first.send('presentation:retracted', { messageIds: ['u2', 'a2'], reason: 'shed' });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    await step('shed while backgrounded');
+    first.send('inference:failed', { error: 'the request was refused' });
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'There are three.', blockType: 'text' });
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'There are three.' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('returned from background'), 'the return');
+    await step('returned');
+  } else if (scenario === 'undone-queued') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // The same words sent twice while the agent is busy: each is echoed as
+    // it is sent, and stored in turn. The first one's turn ends before the
+    // loop stores the second (#485 bot review 4, finding 4).
+    await command('once more');
+    await until(async () => (await frame()).includes('You: once more'), 'the first message to show');
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 2, 'the second message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'once more' }] });
+    await replied('a2', 'the first answer');
+    history.push({ id: 'u3', participant: 'user', content: [{ type: 'text', text: 'once more' }] });
+    await replied('a3', 'the second answer');
+    undoneRows.add('u2');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) the first answer'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-long-turn') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // One turn of more rounds than the scrollback holds lines: each round's
+    // text and its [tools] line are kept, and its row stored, before the
+    // turn's end links them (#485 bot review 4, finding 5).
+    first.send('inference:started');
+    for (let i = 0; i <= 1000; i++) {
+      first.send('inference:tokens', { content: `round ${i}`, blockType: 'text' });
+      first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+      history.push({
+        id: `r${i}`, participant: 'agent',
+        content: [{ type: 'text', text: `round ${i}` }, { type: 'tool_use', id: `t${i}`, name: 'tally', input: {} }],
+      });
+      first.send('inference:stream_resumed');
+    }
+    first.send('inference:tokens', { content: 'all rounds counted', blockType: 'text' });
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'all rounds counted' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('all rounds counted'), 'the reply');
+    // An undo of the first round, whose lines the scrollback took down, with
+    // a row stored since that the TUI drew no line for.
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a twelfth ledger' }] });
+    undoneRows.add('r0');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a twelfth ledger'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     await step('history');

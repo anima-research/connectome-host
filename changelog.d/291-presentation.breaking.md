@@ -75,11 +75,15 @@
     comes back a line per round, the first after the words streamed before
     the press, its thinking left out, where it came back as one line with
     its thinking's words run into its text) and a message sent from it
-    included, each linked to its row as the turn ends, never to
-    another resident's row or an earlier row in the same words, and draws
-    below them an undone row stored since it loaded the history that it has
-    no line for, past the scrollback cap too, until a redo puts it back, but
-    not one whose lines `/clear` or the scrollback cap took down), and the Web
+    included, each linked to its row as the turn ends (a backgrounded
+    turn's replies as it returns, and marked then if a shed took them out
+    meanwhile), never to another resident's row, a reply never to an
+    earlier row in the same words, and the same message sent twice in the
+    order sent, and draws below them an undone row stored since it loaded
+    the history that it has no line for, past the scrollback cap too, until
+    a redo puts it back, but not one whose lines `/clear` or the scrollback
+    cap took down, however many lines were drawn before its row was
+    linked), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again, once, at each undo, redo or shed on the
     window of the agent they show, which they ask for by scope alone: the

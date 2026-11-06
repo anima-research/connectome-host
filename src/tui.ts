@@ -792,17 +792,31 @@ export async function runTui(app: AppContext): Promise<void> {
   }
   /** The lines streamed or sent that no row has taken yet. */
   let streamedLines: StreamedLine[] = [];
+  /** The entries streamedLines let go past the scrollback cap, whose lines
+   *  the scrollback has taken down by then, with no line (`parts` empty): a
+   *  row that takes one isn't drawn again. A reply's go at its turn's end,
+   *  by when its rows are stored; an operator's message's once its row
+   *  takes it. */
+  let evictedLines: StreamedLine[] = [];
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
-  /** How many of the record's rows linkStreamedLines has read: the rows
-   *  past them were stored since. */
+  /** How many of the record's rows linkStreamedLines has read for the
+   *  root agent's replies, and for the operator's messages: the rows past
+   *  them were stored since. A backgrounded turn's replies wait for its
+   *  return, its messages don't. */
   let linkedThrough = 0;
+  let sentLinkedThrough = 0;
+  /** A remark while a turn was backgrounded left its undone replies' rows
+   *  for its return to mark, when their lines are drawn. */
+  let remarkAfterBackground = false;
 
   function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string): StreamedLine {
     const kept: StreamedLine = { kind, said, parts: [{ line, shown, color }] };
     streamedLines.push(kept);
-    if (streamedLines.length > SCROLLBACK_CAP) streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
+    if (streamedLines.length > SCROLLBACK_CAP) {
+      for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) evictedLines.push({ kind: gone.kind, said: gone.said, parts: [] });
+    }
     return kept;
   }
 
@@ -854,7 +868,10 @@ export async function runTui(app: AppContext): Promise<void> {
     recordLines = [];
     historyRead = 0;
     linkedThrough = 0;
+    sentLinkedThrough = 0;
+    remarkAfterBackground = false;
     streamedLines = [];
+    evictedLines = [];
     clearedRows = new Set();
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
@@ -862,6 +879,7 @@ export async function runTui(app: AppContext): Promise<void> {
     const all = cm.getAllMessages();
     historyRead = all.length;
     linkedThrough = all.length;
+    sentLinkedThrough = all.length;
     if (all.length === 0) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
     // The history is the record. A row an undo took out of the agent's
@@ -879,12 +897,15 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   /** The streamed lines of a row stored after the history was drawn, each
-   *  the newest one not linked yet whose kind and words are a run of the
-   *  row's blocks (its text or its thinking, or the operator's message), or
-   *  the tools it called, taken out of streamedLines. A run is the blocks of one kind with no
-   *  block of the other kind between them, which streaming draws as one
-   *  line: it starts a line only where text and thinking meet
-   *  (switchStreamBlock), not at a tool call or another block. */
+   *  the one not linked yet whose kind and words are a run of the row's
+   *  blocks (its text or its thinking, or the operator's message), or the
+   *  tools it called, taken out of streamedLines, or with no line out of
+   *  evictedLines: the oldest for the operator's message, each echoed and
+   *  then stored in the order it was sent, and the newest for a reply's
+   *  runs. A run is the blocks of one kind with no block of the other kind
+   *  between them, which streaming draws as one line: it starts a line only
+   *  where text and thinking meet (switchStreamBlock), not at a tool call
+   *  or another block. */
   function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
     const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
     const tools: string[] = [];
@@ -904,10 +925,14 @@ export async function runTui(app: AppContext): Promise<void> {
     const taken: StreamedLine[] = [];
     for (const { kind, said } of runs) {
       if (!said.trim()) continue;
-      for (let at = streamedLines.length - 1; at >= 0; at--) {
-        const l = streamedLines[at]!;
-        if (l.kind !== kind || l.said.trim() !== said.trim()) continue;
-        taken.push(...streamedLines.splice(at, 1));
+      const matches = (l: StreamedLine) => l.kind === kind && l.said.trim() === said.trim();
+      // The evicted entries are older than every kept one.
+      for (const list of kind === 'you' ? [evictedLines, streamedLines] : [streamedLines, evictedLines]) {
+        let at = -1;
+        if (kind === 'you') at = list.findIndex(matches);
+        else for (let i = list.length - 1; i >= 0 && at < 0; i--) if (matches(list[i]!)) at = i;
+        if (at < 0) continue;
+        taken.push(...list.splice(at, 1));
         break;
       }
     }
@@ -917,31 +942,42 @@ export async function runTui(app: AppContext): Promise<void> {
   /** Link the lines streamed or sent to the rows stored since the last
    *  call, each row once: at each root turn's end, once its last line is
    *  kept, and before each remark. A line is linked while it is fresh, so a
-   *  later line in the same words, or the scrollback cap letting its entry
-   *  go, can't leave its row without it. The rows are read newest first, as
-   *  the lines are, so a line no row took (an attempt that failed, say)
+   *  later line in the same words can't leave its row without it, and an
+   *  entry the scrollback cap let go links its row as one whose line it
+   *  took down. The operator's messages are read oldest first, as their
+   *  echoes are, so the same words sent twice are linked in order though a
+   *  turn ends between their stores. The replies are read newest first, as
+   *  their lines are, so a line no row took (an attempt that failed, say)
    *  isn't taken for a later row in the same words. While a turn is
-   *  backgrounded its rows wait: their lines are drawn when it returns. A
-   *  row stamped for other residents only (a co-resident's, in the store the
-   *  residents share) is no line's: the TUI streams the root agent's turns. */
+   *  backgrounded its replies wait: their lines are drawn when it returns.
+   *  A row stamped for other residents only (a co-resident's, in the store
+   *  the residents share) is no line's: the TUI streams the root agent's
+   *  turns. */
   function linkStreamedLines(): void {
-    if (backgrounded) return;
     const cm = app.framework.getAgent(rootAgentName)?.getContextManager();
     if (!cm) return;
     const total = cm.getMessageCount();
-    const from = Math.min(linkedThrough, total);
-    linkedThrough = total;
-    if (streamedLines.length === 0 || from === total) return;
+    const sentFrom = Math.min(sentLinkedThrough, total);
+    const repliesFrom = backgrounded ? total : Math.min(linkedThrough, total);
+    sentLinkedThrough = total;
+    if (!backgrounded) linkedThrough = total;
+    const from = Math.min(sentFrom, repliesFrom);
+    if (from === total || streamedLines.length + evictedLines.length === 0) return;
     const stored = cm.getMessageWindow(from, total - from, { resolveBlobs: false }).messages;
-    for (let i = stored.length - 1; i >= 0 && streamedLines.length > 0; i--) {
-      const msg = stored[i]!;
+    const link = (msg: StoredMessage): void => {
       const stamp = audienceOf(msg.metadata);
-      if (stamp && !stamp.audience.includes(rootAgentName)) continue;
-      const parts = takeStreamedLines(msg).flatMap((l) => l.parts);
-      if (parts.some((part) => part.line.isDestroyed)) clearedRows.add(msg.id);
-      for (const part of parts) {
+      if (stamp && !stamp.audience.includes(rootAgentName)) return;
+      const taken = takeStreamedLines(msg);
+      if (taken.some((l) => l.parts.length === 0 || l.parts.some((part) => part.line.isDestroyed))) clearedRows.add(msg.id);
+      for (const part of taken.flatMap((l) => l.parts)) {
         if (!part.line.isDestroyed) recordLines.push({ line: part.line, id: msg.id, text: part.shown, color: part.color, appended: false });
       }
+    };
+    for (let i = sentFrom - from; i < stored.length; i++) {
+      if (stored[i]!.participant === 'user') link(stored[i]!);
+    }
+    for (let i = stored.length - 1; i >= repliesFrom - from; i--) {
+      if (stored[i]!.participant !== 'user') link(stored[i]!);
     }
     // The scrollback takes old lines down: a linked line it took down leaves
     // the list, its row in clearedRows, so an undo doesn't draw it again.
@@ -961,12 +997,15 @@ export async function runTui(app: AppContext): Promise<void> {
    *  by their words (linkStreamedLines). An undone one with no such line is
    *  drawn below, marked, and taken down again once a redo puts it back in
    *  the window. A row whose lines /clear or the scrollback cap took down
-   *  isn't drawn again. */
+   *  isn't drawn again. While a turn is backgrounded, a reply's row not
+   *  linked yet waits for the turn's return to draw its lines, and is
+   *  marked then (remarkAfterBackground). */
   function remarkHistory() {
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
     linkStreamedLines();
+    remarkAfterBackground = false;
     const undone = undoneIn(cm);
     const kept: RecordLine[] = [];
     for (const record of recordLines) {
@@ -987,9 +1026,11 @@ export async function runTui(app: AppContext): Promise<void> {
     recordLines = kept;
     const drawn = new Set(kept.map((record) => record.id));
     const total = cm.getMessageCount();
-    for (const msg of cm.getMessageWindow(historyRead, total - historyRead, { resolveBlobs: false }).messages) {
-      if (!drawn.has(msg.id) && !clearedRows.has(msg.id) && undone(msg.id)) drawRow(msg, true, true);
-    }
+    cm.getMessageWindow(historyRead, total - historyRead, { resolveBlobs: false }).messages.forEach((msg, i) => {
+      if (drawn.has(msg.id) || clearedRows.has(msg.id) || !undone(msg.id)) return;
+      if (backgrounded && msg.participant !== 'user' && historyRead + i >= linkedThrough) remarkAfterBackground = true;
+      else drawRow(msg, true, true);
+    });
   }
 
   /** Draw the store's branch again. `mount: false` leaves the `_config`
@@ -1825,8 +1866,12 @@ export async function runTui(app: AppContext): Promise<void> {
     }
     if (streaming) endStream();
     // The turn's rows are stored by its end, its last reply's before the
-    // trace: each takes its lines now.
-    linkStreamedLines();
+    // trace: each takes its lines now, marked if a shed took it out while
+    // the turn was backgrounded. An evicted entry of a reply's no row took
+    // then is no row's.
+    if (remarkAfterBackground && !backgrounded) remarkHistory();
+    else linkStreamedLines();
+    if (!backgrounded) evictedLines = evictedLines.filter((l) => l.kind === 'you');
     if (redrawAfterTurn && end.status !== 'attempt-failed') {
       // A branch move's follow-up came while this turn ran on the branch:
       // the branch is drawn now, and the move's answer again below it.
