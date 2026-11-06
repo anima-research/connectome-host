@@ -170,13 +170,16 @@ interface PublishedMessage {
 
 /** How many of a channel's latest publishes are kept to match its next interruption. */
 const PUBLISHED_PER_CHANNEL_MAX = 32;
+/** How many channels' texts (their publishes, and what was voiced there) are
+ *  kept: those of the channels spoken in last. */
+const TEXT_CHANNELS_MAX = 32;
 /** How many of the heard words' characters a published message must start with. */
 const HEARD_PROBE_CHARS = 80;
 
 /** The agents whose activations were announced in a channel since its last
  *  interruption, in the order they were first announced, what each one's
- *  latest such activation said (its text blocks), and whether the channel
- *  has had one. */
+ *  latest such activation said (its text blocks) while the channel's texts
+ *  are kept (TEXT_CHANNELS_MAX), and whether the channel has had one. */
 interface VoicedInChannel {
   agents: Set<string>;
   said: Map<string, Said>;
@@ -218,11 +221,18 @@ export class TtsRelayModule implements Module {
   /** The agents whose activations were announced in each raw channel since
    *  its last interruption: the relay voices a turn's chunks after the turn
    *  has ended, so an interruption can come once its activation is gone, and
-   *  while another agent's has started. Every channel voiced in is kept (a
-   *  small name set each): one let go would name only an agent voiced there
-   *  after it, though an earlier one's audio can still be queued. */
+   *  while another agent's has started. Every channel voiced in keeps its
+   *  voiced agents' names: one let go would name only an agent voiced there
+   *  after it, though an earlier one's audio can still be queued. Each
+   *  agent's latest activation text there is kept only while the channel is
+   *  among the TEXT_CHANNELS_MAX spoken in last (spokeIn). */
   private voicedIn = new Map<string, VoicedInChannel>();
-  private published: PublishedMessage[] = [];
+  /** Each raw channel's latest PUBLISHED_PER_CHANNEL_MAX publishes since its
+   *  last interruption, oldest first, while it is among the
+   *  TEXT_CHANNELS_MAX channels spoken in last. */
+  private published = new Map<string, PublishedMessage[]>();
+  /** The channels whose texts are kept, the one spoken in longest ago first. */
+  private textsKeptFor = new Set<string>();
   /** Orders the publishes and the announced activations. */
   private order = 0;
 
@@ -257,7 +267,8 @@ export class TtsRelayModule implements Module {
     this.client = null;
     this.activations.clear();
     this.voicedIn.clear();
-    this.published = [];
+    this.published.clear();
+    this.textsKeptFor.clear();
     this.ctx = null;
   }
 
@@ -304,11 +315,32 @@ export class TtsRelayModule implements Module {
     }
   }
 
+  /** `channel` was spoken in: a publish there, or an activation's end. Past
+   *  TEXT_CHANNELS_MAX channels, the texts of the one spoken in longest ago
+   *  are let go, its publishes and what was voiced there together, and the
+   *  names of the agents voiced there are kept. So its next interruption
+   *  matches no message and edits nothing, and its note goes by those names
+   *  (speakerOf). A publish still kept never lacks a later activation's text
+   *  (voicedAfter): the texts of a channel go only all at once. */
+  private spokeIn(channel: string): void {
+    this.textsKeptFor.delete(channel);
+    this.textsKeptFor.add(channel);
+    if (this.textsKeptFor.size <= TEXT_CHANNELS_MAX) return;
+    const [oldest] = this.textsKeptFor;
+    this.textsKeptFor.delete(oldest!);
+    this.published.delete(oldest!);
+    this.voicedIn.get(oldest!)?.said.clear();
+  }
+
   private endActivation(agentName: string, reason: 'complete' | 'abort' | 'error'): void {
     const st = this.activations.get(agentName);
     this.activations.delete(agentName);
     if (!st?.announced || !st.rawChannelId) return;
-    this.voicedIn.get(st.rawChannelId)?.said.set(agentName, { text: st.said, order: st.order });
+    const voiced = this.voicedIn.get(st.rawChannelId);
+    if (voiced) {
+      voiced.said.set(agentName, { text: st.said, order: st.order });
+      this.spokeIn(st.rawChannelId);
+    }
     this.client?.emit('activation_end', {
       channelId: st.rawChannelId,
       ...this.identity(agentName),
@@ -321,22 +353,23 @@ export class TtsRelayModule implements Module {
       case 'inference:published': {
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
         // edit targets come from inference:published.
-        this.published.push({
+        const raw = rawChannelId(event.channelId);
+        // Kept by channel: one ring for every channel let another
+        // channel's traffic push out a publish an interruption here can
+        // still match, so a match by two agents read as one agent's.
+        const channel = this.published.get(raw) ?? [];
+        channel.push({
           agentName: event.agentName,
-          rawChannelId: rawChannelId(event.channelId),
+          rawChannelId: raw,
           mcplChannelId: event.channelId,
           messageId: event.messageId,
           text: event.text,
           at: event.timestamp,
           order: ++this.order,
         });
-        // Trimmed by channel: one ring for every channel let another
-        // channel's traffic push out a publish an interruption here can
-        // still match, so a match by two agents read as one agent's.
-        const channel = this.published.filter((r) => r.rawChannelId === rawChannelId(event.channelId));
-        if (channel.length > PUBLISHED_PER_CHANNEL_MAX) {
-          this.published.splice(this.published.indexOf(channel[0]!), 1);
-        }
+        if (channel.length > PUBLISHED_PER_CHANNEL_MAX) channel.shift();
+        this.published.set(raw, channel);
+        this.spokeIn(raw);
         break;
       }
 
@@ -421,7 +454,8 @@ export class TtsRelayModule implements Module {
     // An interruption ends its channel's voicing: what was published there
     // before it isn't heard in a later one.
     this.voicedIn.set(ev.channelId, { agents: new Set(), said: new Map(), interrupted: true });
-    this.published = this.published.filter((r) => r.rawChannelId !== ev.channelId);
+    this.published.delete(ev.channelId);
+    this.textsKeptFor.delete(ev.channelId);
     let edited = false;
 
     if (target?.messageId && ev.spokenText.trim().length > 0) {
@@ -488,8 +522,9 @@ export class TtsRelayModule implements Module {
   }
 
   /** The messages published in the interruption's channel since its previous
-   *  interruption, its latest PUBLISHED_PER_CHANNEL_MAX, whose text starts
-   *  with the heard words' first HEARD_PROBE_CHARS characters, newest first.
+   *  interruption, its latest PUBLISHED_PER_CHANNEL_MAX while it is among the
+   *  TEXT_CHANNELS_MAX channels spoken in last, whose text starts with the
+   *  heard words' first HEARD_PROBE_CHARS characters, newest first.
    *  A publish they don't start is not taken: it would be edited to words it
    *  never said, and its author told of an interruption that cut off another
    *  agent. */
@@ -498,9 +533,10 @@ export class TtsRelayModule implements Module {
     if (spoken.length === 0) return [];
     const probe = spoken.slice(0, HEARD_PROBE_CHARS);
     const matched: PublishedMessage[] = [];
-    for (let i = this.published.length - 1; i >= 0; i--) {
-      const r = this.published[i]!;
-      if (r.rawChannelId === ev.channelId && collapseWs(r.text).startsWith(probe)) matched.push(r);
+    const channel = this.published.get(ev.channelId) ?? [];
+    for (let i = channel.length - 1; i >= 0; i--) {
+      const r = channel[i]!;
+      if (collapseWs(r.text).startsWith(probe)) matched.push(r);
     }
     return matched;
   }

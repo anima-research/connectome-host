@@ -26,11 +26,11 @@ function relayWith(answer: Record<string, unknown>, opts: { agents?: string[]; s
   const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
   const inner = module as unknown as {
     ctx: ModuleContext;
-    published: Array<{ agentName: string; rawChannelId: string; mcplChannelId: string; messageId?: string; text: string; at: number }>;
+    onTraceEvent(event: Record<string, unknown>): void;
     handleInterruption(ev: Interruption): Promise<void>;
   };
   inner.ctx = ctx;
-  inner.published.push({ agentName: opts.speaker ?? 'fable', rawChannelId: '42', mcplChannelId: 'discord:42', messageId: 'm-1', text: 'The ferry leaves at noon, and the bridge is closed.', at: 1 });
+  inner.onTraceEvent({ timestamp: 1, type: 'inference:published', agentName: opts.speaker ?? 'fable', serverId: 'discord', channelId: 'discord:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-1' });
   const interrupt = () => inner.handleInterruption({ channelId: '42', spokenText: 'The ferry leaves at noon', reason: 'user_speech', timestamp: 2 });
   return { notes, noteFor, calls, interrupt };
 }
@@ -209,12 +209,20 @@ function relayOnTraces(agents: string[] = ['fable']) {
     ctx: ModuleContext;
     onTraceEvent(event: Record<string, unknown>): void;
     handleInterruption(ev: Interruption): Promise<void>;
+    published: Map<string, unknown[]>;
+    voicedIn: Map<string, { agents: Set<string>; said: Map<string, unknown> }>;
   };
   inner.ctx = ctx;
   const trace = (event: Record<string, unknown>) => inner.onTraceEvent({ timestamp: 1, ...event });
   const interrupt = (spokenText: string, channelId = '42') => inner.handleInterruption({ channelId, spokenText, reason: 'user_speech', timestamp: 2 });
   const edited = () => calls.map((c) => (c.input as { messageId: string }).messageId);
-  return { trace, interrupt, edited, notes };
+  /** The channels the module keeps what was voiced in, publishes in, and the voiced agents' names of. */
+  const kept = {
+    said: () => [...inner.voicedIn].filter(([, v]) => v.said.size > 0).map(([channel]) => channel),
+    published: () => [...inner.published].filter(([, rows]) => rows.length > 0).map(([channel]) => channel),
+    named: () => [...inner.voicedIn].filter(([, v]) => v.agents.size > 0).map(([channel]) => channel),
+  };
+  return { trace, interrupt, edited, notes, kept };
 }
 
 describe('what an interruption may edit', () => {
@@ -412,5 +420,49 @@ describe("heard words that start both a published message and what another agent
     expect(edited()).toEqual([]);
     expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
     expect(logged).toContain('the interruption in 42 is told to no agent: the heard words start a message published by clerk and what mira voiced in that channel after it');
+  });
+});
+
+// Host #485 bot review wave 4, finding 14: each channel kept its latest 32
+// publishes and each agent's latest activation text, for every channel
+// spoken in since its last interruption, so a resident's footprint grew
+// with every channel it spoke in. The texts are kept for the 32 channels
+// spoken in last; a channel's agents' names are kept whatever, since a
+// channel's entry let go whole would name only an agent voiced there after
+// it (host #485 bot review wave 2, finding 18).
+describe('the texts kept to match an interruption', () => {
+  const speak = (trace: (event: Record<string, unknown>) => void, agentName: string, channel: string, text: string, messageId: string) => {
+    trace({ type: 'inference:started', agentName, channelId: `g:${channel}` });
+    trace({ type: 'inference:tokens', agentName, channelId: `g:${channel}`, blockIndex: 0, blockType: 'text', content: text });
+    trace({ type: 'inference:published', agentName, serverId: 'discord', channelId: `g:${channel}`, inferenceId: `i-${messageId}`, index: 0, text, messageId });
+    trace({ type: 'inference:completed', agentName });
+  };
+
+  test('are those of the 32 channels spoken in last, however many channels are spoken in, and every channel keeps the names of the agents voiced there', () => {
+    const { trace, kept } = relayOnTraces(['clerk', 'mira']);
+    for (let i = 0; i < 100; i++) speak(trace, i % 2 ? 'mira' : 'clerk', String(100 + i), `Reply ${i}.`, `m-${i}`);
+    const last32 = Array.from({ length: 32 }, (_, i) => String(168 + i));
+    expect(kept.said().sort()).toEqual(last32);
+    expect(kept.published().sort()).toEqual(last32);
+    expect(kept.named()).toHaveLength(100);
+  });
+
+  test('of a channel spoken in before those are let go: its interruption edits nothing, and its note is for the agent voiced there', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    speak(trace, 'clerk', '42', 'Yes, the ferry leaves at noon.', 'm-clerk');
+    for (let i = 0; i < 32; i++) speak(trace, 'mira', String(100 + i), `Elsewhere ${i}.`, `m-${i}`);
+    const logged = await logOf(() => interrupt('Yes, the ferry'));
+    expect(edited()).toEqual([]);
+    expect(logged).toContain('no published message matched the interruption');
+    expect(notes).toEqual([{ text: '[voice] Your reply was interrupted by user speech after: "Yes, the ferry" (the posted message could not be trimmed)', forAgent: 'clerk' }]);
+  });
+
+  test("of a channel spoken in again are kept: its publish is still edited, with 31 other channels spoken in since", async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    speak(trace, 'clerk', '42', 'Yes, the ferry leaves at noon.', 'm-clerk');
+    for (let i = 0; i < 31; i++) speak(trace, 'mira', String(100 + i), `Elsewhere ${i}.`, `m-${i}`);
+    await interrupt('Yes, the ferry');
+    expect(edited()).toEqual(['m-clerk']);
+    expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
 });

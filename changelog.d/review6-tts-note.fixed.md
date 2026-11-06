@@ -16,10 +16,13 @@
   voicing. A message published before that was matched again, so a later
   reply that opened with the same words had it edited again.
 - tts-relay keeps each channel's latest 32 publishes to match an
-  interruption there. It kept the latest 32 of every channel together, so
-  another channel's traffic could push out a message by one agent, and
-  heard words that started it and another agent's message were taken as
-  the other agent's alone.
+  interruption there, and what each agent last voiced there, for the 32
+  channels it last published in or ended an activation in. It kept the
+  latest 32 of every channel together, so another channel's traffic could
+  push out a message by one agent, and heard words that started it and
+  another agent's message were taken as the other agent's alone. In a
+  channel past those 32 an interruption edits nothing, and its note is for
+  the agent voiced there when that is one agent.
 - tts-relay neither edits a published message nor writes a note when the
   heard words start it and also what another agent voiced in the channel
   after it was published (that agent's live activation there, or its
