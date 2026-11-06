@@ -67,7 +67,8 @@ const server = Bun.serve({
     const url = new URL(request.url);
     const [, choice, ...rest] = url.pathname.split('/');
     if (request.method !== 'POST' || rest.join('/') !== 'v1/messages' || !request.headers.get('x-api-key')
-      || request.headers.get('anthropic-version') !== '2023-06-01') {
+      || request.headers.get('anthropic-version') !== '2023-06-01'
+      || request.headers.get('content-type') !== 'application/json') {
       return new Response('not the Messages API', { status: 400 });
     }
     const key = request.headers.get('x-api-key');
