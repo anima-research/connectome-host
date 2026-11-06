@@ -1726,7 +1726,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   });
 
   test('a provider key the provider refuses is not stored, leaving what was stored before', async () => {
-    for (const [name, provider, status] of [['ANTHROPIC_API_KEY', 'Anthropic', 401], ['OPENROUTER_API_KEY', 'OpenRouter', 403]] as const) {
+    for (const [name, provider, status] of [['OPENAI_API_KEY', 'OpenAI', 401], ['ANTHROPIC_API_KEY', 'Anthropic', 401], ['OPENROUTER_API_KEY', 'OpenRouter', 403]] as const) {
       const made = install({
         envFile: `${name}="the-old-key"\n`,
         asker: typed('a-refused-key'),
@@ -1734,7 +1734,9 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       });
       const result = await askSecret(made.module, { name, purpose: 'a key' });
       expect(result.success).toBe(false);
-      expect(result.error).toBe(`${provider} refused this key (${status}), so nothing was stored as ${name}, and what was stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, then call again.`);
+      expect(result.error).toBe(name === 'OPENROUTER_API_KEY'
+        ? `${provider} refused this key (${status}), so nothing was stored as ${name}, and what was stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, then call again.`
+        : `${provider} refused this key (${status}) when setup asked it for its list of models, so nothing was stored as ${name}, and what was stored as it before stays as it was. The key may be wrong or revoked, or it may not be allowed to list models, or to be used from where this machine is. Tell the person, and ask them to check what the key is allowed, or to copy it again, or to make a new one, then call again.`);
       expect(readEnvFile(join(made.dir, '.env')).get(name)).toBe('the-old-key');
       expect(made.shown).toEqual([`Checking it with ${provider}.`, `${provider} refused it (${status}): nothing was stored.`]);
       expect(said(made, result)).not.toContain('a-refused-key');
@@ -1919,7 +1921,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(other.error).toBe('setup--check_model checks models for the keys stored as OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, not AWS_ACCESS_KEY_ID: Bedrock\'s requests need AWS\'s signing, Codex runs on a ChatGPT login, and an openai-compatible endpoint is the recipe\'s.');
     writeFileSync(join(made.dir, '.env'), 'ANTHROPIC_API_KEY=sk-ant-old\n', { mode: 0o600 });
     const refused = await checkModel(made.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(refused.error).toBe('Anthropic refused the key stored as ANTHROPIC_API_KEY (401), so whether it offers claude-opus-5-5 isn\'t known. Ask the person for a new key with setup--ask_secret.');
+    expect(refused.error).toBe('Anthropic refused the key stored as ANTHROPIC_API_KEY (401) when setup asked it for its list of models, so whether it offers claude-opus-5-5 isn\'t known. The key may be wrong or revoked, or it may not be allowed to list models, or to be used from where this machine is. Ask the person to check what the key is allowed, or for a new key with setup--ask_secret.');
     expect(called).toBe(1);
   });
 });

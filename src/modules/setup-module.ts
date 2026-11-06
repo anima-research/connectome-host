@@ -618,10 +618,14 @@ export class SetupModule implements Module {
       }
       key = await this.checkKey(name, value, env, hide);
       if (key.kind === 'refused') {
-        return failed(`${provider.provider} refused this key (${key.status}), so nothing was stored as ${name}, ` +
-          'and what was ' +
-          'stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, ' +
-          'then call again.');
+        return failed(name === 'OPENROUTER_API_KEY'
+          ? `${provider.provider} refused this key (${key.status}), so nothing was stored as ${name}, and what was ` +
+            'stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, ' +
+            'then call again.'
+          : `${provider.provider} refused this key (${key.status}) when setup asked it for its list of models, so ` +
+            `nothing was stored as ${name}, and what was stored as it before stays as it was. ${LISTING_REFUSED} ` +
+            'Tell the person, and ask them to check what the key is allowed, or to copy it again, or to make a new ' +
+            'one, then call again.');
       }
       if (key.kind === 'unsendable') {
         return failed(`What the person typed for ${name} holds a character a request header can't carry, so it can't ` +
@@ -706,8 +710,9 @@ export class SetupModule implements Module {
     if (listed.kind !== 'accepted') {
       this.config.show(answerLine(provider, listed, '', 'whether it offers the model isn\'t known'));
       if (listed.kind === 'refused') {
-        return failed(`${provider} refused the key stored as ${name} (${listed.status}), so whether it offers ${model} ` +
-          'isn\'t known. Ask the person for a new key with setup--ask_secret.');
+        return failed(`${provider} refused the key stored as ${name} (${listed.status}) when setup asked it for its ` +
+          `list of models, so whether it offers ${model} isn't known. ${LISTING_REFUSED} Ask the person to check what ` +
+          'the key is allowed, or for a new key with setup--ask_secret.');
       }
       return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ` +
         `${keyNote(name, listed).replace(/^, but it isn't known to work: /, '').replace(/\.$/, '')}.`);
@@ -746,6 +751,9 @@ function tokenLine(token: TokenCheck): string {
     case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
   }
 }
+
+const LISTING_REFUSED = 'The key may be wrong or revoked, or it may not be allowed to list models, or to be used ' +
+  'from where this machine is.';
 
 function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted: string, refusedThen: string): string {
   switch (answer.kind) {
