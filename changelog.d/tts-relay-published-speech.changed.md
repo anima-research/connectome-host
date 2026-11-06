@@ -14,3 +14,11 @@
   provider's wait, no longer ends the voice client's activation, so it no
   longer cancels the audio of what the turn had already published. A turn
   the framework gives up on still ends it as an error.
+- When the TTS relay module stops with an activation still open, such as
+  a turn held after a failed model call, it now sends that activation's
+  `activation_end`, as an abort, before it disconnects, if it's connected
+  to the relay. The relay keeps no activation state, so Melodeus went on
+  showing the agent as thinking after the host had gone. On an abort,
+  Melodeus cancels the speech it is still fetching for the host, so the
+  end of a message the turn published may go unvoiced. The message is
+  still in its channel as text.

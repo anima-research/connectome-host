@@ -210,9 +210,9 @@ export class TtsRelayModule implements Module {
   async stop(): Promise<void> {
     this.offTrace?.();
     this.offTrace = null;
+    for (const agentName of [...this.activations.keys()]) this.endActivation(agentName, 'abort');
     this.client?.disconnect();
     this.client = null;
-    this.activations.clear();
     this.published = [];
     this.unvoicedServers.clear();
     this.ctx = null;

@@ -136,6 +136,21 @@ describe('a failed attempt', () => {
   }, 30_000);
 });
 
+describe('a module that stops', () => {
+  test('ends each open activation as an abort before it disconnects, a turn held after a failed attempt among them', async () => {
+    const { received, emit, module } = await harness();
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:failed', error: 'overloaded' });
+    emit({ type: 'inference:started', channelId: 'discord:guild:456', agentName: 'spawn-research-1' });
+    await waitFor(() => received.filter((m) => m.type === 'activation_start').length === 2, 'both activation starts');
+    await module.stop();
+    await waitFor(() => received.filter((m) => m.type === 'activation_end').length === 2, 'both activation ends');
+    expect(received.filter((m) => m.type === 'activation_end').map((m) => [m.channelId, m.username, m.reason]).sort()).toEqual([
+      ['123', 'Wren', 'abort'], ['456', 'spawn-research-1', 'abort'],
+    ]);
+  }, 30_000);
+});
+
 describe('what the relay is given to voice', () => {
   test("each message the agent published, as a whole text block on its channel; none of what the model wrote", async () => {
     const { received, emit } = await harness();
