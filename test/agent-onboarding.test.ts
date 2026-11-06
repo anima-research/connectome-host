@@ -165,9 +165,13 @@ describe('what the guide names ships, or is the install\'s own', () => {
     }
   });
 
-  it('gives each shipped script it runs only the options that script takes', () => {
-    const runs = [...GUIDE.replace(/\\\n\s*/g, ' ').matchAll(new RegExp(String.raw`${SCRIPT_RUN} ([^\n]+)`, 'g'))];
+  it('reads every line that runs a shipped script as a run, and gives each script only the options it takes', () => {
+    const text = GUIDE.replace(/\\\n\s*/g, ' ');
+    const runs = [...text.matchAll(new RegExp(String.raw`${SCRIPT_RUN} ([^\n]+)`, 'g'))];
     expect(runs.length).toBeGreaterThan(0);
+    for (const line of text.split('\n').filter((each) => each.includes('bun ') && each.includes('<host>/scripts/'))) {
+      expect({ line, read: new RegExp(SCRIPT_RUN).test(line) }).toEqual({ line, read: true });
+    }
     for (const [, script, rest] of runs) {
       const source = readFileSync(join(ROOT, script!), 'utf-8');
       for (const option of rest!.match(/--\w[\w-]*(?:=\S*)?/g) ?? []) {
