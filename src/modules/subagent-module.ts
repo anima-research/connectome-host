@@ -581,6 +581,16 @@ export function toolDifferences(extra: readonly string[], missing: readonly stri
   return parts.join(', and ');
 }
 
+function proseRoutingNotInherited(launch: SubagentLaunch): string | undefined {
+  const routing = launch.proseRouting;
+  const parentRouting = launch.parent?.proseRouting;
+  if (routing === undefined || parentRouting === undefined) return undefined;
+  const allowed = launch.tools.allowed;
+  const withHelp = allowed === 'all' || (routing === 'explicit' && allowed.includes('prose_help'));
+  return `- Prose routing: ${routing}, since ${launch.kind === 'fork' ? 'the parent' : 'the caller'}'s is ${parentRouting} ` +
+    `and a subagent has no lock of its own: ${proseRoutingEffect(routing, withHelp)}.`;
+}
+
 export function describeSubagentLaunch(launch: SubagentLaunch): string {
   const fork = launch.kind === 'fork';
   const p = launch.parent;
@@ -697,20 +707,15 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
   const shownHelp = explicit && allowed !== 'all' && allowed.includes('prose_help');
 
   const routing = launch.proseRouting;
+  const routingNotInherited = proseRoutingNotInherited(launch);
   settings.push(routing === undefined
     ? {
         name: 'prose routing',
         ...(p ? { uncompared: 'at-start' as const } : {}),
         line: "- Prose routing: not set by this launch, so the framework's default applies, stated when the stream starts.",
       }
-    : p?.proseRouting !== undefined && p.proseRouting !== routing
-      ? {
-          // Not inherited: a locked parent's subagent has no lock of its own (subagentProseRouting).
-          name: 'prose routing',
-          same: false,
-          line: `- Prose routing: ${routing}, since ${them}'s is ${p.proseRouting} and a subagent has no lock of its own: ` +
-            `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
-        }
+    : routingNotInherited !== undefined
+      ? { name: 'prose routing', same: false, line: routingNotInherited }
       : {
           name: 'prose routing',
           ...(p ? { same: true } : {}),
@@ -2296,11 +2301,12 @@ export class SubagentModule implements Module {
     };
   }
 
-  /** The fork's result head: #213's intention framing, or under `orientation: 'none'` the bare fact that this stream is the fork. */
+  /** The fork's result head: #213's intention framing, or under `orientation: 'none'` the bare fact that this stream is the fork, with its prose routing where that isn't its parent's. */
   private forkHead(depth: number, orientation: string): string {
-    return this.config.orientation === 'none'
-      ? `You are the forked stream. Your intention for this stream follows.`
-      : intentionFramedHead(depth, this.maxDepth, orientation);
+    if (this.config.orientation !== 'none') return intentionFramedHead(depth, this.maxDepth, orientation);
+    return orientation
+      ? `You are the forked stream.\n${orientation}\nYour intention for this stream follows.`
+      : `You are the forked stream. Your intention for this stream follows.`;
   }
 
   /** The fork call's result as the fork reads it: #213's intention-framed result, or under `orientation: 'none'` the head and the task alone. */
@@ -2384,7 +2390,7 @@ export class SubagentModule implements Module {
     },
     inherited: SubagentStart['inherited'],
   ): string {
-    if (this.config.orientation === 'none') return '';
+    if (this.config.orientation === 'none') return launch.kind === 'fork' ? proseRoutingNotInherited(launch) ?? '' : '';
     const framework = this.getFramework();
     let parentTools: string[] | undefined;
     let parentAgentSettings: AgentSettings | undefined;
