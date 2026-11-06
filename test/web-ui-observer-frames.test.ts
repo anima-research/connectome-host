@@ -659,6 +659,38 @@ describe('what each client is sent', () => {
     }
   });
 
+  // Host #485 bot review wave 3, finding 16: the transcript joined every
+  // run of rows with one bodyGroupId, so two ingestions of one text were one
+  // entry, by the first one's first part, and an undo of the second marked
+  // nothing, or of the first both.
+  test('two ingestions of one text, each stored in parts, are two entries, and an undo of the second marks it alone', async () => {
+    const part = (id: string, text: string, shardIndex: number) =>
+      ({ id, participant: 'user', content: [{ type: 'text', text }], bodyGroupId: 'g1', shardIndex });
+    transcript = [
+      part('p0', 'The ferry leaves ', 0), part('p1', 'at noon.', 1),
+      part('q0', 'The ferry leaves ', 0), part('q1', 'at noon.', 1),
+    ];
+    undone = new Set(['q0', 'q1']);
+    try {
+      const c = await everyone();
+      type Entry = { id?: string; index?: number; text?: string; undone?: boolean };
+      const welcome = c.operator.framesOf('welcome').at(-1)!.messages as Entry[];
+      expect(welcome.map((e) => [e.id, e.index, e.text, e.undone ?? false])).toEqual([
+        ['p0', 0, 'The ferry leaves at noon.', false],
+        ['q0', 2, 'The ferry leaves at noon.', true],
+      ]);
+      // The marks frame names q's parts; the page marks the entry q0 carries.
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 2 });
+      await host.fence([c.operator]);
+      const rows: MarkableRow[] = welcome.map((e) => ({ storeId: e.id, index: e.index }));
+      applyUndoneMarksTo(rows, c.operator.framesOf('undone-marks').at(-1) as never);
+      expect(rows.map((r) => [r.storeId, r.undone ?? false])).toEqual([['p0', false], ['q0', true]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
   // HOST-1: the frame named undone rows only in the welcome's tail (the
   // record's last 200 rows), and a page leaves a row before `fromIndex` as
   // it was. The agent's reply with 200 rows of others' traffic stored after

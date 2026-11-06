@@ -19,6 +19,7 @@ import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { workspaceReadFields } from '../workspace-read-result.js';
 import { storedInjectionMarkOf } from '@animalabs/agent-framework';
+import { continuesBody } from '@animalabs/context-manager';
 import { storedInjectionLabel } from '../stored-injection.js';
 import { speakerOf } from '../speaker.js';
 import type { ServerWebSocket } from 'bun';
@@ -3328,12 +3329,13 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
       i++;
       continue;
     }
+    // One body's shards, read as context-manager reads them (continuesBody):
+    // the same text ingested again carries the same bodyGroupId, and starts
+    // its shards again, as another message.
     const runStart = i;
-    while (i < messages.length && messages[i]!.bodyGroupId === m.bodyGroupId) i++;
-    const shards = messages.slice(runStart, i)
-      .map((shard, k) => ({ shard, k }))
-      .sort((a, b) => (a.shard.shardIndex ?? a.k) - (b.shard.shardIndex ?? b.k))
-      .map(({ shard }) => shard);
+    i++;
+    while (i < messages.length && continuesBody(messages[i - 1], messages[i])) i++;
+    const shards = messages.slice(runStart, i);
     // context-manager's shards are substrings of one body that join back with
     // no separator, so their text is merged without one.
     const mergedContent: unknown[] = [];
