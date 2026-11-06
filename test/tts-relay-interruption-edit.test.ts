@@ -9,9 +9,10 @@ import { TtsRelayModule } from '../src/modules/tts-relay-module.js';
 type Interruption = { channelId: string; spokenText: string; reason: 'user_speech' | 'manual' | 'timeout'; timestamp: number };
 
 /** The module on a context whose callTool answers `answer`, with one published
- *  message posted to Discord channel 42 by `speaker`, and the notes it gives
- *  the agent, each with the agent it was written for. */
-function relayWith(answer: Record<string, unknown>, opts: { agents?: string[]; speaker?: string } = {}) {
+ *  message posted to channel 42 of the server `editServerId` names (Discord
+ *  by default) by `speaker`, and the notes it gives the agent, each with the
+ *  agent it was written for. */
+function relayWith(answer: Record<string, unknown>, opts: { agents?: string[]; speaker?: string; editServerId?: string } = {}) {
   const notes: string[] = [];
   const noteFor: Array<string | undefined> = [];
   const calls: Array<{ name: string; input: unknown }> = [];
@@ -23,14 +24,15 @@ function relayWith(answer: Record<string, unknown>, opts: { agents?: string[]; s
     },
     getAgents: () => (opts.agents ?? ['fable']).map((name) => ({ name })),
   } as unknown as ModuleContext;
-  const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
+  const server = opts.editServerId ?? 'discord';
+  const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't', ...(opts.editServerId !== undefined ? { editServerId: opts.editServerId } : {}) });
   const inner = module as unknown as {
     ctx: ModuleContext;
     onTraceEvent(event: Record<string, unknown>): void;
     handleInterruption(ev: Interruption): Promise<void>;
   };
   inner.ctx = ctx;
-  inner.onTraceEvent({ timestamp: 1, type: 'inference:published', agentName: opts.speaker ?? 'fable', serverId: 'discord', channelId: 'discord:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-1' });
+  inner.onTraceEvent({ timestamp: 1, type: 'inference:published', agentName: opts.speaker ?? 'fable', serverId: server, channelId: `${server}:42`, inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-1' });
   const interrupt = () => inner.handleInterruption({ channelId: '42', spokenText: 'The ferry leaves at noon', reason: 'user_speech', timestamp: 2 });
   return { notes, noteFor, calls, interrupt };
 }
@@ -47,6 +49,12 @@ describe('an interruption\'s edit of the posted message', () => {
     const { notes, interrupt } = relayWith({ success: true, data: [{ type: 'text', text: 'edited' }] });
     await interrupt();
     expect(notes).toEqual(['[voice] Your message was interrupted by user speech — only this much was voiced, and the posted message was trimmed to match: "The ferry leaves at noon"']);
+  });
+
+  test('with editServerId set, the edit goes to that server\'s edit_message', async () => {
+    const { calls, interrupt } = relayWith({ success: true }, { editServerId: 'discord-main' });
+    await interrupt();
+    expect(calls.map((c) => c.name)).toEqual(['mcpl--discord-main--edit_message']);
   });
 });
 
@@ -286,6 +294,27 @@ describe('what an interruption may edit', () => {
     trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 1, text: 'Take the coast road instead.', messageId: 'm-second' });
     await interrupt('The ferry leaves at noon');
     expect(edited()).toEqual(['m-first']);
+  });
+
+  // Heard words that start no published message edit nothing here, so the
+  // message on the other server starts them too, and is newer.
+  test('a message published to another server is passed over', async () => {
+    const { trace, interrupt, edited } = relayOnTraces();
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'zulip', channelId: 'zulip:stream:42', inferenceId: 'i1', index: 1, text: 'The ferry leaves at noon, and the bridge is open.', messageId: 'm-zulip' });
+    await interrupt('The ferry leaves at noon');
+    expect(edited()).toEqual(['m-prose']);
+  });
+
+  // A message with no words can't start any heard words, so what shows it
+  // passed over is that it isn't kept as an edit target.
+  test('a published message with no words is passed over', async () => {
+    const { trace, interrupt, edited, kept } = relayOnTraces();
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:44', inferenceId: 'i1', index: 1, text: '\n \t\n', messageId: 'm-blank' });
+    expect(kept.published()).toEqual(['42']);
+    await interrupt('The ferry leaves at noon');
+    expect(edited()).toEqual(['m-prose']);
   });
 
   test('with only routed announcements in the channel, nothing is edited', async () => {

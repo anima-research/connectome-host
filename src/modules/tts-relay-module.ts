@@ -29,8 +29,6 @@ export interface TtsRelayModuleConfig {
   notifyOnInterruption?: boolean;
 }
 
-type BlockType = 'text' | 'thinking' | 'tool_call' | 'tool_result';
-
 interface InterruptionEvent {
   channelId: string; // raw Discord snowflake
   spokenText: string;
@@ -149,8 +147,7 @@ interface ActivationState {
   mcplChannelId?: string;
   rawChannelId?: string;
   announced: boolean;
-  blocks: Map<number, string>;
-  /** Its text blocks' tokens so far, which the relay voices. */
+  /** Its text blocks' tokens so far. */
   said: string;
   /** Where its announcement fell, once announced. */
   order: number;
@@ -219,7 +216,7 @@ export class TtsRelayModule implements Module {
 
   private activations = new Map<string, ActivationState>();
   /** The agents whose activations were announced in each raw channel since
-   *  its last interruption: the relay voices a turn's chunks after the turn
+   *  its last interruption: the relay voices a turn's messages after the turn
    *  has ended, so an interruption can come once its activation is gone, and
    *  while another agent's has started. Every channel voiced in keeps its
    *  voiced agents' names: one let go would name only an agent voiced there
@@ -235,6 +232,7 @@ export class TtsRelayModule implements Module {
   private textsKeptFor = new Set<string>();
   /** Orders the publishes and the announced activations. */
   private order = 0;
+  private unvoicedServers = new Set<string>();
 
   constructor(private readonly config: TtsRelayModuleConfig) {}
 
@@ -263,12 +261,13 @@ export class TtsRelayModule implements Module {
   async stop(): Promise<void> {
     this.offTrace?.();
     this.offTrace = null;
+    for (const agentName of [...this.activations.keys()]) this.endActivation(agentName, 'abort');
     this.client?.disconnect();
     this.client = null;
-    this.activations.clear();
     this.voicedIn.clear();
     this.published.clear();
     this.textsKeptFor.clear();
+    this.unvoicedServers.clear();
     this.ctx = null;
   }
 
@@ -291,7 +290,7 @@ export class TtsRelayModule implements Module {
   private activation(agentName: string): ActivationState {
     let st = this.activations.get(agentName);
     if (!st) {
-      st = { announced: false, blocks: new Map(), said: '', order: 0 };
+      st = { announced: false, said: '', order: 0 };
       this.activations.set(agentName, st);
     }
     return st;
@@ -351,6 +350,14 @@ export class TtsRelayModule implements Module {
   private onTraceEvent(event: TraceEvent): void {
     switch (event.type) {
       case 'inference:published': {
+        // The relay takes one server's raw channel ids, the server its edits go to.
+        // Another server's channel id can cut down to the same raw id.
+        if (event.serverId !== (this.config.editServerId ?? 'discord')) {
+          this.logUnvoiced(event.serverId);
+          break;
+        }
+        const content = event.text.replace(/^\n+/, '');
+        if (!content.trim()) break;
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
         // edit targets come from inference:published.
         const raw = rawChannelId(event.channelId);
@@ -370,6 +377,18 @@ export class TtsRelayModule implements Module {
         if (channel.length > PUBLISHED_PER_CHANNEL_MAX) channel.shift();
         this.published.set(raw, channel);
         this.spokeIn(raw);
+        // Only published prose is voiced: agent-framework's contract for a
+        // relay that voices the agent's prose. Each message is a whole text
+        // block, so the client voices its last sentence when it's posted.
+        const block = {
+          channelId: raw,
+          ...this.identity(event.agentName),
+          blockIndex: event.index,
+          blockType: 'text' as const,
+        };
+        this.client?.emit('block_start', block);
+        this.client?.emit('chunk', { ...block, text: content, visible: true });
+        this.client?.emit('block_complete', { ...block, content });
         break;
       }
 
@@ -380,41 +399,20 @@ export class TtsRelayModule implements Module {
         break;
       }
 
+      // The model's text, thinking and tool calls as written aren't what was
+      // published (an explicit-mode aside, a `>>` prefix, a held draft), so
+      // none of them is sent to the relay. The token traces give the turn's
+      // channel, and its text blocks' tokens go to `said`.
       case 'inference:tokens': {
         const st = this.activation(event.agentName);
         this.adoptChannel(st, event.agentName, traceChannelId(event));
-        if (!st.rawChannelId) break;
-        st.blocks.set(event.blockIndex, (st.blocks.get(event.blockIndex) ?? '') + event.content);
-        if (event.blockType === 'text') st.said += event.content;
-        this.client?.emit('chunk', {
-          channelId: st.rawChannelId,
-          ...this.identity(event.agentName),
-          text: event.content,
-          blockIndex: event.blockIndex,
-          blockType: event.blockType as BlockType,
-          visible: event.blockType === 'text',
-        });
+        if (st.rawChannelId && event.blockType === 'text') st.said += event.content;
         break;
       }
 
       case 'inference:content_block': {
         const st = this.activation(event.agentName);
         this.adoptChannel(st, event.agentName, traceChannelId(event));
-        if (!st.rawChannelId) break;
-        const base = {
-          channelId: st.rawChannelId,
-          ...this.identity(event.agentName),
-          blockIndex: event.blockIndex,
-          blockType: event.blockType as BlockType,
-        };
-        if (event.phase === 'block_start') {
-          this.client?.emit('block_start', base);
-        } else {
-          // inference:content_block carries no content.
-          const content = st.blocks.get(event.blockIndex) ?? '';
-          st.blocks.delete(event.blockIndex);
-          this.client?.emit('block_complete', { ...base, content });
-        }
         break;
       }
 
@@ -425,7 +423,10 @@ export class TtsRelayModule implements Module {
       case 'inference:aborted':
         this.endActivation(event.agentName, 'abort');
         break;
-      case 'inference:failed':
+      // inference:failed ends one attempt, not the turn: the framework then
+      // retries it, holds it for a provider's wait, or ends it with
+      // inference:exhausted or inference:aborted. Ending the activation there
+      // would cancel the client's audio of what the turn already published.
       case 'inference:exhausted':
         this.endActivation(event.agentName, 'error');
         break;
@@ -434,6 +435,17 @@ export class TtsRelayModule implements Module {
       default:
         break;
     }
+  }
+
+  private logUnvoiced(serverId: string): void {
+    if (this.unvoicedServers.has(serverId)) return;
+    this.unvoicedServers.add(serverId);
+    const voiced = this.config.editServerId === undefined
+      ? "'discord', the default when modules.ttsRelay.editServerId is unset"
+      : `'${this.config.editServerId}', which modules.ttsRelay.editServerId names`;
+    console.error(
+      `[tts-relay] messages published on server '${serverId}' aren't voiced: the relay voices only server ${voiced}. Later ones on '${serverId}' aren't logged.`,
+    );
   }
 
   private async handleInterruption(ev: InterruptionEvent): Promise<void> {
