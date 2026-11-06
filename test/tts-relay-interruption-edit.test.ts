@@ -76,7 +76,8 @@ describe('whom the interruption note is for', () => {
   });
 
   // With no published message in the interruption's channel, the speaker is
-  // read from the activations: the relay's own record of who it voiced where.
+  // read from the agents voiced there: the relay's own record of whose
+  // activations it announced where, and whose messages it voiced where.
   describe('with no published message matched', () => {
     /** The module on traces alone, with `agents` registered, and the notes it writes, each with the agent it was written for. */
     function relayOnActivations(agents: string[]) {
@@ -135,8 +136,9 @@ describe('whom the interruption note is for', () => {
       expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and clerk, mira were each voiced in that channel');
     });
 
-    // The relay voices a turn's chunks after the turn has ended, so the agent
-    // whose activation ended may still be the one heard when another starts.
+    // The relay voices a turn's messages after the turn has ended, so the
+    // agent whose activation ended may still be the one heard when another
+    // starts.
     test('none, and no note is written, when the heard words are empty and both the agent whose activation ended and the one started after it were voiced in its channel', async () => {
       const { notes, started, ended, interrupt } = relayOnActivations(['clerk', 'mira']);
       started('clerk', 'g:42');
@@ -163,7 +165,7 @@ describe('whom the interruption note is for', () => {
 
     // Host #485 bot review wave 4, finding 3: the interruption's reset left
     // out clerk's activation, live then, so once it ended and mira started,
-    // mira was told, though the relay voices clerk's chunks after the
+    // mira was told, though the relay voices what clerk publishes after the
     // interruption too.
     test("none, and no note is written, when the agent live at the channel's previous interruption has ended there and another started since", async () => {
       const { notes, started, ended, interrupt } = relayOnActivations(['clerk', 'mira']);
@@ -381,9 +383,11 @@ describe('heard words that start more than one published message', () => {
   });
 });
 
-// The note goes to the author of the published message the heard words start,
-// else to the agent voicing in the interruption's channel; a publish the words
-// don't start is neither edited nor taken as the speaker.
+// The note goes to the author of the published messages the heard words
+// start, else to the agent voiced in the interruption's channel, when one
+// agent can be named; otherwise no note is written. A publish the words
+// don't start is never edited, and its author is told only as the one agent
+// voiced in the channel.
 describe('heard words that start no published message', () => {
   const published = { type: 'inference:published', agentName: 'clerk', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-clerk' };
 
