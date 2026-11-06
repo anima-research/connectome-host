@@ -780,6 +780,11 @@ describe('what each client is sent', () => {
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
       host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['r4'], reason: 'shed' });
+      // Reads are watched past the traces' microtasks and a timer's turn, so
+      // one deferred past the trace is seen too (host #485 bot review wave 3,
+      // finding 29). The fence can't be the end: it welcomes each client
+      // again, which reads the record's tail.
+      await new Promise((resolve) => setTimeout(resolve, 20));
       onRead = undefined;
       expect(reads).toEqual([]);
       await host.fence([dashboard, watch]);
