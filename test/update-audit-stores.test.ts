@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AgentFramework, resolveTimeZone } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
 import { AutobiographicalStrategy, ContextManager } from '@animalabs/context-manager';
@@ -39,7 +40,9 @@ const CONTEXT_MANAGER = ((): string => {
   while (!existsSync(join(dir, 'package.json')) && dirname(dir) !== dir) dir = dirname(dir);
   return join(dir, (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { main: string }).main);
 })();
-const REMEDY = 'docs/DEPLOYMENTS.md\'s "Crossed summaries: auditing and repairing a store", in the host\'s package, says what a store with crossed summaries needs.';
+const DEPLOYMENTS = fileURLToPath(new URL('../docs/DEPLOYMENTS.md', import.meta.url));
+const REPAIR_SECTION = `${DEPLOYMENTS}'s "Crossed summaries: auditing and repairing a store"`;
+const REMEDY = `${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 const MODEL_CALLED = 'its strategy called a model while opening it, and the audit gives a strategy none: only a start of this release can answer for this store';
 
 let root: string;
@@ -2425,7 +2428,7 @@ describe('a host on trial, before its commit', () => {
     expect(message).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${child.stores[0]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${farLine}\n`);
-    expect(message).toEndWith('To take this release, repair each refused store as docs/DEPLOYMENTS.md\'s "Crossed summaries: auditing and repairing a store", in the host\'s package, says, or correct what a line names, and update again; or stay on 0.10.2 until a release opens them.');
+    expect(message).toEndWith(`To take this release, repair each refused store as ${REPAIR_SECTION} says, or correct what a line names, and update again; or stay on 0.10.2 until a release opens them.`);
   }, 90_000);
 
   test("opens no store when it can't tell which places its fallback undoes, or when no trial is under way, and says why", async () => {
@@ -2800,4 +2803,9 @@ describe('a host on trial, before its commit', () => {
     expect(counts.started).toBe(2);
     expect(counts.stopped).toBe(2);
   }, 60_000);
+});
+
+test('the repair section a refusal names is a file there, in this package, that has that heading', () => {
+  expect(DEPLOYMENTS.startsWith(sep)).toBe(true);
+  expect(readFileSync(DEPLOYMENTS, 'utf-8').split('\n')).toContain('### Crossed summaries: auditing and repairing a store');
 });
