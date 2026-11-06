@@ -2149,7 +2149,9 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   });
 
   test('a redirect is named, with the server it leads to, and what to set where a base URL can be set, for a key, a token and a model', async () => {
-    const redirecting = (async () => new Response(null, { status: 307, headers: { location: 'https://api.example.test/v1/models?from=old' } })) as unknown as typeof fetch;
+    const redirecting = (async (_url: string, init?: RequestInit) => init?.redirect === 'manual'
+      ? new Response(null, { status: 307, headers: { location: 'https://api.example.test/v1/models?from=old' } })
+      : Response.json({ data: [] })) as unknown as typeof fetch;
     const openai = install({ asker: typed('sk-openai-moved'), fetch: redirecting });
     const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
     expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, set OPENAI_BASE_URL to it, then call again.`);
@@ -2165,7 +2167,9 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   });
 
   test('a redirect shows no part of a base URL that carries a credential, its path included', async () => {
-    const moved = (async () => new Response(null, { status: 302, headers: { location: 'https://other.example/private-token/v1/models' } })) as unknown as typeof fetch;
+    const moved = (async (_url: string, init?: RequestInit) => init?.redirect === 'manual'
+      ? new Response(null, { status: 302, headers: { location: 'https://other.example/private-token/v1/models' } })
+      : Response.json({ data: [] })) as unknown as typeof fetch;
     const made = install({ envFile: 'OPENAI_BASE_URL="https://proxy.example/private-token/v1"\n', asker: typed('sk-openai-moved'), fetch: moved });
     listSecrets(made.module, 'OPENAI_BASE_URL');
     const stored = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
