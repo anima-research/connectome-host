@@ -121,8 +121,8 @@ async function install(opts: {
   return at;
 }
 
-function ladder(at: Install, extra: string[] = [], env: Record<string, string> = {}): { out: string; status: number | null } {
-  const ran = spawnSync('python3', [LADDER, ...extra, at.work, 'connectome-test.service'], {
+function ladder(at: Install, extra: string[] = [], env: Record<string, string> = {}, unit = 'connectome-test.service'): { out: string; status: number | null } {
+  const ran = spawnSync('python3', [LADDER, ...extra, at.work, unit], {
     encoding: 'utf-8',
     env: { ...process.env, ...env, PATH: `${at.bins}:${process.env.PATH}` },
     timeout: 30_000,
@@ -663,6 +663,21 @@ describe('the ladder\'s gate dump', () => {
     expect(lines(join(at.work, 'dump-reads'))).toBe(0);
     expect(signalled(at.host)).toBe(false);
     expect(alive(at.host)).toBe(true);
+  });
+
+  test('the unit reaches journalctl and the read of its main process as its name, a systemd escape included', async () => {
+    const at = await install({ listens: true });
+    const asked = join(at.work, 'asked');
+    const unit = 'connectome\\x2dtest.service';
+    bin(at.bins, 'journalctl', `printf 'journalctl %s\\n' "$*" >> ${asked}\ncase "$*" in *"-o cat"*) echo '[diagnostics] {}' ;; esac`);
+    const answers = readFileSync(join(at.bins, 'systemctl'), 'utf-8').replace('#!/bin/sh\n', '');
+    bin(at.bins, 'systemctl', `printf 'systemctl %s\\n' "$*" >> ${asked}\n${answers}`);
+    const { out } = ladder(at, [], {}, unit);
+    await settled(at.host);
+    expect(out).toContain('live gate dump (SIGUSR2): {}');
+    const ours = readFileSync(asked, 'utf-8').split('\n').filter((l) => l.startsWith('journalctl') || l.includes('MainPID --value'));
+    expect(ours.map((l) => l.split(' ')[0])).toEqual(['journalctl', 'journalctl', 'systemctl', 'journalctl']);
+    for (const l of ours) expect(l).toContain(` ${unit} `);
   });
 
   test('a gate dump whose journal read fails says so, not that the host didn\'t answer, and is a finding', async () => {

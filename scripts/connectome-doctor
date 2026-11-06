@@ -200,13 +200,14 @@ def journal_entries(text):
     return entries
 
 
-last_entry, last_error = run(f"journalctl --user -u {unit} -q --no-pager -n 1 -o short-unix")
+unit_q = shlex.quote(unit)
+last_entry, last_error = run(f"journalctl --user -u {unit_q} -q --no-pager -n 1 -o short-unix")
 journal_text, search_error = "", None
 if last_error is None and start_ts is None:
     search_error = "the unit's start time isn't known"
 elif last_error is None:
     journal_text, search_error = run(
-        f"journalctl --user -u {unit} -q --no-pager --since @{int(start_ts)} -g {shlex.quote(f'{ROUTE_SAID}|{FAILURE}')} "
+        f"journalctl --user -u {unit_q} -q --no-pager --since @{int(start_ts)} -g {shlex.quote(f'{ROUTE_SAID}|{FAILURE}')} "
         "-o short-unix", no_match=1)
 journal_error = last_error if last_error is not None else search_error
 journal_unread = ("can't be read" if last_error is not None else "wasn't searched" if start_ts is None
@@ -701,7 +702,7 @@ def usr2_listener(pid):
 
 
 if pid not in ("0", "", None) and active in ("active", "running"):
-    pid = sh(f"systemctl --user show {unit} -p MainPID --value") or "0"
+    pid = sh(f"systemctl --user show {unit_q} -p MainPID --value") or "0"
     listening = usr2_listener(pid) if pid != "0" else None
     print()
     if pid == "0":
@@ -729,7 +730,7 @@ if pid not in ("0", "", None) and active in ("active", "running"):
                 if left <= 0:
                     break
                 if journal_log:
-                    said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}", timeout=left,
+                    said, why = run(f"journalctl --user -u {unit_q} -o cat --no-pager --since @{signalled}", timeout=left,
                                     cut_is_end=True)
                     where = f"{unit}'s journal"
                 else:
