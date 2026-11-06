@@ -318,14 +318,20 @@ The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage
 you 1–2 on a running instance. For a pre-boot check, run the host on copies, so that
 nothing it does reaches the original:
 1. Copy the data directory the install's record names (stage 1), wherever it is.
-2. Copy the recipe, keep its Web UI on loopback, and leave out `mcpServers`: the
-   servers' `env` names files in the original data directory, and discord-mcpl would
-   put the resident on Discord.
+2. Copy the recipe, keep its Web UI on loopback, and leave out `mcpServers` and
+   `modules.fleet.children`: the servers' `env` names files in the original data
+   directory, discord-mcpl would put the resident on Discord, and a fleet child starts
+   on its own data directory under `<agent>-cm`.
 3. From `<agent>-cm`, start the release `current` names, not the install's entry: the
    entry refuses a `DATA_DIR` other than the one the install's record names, and a host
    it starts writes the install's own files. Started directly, the host writes none:
-   `DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`,
-   with a mock or real key. Then hit the endpoints, and stop it.
+   `env -u CONNECTOME_INSTALL_ROOT MCPL_AGENT_OVERLAY_FILE=<the data copy>/no-overlay.json DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`,
+   with a mock or real key. The overlay variable names a file that doesn't exist, so
+   the servers the resident deployed for itself (`mcpl-servers.agent.json`) stay out
+   too. Then hit the endpoints, and stop it.
+
+The copy's request has none of the servers' tools, so its count is short by theirs,
+and a server's tool schema goes unchecked until the resident is live.
 
 That pre-boot check is an operator's: a setup agent never starts a host
 (`AGENT-ONBOARDING.md`'s "Going live"), so it checks after going live instead.
