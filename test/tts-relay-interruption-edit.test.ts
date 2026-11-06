@@ -660,4 +660,30 @@ describe('the texts kept to match an interruption', () => {
     expect(edited()).toEqual(['m-clerk']);
     expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
+
+  // Within a channel kept, its latest 32 publishes are kept. Of 33 in one
+  // channel the first is let go; the verifier's plant (no channel.shift(),
+  // so every publish kept) left the suite green.
+  describe('of a channel published in 33 times', () => {
+    const publish33 = (trace: (event: Record<string, unknown>) => void) => {
+      for (let i = 0; i < 33; i++) speak(trace, 'clerk', '42', `Ferry notice ${i}: the boat leaves at noon.`, `m-${i}`);
+    };
+
+    test('heard words that start the first edit nothing, and the note is for the agent voiced there', async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      publish33(trace);
+      const logged = await logOf(() => interrupt('Ferry notice 0: the boat'));
+      expect(edited()).toEqual([]);
+      expect(logged).toContain('no published message matched the interruption');
+      expect(notes).toEqual([{ text: '[voice] Your reply was interrupted by user speech after: "Ferry notice 0: the boat" (the posted message could not be trimmed)', forAgent: 'clerk' }]);
+    });
+
+    test('heard words that start the second, the oldest of the 32 kept, edit it', async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      publish33(trace);
+      await interrupt('Ferry notice 1: the boat');
+      expect(edited()).toEqual(['m-1']);
+      expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+    });
+  });
 });
