@@ -96,14 +96,14 @@ function parseArgs(argv: string[]): Opts {
       process.exit(1);
     }
   }
-  const named = personName === undefined ? exportedName(exportDir) : personName.trim();
+  const named = personName === undefined ? exportedName(exportDir) : personName.trim() || null;
   if (named === ANONYMOUS_PARTICIPANT) {
     console.error(`${personName === undefined ? 'The export\'s users.json names its one user' : '--person names the person'} ` +
       `"${ANONYMOUS_PARTICIPANT}", which is the name the host gives a turn whose author has no name, so their turns ` +
       'would go in unnamed. Give the name to use with --person <name>.');
     process.exit(1);
   }
-  return { exportDir, outDir, agentName, personName: personName ?? named ?? ANONYMOUS_PARTICIPANT, filter, dryRun, interactive };
+  return { exportDir, outDir, agentName, personName: named ?? ANONYMOUS_PARTICIPANT, filter, dryRun, interactive };
 }
 
 function exportedName(exportDir: string): string | null {

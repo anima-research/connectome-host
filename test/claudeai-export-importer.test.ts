@@ -496,6 +496,14 @@ describe('an import, run as a person runs it', () => {
     expect((await imported(dir, ['--person', 'ra']))[0]).toEqual({ participant: 'user', author: { name: 'ra' }, text: 'ra: Four days in Lisbon?' });
   }, 60_000);
 
+  test('takes --person trimmed, and an empty one leaves the person\'s turns as before', async () => {
+    const dir = exportOf([]);
+    expect((await imported(dir, ['--person', ' ra ']))[0]).toEqual({ participant: 'user', author: { name: 'ra' }, text: 'ra: Four days in Lisbon?' });
+    for (const empty of ['', '  ']) {
+      expect((await imported(dir, ['--person', empty]))[0]).toEqual({ participant: 'user', author: null, text: 'Four days in Lisbon?' });
+    }
+  }, 60_000);
+
   test('leaves the person\'s turns as before where the export names no one and no --person is given', async () => {
     const dir = exportOf([]);
     expect((await imported(dir, []))[0]).toEqual({ participant: 'user', author: null, text: 'Four days in Lisbon?' });
