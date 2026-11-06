@@ -86,12 +86,13 @@ function blankLiterals(code: string): string {
   const blank = (from: number, to: number) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '; };
   // A `/` opens a regular expression where an expression can start: after an
   // operator or punctuation, or a keyword such as `return`; after a name, a
-  // number, `)` or `]` it divides.
+  // number, `)`, `]` or a postfix `++` or `--` it divides.
   const opensRegExp = (at: number): boolean => {
     let k = at - 1;
     while (k >= 0 && /\s/.test(code[k]!)) k--;
     if (k < 0) return true;
     if (code[k] === ')' || code[k] === ']') return false;
+    if (k > 0 && (code.slice(k - 1, k + 1) === '++' || code.slice(k - 1, k + 1) === '--')) return false;
     if (!/[\w$]/.test(code[k]!)) return true;
     let from = k;
     while (from > 0 && /[\w$]/.test(code[from - 1]!)) from--;
@@ -407,10 +408,14 @@ describe('direct context writes', () => {
     const code = prepared([
       'export function f(cm: any, a: number, b: number, id: string) {',
       'const half = a / b; const re = /["\\/]/g;',
+      // Host #485 bot review wave 4, finding 17: a division after a postfix
+      // `++` or `--`, which Bun keeps on the line of what follows it.
+      "const up = a++ / 2 + cm.addMessage('user', []); const down = b-- / 2 + cm.fork(id);",
       "return `${cm.addMessage('user', [])} and ${half / 2}` + 'x' + re.source + cm.fork(id);",
       '}',
     ].join('\n'));
-    expect([...code.matchAll(CALL)].map(([, receiver, method]) => `${receiver}.${method}`)).toEqual(['cm.addMessage', 'cm.fork']);
+    expect([...code.matchAll(CALL)].map(([, receiver, method]) => `${receiver}.${method}`))
+      .toEqual(['cm.addMessage', 'cm.fork', 'cm.addMessage', 'cm.fork']);
     expect(code).not.toContain('"\\/');
   });
 });
