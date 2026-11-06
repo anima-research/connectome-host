@@ -134,12 +134,15 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined && name !== 'BUN_OPTIONS' && name !== 'NODE_ENV') given[name] = value;
   }
+  const own = env.NODE_ENV;
+  const development = own !== undefined && own !== 'production' && own !== 'test' ? { ...given, NODE_ENV: own } : given;
   for (const mode of DOTENV_MODES) {
     // --config=/dev/null: a bunfig.toml in the directory would otherwise run its preload here. Bun's mode is
-    // development where NODE_ENV is unset, and a NODE_ENV the environment gives wins over a file's, so a file's
-    // NODE_ENV comes through only in the development run, which goes without one.
+    // development where NODE_ENV is unset or names neither production nor test, and a NODE_ENV the environment gives
+    // wins over a file's: the development run goes with the environment's own, as a command does, or else with none,
+    // and only there does a file's NODE_ENV come through.
     const ran = spawnSync(process.execPath, ['--config=/dev/null', '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
-      cwd: dir, env: mode === 'development' ? given : { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS,
+      cwd: dir, env: mode === 'development' ? development : { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS,
       encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024,
     });
     if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
@@ -250,9 +253,12 @@ export interface Secret {
   value: string;
 }
 
-export function secretValues(names: string[], envFile: string, env: Record<string, string | undefined>): Secret[] {
+export function secretValues(
+  names: string[], envFile: string, env: Record<string, string | undefined>,
+  commandEnv: Record<string, string | undefined> = withoutSecrets(env, names),
+): Secret[] {
   const assignments = envAssignments(envFile);
-  const fromFiles = dotenvValues(dirname(envFile), withoutSecrets(env, names));
+  const fromFiles = dotenvValues(dirname(envFile), commandEnv);
   const found: Secret[] = [];
   const add = (name: string, value: string | undefined) => {
     if (value && !found.some((seen) => seen.name === name && seen.value === value)) found.push({ name, value });

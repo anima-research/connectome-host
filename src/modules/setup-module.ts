@@ -406,8 +406,13 @@ export class SetupModule implements Module {
     const { names: current, guessed } = secretNames(join(this.config.dir, '.setup'), envFile);
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
-    for (const read of secretValues(names, envFile, this.config.env)) addSecret(this.seen.values, read);
+    for (const read of secretValues(names, envFile, this.config.env, this.commandEnv(names))) addSecret(this.seen.values, read);
     return { names, values: [...this.seen.values], guessed };
+  }
+
+  private commandEnv(secrets: string[]): Record<string, string> {
+    const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
+    return withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
   }
 
   private damaged(error: unknown, what: string): ToolResult {
@@ -441,9 +446,7 @@ export class SetupModule implements Module {
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);
-    const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
-    const env = withoutSecrets(this.config.env,
-      [...atLaunch.names, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
+    const env = this.commandEnv(atLaunch.names);
     const child = spawn('bash', ['--norc', '-c', input.command], {
       cwd: this.config.dir,
       env,
