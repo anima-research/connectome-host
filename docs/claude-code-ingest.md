@@ -198,12 +198,14 @@ legacy store path, `store` in its data directory: the script takes it from
 `SEED_DATA_DIR` when that's set. The host migrates `data/store` →
 `data/sessions/<id>/` on first launch.
 
-The migration needs a data directory no host has started on. A host's first start
-writes `sessions.json` there, and no later start migrates `data/store`. So a seed
-written after it sits in `data/store` with nothing opening it. The script below refuses
-when `sessions.json` is there, the dry run included. If it does, stop and decide with
-the person. When that start held nothing worth keeping, such as only a hello, stop the
-service with the install's command by its full path,
+The migration needs a data directory with no `sessions.json`. A host's first start
+writes one there, and so does a claude.ai import, and no later start migrates
+`data/store`. So a seed written after either sits in `data/store` with nothing opening
+it. The script below refuses when `sessions.json` is there, the dry run included. If it
+does, stop and decide with the person. Where an import wrote it, moving it aside moves
+the import too. Where a host's start wrote it and that start held nothing worth
+keeping, such as only a hello, stop the service with the install's command by its full
+path,
 `/home/<agent>/<agent>-cm/connectome-host/connectome service stop`, move `sessions.json`
 and `sessions/` out of the data directory, seed it, and start the service again with
 `… service start`. The rest of the data directory stays as it is: discord-mcpl's state
@@ -211,11 +213,11 @@ files, its filters among them, and the Web UI's `observers.json`. Otherwise don'
 the resident already has a history of its own, and this method seeds only a first start.
 
 ```js
-// One-shot: seed.json → chronicle.  Wipe <agent>-cm/data before re-running.
+// One-shot: seed.json → chronicle.  Remove <agent>-cm/data/store before re-running.
 //   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const DATA_DIR = process.env.SEED_DATA_DIR ?? '/home/<agent>/<agent>-cm/data/store';
 const AGENT = '<Agent>';
@@ -224,9 +226,9 @@ const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
-const INDEX = join(dirname(DATA_DIR), 'sessions.json');
+const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
 if (existsSync(INDEX)) {
-  console.error(`${INDEX} exists: a host has started on this data directory and won't migrate a seed written now (stage 2).`);
+  console.error(`${INDEX} exists: a host's first start or a claude.ai import wrote it, and no start migrates a seed written now (stage 2).`);
   process.exit(1);
 }
 const bundle = JSON.parse(readFileSync(src, 'utf8'));
@@ -399,7 +401,8 @@ message comes from the person, not from you, as in
 `AGENT-ONBOARDING.md`'s "Going live"; they can send it over the Discord channel they
 scoped, the Web UI or the IPC socket. Let the resident find the seam themselves.
 
-**Re-runs.** Before first boot the ingest is one-shot: wipe `data/`, rebuild, re-ingest.
+**Re-runs.** Before first boot the ingest is one-shot: remove `data/store`, rebuild,
+re-ingest.
 After first boot never re-ingest; if the Claude Code session was continued after the
 snapshot, build the delta (rows after your last seeded `uuid`) and append it with a
 small script, anchored on the last imported message.
