@@ -128,7 +128,7 @@ const READ_LIMIT_MS = 10_000;
 
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
-  const names = dotenvNames(dir).filter((name) => env[name] === undefined);
+  const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
   if (names.length === 0) return values;
   const given: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {

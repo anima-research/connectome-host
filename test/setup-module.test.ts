@@ -278,6 +278,19 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('token <MY_TOKEN>\n');
   });
 
+  test('a secret a dotenv file names as a name every object has, such as constructor, is shown by its name in a command\'s output', async () => {
+    const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n' });
+    writeFileSync(join(dir, '.env.local'), 'constructor=private-token\n');
+    const answer = await run(module, 'echo "token private-token"');
+    expect(answer.stdout.text).toBe('token <constructor>\n');
+  });
+
+  test('a timeoutMs out of its range is refused, naming the value given', async () => {
+    const { module } = install();
+    const result = await runCall(module, 'true', -5);
+    expect(result.error).toBe(`setup--run's timeoutMs was -5: it's a number of ms above 0 and at most ${30 * 60_000}.`);
+  });
+
   test('a secret a dotenv file beside .env gives through a name it sets later, or with an escaped $, is shown by its name in a command\'s output, as Bun gives it', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n' });
     writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=${LATER}-token\nLATER=later-value\nPRICE=five\\$a-share\n');
@@ -2161,6 +2174,16 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String(stored.data)).toContain('a redirect to https://other.example, which setup doesn\'t follow with a secret.');
     const model = await checkModel(install({ envFile: 'OPENAI_BASE_URL="https://proxy.example/private-token/v1"\nOPENAI_API_KEY="sk-openai"\n', fetch: moved }).module, { name: 'OPENAI_API_KEY', model: 'gpt-5' });
     expect(model.error).not.toContain('private-token');
+  });
+
+  test('check_model says whether a model is offered isn\'t known where the list\'s entries carry no ids', async () => {
+    const listed = install({
+      envFile: 'ANTHROPIC_API_KEY=sk-ant\n',
+      fetch: (async () => Response.json({ data: [{ name: 'claude-x' }] })) as unknown as typeof fetch,
+    });
+    const result = await checkModel(listed.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-x' });
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toStartWith('Whether Anthropic offers claude-x to the key stored as ANTHROPIC_API_KEY isn\'t known:');
   });
 
   test('check_model doesn\'t say a model is unlisted where the provider says it lists more than one answer holds', async () => {

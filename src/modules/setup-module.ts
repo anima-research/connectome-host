@@ -433,7 +433,8 @@ export class SetupModule implements Module {
     }
     const limit = input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : input.timeoutMs;
     if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0 || limit > MAX_TIMEOUT_MS) {
-      return failed(`setup--run's timeoutMs is a number of ms above 0 and at most ${MAX_TIMEOUT_MS}.`);
+      const given = typeof limit === 'number' ? String(limit) : JSON.stringify(limit);
+      return failed(`setup--run's timeoutMs was ${given}: it's a number of ms above 0 and at most ${MAX_TIMEOUT_MS}.`);
     }
     await this.askedAll();
     if (this.stopping) return failed('The host is stopping, so setup--run runs nothing, and calling it again won\'t change that.');

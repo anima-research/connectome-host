@@ -79,6 +79,7 @@ export function listModels(
     const data = (body as { data?: unknown } | null)?.data;
     if (!Array.isArray(data)) return undefined;
     const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+    if (ids.length !== data.length) return undefined;
     return { ids, shownIds: ids.map((id) => hidden(id, key, name, options.hide)), more: (body as { has_more?: unknown }).has_more === true };
   });
 }
