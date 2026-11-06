@@ -66,8 +66,11 @@
     rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
     which marks its lines in place, a reply it streamed (text on both
     sides of a tool call is one line, as it streams it), the `[tools]` line
-    of each round it streamed and a message sent from it included, each
-    linked to its row as the turn ends, never to
+    of each round it streamed, a reply backgrounded with Ctrl+B (which now
+    comes back a line per round, the first after the words streamed before
+    the press, its thinking left out, where it came back as one line with
+    its thinking's words run into its text) and a message sent from it
+    included, each linked to its row as the turn ends, never to
     another resident's row or an earlier row in the same words, and draws
     below them an undone row stored since it loaded the history that it has
     no line for, past the scrollback cap too, until a redo puts it back, but

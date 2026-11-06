@@ -571,6 +571,36 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => /\(undone\).*\[tools\] tally/.test(await frame()), 'the mark');
     await step('tools only');
+  } else if (scenario === 'undone-background') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Ctrl+B while a reply streams: its first round's words before the
+    // press are drawn, the rest come back with the turn (#485 bot review 3,
+    // finding 4).
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'Counting the ', blockType: 'text' });
+    await until(async () => (await frame()).includes('Counting the'), 'the words before the press');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'ledgers now.', blockType: 'text' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'text', text: 'Counting the ledgers now.' }, { type: 'tool_use', id: 't1', name: 'tally', input: {} }],
+    });
+    first.send('inference:stream_resumed');
+    first.send('inference:tokens', { content: 'weigh the count', blockType: 'thinking' });
+    first.send('inference:tokens', { content: 'There are three.', blockType: 'text' });
+    history.push({
+      id: 'a3', participant: 'agent',
+      content: [{ type: 'thinking', thinking: 'weigh the count' }, { type: 'text', text: 'There are three.' }],
+    });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('returned from background'), 'the return');
+    await step('returned');
+    undoneRows.add('a2');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) There are three.'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone-evicted') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     /** More streamed lines than the scrollback holds, none of them a row's. */

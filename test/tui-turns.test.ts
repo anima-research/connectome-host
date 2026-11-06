@@ -370,6 +370,24 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(toolsOnly).toMatch(/\(undone\) \d\d:\d\d \[tools\] tally/);
   }, 40000);
 
+  // A reply backgrounded with Ctrl+B comes back a line per round, the
+  // first after the line streamed before the press, each its row's
+  // (#485 bot review 3, finding 4).
+  test('a reply backgrounded mid-stream comes back a line per round, without its thinking, and an undo marks its lines in place', async () => {
+    const steps = await play('undone-background');
+    const returned = steps.get('returned')!.frame;
+    expect(returned).toMatch(/\nledgers now\. *\n/);
+    expect(returned).toMatch(/\nThere are three\. *\n/);
+    expect(returned).not.toContain('weigh the count');
+    const undone = steps.get('undone')!.frame;
+    for (const words of ['Counting the', 'ledgers now.', 'There are three.']) {
+      expect(times(undone, words)).toBe(1);
+      expect(undone).toContain(`(undone) ${words}`);
+    }
+    expect(undone).not.toContain('weigh the count');
+    expect(undone).not.toContain('[tools] tally');
+  }, 40000);
+
   test("past the scrollback cap: a streamed line it pushed out isn't drawn again below, after a /clear or without one, an undone row with no line is, and a reply keeps its line from an earlier one in the same words", async () => {
     const steps = await play('undone-evicted');
     const cleared = steps.get('cleared, then pushed out')!.frame;

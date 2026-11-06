@@ -382,7 +382,15 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
+  /** What a backgrounded root turn's text says since Ctrl+B, shown when it
+   *  returns: a line per round, each ending where `backgroundBreaks` says a
+   *  tool call ended one. Its thinking is left out, as a collapsed thinking
+   *  line shows none of its words. */
   let backgroundBuffer = '';
+  let backgroundBreaks: number[] = [];
+  /** The text line streamed before Ctrl+B, which the first round's words
+   *  in the buffer continue: one row holds both. */
+  let backgroundPartial: StreamedLine | undefined;
   let attemptStart = 0;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
@@ -738,9 +746,9 @@ export async function runTui(app: AppContext): Promise<void> {
     showStream(currentStreamBuffer);
   }
 
-  function endStream() {
+  function endStream(): StreamedLine | undefined {
     finalizeCollapsedThinking();
-    keepStreamedLine();
+    const kept = keepStreamedLine();
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
@@ -748,12 +756,13 @@ export async function runTui(app: AppContext): Promise<void> {
     currentStreamKind = 'text';
     currentStreamSaid = '';
     currentStreamShown = '';
+    return kept;
   }
 
-  /** Keep the line just streamed, for remarkHistory to link to its row. */
-  function keepStreamedLine() {
-    if (!currentStreamText || !currentStreamSaid.trim()) return;
-    keepLine(currentStreamText, currentStreamKind, currentStreamSaid, currentStreamShown, currentStreamKind === 'thinking' ? THINKING_DIM : WHITE);
+  /** Keep the line just streamed, for linkStreamedLines to link to its row. */
+  function keepStreamedLine(): StreamedLine | undefined {
+    if (!currentStreamText || !currentStreamSaid.trim()) return undefined;
+    return keepLine(currentStreamText, currentStreamKind, currentStreamSaid, currentStreamShown, currentStreamKind === 'thinking' ? THINKING_DIM : WHITE);
   }
 
   const HISTORY_REPLAY_MAX = 50;
@@ -769,10 +778,15 @@ export async function runTui(app: AppContext): Promise<void> {
   /** A line drawn as it was streamed or sent, before its row was stored: a
    *  block of a root turn's reply (its text or its thinking), the tools a
    *  round of it called, or the operator's message. `said` is what the row
-   *  holds for it (for `tools`, the calls' names joined by `, `), `shown`
-   *  and `color` how the line draws it. linkStreamedLines links it to its
-   *  row. */
-  interface StreamedLine { line: TextRenderable; kind: 'text' | 'thinking' | 'tools' | 'you'; said: string; shown: string; color: string }
+   *  holds for it (for `tools`, the calls' names joined by `, `), and each
+   *  part a line that draws it, `shown` and `color` how: one line, or for
+   *  a reply backgrounded mid-stream the line streamed before Ctrl+B and the
+   *  line its return drew. linkStreamedLines links it to its row. */
+  interface StreamedLine {
+    kind: 'text' | 'thinking' | 'tools' | 'you';
+    said: string;
+    parts: Array<{ line: TextRenderable; shown: string; color: string }>;
+  }
   /** The lines streamed or sent that no row has taken yet. */
   let streamedLines: StreamedLine[] = [];
   /** Rows stored after the history was drawn whose lines /clear or the
@@ -782,9 +796,11 @@ export async function runTui(app: AppContext): Promise<void> {
    *  past them were stored since. */
   let linkedThrough = 0;
 
-  function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string) {
-    streamedLines.push({ line, kind, said, shown, color });
+  function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string): StreamedLine {
+    const kept: StreamedLine = { kind, said, parts: [{ line, shown, color }] };
+    streamedLines.push(kept);
     if (streamedLines.length > SCROLLBACK_CAP) streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
+    return kept;
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -918,10 +934,10 @@ export async function runTui(app: AppContext): Promise<void> {
       const msg = stored[i]!;
       const stamp = audienceOf(msg.metadata);
       if (stamp && !stamp.audience.includes(rootAgentName)) continue;
-      const lines = takeStreamedLines(msg);
-      if (lines.some((l) => l.line.isDestroyed)) clearedRows.add(msg.id);
-      for (const l of lines) {
-        if (!l.line.isDestroyed) recordLines.push({ line: l.line, id: msg.id, text: l.shown, color: l.color, appended: false });
+      const parts = takeStreamedLines(msg).flatMap((l) => l.parts);
+      if (parts.some((part) => part.line.isDestroyed)) clearedRows.add(msg.id);
+      for (const part of parts) {
+        if (!part.line.isDestroyed) recordLines.push({ line: part.line, id: msg.id, text: part.shown, color: part.color, appended: false });
       }
     }
     // The scrollback takes old lines down: a linked line it took down leaves
@@ -1753,19 +1769,51 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
+  function leaveBackground(): void {
+    backgrounded = false;
+    backgroundBuffer = '';
+    backgroundBreaks = [];
+    backgroundPartial = undefined;
+  }
+
+  /** Draw what a backgrounded turn said, a line per round, each kept for its
+   *  row: the first one's words with the line streamed before Ctrl+B. */
+  function showBackgroundRounds(): void {
+    const ends = [...backgroundBreaks, backgroundBuffer.length];
+    let from = 0;
+    ends.forEach((end, round) => {
+      const said = backgroundBuffer.slice(from, end);
+      from = end;
+      if (!said.trim()) return;
+      const line = addLine(said, WHITE);
+      if (!line) return;
+      const partial = round === 0 ? backgroundPartial : undefined;
+      const at = partial ? streamedLines.indexOf(partial) : -1;
+      if (at < 0) {
+        keepLine(line, 'text', said, said, WHITE);
+        return;
+      }
+      streamedLines.splice(at, 1);
+      streamedLines.push({ kind: 'text', said: partial!.said + said, parts: [...partial!.parts, { line, shown: said, color: WHITE }] });
+    });
+  }
+
   function showRootTurnEnd(end: RootTurnEnd): void {
     state.status = end.status;
     state.tool = null;
     state.toolStartedAt = null;
     if (backgrounded && end.background === 'cut') {
       backgroundBuffer = backgroundBuffer.slice(0, attemptStart);
+      backgroundBreaks = backgroundBreaks.filter((at) => at <= attemptStart);
+      // The attempt streaming at Ctrl+B failed before its round ended: the
+      // words streamed before the press are no row's start.
+      if (backgroundBreaks.length === 0) backgroundPartial = undefined;
     } else if (backgrounded) {
       if (end.background === 'show') {
-        if (backgroundBuffer.trim()) addLine(backgroundBuffer, WHITE);
+        showBackgroundRounds();
         addEvent('  (researcher returned from background)', CYAN);
       }
-      backgrounded = false;
-      backgroundBuffer = '';
+      leaveBackground();
     }
     if (streaming) endStream();
     // The turn's rows are stored by its end, its last reply's before the
@@ -1829,7 +1877,7 @@ export async function runTui(app: AppContext): Promise<void> {
         const blockType = event.blockType as string | undefined;
         if (content) {
           if (agent === rootAgentName && backgrounded) {
-            backgroundBuffer += content;
+            if (blockType !== 'thinking') backgroundBuffer += content;
             streamOutputTokens += Math.ceil(content.length / 4);
           } else if (agent === rootAgentName && streaming) {
             if (blockType && (blockType === 'text' || blockType === 'thinking')
@@ -1928,6 +1976,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
         if (agent === rootAgentName) {
           attemptStart = backgroundBuffer.length;
+          if (backgrounded) backgroundBreaks.push(backgroundBuffer.length);
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
@@ -2355,8 +2404,9 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       if (streaming && state.status !== 'idle') {
-        endStream();
+        const partial = endStream();
         backgrounded = true;
+        backgroundPartial = partial?.kind === 'text' ? partial : undefined;
         addLine('  (researcher moved to background — result will appear when done)', CYAN);
         updateStatus();
         acted = true;
@@ -2384,10 +2434,7 @@ export async function runTui(app: AppContext): Promise<void> {
           const shown = escapeLine(interrupts.interrupt(rootAgentName, reason), stopped);
           if (shown.endsTurn) {
             if (streaming) endStream();
-            if (backgrounded) {
-              backgrounded = false;
-              backgroundBuffer = '';
-            }
+            if (backgrounded) leaveBackground();
             state.status = 'idle';
             state.tool = null;
           }
@@ -2616,8 +2663,7 @@ export async function runTui(app: AppContext): Promise<void> {
         };
         void switchFollowing(follower, async () => {
           await app.switchSession(sessionId);
-          backgrounded = false;
-          backgroundBuffer = '';
+          leaveBackground();
           attemptStart = 0;
           if (stopping) return;
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
