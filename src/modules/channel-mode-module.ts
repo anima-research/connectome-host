@@ -13,7 +13,7 @@ import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
 
 export interface ChannelModeConfig {
-  /** Explicit fallback for channel ids absent from the registry and connected-server prefixes. */
+  /** Legacy fallback for unregistered bare ids or its own namespace only (default: discord). */
   serverId?: string;
   /** @deprecated Lifecycle tools are host-generic; retained for config compatibility. */
   toolPrefix?: string;
@@ -37,12 +37,12 @@ export class ChannelModeModule implements Module {
   private framework: AgentFramework | null = null;
   private callSeq = 0;
 
-  private readonly fallbackServerId: string | undefined;
+  private readonly fallbackServerId: string;
   private readonly gcModuleName: string;
   private readonly defaultDebounceMs: number;
 
   constructor(config: ChannelModeConfig = {}) {
-    this.fallbackServerId = config.serverId;
+    this.fallbackServerId = config.serverId ?? 'discord';
     this.gcModuleName = config.gcModuleName ?? 'subscription-gc';
     // agent-framework's EventGate refuses a policy whose debounce is outside its
     // bounds, and the default goes to the gate whenever a call leaves debounceMs
@@ -88,7 +88,7 @@ export class ChannelModeModule implements Module {
         name: 'set_channel_mode',
         description:
           'Set how a channel gets your attention, in one step. The owning MCPL server is resolved per channel; ' +
-          'an unknown or ambiguous server is refused before anything changes. ' +
+          'Debounced mode requires a connected owner; mentions mode always attempts local cleanup, reporting any skipped close. ' +
           '`mode: "debounced"` = wake on EVERY message but batched: it opens ' +
           'to the channel, adds a gate rule that debounces its ambient traffic ' +
           '(one wake after the burst settles), and pins the channel so it is never ' +
@@ -99,7 +99,7 @@ export class ChannelModeModule implements Module {
         inputSchema: {
           type: 'object',
           properties: {
-            channelId: { type: 'string', description: 'Channel id EXACTLY as it appears in incoming events (GateEventInfo.channelId). Examples: zulip:backend, slack:<teamId>:<channelId>, or the Discord MCPL-namespaced id discord:<guildId>:<channelId>, NOT the raw channel snowflake — passing the raw id silently never matches the gate, so debouncing/mode has no effect.' },
+            channelId: { type: 'string', description: 'Channel id EXACTLY as it appears in incoming events (GateEventInfo.channelId). Examples: zulip:backend, slack:<teamId>:<channelId>, or the Discord MCPL-namespaced id discord:<guildId>:<channelId>, not a raw channel snowflake. Unregistered bare ids (no colon) or ids in the fallback server namespace may use the legacy server fallback (default discord). Unknown namespaces are refused, not routed to a different fallback; a raw id does not match namespaced incoming events; copy their exact id for a working debounce rule.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms for debounced mode (100–300000). Checked whenever it is given, in either mode.' },
           },
@@ -164,13 +164,13 @@ export class ChannelModeModule implements Module {
     }
 
     const resolved = this.resolveServer(channelId);
-    if ('error' in resolved) {
+    if (mode === 'debounced' && 'error' in resolved) {
       return { success: false, error: `Nothing changed: ${resolved.error}`, isError: true };
     }
     const steps: StepResult[] =
-      mode === 'debounced'
+      mode === 'debounced' && 'serverId' in resolved
         ? await this.applyDebounced(channelId, resolved.serverId, debounceMs)
-        : await this.applyMentions(channelId, resolved.serverId);
+        : await this.applyMentions(channelId, resolved);
 
     const failed = steps.filter((s) => !s.ok);
     const worked = steps.filter((s) => s.ok);
@@ -217,13 +217,20 @@ export class ChannelModeModule implements Module {
     if (owners.length > 1) {
       return { error: `Channel ${channelId} is registered on multiple MCPL servers; ask your operator to give it a unique channel id.` };
     }
-    const connected = new Set(framework.listMcplServers().filter(server => server.connected).map(server => server.id));
+    const servers = framework.listMcplServers();
     const colon = channelId.indexOf(':');
-    const prefix = colon > 0 ? channelId.slice(0, colon) : undefined;
+    const prefix = colon >= 0 ? channelId.slice(0, colon) : undefined;
+    // A legacy bare id may fall back, but an unknown namespace must never be
+    // routed to a different server (nor leave a wrong-source rule and GC pin).
+    const fallback = colon < 0 || prefix === this.fallbackServerId ? this.fallbackServerId : undefined;
     const serverId = owners[0]?.serverId
-      ?? (prefix && connected.has(prefix) ? prefix : this.fallbackServerId);
-    if (!serverId || !connected.has(serverId)) {
-      return { error: `Cannot resolve a connected MCPL server for channel ${channelId}. Copy the exact registered channel id from incoming events and connect its server; for legacy ids, ask your operator to set modules.channelMode.serverId explicitly.` };
+      ?? (prefix && servers.some(server => server.id === prefix) ? prefix : fallback);
+    const server = servers.find(server => server.id === serverId);
+    if (!owners.length && !server) {
+      return { error: `Cannot resolve a known MCPL server for channel ${channelId}. Copy the exact registered channel id from incoming events; for legacy ids, ask your operator to configure modules.channelMode.serverId.` };
+    }
+    if (!server?.connected) {
+      return { error: `MCPL server ${serverId} for channel ${channelId} is disconnected. Connect that server before retrying.` };
     }
     return { serverId };
   }
@@ -241,6 +248,7 @@ export class ChannelModeModule implements Module {
       steps.push({ step: 'gate-policy', ok: false, detail: 'the channel-mode module stopped before this step' });
     } else {
       try {
+        // Reusing the name replaces even a legacy wrong-source rule.
         // Prepended: agent-framework's gate takes the first rule that matches.
         this.framework.addGatePolicy(
           {
@@ -266,7 +274,7 @@ export class ChannelModeModule implements Module {
     return steps;
   }
 
-  private async applyMentions(channelId: string, serverId: string): Promise<StepResult[]> {
+  private async applyMentions(channelId: string, resolved: { serverId: string } | { error: string }): Promise<StepResult[]> {
     const steps: StepResult[] = [];
 
     // agent-framework sends a removed rule's pending batch.
@@ -277,7 +285,9 @@ export class ChannelModeModule implements Module {
       steps.push({ step: 'gate-policy', ok: false, detail: errMsg(err) });
     }
 
-    steps.push(await this.callToolStep('close', 'channel_close', { channelId, serverId }));
+    steps.push('serverId' in resolved
+      ? await this.callToolStep('close', 'channel_close', { channelId, serverId: resolved.serverId })
+      : { step: 'close', ok: false, detail: `skipped: ${resolved.error}` });
 
     steps.push(
       await this.callToolStep('gc-unpin', `${this.gcModuleName}--pin_channel_idle_limit`, {

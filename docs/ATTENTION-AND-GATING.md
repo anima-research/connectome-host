@@ -200,11 +200,17 @@ action.
   `slack:<teamId>:<channelId>`, or `discord:<guildId>:<channelId>`), not a raw
   platform id. Open, gate source, and close use the owning MCPL server from the
   channel registry. If the id is not registered, a prefix before the first `:`
-  is used only when it names a connected server; `modules.channelMode.serverId`
-  is the explicit fallback for otherwise unresolved ids. There is no implicit
-  Discord fallback. Unknown, disconnected, or ambiguous ownership is refused
-  before opening, changing a rule, or pinning. Check the exact id and connect
-  its server (or configure the fallback for legacy ids) before retrying.
+  is used when it names a known server, even if disconnected;
+  `modules.channelMode.serverId` is the legacy fallback (default `discord`) only
+  for unregistered bare ids with no `:`, or ids whose prefix is that fallback
+  server itself. An unknown namespace such as `teams:x` is refused, never routed
+  to a different fallback server. Registry ownership still overrides any prefix.
+  Debounced mode refuses unknown, disconnected, or ambiguous ownership before
+  changing anything; a disconnected-owner error names the server to reconnect.
+  Mentions mode always attempts to remove the debounce rule and pin, even when
+  ownership cannot be resolved; it reports a skipped or failed close separately.
+  Previously saved rules with the wrong source are replaced on the next debounced
+  call or removed on the next mentions call; reapply the mode on affected channels.
   Each channel gets its own rule, so its own timer. This does not change the
   framework's open/close semantics.
 
