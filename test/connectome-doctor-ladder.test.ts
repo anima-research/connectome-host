@@ -437,6 +437,18 @@ describe('the ladder\'s recent failures', () => {
     expect(ladder(at).out).toMatch(unsure);
   });
 
+  test('a later failed call with newer rows of the call log that can\'t be read says whether a turn has succeeded since isn\'t known, not that none has', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    const failed = JSON.stringify({ timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', error: '529 overloaded' });
+    writeFileSync(calls, `${failed}\n{"timestamp":"${new Date((at.now - 4) * 1000).toISOString()}","kind":"str`);
+    const { out } = ladder(at);
+    expect(out).toMatch(/inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since newer rows of the call log can't be read/);
+    expect(out).not.toContain('with no successful turn found since');
+    writeFileSync(calls, `${failed}\n`);
+    expect(ladder(at).out).toMatch(/\* inference failures, the last \S+ ago, with no successful turn found since/);
+  });
+
   test('an exhausted inference that only failures.log still holds is a finding, with its time from the record', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), '');
