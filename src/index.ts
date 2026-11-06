@@ -870,7 +870,7 @@ async function runPiped(app: AppContext) {
       setup ? app.framework.getModule(SETUP_MODULE) as SetupModule | undefined : undefined;
     onAlert = (event) => {
       const alert = opsAlertOf(event);
-      if (setup && alert.kind === 'refusal') return;
+      if (setup && alert.kind === 'refusal' && alert.agent === app.agentName) return;
       showAlert(alert);
     };
     // agent-framework logs a turn's last inference, and notes a refusal, after the turn's inference:completed trace in
@@ -929,13 +929,18 @@ async function runPiped(app: AppContext) {
       const held = app.framework.getAgent(app.agentName)?.getContextManager()?.queryMessages({}).messages ?? [];
       if (lastReplyRefused(app.framework, app.agentName)) say(REFUSED_BEFORE);
       const opened = turns.waitForTurn(null);
-      app.framework.pushEvent({
-        type: 'external-message', source: 'system',
-        content: openingMessage(
-          held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
-          after, setupModule()?.finishedAt() ?? null),
-        metadata: {}, triggerInference: true,
-      });
+      try {
+        app.framework.pushEvent({
+          type: 'external-message', source: 'system',
+          content: openingMessage(
+            held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
+            after, setupModule()?.finishedAt() ?? null),
+          metadata: {}, triggerInference: true,
+        });
+      } catch (error) {
+        opened.cancel();
+        throw error;
+      }
       await Promise.race([opened, ended]);
     };
     afterSwitch = async (switched) => {
@@ -951,7 +956,7 @@ async function runPiped(app: AppContext) {
       try {
         quit = await processLine(message);
       } catch (error) {
-        say(`That line failed, and nothing more came of it: ${error instanceof Error ? error.message : String(error)}`);
+        say(`That line stopped at an error, and nothing after the error ran: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         unanswered--;
       }
