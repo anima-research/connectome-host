@@ -2297,6 +2297,24 @@ test('a record from before workingDir takes each place under this directory as t
   });
 });
 
+test('a binding setup refuses, here a copy\'s label it can\'t read, stops it before it changes package.json or installs anything', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = join(dir, 'connectome-host');
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
+  mkdirSync(join(root, 'copy'), { recursive: true });
+  writeFileSync(join(root, 'copy', 'copy.json'), '{ not json');
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as Record<string, unknown>;
+  delete manifest.trustedDependencies;
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
+  const before = readFileSync(join(dir, 'package.json'), 'utf-8');
+  const again = world(dir);
+  expect(await runSetup(dir, ['discord'], again)).toBe(1);
+  expect(text(again.seen.err)).toContain('so setup can\'t bind the places it names to this directory, and has changed nothing.');
+  expect(readFileSync(join(dir, 'package.json'), 'utf-8')).toBe(before);
+  expect(again.seen.ran.filter((argv) => args(argv)[0] === 'add' || args(argv)[0] === 'install')).toEqual([]);
+});
+
 test('a fleet child\'s data directory outside every place is asked about after the data directory, from the children file in the data directory answered, and its own setup is given both', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);

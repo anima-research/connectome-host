@@ -440,6 +440,40 @@ async function installAndStart(
     return 1;
   }
 
+  let record: InstallRecord | null;
+  try {
+    record = readRecord<InstallRecord>(join(root, 'install.json'), 'install record');
+  } catch (error) {
+    const why = (error as Error).message.replace(/\.+$/, '');
+    const said = `${error instanceof ContractError ? why : `${join(root, 'install.json')} can't be read (${why})`}, so ` +
+      'setup can\'t tell which data the install serves';
+    let version: unknown;
+    try {
+      version = (JSON.parse(readFileSync(join(root, 'install.json'), 'utf-8')) as { v?: unknown } | null)?.v;
+    } catch {
+    }
+    if (error instanceof ContractError && (version === undefined || version === 1)) {
+      err(`${said}. ${WRITE_RECORD_AGAIN}`);
+    } else {
+      err(`${said}, and goes no further.`);
+    }
+    return 1;
+  }
+  let recorded: { record: InstallRecord; binding: Binding } | null = null;
+  if (record !== null) {
+    if (typeof record.dataDir !== 'string' || record.dataDir === '') {
+      err(`The install record at ${join(root, 'install.json')} names no data directory, so setup can't tell which ` +
+        `data the install serves. ${WRITE_RECORD_AGAIN}`);
+      return 1;
+    }
+    try {
+      recorded = { record, binding: bindingOf(root, record) };
+    } catch (error) {
+      err(`connectome setup: ${(error as Error).message}`);
+      return 1;
+    }
+  }
+
   const trusted = await defaultTrusted(async (_manager, args, cwd) => {
     const ran = await world.run([world.bun.path, '--no-env-file', ...args], { cwd, env: programEnv });
     return { status: ran.status, output: `${ran.stdout}${ran.stderr}` };
@@ -518,37 +552,14 @@ async function installAndStart(
     }
   }
 
-  let record: InstallRecord | null;
-  try {
-    record = readRecord<InstallRecord>(join(root, 'install.json'), 'install record');
-  } catch (error) {
-    const why = (error as Error).message.replace(/\.+$/, '');
-    const said = `${error instanceof ContractError ? why : `${join(root, 'install.json')} can't be read (${why})`}, so ` +
-      'setup can\'t tell which data the install serves';
-    let version: unknown;
-    try {
-      version = (JSON.parse(readFileSync(join(root, 'install.json'), 'utf-8')) as { v?: unknown } | null)?.v;
-    } catch {
-    }
-    if (error instanceof ContractError && (version === undefined || version === 1)) {
-      err(`${said}. ${WRITE_RECORD_AGAIN}`);
-    } else {
-      err(`${said}, and goes no further.`);
-    }
-    return 1;
-  }
-  const settingUp = record === null;
+  const settingUp = recorded === null;
   let dataDir: string;
   let placeArgs: string[] = [];
-  if (record === null) {
+  if (recorded === null) {
     dataDir = join(dir, 'data');
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } else if (typeof record.dataDir !== 'string' || record.dataDir === '') {
-    err(`The install record at ${join(root, 'install.json')} names no data directory, so setup can't tell which ` +
-      `data the install serves. ${WRITE_RECORD_AGAIN}`);
-    return 1;
   } else {
-    const bound = await bindingAnswers(world, root, record, { out, err });
+    const bound = await bindingAnswers(world, root, recorded.record, recorded.binding, { out, err });
     if (typeof bound === 'number') return bound === -1 ? stopped() : bound;
     ({ dataDir, placeArgs } = bound);
   }
@@ -804,15 +815,8 @@ async function installAndStart(
   return agentStatus;
 }
 
-async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, { out, err }: Io):
-  Promise<{ dataDir: string; placeArgs: string[] } | number> {
-  let binding: Binding;
-  try {
-    binding = bindingOf(root, record);
-  } catch (error) {
-    err(`connectome setup: ${(error as Error).message}`);
-    return 1;
-  }
+async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, binding: Binding,
+  { out, err }: Io): Promise<{ dataDir: string; placeArgs: string[] } | number> {
   if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
   if (binding.kind === 'resume') {
     out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished. Setup finishes it from ` +
