@@ -90,8 +90,8 @@ describe('what the guide names ships, or is the install\'s own', () => {
         expect({ fragment, server, name, value: env[name] }).toEqual({ fragment, server, name, value: `\${${name}}` });
       }
       for (const [name, value] of Object.entries(env)) {
-        const named = /^\$\{[A-Z_]+\}$/.test(value) || /<[^>]+>/.test(value);
-        expect({ fragment, server, name, value, named }).toEqual({ fragment, server, name, value, named: true });
+        if ((reads[server] ?? []).includes(name)) continue;
+        expect({ fragment, server, name, value, placeholder: /<[^>]+>/.test(value) }).toEqual({ fragment, server, name, value, placeholder: true });
       }
     }
   });
