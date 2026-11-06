@@ -9,6 +9,7 @@ const ENDING_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
 
 export interface BracketedPaste {
   take(line: string): string | null;
+  pasting(): boolean;
   end(): void;
 }
 
@@ -50,6 +51,7 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
   for (const each of ENDING_SIGNALS) signals.on(each, onEach[each]);
   output.write(PASTE_ON);
   return {
+    pasting: () => pasting,
     take(line) {
       if (pasting) {
         lines.push(line);

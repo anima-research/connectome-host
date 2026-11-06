@@ -1609,6 +1609,17 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
+  test('a hidden question opened while a bracketed paste is under way holds through it, its pause included', async () => {
+    const { input, output, rl, shown } = terminal();
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', () => true);
+    input.write('part-one\r');
+    await Bun.sleep(PASTE_QUIET_MS + 100);
+    input.write('part-two\r\x1b[201~');
+    expect(await answer).toBe('part-one\npart-two');
+    expect(shown()).not.toContain('part-');
+    rl.close();
+  });
+
   test('a bracketed paste that opens with a line break and pauses before the rest is one answer, none of it left for the conversation', async () => {
     const { input, output, rl, lines, nextLine, shown } = terminal();
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
@@ -1723,7 +1734,7 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('text typed but not sent when it asks is taken away, and starts neither the answer nor a line after', async () => {
+  test('text typed but not sent when it asks isn\'t part of the answer, and is back on the prompt once the question is answered', async () => {
     const { input, output, rl, lines, nextLine, shown } = terminal();
     input.write('half-typed\x1b[D\x1b[D');
     const pending = rl as unknown as { line: string; cursor: number };
@@ -1732,10 +1743,11 @@ describe("the terminal's hidden question", () => {
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
     input.write('s3cret-value\r');
     expect(await answer).toBe('s3cret-value');
+    expect(pending.line).toBe('half-typed');
     const after = nextLine();
-    input.write('after\r');
+    input.write(' and after\r');
     await after;
-    expect(lines).toEqual(['after']);
+    expect(lines).toEqual(['half-typed and after']);
     expect(shown()).not.toContain('s3cret-value');
     rl.close();
   });

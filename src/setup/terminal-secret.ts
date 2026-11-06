@@ -15,7 +15,9 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
     .map((key) => [key, Array.isArray(held[key]) ? [...held[key] as unknown[]] : held[key]]);
 }
 
-export async function askHidden(rl: Interface, output: Writable, label: string): Promise<string> {
+export async function askHidden(
+  rl: Interface, output: Writable, label: string, pastingNow: () => boolean = () => false,
+): Promise<string> {
   const echoing = rl as Echoing;
   const write = echoing._writeToOutput;
   // readline echoes what's typed through its own _writeToOutput, which isn't part of its documented interface.
@@ -27,7 +29,8 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
     throw new Error('setup can\'t find this terminal\'s readline history or kill ring, so it couldn\'t keep what\'s typed ' +
       'out of them');
   }
-  if (rl.line !== '') {
+  const draft = rl.line;
+  if (draft !== '') {
     rl.write(null, { ctrl: true, name: 'e' });
     rl.write(null, { ctrl: true, name: 'u' });
   }
@@ -41,7 +44,8 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
   let quiet: ReturnType<typeof setTimeout> | undefined;
   let whole = () => {};
   let closed = () => {};
-  let pasting = false;
+  let gone = false;
+  let pasting = pastingNow();
   let tookInPaste = false;
   const take = (line: string) => {
     // readline puts a line in its history before it hands the line on.
@@ -75,7 +79,10 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
         clearTimeout(quiet);
         resolve(lines.join('\n'));
       };
-      closed = () => resolve('');
+      closed = () => {
+        gone = true;
+        resolve('');
+      };
       rl.once('close', closed);
     });
   } finally {
@@ -92,5 +99,6 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
     }
     echoing._writeToOutput = write;
     output.write('\n');
+    if (draft !== '' && !gone) rl.write(draft);
   }
 }
