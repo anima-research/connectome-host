@@ -101,6 +101,8 @@ when the store has pending maintenance, and it is visible in the new process's
 `llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To avoid it, stop the
 resident first, then drain the debt offline with `bun scripts/warmup-session.ts
 <session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
+The script gives the strategy no tool definitions, so a chunk holding tool calls stays
+uncompressed, and with a Fable or Mythos compression model every chunk does.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
 `--merge-threshold` must pass the same values to the warmup command.
 
@@ -717,6 +719,8 @@ repo**:
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
   `scripts/warmup-session.ts <session>`, which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
-  not read from the recipe).
+  not read from the recipe). It gives the strategy no tool definitions, so a
+  chunk holding tool calls stays uncompressed, and with a Fable or Mythos
+  compression model every chunk does.
 - `scripts/strip-oversized-images.mjs` — remove >5 MB image blocks from the
   chronicle (agent must be stopped). No shipped equivalent.
