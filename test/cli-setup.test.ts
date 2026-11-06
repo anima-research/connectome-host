@@ -1510,7 +1510,7 @@ test('setup\'s agent\'s host checks for no update on its own, whatever the perso
   }
 });
 
-test('nothing Bun gave setup from .env reaches the programs it runs or its agent, but for the API key, which setup checks and gives the agent, once .env has changed too, and Bun loads no .env into them',
+test('nothing Bun gave setup from .env reaches the programs it runs or its agent, but for the API key and ANTHROPIC_BASE_URL, which setup reads from .env itself and gives the agent, once .env has changed too, and Bun loads no .env into them',
   async () => {
     const dir = directory();
     mkdirSync(join(dir, '.setup'));
@@ -1541,7 +1541,7 @@ test('nothing Bun gave setup from .env reaches the programs it runs or its agent
     expect(launch.env.PATH).toBe('/usr/bin:/bin');
   });
 
-test('nothing Bun gave setup from any dotenv file of the directory it was started in reaches its programs or its agent, but for the API key, which setup checks and gives the agent, whatever NODE_ENV is', async () => {
+test('nothing Bun gave setup from any dotenv file of the directory it was started in reaches its programs or its agent, but for the API key and ANTHROPIC_BASE_URL, which setup reads from .env itself and gives the agent, whatever NODE_ENV is', async () => {
   const started = directory();
   const files = ['.env', '.env.local', '.env.development', '.env.development.local', '.env.production', '.env.production.local',
     '.env.test', '.env.test.local'];
