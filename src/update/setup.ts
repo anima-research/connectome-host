@@ -423,7 +423,6 @@ export function setup(options: SetupOptions): void {
         ? 'this install has no record yet' : `this install's record is bound to ${bindingFound.to}, where it is`}, so ` +
         'there\'s nothing to bind. Run it again without.');
   }
-  let finished: string | null = null;
   if (bindingFound?.kind === 'resume') {
     const { plan } = bindingFound;
     const here = workingDirOf(root);
@@ -454,8 +453,8 @@ export function setup(options: SetupOptions): void {
       releaseLock(root);
     }
     existing = plan.record;
-    finished = `Finished binding the install at ${root} to ${here}, which a setup run cut off had begun, with the ` +
-      'places that run was given.';
+    say(`Finished binding the install at ${root} to ${here}, which a setup run cut off had begun, with the ` +
+      'places that run was given.');
   }
   const binding = bindingFound?.kind === 'bind' ? bindingFound : null;
   let bindPlaces: RebindPlan['places'] = [];
@@ -822,7 +821,6 @@ export function setup(options: SetupOptions): void {
     command = writeEntries();
   }
 
-  if (finished !== null) say(finished);
   if (settingUp) {
     say(`Set up ${root} as the install of ${readCurrent(root)} that serves ${dataDir}.`);
   } else if (binding !== null) {

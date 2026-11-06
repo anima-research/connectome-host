@@ -813,6 +813,23 @@ describe('a binding cut off', () => {
     expect(command.stderr).toContain('a setup binding this install was cut off before it finished');
   });
 
+  test('a cut-off binding that setup finishes, and then refuses a DATA_DIR, says it finished the binding before it refuses', () => {
+    setup(options(install));
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    writeFileSync(join(root, REBIND_PLAN), JSON.stringify({
+      v: 1, id: 'plan-1', from: install, to: moved, places: [],
+      record: { v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved },
+    }));
+    const other = join(dir, 'other-data');
+    mkdirSync(other);
+    const why = refusal(() => setup(options(moved, { dataDir: other })));
+    expect(why).toContain(`serves ${join(moved, 'data')}, not ${other}`);
+    expect(said).toContain(`Finished binding the install at ${root} to ${moved}, which a setup run cut off had begun, with the places that run was given.`);
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+  });
+
   test('a plan that isn\'t whole is refused as one this release can\'t finish, naming each file to put right, and nothing changes', () => {
     const { places } = chained();
     const root = rootOf(install);
