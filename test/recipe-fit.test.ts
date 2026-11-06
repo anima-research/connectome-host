@@ -602,7 +602,7 @@ describe('a count of the system prompt and tools the host sends beside the conve
     expect(over).toContain('the system prompt and tools the host sends, counted at 48,385, come on top.');
     expect(over).toContain('agent.contextBudgetTokens to 167,999 or less, so the system prompt and tools the host sends still fit');
     expect(over).toContain('bring the system prompt and tools the host sends to about 48,384 tokens or fewer, with fewer tools, ' +
-      'since a shorter system prompt raises the budget the host gives this recipe by as much');
+      'or a shorter system prompt only where it counts more than the estimate the budget is worked out from');
     expect(over).toContain('At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
       'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
       'each turn.');

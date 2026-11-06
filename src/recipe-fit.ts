@@ -296,7 +296,7 @@ function waysOut(f: Fit, problem: Problem): { floor: string; ways: string[]; atA
     const budgetMoves = f.budget === undefined && f.window - f.system - TOOLS_ROOM_TOKENS < DEFAULT_CONTEXT_BUDGET_TOKENS;
     ways.push(`bring ${SENT} to ${from === to ? `about ${n(to)} tokens`
       : from > 0 ? `between about ${n(from)} and ${n(to)} tokens` : `about ${n(to)} tokens or fewer`}, with ` +
-      (budgetMoves ? 'fewer tools, since a shorter system prompt raises the budget the host gives this recipe by as much'
+      (budgetMoves ? 'fewer tools, or a shorter system prompt only where it counts more than the estimate the budget is worked out from'
         : 'a shorter system prompt or fewer tools'));
   }
   const system = f.beside !== undefined ? undefined : nearestRange(f.system, (value) => ({ ...f, system: value }));
