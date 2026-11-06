@@ -444,6 +444,16 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const units = shellBin === null ? [names.host] : [names.shell, names.host];
   insideNeither(sys, manager, names, units, cmd);
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
+  const renamed = old !== null && sameDirectory(old.workingDirectory, work)
+    ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
+      unit.name !== names.host.name && unit.name !== names.shell.name)
+    : [];
+  // A renamed shell daemon matters only to an install that starts one; otherwise it's retired after the pass, as a
+  // dropped shell is.
+  for (const unit of renamed) {
+    const host = unit.name === old!.units.host.name;
+    if (host || shellBin !== null) renamedStopped(sys, manager, env, unit, host);
+  }
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null && !shell.newPort && !(await sys.portFree(Number(shell.port))) &&
     !shellRunning(sys, manager, env, names.shell)) {
@@ -474,10 +484,6 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       'Repeat this service install command with the same recipe so it uses that file as it is now.');
   }
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
-  const renamed = old !== null && sameDirectory(old.workingDirectory, work)
-    ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
-      unit.name !== names.host.name && unit.name !== names.shell.name)
-    : [];
   if (manager === 'systemd-user') noOtherHost(ctx, work, names, renamed, sys, env, cmd);
   else noOtherAgent(ctx, work, names, renamed, sys, env);
   if (!wantsShell) {
@@ -1165,6 +1171,34 @@ function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work:
 function untold(sys: ServiceSystem, manager: ServiceRecord['manager'], unit: ServiceUnit): string {
   return `${unit.name} is still ${manager === 'systemd-user' ? 'running' : 'loaded'}, but its file, ${unit.file}, is ` +
     'gone, so which install it runs can\'t be told';
+}
+
+// A unit this install's record names under an earlier name is retired once the new host passes its checks, so it
+// must not be running when that host starts: a host holds the install's store, which a second host can't open, and a
+// shell daemon holds the stored port.
+function renamedStopped(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
+  unit: ServiceUnit, host: boolean): void {
+  const whose = `${unit.name}, this install's own ${host ? 'host' : 'shell daemon'} under its earlier name,`;
+  let live: boolean;
+  if (manager === 'launchd') {
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') {
+      throw new Refusal(`Whether ${whose} is loaded can't be told: ${state.why}. Nothing was written.`);
+    }
+    live = state.kind !== 'unloaded';
+  } else {
+    const shown = showUnit(sys, env, unit.name, ['ActiveState']);
+    if (typeof shown === 'string') {
+      throw new Refusal(`${shown}, so whether ${whose} is running can't be told. Nothing was written.`);
+    }
+    live = RUNNING.has(shown.get('ActiveState') ?? '') || shown.get('ActiveState') === 'deactivating';
+  }
+  if (!live) return;
+  throw new Refusal(`${whose} is ${manager === 'launchd' ? 'loaded' : 'running'}, and ${host
+    ? "a host started beside it couldn't open the install's store, which it holds"
+    : "a shell daemon started beside it couldn't take the stored port, which it holds"}. Stop it when it suits you: ` +
+    `${stopLine(sys, manager, unit.name)}. Then repeat this service install command with the same recipe, which ` +
+    'retires its files once the new host passes its checks. Nothing was written.');
 }
 
 function stopLine(sys: ServiceSystem, manager: ServiceRecord['manager'], name: string): string {

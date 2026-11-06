@@ -242,12 +242,17 @@ class FakeSystemd {
   private begin(unit: string): void {
     const loaded = this.loaded.get(unit)!;
     const invocation = `${++this.invocations}`.padStart(32, '0');
-    if (this.exiting.has(unit)) this.running.delete(unit);
+    // As chronicle does, a host's store opens for one process at a time, so a second host on one store exits at once.
+    const host = (each: Loaded | undefined) => each !== undefined && each.execStart.includes('start.js');
+    const locked = host(loaded) && [...this.running.keys()].some((other) => other !== unit &&
+      host(this.loaded.get(other)) && this.loaded.get(other)!.workingDirectory === loaded.workingDirectory);
+    if (this.exiting.has(unit) || locked) this.running.delete(unit);
     else this.running.set(unit, invocation);
     this.latest.set(unit, invocation);
     this.starts.push({ unit, environment: loaded.environment, execStart: loaded.execStart });
     this.journal.push({ unit, invocation, own: false, after: 0, line: `Started ${unit} - ${loaded.description}.` });
-    for (const printed of this.prints(unit)) {
+    if (locked) this.journal.push({ unit, invocation, own: true, after: 0, line: 'Error: Store is locked by another process' });
+    else for (const printed of this.prints(unit)) {
       this.journal.push({ unit, invocation, own: true, ...(typeof printed === 'string' ? { after: 0, line: printed } : printed) });
     }
   }
@@ -5001,7 +5006,7 @@ test('an explicit install over a record it can\'t read in full still refuses one
   expect(existsSync(hostUnit(at))).toBe(false);
 });
 
-test('macOS retires a same-directory record\'s agents under their recorded labels when the slug has changed', async () => {
+for (const loaded of [true, false]) test('macOS ' + (loaded ? 'refuses over' : 'retires') + ' a same-directory record\'s agents under their recorded labels, with no plists, ' + (loaded ? 'loaded' : 'not loaded'), async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin' });
   const old = 'com.animalabs.connectome.old-name';
@@ -5009,14 +5014,22 @@ test('macOS retires a same-directory record\'s agents under their recorded label
   writeFileSync(join(at.root, 'service.json'), JSON.stringify({ v: 1, manager: 'launchd',
     units: { host: { name: old, file: join(dir, `${old}.plist`) }, shell: { name: `${old}.shell`, file: join(dir, `${old}.shell.plist`) } },
     hostArgs: [at.recipe, '--headless'], workingDirectory: at.work, logs: { kind: 'file', path: join(at.work, 'logs', 'agent.log') } }));
-  f.systemd.agents.set(old, { pid: 7001 });
-  f.systemd.agents.set(`${old}.shell`, { pid: 7002 });
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect(f.systemd.agents.has(old)).toBe(false);
-  expect(f.systemd.agents.has(`${old}.shell`)).toBe(false);
+  if (loaded) {
+    f.systemd.agents.set(old, { pid: 7001 });
+    f.systemd.agents.set(`${old}.shell`, { pid: 7002 });
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+    expect(f.err.join('\n')).toContain(`${old}, this install's own host under its earlier name, is loaded`);
+    expect(f.err.join('\n')).toContain(`launchctl bootout gui/1001/${old}.`);
+    expect(existsSync(agentPlist(at))).toBe(false);
+    expect(f.systemd.agents.has(old)).toBe(true);
+  } else {
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    expect(existsSync(agentPlist(at))).toBe(true);
+    expect(readServiceRecord(at.root)!.units.host.name).toBe('com.animalabs.connectome.my-resident');
+  }
 });
 
-for (const platform of ['linux', 'darwin'] as const) test(platform + ': a record\'s own host unit under its old name, present and loaded here, is retired rather than refused', async () => {
+for (const platform of ['linux', 'darwin'] as const) for (const live of [true, false]) test(platform + ': a record\'s own host unit under its old name, present here and ' + (live ? 'running, is refused with its stop line, nothing written' : 'stopped, is retired rather than refused'), async () => {
   const at = install();
   const f = fake(at, { platform });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -5027,20 +5040,103 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ': a record
     run('systemctl', ['--user', 'stop', HOST]);
     renameSync(hostUnit(at), file);
     for (const args of [['daemon-reload'], ['enable', name], ['start', name]]) run('systemctl', ['--user', ...args]);
+    if (!live) run('systemctl', ['--user', 'stop', name]);
   } else {
     run('launchctl', ['bootout', 'gui/1001/com.animalabs.connectome.my-resident']);
     writeFileSync(file, readFileSync(agentPlist(at), 'utf-8')
       .replace('<string>com.animalabs.connectome.my-resident</string>', `<string>${name}</string>`));
     rmSync(agentPlist(at));
     run('launchctl', ['bootstrap', 'gui/1001', file]);
+    if (!live) run('launchctl', ['bootout', `gui/1001/${name}`]);
   }
   const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
   writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { host: { name, file } } }));
   f.err.length = 0;
-  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
-  expect(f.err).toEqual([]);
+  if (live) {
+    expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+    expect(f.err.join('\n')).toContain(`${name}, this install's own host under its earlier name, is ` +
+      `${platform === 'linux' ? 'running' : 'loaded'}, and a host started beside it couldn't open the install's store`);
+    expect(f.err.join('\n')).toContain(platform === 'linux' ? `systemctl --user stop ${name}.` : `launchctl bootout gui/1001/${name}.`);
+    expect(existsSync(file)).toBe(true);
+    expect(existsSync(platform === 'linux' ? hostUnit(at) : agentPlist(at))).toBe(false);
+  } else {
+    expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+    expect(f.err).toEqual([]);
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(platform === 'linux' ? hostUnit(at) : agentPlist(at))).toBe(true);
+  }
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ': a record\'s own host unit under its old name whose state can\'t be told is refused, naming it, with nothing written', async () => {
+  const at = install();
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const run = (command: string, args: string[]) => expect(f.system.run(command, args, {}).status).toBe(0);
+  const name = platform === 'linux' ? 'connectome-old-name.service' : 'com.animalabs.connectome.old-name';
+  const file = platform === 'linux' ? join(unitsDir(at), name) : agentPlist(at, name);
+  if (platform === 'linux') {
+    run('systemctl', ['--user', 'stop', HOST]);
+    renameSync(hostUnit(at), file);
+    for (const args of [['daemon-reload'], ['enable', name]]) run('systemctl', ['--user', ...args]);
+  } else {
+    run('launchctl', ['bootout', 'gui/1001/com.animalabs.connectome.my-resident']);
+    writeFileSync(file, readFileSync(agentPlist(at), 'utf-8')
+      .replace('<string>com.animalabs.connectome.my-resident</string>', `<string>${name}</string>`));
+    rmSync(agentPlist(at));
+  }
+  const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { host: { name, file } } }));
+  if (platform === 'linux') f.systemd.failOnce.set(`show ${name}`, 'Failed to get properties: Connection timed out');
+  else {
+    const answer = f.system.run;
+    f.system.run = (command, args, env) => command === 'launchctl' && args[0] === 'list' && args[1] === name
+      ? { status: 5, stdout: '', stderr: 'manager denied query' } : answer(command, args, env);
+  }
+  f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(platform === 'linux'
+    ? `so whether ${name}, this install's own host under its earlier name, is running can't be told. Nothing was written.`
+    : `Whether ${name}, this install's own host under its earlier name, is loaded can't be told: manager denied query. Nothing was written.`);
+  expect(existsSync(platform === 'linux' ? hostUnit(at) : agentPlist(at))).toBe(false);
+});
+
+test('a record\'s own shell daemon under its old name, still running on the stored port, is refused for that, not as another process', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const run = (command: string, args: string[]) => expect(f.system.run(command, args, {}).status).toBe(0);
+  const name = 'connectome-old-name-shell.service';
+  const file = join(unitsDir(at), name);
+  run('systemctl', ['--user', 'stop', SHELL]);
+  renameSync(shellUnit(at), file);
+  for (const args of [['daemon-reload'], ['enable', name], ['start', name]]) run('systemctl', ['--user', ...args]);
+  const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { ...record.units, shell: { name, file } } }));
+  f.system.portFree = async () => false;
+  f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`${name}, this install's own shell daemon under its earlier name, is running`);
+  expect(f.err.join('\n')).not.toContain('something other than');
+  expect(existsSync(shellUnit(at))).toBe(false);
+});
+
+test('a record\'s own shell daemon under its old name, still running, is retired, not refused, by an install that drops the shell', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const run = (command: string, args: string[]) => expect(f.system.run(command, args, {}).status).toBe(0);
+  const name = 'connectome-old-name-shell.service';
+  const file = join(unitsDir(at), name);
+  run('systemctl', ['--user', 'stop', SHELL]);
+  renameSync(shellUnit(at), file);
+  for (const args of [['daemon-reload'], ['enable', name], ['start', name]]) run('systemctl', ['--user', ...args]);
+  const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { ...record.units, shell: { name, file } } }));
+  writeFileSync(at.recipe, '{}');
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.systemd.running.has(name)).toBe(false);
   expect(existsSync(file)).toBe(false);
-  expect(existsSync(platform === 'linux' ? hostUnit(at) : agentPlist(at))).toBe(true);
+  expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
 });
 
 test('a loader\'s stderr is redacted whole before its last line is shown', async () => {
