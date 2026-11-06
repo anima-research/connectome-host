@@ -131,7 +131,7 @@ export function createPipedTurns(
           since = performance.now();
           timer = setTimeout(() => {
             if (!waits.includes(wait)) return;
-            out.error(`(no answer after ${capMs / 1000} s: going on without it)`);
+            out.error(`(no answer after ${capMs / 1000} s: going on; it prints here when it comes)`);
             end(wait);
             waits[0]?.arm();
           }, left);

@@ -259,7 +259,7 @@ describe('the wait for a line\'s turn', () => {
       expect(await settledNow(typed)).toBe(false);
       await advance(1);
       expect(await settledNow(typed)).toBe(true);
-      expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on without it)');
+      expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on; it prints here when it comes)');
     });
   });
 
@@ -311,7 +311,7 @@ describe('the wait for a line\'s turn', () => {
       expect(await settledNow(typed)).toBe(false);
       await advance(1);
       expect(await settledNow(typed)).toBe(true);
-      expect(out.at(-1)).toBe('err:(no answer after 0.4 s: going on without it)');
+      expect(out.at(-1)).toBe('err:(no answer after 0.4 s: going on; it prints here when it comes)');
     });
   });
 
@@ -326,7 +326,7 @@ describe('the wait for a line\'s turn', () => {
       expect(await settledNow(next)).toBe(false);
       await advance(1);
       expect(await settledNow(next)).toBe(true);
-      expect(out.filter((line) => line.includes('no answer after'))).toEqual(['err:(no answer after 0.4 s: going on without it)']);
+      expect(out.filter((line) => line.includes('no answer after'))).toEqual(['err:(no answer after 0.4 s: going on; it prints here when it comes)']);
     });
   });
 
@@ -342,7 +342,7 @@ describe('the wait for a line\'s turn', () => {
       expect(await settledNow(typed)).toBe(false);
       await advance(1);
       expect(await settledNow(typed)).toBe(true);
-      expect(out.at(-1)).toBe('err:(no answer after 0.2 s: going on without it)');
+      expect(out.at(-1)).toBe('err:(no answer after 0.2 s: going on; it prints here when it comes)');
     });
   });
 
@@ -364,7 +364,7 @@ describe('the wait for a line\'s turn', () => {
     emit('inference:started');
     emit('inference:failed', { error: 'held' });
     await wait;
-    expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on without it)');
+    expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on; it prints here when it comes)');
   });
 
   test('with no cap, only the turn\'s end ends it, and nothing is said of a cap', async () => {
@@ -395,7 +395,7 @@ describe('the wait for a line\'s turn', () => {
       expect(await settledNow(typed)).toBe(false);
       await advance(2);
       expect(await settledNow(typed)).toBe(true);
-      expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on without it)');
+      expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on; it prints here when it comes)');
     });
   });
 
