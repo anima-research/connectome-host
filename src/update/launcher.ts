@@ -184,9 +184,11 @@ export function takeLock(root: string, ops: LauncherOps): void {
         throw new LockHeld(
           `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
           `An install runs one host at a time, and \`ps -o args= -p ${holder.pid}\` shows what that process runs. ` +
-          `If it runs this install's start.js, ${join(root, ENTRY_POINT)}, it's this install's host: stop it first. ` +
+          `If it runs this install's start.js, ${join(root, ENTRY_POINT)}, or a release in this install's ` +
+          `${join(root, 'releases')}, it's this install's host: stop it first. ` +
           'If it runs setup, it\'s binding an install: start this one again once that setup has ended. ' +
-          'If it runs another install\'s start.js, this install is a copy made while that host ran, and the lock came ' +
+          'If it runs another install\'s start.js or a release in another install\'s releases, this install is a copy ' +
+          'made while that host ran, and the lock came ' +
           'with the copy: run setup here first, which binds the copy to its own places and removes a lock it can show ' +
           'came with it, and then remove the lock file if it\'s still there. If it\'s something else that reused the ' +
           'number, remove the lock file.',
