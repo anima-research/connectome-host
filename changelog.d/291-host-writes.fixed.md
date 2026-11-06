@@ -28,8 +28,10 @@
     another `/newtopic`'s transition: the answer says `rows entered
     <agent>'s window`), rows leaving it (an undo or a shed: `rows left
     <agent>'s window`), both (`rows entered <agent>'s window and rows left
-    it`), an undo and its redo (`rows left <agent>'s window and entered it
-    again`), a session switch or the host's stop meanwhile
+    it`), rows that come and go and leave the window holding what it held,
+    as a turn and its undo or an undo and its redo do (`rows entered
+    <agent>'s window and left it, or left it and entered it again`), a
+    session switch or the host's stop meanwhile
     stores nothing either, and the answer gives the written summary back
     to run as `/newtopic <text>`: as written in the TUI, the Web UI and the
     headless mode, which send a multi-line command whole, and in the

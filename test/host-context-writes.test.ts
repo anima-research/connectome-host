@@ -393,19 +393,25 @@ describe('a bare /newtopic', () => {
   });
 
   // What the answer says moved is what did: rows that entered the window,
-  // rows that left it, or both (#485 bot review 3, finding 11).
+  // rows that left it, or both (#485 bot review 3, finding 11). A window
+  // that holds what it held at the start had rows leave it and enter it
+  // again, or enter it and leave it, which the two ends don't tell apart
+  // (#485 bot review 5, finding 35).
+  const SAME_ROWS = "rows entered clerk's window and left it, or left it and entered it again";
   for (const [moves, why] of [
-    ['/undo and /redo', "rows left clerk's window and entered it again"],
+    ['/undo and /redo', SAME_ROWS],
+    ['a whole turn and its /undo', SAME_ROWS],
     ['/undo and a whole turn', "rows entered clerk's window and rows left it"],
   ] as const) {
     test(`whose summary ${moves} ran during says what moved the window`, async () => {
-      const { h, app, summarized, releaseSummary } = await bare(`newtopic-bare-${moves === '/undo and /redo' ? 'redo' : 'undo-turn'}-`);
+      const { h, app, summarized, releaseSummary } = await bare(`newtopic-bare-${moves === '/undo and /redo' ? 'redo' : moves === '/undo and a whole turn' ? 'undo-turn' : 'turn-undo'}-`);
       try {
         const result = handleCommand('/newtopic', app);
         expect(summarized).toHaveLength(1);
+        if (moves === 'a whole turn and its /undo') await h.turn('clerk');
         expect(texts(handleCommand('/undo', app))[0]).toStartWith("Undone: clerk's last turn left its window");
         if (moves === '/undo and /redo') expect(texts(handleCommand('/redo', app))[0]).toStartWith("Redone: clerk's undone turn is back in its window");
-        else await h.turn('clerk');
+        else if (moves === '/undo and a whole turn') await h.turn('clerk');
         releaseSummary();
         expect(texts(await result.asyncWork!)).toEqual(refusedWith(why));
         expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();

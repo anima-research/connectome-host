@@ -1683,9 +1683,10 @@ function windowMark(cm: ContextManager): { at: string; ids: Set<string> } {
 }
 
 /** What moved the agent's window since `before` (windowMark), if anything:
- *  rows that entered it, rows that left it, both, or rows that left it and
- *  entered it again (an undo and its redo), which leave it holding what it
- *  held. */
+ *  rows that entered it, rows that left it, both, or, when it holds what it
+ *  held, rows that entered it and left it (a turn and its undo) or left it
+ *  and entered it again (an undo and its redo), which its two ends don't
+ *  tell apart. */
 function windowMoved(cm: ContextManager, before: { at: string; ids: Set<string> }, agentName: string): string | undefined {
   const now = windowMark(cm);
   if (now.at === before.at) return undefined;
@@ -1695,7 +1696,7 @@ function windowMoved(cm: ContextManager, before: { at: string; ids: Set<string> 
   return entered && left ? `rows entered ${window} and rows left it`
     : entered ? `rows entered ${window}`
     : left ? `rows left ${window}`
-    : `rows left ${window} and entered it again`;
+    : `rows entered ${window} and left it, or left it and entered it again`;
 }
 
 /**
