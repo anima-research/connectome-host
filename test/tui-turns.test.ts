@@ -516,6 +516,9 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(after).toContain('(undone) the other reply');
     expect(times(after, 'still counting')).toBe(1);
     expect(after).not.toContain('a fifth ledger');
+    const failed = steps.get('moved, turn failed')!.frame;
+    expect(failed).toContain('Branch moved (by another client): third');
+    expect(failed).toContain('[✗ error]');
   }, 40000);
 
   // A send that is never stored, one the framework refused or one during a

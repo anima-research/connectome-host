@@ -933,6 +933,15 @@ async function play(): Promise<void> {
     first.send('inference:completed');
     await until(async () => (await frame()).includes('the other reply'), 'the branch drawn');
     await step('moved, turn ended');
+    // A move found at the end of a turn that failed: the branch is drawn,
+    // and the turn's status stays.
+    storeBranch = 'third';
+    history.splice(1, history.length, { id: 't1', participant: 'agent', content: [{ type: 'text', text: 'the third reply' }] });
+    first.send('inference:started');
+    first.send('inference:failed', { error: 'gave up' });
+    first.send('inference:exhausted', { error: 'gave up' });
+    await until(async () => (await frame()).includes('the third reply'), 'the branch drawn');
+    await step('moved, turn failed');
   } else if (scenario === 'undone-long-turn') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // One turn of more rounds than the scrollback holds lines: each round's
