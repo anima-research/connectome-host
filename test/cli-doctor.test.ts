@@ -161,13 +161,16 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
 
 let managers = 0;
 
+const unitWords = (data: string): string => `PATH=${process.env.PATH ?? '/usr/bin:/bin'} DATA_DIR=${data} CONNECTOME_SUPERVISED=1`;
+
 function fakeManager(dir: string, opts: {
-  env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string;
+  env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null;
 } = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
   writeFileSync(join(at, 'environment'), (opts.env ?? []).map((line) => `${line}\n`).join(''));
-  if (opts.unit !== undefined) writeFileSync(join(at, 'unit-environment'), `${opts.unit}\n`);
+  const unit = opts.unit === undefined ? unitWords(join(dir, 'data')) : opts.unit;
+  if (unit !== null) writeFileSync(join(at, 'unit-environment'), `${unit}\n`);
   for (const [name, value] of Object.entries(opts.launchd ?? {})) writeFileSync(join(at, 'values', name), `${value}\n`);
   const path = join(at, 'manager');
   writeFileSync(path, [
@@ -302,19 +305,48 @@ describe('connectome doctor', () => {
     expect(both.status).toBe(1);
   });
 
-  test('a compression count refused for its credential names each the host may send and says to replace it', async () => {
+  test('a compression count refused for its credential is a line naming each credential the host may send, not a problem', async () => {
     const at = install();
     const r = await withHost(at, {
       ...HEALTHY_HOST,
       'count-check': { beside: STANDIN_BESIDE,
-        agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' },
+        agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens' },
         compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_401' },
       },
     }, () => run(at));
-    expect(r.out).toContain('✗ count_tokens couldn\'t count with the compression model, claude-old: count_tokens refused ' +
+    expect(r.out).toContain('\n  count_tokens couldn\'t count with the compression model, claude-old: count_tokens refused ' +
       'the credential the host sent (401): its subscription login when it has one, else ANTHROPIC_AUTH_TOKEN, else ' +
       'ANTHROPIC_API_KEY. Replace that credential where the service gets it, and restart the service.');
-    expect(r.status).toBe(1);
+    expect(r.out).not.toContain('✗ count_tokens');
+  });
+
+  test('a count that fails short of refusing the resident\'s own credential is a line, not a problem', async () => {
+    const sources = ['count_tokens_failed_404', 'count_tokens_failed_500', 'count_tokens_timeout', 'count_tokens_error'];
+    for (const source of sources) {
+      const at = install();
+      const r = await withHost(at, {
+        ...HEALTHY_HOST,
+        'count-check': { ...COUNTED, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source } },
+      }, () => run(at, { python: fakePython(at.work, { end: 'clean' }) }));
+      expect([source, r.out]).toEqual([source, expect.stringContaining('\n  count_tokens couldn\'t count with claude-small-window: ')]);
+      expect([source, r.out.includes('✗ count_tokens'), r.status]).toEqual([source, false, 0]);
+    }
+  });
+
+  test('the agent count\'s 401 is a problem where the resident runs on Anthropic, and a line where it runs on another provider', async () => {
+    const refused = { ...COUNTED, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' } };
+    const anthropic = install();
+    const own = await withHost(anthropic, { ...HEALTHY_HOST, 'count-check': refused }, () => run(anthropic));
+    expect(own.out).toContain('✗ count_tokens couldn\'t count with claude-small-window: count_tokens refused the credential');
+    const other = install({ recipe: { ...RECIPE(''), agent: { name: 'ember', provider: 'openrouter', model: 'claude-small-window', systemPrompt: 'hi' } } });
+    const elsewhere = await withHost(other, { ...HEALTHY_HOST, 'count-check': refused }, () => run(other));
+    expect(elsewhere.out).toContain('\n  count_tokens couldn\'t count with claude-small-window: count_tokens refused the credential');
+    expect(elsewhere.out).not.toContain('✗ count_tokens');
+    const unloaded = install({ recipe: { ...RECIPE(''), agent: { name: 'ember', provider: 'not-a-provider', model: 'claude-small-window', systemPrompt: 'hi' } } });
+    const unknown = await withHost(unloaded, { ...HEALTHY_HOST, 'count-check': refused }, () => run(unloaded));
+    expect(unknown.out).toMatch(/✗ \S+recipe\.json doesn't load: /);
+    expect(unknown.out).toContain('\n  count_tokens couldn\'t count with claude-small-window: count_tokens refused the credential');
+    expect(unknown.out).not.toContain('✗ count_tokens');
   });
 
   test('a service stopped on purpose is said as stopped, with the command that starts it, and with no host answering is no problem', async () => {
@@ -482,7 +514,7 @@ describe('connectome doctor', () => {
     try {
       const r = await withHost(at, HEALTHY_HOST, () => run(at));
       expect(r.out).toMatch(/keys the host does not read.*<DISCORD_TOKEN>/);
-      expect(warned.join('\n')).not.toContain(SECRETS.DISCORD_TOKEN);
+      expect(warned).toEqual([]);
       expectNoSecret(r.out + r.err);
     } finally {
       console.warn = warn;
@@ -492,23 +524,23 @@ describe('connectome doctor', () => {
   test('a stored DISCORD_TOKEN that no server gets is told to be named in a server\'s env, the one place discord-mcpl reads it', async () => {
     const at = install({ stored: ['DISCORD_TOKEN'], recipe: { ...RECIPE(''), mcpServers: { shell: RECIPE('').mcpServers.shell } } });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toMatch(/✗ DISCORD_TOKEN is in setup's list of stored secrets, and no server gets it: .* Name it as "\$\{DISCORD_TOKEN\}" in the recipe entry of the server that needs it: in its env, as "DISCORD_TOKEN": "\$\{DISCORD_TOKEN\}"\. mcpl-servers\.json /);
-    expect(r.out).not.toMatch(/DISCORD_TOKEN is in setup's list of stored secrets, and no server gets it[^\n]*or in its args/);
+    expect(r.out).toMatch(/\n {2}DISCORD_TOKEN is in setup's list of stored secrets, and doctor finds no server given it: .* Name it as "\$\{DISCORD_TOKEN\}" in the recipe entry of the server that needs it: in its env, as "DISCORD_TOKEN": "\$\{DISCORD_TOKEN\}"\. mcpl-servers\.json /);
+    expect(r.out).not.toMatch(/DISCORD_TOKEN is in setup's list of stored secrets, and doctor finds no server given it[^\n]*or in its args/);
   });
 
-  test('a secret setup stored that no server\'s env maps is a problem, the overlay\'s replacement included', async () => {
+  test('a secret setup stored that no server\'s env maps is a line saying doctor finds none given it, the overlay\'s replacement included', async () => {
     const lonely = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
     const r = await withHost(lonely, HEALTHY_HOST, () => run(lonely));
-    expect(r.out).toMatch(/✗.*LONELY_SECRET/);
-    expect(r.out).toMatch(/LONELY_SECRET is in setup's list of stored secrets, and no server gets it: no server the host starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it nowhere outside its servers\. Name it as "\$\{LONELY_SECRET\}" in the recipe entry of the server that needs it: in its env, as "LONELY_SECRET": "\$\{LONELY_SECRET\}", or in its args, or, for a server the host dials, in its token or url\. mcpl-servers\.json and the agent overlay take their values as written, with no \$\{…\} substituted\. For a server mcpl-servers\.json starts, a recipe entry can't set its env or args: move the server's definition out of mcpl-servers\.json into the recipe, or set "inheritEnv": true in its recipe entry, which hands it the host's whole environment, with LONELY_SECRET left out of the file's env, whose value would replace the host's\. An agent overlay entry replaces the recipe's and the file's, so the recipe can't reach a server the overlay defines while that entry is there: take the entry out of the overlay, put the server's definition, with its command or url, in the recipe, or in mcpl-servers\.json with a recipe entry that names it, and follow the steps above for whichever then defines it\. Then restart the service\./);
+    expect(r.out).not.toMatch(/✗.*LONELY_SECRET/);
+    expect(r.out).toMatch(/LONELY_SECRET is in setup's list of stored secrets, and doctor finds no server given it: no server the host starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it nowhere outside its servers\. Name it as "\$\{LONELY_SECRET\}" in the recipe entry of the server that needs it: in its env, as "LONELY_SECRET": "\$\{LONELY_SECRET\}", or in its args, or, for a server the host dials, in its token or url\. mcpl-servers\.json and the agent overlay take their values as written, with no \$\{…\} substituted\. For a server mcpl-servers\.json starts, a recipe entry can't set its env or args: move the server's definition out of mcpl-servers\.json into the recipe, or set "inheritEnv": true in its recipe entry, which hands it the host's whole environment, with LONELY_SECRET left out of the file's env, whose value would replace the host's\. An agent overlay entry replaces the recipe's and the file's, so the recipe can't reach a server the overlay defines while that entry is there: take the entry out of the overlay, put the server's definition, with its command or url, in the recipe, or in mcpl-servers\.json with a recipe entry that names it, and follow the steps above for whichever then defines it\. Then restart the service\./);
     expect(r.out).not.toMatch(/✗.*SESSION_SERVER_TOKEN/);
     expectNoSecret(r.out + r.err);
-    expect(r.status).toBe(1);
+    expect(r.status).toBe(0);
 
     const shadowed = install({ overlay: { shell: { command: '/elsewhere/terminal-sessions-mcp', env: {} } } });
     const r2 = await withHost(shadowed, HEALTHY_HOST, () => run(shadowed));
-    expect(r2.out).toMatch(/✗.*SESSION_SERVER_TOKEN/);
-    expect(r2.status).toBe(1);
+    expect(r2.out).toMatch(/\n {2}SESSION_SERVER_TOKEN is in setup's list of stored secrets, and doctor finds no server given it/);
+    expect(r2.out).not.toMatch(/✗.*SESSION_SERVER_TOKEN/);
   });
 
   test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too, from doctor\'s lines and the ladder\'s reads', async () => {
@@ -520,7 +552,7 @@ describe('connectome doctor', () => {
     expectNoSecret(r.out + r.err);
   });
 
-  test('with no stored-secrets list, every value of a name setup doesn\'t know is hidden, as setup--run hides it, and doctor says why', async () => {
+  test('with no stored-secrets list, every value of a name in its dotenv files that setup doesn\'t know is hidden, as setup--run hides it, and doctor says why', async () => {
     const at = install({ env: { LONELY_SECRET: SECRETS.LONELY_SECRET } });
     rmSync(join(at.work, '.setup', 'stored-secrets.json'));
     const python = join(at.work, 'python3-reads');
@@ -598,7 +630,7 @@ describe('connectome doctor', () => {
       },
     });
     const r = await withHost(overridden, HEALTHY_HOST, () => run(overridden));
-    expect(r.out).toMatch(/✗.*LONELY_SECRET/);
+    expect(r.out).toMatch(/\n {2}LONELY_SECRET is in setup's list of stored secrets, and doctor finds no server given it/);
     expect(r.out).toMatch(/✓.*SESSION_SERVER_TOKEN reaches shell/);
   });
 
@@ -608,7 +640,8 @@ describe('connectome doctor', () => {
       recipe: { ...RECIPE(''), mcpServers: { ...RECIPE('').mcpServers, extra: { command: '/x/extra', env: { AGENT_TIMEZONE: '${LONELY_SECRET}' } } } },
     });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toMatch(/✗ LONELY_SECRET is in setup's list of stored secrets, and no server gets it/);
+    expect(r.out).toMatch(/\n {2}LONELY_SECRET is in setup's list of stored secrets, and doctor finds no server given it/);
+    expect(r.out).not.toMatch(/✗ LONELY_SECRET is in setup's list/);
     expect(r.out).not.toMatch(/LONELY_SECRET reaches/);
   });
 
@@ -634,7 +667,7 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('✓ WEBUI_ORIGIN is named in the recipe, at modules.webui.allowedOrigins[1].');
     expect(r.out).not.toMatch(/✗ WEBUI_(USER|PASS|ORIGIN)/);
     expect(r.out).toMatch(/keys the host does not read \(ignored\): modules\.webiu/);
-    expect(r.out).toMatch(/✗ WEBUI_TYPO is in setup's list of stored secrets, and no server gets it: .*, and the recipe names it nowhere outside its servers\./);
+    expect(r.out).toMatch(/\n {2}WEBUI_TYPO is in setup's list of stored secrets, and doctor finds no server given it: .*, and the recipe names it nowhere outside its servers\./);
     for (const value of ['web-user-value', 'web-pass-value', 'web-origin-value', 'web-typo-value']) expect(r.out + r.err).not.toContain(value);
   });
 
@@ -654,7 +687,7 @@ describe('connectome doctor', () => {
         recipe: { ...RECIPE(''), mcpServers: { ...RECIPE('').mcpServers, extra } },
       });
       const r = await withHost(at, HEALTHY_HOST, () => run(at));
-      expect(r.out).toMatch(/(✓ LONELY_SECRET reaches extra\.|✗ LONELY_SECRET is in setup's list of stored secrets, and no server gets it)/);
+      expect(r.out).toMatch(/(✓ LONELY_SECRET reaches extra\.|\n {2}LONELY_SECRET is in setup's list of stored secrets, and doctor finds no server given it)/);
       got.push([what, /✓ LONELY_SECRET reaches extra\./.test(r.out)]);
     }
     expect(got).toEqual(cases.map(([what, , reaches]) => [what, reaches]));
@@ -749,7 +782,7 @@ describe('connectome doctor', () => {
     writeFileSync(join(outside.work, '.env.local'), `LONELY_SECRET=${SECRETS.LONELY_SECRET}\n`);
     const r3 = await withHost(outside, HEALTHY_HOST, () => run(outside));
     expect(r3.out).not.toMatch(/✗ LONELY_SECRET is in setup's list of stored secrets \(/);
-    expect(r3.out).toMatch(/✗ LONELY_SECRET is in setup's list of stored secrets, and no server gets it/);
+    expect(r3.out).toMatch(/\n {2}LONELY_SECRET is in setup's list of stored secrets, and doctor finds no server given it/);
     expectNoSecret(r3.out + r3.err);
   });
 
@@ -854,8 +887,8 @@ describe('connectome doctor', () => {
     expect(r.out).toMatch(/✗.*discord isn't connected.*still retrying/);
     expect(r.out).toMatch(/✗.*old isn't connected.*its command is empty/);
     expect(r.out).toMatch(/✗ The server dying isn't connected, and the host isn't retrying it\. Its stderr is in the data directory/);
-    expect(r.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: .*\. So the context's makeup shows no exact total\. A retired model answers 404, and the endpoint count_tokens asks \(Anthropic's API, or the one ANTHROPIC_BASE_URL names\) may answer it for a model it doesn't serve: set COUNT_TOKENS_MODEL in .*\.env to a current Claude model, and restart the service, since the host reads it when it starts\./);
-    expect(r.out).toMatch(/✗.*claude-old.*folding stalls.*: change the recipe's agent\.strategy\.compressionModel to a current model and restart the service\. The endpoint count_tokens asks \(Anthropic's API, or the one ANTHROPIC_BASE_URL names\) may answer 404 for a model it doesn't serve too, and then the 404 doesn't mean it's retired\./);
+    expect(r.out).toMatch(/\n {2}count_tokens couldn't count with claude-small-window: .*\. So the context's makeup shows no exact total\. A retired model answers 404, and the endpoint count_tokens asks \(Anthropic's API, or the one ANTHROPIC_BASE_URL names\) may answer it for a model it doesn't serve: set COUNT_TOKENS_MODEL in .*\.env to a current Claude model, and restart the service, since the host reads it when it starts\./);
+    expect(r.out).toMatch(/\n {2}count_tokens couldn't count with the compression model, claude-old.*folding stalls.*: change the recipe's agent\.strategy\.compressionModel to a current model and restart the service\. The endpoint count_tokens asks \(Anthropic's API, or the one ANTHROPIC_BASE_URL names\) may answer 404 for a model it doesn't serve too, and then the 404 doesn't mean it's retired\./);
     expect(r.out).not.toContain('only a gateway serves');
     expect(r.status).toBe(1);
   });
@@ -874,7 +907,7 @@ describe('connectome doctor', () => {
         ...HEALTHY_HOST,
         'count-check': { beside: STANDIN_BESIDE, agent, compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_404' } },
       }, () => run(at));
-      expect(r.out).toMatch(/✗ count_tokens couldn't count with the compression model, claude-old: .*: change the recipe's agent\.strategy\.compressionModel to a current model.* and restart the service\./);
+      expect(r.out).toMatch(/\n {2}count_tokens couldn't count with the compression model, claude-old: .*: change the recipe's agent\.strategy\.compressionModel to a current model.* and restart the service\./);
       got.push([what, r.out.includes('or leave it out to compress with the agent\'s model,')]);
     }
     expect(got).toEqual(cases.map(([what, , offered]) => [what, offered]));
@@ -900,7 +933,7 @@ describe('connectome doctor', () => {
       ...HEALTHY_HOST,
       'count-check': { beside: STANDIN_BESIDE, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_error' }, compression: null },
     }, () => run(at));
-    expect(r.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: the count_tokens request failed, or answered with what couldn't be read or with no count\./);
+    expect(r.out).toMatch(/\n {2}count_tokens couldn't count with claude-small-window: the count_tokens request failed, or answered with what couldn't be read or with no count\./);
 
     const none = install();
     const r2 = await withHost(none, {
@@ -1401,7 +1434,9 @@ describe('connectome doctor: the environment the service gets from its manager',
         manager,
         recipe: { ...RECIPE(''), agent: { name: 'ember', model: 'claude-sup-${CONNECTOME_SUPERVISED}', systemPrompt: 'hi' } },
       });
-      const given = fakeManager(at.work, { env: ['CONNECTOME_SUPERVISED=0'], launchd: { CONNECTOME_SUPERVISED: '0' } });
+      const given = fakeManager(at.work, {
+        env: ['CONNECTOME_SUPERVISED=0'], launchd: { CONNECTOME_SUPERVISED: '0' }, unit: unitWords(at.data),
+      });
       const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: given.path, launchctl: given.path }));
       expect([manager, r.out]).toEqual([manager, expect.stringContaining('fit claude-sup-1\'s window')]);
     }
@@ -1651,9 +1686,8 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
 
   test('a ladder that can\'t be started is a problem, and doctor still ends with its closing line', async () => {
     const at = install();
-    const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
-    writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { host: { name: 'connectome-test\u0000.service', file: '/nowhere/x' } } }));
-    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: `${at.data}\u0000`, extraState: [] }));
+    const r = await run(at);
     expect(r.out).toMatch(/✗ The ladder couldn't be started: /);
     expect(r.out).toMatch(/Doctor found \d+ problems?, marked ✗\.$/);
   });
@@ -1837,26 +1871,26 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     expect(r.out).toContain(`Recipe "${DECODED}" has keys the host does not read`);
   });
 
-  test('a unit whose environment can\'t be read is said, and doctor goes on with its own PATH and the record\'s DATA_DIR', async () => {
+  test('a unit whose environment systemd doesn\'t give stops doctor, saying so and what to do', async () => {
     const at = install();
-    const manager = fakeManager(at.work);
+    const manager = fakeManager(at.work, { unit: null });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
-    expect(r.out).toContain('The environment connectome-test.service\'s unit sets couldn\'t be read (');
-    expect(r.out).toContain('so doctor takes PATH from its own environment or the manager\'s, and DATA_DIR from the install ' +
-      'record, in its place.');
-    expect(r.out).not.toContain('Doctor stops here');
-    expect(r.out).toContain('pid 4242');
+    expect(r.out).toContain('✗ systemd didn\'t say the environment connectome-test.service sets the service (');
+    expect(r.out).toContain('). Run doctor again, or `connectome service install` writes the unit anew.');
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.out).not.toContain('pid 4242');
+    expect(r.status).toBe(1);
   });
 
-  test('a plist whose environment plutil gives as something other than JSON is said, and doctor goes on', async () => {
+  test('a plist whose environment plutil gives as something other than JSON stops doctor, saying so', async () => {
     const at = install({ manager: 'launchd' });
     const plutil = join(at.work, 'plutil-garbled');
     writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
     chmodSync(plutil, 0o755);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
-    expect(r.out).toContain('The environment connectome-test.service\'s plist sets couldn\'t be read (plutil\'s answer wasn\'t ' +
-      'JSON), so doctor takes PATH');
-    expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).toContain('connectome-test.service\'s plist, couldn\'t be read for the environment it sets the service ' +
+      '(plutil\'s answer wasn\'t JSON). Fix it, or `connectome service install` writes it anew.');
+    expect(r.out).toContain('Doctor stops here');
   });
 
   test('the banner is out before doctor fetches the recipe\'s system prompt, so a fetch that hangs follows a line saying doctor started', async () => {
@@ -1946,5 +1980,26 @@ describe('connectome doctor\'s Discord check, in its round on the review of 4a79
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).not.toContain('The entry discord:');
+  });
+});
+
+describe('connectome doctor, its round on the review of e9bb852cc', () => {
+  const onLaunchd = process.platform === 'darwin';
+
+  test('with a service record that can\'t be read, a manager doctor can\'t read stops it, as with a readable one', async () => {
+    const at = install();
+    writeFileSync(join(at.root, 'service.json'), '{ not json');
+    const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.out).not.toContain('With no service record to name its manager');
+    expect(r.status).toBe(1);
+  });
+
+  test('a name launchd holds empty is empty in the service\'s environment, though .env gives it a value', async () => {
+    const at = install({ manager: 'launchd' });
+    const manager = fakeManager(at.work, { launchd: { DISCORD_TOKEN: '' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain('✗ DISCORD_TOKEN is in setup\'s list of stored secrets and is empty in the service\'s environment');
   });
 });

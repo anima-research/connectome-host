@@ -7,8 +7,8 @@ import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
-  ENV_REFERENCE, loadRecipeDocument, namesEnvReference, readRecipeDocument, recipeDigest, recipeModel, runningFit,
-  unknownRecipeKeys, type Recipe, type RecipeDocument,
+  ENV_REFERENCE, loadRecipeDocument, namesEnvReference, readRecipeDocument, recipeDigest, recipeModel, resolveProvider,
+  runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
   PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, redactWindow, secretNames, storedSecrets, type Secret,
@@ -140,7 +140,6 @@ export async function doctor(
   const manager = service?.manager
     ?? (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd-user' : null);
   let managerUnread: string | null = null;
-  let unitUnread: string | null = null;
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -155,12 +154,20 @@ export async function doctor(
     try {
       managed = managerEnv(manager, names, parts);
     } catch (error) {
-      if (service !== null) throw error;
+      if (service !== null || serviceError !== null) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
     const unit = service === null ? null : unitEnv(service, parts);
-    if (unit !== null && 'why' in unit) unitUnread = unit.why;
-    const built = serviceEnv(work, root, managed, unit === null || 'why' in unit ? null : unit, parts.envLimitMs);
+    if (unit !== null && 'why' in unit) {
+      const { name, file } = service!.units.host;
+      const why = unit.why.replace(/\.$/, '');
+      throw new Error(service!.manager === 'launchd'
+        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it, or ` +
+          '`connectome service install` writes it anew.'
+        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
+          '`connectome service install` writes the unit anew.');
+    }
+    const built = serviceEnv(work, root, managed, unit, parts.envLimitMs);
     env = built.env;
     secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -202,11 +209,6 @@ export async function doctor(
   }
 
   const report = new Report(ctx.out, redact);
-  if (unitUnread !== null) {
-    report.line(`The environment ${service!.units.host.name}'s ${service!.manager === 'launchd' ? 'plist' : 'unit'} sets ` +
-      `couldn't be read (${unitUnread.replace(/\.$/, '')}), so doctor takes PATH from its own environment or the ` +
-      'manager\'s, and DATA_DIR from the install record, in its place.');
-  }
   if (managerUnread !== null) {
     const asked = manager === 'launchd' ? 'launchd' : 'systemd\'s user manager';
     report.line(`With no service record to name its manager, doctor asked ${asked}, which a service installed here would ` +
@@ -372,7 +374,7 @@ export async function doctor(
       await checked(report, 'The token counts', async () => {
         const answer = await read<CountCheck>('count-check', counting);
         if (answer !== null) {
-          countLines(report, answer.data, work, emptyCompressionSaid);
+          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic');
           uncredentialed = [answer.data.agent.source, answer.data.compression?.source].includes('count_tokens_no_credential');
         }
       });
@@ -603,7 +605,8 @@ function countFailure(source: string): string {
   return source;
 }
 
-function countLines(report: Report, check: CountCheck, work: string, emptyCompressionSaid: boolean): void {
+function countLines(report: Report, check: CountCheck, work: string, emptyCompressionSaid: boolean,
+  onAnthropic: boolean): void {
   const { agent, compression } = check;
   if (agent.source === 'count_tokens') report.ok(`count_tokens counts with ${agent.countModel}.`);
   else if (agent.source === 'count_tokens_no_credential') report.line(`${NO_CREDENTIAL} So the context's makeup shows no exact total.`);
@@ -611,13 +614,15 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
     report.line(`count_tokens isn't asked: ${agent.model === null ? 'the agent names no model'
       : `${agent.model} isn't a Claude model it counts`}.`);
   } else {
-    report.problem(`count_tokens couldn't count with ${agent.countModel}: ${countFailure(agent.source)}. So the ` +
+    const said = `count_tokens couldn't count with ${agent.countModel}: ${countFailure(agent.source)}. So the ` +
       'context\'s makeup shows no exact total.' + (agent.source === 'count_tokens_failed_401' ? REPLACE_CREDENTIAL : '') +
       (agent.source !== 'count_tokens_failed_404' ? '' : ' A retired ' +
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
-      `${BEFORE_ENV}: where one sets it, set it there instead.`));
+      `${BEFORE_ENV}: where one sets it, set it there instead.`);
+    if (onAnthropic && agent.source === 'count_tokens_failed_401') report.problem(said);
+    else report.line(said);
   }
   if (compression === null) {
     report.line('No compression model is checked: the agent\'s strategy is passthrough, or an extension\'s that chooses its own.');
@@ -628,7 +633,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
   else if (compression.source === 'count_tokens_unsupported_model') {
     report.line(`The compression model, ${compression.model}, isn't a Claude model count_tokens counts, so it isn't checked.`);
   } else {
-    report.problem(`count_tokens couldn't count with the compression model, ${compression.model}: ` +
+    report.line(`count_tokens couldn't count with the compression model, ${compression.model}: ` +
       `${countFailure(compression.source)}.` + (compression.source === 'count_tokens_failed_401' ? REPLACE_CREDENTIAL : '') +
       (compression.source !== 'count_tokens_failed_404' ? '' : ' A retired ' +
       'model answers 404, and with a retired compression model folding stalls and the context can\'t compress under ' +
@@ -721,9 +726,9 @@ function storedSecretLines(
     if (reached.length > 0) {
       report.ok(`${name} reaches ${reached.map((s) => s.id).join(', ')}.`);
     } else if (at.length === 0) {
-      report.problem(`${name} is in setup's list of stored secrets, and no server gets it: no server the host starts is ` +
-        `given it in its env or args, no server it dials names it in its token or url, and the recipe names it nowhere ` +
-        `outside its servers. ` + mappingRemedy(name, name === 'DISCORD_TOKEN'));
+      report.line(`${name} is in setup's list of stored secrets, and doctor finds no server given it: no server the host ` +
+        `starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it ` +
+        `nowhere outside its servers. ` + mappingRemedy(name, name === 'DISCORD_TOKEN'));
     }
   }
   if (unchecked.length > 0) report.line(`Which servers see ${unchecked.join(', ')} isn't checked: ${unknown}.`);
@@ -839,8 +844,7 @@ function managerEnv(manager: ServiceRecord['manager'] | null, names: string[], p
           `Run \`launchctl getenv ${name}\` as this user to see why, then run doctor again.`,
           `\`launchctl getenv ${name}\` failed: ${failed}`);
       }
-      const value = ran.stdout.endsWith('\n') ? ran.stdout.slice(0, -1) : ran.stdout;
-      if (value !== '') out[name] = value;
+      if (ran.stdout !== '') out[name] = ran.stdout.endsWith('\n') ? ran.stdout.slice(0, -1) : ran.stdout;
     }
   }
   return out;
