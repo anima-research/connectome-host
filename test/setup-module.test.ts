@@ -748,6 +748,69 @@ describe('setup--run', () => {
     expect(JSON.stringify(result)).not.toContain('word-it-printed');
   });
 
+  test('a dotenv file, the list of stored secrets, setup\'s state or the host\'s package.json that is a named pipe is refused rather than read, so each read answers', () => {
+    const dir = scratch();
+    const child = join(dir, 'child.ts');
+    writeFileSync(child, `
+      import { mkdirSync, writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      import { hostVersionOf } from ${JSON.stringify(join(import.meta.dir, '..', 'src', 'update', 'update.ts'))};
+      import { SetupModule } from ${JSON.stringify(join(import.meta.dir, '..', 'src', 'modules', 'setup-module.ts'))};
+      const answers = [];
+      for (const [name, pipeFirst, command] of [
+        ['before', true, 'echo ran'],
+        ['after', false, 'mkfifo .env.local; echo word-it-printed'],
+        ['list', false, 'mkdir -p .setup; rm -f .setup/stored-secrets.json; mkfifo .setup/stored-secrets.json; echo word-it-printed'],
+      ]) {
+        const at = join(${JSON.stringify(dir)}, name);
+        mkdirSync(at);
+        writeFileSync(join(at, '.env'), 'MY_SERVER_TOKEN="custom-token-value"\\n', { mode: 0o600 });
+        if (pipeFirst) Bun.spawnSync(['mkfifo', join(at, '.env.local')]);
+        const module = new SetupModule({ dir: at, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: at },
+          asker: () => null, show: () => {}, fetch: async () => new Response('{}') });
+        const result = await module.handleToolCall({ id: 'c1', name: 'run', input: { command } });
+        answers.push({ name, success: result.success, error: result.error, data: result.data ?? null });
+      }
+      {
+        const at = join(${JSON.stringify(dir)}, 'state');
+        mkdirSync(join(at, '.setup'), { recursive: true });
+        Bun.spawnSync(['mkfifo', join(at, '.setup', 'setup-state.json')]);
+        const module = new SetupModule({ dir: at, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: at },
+          asker: () => null, show: () => {}, fetch: async () => new Response('{}') });
+        const result = await module.handleToolCall({ id: 'f1', name: 'finished', input: {} });
+        answers.push({ name: 'state', success: result.success, error: result.error, data: result.data ?? null });
+      }
+      {
+        const pipe = join(${JSON.stringify(dir)}, 'package.json');
+        Bun.spawnSync(['mkfifo', pipe]);
+        let error = null;
+        try {
+          hostVersionOf(pathToFileURL(pipe));
+        } catch (thrown) {
+          error = thrown.message;
+        }
+        answers.push({ name: 'package', success: error === null, error, data: null });
+      }
+      console.log(JSON.stringify(answers));
+      process.exit(0);
+    `);
+    const ran = Bun.spawnSync([process.execPath, child], { timeout: 10_000, killSignal: 'SIGKILL', stderr: 'pipe' });
+    expect({ exitCode: ran.exitCode, signal: ran.signalCode ?? null }, ran.stderr.toString()).toEqual({ exitCode: 0, signal: null });
+    const [before, after, list, state, pkg] = JSON.parse(ran.stdout.toString()) as Array<{ name: string; success: boolean; error?: string; data: unknown }>;
+    expect(before!.success).toBe(false);
+    expect(before!.error).toStartWith(`setup--run ran nothing: ${join(dir, 'before', '.env.local')} can't be read (it isn't a file)`);
+    expect(after!.success).toBe(false);
+    expect(after!.error).toStartWith(`setup--run's command ended (exit 0), and its output isn't shown: ${join(dir, 'after', '.env.local')} can't be read (it isn't a file)`);
+    expect(JSON.stringify(after)).not.toContain('word-it-printed');
+    expect(list!.success).toBe(false);
+    expect(list!.error).toStartWith(`setup--run's command ended (exit 0), and its output isn't shown: ${join(dir, 'list', '.setup', 'stored-secrets.json')} can't be read: it isn't a file`);
+    expect(JSON.stringify(list)).not.toContain('word-it-printed');
+    expect(state!.success).toBe(false);
+    expect(state!.error).toStartWith(`${join(dir, 'state', '.setup', 'setup-state.json')} can't be read (it isn't a file), so nothing was recorded`);
+    expect(pkg).toEqual({ name: 'package', success: false, error: `${join(dir, 'package.json')} can't be read (it isn't a file)`, data: null });
+  }, 20_000);
+
   test('replaces a secret stored while its command was running', async () => {
     const { dir, module } = install({ asker: { ask: async () => 'stored-mid-run-value' } });
     const flag = join(dir, 'stored');

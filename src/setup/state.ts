@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readWithoutWaiting } from '../update/contract.js';
 
 export interface SetupState {
   v: 1;
@@ -11,7 +11,7 @@ export type KeptState = { state: SetupState } | { unreadable: string } | { absen
 export function readSetupState(path: string): KeptState {
   let text: string;
   try {
-    text = readFileSync(path, 'utf-8');
+    text = readWithoutWaiting(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { absent: true };
     return { unreadable: (error as Error).message };

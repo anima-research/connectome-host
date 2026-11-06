@@ -40,8 +40,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync,
-  symlinkSync, truncateSync, unlinkSync, writeSync,
+  closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync,
+  renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -495,6 +495,18 @@ export function syncDir(dir: string): void {
 function writeAll(fd: number, text: string): void {
   const bytes = Buffer.from(text, 'utf-8');
   for (let done = 0; done < bytes.length;) done += writeSync(fd, bytes, done, bytes.length - done);
+}
+
+export function readWithoutWaiting(path: string): string {
+  // O_NONBLOCK: opening a named pipe that no process writes to otherwise waits for one.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error('it isn\'t a file');
+    return readFileSync(fd, 'utf-8');
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Write `value` as JSON at `path`, as writeTextAtomic writes. */

@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, mkdirSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
-import { writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
+import { readWithoutWaiting, writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
 
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
@@ -88,7 +88,7 @@ export class EnvFormError extends Error {
 
 function envText(path: string): string {
   try {
-    return readFileSync(path, 'utf-8');
+    return readWithoutWaiting(path);
   } catch (error) {
     const { code } = error as NodeJS.ErrnoException;
     if (code === 'ENOENT') return '';
@@ -219,7 +219,7 @@ export class StoredSecrets {
   read(): string[] | null {
     let text: string;
     try {
-      text = readFileSync(this.file, 'utf-8');
+      text = readWithoutWaiting(this.file);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !lstatSync(this.file, { throwIfNoEntry: false })) {
         return null;
