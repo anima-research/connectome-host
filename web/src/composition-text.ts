@@ -81,9 +81,10 @@ export function notCounted(countSource: string): string {
   if (countSource === 'count_tokens_unsupported_model') return "not counted: count_tokens doesn't take this agent's model";
   const failed = /^count_tokens_failed_(\d+)$/.exec(countSource);
   if (failed) return `not counted: count_tokens answered ${failed[1]}`;
-  if (countSource === 'count_tokens_error') return 'not counted: the count_tokens call failed';
+  if (countSource === 'count_tokens_error') {
+    return 'not counted: the count_tokens call failed, or answered with what couldn\'t be read or with no count';
+  }
   if (countSource === 'count_tokens_timeout') return 'not counted: the count_tokens call didn\'t answer in time';
   if (countSource === 'count_tokens_no_credential') return 'not counted: count_tokens answered 401, with no Anthropic credential sent by the host';
-  if (countSource === 'count_tokens') return 'not counted: count_tokens answered with no count';
   return `not counted (${countSource})`;
 }

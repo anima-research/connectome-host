@@ -181,13 +181,13 @@ describe('doctor host checks over the socket', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('shell-check calls listSessions with no arguments on each connected server that offers it, leaves the agent\'s context as it was, and names those not connected, with whether the host still retries them', async () => {
+  test('shell-check calls listSessions with no arguments on each connected server that offers it, leaves the agent\'s next request as it was, whole, and names those not connected, with whether the host still retries them', async () => {
     const live = async () => ((await panel('mcpl')).data as { live: Array<{ id: string; connected: boolean }> }).live;
     for (let i = 0; i < 100 && (await live()).find((s) => s.id === 'dying')?.connected !== false; i++) {
       await new Promise((r) => setTimeout(r, 100));
     }
     expect((await live()).find((s) => s.id === 'dying')?.connected).toBe(false);
-    const nextRequest = async () => ((await panel('debug-context')).data as { request: { messages: unknown } }).request.messages;
+    const nextRequest = async () => ((await panel('debug-context')).data as { request: unknown }).request;
     const seed = 'a message from before the shell check';
     const idles = events.filter((e) => e.type === 'lifecycle' && e.phase === 'idle').length;
     sock.write(JSON.stringify({ type: 'text', content: seed }) + '\n');
@@ -661,5 +661,65 @@ describe('count-check, in the round on the review of 4a79597ff', () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe('count-check and shell-check, in the round on the review of e9bb852cc', () => {
+  const server = (id: string) => ({
+    id, connected: true, closedTab: false, refused: null, retrying: false,
+    toolClasses: [{ serverTool: 'listSessions', tool: `${id}--listSessions` }],
+  });
+  const frameworkFor = (calls: string[], label: string, then?: () => void) => ({
+    getAgent: () => ({ model: 'claude-agent-test' }),
+    getAllAgents: () => [{ name: 'resident' }],
+    previewActivation: async () => ({ system: '', tools: [], messages: [{ participant: 'Ann', content: [{ type: 'text', text: 'hi' }] }] }),
+    getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456 }),
+    listMcplServers: () => [server('one'), server('two')],
+    executeToolCall: async (call: { name: string }) => {
+      calls.push(`${label}:${call.name}`);
+      then?.();
+      return { success: true, data: 'no sessions' };
+    },
+  }) as unknown as PanelAppRef['framework'];
+  const appFor = (framework: PanelAppRef['framework']): PanelAppRef & { switching?: boolean } => ({
+    recipe: { name: 'r', agent: { name: 'resident', systemPrompt: '', strategy: { type: 'passthrough' } } } as unknown as Recipe,
+    framework,
+  });
+
+  test('a count that comes in while the host is switching sessions is said as that, not counted for the session it\'s leaving', async () => {
+    const app = appFor(frameworkFor([], 'first'));
+    const saved = { key: process.env.ANTHROPIC_API_KEY, base: process.env.ANTHROPIC_BASE_URL, model: process.env.COUNT_TOKENS_MODEL, token: process.env.ANTHROPIC_AUTH_TOKEN };
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        await req.text();
+        app.switching = true;
+        return Response.json({ input_tokens: 10 });
+      },
+    });
+    try {
+      process.env.ANTHROPIC_API_KEY = 'sk-count-test';
+      process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.port}`;
+      delete process.env.COUNT_TOKENS_MODEL;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      const check = await buildCountCheck(app, 2_000);
+      expect(check.beside).toEqual({ tokens: null, source: 'session_switched' });
+    } finally {
+      server.stop(true);
+      for (const [name, value] of [['ANTHROPIC_API_KEY', saved.key], ['ANTHROPIC_BASE_URL', saved.base],
+        ['COUNT_TOKENS_MODEL', saved.model], ['ANTHROPIC_AUTH_TOKEN', saved.token]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test('shell-check makes each call on the session it began on, though the session switches between its calls', async () => {
+    const calls: string[] = [];
+    const next = frameworkFor(calls, 'next');
+    const app = appFor(frameworkFor(calls, 'first', () => { app.framework = next; }));
+    await buildShellCheck(app);
+    expect(calls).toEqual(['first:one--listSessions', 'first:two--listSessions']);
   });
 });

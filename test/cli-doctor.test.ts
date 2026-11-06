@@ -1026,7 +1026,7 @@ describe('connectome doctor', () => {
     expect(older.out).toContain('The system prompt and tools the host sends weren\'t counted (the running host is an older ' +
       'release than this command, so it doesn\'t count them), so this is the check the host makes at load, by estimate.');
     await uncounted({ ...COUNTED, beside: { tokens: null, source: 'session_switched' } },
-      'the host\'s session switched while it counted, so its count isn\'t of the session running now');
+      'the host was switching sessions while it counted, or had switched since, so which session its count is of can\'t be told');
     await uncounted({ ...COUNTED, beside: { tokens: null, source: 'count_tokens_no_credential' } },
       'count_tokens had no Anthropic credential to send');
     await uncounted({ ...COUNTED, beside: { tokens: null, source: 'preview_failed', error: 'the agent is mid-switch' } },

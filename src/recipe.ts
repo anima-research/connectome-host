@@ -1687,8 +1687,7 @@ export async function loadRecipeDocument(document: RecipeDocument, source: strin
   resolveExtensionPaths(recipe, sourceBase);
   const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe), options.env);
   copyResolvedPathsIntoRaw(persistable, resolved);
-  loadedDigests.set(resolved, recipeDigest(resolved));
-  return { recipe: resolved, persistable };
+  return { recipe: digested(resolved), persistable };
 }
 
 function copyResolvedPathsIntoRaw(raw: Record<string, unknown>, recipe: Recipe): void {
@@ -1766,6 +1765,11 @@ export function recipeDigest(recipe: Recipe): string {
 }
 
 const loadedDigests = new WeakMap<Recipe, string>();
+
+function digested(recipe: Recipe): Recipe {
+  loadedDigests.set(recipe, recipeDigest(recipe));
+  return recipe;
+}
 
 export function loadedRecipeDigest(recipe: Recipe): string {
   return loadedDigests.get(recipe) ?? recipeDigest(recipe);
@@ -3571,13 +3575,13 @@ export async function loadSavedRecipe(dataDir: string, options: { fetchSystemPro
 
   if (!(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
     const legacy = validateRecipe(raw);
-    return options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy);
+    return digested(options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy));
   }
 
   const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
   const substituted = substituteEnvVars(unresolved, path);
   const recipe = validateRecipe(substituted);
-  return options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
+  return digested(options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe)));
 }
 
 /**

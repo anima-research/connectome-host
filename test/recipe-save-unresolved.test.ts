@@ -11,6 +11,8 @@ import {
   savedRecipeDirectory,
   clearSavedRecipe,
   SAVED_RECIPE_UNRESOLVED_KEY,
+  loadedRecipeDigest,
+  recipeDigest,
 } from '../src/recipe.js';
 
 const SECRET = 'tok-glpat-supersecret-12345';
@@ -335,5 +337,27 @@ describe('unresolved recipe persistence', () => {
     writeSecretRecipe();
     const recipe = await loadRecipe(recipePath);
     expect((recipe.mcpServers as any).gitlab.env.GITLAB_PERSONAL_ACCESS_TOKEN).toBe(SECRET);
+  });
+});
+
+describe('a resumed recipe\'s digest', () => {
+  test('a recipe the host resumes, from either form of the saved file, keeps the digest it loaded with after its object changes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conhost-resume-digest-'));
+    try {
+      const recipe = { name: 'Resumed', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi' } };
+      const got: Array<[string, boolean]> = [];
+      for (const [form, snapshot] of [['unresolved', { [SAVED_RECIPE_UNRESOLVED_KEY]: true, ...recipe }], ['legacy', recipe]] as const) {
+        const data = join(dir, form);
+        mkdirSync(data, { recursive: true });
+        writeFileSync(join(data, '.recipe.json'), JSON.stringify(snapshot));
+        const loaded = await loadSavedRecipe(data, { fetchSystemPrompt: false });
+        const atLoad = recipeDigest(loaded!);
+        (loaded!.agent as { name: string }).name = 'changed after load';
+        got.push([form, loadedRecipeDigest(loaded!) === atLoad]);
+      }
+      expect(got).toEqual([['unresolved', true], ['legacy', true]]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

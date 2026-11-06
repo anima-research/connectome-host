@@ -1019,7 +1019,8 @@ async function besideOf(
   if (beside.source === 'count_tokens_no_credential') return { why: 'count_tokens had no Anthropic credential to send' };
   if (beside.source === 'count_tokens_unsupported_model') return { why: 'count_tokens doesn\'t count with the agent\'s model' };
   if (beside.source === 'session_switched') {
-    return { why: 'the host\'s session switched while it counted, so its count isn\'t of the session running now' };
+    return { why: 'the host was switching sessions while it counted, or had switched since, so which session its count is of ' +
+      'can\'t be told' };
   }
   return { why: countFailure(beside.source) };
 }

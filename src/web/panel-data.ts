@@ -28,6 +28,7 @@ export interface PanelAppRef {
   quotaMeter?: QuotaMeter | null;
   credentials?: CredentialMonitor | null;
   subscriptionUnmetered?: boolean;
+  switching?: boolean;
 }
 
 export const PANEL_OPS = [
@@ -1149,7 +1150,8 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
     compressionModel === null ? null : count(compressionCountModel),
     sent === null || 'error' in sent ? null : count(countModel, sent),
   ]);
-  const beside: CountCheck['beside'] = app.framework !== framework ? { tokens: null, source: 'session_switched' }
+  const beside: CountCheck['beside'] = app.switching === true || app.framework !== framework
+    ? { tokens: null, source: 'session_switched' }
     : sent === null ? unsupported
     : 'error' in sent ? { tokens: null, source: 'preview_failed', error: sent.error }
     : withSent!.tokens !== null && ping.tokens !== null ? { tokens: withSent!.tokens - ping.tokens, source: 'count_tokens' }
@@ -1178,13 +1180,14 @@ export interface ShellCheck {
 }
 
 export async function buildShellCheck(app: PanelAppRef): Promise<ShellCheck> {
+  const framework = app.framework;
   const agentName = resolveAgent(app);
-  const servers = app.framework.listMcplServers();
+  const servers = framework.listMcplServers();
   const shells: ShellCheckRow[] = [];
   for (const server of servers) {
     const tool = server.toolClasses.find((t) => t.serverTool === 'listSessions');
     if (!tool) continue;
-    const result = await app.framework.executeToolCall({
+    const result = await framework.executeToolCall({
       id: `shell-check-${randomUUID()}`,
       name: tool.tool,
       input: {},
