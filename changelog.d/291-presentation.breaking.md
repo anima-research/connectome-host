@@ -133,6 +133,12 @@
   record (in the store the residents share, theirs too), on the host's
   event loop, at each undo, redo or shed. `undo:completed` and
   `redo:completed` are gone, with agent-framework's branch-moving undo.
+- **Web UI protocol 4:** reload an open Web UI page after updating. An undo
+  and a redo no longer move the branch, so a page from an earlier release,
+  which learned of them from the move, would show an undone turn as still
+  in context, and this release's page on an earlier host would show an
+  empty pin picker. Either way the page shows the protocol mismatch banner
+  until it is reloaded from a host of the same release.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next

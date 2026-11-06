@@ -1,7 +1,7 @@
 /**
  * WebUI wire protocol — JSON-over-WebSocket envelope for the web admin client.
  *
- * Versioning: v3. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
+ * Versioning: v4. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
  * mismatch the Web UI page shows a banner saying what to do and keeps the
  * welcome, session and messages it had: `applyWelcome` returns before taking
  * any of them. The welcome's other readers still read it, among them the
@@ -32,13 +32,22 @@
  * after a command, reaches them before their next welcome. The new framework's
  * traces and stored messages don't, since the server follows a framework's
  * events only once it has started.
+ *
+ * v4: an undo and a redo leave the branch alone (agent-framework #291). The
+ * page learns of them from the `window:undone` trace and the `undone-marks`
+ * frame, and transcript entries carry `undone`, where a v3 host moved the
+ * branch and sent `branch-changed` and a fresh welcome. The local
+ * `pins-list` carries `candidates`, which the pin picker lists, where a v3
+ * page listed the transcript's loaded rows. A v3 page on a v4 host would show
+ * an undone turn as still in context, and a v4 page on a v3 host an empty
+ * picker, so each shows the mismatch banner instead.
  */
 
 import type { Line } from '../output-line.js';
 import type { AgentPhaseState } from '../state/agent-phases.js';
 import type { AgentPhase } from '../state/agent-tree-reducer.js';
 
-export const WEB_PROTOCOL_VERSION = 3;
+export const WEB_PROTOCOL_VERSION = 4;
 
 /** What an observer needs to be sent the agent trees, and so what a page
  *  needs to build and show them: every scope but 'debug'. A tree's nodes
