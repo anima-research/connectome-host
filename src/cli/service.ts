@@ -562,7 +562,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           const shown = showUnit(sys, env, unit.name, ['ActiveState']);
           if (typeof shown === 'string') {
             throw new Refusal(`${shown}. The units' files are written and enabled, and recorded: run ${cmd} service ` +
-              'install again to start what isn\'t running.');
+              'start to start what isn\'t running.');
           }
           const running = RUNNING.has(shown.get('ActiveState') ?? '');
           systemctl(sys, env, cmd, ['restart', unit.name]);

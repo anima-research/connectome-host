@@ -4996,3 +4996,18 @@ test('a host that answers with another install\'s process isn\'t taken as this i
   expect(await installService(g.ctx(['install', copy.recipe]), g.system)).toBe(1);
   expect(g.err.join('\n')).toContain(`A host answers with pid 4242, but connectome-copy.service's main process is`);
 });
+
+test('a failed state query after the units are written points to service start, which starts only what isn\'t running', async () => {
+  const at = install();
+  const f = fake(at);
+  const run = f.system.run;
+  let shows = 0;
+  f.system.run = (command, args, env) => {
+    if (command === 'systemctl' && args.join(' ') === `--user show --property=ActiveState -- ${HOST}` && ++shows === 1) {
+      return { status: 1, stdout: '', stderr: 'Failed to get properties: Connection timed out' };
+    }
+    return run(command, args, env);
+  };
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('service start to start what isn\'t running');
+});
