@@ -359,7 +359,7 @@ describe('where the ladder reads a unit\'s output', () => {
     await settled(at.host);
     expect(out).toMatch(new RegExp(`recent failures in ${file}: not known: it can't be read`));
     expect(out).toMatch(new RegExp(`live gate dump: SIGUSR2 sent, but ${file} can't be read`));
-    expect(out).not.toContain('no [diagnostics] line came');
+    expect(out).not.toContain('no [diagnostics] line was seen');
   });
 
   test('a unit file that can\'t be read is said, as a line that doesn\'t count, and the rest of the ladder still runs', async () => {
@@ -621,7 +621,7 @@ describe('the ladder\'s gate dump', () => {
     const { out, status } = ladder(at);
     await settled(at.host);
     expect(out).toMatch(/live gate dump: SIGUSR2 sent, but connectome-test\.service's journal can't be read \(Failed to open the journal: Permission denied\)/);
-    expect(out).not.toContain('no [diagnostics] line came');
+    expect(out).not.toContain('no [diagnostics] line was seen');
     expect(out).toMatch(/=== findings ===[\s\S]*the gate dump isn't known/);
     expect(status).toBe(1);
   });

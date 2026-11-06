@@ -101,10 +101,12 @@ def print(*args, **kwargs):
     builtins.print(*(withheld(str(a)) for a in args), **kwargs)
 
 
-def run(cmd, timeout=15, no_match=None):
+def run(cmd, timeout=15, no_match=None, cut_is_end=False):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return ("", None) if cut_is_end else (None, str(e))
     except Exception as e:
         return None, str(e)
     if r.returncode == no_match and not r.stderr.strip():
@@ -698,10 +700,14 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
         _, refused = run(f"kill -USR2 {pid}")
         dump = why = None
         if refused is None:
-            deadline = time.time() + DUMP_WAIT
-            while True:
+            deadline = time.monotonic() + DUMP_WAIT
+            while dump is None and why is None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
                 if journal_log:
-                    said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}")
+                    said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}", timeout=left,
+                                    cut_is_end=True)
                     where = f"{unit}'s journal"
                 else:
                     said, why = read_text(agent_log, start=before)
@@ -710,9 +716,8 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
                 for ln in (said or "").split("\n"):
                     if "[diagnostics]" in ln:
                         dump = ln
-                if dump or why is not None or time.time() >= deadline:
-                    break
-                time.sleep(0.1)
+                if dump is None and why is None:
+                    time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         if refused is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 couldn't be sent ({refused}){C_OFF}")
         elif why is not None:
@@ -734,7 +739,7 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
             except Exception:
                 pass
         else:
-            print(f"live gate dump: {C_DIM}no [diagnostics] line came within {DUMP_WAIT} s of SIGUSR2, which the host "
+            print(f"live gate dump: {C_DIM}no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, which the host "
                   f"catches and answers by writing that line{C_OFF}")
 
 if findings_json:
