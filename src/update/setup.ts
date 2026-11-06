@@ -421,9 +421,9 @@ export function setup(options: SetupOptions): void {
     if (unanswered.length > 0) {
       const opening = binding.from === null
         ? 'This install\'s record is from a release that didn\'t record which directory an install is in. Setup ' +
-          `takes each place under ${binding.to} as this install's, and it can't tell whether a place outside it, or ` +
-          'inside another install\'s directory within it, came with the install, as after a move, or is still ' +
-          'another install\'s, as after a copy'
+          `takes each place under ${binding.to}, other than inside another install's directory, as this install's, ` +
+          'and it can\'t tell whether a place outside it, or inside another install\'s directory within it, came with ' +
+          'the install, as after a move, or is still another install\'s, as after a copy'
         : `This install's record is bound to ${binding.from}, and the install is in ${binding.to}, so it was moved or ` +
           `copied here. Setup binds each place under ${binding.from} to the same place under ${binding.to}, and it ` +
           'can\'t tell whether a place outside came with the install, as after a move, or is still another ' +
@@ -725,9 +725,12 @@ export function setup(options: SetupOptions): void {
     const locked = binding.from !== null || rewrite || bindPlaces.some((place) => place.from !== place.to);
     if (locked) lockForBinding(root, binding.from, ops);
     try {
-      const now = locked ? readRecord<InstallRecord>(paths.install, 'install record') : existing;
-      if (JSON.stringify(now) !== JSON.stringify(existing) || (locked && !sameFiles(boundFiles(root), files))) {
-        throw new ContractError(CHANGED_MEANWHILE);
+      if (locked) {
+        const now = boundFiles(root);
+        if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
+          !sameFiles(now, files) || now.some((file) => file.paths.some((path) => mapPath(path, plan) === null))) {
+          throw new ContractError(CHANGED_MEANWHILE);
+        }
       }
       if (rewrite) writePlan(root, plan);
       command = writeEntries();

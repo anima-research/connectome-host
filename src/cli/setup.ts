@@ -820,7 +820,7 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
     'install\'s own, as after a copy.';
   out(from === null
     ? 'This install\'s record is from a release that didn\'t record which directory an install is in. Setup binds it ' +
-      `here: each place under ${to} stays as it is.` +
+      `here: each place under ${to}, other than inside another install's directory, stays as it is.` +
       (ask.length === 0 ? '' : ' It asks about each place outside it, or inside another install\'s directory ' +
         'within it, since it can\'t tell whether that came with the install, as after a move, or is still another ' +
         `install's, as after a copy.${answer}`)

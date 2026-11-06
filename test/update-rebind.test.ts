@@ -256,7 +256,7 @@ describe('binding an install to the directory it is in', () => {
     writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: join(install, 'data'), extraState: [outside] });
     const kept = tree(root);
     const why = refusal(() => setup(options(install)));
-    expect(why).toContain(`This install's record is from a release that didn't record which directory an install is in. Setup takes each place under ${install} as this install's`);
+    expect(why).toContain(`This install's record is from a release that didn't record which directory an install is in. Setup takes each place under ${install}, other than inside another install's directory, as this install's`);
     expect(why.split('\n').filter((line) => line.startsWith('  ')).map((line) => line.trim().split(' (')[0])).toEqual([outside]);
     expect(tree(root)).toEqual(kept);
     const labelled = readFileSync(join(root, 'copy', 'copy.json'), 'utf-8');
@@ -667,6 +667,35 @@ describe('what setup read before it held the lock', () => {
     expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [b, c], workingDir: install });
   });
 
+  test('a label naming a place the binding has no place for, written after setup read the install, is refused before any plan is written', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    const realReadlink = fs.readlinkSync;
+    let written = false;
+    const reads = spyOn(fs, 'readlinkSync').mockImplementation(((...args: Parameters<typeof fs.readlinkSync>) => {
+      if (!written) {
+        written = true;
+        mkdirSync(join(root, 'copy.prev'));
+        writeJsonAtomic(join(root, 'copy.prev', 'copy.json'),
+          { ...label(moved)!, items: [{ path: join(dir, 'elsewhere.json'), name: '0-elsewhere.json' }], absent: [] });
+      }
+      return Reflect.apply(realReadlink, fs, args);
+    }) as typeof fs.readlinkSync);
+    const why = (() => {
+      try {
+        return refusal(() => setup(options(moved)));
+      } finally {
+        reads.mockRestore();
+      }
+    })();
+    expect(why).toContain('isn\'t what setup read before it held the lock, so setup has changed none of them.');
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+    expect(record(moved)!.workingDir).toBe(install);
+  });
+
   test('a record from before workingDir, with an answer that moves a place no file names, takes the lock: a running holder is refused with both readings, and nothing changes', () => {
     setup(options(install));
     const theirs = join(dir, 'state.json');
@@ -685,7 +714,7 @@ describe('what setup read before it held the lock', () => {
 });
 
 describe('a start', () => {
-  test('a start that finds a binding\'s plan once it holds the lock refuses, though the plan came after start.js looked', async () => {
+  test('the launcher refuses a binding\'s plan it finds once it holds the lock', async () => {
     setup(options(install));
     const root = rootOf(install);
     writeFileSync(join(root, REBIND_PLAN), '{}');

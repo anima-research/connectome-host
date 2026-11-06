@@ -1935,7 +1935,7 @@ test('a record from before workingDir takes each place under this directory as t
   expect(await runSetup(dir, ['discord'], here)).toBe(0);
   expect(here.seen.asked).toEqual([]);
   expect(ownSetup(here.seen)).toEqual({ argv: ['--root', join(dir, 'connectome-host')], dataDir: join(dir, 'data') });
-  expect(text(here.seen.out)).toContain(`This install's record is from a release that didn't record which directory an install is in. Setup binds it here: each place under ${dir} stays as it is.`);
+  expect(text(here.seen.out)).toContain(`This install's record is from a release that didn't record which directory an install is in. Setup binds it here: each place under ${dir}, other than inside another install's directory, stays as it is.`);
 
   const elsewhere = join(directory(), 'data');
   mkdirSync(elsewhere);
