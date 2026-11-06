@@ -21,7 +21,7 @@ specific to the Claude Code source; this document covers only what is.
 | You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim, except on a model whose thinking binds (below) |
 | You want to change models | Possible, but thinking blocks must be dropped or wrapped as text (see §4.2); expect a different being |
 | You only want a static transcript | No — the `.jsonl` already is one |
-| The session is short (< ~50 messages) | Yes; skip the pre-compress step |
+| The session is short (< ~50 messages) | Yes |
 
 ## What the transcript contains, and what round-trips
 
@@ -202,11 +202,13 @@ The migration needs a data directory no host has started on. A host's first star
 writes `sessions.json` there, and no later start migrates `data/store`. So a seed
 written after it sits in `data/store` with nothing opening it. The script below refuses
 when `sessions.json` is there, the dry run included. If it does, stop and decide with
-the person. When that start held nothing worth keeping, such as only a hello, run
-`connectome service stop`, move the data directory aside, make an empty one in its
-place (`mkdir -m 700`), seed that, and run `connectome service start`. Otherwise don't
-seed: the resident already has a history of its own, and this method seeds only a first
-start.
+the person. When that start held nothing worth keeping, such as only a hello, stop the
+service with the install's command by its full path,
+`/home/<agent>/<agent>-cm/connectome-host/connectome service stop`, move `sessions.json`
+and `sessions/` out of the data directory, seed it, and start the service again with
+`… service start`. The rest of the data directory stays as it is: discord-mcpl's state
+files, its filters among them, and the Web UI's `observers.json`. Otherwise don't seed:
+the resident already has a history of its own, and this method seeds only a first start.
 
 ```js
 // One-shot: seed.json → chronicle.  Wipe <agent>-cm/data before re-running.
@@ -313,9 +315,19 @@ strategy config chunks its frontier under *that* config):
    human's.
 
 The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage 4) give
-you 1–2 on a running instance; for a pre-boot check, run the host against a copy of
-`<agent>-cm` with `--headless` and a mock or real key, then hit the endpoints. That
-pre-boot check is an operator's: a setup agent never starts a host
+you 1–2 on a running instance. For a pre-boot check, run the host on copies, so that
+nothing it does reaches the original:
+1. Copy the data directory the install's record names (stage 1), wherever it is.
+2. Copy the recipe, keep its Web UI on loopback, and leave out `mcpServers`: the
+   servers' `env` names files in the original data directory, and discord-mcpl would
+   put the resident on Discord.
+3. From `<agent>-cm`, start the release `current` names, not the install's entry: the
+   entry refuses a `DATA_DIR` other than the one the install's record names, and a host
+   it starts writes the install's own files. Started directly, the host writes none:
+   `DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`,
+   with a mock or real key. Then hit the endpoints, and stop it.
+
+That pre-boot check is an operator's: a setup agent never starts a host
 (`AGENT-ONBOARDING.md`'s "Going live"), so it checks after going live instead.
 `/debug/context/makeup` shows a count the API refused only by its status, such as
 `countSource: "count_tokens_failed_400"`, without the body. To read the body, send
@@ -371,7 +383,9 @@ reading them, with its `setup--ask_secret`. Claude-Code-specific choices:
 
 The first start on a data directory with no `sessions.json` migrates `data/store` into
 `data/sessions/<id>/` and, with
-`autoTickOnNewMessage` on, starts minting L1 summaries of the seed immediately.
+`autoTickOnNewMessage` on, starts minting L1 summaries of the seed immediately. A
+claude.ai import into the same data directory comes after that start: the importer
+writes `sessions.json`, and a data directory that has one migrates nothing.
 Watch `/healthz` (the person, if you're the setup agent) for `compressionQuarantine`,
 and the per-call log (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. The first
 message comes from the person, not from you, as in
