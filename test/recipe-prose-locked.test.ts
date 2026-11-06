@@ -33,6 +33,32 @@ describe('locked prose routing recipe wiring', () => {
     );
   });
 
+  test('refuses locked routing with no proseLock and an allowedTools list without prose_locus, which would hold its speech as drafts for good', () => {
+    const refusal =
+      'Recipe agent.proseRouting "locked" without agent.proseLock needs agent.allowedTools to name "prose_locus": ' +
+      "otherwise the agent can't move its prose lock, so its plain text stays held as drafts, or where it chose before, on every turn. " +
+      'Add "prose_locus" to allowedTools (and "drafts", to resend drafts), or, for an agent that hasn\'t chosen yet, set agent.proseLock ' +
+      '("drafts" to hold plain text on purpose); a choice it has made stays until prose_locus moves it.';
+    for (const allowedTools of [['send_message', 'drafts'], []]) {
+      expect(() => validateRecipe(recipe({ proseRouting: 'locked', allowedTools }))).toThrow(refusal);
+    }
+    expect(built({ proseRouting: 'locked', proseLock: '#lounge', allowedTools: ['send_message'] }).proseLock).toBe('#lounge');
+    expect(built({ proseRouting: 'locked', proseLock: 'drafts', allowedTools: [] }).proseLock).toBe('drafts');
+    expect(built({ proseRouting: 'locked', allowedTools: ['send_message', 'prose_locus'] }).proseRouting).toBe('locked');
+    expect(built({ proseRouting: 'locked', allowedTools: 'all' }).proseRouting).toBe('locked');
+    expect(built({ proseRouting: 'locked' }).proseRouting).toBe('locked');
+    expect(built({ proseRouting: 'locus', allowedTools: ['send_message'] }).proseRouting).toBe('locus');
+  });
+
+  test('refuses locked routing beside conversations, whose forks answer the channels as locus mode does', () => {
+    const withConversations = (agent: Record<string, unknown>) => ({ ...recipe(agent), conversations: {} });
+    expect(() => validateRecipe(withConversations({ proseRouting: 'locked', proseLock: '#lounge' }))).toThrow(
+      'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
+        'speak in their home channel, as in locus mode, so the lock would not govern their replies.',
+    );
+    expect(validateRecipe(withConversations({ proseRouting: 'disabled' })).agent.proseRouting).toBe('disabled');
+  });
+
   test('names locked among the modes it refuses another for', () => {
     expect(() => validateRecipe(recipe({ proseRouting: 'pinned' }))).toThrow(
       `Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got "pinned".`,
