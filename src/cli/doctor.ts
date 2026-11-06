@@ -269,39 +269,57 @@ export async function doctor(
           for (const line of serviceLines(root) ?? []) report.line(line);
         });
       }
-    } else if (stopped) {
-      report.problem(`A host answers, pid ${host.ready.pid}, recipe ${host.ready.recipe}, though the service is stopped, so ` +
-        'it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
-        `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket from ` +
-        'one that holds it.');
-      host.subscribe([]);
     } else {
-      let own: { pid: string } | { why: string } | null = null;
-      if (service !== null) {
+      const answering = host;
+      let open = true;
+      void answering.closed.then(() => { open = false; });
+      const ownPid = async (): Promise<{ pid: string } | { why: string } | null> => {
+        if (service === null) return null;
         try {
-          own = await parts.servicePid(service);
+          return await parts.servicePid(service);
         } catch (error) {
-          own = { why: errorText(error) };
+          return { why: errorText(error) };
+        }
+      };
+      const changed = () => {
+        report.line(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but the service's host ` +
+          'changed during the check, so whether it\'s the service\'s can\'t be told: run doctor again.');
+        pidUntold = true;
+      };
+      if (stopped) {
+        const now = await ownPid();
+        if (now !== null && 'pid' in now && now.pid !== '0') changed();
+        else {
+          report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
+            'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
+            `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket ` +
+            'from one that holds it.');
+        }
+      } else {
+        const own = await ownPid();
+        if (own !== null && 'pid' in own && own.pid !== String(answering.ready.pid)) {
+          const again = await ownPid();
+          if (again === null || !('pid' in again) || again.pid !== own.pid || !open) changed();
+          else {
+            report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but ` +
+              `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
+              'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
+              'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
+              `service's own host can't be reached while it does: \`kill ${answering.ready.pid}\` stops it.` +
+              (service!.manager === 'systemd-user'
+                ? ` If something starts it again, \`systemctl --user status ${answering.ready.pid}\` names the unit it ` +
+                  'runs in, which is what to stop.'
+                : ''));
+          }
+        } else if (own !== null && 'why' in own) {
+          report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
+            `service's host can't be told: ${own.why.replace(/\.$/, '')}.`);
+          pidUntold = true;
+        } else {
+          report.ok(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}.`);
         }
       }
-      if (own !== null && 'pid' in own && own.pid !== String(host.ready.pid)) {
-        report.problem(`A host answers, pid ${host.ready.pid}, recipe ${host.ready.recipe}, but ` +
-          `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
-          'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of it. ' +
-          'Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-          `service's own host can't be reached while it does: \`kill ${host.ready.pid}\` stops it.` +
-          (service!.manager === 'systemd-user'
-            ? ` If something starts it again, \`systemctl --user status ${host.ready.pid}\` names the unit it runs in, ` +
-              'which is what to stop.'
-            : ''));
-      } else if (own !== null && 'why' in own) {
-        report.line(`The host answers: pid ${host.ready.pid}, recipe ${host.ready.recipe}. Whether it's the service's host can't ` +
-          `be told: ${own.why.replace(/\.$/, '')}.`);
-        pidUntold = true;
-      } else {
-        report.ok(`The host answers: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
-      }
-      host.subscribe([]);
+      answering.subscribe([]);
     }
     const dataState = dataDir === null ? null : pathState(dataDir);
     if (dataState === 'gone') {

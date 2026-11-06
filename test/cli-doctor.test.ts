@@ -1632,6 +1632,7 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     const r = await withHost(at, HEALTHY_HOST, () => run(at, {
       checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
       python: fakePython(at.work, { end: 'clean' }),
+      servicePid: async () => ({ pid: '0' }),
     }));
     expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, though the service is stopped, so it isn\'t the service\'s');
     expect(r.out).toContain(`Stop it before \`${join(at.root, 'connectome')} service start\`, since a host the service starts takes this install's socket`);
@@ -2118,5 +2119,26 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
     expect(r.out).toContain('`kill 4242` stops it. If something starts it again, `systemctl --user status 4242` names the unit ' +
       'it runs in, which is what to stop.');
+  });
+
+  test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {
+    const at = install();
+    for (const second of ['4242', '6161']) {
+      let asked = 0;
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: ++asked === 1 ? '5151' : second }) }));
+      expect(asked).toBe(2);
+      expect(r.out).toContain('A host answers, pid 4242, recipe Ember, but the service\'s host changed during the check, so ' +
+        'whether it\'s the service\'s can\'t be told: run doctor again.');
+      expect(r.out).not.toContain('kill 4242');
+      expect(r.out).not.toContain('✗ A host answers');
+    }
+    for (const pid of ['4242', '6161']) {
+      const started = await withHost(at, HEALTHY_HOST, () => run(at, {
+        checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+        servicePid: async () => ({ pid }),
+      }));
+      expect(started.out).toContain('but the service\'s host changed during the check');
+      expect(started.out).not.toContain('though the service is stopped');
+    }
   });
 });
