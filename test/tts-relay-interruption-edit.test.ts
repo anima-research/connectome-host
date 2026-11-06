@@ -564,6 +564,77 @@ describe('the texts kept to match an interruption', () => {
     expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
 
+  // Host #485 bot review wave 5, finding 3 (a regression from 514e503): a
+  // channel whose texts were let go and then published in again held only
+  // the new publish, so heard words that started it and mira's message let
+  // go were taken as clerk's alone: clerk's message was edited and clerk
+  // told. Before 514e503 mira's message was still kept, so no note was
+  // written, and the one sharing more of the heard words was edited.
+  describe('of a channel let go and published in again, by another agent than one voiced there before', () => {
+    const shared = 'The ferry leaves at noon from the north pier, and the old bridge on the coast is';
+    const miraText = `${shared} closed until Friday for repairs to the deck and the railings.`;
+    const clerkText = `${shared}, since this morning, open again to cars and to the buses.`;
+    const letGoThenClerk = (trace: (event: Record<string, unknown>) => void) => {
+      speak(trace, 'mira', '42', miraText, 'm-mira');
+      for (let i = 0; i < 32; i++) speak(trace, 'mira', String(100 + i), `Elsewhere ${i}.`, `m-${i}`);
+      speak(trace, 'clerk', '42', clerkText, 'm-clerk');
+    };
+
+    test("heard words that start mira's message let go and clerk's: clerk's isn't edited, and no note is written", async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      letGoThenClerk(trace);
+      await logOf(() => interrupt(miraText.slice(0, 100)));
+      expect(edited()).not.toContain('m-clerk');
+      expect(notes).toEqual([]);
+    });
+
+    // Stricter than before 514e503, which edited clerk's message, the newer
+    // of two that the heard words start alike: with mira's let go, which of
+    // the two was heard can't be told.
+    test("heard words that start clerk's message alone of those kept: nothing is edited, and no note is written", async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      letGoThenClerk(trace);
+      const logged = await logOf(() => interrupt(shared));
+      expect(edited()).toEqual([]);
+      expect(notes).toEqual([]);
+      expect(logged).toContain('the heard words start m-clerk, and messages mira published in 42 are no longer kept — nothing edited');
+      expect(logged).toContain('the interruption in 42 is told to no agent: the heard words start a message published by clerk, and messages mira published in that channel are no longer kept');
+    });
+
+    test('heard words that start a later message by the one agent whose messages were let go there still edit it and tell its author', async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      speak(trace, 'clerk', '42', miraText, 'm-clerk-1');
+      for (let i = 0; i < 32; i++) speak(trace, 'mira', String(100 + i), `Elsewhere ${i}.`, `m-${i}`);
+      speak(trace, 'clerk', '42', clerkText, 'm-clerk-2');
+      await interrupt(shared);
+      expect(edited()).toEqual(['m-clerk-2']);
+      expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+    });
+
+    // Since #317 an activation voices nothing until its agent publishes.
+    test("an agent whose activation alone was announced there doesn't hold the match back", async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+      trace({ type: 'inference:completed', agentName: 'mira' });
+      speak(trace, 'clerk', '42', miraText, 'm-clerk-1');
+      for (let i = 0; i < 32; i++) speak(trace, 'mira', String(100 + i), `Elsewhere ${i}.`, `m-${i}`);
+      speak(trace, 'clerk', '42', clerkText, 'm-clerk-2');
+      await interrupt(shared);
+      expect(edited()).toEqual(['m-clerk-2']);
+      expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+    });
+
+    test('after its next interruption, a message published there is edited and its author told', async () => {
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      letGoThenClerk(trace);
+      await logOf(() => interrupt(shared));
+      speak(trace, 'clerk', '42', clerkText, 'm-clerk-2');
+      await interrupt(shared);
+      expect(edited()).toEqual(['m-clerk-2']);
+      expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+    });
+  });
+
   // An activation that ends without publishing voiced nothing, so it keeps
   // no channel's texts and pushes out none (host #485 bot review wave 5,
   // finding 36).

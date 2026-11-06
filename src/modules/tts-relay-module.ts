@@ -171,10 +171,12 @@ const HEARD_PROBE_CHARS = 80;
 
 /** The agents voiced in a channel since its last interruption, those whose
  *  activations were announced there and those that published there, in the
- *  order they were first voiced there, and whether the channel has had one. */
+ *  order they were first voiced there, whether the channel has had one, and
+ *  the authors of its publishes since that were let go (spokeIn). */
 interface VoicedInChannel {
   agents: Set<string>;
   interrupted: boolean;
+  lostAuthors?: Set<string>;
 }
 
 function rawChannelId(mcplId: string): string {
@@ -309,15 +311,21 @@ export class TtsRelayModule implements Module {
 
   /** `channel` was published in, which is what the relay voices. Past
    *  TEXT_CHANNELS_MAX channels, the publishes of the one published in
-   *  longest ago are let go, and the names of the agents voiced there are
-   *  kept. So its next interruption matches no message and edits nothing,
-   *  and its note goes by those names (speakerOf). */
+   *  longest ago are let go, and their authors are kept with the names of
+   *  the agents voiced there. Until that channel's next interruption, a
+   *  match among the publishes it is given since edits nothing and is told
+   *  to no one while another of those authors' messages was let go
+   *  (lostWith); with no match, the note goes by the names (speakerOf). */
   private spokeIn(channel: string): void {
     this.textsKeptFor.delete(channel);
     this.textsKeptFor.add(channel);
     if (this.textsKeptFor.size <= TEXT_CHANNELS_MAX) return;
     const [oldest] = this.textsKeptFor;
     this.textsKeptFor.delete(oldest!);
+    const voiced = this.voicedIn.get(oldest!) ?? { agents: new Set<string>(), interrupted: false };
+    voiced.lostAuthors ??= new Set<string>();
+    for (const r of this.published.get(oldest!) ?? []) voiced.lostAuthors.add(r.agentName);
+    this.voicedIn.set(oldest!, voiced);
     this.published.delete(oldest!);
   }
 
@@ -436,8 +444,15 @@ export class TtsRelayModule implements Module {
     // the messages published there (#317): another agent's voicing that the
     // heard words also start is one of `matched`, so no one is told.
     const matched = this.publishesHeard(ev);
-    const target = this.interruptedMessage(ev, matched);
-    const speaker = this.speakerOf(ev, matched);
+    const best = this.interruptedMessage(ev, matched);
+    // Once the channel's publishes were let go, another agent may have been
+    // voiced in one of them that the heard words start too.
+    const lost = this.lostWith(ev, matched);
+    const target = lost.length > 0 ? null : best;
+    const authors = [...new Set([...matched].reverse().map((r) => r.agentName))];
+    const speaker = lost.length > 0
+      ? { why: `the heard words start ${authors.length > 1 ? 'messages' : 'a message'} published by ${authors.join(', ')}, and messages ${lost.join(', ')} published in that channel are no longer kept` }
+      : this.speakerOf(ev, matched);
     // An interruption ends its channel's voicing: what was published there
     // before it isn't heard in a later one. An activation still live there
     // goes on, and what it publishes there is voiced, so it is voiced there
@@ -465,6 +480,8 @@ export class TtsRelayModule implements Module {
       if (!edited) {
         console.error(`[tts-relay] edit_message failed for ${target.messageId}:`, result.error);
       }
+    } else if (lost.length > 0) {
+      console.error(`[tts-relay] the heard words start ${best!.messageId ?? 'a published message'}, and messages ${lost.join(', ')} published in ${ev.channelId} are no longer kept — nothing edited`);
     } else if (!target?.messageId) {
       console.error('[tts-relay] no published message matched the interruption — nothing edited');
     }
@@ -531,6 +548,20 @@ export class TtsRelayModule implements Module {
       if (collapseWs(r.text).startsWith(probe)) matched.push(r);
     }
     return matched;
+  }
+
+  /** The authors, other than those of `matched`, of the publishes in the
+   *  interruption's channel since its last interruption that were let go
+   *  (spokeIn). Any of them may have been voiced in a message no longer kept
+   *  that the heard words start, so the match can't be taken as `matched`'s
+   *  alone. An agent whose activation alone was announced there voiced
+   *  nothing there (#317). None when nothing matched: speakerOf reads the
+   *  names then. */
+  private lostWith(ev: InterruptionEvent, matched: PublishedMessage[]): string[] {
+    const lostAuthors = this.voicedIn.get(ev.channelId)?.lostAuthors;
+    if (matched.length === 0 || !lostAuthors) return [];
+    const authors = new Set(matched.map((r) => r.agentName));
+    return [...lostAuthors].filter((agent) => !authors.has(agent));
   }
 
   /** Of `matched` (newest first), the one whose text shares the longest
