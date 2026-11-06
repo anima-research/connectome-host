@@ -62,7 +62,9 @@ export async function checkDiscord(
   if (token !== token.trimEnd()) {
     lines.push('DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it ' +
       'isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which ' +
-      'doctor can\'t check. Store it without the whitespace: `connectome setup discord` stores it trimmed.');
+      'doctor can\'t check. Store it without the whitespace where the server\'s value comes from. ' +
+      `\`connectome setup discord\` stores it trimmed in ${join(options.workingDir, '.env')}, which is that place unless ` +
+      `the server's entry gives DISCORD_TOKEN a value itself, or ${BEFORE_ENV_FILE}.`);
   }
   const userAgent = discordUserAgent();
   const limitMs = options.requestLimitMs ?? REQUEST_LIMIT_MS;

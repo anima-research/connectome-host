@@ -272,11 +272,14 @@ describe('doctor: Discord', () => {
       const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env.DISCORD_TOKEN))'], { cwd: dir, env: { PATH: process.env.PATH ?? '' } });
       return JSON.parse(ran.stdout.toString()) as string;
     };
-    const line = 'DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which doctor can\'t check. Store it without the whitespace: `connectome setup discord` stores it trimmed.';
-    const quoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN="${TOKEN}  "`) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
+    const dir = workdir();
+    const line = 'DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which doctor can\'t check. Store it without the whitespace where the server\'s value comes from. `connectome setup discord` stores it trimmed in ' +
+      `${join(dir, '.env')}, which is that place unless the server's entry gives DISCORD_TOKEN a value itself, or another of the files Bun reads there, ` +
+      'such as .env.local or .env.development, or the service\'s own environment, comes before .env where it sets the name.';
+    const quoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN="${TOKEN}  "`) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
     expect(quoted.lines[0]).toBe(line);
     expect(quoted.problems).toEqual([]);
-    const unquoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN=${TOKEN}  `) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
+    const unquoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN=${TOKEN}  `) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
     expect(unquoted.lines).not.toContain(line);
     expect(unquoted.problems).toEqual([]);
   });
