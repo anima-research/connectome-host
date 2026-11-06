@@ -648,6 +648,7 @@ test('the PATH advice names ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profil
     const made = world(dir, { answers, secrets: [KEY] }, { platform, env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
     expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
     expect(text(made.seen.out), `${shell} ${platform}`).toContain(`For that, put it on your PATH, and in ${file} to keep it there:`);
+    expect(text(made.seen.out), `${shell} ${platform}`).toContain(`That line is for ${basename(shell)}, the login shell SHELL names; another shell sets PATH its own way.`);
   }
 });
 
@@ -1012,6 +1013,7 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
   expect(text(made.seen.out)).toContain(`This install's own command is ${join(root, 'connectome')}.`);
   expect(text(made.seen.out)).toContain('Nothing setup or its agent does needs its directory on your PATH, so you need it there only to type plain `connectome`. For that, put it on your PATH, and in your shell\'s startup file to keep it there:');
   expect(text(made.seen.out)).toContain(`export PATH=${root}:"$PATH"`);
+  expect(text(made.seen.out)).toContain('That line is for a Bourne shell, such as sh or bash, since SHELL names no shell; another shell sets PATH its own way.');
   const pathAt = made.seen.out.indexOf(`  export PATH=${root}:"$PATH"`);
   const updates = made.seen.out.indexOf('Once the resident runs, these take a newer release, in turn: the first says whether one is out, the second installs it beside the one running, and the third switches the resident to it.');
   expect(updates).toBeGreaterThan(pathAt);

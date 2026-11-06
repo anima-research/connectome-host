@@ -623,6 +623,8 @@ async function installAndStart(
       if (env.SHELL === undefined || ['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(basename(env.SHELL))) {
         out(`${needs} For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it there:`);
         out(`  ${command.pathLine}`);
+        out(`That line is for ${env.SHELL === undefined ? 'a Bourne shell, such as sh or bash, since SHELL names no shell'
+          : `${basename(env.SHELL)}, the login shell SHELL names`}; another shell sets PATH its own way.`);
       } else {
         out(`${needs} For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
       }
