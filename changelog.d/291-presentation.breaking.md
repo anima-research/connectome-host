@@ -65,10 +65,11 @@
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
     which marks its lines in place, a reply it streamed and a message sent
-    from it included, never taking another resident's row for one of them,
-    and draws below them an undone row stored since it loaded the history
-    that it has no line for, until a redo puts it back, but not one whose
-    lines `/clear` or the scrollback cap took down), and the Web
+    from it included, each linked to its row as the turn ends, never to
+    another resident's row or an earlier row in the same words, and draws
+    below them an undone row stored since it loaded the history that it has
+    no line for, past the scrollback cap too, until a redo puts it back, but
+    not one whose lines `/clear` or the scrollback cap took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again, once, at each undo, redo or shed. A figure
     that comes back after a newer read of it started is dropped, and the

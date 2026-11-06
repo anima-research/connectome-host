@@ -347,7 +347,7 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(undone).toContain('(undone) the first half, the second half');
   }, 40000);
 
-  test("a streamed line whose entry the scrollback cap pushed out isn't drawn again below, after a /clear or without one", async () => {
+  test("past the scrollback cap: a streamed line it pushed out isn't drawn again below, after a /clear or without one, an undone row with no line is, and a reply keeps its line from an earlier one in the same words", async () => {
     const steps = await play('undone-evicted');
     const cleared = steps.get('cleared, then pushed out')!.frame;
     expect(cleared).toContain('(undone) a ninth ledger');
@@ -355,7 +355,17 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     const pushed = steps.get('pushed out')!.frame;
     expect(pushed).toContain('(undone) a tenth ledger');
     expect(pushed).not.toContain('a stray ledger');
-  }, 60000);
+    // Past the cap, an undone row the TUI drew no line for is still drawn
+    // below, marked (#485 bot review 3, finding 14).
+    const noLine = steps.get('no line, past the cap')!.frame;
+    expect(times(noLine, 'an eleventh ledger')).toBe(1);
+    expect(noLine).toContain('(undone) an eleventh ledger');
+    // A reply's line is its own row's, though an earlier reply in the same
+    // words lost its line to the cap first (finding 2).
+    const same = steps.get('same words, pushed out')!.frame;
+    expect(times(same, 'Done.')).toBe(1);
+    expect(same).toContain('(undone) Done.');
+  }, 90000);
 });
 
 describe("the TUI's branch moves, through runTui", () => {
