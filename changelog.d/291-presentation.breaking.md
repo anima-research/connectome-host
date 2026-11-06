@@ -105,10 +105,10 @@
   agent's window, which names each row of the transcript's record that an
   undo or a shed took out of that window (status `undone`), from `fromIndex`
   0, as a welcome's and a history page's entries mark them (`undone: true`).
-  The host asks the status only of the rows out of that window, so building
-  it takes about a tenth of the time a status read of every row took (some
-  80 ms on the host's event loop at 50,000 rows). `undo:completed` and
-  `redo:completed` are gone, with agent-framework's branch-moving undo.
+  Building it asks the status only of the rows out of that window, where it
+  asked every row of the record, on the host's event loop, at each undo,
+  redo or shed. `undo:completed` and `redo:completed` are gone, with
+  agent-framework's branch-moving undo.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next
