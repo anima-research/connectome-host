@@ -410,6 +410,25 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
 });
 
 describe("the TUI's branch moves, through runTui", () => {
+  // agent-framework holds every agent's turn until the move releases the
+  // store, and the follow-up comes a few awaits later: a turn that started
+  // in between streams on, and the branch is drawn once it ends
+  // (#485 bot review 2, finding 24).
+  test("a root turn that started before a move's follow-up came streams on, and the branch is drawn once it ends", async () => {
+    const steps = await play('async-branch-turn');
+    const streaming = steps.get('streaming at the follow-up')!.frame;
+    expect(streaming).toContain('on the side branch now');
+    expect(streaming).toContain('Switched to branch side.');
+    expect(streaming).not.toContain('[✓ idle]');
+    const ended = steps.get('turn ended')!.frame;
+    expect(ended).toContain('the side branch reply');
+    expect(ended).not.toContain('three ledgers');
+    expect(times(ended, 'on the side branch now')).toBe(1);
+    expect(ended.indexOf('on the side branch now')).toBeLessThan(ended.indexOf('Switched to branch side.'));
+    expect(ended).toContain('[✓ idle]');
+    expect(steps.get('turn ended')!.mountRefreshes).toEqual([]);
+  }, 40000);
+
   // agent-framework's switchBranch and rollbackToMessage trace nothing: the
   // command's follow-up saying the branch changed is what tells the TUI.
   test("a command whose follow-up says the branch changed draws the history of the branch the store is on", async () => {

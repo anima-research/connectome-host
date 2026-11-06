@@ -55,7 +55,7 @@ const contextManager = () => (scenario.startsWith('undone')
       ...recordOf(history),
       windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in'),
     }
-  : scenario === 'async-branch'
+  : scenario.startsWith('async-branch')
     ? {
         ...recordOf(history),
         listBranches: () => [{ id: 'b-main', name: 'main', head: 2 }, { id: 'b-side', name: 'side', head: 2 }],
@@ -76,9 +76,9 @@ function fakeFramework(name: string) {
     },
     getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'numbered-fork-failed-then-started', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }]
-      : scenario === 'async-branch' ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
+      : scenario.startsWith('async-branch') ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
       : [{ name: 'agent' }]),
-    getModule: (moduleName: string) => (scenario === 'async-branch' && moduleName === 'workspace' ? workspace : undefined),
+    getModule: (moduleName: string) => (scenario.startsWith('async-branch') && moduleName === 'workspace' ? workspace : undefined),
     getAgent: (agentName: string) => agentName === 'agent'
       ? { name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }
       : undefined,
@@ -100,10 +100,13 @@ function fakeFramework(name: string) {
     async switchBranch(branch: string) {
       storeBranch = branch;
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
+      if (scenario === 'async-branch-turn') await new Promise<void>((resolve) => { releaseMove = resolve; });
     },
   };
 }
 
+/** In `async-branch-turn`, lets the moved store's answer go. */
+let releaseMove: (() => void) | undefined;
 /** The workspace module in `async-branch`: each mount refresh the TUI starts. */
 const mountRefreshes: string[] = [];
 const workspace = { name: 'workspace', materializeMount: async (mount: string) => { mountRefreshes.push(mount); } };
@@ -485,6 +488,22 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:exhausted', { agentName, error: 'after switch' });
     await step('after switch');
+  } else if (scenario === 'async-branch-turn') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A turn of the root agent's starts on the branch the store moved to
+    // before the move's follow-up is drawn (#485 bot review 2, finding 24).
+    await command('/checkout side');
+    await until(() => releaseMove !== undefined, 'the move');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'on the side ', blockType: 'text' });
+    releaseMove!();
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    first.send('inference:tokens', { content: 'branch now', blockType: 'text' });
+    await step('streaming at the follow-up');
+    history.push({ id: 's2', participant: 'agent', content: [{ type: 'text', text: 'on the side branch now' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the side branch reply'), 'the branch drawn');
+    await step('turn ended');
   } else if (scenario === 'async-branch') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // The store moves in the command's follow-up, with no trace of it.

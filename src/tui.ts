@@ -392,6 +392,9 @@ export async function runTui(app: AppContext): Promise<void> {
    *  in the buffer continue: one row holds both. */
   let backgroundPartial: StreamedLine | undefined;
   let attemptStart = 0;
+  /** A branch move's answer that came while a root turn ran: the branch is
+   *  drawn once the turn ends, with this answer below it. */
+  let redrawAfterTurn: Array<{ text: string }> | undefined;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -994,6 +997,7 @@ export async function runTui(app: AppContext): Promise<void> {
    *  inside its reservation of the store (switchBranch and rollbackToMessage),
    *  whose answer says if that failed. */
   function refreshFromStore(opts: { mount?: boolean } = {}) {
+    redrawAfterTurn = undefined;
     // Reset streaming state BEFORE destroying renderables so nothing can
     // touch a freed native buffer through currentStreamText.
     streaming = false;
@@ -1819,6 +1823,14 @@ export async function runTui(app: AppContext): Promise<void> {
     // The turn's rows are stored by its end, its last reply's before the
     // trace: each takes its lines now.
     linkStreamedLines();
+    if (redrawAfterTurn && end.status !== 'attempt-failed') {
+      // A branch move's follow-up came while this turn ran on the branch:
+      // the branch is drawn now, and the move's answer again below it.
+      const answered = redrawAfterTurn;
+      refreshFromStore({ mount: false });
+      state.status = end.status;
+      for (const l of answered) addLine(l.text, GRAY);
+    }
     if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
     updateStatus();
   }
@@ -2631,15 +2643,20 @@ export async function runTui(app: AppContext): Promise<void> {
         state.status = 'thinking';
         updateStatus();
         result.asyncWork.then(asyncResult => {
+          // A turn of the root agent's can have started since the command:
+          // its stream and its status are left as they are.
+          const turnRunning = rootTurnShowing || streaming;
           // A branch move or a rollback lands in the follow-up, and
           // agent-framework traces neither: the follow-up saying the branch
-          // changed is what has the TUI draw the branch the store is on.
-          // The framework refreshed the `_config` mount for the move.
-          if (asyncResult.branchChanged) refreshFromStore({ mount: false });
+          // changed is what has the TUI draw the branch the store is on, once
+          // a turn that started on it since has ended (showRootTurnEnd).
+          // The framework writes the `_config` mount for the move.
+          if (asyncResult.branchChanged && turnRunning) redrawAfterTurn = asyncResult.lines;
+          else if (asyncResult.branchChanged) refreshFromStore({ mount: false });
           for (const l of asyncResult.lines) {
             addLine(l.text, GRAY);
           }
-          state.status = 'idle';
+          if (!turnRunning) state.status = 'idle';
           updateStatus();
         }).catch(err => {
           addLine(`Async command failed: ${err}`, RED);
