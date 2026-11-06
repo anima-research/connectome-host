@@ -190,11 +190,12 @@ session, rebuild before ingesting — the seed is a snapshot.
 
 ### Stage 2 — Ingest into the chronicle
 
-Save as `<agent>-cm/scripts/ingest-seed.mjs`, and run it from `<agent>-cm`, where
-stage 1 wrote `seed.json`. Node resolves its `@animalabs/context-manager` from the
-script's own directory up, which finds the copy setup installed in
-`<agent>-cm/node_modules`; the install's first release is a copy of that install, so
-before any update it's the version the host will run. Point `DATA_DIR` at the install's
+Save as `<agent>-cm/scripts/ingest-seed.mjs`, link the release's packages beside it
+with `ln -sfn ../connectome-host/current/node_modules '<agent>-cm/scripts/node_modules'`,
+and run it from `<agent>-cm`, where stage 1 wrote `seed.json`. Node resolves its
+`@animalabs/context-manager` from the script's own directory up, so the link gives it
+the release `current` names, the version the host runs, rather than the copy setup
+installed in `<agent>-cm/node_modules`, which an update leaves behind. Point `DATA_DIR` at the install's
 legacy store path, `store` in its data directory: the script takes it from
 `SEED_DATA_DIR` when that's set, and refuses a link there. The host migrates `data/store` →
 `data/sessions/<id>/` on first launch.
