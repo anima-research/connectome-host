@@ -357,6 +357,7 @@ describe('binding an install to the directory it is in', () => {
   test('a moved install whose record is written again as setup advises is bound, each place asked about, not taken as bound where it is', () => {
     setup(options(install));
     updated(install);
+    const before = label(install)!;
     const moved = join(dir, 'moved');
     renameSync(install, moved);
     const advised = WRITE_RECORD_AGAIN.split('\n')[1]!.trim()
@@ -367,6 +368,10 @@ describe('binding an install to the directory it is in', () => {
     expect(why).toContain('So it needs to be told where each of these is in this install');
     expect(why).toContain(join(install, 'data'));
     expect(tree(rootOf(moved))).toEqual(kept);
+    setup(options(moved, { places: ['data', 'mcpl-servers.agent.json', 'mcpl-servers.json'].map((name) => ({ from: join(install, name), to: join(moved, name) })) }));
+    expect(record(moved)).toEqual({ v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved });
+    expect(label(moved)!.items).toEqual(before.items.map((item) => ({ ...item, path: item.path.replace(install, moved) })));
+    expect(existsSync(join(rootOf(moved), REBIND_PLAN))).toBe(false);
   });
 
   test('a binding refuses while the record or a label names a place in a form other than its plain one, naming it and its plain form, and changes nothing', () => {
