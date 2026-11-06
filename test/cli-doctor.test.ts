@@ -2029,4 +2029,16 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       if (before === undefined) delete process.env.DISCORD_TOKEN; else process.env.DISCORD_TOKEN = before;
     }
   });
+
+  test('a stored secret\'s value the manager gives is hidden though the unit sets it otherwise', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MANAGER_SECRET'] });
+    const unit = Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' ') +
+      ' MANAGER_SECRET=unit-given-value';
+    const manager = fakeManager(at.work, { env: ['MANAGER_SECRET=manager-given-value'], unit });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      systemctl: manager.path, ...reports('| the journal says manager-given-value and unit-given-value'),
+    }));
+    expect(r.out).toContain('| the journal says <MANAGER_SECRET> and <MANAGER_SECRET>');
+    expect(r.out).not.toContain('manager-given-value');
+  });
 });

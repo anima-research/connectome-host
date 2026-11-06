@@ -153,6 +153,8 @@ export async function doctor(
     let managed: Record<string, string> = {};
     try {
       managed = managerEnv(manager, names, parts);
+      secrets = [...secrets,
+        ...named.names.flatMap((name) => managed[name] ? withSentForms({ name, value: managed[name] }) : [])];
     } catch (error) {
       if (service !== null || serviceError !== null) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
