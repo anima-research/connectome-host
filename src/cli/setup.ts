@@ -83,43 +83,6 @@ function homeDirectory(home: string | undefined): string | null {
   }
 }
 
-async function makeResidentDirectory(world: SetupWorld, home: string, state: SetupState, { out, err }: Io): Promise<number | null> {
-  for (;;) {
-    const name = await world.ask('The resident\'s directory, made in your home, whose name its service takes [resident]: ');
-    if (name === null) return null;
-    const chosen = name.trim() === '' ? 'resident' : name.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(chosen) || !/[A-Za-z]/.test(chosen)) {
-      out('A directory\'s name here is one word of letters, digits, ".", "_" and "-", with a letter in it, since the ' +
-        'service takes it.');
-      continue;
-    }
-    const path = join(home, chosen);
-    if (existsSync(path)) {
-      out(`${path} is there already: choose another name.`);
-      continue;
-    }
-    let made = false;
-    try {
-      mkdirSync(path);
-      made = true;
-      mkdirSync(join(path, '.setup'), { mode: 0o700 });
-      writeJsonAtomic(join(path, '.setup', 'setup-state.json'), state, 0o600);
-    } catch (error) {
-      if (made) rmSync(path, { recursive: true, force: true });
-      err(`connectome setup: setup couldn't make ${path} for the resident (${(error as Error).message}), and left ` +
-        'nothing of it behind. The resident needs a directory you can write in: make one where you can, or have whoever ' +
-        'administers this machine make one for you, and run this same version of setup in it, where its questions ' +
-        'come again:');
-      err(`  ${firstLine()}`);
-      return 1;
-    }
-    out(`Setup made ${path} for the resident, and keeps your answers there. Run this same version of setup there:`);
-    out(`  cd ${shellWord(path)}`);
-    out(`  ${firstLine()}`);
-    return 0;
-  }
-}
-
 export interface Ran {
   /** null when the program couldn't be started, was stopped at its limit, or was ended by a signal. */
   status: number | null;
@@ -241,11 +204,16 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     };
     if (!ownUserPossible(world) || home === null) return elsewhere();
     out(`${RESIDENT} ${what}, so setup won't install there. It asks first whether the resident gets a shell and who it ` +
-      `runs as: if it runs as this user, ${world.user}, setup then makes its directory with you, in ${home}, and keeps ` +
-      'your answers there, so they aren\'t asked again.');
+      'runs as, since those say where setup runs next.');
     const answered = await askWhoAndShell(world, { out, err });
     if (typeof answered === 'number') return answered === -1 ? stoppedElsewhere() : answered;
-    return await makeResidentDirectory(world, home, answered, { out, err }) ?? stoppedElsewhere();
+    out('Then make a new directory for the resident in your home, and run this same version of setup there, where its ' +
+      'questions come again. Its service takes the directory\'s name, so choose another than resident if you like, or ' +
+      'if ~/resident is already there:');
+    out('  mkdir ~/resident && cd ~/resident');
+    out(`  ${firstLine()}`);
+    out('Nothing was installed here.');
+    return 0;
   }
   mkdirSync(setupDir, { recursive: true, mode: 0o700 });
   const lock = takeSetupLock(join(setupDir, 'setup.lock'));

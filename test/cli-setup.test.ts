@@ -318,7 +318,7 @@ test('the pty check opens node-pty where term-sessions-mcp\'s own resolution fin
   }
 });
 
-test('where a user of its own is possible, a directory holding other files and no install hears who the resident runs as first; setup then makes the resident\'s directory with the person and keeps the answers there, and writes nothing else', async () => {
+test('where a user of its own is possible, a directory holding other files and no install hears who the resident runs as first, then the lines that make its directory and run setup there, and nothing is written', async () => {
   const holding = () => {
     const dir = directory();
     writeFileSync(join(dir, '.bashrc'), '# mine\n');
@@ -326,11 +326,11 @@ test('where a user of its own is possible, a directory holding other files and n
     chmodSync(join(dir, '.env'), 0o644);
     return dir;
   };
-  const untouched = (dir: string, made: string[] = []) => {
-    expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env', ...made].sort());
+  const untouched = (dir: string) => {
+    expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env']);
     expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o644);
   };
-  const opening = (dir: string) => `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there. It asks first whether the resident gets a shell and who it runs as: if it runs as this user, alice, setup then makes its directory with you, in ${dir}, and keeps your answers there, so they aren't asked again.`;
+  const opening = (dir: string) => `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there. It asks first whether the resident gets a shell and who it runs as, since those say where setup runs next.`;
 
   const own = holding();
   const ownRun = world(own, { answers: ['yes', '1', ''] });
@@ -343,21 +343,14 @@ test('where a user of its own is possible, a directory holding other files and n
   untouched(own);
 
   const here = holding();
-  const hereRun = world(here, { answers: ['yes', '2', ''] });
+  const hereRun = world(here, { answers: ['yes', '2'] });
   expect(await runSetup(here, ['discord'], hereRun)).toBe(0);
-  expect(hereRun.seen.asked).toEqual(['Does the resident get a shell? (yes/no) ', 'Choose 1 or 2: ', 'The resident\'s directory, made in your home, whose name its service takes [resident]: ']);
-  const resident = join(here, 'resident');
-  expect(text(hereRun.seen.out)).toContain(`Setup made ${resident} for the resident, and keeps your answers there. Run this same version of setup there:\n  cd ${resident}\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
-  expect(JSON.parse(readFileSync(join(resident, '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1, shell: true });
-  expect(statSync(join(resident, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
-  expect(readdirSync(resident)).toEqual(['.setup']);
+  expect(hereRun.seen.asked).toEqual(['Does the resident get a shell? (yes/no) ', 'Choose 1 or 2: ']);
+  expect(text(hereRun.seen.out)).toContain(opening(here));
+  expect(text(hereRun.seen.out)).toContain(`Then make a new directory for the resident in your home, and run this same version of setup there, where its questions come again. Its service takes the directory's name, so choose another than resident if you like, or if ~/resident is already there:\n  mkdir ~/resident && cd ~/resident\n  bunx @animalabs/connectome-host@${VERSION} setup discord\nNothing was installed here.`);
+  expect(hereRun.seen.err).toEqual([]);
   expect(hereRun.seen.ran).toEqual([]);
-  untouched(here, ['resident']);
-
-  const there = world(resident, { secrets: [KEY] });
-  expect(await runSetup(resident, ['discord'], there)).toBe(0);
-  expect(there.seen.asked.some((question) => question.startsWith('Does the resident get a shell?'))).toBe(false);
-  expect(text(there.seen.out)).toContain('Setup keeps its answers here: the resident gets a shell, and runs as this user, alice.');
+  untouched(here);
 
   const cut = holding();
   const cutRun = world(cut, { answers: ['no'] });
@@ -365,18 +358,6 @@ test('where a user of its own is possible, a directory holding other files and n
   expect(cutRun.seen.out.at(-1)).toBe('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer its two questions.');
   expect(cutRun.seen.err).toEqual([]);
   untouched(cut);
-});
-
-test('the resident\'s directory setup makes is one word with a letter, and not one there already, asked again till it is', async () => {
-  const dir = directory();
-  writeFileSync(join(dir, 'notes.txt'), 'mine\n');
-  mkdirSync(join(dir, 'resident'));
-  const made = world(dir, { answers: ['no', '2', '', 'two words', '123', 'tern'] });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain(`${join(dir, 'resident')} is there already: choose another name.`);
-  expect(made.seen.out.filter((line) => line.startsWith('A directory\'s name here is one word'))).toHaveLength(2);
-  expect(JSON.parse(readFileSync(join(dir, 'tern', '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1, shell: false });
-  expect(readdirSync(join(dir, 'resident'))).toEqual([]);
 });
 
 test('where HOME isn\'t an absolute path to a directory, setup makes no directory for the resident: it sends the person to make one, before any question', async () => {
@@ -414,22 +395,6 @@ test('a name the machine says is already an account isn\'t taken for the residen
   expect(text(made.seen.out)).toContain('This machine already has a user named root, and the resident gets a user of its own, so choose a name no account here has. If an earlier line of setup\'s made root for the resident, open a shell as root and run setup there instead.');
   expect(text(made.seen.out)).toContain('id -u connectome >/dev/null 2>&1 || sudo useradd');
   expect(text(made.seen.out)).not.toContain('sudo useradd -m -s /bin/bash root');
-});
-
-test('where the resident\'s directory can\'t be made, setup says so in one sentence naming it, and what to do, and leaves nothing behind', async () => {
-  const home = directory();
-  writeFileSync(join(home, 'notes.txt'), 'mine\n');
-  chmodSync(home, 0o500);
-  try {
-    const made = world(home, { answers: ['no', '2', ''] });
-    expect(await runSetup(home, ['discord'], made)).toBe(1);
-    const resident = join(home, 'resident');
-    expect(text(made.seen.err)).toContain(`connectome setup: setup couldn't make ${resident} for the resident (EACCES: permission denied, mkdir '${resident}'), and left nothing of it behind. The resident needs a directory you can write in: make one where you can, or have whoever administers this machine make one for you, and run this same version of setup in it, where its questions come again:\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
-    expect(text(made.seen.err)).not.toContain(`mkdir ${resident} &&`);
-    expect(readdirSync(home)).toEqual(['notes.txt']);
-  } finally {
-    chmodSync(home, 0o700);
-  }
 });
 
 test('setup names what a directory not its own holds: your home, hidden files alone, or other files', async () => {
