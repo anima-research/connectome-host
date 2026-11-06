@@ -4907,3 +4907,14 @@ test('retiring the shell settings keeps the token\'s stored-secret name while .e
   expect(new StoredSecrets(join(at.work, '.setup')).names()).toContain('SESSION_SERVER_TOKEN');
   expect(f.out.join('\n')).not.toContain('local-value');
 });
+
+test('a retry forgets the recorded shell names whose values an interrupted retirement already removed', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = join(at.work, '.env');
+  writeFileSync(file, readFileSync(file, 'utf-8').split('\n').filter((line) => !line.startsWith('SESSION_SERVER_')).join('\n'), { mode: 0o600 });
+  writeFileSync(at.recipe, JSON.stringify({}));
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(new StoredSecrets(join(at.work, '.setup')).names()).not.toContain('SESSION_SERVER_TOKEN');
+});

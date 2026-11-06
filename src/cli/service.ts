@@ -622,7 +622,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         retained = false;
       }
       if (!wantsShell) {
-        dropShellSettings(ctx, work, ownedSettings, sys.env);
+        dropShellSettings(ctx, work, ownedSettings, sys.env, old?.shellSettings ?? {});
         const withoutSettings = { ...record };
         delete withoutSettings.shellSettings;
         writeJsonAtomic(join(root, 'service.json'), withoutSettings, 0o600);
@@ -1440,7 +1440,7 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
 }
 
 function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings,
-  env: Record<string, string | undefined>): void {
+  env: Record<string, string | undefined>, recorded: ShellSettings): void {
   const stored = new StoredSecrets(join(work, '.setup'));
   try {
     const current = readEnvFile(join(work, '.env'));
@@ -1448,8 +1448,10 @@ function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings,
     const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
     stored.names();
     removeEnvValues(join(work, '.env'), remove, owned);
-    const still = new Set(secretValues(remove, join(work, '.env'), env).map((secret) => secret.name));
-    stored.forget(remove.filter((name) => !still.has(name)));
+    const gone = SHELL_SETTING_NAMES.filter((name) => recorded[name] !== undefined && !current.has(name));
+    const forgetting = [...new Set([...remove, ...gone])];
+    const still = new Set(secretValues(forgetting, join(work, '.env'), env).map((secret) => secret.name));
+    stored.forget(forgetting.filter((name) => !still.has(name)));
     ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
     if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
     for (const name of still) {
