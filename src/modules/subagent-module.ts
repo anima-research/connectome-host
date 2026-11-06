@@ -403,6 +403,7 @@ const FALLBACK_SUBAGENT_MODEL = 'claude-haiku-4-5-20251001';
 const NO_PARENT_SYSTEM_PROMPT = 'You are a research assistant.';
 
 type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+type LaunchProseRouting = Exclude<ProseRouting, 'locked'>;
 
 /** What each prose-routing mode does with a stream's plain text, as
  *  agent-framework documents the mode (AgentConfig.proseRouting). As terse
@@ -415,10 +416,7 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
   hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
     'a leading ">>>destination" envelope routes that text to the destination it names instead',
   disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
-  // A launch is never 'locked' (a locked parent's subagent runs 'disabled':
-  // subagentProseRouting), and agent-framework runs an ephemeral run of a
-  // locked agent as disabled too: it has no lock of its own.
-  locked: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
+  locked: 'plain text goes to one destination on every turn, which only prose_locus moves, or is held as drafts',
 };
 
 /**
@@ -429,7 +427,7 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
  * text. Run as locus mode, a subagent that opens a channel would speak there,
  * which no prose_locus move chose.
  */
-function subagentProseRouting(parent: ProseRouting | undefined): ProseRouting | undefined {
+function subagentProseRouting(parent: ProseRouting | undefined): LaunchProseRouting | undefined {
   return parent === 'locked' ? 'disabled' : parent;
 }
 
@@ -470,7 +468,7 @@ export interface SubagentLaunch {
     maxMessageTokens: number;
     compressionModel: string;
   };
-  proseRouting?: ProseRouting;
+  proseRouting?: LaunchProseRouting;
   tools: {
     allowed: 'all' | string[];
     requested?: string[];
