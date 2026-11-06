@@ -581,13 +581,17 @@ describe('the ladder\'s recent failures', () => {
 });
 
 describe('the ladder\'s gate dump', () => {
-  test('a host that hasn\'t installed its SIGUSR2 listener yet isn\'t signalled, and says why and what to do', async () => {
+  test('a host that hasn\'t installed its SIGUSR2 listener yet isn\'t signalled, and says why and what to do, with a finding that doesn\'t count', async () => {
     const at = await install({ listens: false });
     const { out } = ladder(at);
     await settled(at.host);
     expect(alive(at.host)).toBe(true);
     expect(out).not.toContain('live gate dump (SIGUSR2): {');
     expect(out).toMatch(/gate dump: not asked: .*has no SIGUSR2 listener.*run this check again in a minute; one whose agent-framework predates the dump never does/);
+    expect(out).toMatch(new RegExp(`=== findings ===[\\s\\S]*the gate dump wasn't asked for, since the host \\(pid ${at.host.process.pid}\\) has no SIGUSR2 listener, so the gate dump isn't known`));
+    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
+    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
+      text: expect.stringMatching(/^the gate dump wasn't asked for, since the host \(pid \d+\) has no SIGUSR2 listener/), counts: false });
   });
 
   test('a host that listens, in a unit that isn\'t active, isn\'t signalled', async () => {
@@ -600,7 +604,7 @@ describe('the ladder\'s gate dump', () => {
     expect(out).toMatch(/=== findings ===[\s\S]*service is deactivating/);
   });
 
-  test('the main process is read again before the signal, and a new one without a listener isn\'t signalled', async () => {
+  test('the main process is read again before the signal, and a new one without a listener isn\'t signalled, and is a finding', async () => {
     const at = await install({ listens: true });
     const laterDir = mkdtempSync(join(tmpdir(), 'chost-ladder-later-'));
     dirs.push(laterDir);
@@ -611,24 +615,30 @@ describe('the ladder\'s gate dump', () => {
     expect(alive(later)).toBe(true);
     expect(signalled(at.host)).toBe(false);
     expect(out).toContain(`the host (pid ${later.process.pid}) has no SIGUSR2 listener`);
+    expect(out).toMatch(new RegExp(`=== findings ===[\\s\\S]*the gate dump wasn't asked for, since the host \\(pid ${later.process.pid}\\) has no SIGUSR2 listener`));
   });
 
-  test('a main process whose status can\'t be read, or no main process, isn\'t signalled, and says why', async () => {
+  test('a main process whose status can\'t be read, or no main process, isn\'t signalled, and says why; only the first is a finding', async () => {
     const at = await install({ listens: true });
     systemctl(at, { mainPidNow: '999999999' });
-    expect(ladder(at).out).toMatch(/gate dump: not asked: \/proc\/999999999\/status can't be read/);
+    const unread = ladder(at).out;
+    expect(unread).toMatch(/gate dump: not asked: \/proc\/999999999\/status can't be read/);
+    expect(unread).toMatch(/=== findings ===[\s\S]*the gate dump wasn't asked for, since \/proc\/999999999\/status can't be read, so the gate dump isn't known/);
     systemctl(at, { mainPidNow: '0' });
-    expect(ladder(at).out).toMatch(/gate dump: not asked: the unit has no main process now/);
+    const none = ladder(at).out;
+    expect(none).toMatch(/gate dump: not asked: the unit has no main process now/);
+    expect(none).not.toContain('the gate dump wasn\'t asked for');
     expect(signalled(at.host)).toBe(false);
   });
 
-  test('a SIGUSR2 that can\'t be sent is said, with why, and nothing waits for a dump', async () => {
+  test('a SIGUSR2 that can\'t be sent is said, with why, and is a finding, and nothing waits for a dump', async () => {
     const at = await install({ listens: true });
     const pid = at.host.process.pid;
     systemctl(at, { mainPidNow: `${pid}/task/${pid}` });
     const { out } = ladder(at);
     await settled(at.host);
     expect(out).toMatch(/^live gate dump: SIGUSR2 couldn't be sent \(.+\)$/m);
+    expect(out).toMatch(/=== findings ===[\s\S]*SIGUSR2 couldn't be sent \(.+\), so the gate dump isn't known/);
     expect(out).not.toContain('[diagnostics] line');
     expect(signalled(at.host)).toBe(false);
     expect(alive(at.host)).toBe(true);

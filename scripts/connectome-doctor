@@ -704,10 +704,14 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
     elif listening is None:
         print(f"live gate dump: {C_DIM}not asked: /proc/{pid}/status can't be read, so whether SIGUSR2 would end "
               f"the host isn't known{C_OFF}")
+        warn(f"the gate dump wasn't asked for, since /proc/{pid}/status can't be read, so the gate dump isn't known",
+             counts=False)
     elif not listening:
         print(f"live gate dump: {C_DIM}not asked: the host (pid {pid}) has no SIGUSR2 listener, and the signal "
               f"would end it. A host still starting installs one once its framework is built, so run this check "
               f"again in a minute; one whose agent-framework predates the dump never does{C_OFF}")
+        warn(f"the gate dump wasn't asked for, since the host (pid {pid}) has no SIGUSR2 listener, so the gate dump "
+             "isn't known", counts=False)
     else:
         before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
         signalled = int(time.time())
@@ -734,6 +738,7 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
                     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         if refused is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 couldn't be sent ({refused}){C_OFF}")
+            warn(f"SIGUSR2 couldn't be sent ({refused}), so the gate dump isn't known", counts=False)
         elif why is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but {where} can't be read ({why}), so whether a "
                   f"[diagnostics] line came isn't known{C_OFF}")
@@ -755,6 +760,8 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
         else:
             print(f"live gate dump: {C_DIM}no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, which the host "
                   f"catches and answers by writing that line{C_OFF}")
+            warn(f"no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, so the gate dump isn't known",
+                 counts=False)
 
 if findings_json:
     builtins.print("connectome-doctor findings: " + json.dumps([{"text": withheld(w), "counts": counts}
