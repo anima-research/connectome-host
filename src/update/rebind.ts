@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  ContractError, REBIND_PLAN, copyLabelPath, installPaths, readRecord, syncDir, writeJsonAtomic,
-  type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
+  ContractError, REBIND_PLAN, childrenFilePath, copyLabelPath, installPaths, isChildEntry, readRecord, syncDir,
+  writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
 } from './contract.js';
 import { RELEASE_HOST, isUnder, lockLive, takeLock, type LauncherOps } from './launcher.js';
 
@@ -42,12 +42,20 @@ export function boundHere(record: InstallRecord, root: string): boolean {
 
 export interface BoundFile {
   path: string;
-  kind: 'label' | 'list';
-  value: CopyLabel | GoBackList;
+  kind: 'label' | 'list' | 'children';
+  value: CopyLabel | GoBackList | ChildrenFile;
   paths: string[];
 }
 
-function pathsIn(value: CopyLabel | GoBackList, kind: BoundFile['kind']): string[] | null {
+const FILE_NAMES: Record<BoundFile['kind'], string> = {
+  label: "copy's label", list: "Go back's list of places", children: "fleet's children file",
+};
+
+function pathsIn(value: BoundFile['value'], kind: BoundFile['kind']): string[] | null {
+  if (kind === 'children') {
+    const { children } = value as ChildrenFile;
+    return Array.isArray(children) ? children.filter(isChildEntry).map((child) => child.dataDir) : null;
+  }
   const lists = kind === 'label'
     ? [(value as CopyLabel).items, (value as CopyLabel).absent ?? []]
     : [(value as GoBackList).places];
@@ -63,7 +71,7 @@ function pathsIn(value: CopyLabel | GoBackList, kind: BoundFile['kind']): string
   return paths;
 }
 
-export function boundFiles(root: string, underWay: string | null = null): BoundFile[] {
+export function boundFiles(root: string, dataDir: string | null, underWay: string | null = null): BoundFile[] {
   const unbindable = (why: string, path: string) => new ContractError(`${why}, so setup can't bind the places it ` +
     'names to this ' + (underWay === null ? 'directory, and has changed nothing.'
       : `directory. A binding of this install is under way, with its plan at ${underWay}: put ${path} right and run ` +
@@ -82,15 +90,15 @@ export function boundFiles(root: string, underWay: string | null = null): BoundF
       throw unbindable(`${setAside} can't be listed (${(error as Error).message})`, setAside);
     }
   }
+  if (dataDir !== null) found.push({ path: childrenFilePath(dataDir), kind: 'children' });
   const files: BoundFile[] = [];
   for (const { path, kind } of found) {
-    let value: CopyLabel | GoBackList | null;
+    let value: BoundFile['value'] | null;
     try {
-      value = readRecord<CopyLabel | GoBackList>(path, kind === 'label' ? "copy's label" : "Go back's list of places");
+      value = readRecord<BoundFile['value']>(path, FILE_NAMES[kind]);
     } catch (error) {
       throw unbindable(error instanceof ContractError ? error.message.replace(/\.+$/, '')
-        : `The ${kind === 'label' ? "copy's label" : "Go back's list of places"} at ${path} can't be read ` +
-          `(${(error as Error).message})`, path);
+        : `The ${FILE_NAMES[kind]} at ${path} can't be read (${(error as Error).message})`, path);
     }
     if (value === null) continue;
     const paths = pathsIn(value, kind);
@@ -146,7 +154,7 @@ export type Binding =
   | { kind: 'resume'; plan: RebindPlan }
   | {
     kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: RebindPlan['places'];
-    files: BoundFile[];
+    files: BoundFile[]; served: string | null;
   };
 
 function keptHere(path: string, to: string, rootName: string): string | null {
@@ -156,13 +164,16 @@ function keptHere(path: string, to: string, rootName: string): string | null {
   }
 }
 
-export function bindingOf(root: string, record: InstallRecord): Binding {
+export function bindingOf(root: string, record: InstallRecord, placed: RebindPlan['places'] = []): Binding {
   const plan = readPlan(root);
   if (plan !== null) return { kind: 'resume', plan };
   const to = workingDirOf(root);
   if (boundHere(record, root)) return { kind: 'bound', to };
   const from = typeof record.workingDir === 'string' ? record.workingDir : null;
-  const files = boundFiles(root);
+  const dataKept = from === null ? keptHere(record.dataDir, to, basename(root)) : null;
+  const served = mapPath(record.dataDir,
+    { from, to, places: [...placed, ...dataKept === null ? [] : [{ from: record.dataDir, to: dataKept }]] });
+  const files = boundFiles(root, served);
   const extraState = Array.isArray(record.extraState) ? record.extraState.filter((path) => typeof path === 'string') : [];
   const named = [
     ...[record.dataDir, ...extraState].map((path) => ({ path, by: `This install's record (${installPaths(root).install})` })),
@@ -183,7 +194,7 @@ export function bindingOf(root: string, record: InstallRecord): Binding {
     })
     : [];
   return {
-    kind: 'bind', from, to, places, files,
+    kind: 'bind', from, to, places, files, served,
     ask: places.filter((place) => from === null ? !kept.some((one) => one.from === place.path) : !isUnder(place.path, from)),
     kept,
   };
@@ -225,20 +236,33 @@ export function writePlan(root: string, plan: RebindPlan): void {
 }
 
 export function rewriteFiles(root: string, plan: RebindPlan): void {
-  for (const file of boundFiles(root, rebindPath(root))) {
+  for (const file of boundFiles(root, plan.record.dataDir, rebindPath(root))) {
     if (file.value.rebound === plan.id) {
       syncDir(dirname(file.path));
       continue;
     }
-    const map = <T extends { path: string }>(place: T): T => {
-      const path = mapPath(place.path, plan);
+    const placeOf = (was: string): string => {
+      const path = mapPath(was, plan);
       if (path === null) {
-        throw new ContractError(`${file.path} names ${place.path}, which the plan at ${rebindPath(root)} gives no place ` +
+        throw new ContractError(`${file.path} names ${was}, which the plan at ${rebindPath(root)} gives no place ` +
           'in this install, so setup can\'t bind it.');
       }
-      return { ...place, path };
+      return path;
     };
-    if (file.kind === 'label') {
+    const map = <T extends { path: string }>(place: T): T => ({ ...place, path: placeOf(place.path) });
+    if (file.kind === 'children') {
+      const children = file.value as ChildrenFile;
+      writeJsonAtomic(file.path, {
+        ...children,
+        children: children.children.map((child) => {
+          if (!isChildEntry(child)) return child;
+          const dataDir = placeOf(child.dataDir);
+          const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
+          return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
+        }),
+        rebound: plan.id,
+      } satisfies ChildrenFile);
+    } else if (file.kind === 'label') {
       const label = file.value as CopyLabel;
       writeJsonAtomic(file.path, {
         ...label, items: label.items.map(map), ...(label.absent === undefined ? {} : { absent: label.absent.map(map) }),

@@ -27,8 +27,10 @@
  *   and what a restore sets aside; and, run from a shell with `--go-back`, a
  *   Go back's mark (writeMark);
  * - setup: the install record; and, binding an install moved or copied
- *   (rebind.ts), its plan and the paths of the copy's labels and the Go
- *   backs' lists, only while it holds the lock;
+ *   (rebind.ts), its plan, the paths of the copy's labels and the Go backs'
+ *   lists, and the fleet's children file's data directories and, where a
+ *   child's is the other install's, its process, only while it holds the
+ *   lock;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
@@ -427,6 +429,7 @@ export function readGoBackList(root: string, markId: string): GoBackList['places
 export interface ChildrenFile {
   v: 1;
   children: Array<{ name: string; pid: number | null; bootId: string | null; dataDir: string }>;
+  rebound?: string;
 }
 
 /** A path's real form as the places of a trial are written (trialPlaces): its

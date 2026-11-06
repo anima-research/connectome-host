@@ -2296,6 +2296,24 @@ test('a record from before workingDir takes each place under this directory as t
   });
 });
 
+test('a fleet child\'s data directory outside every place is asked about after the data directory, from the children file in the data directory answered, and its own setup is given both', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const elsewhere = join(directory(), 'data');
+  mkdirSync(elsewhere);
+  const kid = join(directory(), 'kid');
+  mkdirSync(kid);
+  writeFileSync(join(elsewhere, 'fleet-children.json'),
+    JSON.stringify({ v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: kid }] }));
+  writeFileSync(join(dir, 'connectome-host', 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
+  const again = world(dir, { answers: ['', ''] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([`${elsewhere} (its data directory): `, `${kid} (a place its updates copy): `]);
+  expect(ownSetup(again.seen)).toEqual({
+    argv: ['--root', join(dir, 'connectome-host'), '--place', elsewhere, elsewhere, '--place', kid, kid], dataDir: elsewhere,
+  });
+});
+
 test('a binding a setup run cut off goes to the install\'s own setup to finish, with no --place and asking nothing, and setup says so', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);

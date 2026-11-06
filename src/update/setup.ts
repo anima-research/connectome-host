@@ -24,7 +24,8 @@
  * no directory, as one from before workingDir, or another one, as after a
  * move or a copy, setup binds the install to the directory it's in,
  * writing that as the record's workingDir and giving each place in the
- * record, the copy labels and each Go back's list its place there. With
+ * record, the copy labels, each Go back's list and the fleet's children
+ * file its place there. With
  * --extra-state, it records the paths given in place of those recorded;
  * without, it keeps those recorded, at their places after any binding.
  */
@@ -290,8 +291,8 @@ function setupsOwn(root: string): boolean {
   return readdirSync(releases).every((name) => name.endsWith('.tmp') || existsSync(join(releases, name, HOST_ENTRY)));
 }
 
-const CHANGED_MEANWHILE = 'This install\'s record, its binding\'s plan, its copy\'s label or a Go back\'s list isn\'t ' +
-  'what setup read before it held the lock, so setup has changed none of them. Run it again, and it reads them ' +
+const CHANGED_MEANWHILE = 'This install\'s record, its binding\'s plan, its copy\'s label, a Go back\'s list or the ' +
+  'fleet\'s children file isn\'t what setup read before it held the lock, so setup has changed none of them. Run it again, and it reads them ' +
   'afresh.';
 
 function sameFiles(a: BoundFile[], b: BoundFile[]): boolean {
@@ -411,7 +412,8 @@ export function setup(options: SetupOptions): void {
     return writeInstallCommand(root, undefined, release);
   };
   const placed = (options.places ?? []).map(({ from, to }) => ({ from, to: realOrResolved(to) }));
-  const bindingFound = existing === null ? null : bindingOf(root, given === null ? existing : { ...existing, extraState: [] });
+  const bindingFound = existing === null ? null
+    : bindingOf(root, given === null ? existing : { ...existing, extraState: [] }, placed);
   if (placed.length > 0 && bindingFound?.kind !== 'bind') {
     throw new ContractError(bindingFound?.kind === 'resume'
       ? `A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup, ` +
@@ -433,7 +435,7 @@ export function setup(options: SetupOptions): void {
       const nested = nestedWithRoot(realOrResolved(root), [
         [plan.record.dataDir, plan.record.dataDir],
         ...plan.record.extraState.map((place): [string, string] => [place, place]),
-        ...boundFiles(root, rebindPath(root)).flatMap((file) => file.paths.map((was): [string, string | null] =>
+        ...boundFiles(root, plan.record.dataDir, rebindPath(root)).flatMap((file) => file.paths.map((was): [string, string | null] =>
           [was, file.value.rebound === plan.id ? was : mapPath(was, plan)])),
       ]);
       if (nested !== null) {
@@ -468,8 +470,12 @@ export function setup(options: SetupOptions): void {
         `places it binds:\n${binding.places.map(placeLine).join('\n')}`);
     }
     if (unknown !== undefined) {
-      throw new ContractError(`--place ${unknown.from} names no place this install's record, its copy's label or its Go ` +
-        `backs' lists name. Those it names:\n${binding.places.map(placeLine).join('\n')}`);
+      throw new ContractError(`--place ${unknown.from} names no place this install's record, its copy's label` +
+        (binding.served === null
+          ? ' or its Go backs\' lists name. The fleet\'s children file, in the data directory, is read once the data ' +
+            'directory\'s place is given: give that with --place too. The places named:'
+          : ', its Go backs\' lists or the fleet\'s children file name. Those it names:') +
+        `\n${binding.places.map(placeLine).join('\n')}`);
     }
     const unanswered = binding.ask.filter((place) => !placed.some((given) => given.from === place.path));
     if (unanswered.length > 0) {
@@ -797,7 +803,7 @@ export function setup(options: SetupOptions): void {
     if (locked) lockForBinding(root, binding.from, ops);
     try {
       if (locked) {
-        const now = boundFiles(root);
+        const now = boundFiles(root, binding.served);
         if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
           !sameFiles(now, files) || readPlan(root) !== null) {
           throw new ContractError(CHANGED_MEANWHILE);

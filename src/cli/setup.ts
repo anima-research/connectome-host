@@ -24,7 +24,7 @@ import {
   writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
-import { bindingOf, mapPath, type Binding } from '../update/rebind.js';
+import { bindingOf, mapPath, type Binding, type Place } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
 
@@ -819,7 +819,8 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       'its plan, with the places that run was given, or says what stops it.');
     return { dataDir: binding.plan.record.dataDir, placeArgs: [] };
   }
-  const { from, to, ask, kept } = binding;
+  const { from, to, ask } = binding;
+  let asking = binding;
   const answer = ask.length === 0 ? '' : ' Press Enter where a place is this install\'s, or type the path of this ' +
     'install\'s own, as after a copy.';
   out(from === null
@@ -834,7 +835,8 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
         `with the install, as after a move, or is still the other install's, as after a copy. A place inside another ` +
         `goes with it.${answer}`));
   const places: Array<{ from: string; to: string }> = [];
-  for (const place of ask) {
+  for (let place: Place | undefined = ask[0]; place !== undefined;
+    place = asking.ask.find((one) => !places.some((given) => given.from === one.path))) {
     const what = place.data ? 'its data directory' : place.extra ? 'state kept outside its data directory'
       : 'a place its updates copy';
     for (;;) {
@@ -855,9 +857,19 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       places.push({ from: place.path, to: given });
       break;
     }
+    if (place.data) {
+      let again: Binding;
+      try {
+        again = bindingOf(root, record, places);
+      } catch (error) {
+        err(`connectome setup: ${(error as Error).message}`);
+        return 1;
+      }
+      if (again.kind === 'bind') asking = again;
+    }
   }
   return {
-    dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...kept] })!,
+    dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...asking.kept] })!,
     placeArgs: places.flatMap((place) => ['--place', place.from, place.to]),
   };
 }
