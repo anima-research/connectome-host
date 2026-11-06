@@ -7,7 +7,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { AgentFramework, resolveTimeZone } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
 import { AutobiographicalStrategy, ContextManager } from '@animalabs/context-manager';
@@ -40,8 +39,9 @@ const CONTEXT_MANAGER = ((): string => {
   while (!existsSync(join(dir, 'package.json')) && dirname(dir) !== dir) dir = dirname(dir);
   return join(dir, (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { main: string }).main);
 })();
-const DEPLOYMENTS = fileURLToPath(new URL('../docs/DEPLOYMENTS.md', import.meta.url));
-const REPAIR_SECTION = `${DEPLOYMENTS}'s "Crossed summaries: auditing and repairing a store"`;
+const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+const REPAIR_HEADING = 'Crossed summaries: auditing and repairing a store';
+const REPAIR_SECTION = `docs/DEPLOYMENTS.md's "${REPAIR_HEADING}" in connectome-host ${VERSION}`;
 const REMEDY = `${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 const MODEL_CALLED = 'its strategy called a model while opening it, and the audit gives a strategy none: only a start of this release can answer for this store';
 
@@ -2805,7 +2805,6 @@ describe('a host on trial, before its commit', () => {
   }, 60_000);
 });
 
-test('the repair section a refusal names is a file there, in this package, that has that heading', () => {
-  expect(DEPLOYMENTS.startsWith(sep)).toBe(true);
-  expect(readFileSync(DEPLOYMENTS, 'utf-8').split('\n')).toContain('### Crossed summaries: auditing and repairing a store');
+test('the repair section a refusal names is a heading of this release\'s docs/DEPLOYMENTS.md', () => {
+  expect(readFileSync(new URL('../docs/DEPLOYMENTS.md', import.meta.url), 'utf-8').split('\n')).toContain(`### ${REPAIR_HEADING}`);
 });

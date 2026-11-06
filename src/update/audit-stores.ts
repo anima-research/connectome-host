@@ -15,7 +15,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { resolveTimeZone, storedInjectionMarkOf, type ContextStrategy } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
 import {
@@ -23,6 +22,7 @@ import {
 } from '@animalabs/context-manager';
 import type { Membrane } from '@animalabs/membrane';
 import { resolveAgentName } from '../agent-name.js';
+import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../web/load-repair-alert.js';
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
@@ -33,6 +33,7 @@ import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
 } from './contract.js';
 import { StartRefusal } from './host.js';
+import { hostVersionOf } from './update.js';
 
 /** The flag that runs the audit in place of a host: `<entry> --audit-stores
  *  [--recipe <recipe>] <data directory>…`, by hand after a copy. */
@@ -972,8 +973,8 @@ function refusal(error: unknown): string {
   return `${remedy >= 0 ? line.slice(0, remedy) : line} ${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 }
 
-const REPAIR_SECTION = `${fileURLToPath(new URL('../../docs/DEPLOYMENTS.md', import.meta.url))}'s ` +
-  '"Crossed summaries: auditing and repairing a store"';
+const REPAIR_SECTION = `docs/DEPLOYMENTS.md's "Crossed summaries: auditing and repairing a store" in connectome-host ` +
+  hostVersionOf(HOST_PACKAGE_JSON);
 
 function oneLine(error: unknown): string {
   return flat(error instanceof Error ? error.message : String(error));
