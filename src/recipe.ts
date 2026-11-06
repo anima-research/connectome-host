@@ -1211,9 +1211,9 @@ export interface RecipeModules {
    * call aren't sent, and nothing is sent while the host isn't connected to
    * the relay. Also handles the relay's `interruption` events: the host
    * edits at most one message it recently published in the interruption's
-   * channel, to the text the client reports as voiced, and a note lands in
-   * the agent's context. `token` should be `${VAR}`-substituted from .env,
-   * never literal.
+   * channel, to the text the client reports as voiced, and, with
+   * `notifyOnInterruption` on (its default), puts a note in the agent's
+   * context. `token` should be `${VAR}`-substituted from .env, never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
@@ -1334,7 +1334,7 @@ export interface RecipeTtsRelay {
    *  A message published on another server isn't voiced; the host logs a line naming that server at the first such message from it. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption trims a posted message. Default true. */
+  /** Whether an interruption puts a note in the agent's context, saying what was voiced and whether the posted message was trimmed. Default true. */
   notifyOnInterruption?: boolean;
 }
 
