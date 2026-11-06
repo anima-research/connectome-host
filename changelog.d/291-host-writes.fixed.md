@@ -48,8 +48,10 @@
     launched it, or the current attempt of a run above it, else for the
     primary. It wakes nobody, as before. One whose launcher is listed was
     already written for it, and a run with a route of its own (a subagent
-    agent-framework registered) still has its result held as mail for an
-    ended launcher, which agent-framework delivers on adoption.
+    agent-framework registered) still goes where agent-framework routes it:
+    held as mail for its launcher if that launcher has since ended
+    (delivered on adoption), or, for a launch that waited for a slot past
+    its launcher's end, to the launcher's nearest live ancestor.
   - A subagent's first rows (its orientation and task, a fork's copy of its
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.

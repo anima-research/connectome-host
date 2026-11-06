@@ -26,12 +26,12 @@
     redo or a branch switch", and that "an undo or a branch switch takes back
     `gate.js`": from this release each reads "a branch switch or a rollback".
   - `/checkout` is agent-framework's `switchBranch`, and `/restore` and
-    `/branchto` its `rollbackToMessage`: a new branch whose last row is the
-    checkpoint's or the given message, and the store moved to it. A
-    `/restore` whose checkpoint has no message (one taken on an empty
-    branch), or whose message isn't on the current branch, is a
-    `switchBranch` to the checkpoint's branch head instead, and one at its
-    checkpoint already moves nothing. Each is refused unless every agent
+    `/branchto` its `rollbackToMessage`: a new branch cut at the write that
+    showed the agent the checkpoint's or the given message (see below), and
+    the store moved to it. A `/restore` whose checkpoint has no message (one
+    taken on an empty branch), or whose message isn't on the current
+    branch, is a `switchBranch` to the checkpoint's branch head instead, and
+    one at its checkpoint already moves nothing. Each is refused unless every agent
     sharing the store is idle, as before, and each takes every agent's
     context to the branch it moves to. While the command agent's own turn
     is alive the host refuses it at once, as before (`/checkout refused: a

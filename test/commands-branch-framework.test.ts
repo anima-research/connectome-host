@@ -8,9 +8,12 @@
  * - /undo and /redo are the framework's undoLastTurn and redo: the agent's
  *   own last turn leaves its window and comes back, no branch moves, and a
  *   co-resident's newer row is left alone;
- * - /checkout is the framework's switchBranch, and /branchto and /restore
- *   its rollbackToMessage: each is refused while any agent sharing the store
- *   has a turn alive, and each is in the operator log;
+ * - /checkout is the framework's switchBranch, /branchto its
+ *   rollbackToMessage, and /restore its rollbackToMessage, or switchBranch
+ *   to the checkpoint's branch head (a checkpoint with no message, or one
+ *   whose message isn't on the branch), and nothing when it is at the
+ *   checkpoint already: each move is refused while any agent sharing the
+ *   store has a turn alive, and each is in the operator log;
  * - after each, every resident's context follows the store's branch, so an
  *   autobiographical resident's next turn is served (J-AF1, J-H9: before
  *   agent-framework re-initialized every live context at a branch move, a
