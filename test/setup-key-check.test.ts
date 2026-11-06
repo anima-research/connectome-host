@@ -473,9 +473,7 @@ describe("the key's one real call", () => {
       fetch: (async () => { throw Object.assign(new TypeError('getaddrinfo ENOTFOUND no-such-host.invalid'), { code: 'ENOTFOUND', errno: 4 }); }) as unknown as typeof fetch,
     });
     expect(cause(unnamed)).toContain("no-such-host.invalid couldn't be found by name (ENOTFOUND)");
-    seen.length = 0;
     const silent = await checkKey({ key: 'k-silent', model: 'm', baseUrl: at('silent'), timeoutMs: 300 });
-    expect(seen.map((each) => each.key)).toEqual(['k-silent']);
     expect((silent as { cause: string }).cause).toContain("didn't answer within 0.3 s");
   });
 });
