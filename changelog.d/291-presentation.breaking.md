@@ -125,7 +125,8 @@
   agent names, counts, ids and slots, never content. `window:undone`, an undo
   or a redo on a window, needs `messages`, and so does the new
   `undone-marks` frame, sent at each undo, redo or shed on the conversation
-  agent's window, which names each row of the transcript's record that an
+  agent's window and right after each welcome, which names each row of the
+  transcript's record that an
   undo or a shed took out of that window (status `undone`), from `fromIndex`
   0, as a welcome's and a history page's entries mark them (`undone: true`).
   Building it asks the status only of the rows out of that window that

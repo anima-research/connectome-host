@@ -134,6 +134,8 @@ the record, from index 0, which the page dims and labels wherever it holds
 them, clearing the label of each row it holds that the frame doesn't name.
 The page also reads the
 window's panels again (Context's makeup and coverage, the compiled context
-document, the pins). The pin picker lists the server's candidates, the
+document, the pins). The server sends the frame right after each welcome
+too, since a welcome marks only its tail and a page keeps its older rows
+across a reconnect to the same branch; that one reads no panel. The pin picker lists the server's candidates, the
 record's last 200 rows less the undone ones and those whose audience stamp
 leaves the agent out (another resident's on a shared store).

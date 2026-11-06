@@ -185,6 +185,18 @@ describe("the frames that move a window, and the panels' reads", () => {
     expect(calls).toEqual(['marks:clerk:x3', 'read', 'read', 'marks:clerk:', 'marks:clerk:x4', 'read']);
   });
 
+  // The host sends the record's marks after each welcome (#485 bot review
+  // 5, finding 20): they mark the transcript and read nothing, since nothing
+  // moved the window then.
+  test("the marks frame right after a welcome marks the transcript and reads nothing, and a later one still reads", () => {
+    const { calls, take } = frames();
+    take({ type: 'welcome' });
+    take(marks('clerk', ['a1']));
+    expect(calls).toEqual(['marks:clerk:a1']);
+    take(marks('clerk', ['x3']));
+    expect(calls).toEqual(['marks:clerk:a1', 'marks:clerk:x3', 'read']);
+  });
+
   test("a marks frame with another frame between its agent's trace and it reads them", () => {
     const { calls, take } = frames();
     take(undone('clerk'));

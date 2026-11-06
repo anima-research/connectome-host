@@ -117,7 +117,9 @@ export interface WindowFrameHooks {
  *   redo), and at an undone-marks frame for it that doesn't come right after
  *   that trace (a shed's, which has no trace): the host sends one after each
  *   such trace, and both reading them would read each twice (a makeup read
- *   posts the window to count_tokens);
+ *   posts the window to count_tokens). Nor does the one the host sends right
+ *   after each welcome, which marks the rows the page kept and moved no
+ *   window;
  * - for a fleet child, at a `child-event` of its `window:undone` or its
  *   shed (`presentation:retracted`, reason `shed`): for the agent the child's
  *   panels named, or for any of its agents before they have named one. For
@@ -130,6 +132,7 @@ export interface WindowFrameHooks {
  */
 export class WindowFrames {
   private tracedJustBefore: string | undefined;
+  private welcomedJustBefore = false;
 
   take(
     msg: { type: string; [k: string]: unknown },
@@ -137,7 +140,9 @@ export class WindowFrames {
     hooks: WindowFrameHooks,
   ): void {
     const traced = this.tracedJustBefore;
+    const welcomed = this.welcomedJustBefore;
     this.tracedJustBefore = undefined;
+    this.welcomedJustBefore = msg.type === 'welcome';
     const local = !isChildScope(shown.scope);
     if (msg.type === 'trace') {
       const event = msg.event as { type?: unknown; agentName?: unknown } | undefined;
@@ -149,7 +154,7 @@ export class WindowFrames {
     if (msg.type === 'undone-marks') {
       const marks = msg as unknown as UndoneMarksMessage;
       hooks.applyUndoneMarks(marks);
-      if (local && marks.agent === shown.agent && marks.agent !== traced) hooks.readPanels();
+      if (local && marks.agent === shown.agent && marks.agent !== traced && !welcomed) hooks.readPanels();
       return;
     }
     if (msg.type === 'child-event' && !local && msg.childName === shown.scope) {

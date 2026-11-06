@@ -158,6 +158,13 @@ describe('what each client is sent', () => {
     await host.stop();
   });
 
+  /** The undone-marks frames a client was sent after its welcomes (#485 bot
+   *  review 5, finding 20), and the ones an undo, a redo or a shed sent: a
+   *  socket keeps its frames in order, and the server sends the first kind
+   *  right after the welcome. */
+  const marksAfterWelcome = (conn: Connection) => conn.frames.filter((f, i) => f.type === 'undone-marks' && conn.frames[i - 1]?.type === 'welcome');
+  const tracedMarks = (conn: Connection) => conn.frames.filter((f, i) => f.type === 'undone-marks' && conn.frames[i - 1]?.type !== 'welcome');
+
   async function everyone() {
     const clients = {
       operator: await host.operator(),
@@ -702,7 +709,7 @@ describe('what each client is sent', () => {
       host.emitTrace({ type: 'window:undone', agentName: 'someone-else', retracted: 1 });
       await host.fence(Object.values(c));
       for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
-        expect(conn.framesOf('undone-marks')).toEqual([
+        expect(tracedMarks(conn)).toEqual([
           { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
           { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
         ]);
@@ -775,7 +782,7 @@ describe('what each client is sent', () => {
         .map((e) => ({ storeId: e.id, index: e.index, ...(e.undone ? { undone: true } : {}) }));
       expect(rows.length).toBe(252);
       const marked = () => rows.filter((r) => r.undone).map((r) => r.storeId);
-      const frames = () => c.operator.framesOf('undone-marks');
+      const frames = () => tracedMarks(c.operator);
 
       undone = new Set(['a1']);
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
@@ -803,6 +810,35 @@ describe('what each client is sent', () => {
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
       ]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // A welcome to the same session and branch keeps a page's rows older than
+  // its tail, marks and all, and marks only its tail; an undo or a redo
+  // while the page was disconnected moves no branch, so the page reads the
+  // marks of every row it holds from the frame after each welcome (#485 bot
+  // review 5, finding 20).
+  test('each welcome to a client that holds messages is followed by the record\'s undone marks, from index 0', async () => {
+    const say = (id: string, text: string) => ({ id, participant: 'user', content: [{ type: 'text', text }] });
+    transcript = Array.from({ length: 250 }, (_, i) => say(`w${i}`, `row ${i}`));
+    undone = new Set(['w3']);
+    try {
+      const c = await everyone();
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        await conn.until('undone-marks');
+        expect(marksAfterWelcome(conn)).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['w3'] }]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+      // A redo while a page is away, then its welcome again: the row before
+      // the welcome's tail is named no longer.
+      undone = new Set();
+      await host.fence([c.operator, c.dashboard]);
+      await c.operator.until('undone-marks', (f) => (f.undone as string[]).length === 0);
+      expect(marksAfterWelcome(c.operator).at(-1)).toEqual({ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] });
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
     } finally {
       transcript = [];
       undone = new Set();
@@ -852,13 +888,16 @@ describe('what each client is sent', () => {
       open.push(reader);
       await host.fence([reader]);
       onRecordRead = undefined;
-      expect(recordReads).toBe(0);
+      // Each of the reader's two welcomes, its connection's and the fence's,
+      // reads the record once, for the marks frame after it (#485 bot review
+      // 5, finding 20); a read the traces deferred would make a third.
+      expect(recordReads).toBe(2);
       onRead = (offset, size) => { reads.push([offset, size]); };
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
       onRead = undefined;
       expect(reads).toEqual([[0, 5]]);
       await host.fence([reader]);
-      expect(reader.framesOf('undone-marks')).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['r4'] }]);
+      expect(tracedMarks(reader)).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['r4'] }]);
     } finally {
       onRead = undefined;
       onRecordRead = undefined;

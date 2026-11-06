@@ -72,6 +72,7 @@ import {
   type HostResumeMessage,
   type RequestOperatorLogMessage,
   type OperatorLogEntryWire,
+  type UndoneMarksMessage,
 } from '../web/protocol.js';
 import {
   readMcplServersFile,
@@ -833,19 +834,28 @@ export class WebUiModule implements Module {
    *  holds, and a row a redo put back after it left the tail. It reads the
    *  record's listing (undoneRowIds) at each undo, redo or shed while a
    *  client the frame goes to (one that holds messages) is connected, and
-   *  reads nothing while none is. */
+   *  reads nothing while none is; and once at each welcome of such a
+   *  client (welcomeAndJoinStream). */
   private broadcastUndoneMarks(agentName: unknown): void {
     if (!sharedServer) return;
-    const scopes = frameScopes({ type: 'undone-marks', agent: '', fromIndex: 0, undone: [] });
-    if (![...sharedServer.clients.values()].some((c) => c.welcomed && clientHolds(c, scopes))) return;
-    const agent = sharedServer.app?.framework.getAllAgents()[0];
-    if (!agent || agent.name !== agentName) return;
+    if (![...sharedServer.clients.values()].some((c) => c.welcomed && clientHolds(c, UNDONE_MARKS_SCOPES))) return;
+    const frame = this.undoneMarks(agentName);
+    if (frame) this.broadcast(frame);
+  }
+
+  /** The undone-marks frame of the transcript agent's record, when that
+   *  agent is `agentName` (any agent when it's undefined) and its context
+   *  tells which rows are undone. */
+  private undoneMarks(agentName?: unknown): UndoneMarksMessage | undefined {
+    const agent = sharedServer?.app?.framework.getAllAgents()[0];
+    if (!agent || (agentName !== undefined && agent.name !== agentName)) return undefined;
     const cmw = agent.getContextManager() as unknown as Partial<UndoneReadableCm> | undefined;
-    if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.ordinalOf !== 'function' || typeof cmw.getAllMessages !== 'function') return;
+    if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.ordinalOf !== 'function' || typeof cmw.getAllMessages !== 'function') return undefined;
     try {
-      this.broadcast({ type: 'undone-marks', agent: agent.name, fromIndex: 0, undone: undoneRowIds(cmw as UndoneReadableCm, agent.name) });
+      return { type: 'undone-marks', agent: agent.name, fromIndex: 0, undone: undoneRowIds(cmw as UndoneReadableCm, agent.name) };
     } catch (err) {
       console.error('[webui] undone marks failed:', err instanceof Error ? err.message : err);
+      return undefined;
     }
   }
 
@@ -2867,6 +2877,15 @@ export class WebUiModule implements Module {
     const welcome = this.buildWelcome(childRecipes);
     this.send(client, client.scopes === null ? welcome : this.observerWelcome(welcome, client.scopes));
     client.welcomed = true;
+    // A welcome to the session and branch a page shows keeps the page's rows
+    // older than its tail, marks and all, and marks only its tail: an undo or
+    // a redo while the page was away moved no branch, so every row's mark
+    // follows, from index 0. One read of the record's listing a welcome, for
+    // a client the frame goes to.
+    if (clientHolds(client, UNDONE_MARKS_SCOPES)) {
+      const marks = this.undoneMarks();
+      if (marks) this.send(client, marks);
+    }
   }
 
   private observerWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>): WelcomeMessage {
@@ -3375,6 +3394,9 @@ export interface UndoneReadableCm {
  * residents share, which the listing holds whole) never enters the agent's
  * window, so it isn't asked either.
  */
+/** The scopes the undone-marks frame needs. */
+const UNDONE_MARKS_SCOPES = frameScopes({ type: 'undone-marks', agent: '', fromIndex: 0, undone: [] });
+
 export function undoneRowIds(cm: UndoneReadableCm, agentName: string): string[] {
   const undone: string[] = [];
   for (const { id, metadata } of cm.getAllMessages()) {

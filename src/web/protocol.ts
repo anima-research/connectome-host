@@ -370,12 +370,15 @@ export interface BranchChangedMessage {
 
 /** After an undo or a redo on the conversation agent's window
  *  (agent-framework #291, the `window:undone` trace), or a shed from it
- *  (`presentation:retracted`, reason `shed`): which of the transcript's
- *  rows from `fromIndex` on are out of that window as undone
- *  (`WelcomeMessageEntry.undone`), by store id. A row from there that isn't
- *  named isn't undone. This host sends `fromIndex` 0, every row of the
- *  record, so a page marks each row it holds, however far back its history
- *  reaches. A row before `fromIndex` would keep its mark. */
+ *  (`presentation:retracted`, reason `shed`), and right after each welcome:
+ *  which of the transcript's rows from `fromIndex` on are out of that window
+ *  as undone (`WelcomeMessageEntry.undone`), by store id. A row from there
+ *  that isn't named isn't undone. This host sends `fromIndex` 0, every row
+ *  of the record, so a page marks each row it holds, however far back its
+ *  history reaches, the rows older than a welcome's tail that the page keeps
+ *  across a reconnect included. A row before `fromIndex` would keep its
+ *  mark. The one after a welcome moved no window, so the page reads its
+ *  panels again at neither. */
 export interface UndoneMarksMessage {
   type: 'undone-marks';
   agent: string;
