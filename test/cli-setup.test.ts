@@ -1879,7 +1879,7 @@ async function holdLock(dir: string, source = `
     console.log('held');
     // Bun closes a Database once nothing refers to it, which lets its lock go.
     setInterval(() => db, 1000);
-  `) {
+  `, waitMs = 4_000) {
   mkdirSync(join(dir, '.setup'), { recursive: true });
   const holder = spawn(process.execPath, ['-e', source], { stdio: ['ignore', 'pipe', 'inherit'] });
   const closed = new Promise<void>((done) => holder.once('close', () => done()));
@@ -1888,15 +1888,17 @@ async function holdLock(dir: string, source = `
     return closed;
   };
   let said = '';
+  let stalled: ReturnType<typeof setTimeout> | undefined;
   try {
     await new Promise<void>((done, fail) => {
+      stalled = setTimeout(() => fail(new Error(`the lock holder didn't say it held the lock within ${waitMs} ms`)), waitMs);
       holder.stdout!.on('data', (chunk) => {
         said += String(chunk);
         if (said.includes('held')) done();
       });
       holder.once('error', fail);
       holder.once('exit', (code, signal) => fail(new Error(`the lock holder ended before it held the lock (${signal ?? `exit ${code}`})`)));
-    });
+    }).finally(() => clearTimeout(stalled));
   } catch (error) {
     await kill();
     throw error;
@@ -1908,6 +1910,13 @@ test('the lock holder is waited for until it says it holds the lock, however its
   const split = await holdLock(directory(), "process.stdout.write('he'); setTimeout(() => process.stdout.write('ld\\n'), 200); setInterval(() => {}, 1000);");
   await split.kill();
   await expect(holdLock(directory(), 'process.exit(3);')).rejects.toThrow('the lock holder ended before it held the lock (exit 3)');
+}, 5_000);
+
+test('a lock holder that never says it holds the lock fails the wait, named, and is killed', async () => {
+  const token = `stalled-holder-${process.pid}-${Date.now()}`;
+  await expect(holdLock(directory(), `// ${token}\nsetInterval(() => {}, 1000);`, 300))
+    .rejects.toThrow('the lock holder didn\'t say it held the lock within 300 ms');
+  expect(Bun.spawnSync(['pgrep', '-f', token]).exitCode).toBe(1);
 }, 5_000);
 
 test('one setup at a time in a directory: another running refuses this one before it asks anything, and one killed doesn\'t',
