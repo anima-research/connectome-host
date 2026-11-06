@@ -2112,4 +2112,11 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).toContain('claude-root-unset');
     expect(r.out).not.toContain(`claude-${at.root}`);
   });
+
+  test('a host that isn\'t the service\'s is said with how to find what starts it again, where systemd runs the service', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
+    expect(r.out).toContain('`kill 4242` stops it. If something starts it again, `systemctl --user status 4242` names the unit ' +
+      'it runs in, which is what to stop.');
+  });
 });
