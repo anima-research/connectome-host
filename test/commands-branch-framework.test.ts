@@ -270,7 +270,9 @@ async function served(h: PresentedHost, agent: string): Promise<{ requested: boo
 describe('after /checkout, /restore and /branchto', () => {
   // The host's default strategy is the autobiographical one, which refuses
   // to compile on a branch generation it wasn't initialized on.
-  test('every autobiographical resident is served its next turn, whichever agent the command was for', async () => {
+  // Host #485 bot review wave 3, finding 35: every command was clerk's, so a
+  // defect in a move for mira left this green.
+  for (const commandAgent of ['clerk', 'mira'] as const) test(`every autobiographical resident is served its next turn, after commands for ${commandAgent}`, async () => {
     const h = await bootPresentedHost({
       agents: ['clerk', 'mira'],
       agentConfig: () => ({ strategy: new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }) }),
@@ -280,12 +282,12 @@ describe('after /checkout, /restore and /branchto', () => {
       await h.turn('clerk');
       await h.turn('mira');
       await h.turn('clerk');
-      const clerk = h.framework.getAgent('clerk')!.getContextManager();
-      const first = h.rowWith('clerk', 'clerk reply 1')!;
+      const cm = h.framework.getAgent(commandAgent)!.getContextManager();
+      const first = h.rowWith(commandAgent, `${commandAgent} reply 1`)!;
       const store = h.framework.getStore();
       const main = store.currentBranch().name;
-      const side = clerk.branchAt(first.id, 'side');
-      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      const side = cm.branchAt(first.id, 'side');
+      const app = { framework: h.framework, agentName: commandAgent, branchState: createBranchState() };
       // A checkpoint with no message: /restore takes the branch's head, through switchBranch.
       app.branchState.checkpoints.set('main-head', { branchName: main });
 
