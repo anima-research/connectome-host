@@ -729,6 +729,25 @@ describe('a binding cut off', () => {
     expect(listed(install)).toEqual([b, c]);
   });
 
+  test('killed after one file, leaving its lock held by a process that has ended and the next file part-written: the next run takes the lock, writes that file whole, and finishes the plan', () => {
+    const { b, c, places } = chained();
+    const root = rootOf(install);
+    const second = join(root, 'set-aside', 'm2', 'places.json');
+    mkdirSync(`${second}.tmp`);
+    expect(() => setup(options(install, { places }))).toThrow(/places\.json\.tmp/);
+    rmSync(`${second}.tmp`, { recursive: true });
+    writeFileSync(`${second}.tmp`, '{"v":1,"places":[{"pa');
+    const ended = Bun.spawnSync(['true']).pid;
+    lockHeldBy(install, ended);
+    setup(options(install));
+    expect(listed(install)).toEqual([b, c]);
+    expect(named(install)).toEqual([b, c]);
+    expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [b, c], workingDir: install });
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+    expect(existsSync(`${second}.tmp`)).toBe(false);
+    expect(existsSync(installPaths(root).lock)).toBe(false);
+  });
+
   test('cut after the record: the plan still stands, so starts refuse, until the next run removes it', () => {
     const { b, c, places } = chained();
     const root = rootOf(install);
