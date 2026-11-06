@@ -297,6 +297,12 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
       ctx.err(`connectome: ${errorText(error)}`);
       return 1;
     }
+    const elsewhere = recordedDirectory(join(root, 'service.json'));
+    if (elsewhere !== null && !sameDirectory(elsewhere, workingDirOf(root))) {
+      throw new Refusal(`${errorText(error).replace(/\.+$/, '')}. It names another working directory, ${elsewhere}, ` +
+        'whose units this release can\'t check from it. Take that install\'s units away there, or move this record ' +
+        'aside if they\'re gone, then repeat this service install command. Nothing was written.');
+    }
     ctx.out(`${errorText(error).replace(/\.+$/, '')}. This run replaces it with a new record once it has written a unit file.`);
   }
   if (old !== null && !sameDirectory(old.workingDirectory, workingDirOf(root))) {
@@ -1619,6 +1625,15 @@ export function readServiceRecord(root: string, cmd = typedCommand(root)): Servi
     throw new ContractError(`${foreignServiceWords(root, record)} ${recordAgain(cmd)}`);
   }
   return record;
+}
+
+function recordedDirectory(path: string): string | null {
+  try {
+    const value = (JSON.parse(readFileSync(path, 'utf-8')) as { workingDirectory?: unknown }).workingDirectory;
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function readServiceRecordFile(root: string, cmd: string, repair = true): ServiceRecord | null {

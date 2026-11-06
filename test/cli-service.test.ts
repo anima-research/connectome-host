@@ -4918,3 +4918,15 @@ test('a retry forgets the recorded shell names whose values an interrupted retir
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(new StoredSecrets(join(at.work, '.setup')).names()).not.toContain('SESSION_SERVER_TOKEN');
 });
+
+test('an explicit install over a record it can\'t read in full still refuses one naming another working directory', async () => {
+  const at = install();
+  const elsewhere = join(at.home, 'Original');
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ v: 1, manager: 'a-later-manager',
+    units: { host: { name: 'connectome-original.service', file: join(at.home, 'connectome-original.service') } },
+    hostArgs: [at.recipe, '--headless'], workingDirectory: elsewhere, logs: { kind: 'journal' } }));
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`It names another working directory, ${elsewhere}`);
+  expect(existsSync(hostUnit(at))).toBe(false);
+});
