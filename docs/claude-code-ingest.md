@@ -191,7 +191,7 @@ session, rebuild before ingesting — the seed is a snapshot.
 ### Stage 2 — Ingest into the chronicle
 
 Save as `<agent>-cm/scripts/ingest-seed.mjs`, link the release's packages beside it
-with `ln -sfn ../connectome-host/current/node_modules '<agent>-cm/scripts/node_modules'`,
+with `ln -sfn ../connectome-host/current/node_modules '/home/<agent>/<agent>-cm/scripts/node_modules'`,
 and run it from `<agent>-cm`, where stage 1 wrote `seed.json`. Node resolves its
 `@animalabs/context-manager` from the script's own directory up, so the link gives it
 the release `current` names, the version the host runs, rather than the copy setup
@@ -350,18 +350,22 @@ nothing it does reaches the original:
    and a host it starts writes the install's own files. Start it in an environment of
    its own:
    `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE='<the data copy>/no-overlay.json' DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
-   The host gets only the variables the command names, and from that directory Bun
-   loads none of `<agent>-cm`'s env files, so no credential of the resident's reaches
-   it: the key is a mock, and with `HOME` the new directory, Codex has no login. Where
-   the recipe's provider needs a key of its own to start, give its name a mock value
-   the same way: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and
+   The host gets only the variables the command names, and from that directory Bun loads
+   none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
+   key is a mock, and with `HOME` the new directory, Codex has no login. Where the
+   recipe's provider needs a key of its own to start, give its name a mock value the
+   same way: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and
    `AWS_SECRET_ACCESS_KEY` for Bedrock. Where the resident's environment sets `MODEL` or
    `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. So every
    request the host makes is refused, and a turn it starts on its own, such as for a
-   heartbeat that fell due while the resident was down, gets no reply and calls no
-   tool. The overlay variable names a file that doesn't exist, so the servers the
-   resident deployed for itself (`mcpl-servers.agent.json`) stay out too. The API's
-   count fails and the rest still compiles. Then hit the endpoints, and stop it.
+   heartbeat that fell due while the resident was down, gets no reply and calls no tool.
+   On a gateway, the check can leave out a binding model's changed thinking that the
+   resident sends, since what the host found of the account is kept per base URL and the
+   check names none. The recipe's absolute workspace mounts are the resident's own
+   files, so run no tool in the check, as `/puppet` would. The overlay variable names a
+   file that doesn't exist, so the servers the resident deployed for itself
+   (`mcpl-servers.agent.json`) stay out too. The API's count fails and the rest still
+   compiles. Then hit the endpoints, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
