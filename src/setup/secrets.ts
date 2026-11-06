@@ -213,7 +213,8 @@ export function writeEnvValue(path: string, name: string, value: string): void {
   writeTextAtomic(path, `${kept.join('\n')}\n`, 0o600);
 }
 
-export function removeEnvValues(path: string, names: readonly string[]): boolean {
+export function removeEnvValues(path: string, names: readonly string[],
+  only: Readonly<Record<string, string | undefined>> = {}): boolean {
   const link = envLink(path);
   if (link) throw link;
   const before = envText(path);
@@ -221,7 +222,13 @@ export function removeEnvValues(path: string, names: readonly string[]): boolean
   if (outside.length > 0) throw new EnvFormError(path, outside);
   const bom = before.startsWith('\ufeff') ? '\ufeff' : '';
   const lines = before.slice(bom.length).split('\n');
-  const after = bom + lines.filter((line) => !names.includes(ASSIGNMENT.exec(line)?.[1] ?? '')).join('\n');
+  const removed = (line: string) => {
+    const name = ASSIGNMENT.exec(line)?.[1] ?? '';
+    if (!names.includes(name)) return false;
+    const value = line.slice(name.length + 1);
+    return only[name] === undefined || (value[0] === '"' || value[0] === "'" ? value.slice(1, -1) : value) === only[name];
+  };
+  const after = bom + lines.filter((line) => !removed(line)).join('\n');
   if (after === before) return false;
   writeTextAtomic(path, after, 0o600);
   return true;

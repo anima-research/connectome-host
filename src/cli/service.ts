@@ -1445,7 +1445,7 @@ function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings):
     const remove = SHELL_SETTING_NAMES.filter((name) => owned[name] !== undefined && current.get(name) === owned[name]);
     const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
     stored.names();
-    removeEnvValues(join(work, '.env'), remove);
+    removeEnvValues(join(work, '.env'), remove, owned);
     stored.forget(remove);
     ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
     if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);

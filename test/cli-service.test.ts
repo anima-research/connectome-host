@@ -4884,3 +4884,15 @@ test('a systemctl that refuses --timestamp=, as systemd before 247 does, still a
   expect(f.out.join('\n')).not.toContain("couldn't be asked");
   expect(f.systemd.envs.some((env) => env.TZ === 'UTC' && env.LC_ALL === 'C')).toBe(true);
 });
+
+test('retiring the shell settings removes only the lines holding the values this service wrote', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = join(at.work, '.env');
+  writeFileSync(file, 'SESSION_SERVER_TOKEN="personal"\n' + readFileSync(file, 'utf-8'), { mode: 0o600 });
+  writeFileSync(at.recipe, JSON.stringify({}));
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readEnvFile(file).get('SESSION_SERVER_TOKEN')).toBe('personal');
+  expect(readEnvFile(file).has('SESSION_SERVER_PORT')).toBe(false);
+});
