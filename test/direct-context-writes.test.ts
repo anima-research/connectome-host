@@ -391,6 +391,18 @@ describe('direct context writes', () => {
       { call: 'cm.switchBranch', through: false },
       { call: 'cm.retractRows', through: false },
     ]);
+    // And scanCode counts the direct ones, each, and not the module
+    // context's or the framework's (#485 bot review 5, finding 28).
+    const found = new Map<string, number>();
+    scanCode('f.ts', code, found);
+    expect(Object.fromEntries(found)).toEqual({
+      'f.ts agent.getContextManager().addMessage': 1,
+      'f.ts app.framework.getAgent(id).getContextManager().addMessage': 1,
+      'f.ts cm.fork': 1,
+      'f.ts cm.branchAt': 1,
+      'f.ts cm.switchBranch': 1,
+      'f.ts cm.retractRows': 1,
+    });
   });
 
   test("the scan counts a writer's mention that isn't a call, storeOwnRow under an alias, and an EventResponse's addMessages", () => {
