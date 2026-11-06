@@ -30,6 +30,9 @@ describe('what each client is sent', () => {
     actions: [{ id: 'refresh', label: 'Refresh' }], login, lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
   };
   let onRead: ((offset: number, limit: number) => void) | undefined;
+  // A read of the whole record (getAllMessages), which the undone-marks
+  // frame makes and a welcome doesn't (it reads getMessageWindow).
+  let onRecordRead: (() => void) | undefined;
   // The rows an undo took out of the agent's window (agent-framework #291's windowStatusOf).
   let undone = new Set<string>();
   const cm = {
@@ -48,6 +51,7 @@ describe('what each client is sent', () => {
     },
     getAllMessages: () => {
       onRead?.(0, transcript.length);
+      onRecordRead?.();
       return transcript;
     },
     currentBranch: () => branch,
@@ -813,6 +817,7 @@ describe('what each client is sent', () => {
     transcript = Array.from({ length: 5 }, (_, i) => say(`r${i}`, `row ${i}`));
     undone = new Set(['r4']);
     const reads: [number, number][] = [];
+    let recordReads = 0;
     try {
       // Only observers without messages stay connected.
       const closed = open.splice(0).map((c) => new Promise<void>((resolve) => {
@@ -825,13 +830,17 @@ describe('what each client is sent', () => {
       const watch = await host.observer('watch');
       open.push(dashboard, watch);
       onRead = (offset, size) => { reads.push([offset, size]); };
+      onRecordRead = () => { recordReads++; };
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
       host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['r4'], reason: 'shed' });
-      // Reads are watched past the traces' microtasks and a timer's turn, so
-      // one deferred past the trace is seen too (host #485 bot review wave 3,
-      // finding 29). The fence can't be the end: it welcomes each client
-      // again, which reads the record's tail.
+      // Reads of any kind are watched past the traces' microtasks and a
+      // timer's turn (host #485 bot review wave 3, finding 29), and the
+      // record's whole listing, the marks frame's read, on through the fence
+      // and the next client's connection, so one deferred longer is seen too
+      // (wave 4, finding 20). The fence and a connection welcome a client,
+      // which reads the record's tail (getMessageWindow), so that read is
+      // watched only up to them.
       await new Promise((resolve) => setTimeout(resolve, 20));
       onRead = undefined;
       expect(reads).toEqual([]);
@@ -841,6 +850,9 @@ describe('what each client is sent', () => {
       // A client that holds messages connects: the record is read again.
       const reader = await host.observer('reader');
       open.push(reader);
+      await host.fence([reader]);
+      onRecordRead = undefined;
+      expect(recordReads).toBe(0);
       onRead = (offset, size) => { reads.push([offset, size]); };
       host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
       onRead = undefined;
@@ -849,6 +861,7 @@ describe('what each client is sent', () => {
       expect(reader.framesOf('undone-marks')).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['r4'] }]);
     } finally {
       onRead = undefined;
+      onRecordRead = undefined;
       transcript = [];
       undone = new Set();
     }
