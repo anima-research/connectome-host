@@ -1,6 +1,6 @@
 import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { hostVersionOf } from '../update/update.js';
-import { redirectTarget } from './provider-key.js';
+import { JSON_TYPE, redirectTarget } from './provider-key.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
@@ -52,7 +52,7 @@ export async function checkDiscordToken(
   // A refusal in a body that isn't JSON, such as a network's sign-in page, isn't Discord's.
   const type = response.headers.get('content-type');
   if (response.status === 401) {
-    return type === null || /^application\/json\b/i.test(type.trim())
+    return type === null || JSON_TYPE.test(type.trim())
       ? { kind: 'refused' } : { kind: 'unrecognized', status: response.status };
   }
   if (response.status >= 300 && response.status < 400) {

@@ -35,6 +35,8 @@ const listed = (body: unknown): boolean => idsOf(body) !== undefined;
 // ending in / takes the path without its first /.
 const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
 
+export const JSON_TYPE = /^application\/([\w.+-]+\+)?json\b/i;
+
 // A relative Location is resolved against the origin of the URL asked, not the whole URL as RFC 9110 (10.2.2) has
 // it, so a credential in the URL's user part stays out of the target.
 export function redirectTarget(location: string, asked: string): string {
@@ -124,7 +126,7 @@ async function ask<T>(
   // A refusal in a body that isn't JSON, such as a network's sign-in page, isn't the provider's.
   const type = response.headers.get('content-type');
   if (response.status === 401 || response.status === 403) {
-    return type === null || /^application\/([\w.+-]+\+)?json\b/i.test(type.trim())
+    return type === null || JSON_TYPE.test(type.trim())
       ? { kind: 'refused', status: response.status } : { kind: 'unrecognized', status: response.status };
   }
   if (response.status >= 300 && response.status < 400) {
