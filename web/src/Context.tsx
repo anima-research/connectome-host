@@ -1,6 +1,6 @@
 import { createEffect, createSignal, on, onCleanup, onMount, For, Show } from 'solid-js';
 import { contextPageView } from './composition-text';
-import { LatestRead } from './latest-read';
+import { LatestRead, READ_TIMEOUT_MS, readFigure } from './latest-read';
 
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -102,7 +102,8 @@ export function ContextPanel(props: {
   // Each read counts itself; a response that comes back after a newer read
   // started (a scope change, an undo's refresh, the coverage poll) is dropped,
   // so an older figure never replaces a newer one. The poll starts none while
-  // a coverage read is pending, so a slow read still lands.
+  // a coverage read is pending, so a slow read still lands, and a coverage
+  // read fails once it has gone READ_TIMEOUT_MS unanswered.
   const makeupReads = new LatestRead();
   const load = async () => {
     const thisLoad = makeupReads.begin();
@@ -110,12 +111,7 @@ export function ContextPanel(props: {
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/debug/context/makeup${query()}`, { credentials: 'same-origin' });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      const j = (await res.json()) as Makeup;
+      const j = await readFigure<Makeup>(`/debug/context/makeup${query()}`);
       if (superseded()) return;
       if (j.error) throw new Error(j.error);
       setData(j);
@@ -136,12 +132,9 @@ export function ContextPanel(props: {
     setCoverageLoading(true);
     setCoverageErr(null);
     try {
-      const res = await fetch(`/debug/context/coverage${query()}`, { credentials: 'same-origin' });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      const cov = (await res.json()) as Coverage;
+      // A read that never answers fails at the timeout, so the poll's
+      // next tick starts one.
+      const cov = await readFigure<Coverage>(`/debug/context/coverage${query()}`, READ_TIMEOUT_MS);
       if (superseded()) return;
       setCoverage(cov);
     } catch (e) {

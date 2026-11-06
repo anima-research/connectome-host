@@ -1,10 +1,13 @@
 /**
  * The Context panel's reads (web/src/Context.tsx): the makeup and the
  * coverage each through a LatestRead, the coverage also polled every five
- * seconds. No bun test mounts the panel, so this drives its reads' schedule.
+ * seconds. No bun test mounts the panel, so this drives its reads' schedule,
+ * and reads the panel's source for the two calls that wire it: the tick's
+ * read is a poll, and the coverage read has a timeout.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
-import { LatestRead } from '../web/src/latest-read.js';
+import { LatestRead, readFigure } from '../web/src/latest-read.js';
 
 describe("the Context panel's coverage poll", () => {
   test('a tick with no read pending starts one', () => {
@@ -61,5 +64,41 @@ describe('a read asked for (a scope change, a refresh)', () => {
     const second = reads.begin();
     expect(reads.superseded(first)).toBe(true);
     expect(reads.superseded(second)).toBe(false);
+  });
+});
+
+// Host #485 bot review wave 3, finding 17: a tick starts no read while one is
+// pending, so a coverage read that never answered stopped the poll until a
+// scope change or a refresh. The read fails at its timeout instead.
+describe('a coverage read that never answers', () => {
+  test('fails at its timeout, so the next tick starts a read', async () => {
+    const host = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Promise<Response>(() => {}) });
+    try {
+      const reads = new LatestRead();
+      const hung = reads.poll()!;
+      const failed = await readFigure(`http://127.0.0.1:${host.port}/debug/context/coverage`, 50)
+        .then(() => null, (e: unknown) => e as Error);
+      reads.settled(hung);
+      expect(failed?.message).toBe("The host didn't answer in 0.05 s.");
+      expect(reads.poll()).not.toBeNull();
+    } finally {
+      host.stop(true);
+    }
+  }, 2_000);
+});
+
+// Host #485 bot review wave 3, finding 27: the tests above drive LatestRead
+// alone, so a tick that asked for a read (`loadCoverage()`, which supersedes
+// the pending one) would pass them, and so would a coverage read with no
+// timeout. The panel's source is read for both.
+describe("the panel's wiring", () => {
+  const panel = readFileSync(new URL('../web/src/Context.tsx', import.meta.url), 'utf8');
+
+  test("the five-second tick's read is a poll", () => {
+    expect(panel).toMatch(/setInterval\(\(\) => void loadCoverage\(true\), 5_000\)/);
+  });
+
+  test('the coverage read has the timeout', () => {
+    expect(panel).toMatch(/readFigure<Coverage>\([^;]*, READ_TIMEOUT_MS\)/);
   });
 });

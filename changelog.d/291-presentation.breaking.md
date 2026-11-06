@@ -73,13 +73,14 @@
     pins) read the window again, once, at each undo, redo or shed. A figure
     that comes back after a newer read of it started is dropped, and the
     coverage panel's five-second poll starts no read while one is pending,
-    where a read slower than the poll had another started at each tick. The
-    local pin picker lists the host's candidates, the record's last 200
-    rows, as a fleet child's does, where it listed the rows the transcript
-    had loaded; it leaves out undone rows and rows stamped for other
-    residents only. A message stored in parts is one candidate, by its first
-    part with the parts' text joined, as it is one row in the transcript,
-    where a fleet child's picker listed each part.
+    where a read slower than the poll had another started at each tick; a
+    coverage read that has gone 30 seconds unanswered fails, and the next
+    tick starts one. The local pin picker lists the host's candidates, the
+    record's last 200 rows, as a fleet child's does, where it listed the
+    rows the transcript had loaded; it leaves out undone rows and rows
+    stamped for other residents only. A message stored in parts is one
+    candidate, by its first part with the parts' text joined, as it is one
+    row in the transcript, where a fleet child's picker listed each part.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,
