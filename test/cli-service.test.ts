@@ -691,6 +691,7 @@ test('an empty external shell token leaves whole-credential diagnostic masking i
     recipeLoad: { loads: false, words: 'credential provider-opaque-value refused' } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('<ANTHROPIC_API_KEY>');
+  expect(f.err.join('\n')).not.toContain('provider-opaque-value');
   expect(f.err.join('\n')).not.toContain('<SESSION_SERVER_TOKEN>');
 });
 
