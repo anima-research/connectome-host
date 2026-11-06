@@ -633,6 +633,7 @@ describe('the ladder\'s gate dump', () => {
     systemctl(at, { mainPidNow: String(later.process.pid) });
     const { out } = ladder(at);
     await settled(later);
+    await settled(at.host);
     expect(alive(later)).toBe(true);
     expect(signalled(at.host)).toBe(false);
     expect(out).toContain(`the host (pid ${later.process.pid}) has no SIGUSR2 listener`);
