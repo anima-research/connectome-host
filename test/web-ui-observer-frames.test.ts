@@ -46,8 +46,16 @@ describe('what each client is sent', () => {
       appended = listener;
       return () => { if (appended === listener) appended = undefined; };
     },
+    getAllMessages: () => {
+      onRead?.(0, transcript.length);
+      return transcript;
+    },
     currentBranch: () => branch,
     windowStatusOf: (id: string) => (undone.has(id) ? 'undone' : transcript.some((m) => m.id === id) ? 'in' : 'absent'),
+    ordinalOf: (id: string) => {
+      const at = transcript.findIndex((m) => m.id === id);
+      return at === -1 || undone.has(id) ? undefined : at;
+    },
     getMessage: (id: string) => transcript.find((m) => m.id === id) ?? stored,
     getStrategy: () => ({
       getCompressionQuarantineStatus: () => ({

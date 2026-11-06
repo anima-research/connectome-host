@@ -825,26 +825,19 @@ export class WebUiModule implements Module {
    *  of each it doesn't, however far back its history reaches: the reply an
    *  undo took out with 200 rows stored after it, which no welcome's tail
    *  holds, and a row a redo put back after it left the tail. It reads the
-   *  whole record, one windowStatusOf a row, at each undo, redo or shed
-   *  while a client the frame goes to (one that holds messages) is
-   *  connected, and reads nothing while none is. */
+   *  record's listing (undoneRowIds) at each undo, redo or shed while a
+   *  client the frame goes to (one that holds messages) is connected, and
+   *  reads nothing while none is. */
   private broadcastUndoneMarks(agentName: unknown): void {
     if (!sharedServer) return;
     const scopes = frameScopes({ type: 'undone-marks', agent: '', fromIndex: 0, undone: [] });
     if (![...sharedServer.clients.values()].some((c) => c.welcomed && clientHolds(c, scopes))) return;
     const agent = sharedServer.app?.framework.getAllAgents()[0];
     if (!agent || agent.name !== agentName) return;
-    const cmw = agent.getContextManager() as unknown as WindowCapableCm | undefined;
-    if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.getMessageWindow !== 'function') return;
+    const cmw = agent.getContextManager() as unknown as Partial<UndoneReadableCm> | undefined;
+    if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.ordinalOf !== 'function' || typeof cmw.getAllMessages !== 'function') return;
     try {
-      const total = cmw.getMessageCount();
-      const win = cmw.getMessageWindow(0, total, { resolveBlobs: false, alignToBodyGroups: true });
-      // By each row's id, a shard's too: a page's entry for a sharded body
-      // carries its first shard's.
-      const undone = (win.messages as Array<{ id?: unknown }>)
-        .map((m) => m.id)
-        .filter((id): id is string => typeof id === 'string' && cmw.windowStatusOf!(id) === 'undone');
-      this.broadcast({ type: 'undone-marks', agent: agent.name, fromIndex: win.startIndex, undone });
+      this.broadcast({ type: 'undone-marks', agent: agent.name, fromIndex: 0, undone: undoneRowIds(cmw as UndoneReadableCm) });
     } catch (err) {
       console.error('[webui] undone marks failed:', err instanceof Error ? err.message : err);
     }
@@ -3353,6 +3346,31 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
     out.push(toWireEntry(merged, startIndex + runStart, { storedBlockIndices: false }));
   }
   return out;
+}
+
+/** What undoneRowIds reads of a context manager. */
+export interface UndoneReadableCm {
+  /** The record, in order: the store's listing, kept while it is unchanged. */
+  getAllMessages(): ReadonlyArray<{ id?: unknown }>;
+  /** Undefined for a row not in the window (and for every row in legacy mode). */
+  ordinalOf(id: string): number | undefined;
+  windowStatusOf(id: string): string;
+}
+
+/**
+ * The record's rows, from index 0, out of the agent's window as undone
+ * (windowStatusOf 'undone'), by each row's id, a shard's too: a page's
+ * entry for a sharded body carries its first shard's. An undone row is out
+ * of the window, and a row in it has an ordinal, so only the rows with
+ * none are asked their status: one map lookup a row, where a status read
+ * of every row took 0.4 to 0.7 s of the event loop at 50,000 rows.
+ */
+export function undoneRowIds(cm: UndoneReadableCm): string[] {
+  const undone: string[] = [];
+  for (const { id } of cm.getAllMessages()) {
+    if (typeof id === 'string' && cm.ordinalOf(id) === undefined && cm.windowStatusOf(id) === 'undone') undone.push(id);
+  }
+  return undone;
 }
 
 /**
