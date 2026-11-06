@@ -397,6 +397,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  root turn ran, the move's first: the branch is drawn once the turn
    *  ends, with these below it. */
   let redrawAfterTurn: Array<{ text: string; color: string }> | undefined;
+  /** A /clear came since the last move's answer while the redraw waited:
+   *  the turn's end takes up the branch the store is on, its rows read from
+   *  its end, and draws no line, so the scrollback stays clear. */
+  let redrawQuietly = false;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -885,7 +889,10 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
-  function loadSessionHistory() {
+  /** Draw the root agent's history, from where the record starts, and read
+   *  its rows from the record's end from here on. With `draw` false it
+   *  draws nothing and only takes up the record (redrawQuietly). */
+  function loadSessionHistory(draw = true) {
     recordLines = [];
     historyRead = 0;
     linkedThrough = 0;
@@ -901,7 +908,7 @@ export async function runTui(app: AppContext): Promise<void> {
     historyRead = all.length;
     linkedThrough = all.length;
     sentLinkedThrough = all.length;
-    if (all.length === 0) return;
+    if (all.length === 0 || !draw) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
     // The history is the record. A row an undo took out of the agent's
     // window (agent-framework #291) is still in it: drawn dim and marked,
@@ -1064,9 +1071,13 @@ export async function runTui(app: AppContext): Promise<void> {
    *  rollbackToMessage (/restore to a message, /branchto) as it lets the
    *  store go, without awaiting the write, a failure only in agent-
    *  framework's log. A rollback that failed and left the store on the new
-   *  branch has it written by neither, and its answer says so. */
-  function refreshFromStore(opts: { mount?: boolean } = {}) {
+   *  branch has it written by neither, and its answer says so. `draw:
+   *  false` takes up the branch and draws nothing, leaving the scrollback's
+   *  lines as they are (redrawQuietly). */
+  function refreshFromStore(opts: { mount?: boolean; draw?: boolean } = {}) {
+    const draw = opts.draw !== false;
     redrawAfterTurn = undefined;
+    redrawQuietly = false;
     // Reset streaming state BEFORE destroying renderables so nothing can
     // touch a freed native buffer through currentStreamText.
     streaming = false;
@@ -1077,16 +1088,18 @@ export async function runTui(app: AppContext): Promise<void> {
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
 
-    const children = [...scrollBox.getChildren()];
-    for (const child of children) {
-      scrollBox.remove(child.id);
-      child.destroy();
+    if (draw) {
+      const children = [...scrollBox.getChildren()];
+      for (const child of children) {
+        scrollBox.remove(child.id);
+        child.destroy();
+      }
+      messageCounter = 0;
     }
-    messageCounter = 0;
     state.status = 'idle';
     state.tool = null;
 
-    loadSessionHistory();
+    loadSessionHistory(draw);
 
     if (subMod) {
       subMod.restoreFromStore();
@@ -1915,11 +1928,13 @@ export async function runTui(app: AppContext): Promise<void> {
     if (redrawAfterTurn && end.status !== 'attempt-failed') {
       // A branch move's follow-up came while this turn ran on the branch:
       // the branch is drawn now, and the move's answer again below it, with
-      // each command answer drawn since.
+      // each command answer drawn since. After a /clear meanwhile, the
+      // branch is taken up and nothing drawn.
       const answered = redrawAfterTurn;
-      refreshFromStore({ mount: false });
+      const quietly = redrawQuietly;
+      refreshFromStore({ mount: false, draw: !quietly });
       state.status = end.status;
-      for (const l of answered) addLine(l.text, l.color);
+      if (!quietly) for (const l of answered) addLine(l.text, l.color);
     }
     if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
     updateStatus();
@@ -2723,7 +2738,12 @@ export async function runTui(app: AppContext): Promise<void> {
           scrollBox.remove(child.id);
           child.destroy();
         }
-        if (redrawAfterTurn) redrawAfterTurn = [];
+        // A redraw waiting for a root turn's end draws nothing then: the
+        // branch is taken up, and the scrollback stays clear.
+        if (redrawAfterTurn) {
+          redrawAfterTurn = [];
+          redrawQuietly = true;
+        }
       } else {
         for (const l of result.lines) addAnswerLine(l.text, GRAY);
       }
@@ -2753,8 +2773,12 @@ export async function runTui(app: AppContext): Promise<void> {
           // changed is what has the TUI draw the branch the store is on, once
           // a turn that started on it since has ended (showRootTurnEnd).
           // The framework writes the `_config` mount for the move.
-          if (asyncResult.branchChanged && turnRunning) redrawAfterTurn ??= [];
-          else if (asyncResult.branchChanged) refreshFromStore({ mount: false });
+          if (asyncResult.branchChanged && turnRunning) {
+            redrawAfterTurn ??= [];
+            redrawQuietly = false;
+          } else if (asyncResult.branchChanged) {
+            refreshFromStore({ mount: false });
+          }
           for (const l of asyncResult.lines) addAnswerLine(l.text, GRAY);
           if (!turnRunning) state.status = 'idle';
           updateStatus();

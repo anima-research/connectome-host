@@ -14,7 +14,9 @@
   answer came streams on, and the branch is drawn once the turn ends, the
   answer again below it with every command's answer drawn since: the
   redraw cut the turn's line off, its later words were lost, and the
-  status read idle while it ran. An async command started or answered
+  status read idle while it ran. A `/clear` while that redraw waits
+  leaves the scrollback clear: the turn's end takes up the branch and
+  draws nothing, where it drew the branch's history again. An async command started or answered
   while a root turn runs, backgrounded or held after a failed attempt
   too, leaves the turn's status as it is, where its start set it to
   thinking and its answer to idle.

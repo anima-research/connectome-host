@@ -58,6 +58,7 @@ const contextManager = () => (scenario.startsWith('undone')
   : scenario.startsWith('async-branch')
     ? {
         ...recordOf(history),
+        windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in'),
         listBranches: () => [{ id: 'b-main', name: 'main', head: 2 }, { id: 'b-side', name: 'side', head: 2 }],
         currentBranch: () => ({ id: `b-${storeBranch}`, name: storeBranch, head: 2 }),
       }
@@ -729,6 +730,34 @@ async function play(): Promise<void> {
     first.send('inference:completed');
     await until(async () => (await frame()).includes('the side branch reply'), 'the branch drawn');
     await step('turn ended');
+  } else if (scenario === 'async-branch-turn-clear') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A /clear while the move's redraw waits for the turn's end
+    // (#485 bot review 5, finding 12).
+    await command('/checkout side');
+    await until(() => releaseMove !== undefined, 'the move');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'on the side ', blockType: 'text' });
+    releaseMove!();
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    await command('/clear');
+    await until(async () => !(await frame()).includes('Switched to branch side.'), 'the display to clear');
+    // A command's answer drawn after the /clear, before the turn ends.
+    await command('/puppet tally {}');
+    await until(async () => (await frame()).includes('tally done'), "the command's answer");
+    first.send('inference:tokens', { content: 'branch now', blockType: 'text' });
+    history.push({ id: 's2', participant: 'agent', content: [{ type: 'text', text: 'on the side branch now' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('[✓ idle]'), 'the turn to end');
+    await step('turn ended');
+    // An undo of the turn's row, whose first words /clear took down, and of
+    // a row stored since that the TUI drew no line for.
+    history.push({ id: 's3', participant: 'agent', content: [{ type: 'text', text: 'a side ledger' }] });
+    undoneRows.add('s2');
+    undoneRows.add('s3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a side ledger'), 'the mark');
+    await step('undone');
   } else if (scenario === 'async-turn-status') {
     // An async command started while a root turn is backgrounded, and one
     // started while its attempt failed and the framework holds it: neither

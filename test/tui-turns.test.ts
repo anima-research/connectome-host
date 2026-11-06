@@ -536,6 +536,26 @@ describe("the TUI's branch moves, through runTui", () => {
     expect(ended.indexOf('the side branch reply')).toBeLessThan(ended.indexOf('puppet agent: tally'));
   }, 40000);
 
+  // A /clear while the redraw waits leaves the scrollback clear: the turn's
+  // end takes up the branch without drawing its history (#485 bot review 5,
+  // finding 12).
+  test("a /clear while a move's redraw waits for the turn's end leaves the scrollback clear, and the new branch's rows are read from its end", async () => {
+    const steps = await play('async-branch-turn-clear');
+    const ended = steps.get('turn ended')!.frame;
+    expect(ended).not.toContain('── session history');
+    expect(ended).not.toContain('the side branch reply');
+    expect(ended).not.toContain('Switched to branch side.');
+    // An answer drawn after the /clear stays where it is, drawn once.
+    expect(times(ended, 'result: tally done')).toBe(1);
+    expect(ended).toContain('[✓ idle]');
+    // The cursors are the new branch's: the turn's row, its first words
+    // cleared, isn't drawn again, and a row stored since is drawn, marked.
+    const undone = steps.get('undone')!.frame;
+    expect(undone).toContain('(undone) a side ledger');
+    expect(undone).not.toContain('on the side branch now');
+    expect(undone).not.toContain('── session history');
+  }, 40000);
+
   // An async command leaves the status of a root turn alone, from its
   // start to its answer (#485 bot review 4, finding 8).
   test("an async command started during a backgrounded or held root turn leaves its status as it is", async () => {
