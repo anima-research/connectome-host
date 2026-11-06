@@ -1893,7 +1893,8 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     chmodSync(plutil, 0o755);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
     expect(r.out).toContain('connectome-test.service\'s plist, couldn\'t be read for the environment it sets the service ' +
-      '(plutil\'s answer wasn\'t JSON). Fix it, or `connectome service install` writes it anew.');
+      '(plutil\'s answer wasn\'t JSON). Fix it (`plutil -lint /nowhere/connectome-test.service` names what\'s wrong), or ' +
+      'move it aside and run `connectome service install`, which writes it anew.');
     expect(r.out).toContain('Doctor stops here');
   });
 

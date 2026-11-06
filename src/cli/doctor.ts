@@ -15,6 +15,7 @@ import {
 } from '../setup/secrets.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
 import { INSTALL_ROOT_ENV } from '../update/contract.js';
+import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
@@ -165,8 +166,9 @@ export async function doctor(
       const { name, file } = service!.units.host;
       const why = unit.why.replace(/\.$/, '');
       throw new Error(service!.manager === 'launchd'
-        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it, or ` +
-          '`connectome service install` writes it anew.'
+        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
+          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
+          '`connectome service install`, which writes it anew.'
         : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
           '`connectome service install` writes the unit anew.');
     }
