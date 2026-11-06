@@ -1615,4 +1615,20 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).toMatch(/Doctor found \d+ problems?, marked ✗\.$/);
   });
 
+  test('a manager or Bun answer doctor can\'t read stops it with what to do next', async () => {
+    const systemd = install();
+    const failing = fakeManager(systemd.work, { fails: 'Failed to connect to bus: No medium found' });
+    const bus = await run(systemd, { systemctl: failing.path });
+    expect(bus.out).toContain('Run `systemctl --user show-environment` as this user to see why: it needs the user\'s manager running and ' +
+      'XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run doctor again.');
+    const launchd = install({ manager: 'launchd' });
+    const failingLaunchd = fakeManager(launchd.work, { fails: 'launchctl: no such domain' });
+    const domain = await run(launchd, { launchctl: failingLaunchd.path });
+    expect(domain.out).toMatch(/Run `launchctl getenv \S+` as this user to see why, then run doctor again\./);
+    const preloaded = install();
+    writeFileSync(join(preloaded.work, 'preload.ts'), 'process.stdout.write("hello from a preload\\n");\n');
+    writeFileSync(join(preloaded.work, 'bunfig.toml'), 'preload = ["./preload.ts"]\n');
+    const noisy = await run(preloaded);
+    expect(noisy.out).toContain('`bun -e 0`, run there, shows what writes; once nothing does, run doctor again.');
+  });
 });

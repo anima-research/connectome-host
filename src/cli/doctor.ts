@@ -758,7 +758,9 @@ function managerEnv(manager: ServiceRecord['manager'] | null, names: string[], p
     const failed = failure(ran, parts.envLimitMs);
     if (failed !== null) {
       throw new ManagerUnread('systemctl --user show-environment failed, so what the user manager gives the service ' +
-        `can't be read: ${failed}`, `\`systemctl --user show-environment\` failed: ${failed}`);
+        `can't be read: ${failed}. Run \`systemctl --user show-environment\` as this user to see why: it needs the user's ` +
+        'manager running and XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run doctor again.',
+        `\`systemctl --user show-environment\` failed: ${failed}`);
     }
     for (const line of ran.stdout.split('\n')) {
       const at = line.indexOf('=');
@@ -772,7 +774,8 @@ function managerEnv(manager: ServiceRecord['manager'] | null, names: string[], p
       const ran = spawnSync(parts.launchctl, ['getenv', name], { encoding: 'utf-8', timeout: parts.envLimitMs });
       const failed = failure(ran, parts.envLimitMs);
       if (failed !== null) {
-        throw new ManagerUnread(`launchctl getenv ${name} failed, so what launchd gives the service can't be read: ${failed}`,
+        throw new ManagerUnread(`launchctl getenv ${name} failed, so what launchd gives the service can't be read: ${failed}. ` +
+          `Run \`launchctl getenv ${name}\` as this user to see why, then run doctor again.`,
           `\`launchctl getenv ${name}\` failed: ${failed}`);
       }
       const value = ran.stdout.endsWith('\n') ? ran.stdout.slice(0, -1) : ran.stdout;
@@ -836,7 +839,8 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
     return JSON.parse(ran.stdout) as Record<string, string>;
   } catch {
     throw new Error(`Bun's answer in ${work} wasn't an environment doctor could read: something else wrote to its ` +
-      'output, as a bunfig.toml preload can.');
+      'output, as a bunfig.toml preload can. `bun -e 0`, run there, shows what writes; once nothing does, run doctor ' +
+      'again.');
   }
 }
 
