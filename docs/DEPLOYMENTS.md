@@ -339,7 +339,8 @@ directory as it was, so after one, that package's setup is an older
 release's, which may not bind the install. Setup binds the install there:
 each place under the old directory becomes the same place under the new
 one, in the record, in the copy labels, in each Go back's list and in the
-fleet's children file (`fleet-children.json`, in the data directory). It
+fleet's children file (`fleet-children.json`, in the data directory, and in
+each copy of the data directory that an update or a Go back keeps). It
 doesn't bind `.env` or the service's environment, so an absolute
 `MCPL_AGENT_OVERLAY_FILE` set in either still names the original's overlay:
 change it to the new place before the copy's next start. A binding that

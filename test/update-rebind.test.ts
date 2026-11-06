@@ -831,7 +831,9 @@ describe('a binding cut off', () => {
       const kept = tree(root);
       const why = refusal(() => setup(options(install)));
       expect(why, JSON.stringify(value)).toContain('isn\'t one this release reads');
-      expect(why).toContain('put this install\'s record, copy/copy.json, copy.prev/copy.json and each set-aside/*/places.json right');
+      expect(why).toContain('put this install\'s record, copy/copy.json, copy.prev/copy.json, each set-aside/*/places.json, ' +
+        'the data directory\'s fleet-children.json, and the fleet-children.json in each copy of the data directory, in copy/, ' +
+        'copy.prev/, and its own .connectome-update/set-aside/* and .connectome-update/staging/*, right');
       expect(tree(root)).toEqual(kept);
     }
   });
@@ -1208,6 +1210,40 @@ describe('the fleet\'s children file', () => {
     const { present, absent } = dataItems(rootOf(copy), record(copy)!, opsIn(copy));
     expect([...present, ...absent].filter((path) => path === install || path.startsWith(`${install}/`))).toEqual([]);
     expect(present).toContain(join(copy, 'data'));
+  });
+
+  test('a copy binds the children file in each copy of its data directory that a restore or a Go back\'s fallback can bring back: the switch\'s copy and the one before it, and what a Go back keeps inside the data directory', () => {
+    setup(options(install));
+    withChild(install, join(install, 'data', 'kids', 'c'), live());
+    const children = readFileSync(join(install, 'data', 'fleet-children.json'), 'utf-8');
+    const root = rootOf(install);
+    const data = join(install, 'data');
+    const areas = [
+      join(root, 'copy', '0-data'), join(root, 'copy.prev', '0-data'),
+      join(data, '.connectome-update', 'set-aside', 'm2'), join(data, '.connectome-update', 'staging', 'm2'),
+      join(data, '.connectome-update', 'set-aside', 'm2.filling'), join(data, '.connectome-update', 'set-aside', 'm2.tmp'),
+      join(data, '.connectome-update', 'staging', 'm2.emptying'),
+    ];
+    for (const area of areas) {
+      mkdirSync(area, { recursive: true });
+      writeFileSync(join(area, 'fleet-children.json'), children);
+    }
+    for (const copy of ['copy', 'copy.prev']) {
+      writeJsonAtomic(join(root, copy, 'copy.json'), {
+        v: 1, from: '0.10.2', at: '2026-11-01T00:00:00Z', items: [{ path: data, name: '0-data' }], mark: 'm1',
+      } satisfies CopyLabel);
+    }
+    mkdirSync(join(root, 'set-aside', 'm2'), { recursive: true });
+    writeJsonAtomic(join(root, 'set-aside', 'm2', 'places.json'),
+      { v: 1, places: [{ path: data, name: '0-data', before: 'dir', target: 'dir' }] } satisfies GoBackList);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    setup(options(copy));
+    for (const area of areas) {
+      expect(childrenOf(copy, join(copy, area.slice(install.length))), area)
+        .toEqual([{ name: 'c', pid: null, bootId: null, dataDir: join(copy, 'data', 'kids', 'c') }]);
+      expect(readFileSync(join(area, 'fleet-children.json'), 'utf-8')).toBe(children);
+    }
   });
 
   test('a moved install binds its children file and keeps the pid of a child still running, which is its own, so its updates still wait for it', () => {

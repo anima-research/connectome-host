@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  ContractError, REBIND_PLAN, childrenFilePath, copyLabelPath, installPaths, isChildEntry, readRecord, syncDir,
-  writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
+  ContractError, REBIND_PLAN, childrenFilePath, copyLabelPath, installPaths, isChildEntry, itemSetAsideDir, readRecord,
+  syncDir, writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
 } from './contract.js';
-import { RELEASE_HOST, isUnder, lockLive, takeLock, type LauncherOps } from './launcher.js';
+import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
 
 export interface RebindPlan {
   v: 1;
@@ -92,7 +92,7 @@ export function boundFiles(root: string, dataDir: string | null, underWay: strin
   }
   if (dataDir !== null) found.push({ path: childrenFilePath(dataDir), kind: 'children' });
   const files: BoundFile[] = [];
-  for (const { path, kind } of found) {
+  const read = (path: string, kind: BoundFile['kind']): void => {
     let value: BoundFile['value'] | null;
     try {
       value = readRecord<BoundFile['value']>(path, FILE_NAMES[kind]);
@@ -100,10 +100,32 @@ export function boundFiles(root: string, dataDir: string | null, underWay: strin
       throw unbindable(error instanceof ContractError ? error.message.replace(/\.+$/, '')
         : `The ${FILE_NAMES[kind]} at ${path} can't be read (${(error as Error).message})`, path);
     }
-    if (value === null) continue;
+    if (value === null) return;
     const paths = pathsIn(value, kind);
     if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`, path);
     files.push({ path, kind, value, paths });
+  };
+  const directory = (path: string): boolean => {
+    try {
+      return statSync(path).isDirectory();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw unbindable(`${path} can't be looked at (${(error as Error).message})`, path);
+    }
+  };
+  for (const { path, kind } of found) read(path, kind);
+  for (const file of [...files]) {
+    if (file.kind === 'label') {
+      for (const { name } of (file.value as CopyLabel).items) {
+        const held = typeof name === 'string' ? join(dirname(file.path), name) : null;
+        if (held !== null && directory(held)) read(childrenFilePath(held), 'children');
+      }
+    } else if (file.kind === 'list' && dataDir !== null) {
+      const mark = basename(dirname(file.path));
+      for (const area of [itemSetAsideDir(dataDir, mark), itemStagingDir(dataDir, mark)]) {
+        for (const suffix of ['', '.tmp', '.filling', '.emptying']) read(childrenFilePath(area + suffix), 'children');
+      }
+    }
   }
   return files;
 }
@@ -205,7 +227,9 @@ export function readPlan(root: string): RebindPlan | null {
   const damaged = (why: string) => new ContractError(`The plan of a binding of this install that was cut off, at ${path}, ` +
     `${why}, so setup can't tell which place it gave each place this install names, and can't finish it. Setup has ` +
     'changed nothing. If you know the place each should name, put this install\'s record, copy/copy.json, ' +
-    'copy.prev/copy.json and each set-aside/*/places.json right, and remove the plan.');
+    'copy.prev/copy.json, each set-aside/*/places.json, the data directory\'s fleet-children.json, and the ' +
+    'fleet-children.json in each copy of the data directory, in copy/, copy.prev/, and its own ' +
+    '.connectome-update/set-aside/* and .connectome-update/staging/*, right, and remove the plan.');
   let plan: RebindPlan | null;
   try {
     plan = readRecord<RebindPlan>(path, 'plan of a binding');
