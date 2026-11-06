@@ -1102,8 +1102,10 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
     if (runsIn !== here) return { kind: 'other', runsIn, from: unit.file };
   }
   if (manager !== 'systemd-user') {
-    const loaded = text === null && sys.run('launchctl', ['list', unit.name], env).status === 0;
-    return loaded ? { kind: 'untold' } : { kind: 'ok' };
+    if (text !== null) return { kind: 'ok' };
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
+    return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
   }
   const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath']);
   if (typeof shown === 'string') return { kind: 'unshown', shown };

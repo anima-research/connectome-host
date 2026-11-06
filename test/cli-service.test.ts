@@ -585,6 +585,21 @@ for (const verb of ['stop', 'check'] as const) test('launchd query failure is di
   expect(said).not.toContain('has no com.animalabs.connectome.my-resident loaded');
 });
 
+test('a launch agent with no file whose state launchctl can\'t give is not taken as free', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  f.systemd.agents.set('com.animalabs.connectome.my-resident', { pid: 999 });
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'launchctl' && args[0] === 'list'
+    ? { status: 5, stdout: '', stderr: 'manager denied query' }
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('launchctl list com.animalabs.connectome.my-resident failed: manager denied ' +
+    'query, so whether it runs another install can\'t be told. Nothing was written.');
+  expect(existsSync(agentPlist(at))).toBe(false);
+  expect(existsSync(join(at.root, 'service.json'))).toBe(false);
+});
+
 for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an answering host outside the ' + platform + ' unit', async () => {
   const at = install();
   const f = fake(at, { platform });
