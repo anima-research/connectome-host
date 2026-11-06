@@ -782,11 +782,12 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       `here: each place under ${to}, other than inside another install's directory, stays as it is.` +
       (ask.length === 0 ? '' : ' It asks about each place outside it, or inside another install\'s directory ' +
         'within it, since it can\'t tell whether that came with the install, as after a move, or is still another ' +
-        `install's, as after a copy.${answer}`)
+        `install's, as after a copy. A place inside another goes with it.${answer}`)
     : `This install's record is bound to ${from}, and the install is in ${to}, so it was moved or copied here. Setup ` +
       `binds it here: each place under ${from} becomes the same place under ${to}.` +
       (ask.length === 0 ? '' : ` It asks about each place outside ${from}, since it can't tell whether that came ` +
-        `with the install, as after a move, or is still the other install's, as after a copy.${answer}`));
+        `with the install, as after a move, or is still the other install's, as after a copy. A place inside another ` +
+        `goes with it.${answer}`));
   const places: Array<{ from: string; to: string }> = [];
   for (const place of ask) {
     const what = place.data ? 'its data directory' : place.extra ? 'state kept outside its data directory'

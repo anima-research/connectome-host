@@ -2012,7 +2012,7 @@ test('a copy with a place outside its old directory asks where that place is in 
   expect(await runSetup(copy, ['discord'], again)).toBe(0);
   expect(again.seen.asked).toEqual([`${outside} (state kept outside its data directory): `]);
   expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(copy, 'connectome-host'), '--place', outside, own], dataDir: join(copy, 'data') });
-  expect(text(again.seen.out)).toContain(`It asks about each place outside ${dir}, since it can't tell whether that came with the install, as after a move, or is still the other install's, as after a copy. Press Enter where a place is this install's, or type the path of this install's own, as after a copy.`);
+  expect(text(again.seen.out)).toContain(`It asks about each place outside ${dir}, since it can't tell whether that came with the install, as after a move, or is still the other install's, as after a copy. A place inside another goes with it. Press Enter where a place is this install's, or type the path of this install's own, as after a copy.`);
 });
 
 test('a record from before workingDir takes each place under this directory as this install\'s, asking nothing about them; one outside is asked about, Enter keeping it, and a data directory that isn\'t there is asked again', async () => {
@@ -2033,7 +2033,7 @@ test('a record from before workingDir takes each place under this directory as t
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
   const question = `${elsewhere} (its data directory): `;
   expect(again.seen.asked).toEqual([question, question]);
-  expect(text(again.seen.out)).toContain('It asks about each place outside it, or inside another install\'s directory within it, since it can\'t tell whether that came with the install, as after a move, or is still another install\'s, as after a copy.');
+  expect(text(again.seen.out)).toContain('It asks about each place outside it, or inside another install\'s directory within it, since it can\'t tell whether that came with the install, as after a move, or is still another install\'s, as after a copy. A place inside another goes with it.');
   expect(text(again.seen.out)).toContain(`${join(dir, 'nowhere')} isn't a directory, and the data directory has to be one that's there`);
   expect(ownSetup(again.seen)).toEqual({
     argv: ['--root', join(dir, 'connectome-host'), '--place', elsewhere, elsewhere], dataDir: elsewhere,

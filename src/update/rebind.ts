@@ -66,8 +66,8 @@ function pathsIn(value: CopyLabel | GoBackList, kind: BoundFile['kind']): string
 export function boundFiles(root: string, underWay: string | null = null): BoundFile[] {
   const unbindable = (why: string, path: string) => new ContractError(`${why}, so setup can't bind the places it ` +
     'names to this ' + (underWay === null ? 'directory, and has changed nothing.'
-      : `directory. A binding of this install is under way, with its plan at ${underWay}: put ${path} right, and ` +
-        'setup finishes the binding.'));
+      : `directory. A binding of this install is under way, with its plan at ${underWay}: put ${path} right and run ` +
+        'setup again, which finishes the binding or names what else stops it.'));
   const { copy, copyPrev, setAside } = installPaths(root);
   const found: Array<{ path: string; kind: BoundFile['kind'] }> = [
     { path: copyLabelPath(copy), kind: 'label' },

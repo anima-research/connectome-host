@@ -317,7 +317,8 @@ old directory becomes the same place under the new one, in the record, in
 the copy labels and in each Go back's list. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
-`PLACE` the same path after a move, or the copy's own after a copy. An
+`PLACE` the same path after a move, or the copy's own after a copy; a
+place inside another goes with it. An
 install set up before setup recorded its directory is checked for a move or
 a copy only after setup next runs there. That run takes each place under the
 directory that holds the install root as this install's, unless another

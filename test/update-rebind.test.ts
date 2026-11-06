@@ -732,7 +732,7 @@ describe('a binding cut off', () => {
     writeFileSync(second, 'not a list');
     const why = refusal(() => setup(options(install)));
     expect(why).toContain(second);
-    expect(why).toContain(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}: put ${second} right, and setup finishes the binding.`);
+    expect(why).toContain(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}: put ${second} right and run setup again, which finishes the binding or names what else stops it.`);
     expect(why).not.toContain('changed nothing');
     expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
   });

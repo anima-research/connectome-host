@@ -20,8 +20,13 @@
  *
  * Run again, it finishes whatever a run cut off left undone, or says what
  * stops it, and changes nothing an earlier run finished: the release
- * `current` names stays. With --extra-state, it records the paths given in
- * place of those recorded; without, those recorded stay.
+ * `current` names stays. One exception is a binding: when the record names
+ * no directory, as one from before workingDir, or another one, as after a
+ * move or a copy, setup binds the install to the directory it's in,
+ * writing that as the record's workingDir and giving each place in the
+ * record, the copy labels and each Go back's list its place there. With
+ * --extra-state, it records the paths given in place of those recorded;
+ * without, it keeps those recorded, at their places after any binding.
  */
 import {
   existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync,
