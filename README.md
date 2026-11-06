@@ -942,7 +942,7 @@ headless socket.
 | `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
 | `/redo` | Put the turn `/undo` took out back in the agent's window |
 | `/checkpoint [name]` | Save the record's position: its last row, an undone one included (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts the turn back); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts back the agent's latest undo, which holds that turn only if that undo took it out); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
