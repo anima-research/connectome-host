@@ -60,6 +60,10 @@ jobs:
         if: ${{ !matrix.suite }}
         run: node scripts/host-starts.mjs
 
+      - name: Native file lock
+        if: ${{ !matrix.suite }}
+        run: bun test test/file-lock.test.ts
+
   # bun runs TypeScript without checking its types, and `vite build`
   # doesn't check them either. isolatedModules has the host's check also
   # reject what bun can't transpile one module at a time: a type-only name
