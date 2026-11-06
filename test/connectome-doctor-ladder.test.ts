@@ -42,7 +42,9 @@ async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dump
   const ticks = join(dir, 'ticks');
   const dump = join(dir, 'dump-line');
   writeFileSync(dump, '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}\n');
-  const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; ` : '';
+  // A unit that logs to the journal gets the dump there, stamped as journald stamps a line it receives.
+  const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; `
+    : `printf "%s.000000 host bun[1]: %s\\n" "$(date +%s)" "$(cat ${dump})" >> ${join(dir, 'journal.txt')}; `;
   const trap = listens ? `trap '${dumpDelay ? `sleep ${dumpDelay}; ` : ''}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
   const process = spawn('sh', ['-c', `${trap}while :; do echo t >> ${ticks}; sleep 0.05; done`], { stdio: 'ignore' });
   children.push(process);
@@ -104,7 +106,7 @@ async function install(opts: {
         : `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") awk -v since="\${7#@}" '$1 + 0 >= since' ${journal} | grep -P -- "$9" ;;`,
       opts.dumpReadFails
         ? '  "$unit -o cat --no-pager --since @"*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
-        : `  "$unit -o cat --no-pager --since @"*) if grep -q usr2 ${host.signals} 2>/dev/null; then echo '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}'; fi ;;`,
+        : `  "$unit -o cat --no-pager --since @"*) awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal} ;;`,
       '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
       'esac',
     ].join('\n'));
