@@ -860,8 +860,10 @@ export async function runTui(app: AppContext): Promise<void> {
   /** The streamed lines of a row stored after the history was drawn, each
    *  the newest one not linked yet whose kind and words are a run of the
    *  row's blocks (its text or its thinking, or the operator's message),
-   *  taken out of streamedLines. A run is the consecutive blocks of one
-   *  kind, which streaming draws as one line (switchStreamBlock). */
+   *  taken out of streamedLines. A run is the blocks of one kind with no
+   *  block of the other kind between them, which streaming draws as one
+   *  line: it starts a line only where text and thinking meet
+   *  (switchStreamBlock), not at a tool call or another block. */
   function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
     const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
     let previous: StreamedLine['kind'] | undefined;
@@ -869,10 +871,7 @@ export async function runTui(app: AppContext): Promise<void> {
       const said = block.type === 'text' ? (block as { text?: string }).text ?? ''
         : block.type === 'thinking' ? (block as { thinking?: string }).thinking ?? ''
         : undefined;
-      if (said === undefined) {
-        previous = undefined;
-        continue;
-      }
+      if (said === undefined) continue;
       const kind = block.type === 'thinking' ? 'thinking' : msg.participant === 'user' ? 'you' : 'text';
       if (kind === previous) runs[runs.length - 1]!.said += said;
       else runs.push({ kind, said });

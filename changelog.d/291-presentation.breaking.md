@@ -64,7 +64,8 @@
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
-    which marks its lines in place, a reply it streamed and a message sent
+    which marks its lines in place, a reply it streamed (text on both
+    sides of a tool call is one line, as it streams it) and a message sent
     from it included, each linked to its row as the turn ends, never to
     another resident's row or an earlier row in the same words, and draws
     below them an undone row stored since it loaded the history that it has

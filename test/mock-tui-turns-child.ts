@@ -539,6 +539,27 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('(undone) the first half, the second half'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-tools') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A reply with text after its tool call: the stream changes lines only
+    // between text and thinking, so the TUI draws the two texts as one line.
+    first.send('inference:started');
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'Checking the ledgers, ', blockType: 'text' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'tool_use' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'then counting.', blockType: 'text' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'text', text: 'Checking the ledgers, ' }, { type: 'tool_use', id: 't1', name: 'search', input: {} }, { type: 'text', text: 'then counting.' }],
+    });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('Checking the ledgers, then counting.'), 'the reply');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) Checking the ledgers, then counting.'), 'the mark');
+    await step('text around a tool call');
   } else if (scenario === 'undone-evicted') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     /** More streamed lines than the scrollback holds, none of them a row's. */

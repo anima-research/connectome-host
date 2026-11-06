@@ -347,6 +347,15 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(undone).toContain('(undone) the first half, the second half');
   }, 40000);
 
+  // The stream draws text on both sides of a tool call as one line, so
+  // the row's two texts are one run (#485 second reading, wave-2 finding 22).
+  test('text on both sides of a tool call, streamed as one line, is matched as one, and the line is marked in place', async () => {
+    const undone = await frameOf('undone-tools', 'text around a tool call');
+    expect(times(undone, 'Checking the ledgers,')).toBe(1);
+    expect(times(undone, 'then counting.')).toBe(1);
+    expect(undone).toContain('(undone) Checking the ledgers, then counting.');
+  }, 40000);
+
   test("past the scrollback cap: a streamed line it pushed out isn't drawn again below, after a /clear or without one, an undone row with no line is, and a reply keeps its line from an earlier one in the same words", async () => {
     const steps = await play('undone-evicted');
     const cleared = steps.get('cleared, then pushed out')!.frame;
