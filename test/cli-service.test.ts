@@ -430,7 +430,6 @@ function fake(at: Install, options: {
   const hostOf = (root: string) => (options.platform === 'darwin' ? 'com.animalabs.connectome.' : 'connectome-') +
     slugOf(basename(dirname(root))) + (options.platform === 'darwin' ? '' : '.service');
   systemd.primary = hostOf(at.root);
-  // A test may hand this fake another's systemd; the host's socket answers from whichever systemd runs the units.
   let faked: Fake;
   const out: string[] = [];
   const err: string[] = [];

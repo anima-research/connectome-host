@@ -24,9 +24,6 @@ import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } fro
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, SETUP_SURFACE, typedCommand } from './install-command.js';
 
-/** Set to 1 in the host's service by `connectome service install`: in a systemd unit once systemd shows that it
- *  restarts the host when it exits with 75 and with 1, and in a launch agent, whose KeepAlive restarts the host
- *  whenever it exits other than with 0. */
 export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
@@ -39,8 +36,6 @@ const READY_WAIT_MS = 60_000;
 const RECIPE_CHECK_MS = 60_000;
 const FIRST_MINUTE_S = 60;
 const LOG_LINES = 40;
-// How far back the first read of a log file's end reaches. Each later read reaches twice as far, until it holds the
-// lines an excerpt shows: a step, which bounds nothing.
 const TAIL_STEP_BYTES = 64 * 1024;
 const INVOCATION_FIELDS = ['_SYSTEMD_INVOCATION_ID', 'USER_INVOCATION_ID', 'INVOCATION_ID'];
 export const EXCERPT_LEAD = "Lines starting with | are reports from the process named above each excerpt, " +
@@ -96,7 +91,6 @@ export interface ServiceSystem {
   cwd: string;
   env: Record<string, string | undefined>;
   bun: string;
-  /** This process's /proc/self/cgroup, or null where there's none to read. */
   cgroup(): string | null;
   which(name: string): string | null;
   run(command: string, args: string[], env: Record<string, string>): Ran;
@@ -428,7 +422,6 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const envBefore = readOr(envFile);
   const knownSettings = readEnvFile(envFile);
   const externalToken = knownSettings.get('SESSION_SERVER_TOKEN');
-  // Recorded names this release doesn't know stay recorded, so the release that wrote them can still retire them.
   const unknownSettings: ShellSettings = old !== null && sameDirectory(old.workingDirectory, work) ? Object.fromEntries(
     Object.entries(old.shellSettings ?? {}).filter(([name]) => !SHELL_SETTING_NAMES.includes(name as keyof ShellSettings)))
     : {};
@@ -448,8 +441,6 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
       unit.name !== names.host.name && unit.name !== names.shell.name)
     : [];
-  // A renamed shell daemon matters only to an install that starts one; otherwise it's retired after the pass, as a
-  // dropped shell is.
   for (const unit of renamed) {
     const host = unit.name === old!.units.host.name;
     if (host || shellBin !== null) renamedStopped(sys, manager, env, unit, host);
@@ -1173,9 +1164,6 @@ function untold(sys: ServiceSystem, manager: ServiceRecord['manager'], unit: Ser
     'gone, so which install it runs can\'t be told';
 }
 
-// A unit this install's record names under an earlier name is retired once the new host passes its checks, so it
-// must not be running when that host starts: a host holds the install's store, which a second host can't open, and a
-// shell daemon holds the stored port.
 function renamedStopped(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
   unit: ServiceUnit, host: boolean): void {
   const whose = `${unit.name}, this install's own ${host ? 'host' : 'shell daemon'} under its earlier name,`;
@@ -1835,8 +1823,6 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       closeSync(fd);
     }
   };
-  // How many lines before an excerpt's first a secret it holds could start in, so that a read of the journal holds
-  // them too; null, said, when the install's secrets can't all be known.
   const secretLines = (what: string): number | null => {
     try {
       return storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']).contextLines;
@@ -1845,8 +1831,6 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       return null;
     }
   };
-  // An ended start's last lines, from a read of its journal that ends with them. A read that holds the whole start is
-  // shown as log shows it; one that doesn't is redacted with the lines before its last LOG_LINES, and shown from them.
   const tail = (text: string, what: string, whole: boolean) => {
     if (whole) {
       log(text, what, true);
@@ -1894,7 +1878,6 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
         return null;
       }
-      // Each entry is at least a line, so fewer lines than entries asked for means the start had no more.
       const whole = (logged.stdout === '' ? 0 : logged.stdout.replace(/\n$/, '').split('\n').length) < asked;
       if (whole || tailHolds(logged.stdout, context)) {
         tail(logged.stdout, what, whole);
@@ -2030,11 +2013,9 @@ function endedStart(sys: ServiceSystem, env: Record<string, string>, name: strin
       unread++;
       return [];
     });
-    // The latest start's entries end the read, so a read without them shows they aren't there.
     const latest = entries.findIndex((entry) => entry.id === invocation);
     const earlier = latest === -1 ? [] : entries.slice(0, latest);
     const ended = earlier.at(-1)?.id;
-    // An entry of another start before the ended one's shows the read reaches back past that start's beginning.
     const whole = all || earlier.some((entry) => entry.id !== ended);
     const its = earlier.filter((entry) => entry.id === ended).map((entry) => entry.message).join('\n');
     if (latest !== -1 && !all && (ended === undefined || (!whole && !tailHolds(its, context)))) continue;
@@ -2054,15 +2035,12 @@ function endedStart(sys: ServiceSystem, env: Record<string, string>, name: strin
   }
 }
 
-// Whether a text that ends with its last LOG_LINES nonblank lines also holds the `context` lines before them.
 function tailHolds(text: string, context: number): boolean {
   const bytes = Buffer.from(text, 'utf-8');
   const at = linesStart(bytes, LOG_LINES, false);
   return at >= 0 && bytes.subarray(0, at).toString('utf-8').split('\n').length - 1 >= context;
 }
 
-// Where the last `count` nonblank lines of `bytes` begin, or -1 when it holds fewer. With `cut`, its first line may have
-// begun before it, so that line isn't counted.
 function linesStart(bytes: Buffer, count: number, cut: boolean): number {
   let seen = 0;
   for (let end = bytes.length; ;) {

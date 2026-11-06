@@ -1,4 +1,3 @@
-// Keep this module's imports light: service install's recipe-read child imports it alone.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parseHandWrittenJson } from './hand-written-json.js';

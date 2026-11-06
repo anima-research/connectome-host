@@ -156,8 +156,7 @@ export function passwdHome(name: string, file = '/etc/passwd'): string | null {
  *  the user manager, and as nothing for the system's, whose default is /.
  *  One that sets ~ runs in its user's home: this user's for the user
  *  manager, and for the system's, its User='s, root's when it names none.
- *  A unit runs from `cwd` when its directory's real path is cwd's, or, given
- *  `isHere`, when `isHere` says it does. Only units systemd has loaded are seen. */
+ *  Only units systemd has loaded are seen. */
 export function systemdUnits(cwd: string, run = (args: string[]) =>
   Bun.spawnSync(['systemctl', ...args], { stdout: 'pipe', stderr: 'pipe' }), home = homedir(),
 homeOf = passwdHome, isHere?: (directory: string) => boolean): ServiceUnits {
