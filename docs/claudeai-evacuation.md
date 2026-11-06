@@ -171,7 +171,7 @@ Order-of-magnitude estimates using Sonnet 4.5 pricing (input $3/Mtok, output $15
 | ~500 messages | $5–$20 | tens of minutes |
 | ~5000 messages | $50–$200 | hours |
 
-Use `--max-spend` if you want a hard ceiling — the script will halt cleanly and you can review what's been produced before deciding whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
+Use `--max-spend` for a soft cap: the script halts between ticks once its estimated spend reaches it, so the tick under way can take it past, and you can review what's been produced before deciding whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
 
 For short conversations (under ~50 messages) you can skip warmup entirely; autobio will compress lazily at first compile.
 
