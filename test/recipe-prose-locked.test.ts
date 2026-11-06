@@ -54,7 +54,8 @@ describe('locked prose routing recipe wiring', () => {
     const withConversations = (agent: Record<string, unknown>) => ({ ...recipe(agent), conversations: {} });
     expect(() => validateRecipe(withConversations({ proseRouting: 'locked', proseLock: '#lounge' }))).toThrow(
       'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
-        'speak in their home channel, as in locus mode, so the lock would not govern their replies.',
+        'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
+        'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.',
     );
     expect(validateRecipe(withConversations({ proseRouting: 'disabled' })).agent.proseRouting).toBe('disabled');
   });

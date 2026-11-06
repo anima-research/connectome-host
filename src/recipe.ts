@@ -3585,7 +3585,8 @@ export function validateRecipe(raw: unknown): Recipe {
     if (agent.proseRouting === 'locked') {
       throw new Error(
         'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
-          'speak in their home channel, as in locus mode, so the lock would not govern their replies.',
+          'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
+          'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.',
       );
     }
   }
