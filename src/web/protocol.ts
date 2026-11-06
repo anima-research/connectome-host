@@ -581,7 +581,10 @@ export interface PinsListMessage {
   /** Recent pinnable messages (REAL store ids) from the scoped process, the
    *  local one's as well as a fleet child's: the record's last 200 rows,
    *  less a row out of the agent's window as undone and a row whose audience
-   *  stamp leaves the agent out (another resident's on a shared store). */
+   *  stamp leaves the agent out (another resident's on a shared store), or,
+   *  on a legacy window, which reads no stamp, the rows the resident's view
+   *  leaves out instead (held traffic, suppressed rows, another agent's
+   *  stored injections). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
   /** Why the candidates couldn't be read; `candidates` is then absent. */
   candidatesError?: string;
