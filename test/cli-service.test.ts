@@ -5024,6 +5024,33 @@ test('macOS retires a same-directory record\'s agents under their recorded label
   expect(f.systemd.agents.has(`${old}.shell`)).toBe(false);
 });
 
+for (const platform of ['linux', 'darwin'] as const) test(platform + ': a record\'s own host unit under its old name, present and loaded here, is retired rather than refused', async () => {
+  const at = install();
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const run = (command: string, args: string[]) => expect(f.system.run(command, args, {}).status).toBe(0);
+  const name = platform === 'linux' ? 'connectome-old-name.service' : 'com.animalabs.connectome.old-name';
+  const file = platform === 'linux' ? join(unitsDir(at), name) : agentPlist(at, name);
+  if (platform === 'linux') {
+    run('systemctl', ['--user', 'stop', HOST]);
+    renameSync(hostUnit(at), file);
+    for (const args of [['daemon-reload'], ['enable', name], ['start', name]]) run('systemctl', ['--user', ...args]);
+  } else {
+    run('launchctl', ['bootout', 'gui/1001/com.animalabs.connectome.my-resident']);
+    writeFileSync(file, readFileSync(agentPlist(at), 'utf-8')
+      .replace('<string>com.animalabs.connectome.my-resident</string>', `<string>${name}</string>`));
+    rmSync(agentPlist(at));
+    run('launchctl', ['bootstrap', 'gui/1001', file]);
+  }
+  const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { host: { name, file } } }));
+  f.err.length = 0;
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(f.err).toEqual([]);
+  expect(existsSync(file)).toBe(false);
+  expect(existsSync(platform === 'linux' ? hostUnit(at) : agentPlist(at))).toBe(true);
+});
+
 test('a loader\'s stderr is redacted whole before its last line is shown', async () => {
   const at = install();
   const secret = 'first-half\nsecond-half';
