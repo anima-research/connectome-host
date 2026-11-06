@@ -207,6 +207,7 @@ function startHost(dir: string, modules: Record<string, unknown>,
     THINKING_BINDING_PROBE: 'off',
     DATA_DIR: join(dir, 'data'),
     CONNECTOME_SETUP_DIR: dir,
+    CONNECTOME_UPDATE_CHECK: '0',
     TERM: 'xterm-256color',
   });
   const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`;
