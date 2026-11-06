@@ -1476,11 +1476,6 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   if (!target) return { lines: [{ text: `No message with id ${messageId} on current branch.`, style: 'system' }] };
   const newBranchName = `rollback-at-${messageId}-${Date.now()}`;
   const from = app.framework.getStore().currentBranch().name;
-  // The record's rows, for how many follow the rollback's tail: on a
-  // presented window the cut keeps those stored before the write that
-  // presented the target, a co-resident's among them, which the command
-  // agent's counts (rollbackKeptLines) leave out.
-  const ids = messages.map((m) => String(m.id));
   const asyncWork = app.framework.rollbackToMessage(agent.name, {
     messageId: String(messageId),
     requester: HOST_COMMAND,
@@ -1489,8 +1484,12 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   })
     .then((rolled) => {
       const kept = rollbackKeptLines(rolled, agent.name);
-      const tail = ids.indexOf(String(rolled.tailMessageId));
-      const everything = kept.length === 0 && tail >= 0 && rolled.messagesRemoved === ids.length - tail - 1;
+      // Everything after the target went when its tail is the new branch's
+      // last row: on a presented window the cut keeps the rows stored before
+      // the write that presented the target, a co-resident's among them,
+      // which the command agent's counts (rollbackKeptLines) leave out.
+      const last = cm.queryMessages({}).messages.at(-1);
+      const everything = kept.length === 0 && last !== undefined && String(last.id) === String(rolled.tailMessageId);
       const after = everything
         ? `Everything after [${rolled.tailMessageId}] is dropped on this branch`
         : `${rolled.messagesRemoved} message${rolled.messagesRemoved === 1 ? '' : 's'} after [${rolled.tailMessageId}] ${rolled.messagesRemoved === 1 ? 'is' : 'are'} dropped on this branch`;
