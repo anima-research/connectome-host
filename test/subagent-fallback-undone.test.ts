@@ -3,7 +3,8 @@
  * newest assistant text its record holds (extractLastAssistantText). A text
  * turn an undo or a shed took out of the subagent's window (agent-framework
  * #291: windowStatusOf 'undone') stays in the record, but the subagent was
- * not shown it again, so it is not the run's answer.
+ * not shown it again, so it is not the run's answer; nor is a stored row the
+ * window doesn't hold (`out`).
  */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -96,5 +97,27 @@ describe("a tool-only run's answer", () => {
 
   test('is not a text turn an undo or a shed took out of the window, but the newest one it holds', async () => {
     expect(await answerOf(toolOnlyRun('It is in src/.', true))).toBe('First look: src/ or lib/.');
+  }, 20_000);
+
+  // Host #485 bot review wave 2, finding 29: a stored row the window doesn't
+  // hold yet (status 'out'), such as another agent's mail held out of it past
+  // the run's end, was never shown to the subagent either.
+  test('is not a text row stored after it that the window does not hold, but the newest one it holds', async () => {
+    const run: Run = async (agent, cm) => {
+      cm.presentRows([]);
+      const show = (participant: string, content: unknown[]) => {
+        const id = cm.addMessage(participant, content as never);
+        cm.presentRows([id]);
+        return id;
+      };
+      show('user', text('Find the config file.'));
+      show(agent.name, text('It is in src/.'));
+      const mail = cm.addMessage('mira', text('Mail from mira, not shown to the subagent.') as never);
+      expect(cm.windowStatusOf(mail)).toBe('out');
+      show(agent.name, [{ type: 'tool_use', id: 'tu-1', name: 'look', input: {} }]);
+      show('user', [{ type: 'tool_result', toolUseId: 'tu-1', content: 'ok' }]);
+      return { speech: '', toolCallsCount: 1 };
+    };
+    expect(await answerOf(run)).toBe('It is in src/.');
   }, 20_000);
 });

@@ -163,8 +163,6 @@ interface PublishedMessage {
 }
 
 const PUBLISHED_RING_MAX = 32;
-/** How many channels' voiced agents are kept (voicedIn), the oldest let go first. */
-const VOICED_CHANNELS_MAX = 32;
 /** How many of the heard words' characters a published message must start with. */
 const HEARD_PROBE_CHARS = 80;
 
@@ -205,7 +203,9 @@ export class TtsRelayModule implements Module {
   /** The agents whose activations were announced in each raw channel since
    *  its last interruption: the relay voices a turn's chunks after the turn
    *  has ended, so an interruption can come once its activation is gone, and
-   *  while another agent's has started. */
+   *  while another agent's has started. Every channel voiced in is kept (a
+   *  small name set each): one let go would name only an agent voiced there
+   *  after it, though an earlier one's audio can still be queued. */
   private voicedIn = new Map<string, VoicedInChannel>();
   private published: PublishedMessage[] = [];
 
@@ -278,18 +278,12 @@ export class TtsRelayModule implements Module {
       st.announced = true;
       const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), interrupted: false };
       voiced.agents.add(agentName);
-      this.keepVoiced(st.rawChannelId, voiced);
+      this.voicedIn.set(st.rawChannelId, voiced);
       this.client?.emit('activation_start', {
         channelId: st.rawChannelId,
         ...this.identity(agentName),
       });
     }
-  }
-
-  private keepVoiced(rawChannel: string, voiced: VoicedInChannel): void {
-    this.voicedIn.delete(rawChannel);
-    this.voicedIn.set(rawChannel, voiced);
-    if (this.voicedIn.size > VOICED_CHANNELS_MAX) this.voicedIn.delete(this.voicedIn.keys().next().value!);
   }
 
   private endActivation(agentName: string, reason: 'complete' | 'abort' | 'error'): void {
@@ -392,7 +386,10 @@ export class TtsRelayModule implements Module {
     const matched = this.publishesHeard(ev);
     const target = this.interruptedMessage(ev, matched);
     const speaker = this.speakerOf(ev, matched);
-    this.keepVoiced(ev.channelId, { agents: new Set(), interrupted: true });
+    // An interruption ends its channel's voicing: what was published there
+    // before it isn't heard in a later one.
+    this.voicedIn.set(ev.channelId, { agents: new Set(), interrupted: true });
+    this.published = this.published.filter((r) => r.rawChannelId !== ev.channelId);
     let edited = false;
 
     if (target?.messageId && ev.spokenText.trim().length > 0) {
@@ -456,8 +453,9 @@ export class TtsRelayModule implements Module {
     return named(voiced[0]!, live.length === 1 ? 'voicing in that channel' : `voiced ${where}`);
   }
 
-  /** The messages published in the interruption's channel whose text starts
-   *  with the heard words' first HEARD_PROBE_CHARS characters, newest first.
+  /** The messages published in the interruption's channel since its previous
+   *  interruption whose text starts with the heard words' first
+   *  HEARD_PROBE_CHARS characters, newest first.
    *  A publish they don't start is not taken: it would be edited to words it
    *  never said, and its author told of an interruption that cut off another
    *  agent. */

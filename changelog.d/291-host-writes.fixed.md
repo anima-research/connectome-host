@@ -37,10 +37,11 @@
     start, else the agent voicing in its channel. It was written for no
     agent, so every resident sharing the slot was shown it. An interruption
     whose speaker can't be named (no published message matched it, and no
-    one registered agent was voicing in its channel) writes no note, and the
-    log says why. Heard words that start no published message in the channel
-    edit nothing: the relay used to edit the channel's latest published
-    message to them, and tell that message's author.
+    one registered agent was voicing in its channel, or the heard words start
+    messages by more than one agent) writes no note, and the log says why.
+    Heard words that start no published message in the channel edit
+    nothing: the relay used to edit the channel's latest published message
+    to them, and tell that message's author.
   - A subagent's result or failure told straight to the agent that started
     it, when the run has no route of its own through agent-framework, and
     its launcher, or the attempt that launched it, has ended (its line says
@@ -50,8 +51,14 @@
     launched it, or the current attempt of a run above it, else for the
     primary. It wakes nobody, as before. One whose launcher is listed was
     already written for it, and a run with a route of its own (a subagent
-    agent-framework registered) still has its result held as mail for an
-    ended launcher, which agent-framework delivers on adoption.
+    agent-framework registered) still goes where agent-framework routes it:
+    held as mail for its launcher if that launcher has since ended
+    (delivered on adoption), or, for a launch that waited for a slot past
+    its launcher's end, to the launcher's nearest live ancestor.
   - A subagent's first rows (its orientation and task, a fork's copy of its
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.
+- A subagent run that ends on a tool call, with no speech, answers with the
+  newest text its window holds: a text row an undo or a shed took out of
+  it, or one stored and never shown to it (another agent's mail held out of
+  it past the run's end), was the answer.

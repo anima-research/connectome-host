@@ -49,7 +49,7 @@ import {
   type OperatorLogEntryWire,
 } from '@conhost/web/protocol';
 import {
-  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor,
+  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor, UndoneMarksRefresh,
 } from '@conhost/web/agent-streams';
 import {
   Lightbox,
@@ -85,10 +85,11 @@ interface Message {
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   streaming?: boolean;
   /** The row is out of the conversation agent's window as an undone turn's
-   *  (agent-framework #291): an undo (which /redo puts back) or a shed after
-   *  a refusal or failed inference (which it doesn't). The record keeps it,
-   *  its next request is built without it. From the welcome, a history page
-   *  or an undone-marks frame. */
+   *  (agent-framework #291): an undo (which /redo puts back until the
+   *  agent's next turn or a branch move) or a shed after a refusal or failed
+   *  inference (which it doesn't). The record keeps it, its next request is
+   *  built without it. From the welcome, a history page or an undone-marks
+   *  frame. */
   undone?: boolean;
   trigger?: {
     origin: string;
@@ -569,7 +570,8 @@ export function App() {
   };
 
   /** Bumped at each undo or redo on an agent's window (the window:undone
-   *  trace, DQ-4) and at each undone-marks frame (which a shed sends too):
+   *  trace, DQ-4) and at each undone-marks frame that doesn't follow its
+   *  agent's trace (a shed's, which has none: UndoneMarksRefresh):
    *  the panels built from what a window holds (Context's makeup and
    *  coverage, the compiled context) read again when it moves, and so do
    *  the pins, whose candidates leave an undone row out. */
@@ -1711,11 +1713,14 @@ function staleScope(msgScope: string | undefined, current: string): boolean {
   return msgScope !== undefined && msgScope !== current;
 }
 
+const undoneMarksRefresh = new UndoneMarksRefresh();
+
 function handleServerMessage(
   msg: WebUiServerMessage,
   _wire: WireClient,
   hooks: HandlerHooks,
 ): void {
+  const marksReadPanels = undoneMarksRefresh.take(msg);
   switch (msg.type) {
     case 'welcome': {
       hooks.applyWelcome(msg);
@@ -1770,8 +1775,9 @@ function handleServerMessage(
     case 'undone-marks':
       hooks.applyUndoneMarks(msg);
       // A shed sends this frame without a window:undone trace: the panels
-      // built from the window read again here too.
-      hooks.onWindowUndone(msg.agent);
+      // built from the window read again here, unless the frame follows its
+      // agent's trace, whose hook read them already.
+      if (marksReadPanels) hooks.onWindowUndone(msg.agent);
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
@@ -1953,7 +1959,7 @@ function MessageRow(props: {
       <Show when={props.undone}>
         <div
           class="text-[10px] font-mono text-amber-300/80 mb-0.5"
-          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
+          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back until the agent's next turn or a branch move) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
         >undone · not in the agent's context</div>
       </Show>
       <Show when={actionable()}>

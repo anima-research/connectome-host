@@ -26,12 +26,12 @@
     redo or a branch switch", and that "an undo or a branch switch takes back
     `gate.js`": from this release each reads "a branch switch or a rollback".
   - `/checkout` is agent-framework's `switchBranch`, and `/restore` and
-    `/branchto` its `rollbackToMessage`: a new branch whose last row is the
-    checkpoint's or the given message, and the store moved to it. A
-    `/restore` whose checkpoint has no message (one taken on an empty
-    branch), or whose message isn't on the current branch, is a
-    `switchBranch` to the checkpoint's branch head instead, and one at its
-    checkpoint already moves nothing. Each is refused unless every agent
+    `/branchto` its `rollbackToMessage`: a new branch cut at the write that
+    showed the agent the checkpoint's or the given message (see below), and
+    the store moved to it. A `/restore` whose checkpoint has no message (one
+    taken on an empty branch), or whose message isn't on the current
+    branch, is a `switchBranch` to the checkpoint's branch head instead, and
+    one at its checkpoint already moves nothing. Each is refused unless every agent
     sharing the store is idle, as before, and each takes every agent's
     context to the branch it moves to. While the command agent's own turn
     is alive the host refuses it at once, as before (`/checkout refused: a
@@ -70,10 +70,16 @@
     that it has no line for, until a redo puts it back, but not one whose
     lines `/clear` or the scrollback cap took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again at each undo, redo or shed. The local pin picker
-    lists the host's candidates, the record's last 200 rows, as a fleet
-    child's does, where it listed the rows the transcript had loaded; it
-    leaves out undone rows and rows stamped for other residents only.
+    pins) read the window again, once, at each undo, redo or shed. A figure
+    that comes back after a newer read of it started is dropped, and the
+    coverage panel's five-second poll starts no read while one is pending,
+    where a read slower than the poll had another started at each tick. The
+    local pin picker lists the host's candidates, the record's last 200
+    rows, as a fleet child's does, where it listed the rows the transcript
+    had loaded; it leaves out undone rows and rows stamped for other
+    residents only. A message stored in parts is one candidate, by its first
+    part with the parts' text joined, as it is one row in the transcript,
+    where a fleet child's picker listed each part.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,

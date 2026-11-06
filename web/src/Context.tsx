@@ -1,5 +1,6 @@
 import { createEffect, createSignal, on, onCleanup, onMount, For, Show } from 'solid-js';
 import { contextPageView } from './composition-text';
+import { LatestRead } from './latest-read';
 
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -100,11 +101,12 @@ export function ContextPanel(props: {
 
   // Each read counts itself; a response that comes back after a newer read
   // started (a scope change, an undo's refresh, the coverage poll) is dropped,
-  // so an older figure never replaces a newer one.
-  let latestMakeup = 0;
+  // so an older figure never replaces a newer one. The poll starts none while
+  // a coverage read is pending, so a slow read still lands.
+  const makeupReads = new LatestRead();
   const load = async () => {
-    const thisLoad = ++latestMakeup;
-    const superseded = () => thisLoad !== latestMakeup;
+    const thisLoad = makeupReads.begin();
+    const superseded = () => makeupReads.superseded(thisLoad);
     setLoading(true);
     setErr(null);
     try {
@@ -121,14 +123,16 @@ export function ContextPanel(props: {
       if (superseded()) return;
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
+      makeupReads.settled(thisLoad);
       if (!superseded()) setLoading(false);
     }
   };
 
-  let latestCoverage = 0;
-  const loadCoverage = async () => {
-    const thisLoad = ++latestCoverage;
-    const superseded = () => thisLoad !== latestCoverage;
+  const coverageReads = new LatestRead();
+  const loadCoverage = async (polled = false) => {
+    const thisLoad = polled ? coverageReads.poll() : coverageReads.begin();
+    if (thisLoad === null) return;
+    const superseded = () => coverageReads.superseded(thisLoad);
     setCoverageLoading(true);
     setCoverageErr(null);
     try {
@@ -144,6 +148,7 @@ export function ContextPanel(props: {
       if (superseded()) return;
       setCoverageErr(e instanceof Error ? e.message : String(e));
     } finally {
+      coverageReads.settled(thisLoad);
       if (!superseded()) setCoverageLoading(false);
     }
   };
@@ -165,7 +170,7 @@ export function ContextPanel(props: {
   createEffect(on(() => props.refreshKey, () => refreshAll(), { defer: true }));
 
   onMount(() => {
-    const timer = window.setInterval(() => void loadCoverage(), 5_000);
+    const timer = window.setInterval(() => void loadCoverage(true), 5_000);
     onCleanup(() => window.clearInterval(timer));
   });
 

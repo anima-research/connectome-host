@@ -66,4 +66,32 @@ describe("a pins snapshot's candidates", () => {
     expect(ids('clerk')).toEqual(['s1', 'c1', 'o1', 'n1']);
     expect(ids('mira')).toEqual(['s1', 'r1', 'r2', 'o1', 'n1']);
   });
+
+  // Host #485 bot review wave 2, finding 21: a message stored in parts (its
+  // shards share a bodyGroupId) is one row in the transcript, and a pin on
+  // any part of it covers the whole message, so it is one candidate.
+  test('list a message stored in parts once, by its first part, with its whole text', () => {
+    const part = (id: string, text: string, bodyGroupId: string, shardIndex: number) =>
+      ({ ...say(id, 'user', text), bodyGroupId, shardIndex });
+    const rows = [
+      say('m1', 'user', 'read this'),
+      part('p0', 'The ferry leaves ', 'g1', 0),
+      part('p1', 'at noon, ', 'g1', 1),
+      part('p2', 'and the bridge is closed.', 'g1', 2),
+      // The same text ingested again is another message (context-manager's
+      // continuesBody): its parts start again at 0.
+      part('q0', 'The ferry leaves ', 'g1', 0),
+      part('q1', 'at noon, ', 'g1', 1),
+      part('q2', 'and the bridge is closed.', 'g1', 2),
+      say('m2', 'clerk', 'noted'),
+    ];
+    const app = appOver(rows, () => 'in', ['clerk']);
+    const snapshot = buildPinsSnapshot(app, 'clerk', { withCandidates: true });
+    expect(snapshot.candidates?.map((c) => [c.id, c.index, c.text])).toEqual([
+      ['m1', 0, 'read this'],
+      ['p0', 1, 'The ferry leaves at noon, and the bridge is closed.'],
+      ['q0', 4, 'The ferry leaves at noon, and the bridge is closed.'],
+      ['m2', 7, 'noted'],
+    ]);
+  });
 });

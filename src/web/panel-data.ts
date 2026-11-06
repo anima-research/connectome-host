@@ -1,4 +1,5 @@
 import { audienceOf, type AgentFramework } from '@animalabs/agent-framework';
+import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
 import { recipeModel, resolveProvider, type Recipe } from '../recipe.js';
@@ -544,7 +545,10 @@ export function buildPinsSnapshot(
  * a shared store, or one a tune-out held from every resident), which never
  * enters that window. A row with no stamp (stored before it existed) and a
  * stored arrival the agent's window doesn't hold yet (status 'out'), which
- * enters it at the agent's next turn, are candidates.
+ * enters it at the agent's next turn, are candidates. A message stored in
+ * parts (context-manager's shards of one body) is one candidate, as it is one
+ * row in the transcript: its first part's id, with the parts' text joined. A
+ * pin on any part of it covers the whole message.
  */
 function buildPinCandidates(
   app: PanelAppRef,
@@ -556,7 +560,7 @@ function buildPinCandidates(
       getMessageCount?: () => number;
       getMessageWindow?: (
         offset: number, limit: number, opts?: { resolveBlobs?: boolean },
-      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown }>; startIndex: number };
+      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown } & BodyShard>; startIndex: number };
       windowStatusOf?: (id: string) => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
@@ -566,26 +570,36 @@ function buildPinCandidates(
     const start = Math.max(0, total - PIN_CANDIDATE_LIMIT);
     const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false });
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
-    win.messages.forEach((m, i) => {
-      if (!m.id) return;
-      if (cm.windowStatusOf?.(String(m.id)) === 'undone') return;
-      const stamp = audienceOf(m.metadata);
-      if (stamp && !stamp.audience.includes(agentName)) return;
+    const textOf = (content: unknown): string => {
+      if (typeof content === 'string') return content;
       let text = '';
-      if (Array.isArray(m.content)) {
-        for (const b of m.content as Array<Record<string, unknown>>) {
+      if (Array.isArray(content)) {
+        for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type === 'text') text += String(b.text ?? '');
         }
-      } else if (typeof m.content === 'string') {
-        text = m.content;
       }
+      return text;
+    };
+    for (let i = 0; i < win.messages.length; i++) {
+      const m = win.messages[i]!;
+      const first = i;
+      // A message stored in parts: they join back with no separator.
+      let text = textOf(m.content);
+      while (i + 1 < win.messages.length && continuesBody(win.messages[i], win.messages[i + 1])) {
+        i++;
+        text += textOf(win.messages[i]!.content);
+      }
+      if (!m.id) continue;
+      if (cm.windowStatusOf?.(String(m.id)) === 'undone') continue;
+      const stamp = audienceOf(m.metadata);
+      if (stamp && !stamp.audience.includes(agentName)) continue;
       out.push({
         id: String(m.id),
-        index: win.startIndex + i,
+        index: win.startIndex + first,
         participant: String(m.participant ?? '?'),
         text: text.slice(0, PIN_CANDIDATE_TEXT_CAP),
       });
-    });
+    }
     return out;
   } catch {
     return [];

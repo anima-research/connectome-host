@@ -16,10 +16,11 @@ row, top-right). Context view: **⏪ roll back to here** on a raw (non-summary)
 box, faintly visible until hovered (boxes carry `sourceMessageId`; summaries
 do not, so they have no button).
 
-What happens (`framework.rollbackToMessage`): the chronicle is forked at that
-message's origin sequence (`branchAt`), the fork — `rollback/<agent>/<ts>` —
-becomes the current branch, and `_config` is re-materialized. Nothing is
-deleted. Discord messages that left the context are not marked: agent-framework
+What happens (`framework.rollbackToMessage`): the chronicle is forked
+(`branchAt`) at that message's origin sequence, or, on a presented window, at
+the sequence of the presentation write that showed it (below). The fork,
+`rollback/<agent>/<ts>`, becomes the current branch, and `_config` is
+re-materialized. Nothing is deleted. Discord messages that left the context are not marked: agent-framework
 makes marking a separate, explicit choice (`rollbackToMessage`'s `marks`,
 default `none`), and the WebUI's rollback doesn't make it (an undo, which acts
 on the window only, marks none either).
@@ -120,8 +121,9 @@ An undo or a redo on the conversation agent's window (`/undo`, `/redo`, the
 `window:undone` trace) moves no branch, and the transcript still shows the
 record. A transcript entry whose row is out of the window as an undone
 turn's carries `undone: true` (the welcome, history pages): an undo (which
-`/redo` puts back) or a shed after a refusal or failed inference (which it
-doesn't) takes rows out that way. After each `window:undone` trace, and
+`/redo` puts back until the agent's next turn or a branch move) or a shed
+after a refusal or failed inference (which it doesn't) takes rows out that
+way. After each `window:undone` trace, and
 each shed from that window (`presentation:retracted`, reason `shed`), the
 server sends `undone-marks` (scope `messages`) naming every undone row of
 the record, from index 0, which the page dims and labels wherever it holds

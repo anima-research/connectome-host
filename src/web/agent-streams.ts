@@ -92,6 +92,29 @@ export function applyTrace(
   if (e.type.startsWith('host:')) hooks.requestHostMode();
 }
 
+/**
+ * Whether an undone-marks frame reads the window's panels again. The host
+ * sends one for the conversation agent right after each of its
+ * `window:undone` traces, whose hook (onWindowUndone) has read them again
+ * already, and after a shed from its window, which has no trace. A marks
+ * frame right after its agent's trace reads nothing more, so an undo reads
+ * each panel once (a makeup read posts the window to count_tokens); any
+ * other marks frame, a shed's, reads them.
+ */
+export class UndoneMarksRefresh {
+  private tracedJustBefore: string | undefined;
+
+  /** Each server frame the page takes, in order: `true` for an undone-marks
+   *  frame that reads the window's panels again. */
+  take(msg: { type: string; agent?: unknown; event?: { type?: unknown; agentName?: unknown } }): boolean {
+    const traced = this.tracedJustBefore;
+    this.tracedJustBefore = msg.type === 'trace' && msg.event?.type === 'window:undone' && typeof msg.event.agentName === 'string'
+      ? msg.event.agentName
+      : undefined;
+    return msg.type === 'undone-marks' && msg.agent !== traced;
+  }
+}
+
 export type StreamSource =
   | { kind: 'none' }
   | { kind: 'trace-agent'; agentName: string }
