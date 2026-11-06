@@ -244,7 +244,7 @@ Since context-manager 0.12.0, every load audits the summaries for crossed owners
 **Auditing one store.** context-manager's scripts are in its `dist/scripts/`, under the `node_modules` the host runs from; each script's own header describes it whole. Run them on a copy of the stopped store: a full or reflinked copy, never hard links, since opening a store writes to it.
 
 ```bash
-node <context-manager>/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json > audit.json
+node '<context-manager>/dist/scripts/audit-topology.js' '<store-copy>' --namespace 'agents/<agent>' --json > audit.json
 ```
 
 It exits 2 when it finds crossings, 1 when it couldn't open the store, and 0 when it found none. A warning that it saw nothing to audit means a wrong `--namespace`, a copy without the strategy's state, a store with no summaries yet, or chunks none of which a summary owns. It opens the store audit-only, which skips chunking the messages not yet in a chunk, a step a start takes before its check, so it can pass a store a start refuses: the host's store audit is the one that opens a store as a start does (agent-framework's own state in the store, which a start reads as well, is outside both). Its listing of summaries no merge can take reads the resident's merge settings, which the store doesn't hold, so give it them as the resident has them (`--merge-threshold`, `--merge-max-span`, `--merge-hold`, `--no-speculative-production`); the same holds for the repair.
@@ -252,7 +252,7 @@ It exits 2 when it finds crossings, 1 when it couldn't open the store, and 0 whe
 **Repairing.** Repair a fresh copy of the stopped store, made the same way, never the store itself.
 
 ```bash
-node <context-manager>/dist/scripts/repair-topology.js <store-copy> --namespace agents/<agent> [--mode lossless|compact|rebuild] [--rebuild-since <messageId|ISO date>] [--apply]
+node '<context-manager>/dist/scripts/repair-topology.js' '<store-copy>' --namespace 'agents/<agent>' [--mode lossless|compact|rebuild] [--rebuild-since '<messageId|ISO date>'] [--apply]
 ```
 
 - It's a dry run, which prints its plan, unless `--apply`. After `--apply` it reopens the copy under `reject` to check it. It exits 0 when nothing crossed is left (or the dry run's plan leaves nothing crossed), 2 when the plan is incomplete or the check failed, and 1 on a usage or open error.
@@ -260,7 +260,7 @@ node <context-manager>/dist/scripts/repair-topology.js <store-copy> --namespace 
 - After a `rebuild`, fold the same copy again with the offline drain, which writes summaries with real model calls, taking the key from `ANTHROPIC_API_KEY` in its environment. The repair prints its command:
 
 ```bash
-node <context-manager>/dist/scripts/drain-autobiographical.js <store-copy> agents/<agent> --apply --model=<model> --participant=<agent> --recipe=<the resident's recipe.json> --tools-log=<llm-calls.jsonl>
+node '<context-manager>/dist/scripts/drain-autobiographical.js' '<store-copy>' 'agents/<agent>' --apply --model='<model>' --participant='<agent>' --recipe='<recipe.json>' --tools-log='<llm-calls.jsonl>'
 ```
 
 - The drain takes the resident's tool definitions from the last streamed call in `--tools-log` whose raw request the log kept with tool definitions in it, so that call has to be the resident's own, not a subagent's, which the same log holds. The log has to be one from a host on the `anthropic` provider, which keeps an ordinary call's raw request only when the host was started with `LLM_CALLS_FULL_PAYLOADS=1`. So, if the resident still runs on a release that opens its store, restart it with that set and stop it just after one of its turns, before you copy the store; the turn is a real one, and the store keeps it. A call whose log record would pass 16 MiB is kept without its raw request (`MAX_RECORD_BYTES` in `src/logging-record.ts`), so a turn whose calls' records are that large gives the drain no definitions. Pass the log that restart began: each start of the host begins a new `llm-calls.<iso>.jsonl` in the data directory. Without the definitions, the drain can't compress a chunk with tool calls, nor any chunk when the model is a Fable or Mythos model: choose `lossless` or `compact` then, which need no drain. A drain that stops short exits 1, says why (`not drained (max-steps)`, at `--max-steps`, 200 unless given), and goes on from where it stopped when run again with the same flags on the same copy, leaving out any `--clear-merge-quarantine`. A drain that finishes with quarantines left also exits 1 and says how many. A merge's quarantine clears with `--clear-merge-quarantine=<key>` on the next run, and `audit-topology` names the key of one that stands beside a stranded summary. A compression quarantine has no command in this host, as `audit-topology` says, so a drain that ends with one can't exit 0. Run it until it exits 0.
