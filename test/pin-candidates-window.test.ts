@@ -10,7 +10,8 @@
  * the record through the resident's view, which reads no stamp, so there the
  * view decides.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { bodyStart, type BodyShard } from '@animalabs/context-manager';
 import { buildPinsSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 
@@ -152,12 +153,26 @@ describe("a pins snapshot's candidates", () => {
   // Host #485 bot review wave 3, finding 20: a read that failed came back as
   // an empty list, and the picker said the last 200 rows held no pinnable
   // message.
-  test("are absent, with the reason, when the record can't be read", () => {
+  // The read's failure is logged under the host's `[pins]` tag, and the
+  // picker says the rows couldn't be read, with why (#485 bot review 5,
+  // finding 22).
+  test("are absent, with the reason, when the record can't be read, and the failure is logged", () => {
     const app = appOver([say('m1', 'user', 'count the ledgers')], () => {
       throw new Error('the window index is unreadable');
     }, ['clerk']);
-    const snapshot = buildPinsSnapshot(app, 'clerk', { withCandidates: true });
-    expect(snapshot.candidates).toBeUndefined();
-    expect(snapshot.candidatesError).toBe('the window index is unreadable');
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const snapshot = buildPinsSnapshot(app, 'clerk', { withCandidates: true });
+      expect(snapshot.candidates).toBeUndefined();
+      expect(snapshot.candidatesError).toBe('the window index is unreadable');
+      expect(warn.mock.calls.map((call) => String(call[0]))).toContain("[pins] couldn't read clerk's pin candidates:");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("the picker says the record's rows couldn't be read, and why, rather than that none is pinnable", () => {
+    const picker = readFileSync(new URL('../web/src/Pins.tsx', import.meta.url), 'utf8');
+    expect(picker).toMatch(/props\.state\?\.candidatesError\s*\?\s*`The record's last 200 rows couldn't be read: \$\{props\.state\.candidatesError\}`/);
   });
 });
