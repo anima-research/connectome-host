@@ -738,6 +738,16 @@ describe('setup--run', () => {
     for (const part of ['printed-line', 'first-half', 'second-half']) expect(JSON.stringify(result)).not.toContain(part);
   });
 
+  test('gives back none of a command\'s output when what setup reads of its secrets can\'t be read once it ends, and says why', async () => {
+    const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
+    listSecrets(module, 'MY_SERVER_TOKEN');
+    const list = join(dir, '.setup', 'stored-secrets.json');
+    const result = await runCall(module, `rm ${list}; ln -s gone.json ${list}; echo word-it-printed`);
+    expect(result.success).toBe(false);
+    expect(result.error).toStartWith(`setup--run's command ended (exit 0), and its output isn't shown: ${list} can't be read: ENOENT`);
+    expect(JSON.stringify(result)).not.toContain('word-it-printed');
+  });
+
   test('replaces a secret stored while its command was running', async () => {
     const { dir, module } = install({ asker: { ask: async () => 'stored-mid-run-value' } });
     const flag = join(dir, 'stored');
