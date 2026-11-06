@@ -1846,9 +1846,10 @@ function stateOf(shown: Map<string, string>): string {
 function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
   properties: string[]): Map<string, string> | string {
   const timestamp = properties.includes('ExecMainStartTimestamp');
-  // systemd 247 ignores show's timestamp style. TZ and LC_ALL also fix its default output to numeric UTC seconds.
-  const ran = sys.run('systemctl', ['--user', 'show', ...(timestamp ? ['--timestamp=utc'] : []),
-    `--property=${properties.join(',')}`, '--', name], timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
+  // TZ and LC_ALL give show's default timestamp style in UTC, in C's words. systemctl's --timestamp= only exists
+  // from systemd 247, which ignores it for show, and on 257 it changes nothing under them.
+  const ran = sys.run('systemctl', ['--user', 'show', `--property=${properties.join(',')}`, '--', name],
+    timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
   if (ran.status !== 0) {
     return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
       `(${systemctlLine(sys, `show ${name}`)})`;

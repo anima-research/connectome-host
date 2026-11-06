@@ -4873,3 +4873,14 @@ test('an install whose record isn\'t bound here is told to run setup discord', a
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('setup discord here to confirm each recorded place');
 });
+
+test('a systemctl that refuses --timestamp=, as systemd before 247 does, still answers every check', async () => {
+  const at = install();
+  const f = fake(at);
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'systemctl' && args.some((arg) => arg.startsWith('--timestamp'))
+    ? { status: 1, stdout: '', stderr: "systemctl: unrecognized option '--timestamp=utc'" } : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).not.toContain("couldn't be asked");
+  expect(f.systemd.envs.some((env) => env.TZ === 'UTC' && env.LC_ALL === 'C')).toBe(true);
+});
