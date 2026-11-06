@@ -609,6 +609,18 @@ describe('the ladder\'s recent start', () => {
     expect(out).toMatch(/^=== (findings|no obvious problems)/m);
     expect(out).toMatch(/· routeSpeech delivery +can't be seen here: the unit has no start time, so no run's journal is read$/m);
   });
+
+  test('a unit with no start time leaves its journal\'s failures not known, since no search ran, not none found', async () => {
+    const at = await install({ listens: true });
+    systemctl(at, { neverStarted: true });
+    const { out } = ladder(at, ['--no-signal']);
+    expect(out).toContain('recent failures in connectome-test.service\'s journal: not known: it wasn\'t searched (the unit\'s ' +
+      'start time isn\'t known)');
+    expect(out).toContain('connectome-test.service\'s journal wasn\'t searched (the unit\'s start time isn\'t known), so its ' +
+      'failures and deliveries aren\'t shown');
+    expect(out).not.toContain('none found');
+    expect(out).not.toContain('its search by pattern failed');
+  });
 });
 
 describe('the ladder\'s data directory', () => {

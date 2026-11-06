@@ -207,12 +207,15 @@ def journal_entries(text):
 
 last_entry, last_error = run(f"journalctl --user -u {unit} -q --no-pager -n 1 -o short-unix")
 journal_text, search_error = "", None
-if last_error is None and start_ts is not None:
+if last_error is None and start_ts is None:
+    search_error = "the unit's start time isn't known"
+elif last_error is None:
     journal_text, search_error = run(
         f"journalctl --user -u {unit} -q --no-pager --since @{int(start_ts)} -g {shlex.quote(f'{ROUTE_SAID}|{FAILURE}')} "
         "-o short-unix", no_match=1)
 journal_error = last_error if last_error is not None else search_error
-journal_unread = "can't be read" if last_error is not None else "couldn't be searched by pattern"
+journal_unread = ("can't be read" if last_error is not None else "wasn't searched" if start_ts is None
+                  else "couldn't be searched by pattern")
 journal = journal_entries(journal_text)
 jts = (journal_entries(last_entry) or [(None, None)])[-1][0]
 log_redirect = None
@@ -233,8 +236,8 @@ if last_error is not None:
     print(f"journal    : {C_RED}can't be read: {last_error}{C_OFF}")
 else:
     print(f"journal    : last entry {age(jts)}" + ("" if journal_log else f"  {C_DIM}(stdout/err -> {agent_log}){C_OFF}")
-          + (f"  {C_RED}its search by pattern failed: {search_error}{C_OFF}" if journal_log and search_error is not None
-             else ""))
+          + (f"  {C_RED}its search by pattern failed: {search_error}{C_OFF}"
+             if journal_log and search_error is not None and start_ts is not None else ""))
     if not journal_log and (jts is None or (start_ts and jts < start_ts)):
         warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}", counts=False)
 if journal_log and journal_error is not None:
@@ -503,9 +506,9 @@ if journal_log:
             unknown.add(DELIVERY)
     else:
         unknown.add(DELIVERY)
-        del_detail = (f"the journal {journal_unread}" if journal_error is not None
-                      else "none in the journal since the unit's latest start" if start_ts is not None
-                      else "the unit has no start time, so no run's journal is read")
+        del_detail = ("the unit has no start time, so no run's journal is read" if last_error is None and start_ts is None
+                      else f"the journal {journal_unread}" if journal_error is not None
+                      else "none in the journal since the unit's latest start")
 else:
     text, why = read_text(agent_log, last=2_000_000)
     said = [ln for ln in (text or "").split("\n") if re.search(ROUTE_SAID, ln)]
