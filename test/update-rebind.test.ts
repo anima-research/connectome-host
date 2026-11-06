@@ -12,6 +12,7 @@ import {
 } from '../src/update/contract.js';
 import { decide, machineOps, releaseLock } from '../src/update/launcher.js';
 import { ENTRY_POINT, parseArgs, setup, type ServiceUnits, type SetupOptions } from '../src/update/setup.js';
+import * as rebind from '../src/update/rebind.js';
 
 let dir: string;
 let install: string;
@@ -853,6 +854,28 @@ describe('a binding cut off', () => {
 });
 
 describe('what setup read before it held the lock', () => {
+  test('a label replaced after setup checked it, before the lock, is refused as changed meanwhile, and nothing is rewritten', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const labelPath = join(rootOf(moved), 'copy', 'copy.json');
+    const replaced = { ...label(moved)!, items: [...label(moved)!.items, { path: join(rootOf(install), 'inside'), name: '9-inside' }] };
+    const realPlan = rebind.newPlan;
+    const planned = spyOn(rebind, 'newPlan').mockImplementation((...args: Parameters<typeof rebind.newPlan>) => {
+      writeJsonAtomic(labelPath, replaced);
+      return realPlan(...args);
+    });
+    try {
+      expect(refusal(() => setup(options(moved)))).toBe('This install\'s record, its binding\'s plan, its copy\'s label or a Go back\'s list isn\'t what setup read before it held the lock, so setup has changed none of them. Run it again, and it reads them afresh.');
+    } finally {
+      planned.mockRestore();
+    }
+    expect(label(moved)).toEqual(replaced);
+    expect(record(moved)!.workingDir).toBe(install);
+    expect(existsSync(join(rootOf(moved), REBIND_PLAN))).toBe(false);
+  });
+
   test('a binding that finds a plan another setup wrote meanwhile refuses, and leaves that plan as it was', () => {
     const { places } = chained();
     const root = rootOf(install);

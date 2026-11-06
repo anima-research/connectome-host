@@ -144,7 +144,10 @@ export function mapPath(path: string, plan: Pick<RebindPlan, 'from' | 'to' | 'pl
 export type Binding =
   | { kind: 'bound'; to: string }
   | { kind: 'resume'; plan: RebindPlan }
-  | { kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: RebindPlan['places'] };
+  | {
+    kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: RebindPlan['places'];
+    files: BoundFile[];
+  };
 
 function keptHere(path: string, to: string, rootName: string): string | null {
   for (let at = path; ; at = dirname(at)) {
@@ -180,7 +183,7 @@ export function bindingOf(root: string, record: InstallRecord): Binding {
     })
     : [];
   return {
-    kind: 'bind', from, to, places,
+    kind: 'bind', from, to, places, files,
     ask: places.filter((place) => from === null ? !kept.some((one) => one.from === place.path) : !isUnder(place.path, from)),
     kept,
   };

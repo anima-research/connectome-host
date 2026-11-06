@@ -651,7 +651,7 @@ export function setup(options: SetupOptions): void {
   if (binding !== null && bindShape !== null) {
     const nested = nestedWithRoot(rootReal, [
       ...given === null ? (recorded ?? []).map((was, at): [string, string] => [was, extraState[at]!]) : [],
-      ...boundFiles(root).flatMap((file) => file.paths.map((was): [string, string | null] => [was, mapPath(was, bindShape)])),
+      ...binding.files.flatMap((file) => file.paths.map((was): [string, string | null] => [was, mapPath(was, bindShape)])),
     ]);
     if (nested !== null) {
       const { was, place, real } = nested;
@@ -771,7 +771,7 @@ export function setup(options: SetupOptions): void {
   let command: { path: string; pathLine: string | null };
   if (binding !== null) {
     const plan = newPlan(binding.from, binding.to, bindPlaces, written);
-    const files = boundFiles(root);
+    const files = binding.files;
     const rewrite = changesFiles(plan, files);
     const locked = binding.from !== null || rewrite || bindPlaces.some((place) => place.from !== place.to);
     if (locked) lockForBinding(root, binding.from, ops);
@@ -779,8 +779,7 @@ export function setup(options: SetupOptions): void {
       if (locked) {
         const now = boundFiles(root);
         if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
-          !sameFiles(now, files) || now.some((file) => file.paths.some((path) => mapPath(path, plan) === null)) ||
-          readPlan(root) !== null) {
+          !sameFiles(now, files) || readPlan(root) !== null) {
           throw new ContractError(CHANGED_MEANWHILE);
         }
       }
