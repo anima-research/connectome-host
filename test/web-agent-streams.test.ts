@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   applyStreamEnded, applyTrace, conversationAgentOf, pickStreamSource, streamEventFor, toolCallState, treesShownFor,
-  UndoneMarksRefresh, type TraceViewHooks,
+  WindowFrames, type ShownPanels, type TraceViewHooks,
 } from '../src/web/agent-streams.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 
@@ -17,7 +17,6 @@ function recorder() {
     onOpsAlert: () => { calls.push('alert'); },
     onOperatorAction: () => { calls.push('operator'); },
     requestHostMode: () => { calls.push('host-mode'); },
-    onWindowUndone: (agent) => { calls.push(`window-undone:${agent ?? '-'}`); },
   };
   return { calls, hooks };
 }
@@ -140,51 +139,104 @@ describe('the other traces the page reads', () => {
     expect(calls).toEqual(['alert', 'operator', 'host-mode']);
   });
 
-  // DQ-4: an undo or a redo on a window refreshes the panels built from it,
-  // whichever agent's window it was (a panel can show another agent's).
-  test("an undo or a redo on any agent's window, for the panels built from it", () => {
+  test("an undo's or a redo's trace is no stream's and no host state's", () => {
     const { calls, hooks } = recorder();
     applyTrace({ type: 'window:undone', agentName: 'clerk', retracted: 2 }, hooks, 'clerk');
-    applyTrace({ type: 'window:undone', agentName: 'mira', retracted: 0, represented: 1 }, hooks, 'clerk');
-    expect(calls).toEqual(['window-undone:clerk', 'window-undone:mira']);
+    expect(calls).toEqual([]);
   });
 });
 
-// Host #485 bot review wave 2, finding 20: the host sends an undone-marks
-// frame right after the conversation agent's window:undone trace, and both
-// read the window's panels again, so an undo read each twice.
-describe("an undone-marks frame reads the window's panels again", () => {
+// DQ-4: an undo, a redo or a shed on a window reads the panels built from it
+// again. The page's handleServerMessage hands WindowFrames every frame.
+describe("the frames that move a window, and the panels' reads", () => {
   const undone = (agentName: string) => ({ type: 'trace', event: { type: 'window:undone', agentName, retracted: 1 } });
-  const marks = (agent: string) => ({ type: 'undone-marks', agent, fromIndex: 0, undone: [] });
+  const marks = (agent: string, ids: string[] = []) => ({ type: 'undone-marks', agent, fromIndex: 0, undone: ids });
+  const child = (childName: string, event: Record<string, unknown>) => ({ type: 'child-event', childName, event });
+  const local: ShownPanels = { scope: 'local', agent: 'clerk' };
+  function frames() {
+    const calls: string[] = [];
+    const taker = new WindowFrames();
+    const take = (msg: { type: string; [k: string]: unknown }, shown: ShownPanels = local) => taker.take(msg, shown, {
+      applyUndoneMarks: (m) => { calls.push(`marks:${m.agent}:${m.undone.join(',')}`); },
+      readPanels: () => { calls.push('read'); },
+    });
+    return { calls, take };
+  }
 
-  test("not right after its agent's window:undone trace, which read them already", () => {
-    const refresh = new UndoneMarksRefresh();
-    expect(refresh.take(undone('clerk'))).toBe(false);
-    expect(refresh.take(marks('clerk'))).toBe(false);
+  // Host #485 bot review wave 2, finding 20: the host sends an undone-marks
+  // frame right after the conversation agent's window:undone trace, and both
+  // read the window's panels again, so an undo read each twice.
+  test("an undo reads them once: at its trace, and not at the marks frame right after it, which marks the transcript", () => {
+    const { calls, take } = frames();
+    take(undone('clerk'));
+    take(marks('clerk', ['a1']));
+    expect(calls).toEqual(['read', 'marks:clerk:a1']);
   });
 
-  test("for a shed, which has no trace, and for a later one after an undo's", () => {
-    const refresh = new UndoneMarksRefresh();
-    expect(refresh.take(marks('clerk'))).toBe(true);
-    refresh.take(undone('clerk'));
-    refresh.take(marks('clerk'));
-    expect(refresh.take(marks('clerk'))).toBe(true);
+  test("a shed's marks frame, which has no trace, reads them, and so does a later one after an undo's", () => {
+    const { calls, take } = frames();
+    take(marks('clerk', ['x3']));
+    take(undone('clerk'));
+    take(marks('clerk'));
+    take(marks('clerk', ['x4']));
+    expect(calls).toEqual(['marks:clerk:x3', 'read', 'read', 'marks:clerk:', 'marks:clerk:x4', 'read']);
   });
 
-  test("after another agent's trace, or with another frame between its agent's trace and it", () => {
-    const refresh = new UndoneMarksRefresh();
-    refresh.take(undone('mira'));
-    expect(refresh.take(marks('clerk'))).toBe(true);
-    refresh.take(undone('clerk'));
-    refresh.take({ type: 'usage' });
-    expect(refresh.take(marks('clerk'))).toBe(true);
+  test("a marks frame with another frame between its agent's trace and it reads them", () => {
+    const { calls, take } = frames();
+    take(undone('clerk'));
+    take({ type: 'usage' });
+    take(marks('clerk'));
+    expect(calls).toEqual(['read', 'marks:clerk:', 'read']);
   });
 
-  test('and no other frame does', () => {
-    const refresh = new UndoneMarksRefresh();
-    expect(refresh.take(undone('clerk'))).toBe(false);
-    expect(refresh.take({ type: 'trace', event: { type: 'inference:started', agentName: 'clerk' } })).toBe(false);
-    expect(refresh.take({ type: 'welcome' })).toBe(false);
+  // nissa's second reading of the #485 wave-2 answer, point 2: the panels ask
+  // by scope alone, so they show the conversation agent's window locally,
+  // and another resident's undo read them again for nothing.
+  test("another resident's or a subagent's undo reads nothing", () => {
+    const { calls, take } = frames();
+    take(undone('mira'));
+    take(undone('spawn-research-1'));
+    expect(calls).toEqual([]);
+  });
+
+  // Host #485 bot review wave 3, finding 18: a fleet child's undo or shed
+  // reached the page only as a child-event, which read nothing, so the
+  // child's panels stayed stale.
+  test("a fleet child's undo or shed reads its panels, for the agent they answer for", () => {
+    const { calls, take } = frames();
+    const miner: ShownPanels = { scope: 'miner', agent: 'digger' };
+    take(child('miner', { type: 'window:undone', agentName: 'digger', retracted: 1 }), miner);
+    take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r1'], reason: 'shed' }), miner);
+    expect(calls).toEqual(['read', 'read']);
+    take(child('miner', { type: 'window:undone', agentName: 'sifter', retracted: 1 }), miner);
+    take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r2'], reason: 'hide' }), miner);
+    take(child('smelter', { type: 'window:undone', agentName: 'digger', retracted: 1 }), miner);
+    take(child('miner', { type: 'inference:started', agentName: 'digger' }), miner);
+    expect(calls).toEqual(['read', 'read']);
+  });
+
+  test("before a fleet child's panels name their agent, any of its agents' undo reads them", () => {
+    const { calls, take } = frames();
+    take(child('miner', { type: 'window:undone', agentName: 'sifter', retracted: 1 }), { scope: 'miner', agent: undefined });
+    expect(calls).toEqual(['read']);
+  });
+
+  test("a frame for a scope the panels don't show reads nothing, and still marks the transcript", () => {
+    const { calls, take } = frames();
+    const miner: ShownPanels = { scope: 'miner', agent: 'clerk' };
+    take(undone('clerk'), miner);
+    take(marks('clerk', ['a1']), miner);
+    take(child('miner', { type: 'window:undone', agentName: 'clerk', retracted: 1 }), local);
+    expect(calls).toEqual(['marks:clerk:a1']);
+  });
+
+  test('and no other frame does anything', () => {
+    const { calls, take } = frames();
+    take({ type: 'trace', event: { type: 'inference:started', agentName: 'clerk' } });
+    take({ type: 'trace', event: { type: 'presentation:retracted', agentName: 'clerk', reason: 'shed' } });
+    take({ type: 'welcome' });
+    expect(calls).toEqual([]);
   });
 });
 

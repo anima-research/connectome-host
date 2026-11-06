@@ -20,9 +20,11 @@
  * the slot it lands in: on a residents' host, every resident. So each such
  * write is listed too, as a row meant for every one of them (each
  * EventResponse's `addMessages` is listed, with whom its request names); a
- * row about one agent's work names that agent. A `forAgent` under a
- * conditional (`?:`) is listed as well: the row names no agent when the
- * condition fails.
+ * row about one agent's work names that agent. A write whose target (its
+ * fourth argument) holds `forAgent` other than as an object literal's own
+ * property (under a `?:`, an `&&` or an `||`, or in a spread) is listed as
+ * well: on some path the row names no agent. A `forAgent` in another
+ * argument names no one.
  *
  * The scan reads each source file under src/ as Bun transpiles it, so
  * comments and types are gone, with the text of its string literals,
@@ -179,13 +181,30 @@ function topLevelArguments(args: string): string[] {
 }
 
 /** Whom a module context's addMessage names for its row, read from its
- *  arguments: no agent (`none`) without a `forAgent`; `conditional` when the
- *  argument that holds it holds a `?:`, so the row names no agent when the
- *  condition fails; otherwise `named`. */
+ *  target, the fourth argument (a `forAgent` in another, the metadata say,
+ *  names no one): no agent (`none`) when it doesn't mention `forAgent`;
+ *  `named` when it is an object literal with `forAgent` as one of its own
+ *  properties, whatever its value; otherwise `conditional`, as for
+ *  `name ? { forAgent: name } : undefined`, `{ ...(ok && { forAgent }) }`
+ *  or `ok || { forAgent }`, whose row names no agent on some path. */
 function targetOf(args: string): 'named' | 'none' | 'conditional' {
-  const target = topLevelArguments(args).find((arg) => /\bforAgent\b/.test(arg));
-  if (target === undefined) return 'none';
-  return /(?<!\?)\?(?![.?])/.test(target) ? 'conditional' : 'named';
+  const target = topLevelArguments(args)[3]?.trim();
+  if (target === undefined || !/\bforAgent\b/.test(target)) return 'none';
+  if (!isObjectLiteral(target)) return 'conditional';
+  const own = topLevelArguments(target.slice(1, -1)).some((property) => /^\s*forAgent\b\s*(:|$)/.test(property));
+  return own ? 'named' : 'conditional';
+}
+
+/** Whether `code` is one object literal: a `{` whose matching `}` ends it,
+ *  not `{ … } || { … }`. */
+function isObjectLiteral(code: string): boolean {
+  if (!code.startsWith('{')) return false;
+  let depth = 0;
+  for (let i = 0; i < code.length; i++) {
+    if ('([{'.includes(code[i]!)) depth++;
+    else if (')]}'.includes(code[i]!) && --depth === 0) return i === code.length - 1;
+  }
+  return false;
 }
 
 /** A module context's addMessage, which the framework stamps for whom its target names. */
@@ -314,10 +333,16 @@ describe('direct context writes', () => {
       "ctx.addMessage('user', [{ type: 'text', text: 'a ) in a string' }]);",
       "ctx.addMessage('user', [{ type: 'text', text: 'not { forAgent: name }' }]);",
       "ctx.addMessage('user', [{ type: 'text', text: ok ? 'yes' : 'no' }], {}, { forAgent: name ?? 'clerk' });",
+      // Host #485 bot review wave 3, finding 33: these two read `named`.
+      "ctx.addMessage('user', [], {}, { ...(ok && { forAgent: name }) });",
+      "ctx.addMessage('user', [], { forAgent: name });",
+      "ctx.addMessage('user', [], {}, { channel: 'c', forAgent: name });",
+      "ctx.addMessage('user', [], {}, ok || { forAgent: name });",
+      "ctx.addMessage('user', [], {}, { channel: 'c' } && { forAgent: name });",
       '} }',
     ].join('\n'));
     const calls = [...code.matchAll(CALL)].map((match) => targetOf(argumentsAt(code, match.index! + match[0].length)));
-    expect(calls).toEqual(['none', 'named', 'conditional', 'conditional', 'none', 'none', 'named']);
+    expect(calls).toEqual(['none', 'named', 'conditional', 'conditional', 'none', 'none', 'named', 'conditional', 'none', 'named', 'conditional', 'conditional']);
   });
 
   test('the scan finds a direct write and a branch move by their receivers, and passes a module context and the framework', () => {

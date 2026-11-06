@@ -4,7 +4,10 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-type Step = { frame: string; aborts: string[]; mountRefreshes: string[] };
+/** src/tui.ts's colour for a line an undo or a shed took out. */
+const DIM_GRAY = '#555555';
+
+type Step = { frame: string; aborts: string[]; mountRefreshes: string[]; colours: Record<string, string> };
 
 async function play(scenario: string): Promise<Map<string, Step>> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tui-turns-')));
@@ -29,8 +32,8 @@ async function play(scenario: string): Promise<Map<string, Step>> {
     expect(stdout).toContain('TUI_DONE');
     const steps = new Map<string, Step>();
     for (const [, json] of stdout.matchAll(/TUI_STEP (\{[^\n]*\})/g)) {
-      const { step, frame, aborts, mountRefreshes } = JSON.parse(json);
-      steps.set(step, { frame, aborts, mountRefreshes });
+      const { step, frame, aborts, mountRefreshes, colours } = JSON.parse(json);
+      steps.set(step, { frame, aborts, mountRefreshes, colours });
     }
     return steps;
   } finally {
@@ -298,6 +301,25 @@ describe("the TUI's history after an undo", () => {
     expect(frameAt('undone').indexOf('(undone) a fifth ledger')).toBeGreaterThan(frameAt('undone').indexOf('You: and the fifth?'));
     expect(times(frameAt('undone'), 'You: and the fifth?')).toBe(1);
     expect(frameAt('undone')).toMatch(/\(undone\) \d\d:\d\d You: and the fifth\?/);
+    // Both are marked above the line written after them, which is no row's
+    // (#485 bot review 3, finding 31): marked in place, not drawn again at
+    // the bottom.
+    const failedTool = frameAt('undone').indexOf('the beads stuck');
+    expect(failedTool).toBeGreaterThan(-1);
+    expect(frameAt('undone').indexOf('(undone) a fifth ledger')).toBeLessThan(failedTool);
+    expect(frameAt('undone').search(/\(undone\) \d\d:\d\d You: and the fifth\?/)).toBeLessThan(failedTool);
+    // The marked lines are dimmed, and each takes its colour back at the
+    // redo (finding 30): the history's reply and thinking, the streamed
+    // reply and the operator's message.
+    const colours = (name: string) => steps.get(name)!.colours;
+    expect(Object.keys(colours('undone')).sort()).toEqual(['You: and the fifth?', 'a fifth ledger', 'tally them first', 'three ledgers']);
+    for (const words of Object.keys(colours('undone'))) {
+      expect(colours('undone')[words], words).toBe(DIM_GRAY);
+      expect(colours('redone')[words], words).not.toBe(DIM_GRAY);
+    }
+    expect(colours('redone')['three ledgers']).toBe(colours('history')['three ledgers']);
+    expect(colours('redone')['tally them first']).toBe(colours('history')['tally them first']);
+    expect(colours('redone')['a fifth ledger']).toBe(colours('history')['three ledgers']);
     // A row stored after the history was drawn that the TUI drew no line
     // for is drawn below while undone, and taken down at the redo.
     expect(frameAt('undone').indexOf('(undone) a sixth ledger')).toBeGreaterThan(frameAt('undone').indexOf('(undone) a fifth ledger'));

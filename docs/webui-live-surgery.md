@@ -33,7 +33,10 @@ hide them by Discord message id), and rows stored before the message was
 shown and shown after it stay in the record, out of the context until the
 agent's next turn starts, or the host restarts before then
 (`returnedToArrivals`). Neither is counted in
-`messagesRemoved` or marked.
+`messagesRemoved` or marked. A row another resident stored after the
+message and before that write stays on the new branch too, and is in
+neither count, since it isn't the agent's: the record holds every
+resident's rows, and the cut is by sequence.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
 queued. The dialog then offers **Quiesce, then retry**.
@@ -121,7 +124,8 @@ An undo or a redo on the conversation agent's window (`/undo`, `/redo`, the
 `window:undone` trace) moves no branch, and the transcript still shows the
 record. A transcript entry whose row is out of the window as an undone
 turn's carries `undone: true` (the welcome, history pages): an undo (which
-`/redo` puts back until the agent's next turn or a branch move) or a shed
+`/redo` puts back until the agent's next turn, a branch move or a restart:
+agent-framework keeps the redo in memory only) or a shed
 after a refusal or failed inference (which it doesn't) takes rows out that
 way. After each `window:undone` trace, and
 each shed from that window (`presentation:retracted`, reason `shed`), the

@@ -459,6 +459,8 @@ export interface PinsSnapshotData {
   levelHonored: boolean;
   deepestLevel?: number;
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 function pinnableCm(app: PanelAppRef, agentName: string): {
@@ -533,7 +535,7 @@ export function buildPinsSnapshot(
     pinsSupported: supported,
     levelHonored,
     ...(deepestLevel !== undefined ? { deepestLevel } : {}),
-    ...(opts.withCandidates ? { candidates: buildPinCandidates(app, agentName) } : {}),
+    ...(opts.withCandidates ? buildPinCandidates(app, agentName) : {}),
   };
 }
 
@@ -547,28 +549,32 @@ export function buildPinsSnapshot(
  * stored arrival the agent's window doesn't hold yet (status 'out'), which
  * enters it at the agent's next turn, are candidates. A message stored in
  * parts (context-manager's shards of one body) is one candidate, as it is one
- * row in the transcript: its first part's id, with the parts' text joined. A
- * pin on any part of it covers the whole message.
+ * row in the transcript: its first part's id, with the parts' text joined,
+ * the first part included when the last 200 rows start after it. A pin on
+ * any part of it covers the whole message. A read that fails gives its
+ * reason, not an empty list, so the picker doesn't say there are none.
  */
 function buildPinCandidates(
   app: PanelAppRef,
   agentName: string,
-): Array<{ id: string; index: number; participant: string; text: string }> {
+): Pick<PinsSnapshotData, 'candidates' | 'candidatesError'> {
   try {
     const agent = app.framework.getAgent(agentName);
     const cm = agent?.getContextManager() as unknown as {
       getMessageCount?: () => number;
       getMessageWindow?: (
-        offset: number, limit: number, opts?: { resolveBlobs?: boolean },
+        offset: number, limit: number, opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
       ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown } & BodyShard>; startIndex: number };
       windowStatusOf?: (id: string) => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
-      return [];
+      return { candidates: [] };
     }
     const total = cm.getMessageCount();
     const start = Math.max(0, total - PIN_CANDIDATE_LIMIT);
-    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false });
+    // Rows that start inside a message stored in parts reach back to its
+    // first part, as the transcript's pages do.
+    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false, alignToBodyGroups: true });
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
     const textOf = (content: unknown): string => {
       if (typeof content === 'string') return content;
@@ -600,9 +606,10 @@ function buildPinCandidates(
         text: text.slice(0, PIN_CANDIDATE_TEXT_CAP),
       });
     }
-    return out;
-  } catch {
-    return [];
+    return { candidates: out };
+  } catch (err) {
+    console.warn(`[pins] couldn't read ${agentName}'s pin candidates:`, err);
+    return { candidatesError: err instanceof Error ? err.message : String(err) };
   }
 }
 

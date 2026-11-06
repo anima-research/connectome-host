@@ -19,6 +19,8 @@ export interface PinsState {
   levelHonored: boolean;
   deepestLevel?: number;
   candidates?: PinCandidate[];
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 /**
@@ -263,9 +265,11 @@ export function PinsPanel(props: {
                      font-mono text-[10px] text-neutral-100" />
             <Show when={candidates().length === 0}>
               <div class="text-[10px] text-neutral-600 italic">
-                {filter().trim()
-                  ? 'No pinnable message matches the filter.'
-                  : "No pinnable messages among the record's last 200 rows."}
+                {props.state?.candidatesError
+                  ? `The record's last 200 rows couldn't be read: ${props.state.candidatesError}`
+                  : filter().trim()
+                    ? 'No pinnable message matches the filter.'
+                    : "No pinnable messages among the record's last 200 rows."}
               </div>
             </Show>
             <div class="max-h-64 overflow-y-auto border border-neutral-800 rounded">

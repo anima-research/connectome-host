@@ -9,6 +9,7 @@
  * one: it enters the window at the agent's next turn.
  */
 import { describe, expect, test } from 'bun:test';
+import { bodyStart, type BodyShard } from '@animalabs/context-manager';
 import { buildPinsSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 
 function appOver(
@@ -18,7 +19,12 @@ function appOver(
 ): PanelAppRef {
   const cmFor = (agent: string) => ({
     getMessageCount: () => rows.length,
-    getMessageWindow: (offset: number, limit: number) => ({ messages: rows.slice(offset, offset + limit), startIndex: offset }),
+    // context-manager's getMessageWindow: `alignToBodyGroups` walks the start
+    // back to the first part of a message stored in parts.
+    getMessageWindow: (offset: number, limit: number, opts?: { alignToBodyGroups?: boolean }) => {
+      const start = opts?.alignToBodyGroups ? bodyStart((i) => rows[i] as BodyShard, offset) : offset;
+      return { messages: rows.slice(start, offset + limit), startIndex: start };
+    },
     windowStatusOf: (id: string) => statusOf(agent, id),
     listPins: () => [],
     pinRange: () => 'pin-1',
@@ -93,5 +99,36 @@ describe("a pins snapshot's candidates", () => {
       ['q0', 4, 'The ferry leaves at noon, and the bridge is closed.'],
       ['m2', 7, 'noted'],
     ]);
+  });
+
+  // Host #485 bot review wave 3, finding 7: the record's last 200 rows began
+  // at p1, so the picker listed p1 with only the rest of the text.
+  test('list a message the last 200 rows start inside by its first part, with its whole text', () => {
+    const part = (id: string, text: string, shardIndex: number) =>
+      ({ ...say(id, 'user', text), bodyGroupId: 'g1', shardIndex });
+    const filler = Array.from({ length: 199 }, (_, i) => say(`f${i}`, 'clerk', `row ${i}`));
+    const rows = [
+      say('m1', 'user', 'read this'),
+      part('p0', 'The ferry leaves ', 0),
+      part('p1', 'at noon, ', 1),
+      ...filler,
+    ];
+    expect(rows.length - 200).toBe(2); // the 200 rows start at p1
+    const app = appOver(rows, () => 'in', ['clerk']);
+    const candidates = buildPinsSnapshot(app, 'clerk', { withCandidates: true }).candidates!;
+    expect(candidates[0]).toEqual({ id: 'p0', index: 1, participant: 'user', text: 'The ferry leaves at noon, ' });
+    expect(candidates.length).toBe(200);
+  });
+
+  // Host #485 bot review wave 3, finding 20: a read that failed came back as
+  // an empty list, and the picker said the last 200 rows held no pinnable
+  // message.
+  test("are absent, with the reason, when the record can't be read", () => {
+    const app = appOver([say('m1', 'user', 'count the ledgers')], () => {
+      throw new Error('the window index is unreadable');
+    }, ['clerk']);
+    const snapshot = buildPinsSnapshot(app, 'clerk', { withCandidates: true });
+    expect(snapshot.candidates).toBeUndefined();
+    expect(snapshot.candidatesError).toBe('the window index is unreadable');
   });
 });

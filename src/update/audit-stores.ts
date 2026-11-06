@@ -32,7 +32,7 @@ import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport 
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
 import { fleetChildDataDir, fleetChildEnv, spawnErrorText } from '../modules/fleet-module.js';
-import { DEFAULT_RECIPE, loadRecipeDetailed, loadSavedRecipe, recipeModel, type Recipe } from '../recipe.js';
+import { DEFAULT_RECIPE, loadRecipeDetailed, loadSavedRecipe, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
 import { SessionManager } from '../session-manager.js';
 import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
@@ -594,13 +594,20 @@ const MODEL_CALLED = 'its strategy called a model while opening it, and the audi
 
 type RecipeRead = { recipe: Recipe | null } | { error: unknown };
 
+/** The recipe the directory's start would load: `source`, or the one saved
+ *  in it. A refusal names the file, which for a saved recipe is a hidden
+ *  one (.recipe.json), unless its own words name it already. */
 async function readRecipe(dataDir: string, source: string | undefined): Promise<RecipeRead> {
   try {
     return source !== undefined
       ? { recipe: (await loadRecipeDetailed(source, { fetchSystemPrompt: false })).recipe }
       : { recipe: await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }) };
   } catch (error) {
-    return { error };
+    const path = source ?? savedRecipePath(dataDir);
+    const said = oneLine(error);
+    if (said.includes(path)) return { error };
+    const file = source !== undefined ? `its recipe, ${path},` : `its saved recipe, ${path},`;
+    return { error: new Error(`${file} can't be loaded: ${said}`, { cause: error }) };
   }
 }
 

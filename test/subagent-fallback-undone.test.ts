@@ -120,4 +120,28 @@ describe("a tool-only run's answer", () => {
     };
     expect(await answerOf(run)).toBe('It is in src/.');
   }, 20_000);
+
+  // Host #485 bot review wave 3, finding 24: every run above presents its
+  // window, so neither of these paths was run.
+  /** A run that stores a text turn and then a tool call, on `cm` as `prepare` leaves it, presenting nothing. */
+  const storedOnly = (prepare: (cm: ContextManager) => void): Run => async (agent, cm) => {
+    prepare(cm);
+    cm.addMessage('user', text('Find the config file.') as never);
+    cm.addMessage(agent.name, text('It is in src/.') as never);
+    cm.addMessage(agent.name, [{ type: 'tool_use', id: 'tu-1', name: 'look', input: {} }] as never);
+    cm.addMessage('user', [{ type: 'tool_result', toolUseId: 'tu-1', content: 'ok' }] as never);
+    return { speech: '', toolCallsCount: 1 };
+  };
+
+  test('is the newest text turn on a legacy window, where the window is the record', async () => {
+    expect(await answerOf(storedOnly((cm) => {
+      expect(cm.windowMode()).toBe('legacy');
+    }))).toBe('It is in src/.');
+  }, 20_000);
+
+  test('is the newest text turn from a context manager without windowStatusOf', async () => {
+    expect(await answerOf(storedOnly((cm) => {
+      (cm as unknown as { windowStatusOf?: unknown }).windowStatusOf = undefined;
+    }))).toBe('It is in src/.');
+  }, 20_000);
 });

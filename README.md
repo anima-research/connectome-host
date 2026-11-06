@@ -942,7 +942,7 @@ headless socket.
 | `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
 | `/redo` | Put the turn `/undo` took out back in the agent's window |
 | `/checkpoint [name]` | Save the record's position: its last row, an undone one included (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts the turn back); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts back the agent's latest undo, which holds that turn only if that undo took it out); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
@@ -969,10 +969,15 @@ while any agent sharing the store is mid-turn, the subconscious included, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy
 changes meanwhile, the summary can't be written: it stores nothing, and its
-answer says why. If a turn of the agent starts, rows enter the agent's
-window (a whole turn, or another `/newtopic`'s transition), or the session is
-switched or the host stops, meanwhile, it stores nothing, and its answer
-gives the summary it wrote, to pass as `/newtopic <text>`.
+answer says why. If a turn of the agent starts, rows enter or leave the
+agent's window (a whole turn, another `/newtopic`'s transition, an undo, a
+redo or a shed), or the session is switched or the host stops, meanwhile, it
+stores nothing. Its answer says which: rows entered the window, left it,
+both, or left it and entered it again (an undo and its redo). It gives the
+summary it wrote back as one `/newtopic …` line to run, its line breaks
+folded to spaces, which every input mode takes whole (the readline and piped
+modes read each line as its own input). A `/newtopic <text>` on several
+lines needs the TUI or the Web UI, which send a pasted text whole.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the

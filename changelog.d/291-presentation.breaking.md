@@ -62,7 +62,10 @@
     and the Surgery panel's log summarizes a rollback's and a checkout's.
     `/branchto` says everything after the message was dropped only when the
     cut took every row stored after it, and otherwise how many it took: a
-    co-resident's row stored before the message was shown stays too.
+    co-resident's row stored before the message was shown stays too. The
+    Web UI's rollback dialog and its roll-back buttons say the fork is at
+    that write on a presented window, and that such a row stays on the
+    fork, in neither count, where they said the fork was at the message.
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
@@ -78,16 +81,27 @@
     no line for, past the scrollback cap too, until a redo puts it back, but
     not one whose lines `/clear` or the scrollback cap took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again, once, at each undo, redo or shed. A figure
+    pins) read the window again, once, at each undo, redo or shed on the
+    window of the agent they show, which they ask for by scope alone: the
+    conversation agent's, or a fleet child's agent that its pins or
+    settings answer named (any of the child's agents before one has), and
+    not another resident's or a subagent's. A figure
     that comes back after a newer read of it started is dropped, and the
     coverage panel's five-second poll starts no read while one is pending,
-    where a read slower than the poll had another started at each tick. The
-    local pin picker lists the host's candidates, the record's last 200
-    rows, as a fleet child's does, where it listed the rows the transcript
-    had loaded; it leaves out undone rows and rows stamped for other
-    residents only. A message stored in parts is one candidate, by its first
-    part with the parts' text joined, as it is one row in the transcript,
-    where a fleet child's picker listed each part.
+    where a read slower than the poll had another started at each tick; a
+    coverage read that has gone 30 seconds unanswered fails, and the next
+    tick starts one. The local pin picker lists the host's candidates, the
+    record's last 200 rows, as a fleet child's does, where it listed the
+    rows the transcript had loaded; it leaves out undone rows and rows
+    stamped for other residents only. A message stored in parts is one
+    candidate, by its first part with the parts' text joined, as it is one
+    row in the transcript, where a fleet child's picker listed each part,
+    and the 200 rows reach back to its first part when they start inside
+    it. A picker whose candidates couldn't be read says so and why, where it
+    said the record's last 200 rows held no pinnable message. The Web UI's
+    transcript shows one text ingested twice, each time stored in parts, as
+    two rows, each marked by its own first part, where it joined both into
+    one row, marked as the first ingestion was.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,
@@ -99,8 +113,10 @@
   agent's window, which names each row of the transcript's record that an
   undo or a shed took out of that window (status `undone`), from `fromIndex`
   0, as a welcome's and a history page's entries mark them (`undone: true`).
-  `undo:completed` and `redo:completed`
-  are gone, with agent-framework's branch-moving undo.
+  Building it asks the status only of the rows out of that window, where it
+  asked every row of the record, on the host's event loop, at each undo,
+  redo or shed. `undo:completed` and `redo:completed` are gone, with
+  agent-framework's branch-moving undo.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next

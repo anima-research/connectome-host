@@ -13,7 +13,8 @@
  *   written, so the head window starts at a row the window holds, and
  *   never stored while a turn of the agent is alive: /newtopic is refused
  *   then, and a bare /newtopic during whose summary a turn started, or rows
- *   entered the agent's window, stores nothing and gives the summary back;
+ *   entered the agent's window or left it, stores nothing and gives the
+ *   summary back;
  * - a subagent's seed rows (its orientation and task, or a fork's copy of
  *   its parent's context) are the child's own rows, in its window once its
  *   run takes it on;
@@ -22,8 +23,9 @@
  *   whose launcher has ended is written for the nearest listed agent above
  *   the launcher, else for the primary, and wakes nobody.
  *
- * Each runs a real AgentFramework (test/presented-host.ts) and reads the
- * agents' windows and the requests the provider receives.
+ * Each runs a real AgentFramework (test/presented-host.ts). Most read the
+ * agents' windows and the requests the provider receives; the refusal cases
+ * (a strategy change, a branch move) read the answer and the stored rows.
  */
 import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { audienceOf } from '@animalabs/agent-framework';

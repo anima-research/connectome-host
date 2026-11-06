@@ -1205,10 +1205,13 @@ export interface RecipeModules {
    * the host mirrors the agent's streaming generation — chunks, block
    * boundaries, activation start/end, tagged with the turn's channel — to
    * the relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak
-   * it. Also handles the relay's `interruption` events: the just-posted
-   * Discord message is edited down to the words actually voiced, and a note
-   * lands in the agent's context. `token` should be `${VAR}`-substituted
-   * from .env, never literal.
+   * it. Also handles the relay's `interruption` events: the published
+   * Discord message the heard words match is edited down to them, and a
+   * note lands in the context of the agent voiced, when one agent can be
+   * named (`notifyOnInterruption`, default on). Nothing is edited when no
+   * message matches, or when the words also start what another agent voiced
+   * after it. `token` should be `${VAR}`-substituted from .env, never
+   * literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
