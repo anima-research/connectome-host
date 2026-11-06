@@ -269,6 +269,20 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('token <MY_TOKEN>\n');
   });
 
+  test('a secret a dotenv file beside .env gives through a name it sets later, or with an escaped $, is shown by its name in a command\'s output, as Bun gives it', async () => {
+    const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n' });
+    writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=${LATER}-token\nLATER=later-value\nPRICE=five\\$a-share\n');
+    const answer = await run(module, 'echo "later-value-token five\\$a-share"');
+    expect(answer.stdout.text).toBe('<MY_TOKEN> <PRICE>\n');
+  });
+
+  test('a stored secret a command changes in .env and prints in that same command is shown by its name', async () => {
+    const { module } = install({ envFile: 'DISCORD_TOKEN="old-token-value"\n' });
+    listSecrets(module, 'DISCORD_TOKEN');
+    const answer = await run(module, 'printf \'DISCORD_TOKEN="new-token-value"\\n\' > .env; cat .env');
+    expect(answer.stdout.text).toBe('DISCORD_TOKEN="<DISCORD_TOKEN>"\n');
+  });
+
   linuxTest('stops a command at its limit with every process in its group, says so, and answers', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'child.pid');

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { lstatSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
@@ -116,9 +117,7 @@ function envAssignments(path: string): Assignment[] {
 }
 
 // Bun 1.4.4 reads, from the directory it starts in, .env.<mode>.local, .env.local (not under test), .env.<mode> and
-// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise. A name the
-// environment or an earlier file gives keeps that value, and within a file a later line takes an earlier one's place.
-// It puts in $NAME and ${NAME}, quoted or not, from what it has so far, or nothing, and reads \$ as $ (probed).
+// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise.
 const DOTENV_MODES = ['development', 'production', 'test'] as const;
 
 function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
@@ -143,27 +142,40 @@ export function dotenvNames(dir: string): string[] {
   return [...names];
 }
 
-/** Each value Bun can give a name from a directory's dotenv files, in any mode, with `env` as the environment it
- *  starts with: a name `env` gives takes none from the files. */
+const READ_LIMIT_MS = 10_000;
+
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
+  const names = dotenvNames(dir).filter((name) => env[name] === undefined);
+  if (names.length === 0) return values;
+  const given: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined && name !== 'BUN_OPTIONS') given[name] = value;
   for (const mode of DOTENV_MODES) {
-    const has = new Map<string, string>();
-    for (const [name, value] of Object.entries(env)) if (value !== undefined) has.set(name, value);
-    const fixed = new Set(has.keys());
-    for (const file of dotenvFiles(mode)) {
-      const ours = new Set<string>();
-      for (const { name, value } of dotenvAssignments(dir, file)) {
-        if (fixed.has(name)) continue;
-        has.set(name, value.replace(/\\\$|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
-          (whole, braced?: string, bare?: string) => (whole === '\\$' ? '$' : has.get(braced ?? bare!) ?? '')));
-        ours.add(name);
-      }
-      for (const name of ours) {
-        fixed.add(name);
-        if (!values.has(name)) values.set(name, new Set());
-        values.get(name)!.add(has.get(name)!);
-      }
+    // --config=/dev/null: a bunfig.toml in the directory would otherwise run its preload here.
+    const ran = spawnSync(process.execPath, ['--config=/dev/null', '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+      cwd: dir, env: { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024,
+    });
+    if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      throw new Error(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
+    }
+    if (ran.error || ran.status !== 0) {
+      const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);
+      const how = ran.error ? ran.error.message : ran.status === null ? `killed by ${ran.signal}` : `exit ${ran.status}`;
+      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}${last ? `: ${last}` : ''})`);
+    }
+    let read: Record<string, unknown> | null = null;
+    try {
+      read = JSON.parse(ran.stdout) as Record<string, unknown> | null;
+    } catch {
+    }
+    if (read === null || typeof read !== 'object') {
+      throw new Error(`Bun's reading of the dotenv files in ${dir} gave output setup can't read`);
+    }
+    for (const name of names) {
+      const value = read[name];
+      if (typeof value !== 'string') continue;
+      if (!values.has(name)) values.set(name, new Set());
+      values.get(name)!.add(value);
     }
   }
   return values;
