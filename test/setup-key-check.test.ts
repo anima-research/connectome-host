@@ -533,15 +533,18 @@ describe('the check and the agent\'s client', () => {
     try {
       const outcomes = await Promise.all(Object.keys(STREAMS).map(async (choice) => {
         const baseURL = `http://127.0.0.1:${stubs.port}/${choice}`;
-        const check = await checkKey({ key: 'k', model: 'm', baseUrl: baseURL, timeoutMs: 3_000 });
+        const checked = await checkKey({ key: 'k', model: 'm', baseUrl: baseURL, timeoutMs: 3_000 });
+        const check = checked.ok ? true : checked.cause.includes('didn\'t answer within') ? 'timed out' : false;
         const adapter = new AnthropicAdapter({ apiKey: 'k', baseURL, cacheKeepalive: { enabled: false } });
         const reads = await Promise.race([
           adapter.stream({ model: 'm', maxTokens: 1, messages: [{ role: 'user', content: 'ok' }] } as never,
             { onChunk: () => {}, onContentBlock: () => {} } as never, {} as never).then(() => true, () => false),
-          Bun.sleep(4_000).then(() => false),
+          Bun.sleep(4_000).then(() => 'timed out' as const),
         ]);
-        return { choice, check: check.ok, reads };
+        return { choice, check, reads };
       }));
+      const late = outcomes.filter((each) => !(each.choice in EDGE) && (each.check === 'timed out' || each.reads === 'timed out'));
+      expect(late, `timed out, so these streams weren't compared: ${JSON.stringify(late)}`).toEqual([]);
       expect(outcomes.filter((each) => each.check !== each.reads), JSON.stringify(outcomes)).toEqual([]);
       expect(outcomes.filter((each) => !(each.choice in EDGE) && each.reads !== each.choice in READ), JSON.stringify(outcomes)).toEqual([]);
     } finally {
