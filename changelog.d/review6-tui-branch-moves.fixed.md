@@ -3,4 +3,5 @@
   failed left the store on the new branch. It kept showing the earlier
   branch's transcript: agent-framework traces no branch move, and the TUI
   read a branch change only from a command's first answer, which never
-  carries one.
+  carries one. It doesn't write the `_config` mount again then:
+  agent-framework writes it for the move while it holds the store.

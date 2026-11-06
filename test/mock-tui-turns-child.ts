@@ -71,7 +71,7 @@ function fakeFramework(name: string) {
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }]
       : scenario === 'async-branch' ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
       : [{ name: 'agent' }]),
-    getModule: () => undefined,
+    getModule: (moduleName: string) => (scenario === 'async-branch' && moduleName === 'workspace' ? workspace : undefined),
     getAgent: (agentName: string) => agentName === 'agent'
       ? { name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }
       : undefined,
@@ -96,6 +96,10 @@ function fakeFramework(name: string) {
     },
   };
 }
+
+/** The workspace module in `async-branch`: each mount refresh the TUI starts. */
+const mountRefreshes: string[] = [];
+const workspace = { name: 'workspace', materializeMount: async (mount: string) => { mountRefreshes.push(mount); } };
 
 const first = fakeFramework('first');
 const second = fakeFramework('second');
@@ -159,7 +163,7 @@ async function until(done: () => boolean | Promise<boolean>, what: string): Prom
 }
 
 async function step(name: string): Promise<void> {
-  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts] })}\n`);
+  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts], mountRefreshes: [...mountRefreshes] })}\n`);
 }
 
 /** A reply of the root agent's, streamed in `parts` and completed. */

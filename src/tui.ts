@@ -944,7 +944,11 @@ export async function runTui(app: AppContext): Promise<void> {
     });
   }
 
-  function refreshFromStore() {
+  /** Draw the store's branch again. `mount: false` leaves the `_config`
+   *  mount alone, for a branch move agent-framework has refreshed it for
+   *  inside its reservation of the store (switchBranch and rollbackToMessage),
+   *  whose answer says if that failed. */
+  function refreshFromStore(opts: { mount?: boolean } = {}) {
     // Reset streaming state BEFORE destroying renderables so nothing can
     // touch a freed native buffer through currentStreamText.
     streaming = false;
@@ -976,7 +980,7 @@ export async function runTui(app: AppContext): Promise<void> {
       }
     }
 
-    const ws = app.framework.getModule('workspace');
+    const ws = opts.mount === false ? undefined : app.framework.getModule('workspace');
     if (ws && 'materializeMount' in ws) {
       trackOperatorWork(app, "the _config mount's refresh", (ws as any).materializeMount('_config')).catch(() => {});
     }
@@ -2546,7 +2550,8 @@ export async function runTui(app: AppContext): Promise<void> {
           // A branch move or a rollback lands in the follow-up, and
           // agent-framework traces neither: the follow-up saying the branch
           // changed is what has the TUI draw the branch the store is on.
-          if (asyncResult.branchChanged) refreshFromStore();
+          // The framework refreshed the `_config` mount for the move.
+          if (asyncResult.branchChanged) refreshFromStore({ mount: false });
           for (const l of asyncResult.lines) {
             addLine(l.text, GRAY);
           }

@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-type Step = { frame: string; aborts: string[] };
+type Step = { frame: string; aborts: string[]; mountRefreshes: string[] };
 
 async function play(scenario: string): Promise<Map<string, Step>> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tui-turns-')));
@@ -29,8 +29,8 @@ async function play(scenario: string): Promise<Map<string, Step>> {
     expect(stdout).toContain('TUI_DONE');
     const steps = new Map<string, Step>();
     for (const [, json] of stdout.matchAll(/TUI_STEP (\{[^\n]*\})/g)) {
-      const { step, frame, aborts } = JSON.parse(json);
-      steps.set(step, { frame, aborts });
+      const { step, frame, aborts, mountRefreshes } = JSON.parse(json);
+      steps.set(step, { frame, aborts, mountRefreshes });
     }
     return steps;
   } finally {
@@ -368,6 +368,10 @@ describe("the TUI's branch moves, through runTui", () => {
     expect(switched.frame).not.toContain('three ledgers');
     expect(times(switched.frame, '── session history')).toBe(1);
     expect(switched.frame.indexOf('the side branch reply')).toBeLessThan(switched.frame.indexOf('Switched to branch side.'));
+    // agent-framework's switchBranch has written the `_config` mount inside
+    // its reservation: the TUI's refresh starts no second write of it
+    // (#485 bot review 2, finding 25).
+    expect(switched.mountRefreshes).toEqual([]);
   }, 40000);
 });
 
