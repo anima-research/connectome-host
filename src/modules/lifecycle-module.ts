@@ -75,11 +75,14 @@ const UPDATE_DESCRIPTION =
   'cache once), the release you run, an install under way, an armed restart, and how the last switch ended: committed, ' +
   'or went back, and why.\n' +
   '- notes: once a release newer than yours is installed, the notes of each release after yours up to it, from its ' +
-  'own CHANGELOG.md. check names it while a newer release is installed.\n' +
+  'own CHANGELOG.md, when they fit in one answer (24,000 characters). When they don\'t, it lists those releases with ' +
+  'each one\'s size, and notes with `version` gives one release\'s notes: their first part, if even those don\'t fit, ' +
+  'with how much was left out and where the rest is. check names it while a newer release is installed.\n' +
   '- install: installs the newest release beside the one you run, which runs on. It answers once the install has ' +
   'begun; check shows when it is done.\n' +
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment, once ' +
-  QUIET_MOMENT + ', however long that takes, so it cuts no turn and asks nobody: your turn ends as it would. ' +
+  QUIET_MOMENT + ', however long that takes, so it goes only once every host has said no turn is running there, ' +
+  'and asks nobody: your turn ends as it would. ' +
   ARMED_RETRY + ' The host then stops, and its service starts it again on the new release. If the host stops for ' +
   'any other reason first, nothing stays armed, and from its next start check says the restart didn\'t go ahead, with that stop as the ' +
   'reason, though a crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An ' +
@@ -91,11 +94,18 @@ const UPDATE_DESCRIPTION =
   'switch, so everything since then, for you everything you have lived since, is set aside, not deleted.\n' +
   '- cancel: disarms an armed restart or Go back before it begins.\n' +
   '`version`, with restart or back, is the release you looked at: if the release they would go to is another by ' +
-  'then, nothing is armed. Restart and back need the host to run headless with `CONNECTOME_SUPERVISED=1` in its ' +
+  'then, nothing is armed. With notes, it is the release whose notes you want. Restart and back need the host to ' +
+  'run headless with `CONNECTOME_SUPERVISED=1` in its ' +
   'environment when it started. `connectome service install` sets it only for a service that starts the host again ' +
   'when it exits with 75 and with 1, and a service written by hand needs the line and both restarts. Elsewhere they ' +
   'refuse, say why, and arm nothing. After a restart nothing tells you it happened: check says what you run now ' +
   'and how the switch went. ';
+
+const NO_INSTALL_HEADLESS =
+  'The person who runs your host can\'t call this tool, so never give them its name or an action of it to type. ' +
+  'This host runs headless with no install of its own, so it has no command of theirs to update it: a fleet child is ' +
+  'updated with its parent\'s install where its parent has one, and any other host by hand (docs/DEPLOYMENTS.md, ' +
+  '"Updating an install"), and your restart and back refuse here, saying so.';
 
 const personHeadless = (command: string): string =>
   'The person who runs your install can\'t call this tool, so never give them its name or an action of it to type. ' +
@@ -118,15 +128,20 @@ const PERSON_IN_A_TERMINAL =
   'theirs: check gives them a link to the notes, and only your cancel disarms a restart or Go back you armed, ' +
   'though their own restart or back goes ahead in its place.';
 
-function updateTool(headless: boolean, command: string): ToolDefinition {
+function updateTool(headless: boolean, command: string | null): ToolDefinition {
   return {
     name: 'update',
-    description: UPDATE_DESCRIPTION + (headless ? personHeadless(command) : PERSON_IN_A_TERMINAL),
+    description: UPDATE_DESCRIPTION + (!headless ? PERSON_IN_A_TERMINAL : command === null ? NO_INSTALL_HEADLESS
+      : personHeadless(command)),
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: [...UPDATE_ACTIONS] },
-        version: { type: 'string', description: 'With restart or back: the exact release you looked at, such as 0.15.0.' },
+        version: {
+          type: 'string',
+          description: 'With restart or back: the exact release you looked at, such as 0.15.0. With notes: the release ' +
+            'whose notes you want.',
+        },
         data: { type: 'string', enum: ['keep', 'restore'], description: 'With back, and only then: keep or restore.' },
       },
       required: ['action'],
@@ -148,6 +163,7 @@ export class LifecycleModule implements Module {
   private readonly update: HostUpdate;
   private readonly headless: boolean;
   private readonly command: string;
+  private readonly ownInstall: boolean;
 
   constructor(config: LifecycleModuleConfig) {
     this.dataDir = config.dataDir;
@@ -161,6 +177,7 @@ export class LifecycleModule implements Module {
     this.update = config.update ?? hostUpdate;
     this.headless = config.headless;
     this.command = config.installCommand ?? 'connectome';
+    this.ownInstall = config.installCommand !== undefined;
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -179,7 +196,7 @@ export class LifecycleModule implements Module {
   getTools(): ToolDefinition[] {
     return [
       ...(this.selfRestart ? [this.restartTool()] : []),
-      ...(this.selfUpdate ? [updateTool(this.headless, this.command)] : []),
+      ...(this.selfUpdate ? [updateTool(this.headless, this.ownInstall ? this.command : null)] : []),
     ];
   }
 
@@ -320,6 +337,11 @@ export class LifecycleModule implements Module {
   private async handleUpdate(call: ToolCall): Promise<ToolResult> {
     const input = (call.input ?? {}) as { action?: unknown; version?: unknown; data?: unknown };
     const refuse = (error: string): ToolResult => ({ success: false, isError: true, error });
+    const unknown = Object.keys(input).filter((key) => !['action', 'version', 'data'].includes(key));
+    if (unknown.length > 0) {
+      return refuse(`This tool takes \`action\`, \`version\` and \`data\`, not ${unknown.map((key) => `\`${key}\``).join(', ')}, ` +
+        'and nothing was done.');
+    }
     if (typeof input.action !== 'string' || !(UPDATE_ACTIONS as readonly string[]).includes(input.action)) {
       return refuse(`\`action\` must be one of ${UPDATE_ACTIONS.join(', ')}, and nothing was done.`);
     }
@@ -329,8 +351,8 @@ export class LifecycleModule implements Module {
     if (input.data !== undefined && input.data !== 'keep' && input.data !== 'restore') {
       return refuse('`data` must be keep or restore, and nothing was done.');
     }
-    if (input.version !== undefined && input.action !== 'restart' && input.action !== 'back') {
-      return refuse(`\`version\` goes with restart or back, not ${input.action}, and nothing was done.`);
+    if (input.version !== undefined && input.action !== 'restart' && input.action !== 'back' && input.action !== 'notes') {
+      return refuse(`\`version\` goes with restart, back or notes, not ${input.action}, and nothing was done.`);
     }
     if (input.data !== undefined && input.action !== 'back') {
       return refuse(`\`data\` goes with back, not ${input.action}, and nothing was done.`);
@@ -340,7 +362,8 @@ export class LifecycleModule implements Module {
     const plainRestart = (pending: NonNullable<ReturnType<SelfRestartState['armedRequest']>>): string =>
       `a plain restart (lifecycle--restart) is pending, asked for by ${this.asker(pending, call.callerAgentName)} at ` +
       `${this.when(pending.requestedAt)}. It restarts the host once every agent is idle and nothing is in flight, and ` +
-      (this.selfRestart ? 'lifecycle--restart with cancel: true disarms it.' : 'it isn\'t yours to cancel, since ' +
+      (this.selfRestart ? 'lifecycle--restart with cancel: true disarms it, for an agent given that tool.'
+        : 'it isn\'t yours to cancel, since ' +
         'lifecycle--restart isn\'t granted here.');
     const selfRestartPending = (): UpdateAnswer | null => {
       const pending = this.state.armedRequest();
@@ -360,7 +383,7 @@ export class LifecycleModule implements Module {
         break;
       }
       case 'notes':
-        answer = this.update.installedNotes();
+        answer = this.update.installedNotes(version);
         break;
       case 'install':
         answer = await this.update.startInstall(TOOL_WAYS.check);

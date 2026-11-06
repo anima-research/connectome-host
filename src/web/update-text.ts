@@ -36,7 +36,10 @@ export type SwitchOutcome =
  *  child's name. A host that can't be counted, such as a child that didn't
  *  answer or a host serving again, says why. */
 export type HostQuiet =
-  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number; operatorHold?: { reason?: string } }
+  | {
+    host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number;
+    operatorHold?: { reason?: string }; inFlight?: string[];
+  }
   | { host: string; answered: false; why: string };
 
 export interface RestartState {
@@ -163,7 +166,7 @@ export function toolWays(headless: boolean, command = 'connectome'): UpdateWays 
 
 export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
   'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
-  'going there, such as a turn or background script';
+  'going there, such as a turn, background script, operator\'s work or credential action';
 
 export const ARMED_RETRY = 'A try that finds something still going waits at least a minute before the next.';
 
@@ -277,7 +280,7 @@ export function busyLines(restart: RestartState, waitedMs: number, ways: UpdateW
   ];
 }
 
-function busyHostLines(hosts: HostQuiet[]): string[] {
+function busyHostLines(hosts: HostQuiet[], scriptsEnd = 'which a stop ends'): string[] {
   const lines: string[] = [];
   for (const host of hosts) {
     if (!host.answered) {
@@ -291,7 +294,7 @@ function busyHostLines(hosts: HostQuiet[]): string[] {
           : 'not drained, though no agent holds a turn: a wake is waiting on an auxiliary call before its turn starts',
         // Drain doesn't wait for them.
         ...(host.backgroundScripts > 0
-          ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'}, which a stop ends`]
+          ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'}, ${scriptsEnd}`]
           : []),
       ];
       lines.push(`- ${host.host}: ${parts.join('; ')}`);
@@ -324,6 +327,7 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     lines.push(retrying(status)
       ? `${status.installed} is installed, and ended before its commit at its last try: ${ways.restart} tries it again.`
       : `${status.installed} is installed: ${ways.restart} switches to it.`);
+    if (!check?.ok || check.candidate === null) lines.push(`Notes: ${notesUrl(status.installed)}`);
   }
   if (status.goBack !== null) {
     lines.push(`Going back to ${status.goBack.to} is offered, with the copy of its data taken ${status.goBack.since}: ` +
@@ -346,17 +350,23 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     if (last !== null) {
       lines.push(told(`Its try at ${last.at} didn't go ahead`, last.waited) + ' It tries again at a quiet moment at ' +
         'least a minute later.');
-      const holding = [...busyHostLines(last.hosts), ...last.hosts.flatMap((host) => host.answered && host.drained &&
-        host.backgroundScripts > 0
-        ? [`- ${host.host}: ${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'} ` +
-          'running outside any turn']
-        : [])];
+      const holding = last.hosts.flatMap((host) => {
+        if (!host.answered || !host.drained) {
+          return busyHostLines([host], 'which the switch waits for')
+            .map((line) => host.answered && host.inFlight !== undefined ? `${line}; ${list(host.inFlight)}` : line);
+        }
+        const parts = [...host.inFlight ?? [], ...(host.backgroundScripts > 0
+          ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'} running outside any turn`]
+          : [])];
+        return parts.length > 0 ? [`- ${host.host}: ${parts.join('; ')}`] : [];
+      });
       if (holding.length > 0) lines.push('Holding it then:', ...holding);
     }
-    lines.push(ways.check === TOOL_WAYS.check
-      ? `${TOOL_CANCEL} disarms it.`
-      : `The agent's own ${TOOL_CANCEL} disarms it, and ${ways.restart}, ${ways.keep} or ${ways.restore} here goes ahead ` +
-        'in its place.');
+    const instead = [...status.installed !== null ? [ways.restart] : [], ...status.goBack !== null ? [ways.keep, ways.restore] : []];
+    lines.push(ways.check === TOOL_WAYS.check || instead.length === 0
+      ? `${ways.check === TOOL_WAYS.check ? '' : 'The agent\'s own '}${TOOL_CANCEL} disarms it.`
+      : `The agent's own ${TOOL_CANCEL} disarms it, and ${instead.length > 1 ? `${instead.slice(0, -1).join(', ')} or ` +
+        instead.at(-1) : instead[0]} here goes ahead in its place.`);
   }
   const dropped = status.armedDropped ?? null;
   if (dropped !== null) {
@@ -421,16 +431,18 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   return [
     `Going back to ${to}, whose data the copy holds as it was at ${since}. Two ways:`,
     `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. It comes back as the host is ` +
-      `now: answering new turns, or holding them if it's quiesced. If ${to} can't read the data, its start goes back ` +
-      `to ${status.running} by itself, and ${ways.restore} is the way then.`,
+      'now: answering new turns, or holding them if its operator quiesced it, though a switch\'s quiesce left behind ' +
+      `ends at that start. If ${to} can't read the data, its start goes back to ${status.running} by itself, and ` +
+      `${ways.restore} is the way then.`,
     `- ${ways.restore}: the copy is restored, and everything since ${since} is set aside, not deleted. For ` +
       'residents, that is everything they have lived since then. The host comes back answering new turns, unless ' +
       'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
-      'and clicking "⏸ quiesced" in the Web UI\'s top bar lets them through. Whether it\'s quiesced now makes no ' +
-      'difference.',
+      `and ${ways.check === TOOL_WAYS.check ? 'the person\'s click on' : 'clicking'} "⏸ quiesced" in the Web UI's ` +
+      'top bar lets them through. Whether it\'s quiesced now makes no difference.',
     ways.check === TOOL_WAYS.check
-      ? 'Either way it begins at the host\'s first quiet moment, however long that takes, so it cuts no turn and asks ' +
-        `nobody. ${ARMED_RETRY}`
+      ? 'Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, it begins at the host\'s first quiet ' +
+        'moment, however long that takes, so it goes only once every host has said no turn is running there, and ' +
+        `asks nobody. ${ARMED_RETRY} Anywhere else, back refuses and arms nothing.`
       : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }

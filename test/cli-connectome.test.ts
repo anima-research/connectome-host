@@ -660,6 +660,25 @@ test('bare, before the host has read the registry, says how to read it', async (
     `  The registry hasn't been read yet: ${path} update check reads it.\n`);
 });
 
+test('bare gives a reason the host stored, such as an armed try\'s, in the words this shell takes', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  const waited = 'turns were still going. Ending the switch\'s quiesce didn\'t reach every host: kid: it didn\'t say why. ' +
+    'An operator\'s /update restart resume ends it, as does the host\'s next start.';
+  await fakeHost(data, (message, reply) => {
+    if (message.type === 'panel-request' && message.op === 'health') {
+      reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: { ...STATUS, armed: {
+        to: '0.15.0', why: 'update', keepData: true, since: '2026-10-26T06:00:00.000Z', by: 'resident',
+        lastTry: { at: '2026-10-26T06:10:00.000Z', waited, hosts: [] },
+      } } } });
+    }
+  });
+  const ran = await run(path, [], root);
+  expect(ran.status).toBe(0);
+  expect(ran.out).toContain(`An operator's ${path} update restart resume ends it`);
+  expect(ran.out).not.toContain('/update restart resume');
+});
+
 test('send isn\'t ended by an idle from before its line (texts 0), and ends at the idle that covers it', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');

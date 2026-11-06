@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HostModeStatus, ModuleContext, ToolResult } from '@animalabs/agent-framework';
@@ -107,7 +107,7 @@ const registry = (versions: string[], costs: Costs = {}, bunFloor?: string) => (
 
 function fleetChild(state: {
   busy: boolean; resumes?: boolean; held?: Promise<void>; resumeHeld?: Promise<void>; scripts?: number; afterLook?: () => void;
-  operator?: { reason?: string; fromLook: number };
+  operator?: { reason?: string; fromLook: number }; inFlight?: unknown;
 }) {
   const child = { quiesced: false, waits: [] as number[], looks: 0 };
   const fleet: SwitchFleet = {
@@ -128,7 +128,7 @@ function fleetChild(state: {
         ? { operatorHold: state.operator.reason === undefined ? {} : { reason: state.operator.reason } } : {};
       return { ok: true, data: {
         answered: true, drained: !state.busy, activeTurnAgents: state.busy ? ['kid-agent'] : [], backgroundScripts: state.scripts ?? 0,
-        ...operator,
+        ...operator, ...(state.inFlight !== undefined ? { inFlight: state.inFlight } : {}),
       } };
     },
   };
@@ -175,7 +175,8 @@ function residentHost(options: {
     dataDir, update, now: () => new Date('2026-10-26T20:00:00.000Z'), hostVersion: '0.14.1',
     headless: (options.mode ?? 'service') === 'service',
     state: options.state ?? new SelfRestartState(), ...(options.grants ?? { selfUpdate: true }),
-    ...(options.installCommand !== undefined ? { installCommand: options.installCommand } : {}),
+    ...(options.installCommand !== undefined ? { installCommand: options.installCommand }
+      : options.root !== null ? { installCommand: 'connectome' } : {}),
   });
   const call = (input: Record<string, unknown>, name = 'update'): Promise<ToolResult> =>
     module.handleToolCall({ id: `call-${Math.random()}`, name, input, callerAgentName: 'resident' });
@@ -194,7 +195,7 @@ function residentHost(options: {
 const text = (result: ToolResult): string => String(result.success ? result.data : result.error);
 const QUIET = 'first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, ' +
   'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child says ' +
-  'nothing is going there, such as a turn or background script';
+  'nothing is going there, such as a turn, background script, operator\'s work or credential action';
 const RETRY = 'A try that finds something still going waits at least a minute before the next.';
 const alwaysQuiet = () => true;
 
@@ -249,6 +250,14 @@ test('on a headless host, the update tool says so, and names for each action the
   expect(description.replace(/\s+/g, ' ')).toContain('If the host stops for any other reason first, nothing stays ' +
     'armed, and from its next start check says the restart didn\'t go ahead, with that stop as the reason, though a ' +
     'crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it.');
+});
+
+test('on a headless host with no install of its own, the update tool names no command of the person\'s, and says how such a host is updated', () => {
+  const description = residentHost({ root: null }).module.getTools().find((tool) => tool.name === 'update')?.description ?? '';
+  expect(description.replace(/\s+/g, ' ')).toContain('This host runs headless with no install of its own, so it has no ' +
+    'command of theirs to update it: a fleet child is updated with its parent\'s install where its parent has one, and ' +
+    'any other host by hand');
+  expect(description).not.toContain('connectome update');
 });
 
 test('on a host run in a terminal, the update tool says so, and names for each action the person\'s /update, typed there', () => {
@@ -517,6 +526,62 @@ test('a fleet child with a script running outside any turn keeps the restart arm
   expect(check).toContain('- kid: 1 background script running outside any turn');
 });
 
+test('a fleet child with a credential action in flight keeps the restart armed, and check names that work', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const { fleet, child } = fleetChild({ busy: false, inFlight: ['a credential action'] });
+  const host = residentHost({ root, fleet });
+  await host.armed();
+  expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+  expect(readMark(root)).toBeNull();
+  expect(host.stops).toEqual([]);
+  expect(child.quiesced).toBe(false);
+  expect(host.update.armedSwitch()).not.toBeNull();
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain('a fleet child had work going outside any turn');
+  expect(check).toContain('- kid: a credential action');
+});
+
+test('a fleet child whose answer names its work in flight unreadably keeps the restart armed, and check says so', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const { fleet } = fleetChild({ busy: false, inFlight: 'a credential action' });
+  const host = residentHost({ root, fleet });
+  await host.armed();
+  expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+  expect(readMark(root)).toBeNull();
+  expect(text(await host.call({ action: 'check' }))).toContain('- kid: work outside any turn that its answer doesn\'t name plainly');
+});
+
+test('a host says a switch is under way only while its own restart is: never on a host with no install, and not once it has ended', async () => {
+  expect(residentHost({ root: null }).update.switchUnderWay()).toBeNull();
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root, holders: ['alice'] });
+  expect(host.update.switchUnderWay()).toBe(false);
+  await host.update.restartToInstalled();
+  expect(host.update.status().restart?.phase).toBe('busy');
+  expect(host.update.switchUnderWay()).toBe(true);
+  await host.update.resume();
+  expect(host.update.switchUnderWay()).toBe(false);
+});
+
+test('a person\'s restart decides on a fleet child\'s drained alone, whatever work it says is in flight beside it', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const { fleet } = fleetChild({ busy: false, inFlight: ['a credential action'] });
+  const host = residentHost({ root, fleet });
+  expect((await host.update.restartToInstalled()).done).toBe(true);
+  expect(readMark(root)).toMatchObject({ to: '0.15.0' });
+  expect(host.stops).toHaveLength(1);
+});
+
+test('a try that finds this host mid-turn with a script says, in check, that the switch waits for the script', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root, holders: ['alice'], scripts: 1 });
+  await host.armed();
+  expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain('- this host: mid-turn: alice; 1 background script, which the switch waits for');
+  expect(check).not.toContain('which a stop ends');
+});
+
 test('a child that doesn\'t answer the look keeps the restart armed, and check says a host couldn\'t be counted', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const fleet: SwitchFleet = {
@@ -613,7 +678,8 @@ test('a try on a host its operator has quiesced waits for a later quiet moment, 
 
 for (const [what, reason] of [
   ['its mark can\'t be written', 'its mark couldn\'t be written'],
-  ['the session changes during it', 'the session changed'],
+  ['the session changes during it', 'the session changed while the fleet\'s children were asked whether they were busy, ' +
+    'before this host was quiesced'],
   ['it throws once hosts are quiesced', 'its try failed: the quiet check failed'],
 ] as const) {
   test(`a try that can't go ahead because ${what} drops the restart, with every host serving again, and check says why`, async () => {
@@ -800,9 +866,11 @@ test('back needs the data kept or restored, and goes back the way it was asked',
     expect(missing.success).toBe(false);
     expect(text(missing)).toContain('keep');
     expect(text(missing)).toContain('restore');
-    expect(text(missing).split('\n').at(-1)).toBe('Either way it begins at the host\'s first quiet moment, however long ' +
-      'that takes, so it cuts no turn and asks nobody. A try that finds something still going waits at least a ' +
-      'minute before the next.');
+    expect(text(missing).split('\n').at(-1)).toBe('Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, ' +
+      'it begins at the host\'s first quiet moment, however long that takes, so it goes only once every host has said ' +
+      'no turn is running there, and asks nobody. A try that finds something still going waits at least a minute ' +
+      'before the next. Anywhere else, back refuses and arms nothing.');
+    expect(text(missing)).toContain('the person\'s click on "⏸ quiesced" in the Web UI\'s top bar lets them through');
     expect(host.update.armedSwitch()).toBeNull();
     const arming = text(await host.call({ action: 'back', data }));
     expect(arming).toContain('if 0.14.0 has lifecycle--update; the person\'s connectome update check shows it either way.');
@@ -896,7 +964,8 @@ test('a host with no install of its own, such as a fleet child, refuses restart 
   for (const input of [{ action: 'restart' }, { action: 'back', data: 'keep' }]) {
     const answer = await host.call(input);
     expect(answer.success).toBe(false);
-    expect(text(answer)).toContain('fleet');
+    expect(text(answer)).toContain('A fleet child is updated with its parent\'s install where its parent has one, and any ' +
+      'other host, or a child whose parent has none, by hand');
     expect(text(answer)).toContain('Asking again');
   }
   expect(host.update.armedSwitch()).toBeNull();
@@ -926,7 +995,8 @@ test('a restart of either kind waits alone: each refuses while the other is arme
   expect(text(back)).toContain('a plain restart (lifecycle--restart) is pending');
   expect(host.update.armedSwitch()).toBeNull();
   expect(text(await host.call({ action: 'check' }))).toContain('A plain restart (lifecycle--restart) is pending');
-  expect(text(await host.call({ action: 'cancel' }))).toContain('lifecycle--restart with cancel: true');
+  expect(text(await host.call({ action: 'cancel' }))).toContain('lifecycle--restart with cancel: true disarms it, for an ' +
+    'agent given that tool.');
   expect(state.isArmed()).toBe(true);
 });
 
@@ -938,8 +1008,9 @@ test('a call whose action, version or data the tool can\'t use is refused, namin
     [{ action: 'reboot' }, '`action`'],
     [{ action: 'restart', version: 'latest' }, '`version`'],
     [{ action: 'back', data: 'maybe' }, '`data`'],
-    [{ action: 'check', version: '0.15.0' }, '`version` goes with restart or back'],
+    [{ action: 'check', version: '0.15.0' }, '`version` goes with restart, back or notes'],
     [{ action: 'restart', data: 'keep' }, '`data` goes with back'],
+    [{ action: 'restart', verison: '0.15.0' }, '`verison`'],
   ] as const) {
     const answer = await host.call(input);
     expect(answer.success).toBe(false);
@@ -949,8 +1020,9 @@ test('a call whose action, version or data the tool can\'t use is refused, namin
 });
 
 test('/update and the Web UI say who can disarm an armed restart, and that their Restart or Go back goes ahead in its place', async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
+  const { root, dataDir } = installRunning0141(['0.15.0']);
+  placeCopyOf0140(root, dataDir);
+  const host = residentHost({ root, dataDir });
   await host.armed();
   expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).toContain(
     'The agent\'s own lifecycle--update cancel disarms it, and /update restart, /update back keep or /update back restore here ' +
@@ -958,6 +1030,15 @@ test('/update and the Web UI say who can disarm an armed restart, and that their
   expect(statusLines(host.update.status(), PAGE_WAYS).join('\n')).toContain(`The agent's own lifecycle--update cancel disarms it, and ` +
     `${PAGE_WAYS.restart}, ${PAGE_WAYS.keep} or ${PAGE_WAYS.restore} here goes ahead in its place.`);
   expect(text(await host.call({ action: 'check' }))).toContain('\nlifecycle--update cancel disarms it.');
+});
+
+test('with no Go back offered, /update names only its Restart as going ahead in an armed restart\'s place', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root });
+  await host.armed();
+  const lines = statusLines(host.update.status(), COMMAND_WAYS).join('\n');
+  expect(lines).toContain('The agent\'s own lifecycle--update cancel disarms it, and /update restart here goes ahead in its place.');
+  expect(lines).not.toContain('/update back keep or');
 });
 
 test('a host with no stop at all, as a batch run, refuses restart and back and arms nothing', async () => {
@@ -1160,18 +1241,68 @@ test('on a host outside an install, notes refuses, saying no notes were given', 
   expect(text(notes)).toContain('wasn\'t started through an install');
 });
 
-test('notes gives every section whole, however long the notes run', async () => {
+const longNotes = (mark: string, lines: number) =>
+  `${mark}\n` + 'a line of notes that runs on for a while\n'.repeat(lines) + `the last line of ${mark}`;
+
+test('notes that come to more than one answer carries are listed release by release, with each one\'s size, and the answer fits', async () => {
   const { root } = installRunning0141(['0.17.0']);
-  const long = (mark: string, lines: number) =>
-    `${mark}\n` + 'a line of notes that runs on for a while\n'.repeat(lines) + `the last line of ${mark}`;
-  const sections = [section('0.17.0', long('seventeen', 600)), section('0.16.0', long('sixteen', 180)),
-    section('0.15.0', long('fifteen', 180))];
+  const sections = [section('0.17.0', longNotes('seventeen', 300)), section('0.16.0', longNotes('sixteen', 180)),
+    section('0.15.0', longNotes('fifteen', 180))];
   placeNotes(root, '0.17.0', sections.join(''));
   const host = residentHost({ root, versions: ['0.14.1', '0.15.0', '0.16.0', '0.17.0'] });
   const answer = await host.call({ action: 'notes' });
   expect(answer.success).toBe(true);
   const notes = text(answer);
-  for (const whole of sections) expect(notes).toContain(whole.trimEnd());
+  expect(notes.length).toBeLessThanOrEqual(24_000);
+  expect(notes).not.toContain('a line of notes');
+  for (const whole of sections) {
+    const version = whole.slice(3, whole.indexOf(' ', 3));
+    expect(notes).toContain(`- ${version}: ${whole.trimEnd().length.toLocaleString('en-US')} characters`);
+  }
+  expect(notes).toContain('lifecycle--update notes with its `version`');
+});
+
+test('notes with a version gives that release\'s notes whole, and none of the others', async () => {
+  const { root } = installRunning0141(['0.17.0']);
+  const sixteen = section('0.16.0', longNotes('sixteen', 180));
+  placeNotes(root, '0.17.0', section('0.17.0', longNotes('seventeen', 300)) + sixteen + section('0.15.0', longNotes('fifteen', 180)));
+  const host = residentHost({ root, versions: ['0.14.1', '0.15.0', '0.16.0', '0.17.0'] });
+  const answer = await host.call({ action: 'notes', version: '0.16.0' });
+  expect(answer.success).toBe(true);
+  expect(text(answer)).toContain(sixteen.trimEnd());
+  expect(text(answer)).not.toContain('seventeen');
+  expect(text(answer)).not.toContain('fifteen');
+});
+
+test('one release\'s notes too long for one answer give their first part, how much was left out, and where the rest is', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const fifteen = section('0.15.0', longNotes('fifteen', 700));
+  const path = placeNotes(root, '0.15.0', fifteen);
+  const host = residentHost({ root });
+  for (const input of [{ action: 'notes' }, { action: 'notes', version: '0.15.0' }]) {
+    const answer = await host.call(input);
+    expect(answer.success).toBe(true);
+    const notes = text(answer);
+    expect(notes.length).toBeLessThanOrEqual(24_000);
+    expect(notes).toContain('fifteen\na line of notes');
+    expect(notes).not.toContain('the last line of fifteen');
+    const shown = notes.split('\n').filter((line) => line === 'a line of notes that runs on for a while').length;
+    expect(shown).toBeGreaterThan(0);
+    expect(notes).toMatch(new RegExp(`the first [0-9,]+ of its ${fifteen.trimEnd().length.toLocaleString('en-US')} characters`));
+    expect(notes).toContain(path);
+    expect(notes).toContain('https://github.com/anima-research/connectome-host/blob/v0.15.0/CHANGELOG.md');
+  }
+});
+
+test('notes with a version outside the releases after this one up to the installed one is refused, naming those it has', async () => {
+  const { root } = installRunning0141(['0.16.0']);
+  placeNotes(root, '0.16.0', section('0.16.0', 'notes of sixteen') + section('0.15.0', 'notes of fifteen') +
+    section('0.14.1', 'notes of fourteen-one'));
+  const host = residentHost({ root, versions: ['0.14.1', '0.15.0', '0.16.0'] });
+  const answer = await host.call({ action: 'notes', version: '0.14.1' });
+  expect(answer.success).toBe(false);
+  expect(text(answer)).toContain('0.16.0, 0.15.0');
+  expect(text(answer)).not.toContain('notes of');
 });
 
 for (const [what, notes, reason] of [
@@ -1196,7 +1327,7 @@ for (const [what, notes, reason] of [
   });
 }
 
-test('once the release offered is installed, every surface\'s take line names the restart alone', async () => {
+test('once the release offered is installed, the tool\'s check and the host\'s log name the restart alone, and so do the status lines /update and the CLI show', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const logged: string[] = [];
   const host = residentHost({ root, log: (line) => { logged.push(line); } });
@@ -1208,6 +1339,32 @@ test('once the release offered is installed, every surface\'s take line names th
   await host.update.readRegistry();
   expect(statusLines(host.update.status(), COMMAND_WAYS)).toContain('To take it: /update restart.');
   expect(statusLines(host.update.status(), cliWays('connectome'))).toContain('To take it: connectome update restart.');
+});
+
+test('with a release installed and the registry unread, the person\'s status still links that release\'s notes', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root, registryDown: true });
+  await host.update.readRegistry();
+  const lines = statusLines(host.update.status(), COMMAND_WAYS);
+  expect(lines).toContain('0.15.0 is installed: /update restart switches to it.');
+  expect(lines).toContain('Notes: https://github.com/anima-research/connectome-host/blob/v0.15.0/CHANGELOG.md');
+});
+
+test('a notice written while the installed releases couldn\'t be read is written again, rightly, at the next read', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const logged: string[] = [];
+  const host = residentHost({ root, log: (line) => { logged.push(line); } });
+  const releases = join(root, 'releases');
+  renameSync(releases, `${releases}.away`);
+  try {
+    await host.update.readRegistry();
+  } finally {
+    renameSync(`${releases}.away`, releases);
+  }
+  const take = `[update] To take it: ${shellWord(join(root, 'connectome'))} update restart.`;
+  expect(logged).not.toContain(take);
+  await host.update.readRegistry();
+  expect(logged).toContain(take);
 });
 
 test('a host in a terminal logs its take line in /update words, which its terminal takes, and a headless one without the service line by the full path', async () => {
