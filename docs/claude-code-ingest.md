@@ -211,9 +211,9 @@ it refuses, stop and decide with the person. Where an import wrote `sessions.jso
 moving it aside moves the import too. Where a host's start wrote it and that start held nothing worth
 keeping, such as only a hello, stop the service with the install's command by its full
 path,
-`/home/<agent>/<agent>-cm/connectome-host/connectome service stop`, move `sessions.json`
+`'/home/<agent>/<agent>-cm/connectome-host/connectome' service stop`, move `sessions.json`
 and `sessions/` out of the data directory, seed it, and start the service again with
-`… service start`. The rest of the data directory stays as it is: discord-mcpl's state
+`'/home/<agent>/<agent>-cm/connectome-host/connectome' service start`. The rest of the data directory stays as it is: discord-mcpl's state
 files, its filters among them, and the Web UI's `observers.json`. Otherwise don't seed:
 the resident already has a history of its own, and this method seeds only a first start.
 
@@ -339,19 +339,20 @@ nothing it does reaches the original:
    original.
 2. Make stage 4's Claude-Code-specific choices in the recipe first, all but its Web UI,
    so the check compiles what the resident will run. Then copy it, readable by you alone
-   (`chmod 600` on the copy before the password goes in), and in the copy leave
-   out `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath` and
-   `extensions`: the servers' `env` names files in the original data directory,
-   discord-mcpl would put the resident on Discord, a fleet child starts on its own data
-   directory under `<agent>-cm`, a heartbeat state path resolves from there too, and an
-   extension's code runs in the host's process. So a recipe whose strategy comes from an
-   extension gets no pre-boot check this way. For an `openai-compatible` recipe, whose
-   own endpoint may answer with no key at all, set `agent.baseUrl` to
-   `http://127.0.0.1:9/v1`, where nothing answers, as `curl http://127.0.0.1:9/` failing
-   to connect shows. Where `agent.systemPrompt` is a URL, or a `${…}` whose value is one,
-   put the text it gives in its place, since the host fetches it as it loads the recipe.
-   In place of any Web UI the recipe has, give the copy one of its own under `modules`,
-   with a password you make up for the check:
+   (`chmod 600` on the copy before the password goes in), and in the copy leave out
+   `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath`,
+   `modules.ttsRelay` and `extensions`: the servers' `env` names files in the original
+   data directory, discord-mcpl would put the resident on Discord, a fleet child starts
+   on its own data directory under `<agent>-cm`, a heartbeat state path resolves from
+   there too, a TTS relay connects to the relay the recipe names and signs in as the
+   resident's bot, and an extension's code runs in the host's process. So a recipe whose
+   strategy comes from an extension gets no pre-boot check this way. For an
+   `openai-compatible` recipe, whose own endpoint may answer with no key at all, set
+   `agent.baseUrl` to `http://127.0.0.1:9/v1`, where nothing answers, as `curl
+   http://127.0.0.1:9/` failing to connect shows. Where `agent.systemPrompt` is a URL,
+   or a `${…}` whose value is one, put the text it gives in its place, since the host
+   fetches it as it loads the recipe. In place of any Web UI the recipe has, give the
+   copy one of its own under `modules`, with a password you make up for the check:
    `"webui": { "port": <port>, "host": "127.0.0.1", "basicAuth": { "username": "check", "password": "<password>" } }`.
    Without `basicAuth`, every account on the machine could read the copy's
    `/debug/context`, the resident's whole history, since loopback is open to all of
@@ -451,10 +452,16 @@ stage 3's pre-boot check, you made all but the Web UI already):
   continuation, not an error.
 
 The first start on a data directory with no `sessions.json` migrates `data/store` into
-`data/sessions/<id>/` and, with
-`autoTickOnNewMessage` on, starts minting L1 summaries of the seed immediately. A
-claude.ai import into the same data directory comes after that start: the importer
-writes `sessions.json`, and a data directory that has one migrates nothing.
+`data/sessions/<id>/` and, with `autoTickOnNewMessage` on, starts minting L1 summaries
+of the seed immediately. A claude.ai import into the same data directory comes after
+that start: the importer writes `sessions.json`, and a data directory that has one
+migrates nothing. Stop the service for the import, with
+`'/home/<agent>/<agent>-cm/connectome-host/connectome' service stop`, and start it again
+after it with `'/home/<agent>/<agent>-cm/connectome-host/connectome' service start`: the
+importer writes the session index, which a running host reads as it goes. The seed's
+session is the one that opens afterwards, and `/session switch <id>`, with the id the
+import printed, bare, opens the import's,
+as `AGENT-ONBOARDING.md`'s "Importing a history" says.
 Watch `/healthz` (the person, if you're the setup agent) for `compressionQuarantine`,
 and the per-call log (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. The first
 message comes from the person, not from you, as in
