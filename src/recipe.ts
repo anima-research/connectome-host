@@ -1788,6 +1788,7 @@ export async function loadRecipeDocument(document: RecipeDocument, source: strin
   resolveExtensionPaths(recipe, sourceBase);
   const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe), options.env);
   copyResolvedPathsIntoRaw(persistable, resolved);
+  loadedDigests.set(resolved, recipeDigest(resolved));
   return { recipe: resolved, persistable };
 }
 
@@ -1863,6 +1864,12 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
 
 export function recipeDigest(recipe: Recipe): string {
   return createHash('sha256').update(JSON.stringify(recipe)).digest('hex');
+}
+
+const loadedDigests = new WeakMap<Recipe, string>();
+
+export function loadedRecipeDigest(recipe: Recipe): string {
+  return loadedDigests.get(recipe) ?? recipeDigest(recipe);
 }
 
 export function runningFit(recipe: Recipe, envModel: string | undefined, beside?: number): RecipeFit {

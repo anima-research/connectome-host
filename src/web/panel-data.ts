@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
-import { recipeDigest, recipeModel, resolveProvider, type Recipe } from '../recipe.js';
+import { loadedRecipeDigest, recipeModel, resolveProvider, type Recipe } from '../recipe.js';
 import { anthropicXmlFormatter, xmlToolsInSystem } from '../recipe-formatter.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
@@ -1160,7 +1160,7 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
       : { model: compressionModel, countModel: compressionCountModel, source: compression!.source },
     beside,
     budget: typeof live === 'number' && live > 0 ? live : null,
-    recipeDigest: recipeDigest(app.recipe),
+    recipeDigest: loadedRecipeDigest(app.recipe),
   };
 }
 

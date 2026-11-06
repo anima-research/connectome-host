@@ -253,6 +253,27 @@ describe('count-check, with a stand-in for the framework', () => {
   };
   afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
 
+  test('the recipe\'s digest is the one taken as it loaded, so a config changed after the load, as an extension\'s register can, leaves it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chost-digest-'));
+    try {
+      const path = join(dir, 'recipe.json');
+      writeFileSync(path, JSON.stringify({ name: 'r', agent: { name: 'resident', model: 'claude-agent-test', systemPrompt: 'hello', strategy: { type: 'passthrough' } } }));
+      const { loadRecipeDetailed, recipeDigest } = await import('../src/recipe.js');
+      const { recipe } = await loadRecipeDetailed(path, { fetchSystemPrompt: false });
+      const atLoad = recipeDigest(recipe);
+      (recipe.agent.strategy as unknown as Record<string, unknown>).filledAfterLoad = true;
+      expect(recipeDigest(recipe)).not.toBe(atLoad);
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' });
+      const check = await buildCountCheck({
+        recipe,
+        framework: { getAgent: () => ({ model: 'claude-agent-test' }), getAllAgents: () => [{ name: 'resident' }] } as unknown as PanelAppRef['framework'],
+      }, 300);
+      expect(check.recipeDigest).toBe(atLoad);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('an empty compressionModel is reported as that model, not as a strategy with no compression, and only the agent\'s model is counted', async () => {
     const seen: string[] = [];
     const server = Bun.serve({
