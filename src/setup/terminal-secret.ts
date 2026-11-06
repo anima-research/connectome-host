@@ -65,6 +65,7 @@ export async function askHidden(
   let closed = () => {};
   let gone = false;
   let pasting = false;
+  let answer = '';
   let tookInPaste = false;
   const take = (line: string) => {
     // readline puts a line in its history before it hands the line on.
@@ -93,7 +94,8 @@ export async function askHidden(
         // would send it on; written a line break, readline ends it as Enter would, handing it to take.
         if (rl.line !== '') rl.write('\n');
         clearTimeout(quiet);
-        resolve(lines.join('\n'));
+        answer = lines.join('\n');
+        resolve(answer);
       };
       closed = () => {
         gone = true;
@@ -115,6 +117,7 @@ export async function askHidden(
     }
     echoing._writeToOutput = write;
     output.write('\n');
-    if (draft !== '' && !gone) rl.write(draft);
+    const given = answer.trim();
+    if (draft !== '' && !gone && !(given !== '' && draft.includes(given))) rl.write(draft);
   }
 }

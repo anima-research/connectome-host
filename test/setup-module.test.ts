@@ -1659,6 +1659,33 @@ describe("the terminal's hidden question", () => {
     expect(shown()).not.toContain('DISCORD_TOKEN');
   });
 
+  test('a line on the prompt that holds the answer just given hidden isn\'t given back, so the secret isn\'t one Enter from the conversation', async () => {
+    const { input, output, rl, lines, nextLine, shown } = terminal();
+    input.write('tok-123456');
+    await Bun.sleep(20);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
+    input.write('tok-123456\r');
+    expect(await answer).toBe('tok-123456');
+    expect(rl.line).toBe('');
+    const after = nextLine();
+    input.write('after\r');
+    await after;
+    expect(lines).toEqual(['after']);
+    expect(shown().split('tok-123456').length - 1).toBe(1);
+    rl.close();
+  });
+
+  test('a draft that holds the answer isn\'t given back where the answer came with spaces around it', async () => {
+    const { input, output, rl } = terminal();
+    input.write('tok-123456');
+    await Bun.sleep(20);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
+    input.write(' tok-123456 \r');
+    expect(await answer).toBe(' tok-123456 ');
+    expect(rl.line).toBe('');
+    rl.close();
+  });
+
   test('a bracketed paste that opens with a line break and pauses before the rest is one answer, none of it left for the conversation', async () => {
     const { input, output, rl, lines, nextLine, shown } = terminal();
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
