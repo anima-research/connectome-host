@@ -469,11 +469,11 @@ describe('a binding cut off', () => {
     expect(listed(install)).toEqual([a, b]);
     const refused = startOf(install);
     expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toContain(`a setup binding this install to ${install} was cut off before it finished`);
-    expect(refused.stderr).toContain('Setup finishes it, without asking about its places again');
+    expect(refused.stderr).toContain('a setup binding this install was cut off before it finished');
+    expect(refused.stderr).toContain('Setup, run again, finishes it from its plan without asking about its places again, or says what stops it');
     const command = commandOf(install, 'update');
     expect(command.exitCode).toBe(1);
-    expect(command.stderr).toContain(`a setup binding this install to ${install} was cut off before it finished`);
+    expect(command.stderr).toContain('a setup binding this install was cut off before it finished');
     rmSync(join(root, 'connectome.tmp'), { recursive: true });
     setup(options(install));
     expect(said).toContain(`Finished binding the install at ${root} to ${install}, which a setup run cut off had begun, with the places that run was given.`);
@@ -719,7 +719,7 @@ describe('a start', () => {
     const root = rootOf(install);
     writeFileSync(join(root, REBIND_PLAN), '{}');
     try {
-      await expect(decide(root, machineOps())).rejects.toThrow(`was cut off before it finished (${join(root, REBIND_PLAN)} is its plan)`);
+      await expect(decide(root, machineOps())).rejects.toThrow(`Nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, REBIND_PLAN)} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
     } finally {
       releaseLock(root);
     }
