@@ -2408,6 +2408,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String(stored.data)).toContain('a redirect to https://other.example, which setup doesn\'t follow with a secret.');
     const model = await checkModel(install({ envFile: 'OPENAI_BASE_URL="https://proxy.example/private-token/v1"\nOPENAI_API_KEY="sk-openai"\n', fetch: moved }).module, { name: 'OPENAI_API_KEY', model: 'gpt-5' });
     expect(model.error).not.toContain('private-token');
+    expect(model.error).toContain('a redirect to https://other.example, which setup doesn\'t follow with a secret');
   });
 
   test('check_model says whether a model is offered isn\'t known where the list\'s entries carry no ids', async () => {
