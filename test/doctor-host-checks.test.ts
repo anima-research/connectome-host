@@ -296,8 +296,6 @@ describe('doctor host checks over the socket', () => {
     const said = out.split('\n').find((line) => line.startsWith('live gate dump'));
     expect(said ?? out).toStartWith('live gate dump (SIGUSR2): {');
     const dump = JSON.parse(said!.slice(said!.indexOf('{'))) as Record<string, unknown>;
-    // This host's recipe leaves out the wake module, so its framework has no event gate and the dump's gate is
-    // null, which the ladder reads as an empty gate.
     expect({ gate: 'gate' in dump ? dump.gate : 'missing', activeStreams: Array.isArray(dump.activeStreams) })
       .toEqual({ gate: null, activeStreams: true });
     expect({ exitCode: child.exitCode, signalCode: child.signalCode }).toEqual({ exitCode: null, signalCode: null });

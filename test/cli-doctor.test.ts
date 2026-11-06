@@ -164,13 +164,13 @@ let managers = 0;
 const unitWords = (data: string): string => `PATH=${process.env.PATH ?? '/usr/bin:/bin'} DATA_DIR=${data} CONNECTOME_SUPERVISED=1`;
 
 function fakeManager(dir: string, opts: {
-  env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null;
+  env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null; unitFails?: string;
 } = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
   writeFileSync(join(at, 'environment'), (opts.env ?? []).map((line) => `${line}\n`).join(''));
-  const unit = opts.unit === undefined ? unitWords(join(dir, 'data')) : opts.unit;
-  if (unit !== null) writeFileSync(join(at, 'unit-environment'), `${unit}\n`);
+  const unit = opts.unit === undefined ? unitWords(join(dir, 'data')) : opts.unit ?? '';
+  writeFileSync(join(at, 'unit-environment'), `${unit}\n`);
   for (const [name, value] of Object.entries(opts.launchd ?? {})) writeFileSync(join(at, 'values', name), `${value}\n`);
   const path = join(at, 'manager');
   writeFileSync(path, [
@@ -179,7 +179,8 @@ function fakeManager(dir: string, opts: {
     ...(opts.hangs ? ['exec sleep 30'] : []),
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
     `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
-    `if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ] && [ -f ${join(at, 'unit-environment')} ]; then cat ${join(at, 'unit-environment')}; exit 0; fi`,
+    ...(opts.unitFails === undefined ? [] : [`if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ]; then echo '${opts.unitFails}' >&2; exit 1; fi`]),
+    `if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ]; then cat ${join(at, 'unit-environment')}; exit 0; fi`,
     `if [ "$1" = getenv ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'values')}/$2" ]; then cat "${join(at, 'values')}/$2"; fi; exit 0; fi`,
     `if [ "$*" = "--user show --property=EnvironmentFiles --value -- connectome-test.service" ]; then if [ -f ${join(at, 'environment-files')} ]; then cat ${join(at, 'environment-files')}; fi; exit 0; fi`,
     'echo "unexpected: $*" >&2',
@@ -259,7 +260,7 @@ function expectNoSecret(text: string): void {
 }
 
 describe('connectome doctor', () => {
-  test('a healthy install: every whole check passes, the ladder runs with the data directory, the working directory and the unit, withholding the stored values, and the exit is 0', async () => {
+  test('a healthy install: every check made passes, the fit is said not checked for a model whose window isn\'t known, the ladder runs with the data directory, the working directory and the unit, withholding the stored values, and the exit is 0', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain('connectome-test.service is active');
@@ -624,7 +625,7 @@ describe('connectome doctor', () => {
     expect(own).not.toContain('`PASSWORD`');
   });
 
-  test('a server given the host\'s whole environment (inheritEnv) sees every stored secret its entry doesn\'t replace, without a mapping', async () => {
+  test('a server given the host\'s whole environment (inheritEnv) sees every stored secret its entry or the host doesn\'t replace, without a mapping', async () => {
     const at = install({
       recipe: {
         name: 'Ember',
@@ -637,6 +638,7 @@ describe('connectome doctor', () => {
     });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).not.toContain('✗');
+    expect(r.out).toMatch(/✓.*SESSION_SERVER_TOKEN reaches .*shell/);
     expect(r.out).toContain('ember (900)');
     expect(r.status).toBe(0);
   });
@@ -883,7 +885,7 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(1);
   });
 
-  test('the shell\'s and the counts\' failures, and a server not connected, are each a problem in words', async () => {
+  test('the shell\'s failure and a server not connected are each a problem in words, and the counts\' failures are lines in words', async () => {
     const at = install();
     const r = await withHost(at, {
       'shell-check': {
@@ -1900,12 +1902,29 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
 
   test('a unit whose environment systemd doesn\'t give stops doctor, saying so and what to do', async () => {
     const at = install();
-    const manager = fakeManager(at.work, { unit: null });
+    const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain('✗ systemd didn\'t say the environment connectome-test.service sets the service (');
     expect(r.out).toContain('). Run doctor again, or `connectome service install` writes the unit anew.');
     expect(r.out).toContain('Doctor stops here');
     expect(r.out).not.toContain('pid 4242');
+    expect(r.status).toBe(1);
+  });
+
+  test('a unit systemd hasn\'t loaded gives no environment, as systemd answers, so doctor goes on, and the service check is what fails it', async () => {
+    const at = install();
+    const manager = fakeManager(at.work, { unit: null });
+    const unloaded = `systemd has no connectome-test.service loaded (not-found): its unit file may be gone. Run connectome service install again.`;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      systemctl: manager.path,
+      checkService: async () => ({ passed: false, lines: [unloaded] }),
+    }));
+    expect(manager.calls()).toContain('--user show --property=Environment --value -- connectome-test.service');
+    expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).not.toContain('systemd didn\'t say');
+    expect(r.out).toContain(unloaded);
+    expect(r.out).toContain('✗ The service check above didn\'t pass.');
+    expect(r.out).toContain('ember (900)');
     expect(r.status).toBe(1);
   });
 
@@ -2007,6 +2026,7 @@ describe('connectome doctor\'s Discord check, in its round on the review of 4a79
   test('with one Discord server, no line names its entry', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('✓ The token in DISCORD_TOKEN works');
     expect(r.out).not.toContain('The entry discord:');
   });
 });
