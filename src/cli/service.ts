@@ -1627,8 +1627,7 @@ function readServiceRecordFile(root: string, cmd: string, repair = true): Servic
       (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
     const settings = record.shellSettings;
     const settingsFit = settings === undefined || (settings !== null && typeof settings === 'object' && !Array.isArray(settings) &&
-      Object.entries(settings).every(([name, value]) => SHELL_SETTING_NAMES.includes(name as keyof ShellSettings) &&
-        typeof value === 'string'));
+      SHELL_SETTING_NAMES.every((name) => settings[name] === undefined || typeof settings[name] === 'string'));
     if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
     return record;
   } catch (error) {

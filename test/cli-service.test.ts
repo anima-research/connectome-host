@@ -4853,3 +4853,15 @@ test('a stored shell port held by something other than this install\'s shell dae
   expect(free.out).toContain(`The shell daemon uses SESSION_SERVER_PORT 3150 and SESSION_SERVER_TOKEN, not shown, as ${join(at.work, '.env')} holds them.`);
   expect(free.out.join('\n')).not.toContain('abc123');
 });
+
+test('a service record whose shellSettings hold a name this release doesn\'t know is read, ignoring that name', async () => {
+  const at = install();
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = join(at.root, 'service.json');
+  const record = JSON.parse(readFileSync(file, 'utf-8'));
+  record.shellSettings = { ...(record.shellSettings ?? {}), SESSION_SERVER_HOST: 'localhost' };
+  writeFileSync(file, JSON.stringify(record));
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  expect(f.err).toEqual([]);
+});
