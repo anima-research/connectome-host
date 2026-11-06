@@ -447,6 +447,12 @@ describe('setup--run', () => {
     expect(short.stdout).toEqual({ bytes: 9_000, text: `${'a'.repeat(4_096)}\n[808 bytes not shown]\n${'a'.repeat(4_096)}`, cut: true });
   });
 
+  test('an output of exactly twice the kept window answers its first and last 4 KiB, and counts the 8 bytes between', async () => {
+    const { module } = install();
+    const answer = await run(module, 'head -c 4100 /dev/zero | tr "\\0" a; head -c 4100 /dev/zero | tr "\\0" b');
+    expect(answer.stdout).toEqual({ bytes: 8_200, text: `${'a'.repeat(4_096)}\n[8 bytes not shown]\n${'b'.repeat(4_096)}`, cut: true });
+  });
+
   test('shows whole a secret the head\'s cut runs through, and counts the bytes left out from its end', async () => {
     const { module } = install({ envFile: `LONG_TOKEN=${'t'.repeat(2_000)}\n` });
     listSecrets(module, 'LONG_TOKEN');

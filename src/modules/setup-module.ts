@@ -58,8 +58,6 @@ function isContinuation(bytes: Buffer, at: number): boolean {
 
 class Capture {
   private total = 0;
-  private full: Buffer[] | null = [];
-  private fullBytes = 0;
   private head = Buffer.alloc(0);
   private tail = Buffer.alloc(0);
   private readonly window: number;
@@ -70,11 +68,6 @@ class Capture {
 
   add(chunk: Buffer): void {
     this.total += chunk.length;
-    if (this.full) {
-      this.full.push(chunk);
-      this.fullBytes += chunk.length;
-      if (this.fullBytes > 2 * this.window) this.full = null;
-    }
     if (this.head.length < this.window) {
       this.head = Buffer.concat([this.head, chunk.subarray(0, this.window - this.head.length)]);
     }
@@ -83,7 +76,8 @@ class Capture {
   }
 
   result(secrets: Secret[], replaced: Set<string>): Stream {
-    const all = this.full ? Buffer.concat(this.full) : null;
+    const all = this.total > 2 * this.window ? null
+      : Buffer.concat([this.head, this.tail.subarray(this.head.length + this.tail.length - this.total)]);
     const whole = (): Stream =>
       ({ bytes: this.total, text: redactWindow(all!, 0, all!.length, secrets, replaced).text, cut: false });
     if (all && all.length <= WHOLE_OUTPUT_BYTES) return whole();
