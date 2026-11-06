@@ -1828,9 +1828,7 @@ test('a directory holding only setup\'s own .setup/ is setup\'s, so setup goes o
   expect(made.seen.launched).not.toBeNull();
 });
 
-async function holdLock(dir: string) {
-  mkdirSync(join(dir, '.setup'), { recursive: true });
-  const holder = spawn(process.execPath, ['-e', `
+async function holdLock(dir: string, source = `
     const { Database } = await import('bun:sqlite');
     const db = new Database(${JSON.stringify(join(dir, '.setup', 'setup.lock'))}, { create: true });
     db.exec('PRAGMA busy_timeout = 1000');
@@ -1840,10 +1838,36 @@ async function holdLock(dir: string) {
     console.log('held');
     // Bun closes a Database once nothing refers to it, which lets its lock go.
     setInterval(() => db, 1000);
-  `], { stdio: ['ignore', 'pipe', 'inherit'] });
-  await new Promise<void>((done) => holder.stdout!.on('data', (chunk) => { if (String(chunk).includes('held')) done(); }));
-  return { kill: () => new Promise<void>((done) => { holder.on('close', () => done()); holder.kill('SIGKILL'); }) };
+  `) {
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  const holder = spawn(process.execPath, ['-e', source], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const closed = new Promise<void>((done) => holder.once('close', () => done()));
+  const kill = () => {
+    holder.kill('SIGKILL');
+    return closed;
+  };
+  let said = '';
+  try {
+    await new Promise<void>((done, fail) => {
+      holder.stdout!.on('data', (chunk) => {
+        said += String(chunk);
+        if (said.includes('held')) done();
+      });
+      holder.once('error', fail);
+      holder.once('exit', (code, signal) => fail(new Error(`the lock holder ended before it held the lock (${signal ?? `exit ${code}`})`)));
+    });
+  } catch (error) {
+    await kill();
+    throw error;
+  }
+  return { kill };
 }
+
+test('the lock holder is waited for until it says it holds the lock, however its output is split, and one that ends first fails the wait, named', async () => {
+  const split = await holdLock(directory(), "process.stdout.write('he'); setTimeout(() => process.stdout.write('ld\\n'), 200); setInterval(() => {}, 1000);");
+  await split.kill();
+  await expect(holdLock(directory(), 'process.exit(3);')).rejects.toThrow('the lock holder ended before it held the lock (exit 3)');
+}, 5_000);
 
 test('one setup at a time in a directory: another running refuses this one before it asks anything, and one killed doesn\'t',
   async () => {
