@@ -49,7 +49,8 @@ import {
   type OperatorLogEntryWire,
 } from '@conhost/web/protocol';
 import {
-  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor, UndoneMarksRefresh,
+  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor, WindowFrames,
+  type ShownPanels,
 } from '@conhost/web/agent-streams';
 import {
   Lightbox,
@@ -569,17 +570,25 @@ export function App() {
     wire.send({ type: 'request-pins', scope: panelScope() });
   };
 
-  /** Bumped at each undo or redo on an agent's window (the window:undone
-   *  trace, DQ-4) and at each undone-marks frame that doesn't follow its
-   *  agent's trace (a shed's, which has none: UndoneMarksRefresh):
-   *  the panels built from what a window holds (Context's makeup and
-   *  coverage, the compiled context) read again when it moves, and so do
-   *  the pins, whose candidates leave an undone row out. */
+  /** Bumped at each undo, redo or shed on the window of the agent the
+   *  panels show (WindowFrames, DQ-4): the panels built from what that
+   *  window holds (Context's makeup and coverage, the compiled context)
+   *  read again when it moves, and so do the pins, whose candidates leave
+   *  an undone row out. */
   const [windowEpoch, setWindowEpoch] = createSignal(0);
-  const onWindowUndone = (): void => {
+  const readWindowPanels = (): void => {
     setWindowEpoch((n) => n + 1);
     if (sidebarTab() === 'pins') refreshPins();
   };
+  /** The panels' scope and the agent they answer for: they ask by scope
+   *  alone, so locally the conversation agent, and for a fleet child the
+   *  agent its pins or settings answer named. */
+  const shownPanels = () => ({
+    scope: panelScope(),
+    agent: isChildScope(panelScope())
+      ? pinsState()?.agent ?? settingsState()?.agent
+      : conversationAgentOf(welcome()),
+  });
   /** Mark the transcript's rows from `fromIndex` on as the server says an
    *  undo left them: in the conversation agent's window, or out of it. */
   const applyUndoneMarks = (marks: UndoneMarksMessage): void => {
@@ -1184,7 +1193,8 @@ export function App() {
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
         onCommandAnswer: refreshLocalUpdate,
-        onWindowUndone,
+        shownPanels,
+        readPanels: readWindowPanels,
         applyUndoneMarks,
       });
     });
@@ -1703,8 +1713,10 @@ interface HandlerHooks {
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   onOperatorAction: () => void;
   onCommandAnswer: () => void;
-  /** An undo, a redo or a shed on an agent's window: the panels built from it read again. */
-  onWindowUndone: (agentName: string | undefined) => void;
+  /** The panels' scope and the agent they answer for (WindowFrames). */
+  shownPanels: () => ShownPanels;
+  /** An undo, a redo or a shed on the shown agent's window: the panels built from it read again. */
+  readPanels: () => void;
   /** Apply an undone-marks frame to the transcript. */
   applyUndoneMarks: (marks: UndoneMarksMessage) => void;
 }
@@ -1713,14 +1725,14 @@ function staleScope(msgScope: string | undefined, current: string): boolean {
   return msgScope !== undefined && msgScope !== current;
 }
 
-const undoneMarksRefresh = new UndoneMarksRefresh();
+const windowFrames = new WindowFrames();
 
 function handleServerMessage(
   msg: WebUiServerMessage,
   _wire: WireClient,
   hooks: HandlerHooks,
 ): void {
-  const marksReadPanels = undoneMarksRefresh.take(msg);
+  windowFrames.take(msg as unknown as { type: string; [k: string]: unknown }, hooks.shownPanels(), hooks);
   switch (msg.type) {
     case 'welcome': {
       hooks.applyWelcome(msg);
@@ -1773,11 +1785,7 @@ function handleServerMessage(
       hooks.onBranchChanged(msg.branch);
       return;
     case 'undone-marks':
-      hooks.applyUndoneMarks(msg);
-      // A shed sends this frame without a window:undone trace: the panels
-      // built from the window read again here, unless the frame follows its
-      // agent's trace, whose hook read them already.
-      if (marksReadPanels) hooks.onWindowUndone(msg.agent);
+      // windowFrames took it, above.
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);

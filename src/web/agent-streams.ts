@@ -1,6 +1,6 @@
 import { STREAM_END_TRACES } from '../state/turn-trace.js';
 import type { AgentNode } from '../state/agent-tree-reducer.js';
-import { AGENT_TREE_SCOPES } from './protocol.js';
+import { AGENT_TREE_SCOPES, isChildScope, type UndoneMarksMessage } from './protocol.js';
 
 export interface TraceViewHooks {
   appendStreamToken(token: string, blockType?: string): void;
@@ -12,12 +12,6 @@ export interface TraceViewHooks {
   onOpsAlert(event: { [k: string]: unknown }): void;
   onOperatorAction(): void;
   requestHostMode(): void;
-  /** An undo or a redo on an agent's window (agent-framework #291's
-   *  `window:undone`): the views built from what that window holds (context
-   *  makeup and coverage, the compiled context, pin candidates) read again.
-   *  The transcript shows the record, which keeps the rows; the server's
-   *  `undone-marks` frame marks them. */
-  onWindowUndone(agentName: string | undefined): void;
 }
 
 export function conversationAgentOf(
@@ -81,9 +75,6 @@ export function applyTrace(
     case 'operator:action':
       hooks.onOperatorAction();
       return;
-    case 'window:undone':
-      hooks.onWindowUndone(typeof e.agentName === 'string' ? e.agentName : undefined);
-      return;
   }
   if (STREAM_END_TRACES.has(e.type)) {
     applyStreamEnded(e.agentName, hooks, conversationAgent);
@@ -92,26 +83,73 @@ export function applyTrace(
   if (e.type.startsWith('host:')) hooks.requestHostMode();
 }
 
+/** The panels the page shows: their scope ('local' or a fleet child's
+ *  name), and the agent they answer for, which the page asks for by scope
+ *  alone: the conversation agent locally, and for a fleet child the agent
+ *  its latest pins or settings answer named, undefined before one has. */
+export interface ShownPanels {
+  scope: string;
+  agent: string | undefined;
+}
+
+/** What WindowFrames does with a frame that moves an agent's window. */
+export interface WindowFrameHooks {
+  /** Mark the transcript's rows as an undone-marks frame says. */
+  applyUndoneMarks(marks: UndoneMarksMessage): void;
+  /** The panels built from the shown agent's window (Context's makeup and
+   *  coverage, the compiled context, the pins, whose candidates leave an
+   *  undone row out) read it again. */
+  readPanels(): void;
+}
+
 /**
- * Whether an undone-marks frame reads the window's panels again. The host
- * sends one for the conversation agent right after each of its
- * `window:undone` traces, whose hook (onWindowUndone) has read them again
- * already, and after a shed from its window, which has no trace. A marks
- * frame right after its agent's trace reads nothing more, so an undo reads
- * each panel once (a makeup read posts the window to count_tokens); any
- * other marks frame, a shed's, reads them.
+ * The frames that move an agent's window, agent-framework #291's undo, redo
+ * and shed (DQ-4), each taken in order. The transcript shows the record,
+ * which keeps the rows, and an `undone-marks` frame marks them. The shown
+ * panels read the window again when the frame is for the agent they answer
+ * for, in their scope, once:
+ *
+ * - locally, at the conversation agent's `window:undone` trace (an undo or a
+ *   redo), and at an undone-marks frame for it that doesn't come right after
+ *   that trace (a shed's, which has no trace): the host sends one after each
+ *   such trace, and both reading them would read each twice (a makeup read
+ *   posts the window to count_tokens);
+ * - for a fleet child, at a `child-event` of its `window:undone` or its
+ *   shed (`presentation:retracted`, reason `shed`): for the agent the child's
+ *   panels named, or for any of its agents before they have named one.
+ *
+ * Another resident's window, a subagent's, and a scope the panels don't
+ * show read nothing.
  */
-export class UndoneMarksRefresh {
+export class WindowFrames {
   private tracedJustBefore: string | undefined;
 
-  /** Each server frame the page takes, in order: `true` for an undone-marks
-   *  frame that reads the window's panels again. */
-  take(msg: { type: string; agent?: unknown; event?: { type?: unknown; agentName?: unknown } }): boolean {
+  take(
+    msg: { type: string; [k: string]: unknown },
+    shown: ShownPanels,
+    hooks: WindowFrameHooks,
+  ): void {
     const traced = this.tracedJustBefore;
-    this.tracedJustBefore = msg.type === 'trace' && msg.event?.type === 'window:undone' && typeof msg.event.agentName === 'string'
-      ? msg.event.agentName
-      : undefined;
-    return msg.type === 'undone-marks' && msg.agent !== traced;
+    this.tracedJustBefore = undefined;
+    const local = !isChildScope(shown.scope);
+    if (msg.type === 'trace') {
+      const event = msg.event as { type?: unknown; agentName?: unknown } | undefined;
+      if (event?.type !== 'window:undone' || typeof event.agentName !== 'string') return;
+      this.tracedJustBefore = event.agentName;
+      if (local && event.agentName === shown.agent) hooks.readPanels();
+      return;
+    }
+    if (msg.type === 'undone-marks') {
+      const marks = msg as unknown as UndoneMarksMessage;
+      hooks.applyUndoneMarks(marks);
+      if (local && marks.agent === shown.agent && marks.agent !== traced) hooks.readPanels();
+      return;
+    }
+    if (msg.type === 'child-event' && !local && msg.childName === shown.scope) {
+      const event = msg.event as { type?: unknown; agentName?: unknown; reason?: unknown } | undefined;
+      const moved = event?.type === 'window:undone' || (event?.type === 'presentation:retracted' && event.reason === 'shed');
+      if (moved && (shown.agent === undefined || event.agentName === shown.agent)) hooks.readPanels();
+    }
   }
 }
 

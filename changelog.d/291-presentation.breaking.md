@@ -70,7 +70,11 @@
     that it has no line for, until a redo puts it back, but not one whose
     lines `/clear` or the scrollback cap took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again, once, at each undo, redo or shed. A figure
+    pins) read the window again, once, at each undo, redo or shed on the
+    window of the agent they show, which they ask for by scope alone: the
+    conversation agent's, or a fleet child's agent that its pins or
+    settings answer named (any of the child's agents before one has), and
+    not another resident's or a subagent's. A figure
     that comes back after a newer read of it started is dropped, and the
     coverage panel's five-second poll starts no read while one is pending,
     where a read slower than the poll had another started at each tick; a
