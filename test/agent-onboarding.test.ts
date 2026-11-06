@@ -21,6 +21,7 @@ const PIECES = pieces(GUIDE);
 const OPENING = PIECES[0]!.text;
 const HEADINGS = PIECES.slice(1).map((piece) => piece.heading!);
 const SPAN = /`([^`\n]+)`/g;
+const SCRIPT_RUN = String.raw`bun (?:--[\w-]+ )*'?<host>\/(scripts\/[\w.-]+)'?`;
 const SPANS = [...GUIDE.matchAll(SPAN)].map((match) => match[1]!);
 
 describe('the setup agent reads the guide through setup--run', () => {
@@ -165,7 +166,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
   });
 
   it('gives each shipped script it runs only the options that script takes', () => {
-    const runs = [...GUIDE.replace(/\\\n\s*/g, ' ').matchAll(/bun (?:--no-env-file )?'?<host>\/(scripts\/[\w.-]+)'? ([^\n]+)/g)];
+    const runs = [...GUIDE.replace(/\\\n\s*/g, ' ').matchAll(new RegExp(String.raw`${SCRIPT_RUN} ([^\n]+)`, 'g'))];
     expect(runs.length).toBeGreaterThan(0);
     for (const [, script, rest] of runs) {
       const source = readFileSync(join(ROOT, script!), 'utf-8');
@@ -179,7 +180,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
     const BUN_OPTIONS = new Set(['--no-env-file']);
     let named = 0;
     for (const piece of PIECES) {
-      const scripts = [...piece.text.replace(/\\\n\s*/g, ' ').matchAll(/bun (?:--no-env-file )?'?<host>\/(scripts\/[\w.-]+)/g)].map((match) => match[1]!);
+      const scripts = [...piece.text.replace(/\\\n\s*/g, ' ').matchAll(new RegExp(SCRIPT_RUN, 'g'))].map((match) => match[1]!);
       if (scripts.length === 0) continue;
       const sources = scripts.map((script) => readFileSync(join(ROOT, script), 'utf-8'));
       for (const [, span] of piece.text.matchAll(SPAN)) {
