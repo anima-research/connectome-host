@@ -479,7 +479,14 @@ describe('the store audit', () => {
     // records each ContextManager.open a start and the audit make, and the
     // window each opened manager holds, over a store a start left presented.
     await expectFrameworkLoadsOurContextManager();
-    const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, systemPrompt: 'attend to the agent', name: 'Muse' } };
+    // A re-anchor fraction and a message cap of their own, so an open that
+    // leaves either out opens another strategy than the start's (host #485
+    // bot review wave 4, finding 16).
+    const raw = {
+      ...DEFAULT_RECIPE,
+      agent: { ...DEFAULT_RECIPE.agent, strategy: { maxMessageTokens: 7000 } },
+      subconscious: { enabled: true, systemPrompt: 'attend to the agent', name: 'Muse', reAnchorFraction: 0.3 },
+    };
     const recipe = validateRecipe(structuredClone(raw));
     const opened: Array<{ config: Record<string, unknown>; window: string[]; mode: string }> = [];
     const open = ContextManager.open.bind(ContextManager);
@@ -527,7 +534,11 @@ describe('the store audit', () => {
       const shape = (config: Record<string, unknown>) => ({
         isolate: config.isolate,
         auxiliaryMessageViews: config.auxiliaryMessageViews,
-        strategy: (config.strategy as object | undefined)?.constructor.name,
+        strategy: config.strategy === undefined ? undefined : {
+          name: (config.strategy as object).constructor.name,
+          reAnchorFraction: (config.strategy as { reAnchorFraction?: number }).reAnchorFraction,
+          maxMessageTokens: (config.strategy as { maxMessageTokens?: number }).maxMessageTokens,
+        },
         view: samples.map((m) => (config.viewFilter as ((m: StoredMessage) => boolean) | undefined)?.(m) ?? true),
       });
       for (const namespace of ['agents/agent', 'subconscious/agent']) {
@@ -542,6 +553,8 @@ describe('the store audit', () => {
           .toEqual(namespace === 'agents/agent' ? startShape : shape(start!.config));
         expect({ mode: audit!.mode, window: audit!.window }, namespace).toEqual({ mode: 'presented', window: live[namespace]! });
       }
+      expect(shape(audited.find((o) => o.config.namespace === 'subconscious/agent')!.config).strategy)
+        .toEqual({ name: 'WindowedPassthroughStrategy', reAnchorFraction: 0.3, maxMessageTokens: 7000 });
       expect(live['agents/agent']).toHaveLength(1);
       // The resident's view leaves out held traffic and another agent's injections; the subconscious's only the latter.
       expect(shape(audited.find((o) => o.config.namespace === 'agents/agent')!.config).view).toEqual([true, false, true, false, false]);
