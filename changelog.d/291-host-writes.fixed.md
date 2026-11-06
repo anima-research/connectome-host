@@ -41,7 +41,8 @@
     and sent the rest to the agent. One given back as the TUI stops
     is printed to the terminal the TUI leaves, if it comes before the host
     exits, as any command's answer that comes then now is: the TUI dropped
-    it, its scrollback gone. `/newtopic <text>` stores the
+    it, its scrollback gone. That answer names the stop once and says to
+    store the summary after the restart. `/newtopic <text>` stores the
     text as given, its line breaks included (a multi-line one needs the TUI
     or the Web UI, which send a pasted text whole), where it joined its
     words with single spaces.

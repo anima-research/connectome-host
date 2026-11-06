@@ -1574,12 +1574,12 @@ function handleNewTopic(app: AppContext, text: string, input: CommandInput): Com
     ],
   })).catch(err => {
     const said = err instanceof Error ? err.message : String(err);
-    return {
-      lines: [{
-        text: app.stopping ? `Topic reset stopped: the host is stopping. What the reset said: ${said}` : `Topic reset failed: ${said}`,
-        style: 'system' as const,
-      }],
-    };
+    // A bare /newtopic's refusal for the stop (bareTransition) names it
+    // already.
+    const text = !app.stopping ? `Topic reset failed: ${said}`
+      : said.startsWith('the host is stopping') ? `Topic reset stopped: ${said}`
+      : `Topic reset stopped: the host is stopping. What the reset said: ${said}`;
+    return { lines: [{ text, style: 'system' as const }] };
   });
 
   return {
@@ -1651,11 +1651,14 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
     : !idleWithNoTurn(framework, agentName) ? `a turn of ${agentName}'s started`
     : windowMoved(cm, window, agentName);
   if (moved !== undefined) {
+    // A summary given back as the host stops is printed where the operator
+    // can store it once the host is started again.
+    const when = app.stopping ? ' after the restart' : '';
     throw new Error(
       `${moved} while the transition summary was written; nothing was stored. ` +
         (input.lineByLine
-          ? `To store it, run this one-line command:\n/newtopic ${oneLine(summary)}`
-          : `To store it, run /newtopic with it as the text:\n${summary}`),
+          ? `To store it${when}, run this one-line command:\n/newtopic ${oneLine(summary)}`
+          : `To store it${when}, run /newtopic with it as the text:\n${summary}`),
     );
   }
   return storeTransition(cm, summary, metadata);

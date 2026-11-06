@@ -343,4 +343,30 @@ describe('/newtopic cut short by a stop', () => {
         : `Topic reset failed: ${said}`);
     }
   });
+
+  // The refusal already names the stop, so it is passed on as it is, and
+  // the summary is given back for after the restart (#485 bot review 5,
+  // finding 17).
+  test('a bare one whose summary was written as the host began to stop says so once, and gives the summary back for after the restart', async () => {
+    for (const lineByLine of [false, true]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        windowMode: () => 'presented',
+        indexLength: () => 0,
+        getPresentedMessages: () => [],
+        generateTransitionSummary: async () => {
+          app.stopping = true;
+          return 'Done: the ledger.\nNext: the release.';
+        },
+      });
+      const follow = await handleCommand('/newtopic', app, { lineByLine }).asyncWork!;
+      expect(text(follow)).toBe(
+        'Topic reset stopped: the host is stopping while the transition summary was written; nothing was stored. ' +
+          (lineByLine
+            ? 'To store it after the restart, run this one-line command:\n/newtopic Done: the ledger. Next: the release.'
+            : 'To store it after the restart, run /newtopic with it as the text:\nDone: the ledger.\nNext: the release.'),
+      );
+    }
+  });
 });
