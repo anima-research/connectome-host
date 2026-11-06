@@ -715,6 +715,39 @@ describe('count-check and shell-check, in the round on the review of e9bb852cc',
     }
   });
 
+  test('a count that starts while a session switch is under way is said as switched, though the switch ends before the counts answer', async () => {
+    const app = appFor(frameworkFor([], 'first'));
+    app.switching = true;
+    const saved = { key: process.env.ANTHROPIC_API_KEY, base: process.env.ANTHROPIC_BASE_URL, model: process.env.COUNT_TOKENS_MODEL, token: process.env.ANTHROPIC_AUTH_TOKEN };
+    let asked = 0;
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        await req.text();
+        asked += 1;
+        app.switching = false;
+        return Response.json({ input_tokens: 10 });
+      },
+    });
+    try {
+      process.env.ANTHROPIC_API_KEY = 'sk-count-test';
+      process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.port}`;
+      delete process.env.COUNT_TOKENS_MODEL;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      const check = await buildCountCheck(app, 2_000);
+      expect(asked).toBe(2);
+      expect(check.beside).toEqual({ tokens: null, source: 'session_switched' });
+    } finally {
+      server.stop(true);
+      for (const [name, value] of [['ANTHROPIC_API_KEY', saved.key], ['ANTHROPIC_BASE_URL', saved.base],
+        ['COUNT_TOKENS_MODEL', saved.model], ['ANTHROPIC_AUTH_TOKEN', saved.token]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   test('shell-check makes each call on the session it began on, though the session switches between its calls', async () => {
     const calls: string[] = [];
     const next = frameworkFor(calls, 'next');

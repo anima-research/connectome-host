@@ -1127,6 +1127,7 @@ const COUNT_CHECK_MESSAGE: NormalizedMessage = { participant: 'User', content: [
 
 export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS): Promise<CountCheck> {
   const framework = app.framework;
+  const switchedAtStart = app.switching === true;
   const agentName = resolveAgent(app);
   const agent = requireAgent(app, agentName);
   const model = (agent as { model?: string }).model ?? null;
@@ -1150,7 +1151,7 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
     compressionModel === null ? null : count(compressionCountModel),
     sent === null || 'error' in sent ? null : count(countModel, sent),
   ]);
-  const beside: CountCheck['beside'] = app.switching === true || app.framework !== framework
+  const beside: CountCheck['beside'] = switchedAtStart || app.switching === true || app.framework !== framework
     ? { tokens: null, source: 'session_switched' }
     : sent === null ? unsupported
     : 'error' in sent ? { tokens: null, source: 'preview_failed', error: sent.error }
