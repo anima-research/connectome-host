@@ -320,6 +320,44 @@ describe("the TUI's history after an undo", () => {
   }, 40000);
 });
 
+// #485 bot review 2, findings 6, 9, 22 and 23.
+describe("the TUI's undone marks on lines it streamed, through runTui", () => {
+  const frameOf = async (scenario: string, name: string): Promise<string> => {
+    const step = (await play(scenario)).get(name);
+    if (!step) throw new Error(`no step ${name} in ${scenario}`);
+    return step.frame;
+  };
+
+  test("a shed of the root agent's reply marks its line in place, as an undo does", async () => {
+    const shed = await frameOf('undone-shed', 'shed');
+    expect(times(shed, 'a fifth ledger')).toBe(1);
+    expect(shed).toContain('(undone) a fifth ledger');
+  }, 40000);
+
+  test("a co-resident's row with the same words doesn't take the root agent's streamed line", async () => {
+    const undone = await frameOf('undone-co-resident', 'undone');
+    expect(times(undone, 'Done with the ledgers.')).toBe(1);
+    expect(undone).toContain('(undone) Done with the ledgers.');
+  }, 40000);
+
+  test('two text blocks streamed into one line are matched as one, and the line is marked in place', async () => {
+    const undone = await frameOf('undone-blocks', 'undone');
+    expect(times(undone, 'the first half')).toBe(1);
+    expect(times(undone, 'the second half')).toBe(1);
+    expect(undone).toContain('(undone) the first half, the second half');
+  }, 40000);
+
+  test("a streamed line whose entry the scrollback cap pushed out isn't drawn again below, after a /clear or without one", async () => {
+    const steps = await play('undone-evicted');
+    const cleared = steps.get('cleared, then pushed out')!.frame;
+    expect(cleared).toContain('(undone) a ninth ledger');
+    expect(cleared).not.toContain('a lost ledger');
+    const pushed = steps.get('pushed out')!.frame;
+    expect(pushed).toContain('(undone) a tenth ledger');
+    expect(pushed).not.toContain('a stray ledger');
+  }, 60000);
+});
+
 describe("the TUI's branch moves, through runTui", () => {
   // agent-framework's switchBranch and rollbackToMessage trace nothing: the
   // command's follow-up saying the branch changed is what tells the TUI.

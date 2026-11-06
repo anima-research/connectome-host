@@ -34,16 +34,20 @@ const subagents = {
   cancelAll() { aborts.push('cancelAll'); return 1; },
 };
 
-/** The agent's record in `undone`, and which of its rows an undo took out of its window. */
-const history: Array<{ id: string; participant: string; content: Array<Record<string, unknown>> }> = [
+/** The agent's record in the `undone` scenarios, and which of its rows an undo took out of its window. */
+const history: Array<{ id: string; participant: string; content: Array<Record<string, unknown>>; metadata?: Record<string, unknown> }> = [
   { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
   { id: 'a1', participant: 'agent', content: [{ type: 'thinking', thinking: 'tally them first' }, { type: 'text', text: 'three ledgers' }] },
 ];
 const undoneRows = new Set<string>();
 /** The store's branch in `async-branch`, which a /checkout moves (the framework's switchBranch traces nothing). */
 let storeBranch = 'main';
-const contextManager = () => (scenario === 'undone'
-  ? { getAllMessages: () => history, windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in') }
+const contextManager = () => (scenario.startsWith('undone')
+  ? {
+      getAllMessages: () => history,
+      getMessageCount: () => history.length,
+      windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in'),
+    }
   : scenario === 'async-branch'
     ? {
         getAllMessages: () => history,
@@ -466,6 +470,88 @@ async function play(): Promise<void> {
     await command('/checkout side');
     await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
     await step('switched');
+  } else if (scenario === 'undone-shed') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    await streamed('a fifth ledger');
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] });
+    // A failed inference's shed takes the reply out of the window as undone,
+    // with no window:undone (agent-framework's shedFailedExchange).
+    undoneRows.add('a2');
+    first.send('presentation:retracted', { messageIds: ['a2'], reason: 'shed' });
+    await until(async () => (await frame()).includes('(undone) a fifth ledger'), 'the mark');
+    await step('shed');
+  } else if (scenario === 'undone-co-resident') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A co-resident's row with the same words, stored in the record the
+    // residents share before the root agent's reply.
+    history.push({
+      id: 'm1', participant: 'mira', content: [{ type: 'text', text: 'Done with the ledgers.' }],
+      metadata: { audience: ['mira'], ownRowOf: 'mira' },
+    });
+    await streamed('Done with the ledgers.');
+    history.push({
+      id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'Done with the ledgers.' }],
+      metadata: { audience: ['agent'], ownRowOf: 'agent' },
+    });
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) Done with the ledgers.'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-blocks') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A reply whose thinking is followed by two text blocks: the TUI
+    // streams the two into one line.
+    first.send('inference:started');
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'thinking' });
+    first.send('inference:tokens', { content: 'weigh them', blockType: 'thinking' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'the first half, ', blockType: 'text' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'the second half', blockType: 'text' });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the first half, the second half'), 'the reply');
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'thinking', thinking: 'weigh them' }, { type: 'text', text: 'the first half, ' }, { type: 'text', text: 'the second half' }],
+    });
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) the first half, the second half'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-evicted') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    /** More streamed lines than the scrollback holds, none of them a row's. */
+    const fill = (prefix: string) => {
+      for (let i = 0; i <= 2000; i++) {
+        first.send('inference:started');
+        first.send('inference:tokens', { content: `${prefix} filler ${i}`, blockType: 'text' });
+        first.send('inference:completed');
+      }
+    };
+    // A streamed reply whose lines /clear took down, then enough streamed
+    // lines to push its entry out before any undo linked it to its row.
+    await streamed('a lost ledger');
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a lost ledger' }] });
+    await command('/clear');
+    await until(async () => !(await frame()).includes('ledger'), 'the display to clear');
+    fill('first');
+    // Undone, with a row stored since that the TUI drew no line for.
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a ninth ledger' }] });
+    undoneRows.add('a2');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a ninth ledger'), 'the mark');
+    await step('cleared, then pushed out');
+    // A streamed reply the scrollback cap took down, with no /clear.
+    await streamed('a stray ledger');
+    history.push({ id: 'a4', participant: 'agent', content: [{ type: 'text', text: 'a stray ledger' }] });
+    fill('second');
+    history.push({ id: 'a5', participant: 'agent', content: [{ type: 'text', text: 'a tenth ledger' }] });
+    undoneRows.add('a4');
+    undoneRows.add('a5');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a tenth ledger'), 'the mark');
+    await step('pushed out');
   } else if (scenario === 'undone') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     await step('history');

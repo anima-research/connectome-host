@@ -38,7 +38,7 @@ import { takeRecipeWarnings } from './recipe-warnings.js';
 import { bunFloorNotice } from './bun-floor-check.js';
 import { hostUpdate } from './update/update.js';
 import { effectiveContextBudgetTokens } from './recipe-fit.js';
-import { storedInjectionMarkOf } from '@animalabs/agent-framework';
+import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from './stored-injection.js';
 import { speakerOf, type Speaker } from './speaker.js';
 
@@ -775,10 +775,17 @@ export async function runTui(app: AppContext): Promise<void> {
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
+  /** How many rows the record held when streamedLines last let an entry go:
+   *  past the cap, the scrollback has taken that entry's line down, so a row
+   *  stored by then, which no entry may link any more, isn't drawn again. */
+  let droppedBefore = 0;
 
   function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string) {
     streamedLines.push({ line, kind, said, shown, color });
-    if (streamedLines.length > SCROLLBACK_CAP) streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
+    if (streamedLines.length > SCROLLBACK_CAP) {
+      streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
+      droppedBefore = app.framework.getAgent(rootAgentName)?.getContextManager().getMessageCount() ?? droppedBefore;
+    }
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -830,6 +837,7 @@ export async function runTui(app: AppContext): Promise<void> {
     historyRead = 0;
     streamedLines = [];
     clearedRows = new Set();
+    droppedBefore = 0;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -852,17 +860,29 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   /** The streamed lines of a row stored after the history was drawn, each
-   *  the first one not linked yet whose kind and words are a block of the
-   *  row's (its text or its thinking, or the operator's message), taken out
-   *  of streamedLines. */
+   *  the first one not linked yet whose kind and words are a run of the
+   *  row's blocks (its text or its thinking, or the operator's message),
+   *  taken out of streamedLines. A run is the consecutive blocks of one
+   *  kind, which streaming draws as one line (switchStreamBlock). */
   function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
-    const taken: StreamedLine[] = [];
+    const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
+    let previous: StreamedLine['kind'] | undefined;
     for (const block of msg.content) {
-      const said = block.type === 'text' ? (block as { text?: string }).text
-        : block.type === 'thinking' ? (block as { thinking?: string }).thinking
+      const said = block.type === 'text' ? (block as { text?: string }).text ?? ''
+        : block.type === 'thinking' ? (block as { thinking?: string }).thinking ?? ''
         : undefined;
-      if (!said?.trim()) continue;
+      if (said === undefined) {
+        previous = undefined;
+        continue;
+      }
       const kind = block.type === 'thinking' ? 'thinking' : msg.participant === 'user' ? 'you' : 'text';
+      if (kind === previous) runs[runs.length - 1]!.said += said;
+      else runs.push({ kind, said });
+      previous = kind;
+    }
+    const taken: StreamedLine[] = [];
+    for (const { kind, said } of runs) {
+      if (!said.trim()) continue;
       const at = streamedLines.findIndex((l) => l.kind === kind && l.said.trim() === said.trim());
       if (at >= 0) taken.push(...streamedLines.splice(at, 1));
     }
@@ -877,7 +897,9 @@ export async function runTui(app: AppContext): Promise<void> {
    *  by their words. An undone one with no such line is drawn below,
    *  marked, and taken down again once a redo puts it back in the window.
    *  A row whose lines /clear or the scrollback cap took down isn't drawn
-   *  again. */
+   *  again. A row stamped for other residents only (a co-resident's, in the
+   *  store the residents share) is no line's: the TUI streams the root
+   *  agent's turns. */
   function remarkHistory() {
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
@@ -888,6 +910,8 @@ export async function runTui(app: AppContext): Promise<void> {
     for (const msg of stored) {
       if (streamedLines.length === 0) break;
       if (linked.has(msg.id) || clearedRows.has(msg.id)) continue;
+      const stamp = audienceOf(msg.metadata);
+      if (stamp && !stamp.audience.includes(rootAgentName)) continue;
       const lines = takeStreamedLines(msg);
       if (lines.length === 0) continue;
       linked.add(msg.id);
@@ -914,9 +938,10 @@ export async function runTui(app: AppContext): Promise<void> {
     }
     recordLines = kept;
     const drawn = new Set(kept.map((record) => record.id));
-    for (const msg of stored) {
+    stored.forEach((msg, i) => {
+      if (historyRead + i < droppedBefore) return;
       if (!drawn.has(msg.id) && !clearedRows.has(msg.id) && undone(msg.id)) drawRow(msg, true, true);
-    }
+    });
   }
 
   function refreshFromStore() {
@@ -1965,6 +1990,14 @@ export async function runTui(app: AppContext): Promise<void> {
         // another client: the history marks its lines again in place, and
         // the scrollback's other lines stay as they are.
         if (agent === rootAgentName) remarkHistory();
+        break;
+      }
+
+      case 'presentation:retracted': {
+        // A refusal rewind's or a failed inference's shed from the root
+        // agent's window takes its rows out as an undone turn's, with no
+        // window:undone: the history marks them, as the Web UI's marks do.
+        if (agent === rootAgentName && event.reason === 'shed') remarkHistory();
         break;
       }
 

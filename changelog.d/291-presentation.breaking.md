@@ -63,11 +63,12 @@
     co-resident's row stored before the message was shown stays too.
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
-    rows an undo took out (dimmed, and `(undone)` in the TUI, which marks
-    its lines in place, a reply it streamed and a message sent from it
-    included, and draws below them an undone row stored since it loaded
-    the history that it has no line for, until a redo puts it back, but
-    not one whose lines `/clear` took down), and the Web
+    rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
+    which marks its lines in place, a reply it streamed and a message sent
+    from it included, never taking another resident's row for one of them,
+    and draws below them an undone row stored since it loaded the history
+    that it has no line for, until a redo puts it back, but not one whose
+    lines `/clear` or the scrollback cap took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again at each undo, redo or shed. The local pin picker
     lists the host's candidates, the record's last 200 rows, as a fleet
