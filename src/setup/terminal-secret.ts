@@ -29,6 +29,25 @@ export async function askHidden(
     throw new Error('setup can\'t find this terminal\'s readline history or kill ring, so it couldn\'t keep what\'s typed ' +
       'out of them');
   }
+  // Bun 1.4.4's readline tells a bracketed paste's start and end apart only as keypresses named paste-start and
+  // paste-end (readline-paste.ts).
+  const input = (rl as unknown as { input?: NodeJS.EventEmitter }).input;
+  if (input !== undefined && pastingNow()) {
+    const ended = await new Promise<boolean>((resolve) => {
+      const onKey = (_text: unknown, key: { name?: string } | undefined) => {
+        if (key?.name === 'paste-end') done(true);
+      };
+      const onClose = () => done(false);
+      const done = (value: boolean) => {
+        input.off('keypress', onKey);
+        rl.off('close', onClose);
+        resolve(value);
+      };
+      input.on('keypress', onKey);
+      rl.once('close', onClose);
+    });
+    if (!ended) return '';
+  }
   const draft = rl.line;
   if (draft !== '') {
     rl.write(null, { ctrl: true, name: 'e' });
@@ -45,7 +64,7 @@ export async function askHidden(
   let whole = () => {};
   let closed = () => {};
   let gone = false;
-  let pasting = pastingNow();
+  let pasting = false;
   let tookInPaste = false;
   const take = (line: string) => {
     // readline puts a line in its history before it hands the line on.
@@ -55,9 +74,6 @@ export async function askHidden(
     if (pasting) tookInPaste = true;
     else quiet = setTimeout(() => whole(), PASTE_QUIET_MS);
   };
-  // Bun 1.4.4's readline tells a bracketed paste's start and end apart only as keypresses named paste-start and
-  // paste-end (readline-paste.ts).
-  const input = (rl as unknown as { input?: NodeJS.EventEmitter }).input;
   const pasted = (_text: unknown, key: { name?: string } | undefined) => {
     if (key?.name === 'paste-start') {
       pasting = true;

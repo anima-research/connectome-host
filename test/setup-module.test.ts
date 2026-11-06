@@ -9,6 +9,7 @@ import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
 import { EnvFormError, envForm, readEnvFile, storedSecretRedactor, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
+import { bracketedPaste } from '../src/readline-paste.js';
 import { checkDiscordToken } from '../src/setup/discord-token.js';
 
 const dirs: string[] = [];
@@ -1618,15 +1619,44 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('a hidden question opened while a bracketed paste is under way holds through it, its pause included', async () => {
+  test('a hidden question asked while a bracketed paste is under way opens once the paste ends, which is left whole for the conversation', async () => {
     const { input, output, rl, shown } = terminal();
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', () => true);
-    input.write('part-one\r');
+    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
+    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
+    const sent: string[] = [];
+    rl.on('line', (line) => {
+      const message = paste.take(line);
+      if (message !== null) sent.push(message);
+    });
+    input.write('\x1b[200~chat one\r');
+    await Bun.sleep(20);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', () => paste.pasting());
+    input.write('chat two\r');
     await Bun.sleep(PASTE_QUIET_MS + 100);
-    input.write('part-two\r\x1b[201~');
-    expect(await answer).toBe('part-one\npart-two');
-    expect(shown()).not.toContain('part-');
+    expect(shown()).not.toContain('DISCORD_TOKEN');
+    input.write('chat three\x1b[201~');
+    await Bun.sleep(20);
+    expect(shown()).toContain('DISCORD_TOKEN (the bot token)');
+    input.write('s3cret-value\r');
+    expect(await answer).toBe('s3cret-value');
+    expect(rl.line).toBe('chat three');
+    const after = new Promise<void>((resolve) => rl.once('line', () => resolve()));
+    input.write('\r');
+    await after;
+    expect(sent).toEqual(['chat one\nchat two\nchat three']);
+    expect(shown()).not.toContain('s3cret-value');
+    paste.end();
     rl.close();
+  });
+
+  test('a conversation closed while a hidden question waits out a paste answers nothing, and the question never opens', async () => {
+    const { input, output, rl, shown } = terminal();
+    input.write('half');
+    await Bun.sleep(20);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', () => true);
+    rl.close();
+    expect(await answer).toBe('');
+    expect(shown()).not.toContain('DISCORD_TOKEN');
   });
 
   test('a bracketed paste that opens with a line break and pauses before the rest is one answer, none of it left for the conversation', async () => {
