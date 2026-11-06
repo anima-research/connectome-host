@@ -1,10 +1,8 @@
 /**
- * The framework's traces don't say which events started a turn, so a line's wait counts from when the host's own
- * module takes the line in (TuiModule.onProcess): a turn of the primary's that starts after that has the line in its
- * context, a wake's included, and the first one's end ends the wait. A line taken in while a turn runs waits for the
- * turn after that one, which the framework starts for every request queued while the agent was busy. At
- * `inference:failed` the wait goes on, since the framework may retry the turn, or hold it and run it again, and either
- * answers the line.
+ * agent-framework 0.32.0's traces don't say which events started a turn, so a line's wait counts from when the host
+ * takes the line in. It starts a turn for every line the host queued while the agent was busy, so a line taken in
+ * during a turn waits for the turn after it. It may retry a failed turn, or hold it and run it again, so
+ * `inference:failed` doesn't end a wait.
  */
 
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES, traceError } from './state/turn-trace.js';
