@@ -282,6 +282,13 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('<MY_TOKEN> <PRICE>\n');
   });
 
+  test('a NODE_ENV a dotenv file gives is shown by its name, and the modes setup reads the files in aren\'t', async () => {
+    const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n' });
+    writeFileSync(join(dir, '.env.local'), 'NODE_ENV=staging\n');
+    const answer = await run(module, 'echo "test production development staging"');
+    expect(answer.stdout.text).toBe('test production development <NODE_ENV>\n');
+  });
+
   test('a stored secret a command changes in .env and prints in that same command is shown by its name', async () => {
     const { module } = install({ envFile: 'DISCORD_TOKEN="old-token-value"\n' });
     listSecrets(module, 'DISCORD_TOKEN');

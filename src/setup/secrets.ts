@@ -140,11 +140,16 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
   const names = dotenvNames(dir).filter((name) => env[name] === undefined);
   if (names.length === 0) return values;
   const given: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) if (value !== undefined && name !== 'BUN_OPTIONS') given[name] = value;
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && name !== 'BUN_OPTIONS' && name !== 'NODE_ENV') given[name] = value;
+  }
   for (const mode of DOTENV_MODES) {
-    // --config=/dev/null: a bunfig.toml in the directory would otherwise run its preload here.
+    // --config=/dev/null: a bunfig.toml in the directory would otherwise run its preload here. Bun's mode is
+    // development where NODE_ENV is unset, and a NODE_ENV the environment gives wins over a file's, so a file's
+    // NODE_ENV comes through only in the development run, which goes without one.
     const ran = spawnSync(process.execPath, ['--config=/dev/null', '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
-      cwd: dir, env: { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024,
+      cwd: dir, env: mode === 'development' ? given : { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS,
+      encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024,
     });
     if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
       throw new Error(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
@@ -163,6 +168,7 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
       throw new Error(`Bun's reading of the dotenv files in ${dir} gave output setup can't read`);
     }
     for (const name of names) {
+      if (name === 'NODE_ENV' && mode !== 'development') continue;
       const value = read[name];
       if (typeof value !== 'string') continue;
       if (!values.has(name)) values.set(name, new Set());
