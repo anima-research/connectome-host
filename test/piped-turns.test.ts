@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from 'bun:test';
 import { PIPED_TURN_CAP_MS, createPipedTurns, switchFollowing, traceFollower, type TraceSource } from '../src/piped-turns.js';
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES } from '../src/state/turn-trace.js';
+import { TuiModule, onHostLineTakenIn } from '../src/modules/tui-module.js';
 
 function setUp(showsItself?: (tool: string) => boolean) {
   const out: string[] = [];
@@ -53,6 +54,40 @@ describe('the wait for a line\'s turn', () => {
       expect(await settled(wait)).toBe(true);
     });
   }
+
+  test('endAll ends every wait at once, and no cap fires after it', async () => {
+    await onFakeTimers(async (advance, settledNow) => {
+      const { out, turns, emit } = setUp();
+      emit('inference:started');
+      const first = turns.waitForTurn(400);
+      const second = turns.waitForTurn(400);
+      turns.endAll();
+      expect([await settledNow(first), await settledNow(second)]).toEqual([true, true]);
+      await advance(PIPED_TURN_CAP_MS);
+      expect(out.filter((line) => line.includes('no answer after'))).toEqual([]);
+    });
+  });
+
+  test('a turn that starts before the host\'s module takes the line in, such as a wake\'s, doesn\'t end its wait, and the next turn\'s end does', async () => {
+    const { turns, emit } = setUp();
+    const takeIn = (source: string) => new TuiModule().onProcess(
+      { type: 'external-message', source, content: `from ${source}`, metadata: {}, triggerInference: true } as never, {} as never);
+    const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+    onHostLineTakenIn(() => turns.takenIn());
+    try {
+      const wait = turns.waitForTurn(60_000);
+      emit('inference:started');
+      await takeIn('cli');
+      emit(settledTrace);
+      expect(await settled(wait)).toBe(false);
+      emit('inference:started');
+      await takeIn('tui');
+      emit(settledTrace);
+      expect(await settled(wait)).toBe(true);
+    } finally {
+      onHostLineTakenIn(null);
+    }
+  });
 
   test('a failure keeps it waiting, and the retry\'s end ends it', async () => {
     const { turns, emit, out } = setUp();

@@ -59,7 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
-import { TuiModule } from './modules/tui-module.js';
+import { TuiModule, onHostLineTakenIn } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -738,6 +738,7 @@ async function runPiped(app: AppContext) {
     error: (line) => { say(line); },
   }, failureHint(app.recipe, process.env, app.credentials), app.recipe.modules?.setup === true ? showsItself : undefined,
   () => { answeredUnwaited(); });
+  onHostLineTakenIn(() => turns.takenIn());
   const traces = traceFollower((event) => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
@@ -903,6 +904,7 @@ async function runPiped(app: AppContext) {
     rl.on('close', () => {
       terminalAsker = null;
       closed = true;
+      turns.endAll();
       conversationEnded = true;
       atPrompt = false;
       paste?.end();
@@ -916,7 +918,7 @@ async function runPiped(app: AppContext) {
     const promptIfDone = (): void => {
       if (closed || unanswered > 0) return;
       if (setupModule()?.finishRequested) {
-        rl.close();
+        if (!turns.running()) rl.close();
         return;
       }
       rl.prompt();

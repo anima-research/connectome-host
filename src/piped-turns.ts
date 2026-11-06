@@ -1,9 +1,10 @@
 /**
- * The framework's traces don't say which events started a turn, so a line's wait ends at the end of the first turn of
- * the primary's that starts after the wait was asked for: a line that goes in while a turn runs waits for the turn
- * after that one, which the framework starts for every request queued while the agent was busy, and another turn of
- * the primary's that starts first, such as a wake's, ends it too. At `inference:failed` the wait goes on, since the
- * framework may retry the turn, or hold it and run it again, and either answers the line.
+ * The framework's traces don't say which events started a turn, so a line's wait counts from when the host's own
+ * module takes the line in (TuiModule.onProcess): a turn of the primary's that starts after that has the line in its
+ * context, a wake's included, and the first one's end ends the wait. A line taken in while a turn runs waits for the
+ * turn after that one, which the framework starts for every request queued while the agent was busy. At
+ * `inference:failed` the wait goes on, since the framework may retry the turn, or hold it and run it again, and either
+ * answers the line.
  */
 
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES, traceError } from './state/turn-trace.js';
@@ -23,6 +24,9 @@ export interface PipedTurns {
    *  released. */
   switched(): void;
   holdCaps(): () => void;
+  endAll(): void;
+  running(): boolean;
+  takenIn(): void;
 }
 
 /** The longest a line waits for its turn. */
@@ -172,7 +176,16 @@ export function createPipedTurns(
     };
   }
 
-  return { onTrace, waitForTurn, switched, holdCaps };
+  function endAll(): void {
+    for (const wait of waits.splice(0)) wait.done();
+  }
+
+  function takenIn(): void {
+    const wait = waits.at(-1);
+    if (wait !== undefined) wait.after = turnsStarted;
+  }
+
+  return { onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn };
 }
 
 export interface TraceSource {
