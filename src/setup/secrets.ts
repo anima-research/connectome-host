@@ -303,10 +303,12 @@ interface Span {
 function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   const candidates: Span[] = [];
   for (const { name, value } of secrets) {
-    const needle = Buffer.from(value, 'utf-8');
-    if (needle.length === 0) continue;
-    for (let at = bytes.indexOf(needle); at >= 0; at = bytes.indexOf(needle, at + 1)) {
-      candidates.push({ start: at, end: at + needle.length, names: [name] });
+    for (const form of new Set([value, value.trim()])) {
+      const needle = Buffer.from(form, 'utf-8');
+      if (needle.length === 0) continue;
+      for (let at = bytes.indexOf(needle); at >= 0; at = bytes.indexOf(needle, at + 1)) {
+        candidates.push({ start: at, end: at + needle.length, names: [name] });
+      }
     }
   }
   candidates.sort((a, b) => a.start - b.start || b.end - a.end);

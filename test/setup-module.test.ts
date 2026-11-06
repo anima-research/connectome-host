@@ -11,6 +11,7 @@ import { EnvFormError, envForm, readEnvFile, storedSecretRedactor, writeEnvValue
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
 import { bracketedPaste } from '../src/readline-paste.js';
 import { checkDiscordToken } from '../src/setup/discord-token.js';
+import { checkProviderKey } from '../src/setup/provider-key.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -1082,6 +1083,15 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
   });
 });
 
+describe('checkProviderKey', () => {
+  test('a provider key a redirect puts in a host, lowercased, is hidden in where it leads', async () => {
+    const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
+      fetch: (async () => new Response(null, { status: 302, headers: { location: 'https://sk-or-abc.example/' } })) as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ kind: 'redirected', status: 302, to: 'https://<OPENROUTER_API_KEY>.example/' });
+  });
+});
+
 describe('checkDiscordToken', () => {
   test('follows no redirect, and answers a 3xx as a redirect, with where it leads', async () => {
     let redirect: RequestRedirect | undefined;
@@ -1093,6 +1103,13 @@ describe('checkDiscordToken', () => {
     });
     expect(redirect).toBe('manual');
     expect(result).toEqual({ kind: 'redirected', status: 307, to: 'https://elsewhere.example/' });
+  });
+
+  test('a token a redirect puts in a host, lowercased, is hidden in where it leads', async () => {
+    const result = await checkDiscordToken('A-Token', {
+      fetch: (async () => new Response(null, { status: 307, headers: { location: 'https://a-token.example/' } })) as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ kind: 'redirected', status: 307, to: 'https://<DISCORD_TOKEN>.example/' });
   });
 
   test('a token passed with spaces around it is hidden in what an error quotes, as sent or trimmed', async () => {

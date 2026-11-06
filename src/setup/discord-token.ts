@@ -73,8 +73,11 @@ export async function checkDiscordToken(
   return { kind: 'answered', status: response.status, said };
 }
 
+// In any letter case, since a server that puts the token in a URL's host gives it back lowercased.
 function hidden(words: string, token: string): string {
   const forms = [...new Set([token, token.trim()])].filter((form) => form !== '').sort((a, b) => b.length - a.length);
-  for (const form of forms) words = words.split(form).join('<DISCORD_TOKEN>');
+  for (const form of forms) {
+    words = words.replace(new RegExp(form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<DISCORD_TOKEN>');
+  }
   return words;
 }

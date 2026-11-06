@@ -26,6 +26,15 @@ function tail(log: string, windowStart: number, contextBytes: number): { bytes: 
 }
 
 describe("the stored secrets' window redactor", () => {
+  test('replaces a stored value that has spaces around it where output holds it trimmed too', () => {
+    const dir = install();
+    writeFileSync(join(dir, '.setup', 'stored-secrets.json'), '["DISCORD_TOKEN","OPENAI_API_KEY"]');
+    writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN="dt-value"\nOPENAI_API_KEY="  sk-spaced  "\n');
+    const { redact } = storedSecretWindowRedactor(dir, {});
+    const bytes = Buffer.from('it printed sk-spaced here', 'utf-8');
+    expect(redact(bytes, 0, bytes.length)).toMatchObject({ text: 'it printed <OPENAI_API_KEY> here', replaced: ['OPENAI_API_KEY'] });
+  });
+
   test('holds the longest value in UTF-8 bytes, and shows a value cut by the window whole, as its name', () => {
     const multiLine = 'first-line\nsécond-line';
     const { contextBytes, redact } = storedSecretWindowRedactor(install(), { OPENAI_API_KEY: multiLine });
