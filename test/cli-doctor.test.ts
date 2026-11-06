@@ -293,8 +293,8 @@ describe('connectome doctor', () => {
       python: fakePython(at.work, { end: 'clean' }),
     });
     expect(asked[2]).toBe(true);
-    expect(r.out).toContain(`It's stopped: \`${join(at.root, 'connectome')} service start\` starts it.`);
-    expect(r.out).toContain('No host answers, since its service is stopped.');
+    expect(r.out).toContain('It\'s stopped.');
+    expect(r.out).toContain(`No host answers, since its service is stopped: \`${join(at.root, 'connectome')} service start\` starts it.`);
     expect(r.out).not.toMatch(/✗ (No host answers|The service check)/);
     const failed = await run(at, { checkService: async () => ({ passed: false, lines: ['The unit is failed.'] }) });
     expect(failed.out).toMatch(/✗ The service check above didn't pass/);
@@ -1543,6 +1543,19 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).not.toContain('Then run doctor again');
     expect(r.out).not.toContain('Doctor stops here');
     expect(r.out).toContain('pid 4242');
+  });
+
+  test('a host that answers while its service is stopped is a problem naming it, with no advice to start the service until it\'s stopped', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+      python: fakePython(at.work, { end: 'clean' }),
+    }));
+    expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, though the service is stopped, so it isn\'t the service\'s');
+    expect(r.out).toContain(`Stop it before \`${join(at.root, 'connectome')} service start\`, since a host the service starts takes this install's socket`);
+    expect(r.out).not.toContain(`\`${join(at.root, 'connectome')} service start\` starts it`);
+    expect(r.out).not.toContain('✓ The host answers');
+    expect(r.status).toBe(1);
   });
 
 });

@@ -189,7 +189,7 @@ export async function doctor(
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         if (result.stopped === true) {
           stopped = true;
-          report.line(`It's stopped: \`${startCommand}\` starts it.`);
+          report.line('It\'s stopped.');
         }
       });
     }
@@ -201,7 +201,7 @@ export async function doctor(
       host = { reason: errorText(error), down: false };
     }
     if ('reason' in host && stopped && host.down) {
-      report.line('No host answers, since its service is stopped.');
+      report.line(`No host answers, since its service is stopped: \`${startCommand}\` starts it.`);
     } else if ('reason' in host) {
       report.problem(`No host answers: ${host.reason}.`);
       if (host.down && service !== null) {
@@ -209,6 +209,12 @@ export async function doctor(
           for (const line of serviceLines(root) ?? []) report.line(line);
         });
       }
+    } else if (stopped) {
+      report.problem(`A host answers, pid ${host.ready.pid}, recipe ${host.ready.recipe}, though the service is stopped, so ` +
+        'it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
+        `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket from ` +
+        'one that holds it.');
+      host.subscribe([]);
     } else {
       report.ok(`The host answers: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
       host.subscribe([]);
