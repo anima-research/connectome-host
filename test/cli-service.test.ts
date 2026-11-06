@@ -3242,7 +3242,7 @@ test('a stopped service passes the check that takes stopped as fine, and says so
   expect([fine.passed, fine.stopped]).toEqual([true, true]);
   expect(fine.lines).toContain(`${HOST} is stopped: systemd shows it inactive (dead).`);
   expect(fine.lines).toContain(`${SHELL} is stopped: systemd shows it inactive (dead).`);
-  expect(fine.lines.join('\n')).not.toContain('The journal\'s last lines from the shell daemon');
+  expect(fine.lines.join('\n')).toContain('The journal\'s last lines from the shell daemon');
   const strict = await checkService(at.root, f.system);
   expect([strict.passed, strict.stopped]).toEqual([false, undefined]);
 });
@@ -5369,10 +5369,11 @@ test.skipIf(process.getuid?.() === 0)('a unit file this user can\'t look at is s
     expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
     expect(fine.lines.join('\n')).toContain(`${hostUnit(at)}, ${HOST}'s unit file, can't be looked at, so whether it's there ` +
       'can\'t be told: ');
+    expect(fine.lines.join('\n')).toMatch(/can't be told: .*\. Give this user search on each directory on the way to it, and run this again\./);
     expect(fine.lines.join('\n')).not.toContain('is gone');
     f.err.length = 0;
     expect(await runService(f.ctx(['start']), f.system)).not.toBe(0);
-    expect(f.err.join('\n')).toMatch(/unit file, can't be looked at \(.*\), so whether it's there can't be told\. Nothing was started\./);
+    expect(f.err.join('\n')).toMatch(/unit file, can't be looked at \(.*\), so whether it's there can't be told\. Nothing was started\. Give this user search on each directory on the way to it, and run this again\./);
     expect(f.err.join('\n')).not.toContain('is gone');
   } finally {
     chmodSync(dir, 0o755);

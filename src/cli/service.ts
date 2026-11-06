@@ -807,13 +807,19 @@ function startsAgain(record: ServiceRecord, sys: ServiceSystem, env: Record<stri
   return gone === record.units.host ? [refuses] : [startsByItself(record, sys, env, false, cmd), refuses];
 }
 
-function unitFileState(file: string): 'there' | 'gone' | { why: string } {
+function unitFileState(file: string): 'there' | 'gone' | { why: string; repair: string } {
   try {
     statSync(file);
     return 'there';
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    return code === 'ENOENT' || code === 'ENOTDIR' ? 'gone' : { why: errorText(error).replace(/\.$/, '') };
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'gone';
+    return {
+      why: errorText(error).replace(/\.$/, ''),
+      repair: code === 'EACCES' || code === 'EPERM'
+        ? 'Give this user search on each directory on the way to it, and run this again.'
+        : 'Repair what that path runs through, and run this again.',
+    };
   }
 }
 
@@ -907,7 +913,7 @@ async function startService(ctx: CliContext, sys: ServiceSystem): Promise<number
     }
     if (state !== 'there') {
       throw new Refusal(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, can't be looked at (${state.why}), so ` +
-        'whether it\'s there can\'t be told. Nothing was started.');
+        `whether it's there can't be told. Nothing was started. ${state.repair}`);
     }
   }
   const env = childEnv(sys);
@@ -1914,7 +1920,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     unseen += 1;
     fail(state === 'gone' ? `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)}`
       : `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, can't be looked at, so whether it's there can't be told: ` +
-        `${state.why}.`);
+        `${state.why}. ${state.repair}`);
   }
   if (record.manager === 'systemd-user') {
     const shownAll = units.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
@@ -1958,7 +1964,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         lines.push(restarts > 0 ? `${restarted}${exited}.` : `systemd hasn't restarted it since it was last started${exited}.`);
       }
       if (unit !== record.units.host) {
-        if (!active && !stopped) latestStart(unit, shown, false, 'the shell daemon');
+        if (!active) latestStart(unit, shown, false, 'the shell daemon');
         continue;
       }
       const policy = restartPolicy(shown);
