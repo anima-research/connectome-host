@@ -328,17 +328,23 @@ The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage
 you 1–2 on a running instance. For a pre-boot check, run the host on copies, so that
 nothing it does reaches the original:
 1. Copy the data directory the install's record names (stage 1), wherever it is.
-2. Copy the recipe, keep its Web UI on loopback, and leave out `mcpServers` and
-   `modules.fleet.children`: the servers' `env` names files in the original data
-   directory, discord-mcpl would put the resident on Discord, and a fleet child starts
-   on its own data directory under `<agent>-cm`.
+2. Copy the recipe, keep its Web UI on loopback, and leave out `mcpServers`,
+   `modules.fleet.children`, `modules.heartbeat.statePath` and `extensions`: the
+   servers' `env` names files in the original data directory, discord-mcpl would put
+   the resident on Discord, a fleet child starts on its own data directory under
+   `<agent>-cm`, a heartbeat state path resolves from there too, and an extension's
+   code runs in the host's process. So a recipe whose strategy comes from an extension
+   gets no pre-boot check this way.
 3. From `<agent>-cm`, start the release `current` names, not the install's entry: the
    entry refuses a `DATA_DIR` other than the one the install's record names, and a host
    it starts writes the install's own files. Started directly, the host writes none:
-   `env -u CONNECTOME_INSTALL_ROOT MCPL_AGENT_OVERLAY_FILE=<the data copy>/no-overlay.json DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`,
-   with a mock or real key. The overlay variable names a file that doesn't exist, so
-   the servers the resident deployed for itself (`mcpl-servers.agent.json`) stay out
-   too. Then hit the endpoints, and stop it.
+   `CONNECTOME_INSTALL_ROOT= OBSERVERS_FILE= IDENTITY_KEY_FILE= ANTHROPIC_AUTH_TOKEN= ANTHROPIC_OAUTH_CREDENTIALS_FILE= ANTHROPIC_API_KEY=<a mock or real key> MCPL_AGENT_OVERLAY_FILE=<the data copy>/no-overlay.json DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`.
+   A variable set empty there stays empty, though `<agent>-cm/.env` sets it, so the host
+   doesn't take the install as its own, use the original's observers or identity key,
+   or sign in with the resident's subscription. The overlay variable names a
+   file that doesn't exist, so the servers the resident deployed for itself
+   (`mcpl-servers.agent.json`) stay out too. With a mock key, the API's count fails
+   and the rest still compiles. Then hit the endpoints, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
