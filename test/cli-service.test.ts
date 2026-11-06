@@ -1375,25 +1375,29 @@ test('a unit of this install\'s name systemd can\'t be asked about is refused, w
   nothingWritten(at);
 });
 
-test('a user unit whose working directory can\'t be resolved gets no line, and the install goes on', async () => {
+test('a user unit whose working directory can\'t be resolved is named once, and the install goes on', async () => {
   const at = install();
   const loop = join(dirname(at.home), 'loop');
   symlinkSync(loop, loop);
   const f = fake(at);
   f.systemd.otherUnits.push({ id: 'elsewhere-agent.service', workingDirectory: join(loop, 'srv') });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect([...f.out, ...f.err].filter((line) => line.includes('elsewhere-agent.service'))).toEqual([]);
+  const named = [...f.out, ...f.err].filter((line) => line.includes('elsewhere-agent.service'));
+  expect(named).toHaveLength(1);
+  expect(named[0]).toContain('The working directory of elsewhere-agent.service, a user unit, couldn\'t be resolved');
   expect(f.systemd.starts.map((start) => start.unit)).toContain(HOST);
 });
 
-test('a system unit whose working directory can\'t be resolved gets no line, and the install goes on', async () => {
+test('a system unit whose working directory can\'t be resolved is named once, and the install goes on', async () => {
   const at = install();
   const loop = join(dirname(at.home), 'loop');
   symlinkSync(loop, loop);
   const f = fake(at);
   f.systemd.otherUnits.push({ id: 'elsewhere-agent.service', workingDirectory: join(loop, 'srv'), scope: 'system' });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect([...f.out, ...f.err].filter((line) => line.includes('elsewhere-agent.service'))).toEqual([]);
+  const named = [...f.out, ...f.err].filter((line) => line.includes('elsewhere-agent.service'));
+  expect(named).toHaveLength(1);
+  expect(named[0]).toContain('The working directory of elsewhere-agent.service, a system unit, couldn\'t be resolved');
   expect(f.systemd.starts.map((start) => start.unit)).toContain(HOST);
 });
 
@@ -4816,4 +4820,23 @@ test('a blank original line inside a masked credential consumes no excerpt slot'
   expect(reports).not.toContain('  | <DISCORD_TOKEN>');
   expect(checked.lines).toContain('  2 more lines not shown.');
   expect(checked.lines.join('\n')).not.toMatch(/first-part|last-part/);
+});
+
+test('a unit in its manager\'s default directory, which is this install, and one whose directory can\'t be resolved are each named', async () => {
+  const base = install();
+  const at = { ...base, home: base.work };
+  const f = fake(at);
+  const locked = join(base.home, 'locked');
+  mkdirSync(locked);
+  f.systemd.otherUnits.push({ id: 'old-host.service', workingDirectory: `!${at.work}` });
+  f.systemd.otherUnits.push({ id: 'hidden.service', workingDirectory: join(locked, 'inside') });
+  chmodSync(locked, 0o000);
+  try {
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+  const said = f.out.join('\n');
+  expect(said).toContain(`old-host.service sets no working directory, so it runs in its systemd manager's default, which is ${at.work}.`);
+  expect(said).toContain("The working directory of hidden.service, a user unit, couldn't be resolved");
 });

@@ -1154,6 +1154,15 @@ function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; 
       `${steps.join('; and ')}. If ${others.length === 1 ? 'it runs' : 'they run'} something other than a host, give ` +
       `${them} another working directory instead. Then repeat this service install command with the same recipe. Nothing was written.`);
   }
+  for (const id of listed.defaulted) {
+    ctx.out(`${id} sets no working directory, so it runs in its systemd manager's default, which is ${work}. Most ` +
+      'units that do are no host\'s, so it isn\'t checked. If it runs a host, two hosts would serve this install\'s ' +
+      'data: give it a working directory of its own, or take it away.');
+  }
+  for (const unit of listed.unresolved) {
+    ctx.out(`The working directory of ${unit.id}, a ${unit.scope} unit, couldn't be resolved, so whether it runs a ` +
+      `host from ${work} can't be told, and one that does isn't ruled out.`);
+  }
 }
 
 function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
