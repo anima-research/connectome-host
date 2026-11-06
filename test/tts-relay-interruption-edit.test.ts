@@ -280,7 +280,7 @@ describe('heard words that start more than one published message', () => {
   const publish = (agentName: string, messageId: string, text: string) =>
     ({ type: 'inference:published', agentName, serverId: 'discord', channelId: 'g:42', inferenceId: `i-${messageId}`, index: 0, text, messageId });
 
-  test('by two agents: the newest is edited, and the note is for no agent', async () => {
+  test('by two agents: the newest is edited, and no note is written', async () => {
     const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
     trace(publish('clerk', 'm-clerk', 'Yes, the ferry leaves at noon.'));
     trace(publish('mira', 'm-mira', 'Yes — and the bridge is closed.'));
@@ -315,7 +315,7 @@ describe('heard words that start more than one published message', () => {
     expect(logged).toContain('the interruption in 42 is told to no agent: the heard words start messages published by clerk, mira');
   });
 
-  test('sharing their first 80 characters: the one that shares more of the heard words is edited, though older, and the note is for no agent', async () => {
+  test('sharing their first 80 characters: the one that shares more of the heard words is edited, though older, and no note is written', async () => {
     const shared = 'The ferry leaves at noon from the north pier, and the old bridge on the coast is';
     expect(shared).toHaveLength(80);
     const older = `${shared} closed until Friday for repairs to the deck and the railings.`;
