@@ -153,6 +153,22 @@ describe('whom the interruption note is for', () => {
       expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and no agent was voiced in that channel since its previous interruption');
     });
 
+    // Each channel's voiced agents are kept however many channels the relay
+    // voices in: one let go would leave only those voiced there after it.
+    test('none, and no note is written, when the agent whose activation ended and the one started after it were voiced in its channel, with 32 other channels voiced in between', async () => {
+      const { notes, started, ended, interrupt } = relayOnActivations(['clerk', 'mira']);
+      started('clerk', 'g:42');
+      ended('clerk');
+      for (let i = 0; i < 32; i++) {
+        started('mira', `g:${100 + i}`);
+        ended('mira');
+      }
+      started('mira', 'g:42');
+      const logged = await logOf(interrupt);
+      expect(notes).toEqual([]);
+      expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and clerk, mira were each voiced in that channel');
+    });
+
     test('none, and no note is written, when the agent voiced there is no longer registered', async () => {
       const { notes, started, interrupt } = relayOnActivations(['clerk']);
       started('mira', 'g:42');
@@ -196,7 +212,7 @@ function relayOnTraces(agents: string[] = ['fable']) {
   };
   inner.ctx = ctx;
   const trace = (event: Record<string, unknown>) => inner.onTraceEvent({ timestamp: 1, ...event });
-  const interrupt = (spokenText: string) => inner.handleInterruption({ channelId: '42', spokenText, reason: 'user_speech', timestamp: 2 });
+  const interrupt = (spokenText: string, channelId = '42') => inner.handleInterruption({ channelId, spokenText, reason: 'user_speech', timestamp: 2 });
   const edited = () => calls.map((c) => (c.input as { messageId: string }).messageId);
   return { trace, interrupt, edited, notes };
 }
@@ -210,9 +226,35 @@ describe('what an interruption may edit', () => {
     const logged = await logOf(() => interrupt('Going to sleep'));
     expect(edited()).toEqual([]);
     expect(logged).toContain('no published message matched the interruption');
-    // The published message was kept: heard words that start it edit it.
+  });
+
+  test('heard words that start a published message edit it, though an announcement was routed after it', async () => {
+    const { trace, interrupt, edited } = relayOnTraces();
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
+    trace({ type: 'mcpl:speech-routed', conversationId: 'fable', channelId: 'g:42', text: 'Going to sleep for an hour.', messageId: 'm-sleep' });
     await interrupt('The ferry leaves');
     expect(edited()).toEqual(['m-prose']);
+  });
+
+  // An interruption ends its channel's voicing, so what was published there
+  // before it is not heard in a later one.
+  test('a message published before the channel\'s previous interruption is not edited again, and the note is for the agent voiced since', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    trace({ type: 'inference:published', agentName: 'clerk', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'Yes, the ferry leaves at noon.', messageId: 'm-clerk' });
+    await interrupt('Yes, the ferry');
+    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+    const logged = await logOf(() => interrupt('Yes, the ferry'));
+    expect(edited()).toEqual(['m-clerk']);
+    expect(logged).toContain('no published message matched the interruption');
+    expect(notes.map((n) => n.forAgent)).toEqual(['clerk', 'mira']);
+  });
+
+  test('a message published in another channel is still edited after an interruption in this one', async () => {
+    const { trace, interrupt, edited } = relayOnTraces();
+    trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:43', inferenceId: 'i1', index: 0, text: 'Yes, the ferry leaves at noon.', messageId: 'm-43' });
+    await interrupt('Yes, the ferry');
+    await interrupt('Yes, the ferry', '43');
+    expect(edited()).toEqual(['m-43']);
   });
 
   test('the published message whose text the heard words start is edited, though a later one was published', async () => {
