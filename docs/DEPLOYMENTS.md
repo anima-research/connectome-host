@@ -184,8 +184,11 @@ the working directory):
   line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   `CONNECTOME_DOCTOR_WITHHOLD`, a JSON list of `[name, value]` pairs, has each
-  value replaced by `<name>` in everything the ladder prints, its findings
-  included, while it parses what it reads as it was read. `--findings-json`
+  value replaced by `<name>` in what the ladder cuts short before it prints
+  it: a message's preview, a model call's error and a failure line. It parses
+  what it reads as it was read, and leaves a whole value in anything else it
+  prints to its caller, as `connectome doctor` replaces each stored value in
+  every line of the ladder's it shows. `--findings-json`
   prints the findings, once the ladder finishes, as its last line,
   `connectome-doctor findings: ` and a JSON list of `{"text", "counts"}`, with
   no findings block or closing line, leaves the service's own state (its row,

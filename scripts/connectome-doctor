@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import builtins
 import json
 import os
 import re
@@ -95,10 +94,6 @@ def withheld(text):
         at = end
     out.append(text[at:])
     return "".join(out)
-
-
-def print(*args, **kwargs):
-    builtins.print(*(withheld(str(a)) for a in args), **kwargs)
 
 
 def run(cmd, timeout=15, no_match=None, cut_is_end=False):
@@ -280,9 +275,9 @@ else:
     ln = last_in_dbg(r"handleDiscordMessage:enter")
     if ln:
         enter_ts = parse_iso(ln.split(" ", 1)[0])
-        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"(.{0,40})', withheld(ln))
+        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"((?:[^"\\]|\\.)*)', ln)
         if mm:
-            enter_detail = f"#{mm.group(1)}: {mm.group(2)}…"
+            enter_detail = f"#{mm.group(1)}: {withheld(mm.group(2))[:40]}…"
     ln = last_in_dbg(r'gateway:message-create-drop (?!.*"reason":"self-authored")')
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
@@ -297,7 +292,7 @@ else:
     stages_note = None
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
-        mm = re.search(r'"reason":"([^"]*)"', withheld(ln))
+        mm = re.search(r'"reason":"([^"]*)"', ln)
         if dts and NOW - dts < 3600 and mm:
             stages_note = f"last drop {age(dts)}: {mm.group(1)}"
     if stages_note:
@@ -382,8 +377,8 @@ if records:
             try:
                 payload = bytes(int(x) for x in arr.group(1).split(",")).decode("utf-8", "replace")
                 trig = '"triggered":true' in payload
-                pm = re.search(r'"participant":"([^"]*)"', withheld(payload))
-                cm = re.search(r'"channelName":"([^"]*)"', withheld(payload))
+                pm = re.search(r'"participant":"([^"]*)"', payload)
+                cm = re.search(r'"channelName":"([^"]*)"', payload)
                 rec_detail = (f"{'triggered=true' if trig else 'triggered=false (gate skip)'}"
                               + (f"  #{cm.group(1)}" if cm else "")
                               + (f"  by {pm.group(1)}" if pm else ""))
@@ -765,8 +760,7 @@ if pid not in ("0", "", None) and active in ("active", "running"):
                  counts=False)
 
 if findings_json:
-    builtins.print("connectome-doctor findings: " + json.dumps([{"text": withheld(w), "counts": counts}
-                                                             for w, counts in WARNINGS]))
+    print("connectome-doctor findings: " + json.dumps([{"text": w, "counts": counts} for w, counts in WARNINGS]))
     sys.exit(0)
 print()
 if WARNINGS:

@@ -788,10 +788,9 @@ describe('the ladder\'s data directory', () => {
     writeFileSync(join(at.work, 'data', 'sessions', 's-other', 'records.log'),
       `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${(at.now - 40) * 1_000_000}}\n`);
     const index = join(at.work, 'data', 'sessions.json');
-    writeFileSync(index, JSON.stringify({ activeSessionId: 's-gone-Zq9-SID-SECRET', sessions: {} }));
-    const named = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
-    expect(named).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\).*the active session, s-gone-<DISCORD_TOKEN>, has no records\.log/);
-    expect(named).not.toContain('Zq9-SID-SECRET');
+    writeFileSync(index, JSON.stringify({ activeSessionId: 's-gone', sessions: {} }));
+    const named = ladder(at).out;
+    expect(named).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\).*the active session, s-gone, has no records\.log/);
     expect(named).not.toContain('#other-room');
     for (const activeSessionId of [null, '', 42]) {
       writeFileSync(index, JSON.stringify({ activeSessionId, sessions: {} }));
@@ -799,11 +798,10 @@ describe('the ladder\'s data directory', () => {
       expect(none).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json names no active session, which no start of the host leaves, so which session is active isn't known/);
       expect(none).not.toContain('#other-room');
     }
-    mkdirSync(join(at.work, 'data', 'sessions', 's-bare-Zq9-SID-SECRET'));
-    writeFileSync(index, JSON.stringify({ activeSessionId: 's-bare-Zq9-SID-SECRET', sessions: {} }));
-    const bare = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
-    expect(bare).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*the active session's store, \S*sessions\/s-bare-<DISCORD_TOKEN>, is there without a records\.log, which the host writes when it opens the store, so what was ingested isn't known/);
-    expect(bare).not.toContain('Zq9-SID-SECRET');
+    mkdirSync(join(at.work, 'data', 'sessions', 's-bare'));
+    writeFileSync(index, JSON.stringify({ activeSessionId: 's-bare', sessions: {} }));
+    const bare = ladder(at).out;
+    expect(bare).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*the active session's store, \S*sessions\/s-bare, is there without a records\.log, which the host writes when it opens the store, so what was ingested isn't known/);
     expect(bare).not.toContain('#other-room');
     writeFileSync(index, '{ not json');
     const unread = ladder(at).out;
@@ -813,19 +811,16 @@ describe('the ladder\'s data directory', () => {
     const listed = ladder(at).out;
     expect(listed).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json can't be read as the host's session index \(it isn't a JSON object\)/);
     expect(listed).not.toContain('#other-room');
-    const withhold = { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) };
-    mkdirSync(join(at.work, 'data', 'sessions', 's-dir-Zq9-SID-SECRET', 'records.log'), { recursive: true });
-    writeFileSync(index, JSON.stringify({ activeSessionId: 's-dir-Zq9-SID-SECRET', sessions: {} }));
-    const records = ladder(at, [], withhold).out;
-    expect(records).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*s-dir-<DISCORD_TOKEN>\/records\.log can't be read \(Is a directory\)/);
-    expect(records).not.toContain('Zq9-SID-SECRET');
+    mkdirSync(join(at.work, 'data', 'sessions', 's-dir', 'records.log'), { recursive: true });
+    writeFileSync(index, JSON.stringify({ activeSessionId: 's-dir', sessions: {} }));
+    const records = ladder(at).out;
+    expect(records).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*s-dir\/records\.log can't be read \(Is a directory\)/);
     expect(records).not.toContain('#other-room');
-    mkdirSync(join(at.work, 'data', 'sessions', 's-loop-Zq9-SID-SECRET'));
-    symlinkSync('records.log', join(at.work, 'data', 'sessions', 's-loop-Zq9-SID-SECRET', 'records.log'));
-    writeFileSync(index, JSON.stringify({ activeSessionId: 's-loop-Zq9-SID-SECRET', sessions: {} }));
-    const loop = ladder(at, [], withhold).out;
-    expect(loop).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*s-loop-<DISCORD_TOKEN>\/records\.log can't be read \(Too many levels of symbolic links\)/);
-    expect(loop).not.toContain('Zq9-SID-SECRET');
+    mkdirSync(join(at.work, 'data', 'sessions', 's-loop'));
+    symlinkSync('records.log', join(at.work, 'data', 'sessions', 's-loop', 'records.log'));
+    writeFileSync(index, JSON.stringify({ activeSessionId: 's-loop', sessions: {} }));
+    const loop = ladder(at).out;
+    expect(loop).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*s-loop\/records\.log can't be read \(Too many levels of symbolic links\)/);
     expect(loop).not.toContain('#other-room');
   });
 
@@ -984,8 +979,11 @@ describe('what the ladder withholds', () => {
     const long = `[inference-failed] ${'x'.repeat(125)}${secret} and the rest`;
     writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: ${long}\n`);
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: `Error: ${'y'.repeat(120)}${secret}` })}\n`);
+    writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
+      `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"${'p'.repeat(35)}${secret} more"}\n`);
     const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
     expect(out).toContain('<DISC');
+    expect(out).toMatch(/discord event seen .*#general: p{35}<DISC…/);
     expect(out).not.toContain('Zq9');
   });
 
@@ -1009,13 +1007,6 @@ describe('what the ladder withholds', () => {
     expect(out).not.toContain(secret.slice(10));
   });
 
-  test('a failed command\'s error is withheld too', async () => {
-    const at = await install({ listens: true, journalFails: 'Failed: the token Zq9-SECRET-77 was refused', mainPidNow: '0' });
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SECRET-77']]) });
-    expect(out).toContain('the token <DISCORD_TOKEN> was refused');
-    expect(out).not.toContain('Zq9');
-  });
-
   test('a value it withholds is still read as what it is: a call row with that value in it counts, and a channel\'s auto-close stays one', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
@@ -1029,13 +1020,17 @@ describe('what the ladder withholds', () => {
     expect(out).toMatch(/recent failures in .*failures\.log: none found/);
   });
 
-  test('what it prints from its own arguments and commands is withheld too', async () => {
+  test('a value it withholds that\'s a word of the lines it reads leaves them read as they were: a message\'s channel and preview, and a drop\'s reason', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
-    const name = at.work.split('/').at(-1)!;
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['PATHNAME', name], ['STATE', 'running']]) });
-    expect(out).toContain('<PATHNAME>');
-    expect(out).toContain('active/<STATE>');
-    expect(out).not.toContain(name);
+    const iso = (s: number) => new Date(s * 1000).toISOString();
+    writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'), [
+      `${iso(at.now - 50)} handleDiscordMessage:enter {"channelName":"general","contentPreview":"hello"}`,
+      `${iso(at.now - 45)} handleDiscordMessage:drop {"reason":"channel not in scope"}`,
+      '',
+    ].join('\n'));
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['FIRST', 'contentPreview'], ['SECOND', 'reason']]) });
+    expect(out).toMatch(/discord event seen .*#general: hello…/);
+    expect(out).toMatch(/mcpl forward to host .*last drop .*: channel not in scope/);
   });
 
   test('a CONNECTOME_DOCTOR_WITHHOLD it can\'t read stops the ladder before it reads anything', async () => {
