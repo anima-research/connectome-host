@@ -695,24 +695,27 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
     else:
         before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
         signalled = int(time.time())
-        sh(f"kill -USR2 {pid} 2>/dev/null")
-        deadline = time.time() + DUMP_WAIT
-        dump = None
-        while True:
-            if journal_log:
-                said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}")
-                where = f"{unit}'s journal"
-            else:
-                said, why = read_text(agent_log, start=before)
-                where = agent_log
-            # Split at newlines only: the dump is JSON, which can hold U+2028.
-            for ln in (said or "").split("\n"):
-                if "[diagnostics]" in ln:
-                    dump = ln
-            if dump or why is not None or time.time() >= deadline:
-                break
-            time.sleep(0.1)
-        if why is not None:
+        _, refused = run(f"kill -USR2 {pid}")
+        dump = why = None
+        if refused is None:
+            deadline = time.time() + DUMP_WAIT
+            while True:
+                if journal_log:
+                    said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}")
+                    where = f"{unit}'s journal"
+                else:
+                    said, why = read_text(agent_log, start=before)
+                    where = agent_log
+                # Split at newlines only: the dump is JSON, which can hold U+2028.
+                for ln in (said or "").split("\n"):
+                    if "[diagnostics]" in ln:
+                        dump = ln
+                if dump or why is not None or time.time() >= deadline:
+                    break
+                time.sleep(0.1)
+        if refused is not None:
+            print(f"live gate dump: {C_RED}SIGUSR2 couldn't be sent ({refused}){C_OFF}")
+        elif why is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but {where} can't be read ({why}), so whether a "
                   f"[diagnostics] line came isn't known{C_OFF}")
             warn(f"SIGUSR2 was sent, but {where} can't be read ({why}), so the gate dump isn't known", counts=False)

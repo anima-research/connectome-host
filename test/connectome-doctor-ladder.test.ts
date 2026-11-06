@@ -595,6 +595,18 @@ describe('the ladder\'s gate dump', () => {
     expect(signalled(at.host)).toBe(false);
   });
 
+  test('a SIGUSR2 that can\'t be sent is said, with why, and nothing waits for a dump', async () => {
+    const at = await install({ listens: true });
+    const pid = at.host.process.pid;
+    systemctl(at, { mainPidNow: `${pid}/task/${pid}` });
+    const { out } = ladder(at);
+    await settled(at.host);
+    expect(out).toMatch(/^live gate dump: SIGUSR2 couldn't be sent \(.+\)$/m);
+    expect(out).not.toContain('[diagnostics] line');
+    expect(signalled(at.host)).toBe(false);
+    expect(alive(at.host)).toBe(true);
+  });
+
   test('--no-signal sends no SIGUSR2, even to a host that listens, and says the dump was left out', async () => {
     const at = await install({ listens: true });
     const { out } = ladder(at, ['--no-signal']);
