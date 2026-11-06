@@ -631,6 +631,9 @@ if times or untimed:
     if failed_at is not None and turn_ok and turn_ts is not None and turn_ts > failed_at:
         warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
              "doesn't say whose, so whether the agent that failed has recovered isn't known", counts=False)
+    elif failed_at is not None and INFERENCE in unknown:
+        warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
+             "since the call log can't be read here", counts=False)
     elif failed_at is not None:
         warn(f"inference failures, the last{timed} {age(failed_at)}, with no successful turn found since — if the reason "
              "repeats identically, the agent is hard-down until config changes (e.g. budget)")

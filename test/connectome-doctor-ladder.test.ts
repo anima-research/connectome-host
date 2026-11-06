@@ -477,6 +477,22 @@ describe('the ladder\'s recent failures', () => {
     }
   });
 
+  test('with a failure on record and a newest call log that can\'t be read, whether a turn has succeeded since is not known, and doesn\'t count', async () => {
+    const at = await install({ listens: true });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    writeFileSync(calls, `${JSON.stringify({ timestamp: new Date().toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
+    chmodSync(calls, 0o000);
+    try {
+      const line = ladder(at, ['--no-signal', '--findings-json']).out.split('\n')
+        .find((l) => l.startsWith('connectome-doctor findings: '))!;
+      const found = JSON.parse(line.slice('connectome-doctor findings: '.length)) as { text: string; counts: boolean }[];
+      expect(found).toContainEqual({ text: expect.stringMatching(/^inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since the call log can't be read here$/), counts: false });
+      expect(found.some((f) => f.text.includes('no successful turn found since'))).toBe(false);
+    } finally {
+      chmodSync(calls, 0o644);
+    }
+  });
+
   test('the journal\'s failures and failures.log\'s are each shown, under where they came from', async () => {
     const at = await install({ listens: true });
     const records = Array.from({ length: 6 }, (_, i) => JSON.stringify({ reason: `record ${i}` }));
