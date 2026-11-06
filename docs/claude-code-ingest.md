@@ -337,15 +337,25 @@ nothing it does reaches the original:
 1. Copy the data directory the install's record names (stage 1), wherever it is,
    following links (`cp -RL`), so a link in it doesn't lead the copy back to the
    original.
-2. Copy the recipe, keep its Web UI on loopback without `basicAuth`, and leave out
-   `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath` and
+2. Make stage 4's Claude-Code-specific choices in the recipe first, all but its Web UI,
+   so the check compiles what the resident will run. Then copy it, and in the copy leave
+   out `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath` and
    `extensions`: the servers' `env` names files in the original data directory,
    discord-mcpl would put the resident on Discord, a fleet child starts on its own data
    directory under `<agent>-cm`, a heartbeat state path resolves from there too, and an
    extension's code runs in the host's process. So a recipe whose strategy comes from an
    extension gets no pre-boot check this way. For an `openai-compatible` recipe, set
    `agent.baseUrl` to `http://127.0.0.1:9/v1`, where nothing answers, since its own
-   endpoint may answer with no key at all.
+   endpoint may answer with no key at all. Where `agent.systemPrompt` is a URL, put the
+   text it gives in its place, since the host fetches it as it loads the recipe. In
+   place of any Web UI the recipe has, give the copy one of its own under `modules`,
+   with a password you make up for the check:
+   `"webui": { "port": <port>, "host": "127.0.0.1", "basicAuth": { "username": "check", "password": "<password>" } }`.
+   Without `basicAuth`, every account on the machine could read the copy's
+   `/debug/context`, the resident's whole history, since loopback is open to all of
+   them. For `<port>`, take one nothing listens on, which
+   `curl http://127.0.0.1:<port>/` failing to connect shows before the boot: otherwise
+   a request meant for the copy could reach another host on the machine.
 3. From a new, empty directory, start the release `current` names, not the install's
    entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
    and a host it starts writes the install's own files. Start it in an environment of
@@ -357,9 +367,13 @@ nothing it does reaches the original:
    recipe's provider needs a key of its own to start, give its name a mock value the
    same way: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and
    `AWS_SECRET_ACCESS_KEY` for Bedrock. Where the resident's environment sets `MODEL` or
-   `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. So every
-   request the host makes is refused, and a turn it starts on its own, such as for a
-   heartbeat that fell due while the resident was down, gets no reply and calls no tool.
+   `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. Give any other
+   variable the copy names as `${…}` too, since the host fills each from its environment
+   and won't load a recipe naming one it can't, with a mock value where it's a
+   credential. So every request the host makes is refused, and a turn it starts on its
+   own, such as for a heartbeat that fell due while the resident was down, gets no reply
+   and calls no tool. The `mock` provider is the exception: it needs no key, and a turn
+   on it gets the reply the recipe's `agent.mock` gives, by default an echo of the turn.
    On a gateway, the check can leave out a binding model's changed thinking that the
    resident sends, since what the host found of the account is kept per base URL and the
    check names none. The recipe's absolute workspace mounts are the resident's own
@@ -367,7 +381,8 @@ nothing it does reaches the original:
    file that doesn't exist, so the servers the resident deployed for itself
    (`mcpl-servers.agent.json`) stay out too. Where the host asks the API for a count,
    the count fails, and where it asks for none, there's none live either. The rest still
-   compiles. Then hit the endpoints, and stop it.
+   compiles. Then hit the endpoints with the check's username and password, such as
+   `curl -u 'check:<password>' http://127.0.0.1:<port>/debug/context`, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
@@ -387,7 +402,8 @@ for the pre-boot check, a key of your own.
 Follow `AGENT-ONBOARDING.md`'s "Secrets", "The recipe", "The recipe's servers" and
 "Going live" for `.env`, the recipe, the service and its checks. Those sections
 assume setup has run in `<agent>-cm` (stage 1) and that the setup agent is the one
-reading them, with its `setup--ask_secret`. Claude-Code-specific choices:
+reading them, with its `setup--ask_secret`. Claude-Code-specific choices (if you ran
+stage 3's pre-boot check, you made all but the Web UI already):
 
 - **`agent.model`**: the transcript's model, exactly. Signatures verify only there.
 - **`agent.thinking`**: `{ "enabled": true, "type": "adaptive", "display": "summarized" }`
