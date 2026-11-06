@@ -22,12 +22,15 @@ export function originOf(baseUrl: string): string | null {
   }
 }
 
-function apiMessage(body: string): string | null {
+function apiError(body: string): { message: string | null; type: string | null } {
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
-    return typeof parsed.error?.message === 'string' ? parsed.error.message : null;
+    const parsed = JSON.parse(body) as { error?: { message?: unknown; type?: unknown } };
+    return {
+      message: typeof parsed.error?.message === 'string' ? parsed.error.message : null,
+      type: typeof parsed.error?.type === 'string' ? parsed.error.type : null,
+    };
   } catch {
-    return null;
+    return { message: null, type: null };
   }
 }
 
@@ -190,14 +193,18 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     body = '';
   }
   // A 3xx's words are never the Messages API's, which sends none, so they're the server's alone, as its Location is.
-  const apiSaid = response.status >= 300 && response.status < 400 ? null : apiMessage(body);
-  const quoted = apiSaid ? ` It said: "${quote(apiSaid)}".` : '';
+  const api = response.status >= 300 && response.status < 400 ? { message: null, type: null } : apiError(body);
+  const quoted = api.message ? ` It said: "${quote(api.message)}".` : '';
   switch (response.status) {
     case 401:
       return failed(`${host} refused the key (401).${quoted} Check that it was copied whole` +
         `${set ? `, and that it's a key ${origin} accepts` : ', from console.anthropic.com\'s API keys'}.`, true);
     case 403:
-      return failed(`${host} refused this call, one message to ${model} (403).${quoted} ${notAllowed}`, true);
+      return failed(`${host} refused this call, one message to ${model} (403).${quoted} ` + (set || api.type === 'permission_error'
+        ? notAllowed
+        : 'Its answer doesn\'t name a permission_error, so setup can\'t tell from it whether this key is allowed to make it. ' +
+          'If the key\'s account isn\'t allowed the call, ask whoever manages it at console.anthropic.com to allow it, or use ' +
+          'a key from an account that can.'), true);
     case 404:
       return failed(set
         ? `${host} found nothing for ${model} (404).${quoted} Either this key can't use ` +

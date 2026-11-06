@@ -350,6 +350,16 @@ describe("the key's one real call", () => {
     expect(cause(streamed)).toContain('refused this call, one message to m, in its stream (permission_error). It said: "not allowed". Ask whoever runs ');
   });
 
+  test('a 403 that names no permission_error says setup can\'t tell from it whether the key is allowed, and still says whom to ask if it isn\'t', async () => {
+    const refused = (async () => Response.json({ type: 'error', error: { type: 'forbidden', message: 'blocked' } }, { status: 403 })) as unknown as typeof fetch;
+    const result = await checkKey({ key: 'sk-ant-k', model: 'claude-x', fetch: refused });
+    expect(result).toEqual({ ok: false, cause: expect.any(String), anotherKeyMayHelp: true });
+    expect(cause(result)).toBe('api.anthropic.com refused this call, one message to claude-x (403). It said: "blocked". Its answer ' +
+      'doesn\'t name a permission_error, so setup can\'t tell from it whether this key is allowed to make it. If the key\'s ' +
+      'account isn\'t allowed the call, ask whoever manages it at console.anthropic.com to allow it, or use a key from an ' +
+      'account that can.');
+  });
+
   test('words quoting the path of a request to an ANTHROPIC_BASE_URL with a path of its own show it as the request\'s path', async () => {
     const quoting = (async (url: string) => Response.json(
       { type: 'error', error: { type: 'not_found_error', message: `Cannot POST ${new URL(url).pathname}` } }, { status: 404 },
