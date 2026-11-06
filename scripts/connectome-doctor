@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -94,12 +95,14 @@ def withheld(text):
     return "".join(out)
 
 
-def run(cmd, timeout=15):
+def run(cmd, timeout=15, no_match=None):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
     except Exception as e:
         return None, withheld(str(e))
+    if r.returncode == no_match and not r.stderr.strip():
+        return "", None
     if r.returncode != 0:
         said = withheld(r.stderr).strip().splitlines()
         return None, said[-1] if said else f"exit {r.returncode}"
@@ -180,13 +183,32 @@ if len(df) >= 5:
     if pct >= 88:
         warn(f"disk at {pct}% — agents corrupt stores when writes fail (see 2026-07-02)")
 
-journal_text, journal_error = run(f"journalctl --user -u {unit} -q --no-pager -n 2000 -o short-unix")
-journal = []
-for ln in (journal_text or "").split("\n"):
-    m = re.match(r"^(\d+)\.\d+ \S+ [^:]*: (.*)$", ln)
-    if m:
-        journal.append((float(m.group(1)), m.group(2)))
-jts = journal[-1][0] if journal else None
+DELIVERY = "routeSpeech delivery"
+DELIVERED = r"\[routeSpeech\] .*: routed \d+ chars -> \S"
+UNCONFIRMED = r"\[routeSpeech\] .*speech delivery NOT confirmed"
+ROUTE_SAID = DELIVERED + r"|\[routeSpeech\] .*speech (NOT routed|delivery NOT confirmed)"
+FAILURE = r"\[inference-(failed|hard-down|dropped)\]|\[push-event-rejected\]|Error"
+
+
+def journal_entries(text):
+    entries = []
+    for ln in (text or "").split("\n"):
+        m = re.match(r"^(\d+)\.\d+ \S+ [^:]*: (.*)$", ln)
+        if m:
+            entries.append((float(m.group(1)), m.group(2)))
+    return entries
+
+
+last_entry, last_error = run(f"journalctl --user -u {unit} -q --no-pager -n 1 -o short-unix")
+journal_text, search_error = "", None
+if last_error is None and start_ts is not None:
+    journal_text, search_error = run(
+        f"journalctl --user -u {unit} -q --no-pager --since @{int(start_ts)} -g {shlex.quote(f'{ROUTE_SAID}|{FAILURE}')} "
+        "-o short-unix", no_match=1)
+journal_error = last_error if last_error is not None else search_error
+journal_unread = "can't be read" if last_error is not None else "couldn't be searched by pattern"
+journal = journal_entries(journal_text)
+jts = (journal_entries(last_entry) or [(None, None)])[-1][0]
 log_redirect = None
 frag = sh(f"systemctl --user show {unit} -p FragmentPath --value")
 if frag and os.path.exists(frag):
@@ -201,15 +223,18 @@ elif os.path.exists(agent_log):
     journal_log = start_ts is not None and os.path.getmtime(agent_log) < start_ts
 else:
     journal_log = True
-if journal_error is not None:
-    print(f"journal    : {C_RED}can't be read: {journal_error}{C_OFF}")
-    if journal_log:
-        warn(f"{unit}'s journal can't be read ({journal_error}), so its failures, deliveries and gate dump "
-             "aren't shown", counts=False)
+if last_error is not None:
+    print(f"journal    : {C_RED}can't be read: {last_error}{C_OFF}")
 else:
-    print(f"journal    : last entry {age(jts)}" + ("" if journal_log else f"  {C_DIM}(stdout/err -> {agent_log}){C_OFF}"))
+    print(f"journal    : last entry {age(jts)}" + ("" if journal_log else f"  {C_DIM}(stdout/err -> {agent_log}){C_OFF}")
+          + (f"  {C_RED}its search by pattern failed: {search_error}{C_OFF}" if journal_log and search_error is not None
+             else ""))
     if not journal_log and (jts is None or (start_ts and jts < start_ts)):
         warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}", counts=False)
+if journal_log and journal_error is not None:
+    warn(f"{unit}'s journal {journal_unread} ({journal_error}), so its failures"
+         + (", deliveries and gate dump" if last_error is not None else " and deliveries") + " aren't shown",
+         counts=False)
 
 stages = []
 
@@ -447,10 +472,6 @@ if llm_files:
 INFERENCE = "inference (llm call)"
 stages.append((INFERENCE, llm_ts, llm_detail))
 
-DELIVERY = "routeSpeech delivery"
-DELIVERED = r"\[routeSpeech\] .*: routed \d+ chars -> \S"
-UNCONFIRMED = r"\[routeSpeech\] .*speech delivery NOT confirmed"
-ROUTE_SAID = DELIVERED + r"|\[routeSpeech\] .*speech (NOT routed|delivery NOT confirmed)"
 unknown = {INGEST} if ingest_unknown else set()
 if llm_unread is not None:
     unknown.add(INFERENCE)
@@ -476,7 +497,9 @@ if journal_log:
             unknown.add(DELIVERY)
     else:
         unknown.add(DELIVERY)
-        del_detail = "none in the journal's last 2000 lines" if journal_error is None else "the journal can't be read"
+        del_detail = (f"the journal {journal_unread}" if journal_error is not None
+                      else "none in the journal since the unit's latest start" if start_ts is not None
+                      else "the unit has no start time, so no run's journal is read")
 else:
     text, why = read_text(agent_log, last=2_000_000)
     said = [ln for ln in (text or "").split("\n") if re.search(ROUTE_SAID, ln)]
@@ -543,14 +566,13 @@ if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not 
          "budget failures / [diagnostics] dump below)")
 
 print()
-FAILURE = r"\[inference-(failed|hard-down|dropped)\]|\[push-event-rejected\]|Error"
 
 
 def file_failures(path, is_failure):
     text, why = read_text(path, last=400_000)
     if text is None:
         warn(f"{path} can't be read ({why}), so its failures aren't shown", counts=False)
-        return path, None, why
+        return path, None, f"it can't be read ({why})"
     return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None
 
 
@@ -569,7 +591,8 @@ def exhausted(ln):
 sources = []
 if journal_log:
     sources.append((f"{unit}'s journal", None if journal_error is not None
-                    else [msg for _, msg in journal if re.search(FAILURE, msg)], journal_error))
+                    else [msg for _, msg in journal if re.search(FAILURE, msg)],
+                    f"it {journal_unread} ({journal_error})"))
 else:
     sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
 failures_log = os.path.join(logs_dir, "failures.log")
@@ -577,7 +600,7 @@ if os.path.exists(failures_log):
     sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
 for where, found, why in sources:
     if found is None:
-        print(f"recent failures in {where}: {C_YEL}not known: it can't be read ({why}){C_OFF}")
+        print(f"recent failures in {where}: {C_YEL}not known: {why}{C_OFF}")
     elif found:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:

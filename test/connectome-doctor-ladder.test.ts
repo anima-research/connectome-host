@@ -78,7 +78,9 @@ function systemctl(at: Install, unit: Unit = {}): void {
   ].join('\n'));
 }
 
-async function install(opts: { listens: boolean; journalFails?: string; dumpReadFails?: boolean; dumpsTo?: string }): Promise<Install> {
+async function install(opts: {
+  listens: boolean; journalFails?: string; dumpReadFails?: boolean; dumpsTo?: string; grepRefused?: string;
+}): Promise<Install> {
   const work = mkdtempSync(join(tmpdir(), 'chost-ladder-'));
   dirs.push(work);
   mkdirSync(join(work, 'data'));
@@ -89,14 +91,20 @@ async function install(opts: { listens: boolean; journalFails?: string; dumpRead
   const now = Math.floor(Date.now() / 1000);
   const at = { work, bins, host, started: now - 60, now };
   systemctl(at);
+  const journal = join(work, 'journal.txt');
   bin(bins, 'journalctl', opts.journalFails !== undefined
     ? `echo "${opts.journalFails}" >&2; exit 1`
     : [
+      'unit="--user -u connectome-test.service"',
       'case "$*" in',
+      `  "$unit -q --no-pager -n 1 -o short-unix") tail -n 1 ${journal} ;;`,
+      opts.grepRefused !== undefined
+        ? `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") echo "${opts.grepRefused}" >&2; exit 1 ;;`
+        : `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") awk -v since="\${7#@}" '$1 + 0 >= since' ${journal} | grep -P -- "$9" ;;`,
       opts.dumpReadFails
-        ? '  *--since*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
-        : `  *--since*) grep -q usr2 ${host.signals} 2>/dev/null && echo '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}' ;;`,
-      `  *) cat ${join(work, 'journal.txt')} ;;`,
+        ? '  "$unit -o cat --no-pager --since @"*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
+        : `  "$unit -o cat --no-pager --since @"*) if grep -q usr2 ${host.signals} 2>/dev/null; then echo '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}'; fi ;;`,
+      '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
       'esac',
     ].join('\n'));
   writeFileSync(join(work, 'journal.txt'), [
@@ -213,7 +221,7 @@ describe('the ladder, for a unit that logs to the journal', () => {
   test('a window with no reply line in it leaves the last delivery\'s time not known, naming the window', async () => {
     const at = await install({ listens: true });
     writeFileSync(join(at.work, 'journal.txt'), `${at.now - 3}.000000 host bun[1]: an ordinary line\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(/· routeSpeech delivery +can't be seen here: none in the journal's last 2000 lines$/m);
+    expect(ladder(at, ['--no-signal']).out).toMatch(/· routeSpeech delivery +can't be seen here: none in the journal since the unit's latest start$/m);
     writeFileSync(join(at.work, 'logs', 'agent.log'), 'an ordinary line\n');
     expect(ladder(at, ['--no-signal']).out).toMatch(/· routeSpeech delivery +can't be seen here: none in its last 2 MB$/m);
   });
@@ -246,6 +254,33 @@ describe('the ladder, for a unit that logs to the journal', () => {
     expect(out).toMatch(/· routeSpeech delivery +can't be seen here: the journal can't be read$/m);
     expect(out).not.toMatch(/routeSpeech delivery .*never/);
   });
+
+  test('the journal is read from the unit\'s latest start on, so an earlier run\'s failure isn\'t shown', async () => {
+    const at = await install({ listens: true });
+    writeFileSync(join(at.work, 'journal.txt'), [
+      `${at.started - 10}.000000 host bun[1]: [inference-failed] a failure of the run before`,
+      `${at.now - 20}.000000 host bun[1]: [inference-failed] a failure of this run`,
+      '',
+    ].join('\n'));
+    const { out } = ladder(at, ['--no-signal']);
+    expect(out).toContain('a failure of this run');
+    expect(out).not.toContain('a failure of the run before');
+  });
+
+  test('a journalctl that refuses its pattern leaves the run\'s failures and deliveries not known, in its own words, and still asks for the gate dump', async () => {
+    const at = await install({ listens: true, grepRefused: 'Compiled without pattern matching support' });
+    const { out } = ladder(at);
+    await settled(at.host);
+    expect(out).toMatch(/^journal    : last entry \S+ ago  its search by pattern failed: Compiled without pattern matching support$/m);
+    expect(out).not.toContain('can\'t be read');
+    expect(out).toMatch(/· routeSpeech delivery +can't be seen here: the journal couldn't be searched by pattern$/m);
+    expect(out).toContain('connectome-test.service\'s journal couldn\'t be searched by pattern (Compiled without pattern matching ' +
+      'support), so its failures and deliveries aren\'t shown');
+    expect(out).toContain('recent failures in connectome-test.service\'s journal: not known: it couldn\'t be searched by pattern ' +
+      '(Compiled without pattern matching support)');
+    expect(out).not.toContain('none found');
+    expect(out).toContain('live gate dump (SIGUSR2): {"activeStreams":[]');
+  });
 });
 
 describe('where the ladder reads a unit\'s output', () => {
@@ -260,6 +295,18 @@ describe('where the ladder reads a unit\'s output', () => {
     expect(out).toContain('from the stderr file');
     expect(out).not.toContain('400 prompt is too long');
     expect(out).toContain(`(stdout/err -> ${file})`);
+  });
+
+  test('a journalctl that refuses its pattern says nothing of it for a unit whose output goes to a file', async () => {
+    const at = await install({ listens: true, grepRefused: 'Compiled without pattern matching support' });
+    const file = join(at.work, 'host.err');
+    writeFileSync(file, failing('from the stderr file'));
+    systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
+    const { out } = ladder(at, ['--no-signal']);
+    expect(out).toContain(`(stdout/err -> ${file})`);
+    expect(out).toContain('from the stderr file');
+    expect(out).not.toContain('Compiled without pattern matching support');
+    expect(out).not.toContain('searched by pattern');
   });
 
   test('the gate dump of a unit whose stderr goes to a file comes from that file', async () => {
@@ -525,6 +572,7 @@ describe('the ladder\'s recent start', () => {
     const { out } = ladder(at, ['--no-signal']);
     expect(out).not.toMatch(recent);
     expect(out).toMatch(/^=== (findings|no obvious problems)/m);
+    expect(out).toMatch(/· routeSpeech delivery +can't be seen here: the unit has no start time, so no run's journal is read$/m);
   });
 });
 
