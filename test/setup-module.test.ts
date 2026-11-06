@@ -447,7 +447,7 @@ describe('setup--run', () => {
     expect(lines).toContain(Object.keys(PROVIDER_CREDENTIALS).map((name) => `<${name}>`).join(' '));
   });
 
-  test('where the list of stored secrets is missing, every name in .env setup doesn\'t know counts as secret, whatever its value, and the answer says why', async () => {
+  test('where the list of stored secrets is missing, every name .env or another dotenv file beside it gives that setup doesn\'t know counts as secret, whatever its value, and the answer says why', async () => {
     const { dir, module } = install({
       envFile: 'DISCORD_TOKEN="discord-token-value"\nMY_SERVER_TOKEN="custom-token-value"\nDEBUG=7\n',
       env: { DISCORD_TOKEN: 'discord-token-value', MY_SERVER_TOKEN: 'custom-token-value', DEBUG: '7', KEEP_ME: 'kept' },
@@ -459,7 +459,7 @@ describe('setup--run', () => {
     expect(answer.stdout.text).not.toContain('discord-token-value');
     expect(answer.stdout.text).toContain('DEBUG=<DEBUG>');
     expect(answer.replaced).toEqual(['DEBUG', 'DISCORD_TOKEN', 'MY_SERVER_TOKEN']);
-    expect(answer.note).toBe(`${join(dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is missing, so every name in .env that setup doesn't know counts as secret, and DEBUG, MY_SERVER_TOKEN came back as its name. For values that aren't secret to show, the person writes that file as a JSON list of the name of every secret, those in .env and any the host is given through its environment, such as ["MY_SERVER_TOKEN"], leaving out only names that aren't secret; it takes effect from the host's next start.`);
+    expect(answer.note).toBe(`${join(dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is missing, so every name that .env or another dotenv file beside it gives and setup doesn't know counts as secret, and DEBUG, MY_SERVER_TOKEN came back as its name. For values that aren't secret to show, the person writes that file as a JSON list of the name of every secret, those in .env and any the host is given through its environment, such as ["MY_SERVER_TOKEN"], leaving out only names that aren't secret; it takes effect from the host's next start.`);
     listSecrets(module, 'MY_SERVER_TOKEN');
     const again = await run(module, 'cat .env');
     expect(again.stdout.text).toContain('DEBUG=<DEBUG>');

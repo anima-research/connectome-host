@@ -40,7 +40,7 @@ export interface SetupModuleConfig {
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream's head and tail, so both streams' together, with what the answer adds, stay under agent-framework
-// 0.27.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), past which it
+// 0.32.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), past which it
 // cuts the answer, and stderr's tail with it, for ordinary output: one dense in what JSON escapes, or in short
 // secrets under long names, can still pass it.
 const KEPT_BYTES = 4 * 1024;
@@ -533,7 +533,8 @@ export class SetupModule implements Module {
     const hidden = guessed.filter((name) => replaced.has(name)).sort();
     if (hidden.length > 0) {
       notes.push(`${join(this.config.dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is ` +
-        `missing, so every name in .env that setup doesn't know counts as secret, and ${hidden.join(', ')} came back ` +
+        `missing, so every name that .env or another dotenv file beside it gives and setup doesn't know counts as secret, ` +
+        `and ${hidden.join(', ')} came back ` +
         'as its name. For values that aren\'t secret to show, the person writes that file as a JSON list of the name ' +
         'of every secret, those in .env and any the host is given through its environment, such as ' +
         '["MY_SERVER_TOKEN"], leaving out only names that aren\'t secret; it takes effect from the host\'s next start.');
