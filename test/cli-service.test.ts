@@ -466,7 +466,7 @@ function fake(at: Install, options: {
       return options.ready === false || asked <= (options.answersAfter ?? 0)
         ? { reason: 'no host is running', down: true }
         : { ready: { pid: faked.systemd.pidFor(hostOf(root)),
-          recipe: root === at.root ? at.recipe : join(dirname(root), 'resident.json') }, close() {} } as never;
+          recipe: root === at.root ? 'Resident' : basename(dirname(root)) }, close() {} } as never;
     },
     sleep: async (ms) => {
       clock += ms;
@@ -628,7 +628,7 @@ test('a launch agent with no file whose state launchctl can\'t give is not taken
 for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an answering host outside the ' + platform + ' unit', async () => {
   const at = install();
   const f = fake(at, { platform });
-  f.system.openHost = async () => ({ ready: { pid: 9999, recipe: at.recipe }, close() {} }) as never;
+  f.system.openHost = async () => ({ ready: { pid: 9999, recipe: 'Resident' }, close() {} }) as never;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('9999');
   expect(f.err.join('\n')).toContain('4242');
@@ -3479,8 +3479,7 @@ test('start clears the start-limit count of the units that aren\'t running and s
   expect(f.systemd.calls.slice(calls).filter((call) => call.startsWith('systemctl') && !call.includes(' show ')))
     .toEqual([`systemctl --user reset-failed ${HOST} ${SHELL}`, `systemctl --user start ${HOST} ${SHELL}`]);
   expect(f.systemd.running.has(HOST) && f.systemd.running.has(SHELL)).toBe(true);
-  expect(f.out.slice(0, 3)).toEqual([`Started ${HOST}.`, `Started ${SHELL}.`, 'Its host answers: pid 4242, recipe ' +
-    `${at.recipe}.`]);
+  expect(f.out.slice(0, 3)).toEqual([`Started ${HOST}.`, `Started ${SHELL}.`, 'Its host answers: pid 4242, recipe Resident.']);
   expect(f.out).toContain(`${HOST} is active (running).`);
   expect(f.out).toContain(`  stop it and its shell daemon: connectome service stop`);
   expect(f.err).toEqual([]);
