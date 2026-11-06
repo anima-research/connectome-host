@@ -100,7 +100,10 @@ immediately drains restored Context Manager compression/merge debt. This happens
 when the store has pending maintenance, and it is visible in the new process's
 `llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To drain what it can before the restart, stop the
 resident first, then drain the debt offline with `bun scripts/warmup-session.ts
-<session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
+<session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`,
+where in an install setup made the script is
+`<install>/current/node_modules/@animalabs/connectome-host/scripts/warmup-session.ts`,
+`<install>` being the directory that holds the install's `connectome` command.
 The script gives the strategy no tool definitions, so a chunk holding tool calls stays
 uncompressed, and with a Fable or Mythos compression model every chunk does.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
@@ -167,7 +170,12 @@ the working directory):
   [INSTALL_DIR] [UNIT]`** — one-shot "why isn't the agent responding?"
   (python3; systemd-user boxes). Prints service state, disk, a last-seen
   ladder per pipeline stage (discord event → chronicle ingest → `llm-calls` →
-  delivery), recent failures, and a live gate dump via `SIGUSR2`. It reads the
+  delivery), recent failures, and a live gate dump via `SIGUSR2`.
+  `connectome doctor` runs it as one of its checks, with `--findings-json`,
+  the install's data directory, working directory and unit; in an install
+  setup made, the script itself is
+  `<install>/current/node_modules/@animalabs/connectome-host/scripts/connectome-doctor`.
+  It reads the
   host's lines from the first `StandardOutput=` or `StandardError=` `file:` or
   `append:` path in the unit file's text, a commented line included, else from
   `INSTALL_DIR/logs/agent.log` unless that was last written before the unit
@@ -717,7 +725,8 @@ repo**:
   (`scripts/import-codex-rollout.ts`).
 - `scripts/compress-fresh.mjs` — drain the compression queue offline before
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
-  `scripts/warmup-session.ts <session>`, which drives a session's
+  `scripts/warmup-session.ts <session>` (in an install setup made, under
+  `<install>/current/node_modules/@animalabs/connectome-host/`), which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
   not read from the recipe). It gives the strategy no tool definitions, so a
   chunk holding tool calls stays uncompressed, and with a Fable or Mythos
