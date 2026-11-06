@@ -1736,6 +1736,30 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
+  test('an answer of more than one line is matched line by line, so a paste of it held for the conversation, and its last line left unsent, are taken out', async () => {
+    const { input, output, rl, shown } = terminal();
+    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
+    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
+    const sent: string[] = [];
+    rl.on('line', (line) => {
+      const message = paste.take(line);
+      if (message !== null) sent.push(message);
+    });
+    input.write('\x1b[200~first\rsecond\x1b[201~');
+    await Bun.sleep(30);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
+    input.write('\x1b[200~first\rsecond\x1b[201~');
+    expect(await answer).toBe('first\nsecond');
+    expect(rl.line).toBe('');
+    expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out.\n');
+    const after = new Promise<void>((resolve) => rl.once('line', () => resolve()));
+    input.write('\r');
+    await after;
+    expect(sent).toEqual(['']);
+    paste.end();
+    rl.close();
+  });
+
   test('a paste held for the conversation that\'s all taken out for holding the answer says so, with nothing left to send', async () => {
     const { input, output, rl, shown } = terminal();
     const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };

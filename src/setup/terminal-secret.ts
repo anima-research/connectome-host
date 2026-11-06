@@ -118,12 +118,12 @@ export async function askHidden(
     }
     echoing._writeToOutput = write;
     output.write('\n');
-    const given = answer.trim();
-    const dropped = given === '' ? undefined : paste?.drop(given);
+    const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    const dropped = given.length === 0 ? undefined : paste?.drop(given);
     if (dropped !== undefined && dropped.taken > 0) {
       output.write(`${dropped.taken === 1 ? '1 pasted line' : `${dropped.taken} pasted lines`} held what you just entered ` +
         `hidden, so ${dropped.taken === 1 ? 'it was' : 'they were'} taken out${dropped.left > 0 ? '. Enter sends the rest' : ''}.\n`);
     }
-    if (draft !== '' && !gone && !(given !== '' && draft.includes(given))) rl.write(draft);
+    if (draft !== '' && !gone && !given.some((line) => draft.includes(line))) rl.write(draft);
   }
 }
