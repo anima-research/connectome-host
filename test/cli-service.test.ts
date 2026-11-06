@@ -4957,3 +4957,13 @@ test('a loader\'s stderr is redacted whole before its last line is shown', async
   expect(f.err.join('\n')).toContain("whether the host can load the recipe couldn't be checked");
   expect(f.err.join('\n')).not.toContain('second-half');
 });
+
+test('a secret quoted with JSON escapes in the loader\'s words is masked too', async () => {
+  const at = install();
+  const secret = 'tok"en-value';
+  const f = fake(at, { env: { PATH: `${at.root}:/usr/bin:/bin`, SESSION_SERVER_TOKEN: secret },
+    recipeLoad: { loads: false, words: `Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(secret)}.` } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('agent.proseRouting');
+  expect(f.err.join('\n')).not.toContain('en-value');
+});
