@@ -27,11 +27,17 @@
     rows entering the agent's window (a turn that started and ended, or
     another `/newtopic`'s transition: the answer says `rows entered
     <agent>'s window`), rows leaving it (an undo or a shed: `rows left
-    <agent>'s window`), a session switch or the host's stop meanwhile
-    stores nothing either, and the answer gives the written summary back,
-    to pass as `/newtopic <text>`. `/newtopic <text>` stores the text as
-    given, its line breaks included, where it joined its words with single
-    spaces.
+    <agent>'s window`), both (`rows entered <agent>'s window and rows left
+    it`), an undo and its redo (`rows left <agent>'s window and entered it
+    again`), a session switch or the host's stop meanwhile
+    stores nothing either, and the answer gives the written summary back
+    as a one-line `/newtopic <text>` to run, its line breaks folded to
+    spaces: the readline and piped modes read each line as its own input,
+    so a summary given back on several lines stored its first line alone
+    there, and sent the rest to the agent. `/newtopic <text>` stores the
+    text as given, its line breaks included (a multi-line one needs the TUI
+    or the Web UI, which send a pasted text whole), where it joined its
+    words with single spaces.
   - tts-relay's note that a voiced reply was interrupted is written for the
     agent that spoke: the author of the published message the heard words
     start, else the agent voicing in its channel. It was written for no

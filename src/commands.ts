@@ -1603,8 +1603,8 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
  * another /newtopic's transition, enters rows, and an undo or a shed takes
  * them out), the session wasn't switched, the
  * host isn't stopping and the agent is still registered with this context;
- * otherwise nothing is stored, and the answer gives the summary back, to
- * store with /newtopic <text>. The check of the branch and the strategy here
+ * otherwise nothing is stored, and the answer gives the summary back as a
+ * one-line /newtopic <text> to store it with (oneLine). The check of the branch and the strategy here
  * is a backstop for a move after context-manager's own check, and gives the
  * summary back too.
  *
@@ -1634,30 +1634,47 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   if (moved !== undefined) {
     throw new Error(
       `${moved} while the transition summary was written; nothing was stored. ` +
-        `To store it, run /newtopic with it as the text:\n${summary}`,
+        `To store it, run this one-line command:\n/newtopic ${oneLine(summary)}`,
     );
   }
   return storeTransition(cm, summary, metadata);
+}
+
+/** The summary on one line, its line breaks folded to spaces: the readline
+ *  and piped modes dispatch each line they read as its own input, so a
+ *  `/newtopic` given back with its line breaks would store its first line
+ *  alone there, and send the rest as messages or commands. */
+function oneLine(summary: string): string {
+  return summary.split(/\r\n|\r|\n/).map((line) => line.trim()).filter(Boolean).join(' ');
 }
 
 /** Where the agent's window stands (`at`): how many items its index has
  *  written (indexLength), which a row entering the window moves, and a row
  *  leaving it too (an undo's or a shed's tombstone is an item), and in
  *  legacy mode, where the window is the record, how many rows the record
- *  holds; with how many rows the window holds (`held`, presentedLength),
- *  which tells rows that left it from rows that entered it. */
-function windowMark(cm: ContextManager): { at: string; held: number } {
+ *  holds; with the rows the window holds (`ids`, getPresentedMessages),
+ *  which tell rows that left it from rows that entered it. */
+function windowMark(cm: ContextManager): { at: string; ids: Set<string> } {
   return {
     at: cm.windowMode() === 'legacy' ? `legacy ${cm.getMessageCount()}` : `presented ${cm.indexLength()}`,
-    held: cm.presentedLength(),
+    ids: new Set(cm.getPresentedMessages().map((m) => String(m.id))),
   };
 }
 
-/** What moved the agent's window since `before` (windowMark), if anything. */
-function windowMoved(cm: ContextManager, before: { at: string; held: number }, agentName: string): string | undefined {
+/** What moved the agent's window since `before` (windowMark), if anything:
+ *  rows that entered it, rows that left it, both, or rows that left it and
+ *  entered it again (an undo and its redo), which leave it holding what it
+ *  held. */
+function windowMoved(cm: ContextManager, before: { at: string; ids: Set<string> }, agentName: string): string | undefined {
   const now = windowMark(cm);
   if (now.at === before.at) return undefined;
-  return `rows ${now.held < before.held ? 'left' : 'entered'} ${agentName}'s window`;
+  const entered = [...now.ids].some((id) => !before.ids.has(id));
+  const left = [...before.ids].some((id) => !now.ids.has(id));
+  const window = `${agentName}'s window`;
+  return entered && left ? `rows entered ${window} and rows left it`
+    : entered ? `rows entered ${window}`
+    : left ? `rows left ${window}`
+    : `rows left ${window} and entered it again`;
 }
 
 /**
