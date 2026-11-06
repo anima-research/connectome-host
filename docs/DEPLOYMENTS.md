@@ -310,11 +310,21 @@ its fallback need: systemd's `Restart=on-failure` does.
 **Moving or copying an install.** Setup records the directory that holds the
 install root, and `start.js` and `connectome` refuse to run an install moved
 or copied away from it, since its record still names the places of the
-install it was. Run setup again in the new directory, the line above with
-the new `DATA_DIR`, or `<root>/connectome setup discord` for an install
-`connectome setup` made. It binds the install there: each place under the
-old directory becomes the same place under the new one, in the record, in
-the copy labels and in each Go back's list. Each place outside the
+install it was. Run setup again in the new directory:
+`<root>/connectome setup discord` for an install `connectome setup` made, or
+for one set up by hand, the setup of the release the install runs, with the
+new `DATA_DIR`:
+
+```bash
+DATA_DIR=... bun <root>/current/node_modules/@animalabs/connectome-host/src/update/setup.ts --root <root> [--extra-state PATH]... [--place PATH PLACE]...
+```
+
+with `<root>` the install root's absolute path where it is now. An update
+installs each release in the install root and leaves the package in the
+directory as it was, so after one, that package's setup is an older
+release's, which may not bind the install. Setup binds the install there:
+each place under the old directory becomes the same place under the new
+one, in the record, in the copy labels and in each Go back's list. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
 `PLACE` the same path after a move, or the copy's own after a copy; a
