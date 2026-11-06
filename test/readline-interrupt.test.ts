@@ -283,7 +283,8 @@ linux('in readline mode, two lines entered together, as a terminal without brack
     const second = seen.output.indexOf('Answer number 2.');
     expect(first).toBeGreaterThanOrEqual(0);
     expect(second).toBeGreaterThan(first);
-    expect(seen.output.slice(seen.output.lastIndexOf('second line'), second)).not.toContain('> ');
+    expect(seen.output.slice(seen.output.indexOf('first line'), second)).not.toContain('> ');
+    expect(seen.output.slice(second).split('> ')).toHaveLength(2);
     expect(carries(lastFromPerson(bodies[0]!), 'first line'), lastFromPerson(bodies[0]!)).toBe(true);
     expect(carries(lastFromPerson(bodies[1]!), 'second line'), lastFromPerson(bodies[1]!)).toBe(true);
     host.stdin!.write('/quit\r');
@@ -473,7 +474,7 @@ linux('a line typed while setup\'s opening turn waits on its model is answered a
     const answer = output.indexOf('Answer to hi.');
     expect(opening).toBeGreaterThanOrEqual(0);
     expect(answer).toBeGreaterThan(opening);
-    expect(output.slice(opening, answer)).not.toContain('> ');
+    expect(output.slice(0, answer)).not.toContain('> ');
     expect(output.slice(answer).split('> ')).toHaveLength(2);
     expect(carries(lastFromPerson(typed.bodies[1]!), 'typed-while-held'), lastFromPerson(typed.bodies[1]!)).toBe(true);
     hosts.at(-1)!.stdin!.write('/quit\r');
