@@ -249,6 +249,10 @@ linux('in readline mode, a bracketed paste is held until Enter and sent as one m
     await until(() => seen.output.includes('Got it.'), 30_000, `the answer (requests: ${bodies.length}; output: ${seen.output.slice(-1500)})`);
     expect(bodies).toHaveLength(1);
     expect(carries(lastFromPerson(bodies[0]!), '/quit\nsecond\nthird and more'), lastFromPerson(bodies[0]!)).toBe(true);
+    host.stdin!.write('fourth\r');
+    await until(() => bodies.length >= 2 && seen.output.split('Got it.').length >= 3, 30_000, `the second answer (requests: ${bodies.length})`);
+    expect(bodies).toHaveLength(2);
+    expect(carries(lastFromPerson(bodies[1]!), 'fourth'), lastFromPerson(bodies[1]!)).toBe(true);
     host.stdin!.write('\x1b[200~/quit\x1b[201~\r');
     expect(await exit).toBe(0);
     expect(givenBack(seen.output)).toBe(true);
