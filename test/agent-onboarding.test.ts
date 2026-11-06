@@ -168,7 +168,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
     expect(runs.length).toBeGreaterThan(0);
     for (const [, script, rest] of runs) {
       const source = readFileSync(join(ROOT, script!), 'utf-8');
-      for (const option of rest!.match(/--\w[\w-]*/g) ?? []) {
+      for (const option of rest!.match(/--\w[\w-]*(?:=\S*)?/g) ?? []) {
         expect({ script, option, taken: source.includes(`'${option}'`) }).toEqual({ script, option, taken: true });
       }
     }
@@ -182,7 +182,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       if (scripts.length === 0) continue;
       const sources = scripts.map((script) => readFileSync(join(ROOT, script), 'utf-8'));
       for (const [, span] of piece.text.matchAll(/`([^`]*)`/g)) {
-        for (const option of span!.match(/(?<![\w-])--\w[\w-]*/g) ?? []) {
+        for (const option of span!.match(/(?<![\w-])--\w[\w-]*(?:=\S*)?/g) ?? []) {
           if (BUN_OPTIONS.has(option)) continue;
           named++;
           const taken = sources.some((source) => source.includes(`'${option}'`));
