@@ -270,7 +270,7 @@ node '<context-manager>/dist/scripts/repair-topology.js' '<store-copy>' --namesp
 
 - It's a dry run, which prints its plan, unless you add `--apply`. After `--apply` it reopens the copy under `reject` to check it. It exits 0 when nothing crossed is left (or the dry run's plan leaves nothing crossed), 2 when the plan is incomplete or the check failed, and 1 on a usage or open error.
 - `lossless`, the default, only detaches, so no summary claims what it didn't see, but the pyramid unravels around each fragment. Add `--mode compact` to keep depth at the price of gaps in the summaries' prose. Add `--mode rebuild` to dissolve every summary whose span touches a crossed region, with its ancestors, back to level-1 summaries, for the merge ladder to fold again with real summarizer calls. With `rebuild`, add `--rebuild-since '<messageId|ISO date>'` to rebuild only the crossings from that message on, and compact older ones.
-- After a `rebuild`, fold the same copy again with the offline drain, which writes summaries with real model calls, taking the key from `ANTHROPIC_API_KEY` in its environment. The repair prints its command:
+- After a `rebuild`, fold the same copy again with the offline drain, which writes summaries with real model calls, taking `ANTHROPIC_AUTH_TOKEN` from its environment, or `ANTHROPIC_API_KEY` where no token is set, and `ANTHROPIC_BASE_URL` where that's set. The repair prints its command:
 
 ```bash
 node '<context-manager>/dist/scripts/drain-autobiographical.js' '<store-copy>' 'agents/<agent>' --apply --model='<model>' --participant='<agent>' --recipe='<recipe.json>' --tools-log='<llm-calls.jsonl>'
