@@ -1915,11 +1915,19 @@ test('a port and token already in .env are kept, in the unit and in .env', async
   expect(env).toContain('SESSION_SERVER_TOKEN="abc123"');
 });
 
-test('with no port free for the shell daemon it refuses, writing nothing', async () => {
+test('with 3100 to 3199 held, the shell daemon gets the next free port', async () => {
   const at = install('My Resident', { shell: true });
-  const f = fake(at, { taken: Array.from({ length: 100 }, (_, at) => 3100 + at) });
+  const f = fake(at, { taken: Array.from({ length: 100 }, (_, n) => 3100 + n) });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(join(at.work, '.env'), 'utf-8')).toContain('SESSION_SERVER_PORT="3200"');
+});
+
+test('with no port free for the shell daemon below the ephemeral ranges it refuses, writing nothing', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { taken: Array.from({ length: 32768 - 3100 }, (_, n) => 3100 + n) });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('SESSION_SERVER_PORT');
+  expect(f.err.join('\n')).toContain('no port from 3100 to 32767 is free for the resident\'s shell daemon: set ' +
+    `SESSION_SERVER_PORT in ${join(at.work, '.env')}`);
   nothingWritten(at);
 });
 

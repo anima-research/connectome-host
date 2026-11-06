@@ -31,7 +31,10 @@ export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
 const SHELL_BIN = 'session-server';
-const SHELL_PORTS = { first: 3100, last: 3199 };
+// term-sessions-mcp's own default port is 3100. Picked ports stay below the platforms' default ephemeral ranges, from
+// which the kernel hands out ports for outgoing connections: Linux's from 32768 (ip_local_port_range), macOS's from
+// 49152 (net.inet.ip.portrange.first).
+const SHELL_PORTS = { first: 3100, last: 32767 };
 const READY_WAIT_MS = 60_000;
 const RECIPE_CHECK_MS = 60_000;
 const FIRST_MINUTE_S = 60;
