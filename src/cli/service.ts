@@ -160,9 +160,10 @@ export async function portFree(port: number): Promise<boolean> {
 }
 
 const RECIPE_LOADER = fileURLToPath(new URL('../recipe.js', import.meta.url));
+const RECIPE_DOCUMENT = fileURLToPath(new URL('../recipe-document.js', import.meta.url));
 
 export function readRecipeAsHost(bun: string, recipe: string, work: string, env: Record<string, string>): RecipeRead {
-  return recipeCheck(bun, recipe, work, env, [
+  return recipeCheck(bun, recipe, work, env, { from: RECIPE_DOCUMENT, names: ['readRecipeDocument', 'substituteEnvVars'] }, [
     'const usesShell = (document) => {',
     '  if (["SESSION_SERVER_TOKEN", "SESSION_SERVER_PORT"].some((name) => JSON.stringify(document).includes(name))) return true;',
     '  const value = substituteEnvVars(document, source);',
@@ -178,7 +179,7 @@ export function readRecipeAsHost(bun: string, recipe: string, work: string, env:
 
 export function loadRecipeAsHost(bun: string, recipe: string, work: string, env: Record<string, string>,
   document?: unknown): RecipeLoad {
-  return recipeCheck(bun, recipe, work, env, [
+  return recipeCheck(bun, recipe, work, env, { from: RECIPE_LOADER, names: ['loadRecipeDocument', 'loadRecipeDetailed'] }, [
     document === undefined ? 'await loadRecipeDetailed(source);'
       : 'await loadRecipeDocument(JSON.parse(await Bun.stdin.text()), source);',
     'console.log("\\n" + JSON.stringify({ loaded: true }));',
@@ -186,11 +187,10 @@ export function loadRecipeAsHost(bun: string, recipe: string, work: string, env:
 }
 
 function recipeCheck<T extends { loads: true }>(bun: string, recipe: string, work: string, env: Record<string, string>,
-  body: string[], decode: (result: Record<string, unknown>) => T | null, document?: unknown):
-  T | Exclude<RecipeLoad, { loads: true }> {
+  imports: { from: string; names: string[] }, body: string[], decode: (result: Record<string, unknown>) => T | null,
+  document?: unknown): T | Exclude<RecipeLoad, { loads: true }> {
   const script = [
-    'const { readRecipeDocument, loadRecipeDocument, loadRecipeDetailed, substituteEnvVars } = await import(' +
-      JSON.stringify(RECIPE_LOADER) + ');',
+    `const { ${imports.names.join(', ')} } = await import(${JSON.stringify(imports.from)});`,
     'const source = ' + JSON.stringify(recipe) + ';',
     'try {',
     ...body,
