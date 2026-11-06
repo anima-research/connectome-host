@@ -1108,6 +1108,15 @@ describe('checkDiscordToken', () => {
       fetch: (async () => Response.json({ id: 'a-token', username: 'bot a-token' })) as unknown as typeof fetch,
     })).toEqual({ kind: 'accepted', name: 'bot <DISCORD_TOKEN>', id: '<DISCORD_TOKEN>' });
   });
+
+  test('a user whose answer says it isn\'t a bot is Discord answering otherwise, and one that says it is, is the bot', async () => {
+    expect(await checkDiscordToken('a-token', {
+      fetch: (async () => Response.json({ id: '900', username: 'person', bot: false })) as unknown as typeof fetch,
+    })).toEqual({ kind: 'answered', status: 200, said: null });
+    expect(await checkDiscordToken('a-token', {
+      fetch: (async () => Response.json({ id: '900', username: 'ember', bot: true })) as unknown as typeof fetch,
+    })).toEqual({ kind: 'accepted', name: 'ember', id: '900' });
+  });
 });
 
 describe('setup--ask_secret', () => {

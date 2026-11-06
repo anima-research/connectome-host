@@ -196,6 +196,19 @@ describe('doctor: Discord', () => {
     expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
   });
 
+  test('a user that says it isn\'t a bot is no answer of the bot\'s, and one that doesn\'t say is taken as the bot', async () => {
+    for (const bot of [false, 'true', null]) {
+      const discord = fakeDiscord({ answers: { '/users/@me': () => Response.json({ id: '900', username: 'person', bot }) }, guilds: [HOME] });
+      const r = await run({ DISCORD_TOKEN: TOKEN }, discord);
+      expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
+      expect(r.text).not.toContain('person');
+      expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
+    }
+    const unsaid = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': () => Response.json({ id: '900', username: 'ember' }) }, flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
+    expect(unsaid.lines[0]).toBe('✓ The token in DISCORD_TOKEN works: the bot is ember (900).');
+    expect(unsaid.problems).toEqual([]);
+  });
+
   test('a redirect, to the first request or a later one, is reported, not followed with the token', async () => {
     const moved = () => new Response(null, { status: 307, headers: { location: 'https://elsewhere.example/' } });
     for (const path of ['/users/@me', '/applications/@me', '/guilds/100/roles']) {
