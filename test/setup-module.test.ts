@@ -360,8 +360,9 @@ describe('setup--run', () => {
       const took = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
       holder = Number(readFileSync(pidFile, 'utf-8'));
       expect(alive(holder)).toBe(true);
-      expect(took).toBeGreaterThanOrEqual(900);
-      expect(took).toBeLessThan(6_000);
+      const said = JSON.stringify({ outputHeldOpen: answer.outputHeldOpen, note: answer.note, stdout: answer.stdout.text });
+      expect(took, said).toBeGreaterThanOrEqual(900);
+      expect(took, said).toBeLessThan(6_000);
       expect(answer.exitCode).toBe(0);
       expect(answer.outputHeldOpen).toBe(true);
       expect(answer.note).toContain('still holds the output open');
