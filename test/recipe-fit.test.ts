@@ -604,7 +604,8 @@ describe('a count of the system prompt and tools the host sends beside the conve
     expect(over).toContain('bring the system prompt and tools the host sends to about 48,384 tokens or fewer, with fewer tools, ' +
       'since a shorter system prompt raises the budget the host gives this recipe by as much');
     expect(over).toContain('At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
-      'with the system prompt and tools as counted, can fill the window, leaving nothing for what modules add at each turn.');
+      'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
+      'each turn.');
     expect(over).not.toContain('32,000');
     expect(over).not.toContain('less the size of the tools');
     expect(over).not.toContain('leaving none for the tool definitions');

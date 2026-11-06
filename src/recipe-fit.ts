@@ -212,7 +212,8 @@ const AT_AN_END = 'At an end of a named range, the compile can have no room left
   'fails once its conversation fills the compile.';
 
 const AT_AN_END_COUNTED = 'At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
-  'with the system prompt and tools as counted, can fill the window, leaving nothing for what modules add at each turn.';
+  'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
+  'each turn.';
 
 function full(f: Fit): boolean {
   const budget = budgetOf(f);
