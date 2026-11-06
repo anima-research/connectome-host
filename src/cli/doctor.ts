@@ -1,5 +1,4 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +19,9 @@ import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
-import { SUPERVISED_ENV, checkService, readServiceRecord, serviceLines, servicePid, type ServiceRecord } from './service.js';
+import {
+  SUPERVISED_ENV, checkService, readServiceRecord, serviceLines, servicePid, pathState, type ServiceRecord,
+} from './service.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
 const LADDER_LIMIT_MS = 60_000;
@@ -330,7 +331,7 @@ export async function doctor(
         'have it, or ask for help, before starting the service.');
     } else if (dataState !== null && dataState !== 'there') {
       report.problem(`The install record names ${dataDir} as the resident's data directory, and it can't be looked at ` +
-        `(${dataState.why}), so whether it's there can't be told.`);
+        `(${dataState.why}), so whether it's there can't be told. ${dataState.repair}`);
     }
     const running = host;
     const asked = (op: keyof typeof CHECKS): Promise<HostEvent | null> | null =>
@@ -847,16 +848,6 @@ async function within<T>(limitMs: number, work: Promise<T>, late: string): Promi
 
 function namesIn(document: RecipeDocument): string[] {
   return [...JSON.stringify(document.raw).matchAll(new RegExp(ENV_REFERENCE, 'g'))].map(([, name]) => name!);
-}
-
-function pathState(path: string): 'there' | 'gone' | { why: string } {
-  try {
-    statSync(path);
-    return 'there';
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === 'ENOENT' || code === 'ENOTDIR' ? 'gone' : { why: errorText(error).replace(/\.$/, '') };
-  }
 }
 
 function withSentForms(secret: Secret): Secret[] {

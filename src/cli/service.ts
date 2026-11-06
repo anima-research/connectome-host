@@ -800,16 +800,16 @@ function stopUnits(ctx: CliContext, sys: ServiceSystem, env: Record<string, stri
 }
 
 function startsAgain(record: ServiceRecord, sys: ServiceSystem, env: Record<string, string>, cmd: string): string[] {
-  const gone = unitsOf(record).find((unit) => unitFileState(unit.file) === 'gone');
+  const gone = unitsOf(record).find((unit) => pathState(unit.file) === 'gone');
   if (gone === undefined) return [startsByItself(record, sys, env, true, cmd)];
   const refuses = `${gone.file}, ${gone.name}'s ${fileOf(record.manager)}, is gone, so ${cmd} service start ` +
     `refuses. ${serviceRepair(cmd)}`;
   return gone === record.units.host ? [refuses] : [startsByItself(record, sys, env, false, cmd), refuses];
 }
 
-function unitFileState(file: string): 'there' | 'gone' | { why: string; repair: string } {
+export function pathState(path: string): 'there' | 'gone' | { why: string; repair: string } {
   try {
-    statSync(file);
+    statSync(path);
     return 'there';
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -906,7 +906,7 @@ async function startService(ctx: CliContext, sys: ServiceSystem): Promise<number
       'whoever runs this machine to run it from a terminal outside it, such as over ssh.');
   }
   for (const unit of units) {
-    const state = unitFileState(unit.file);
+    const state = pathState(unit.file);
     if (state === 'gone') {
       throw new Refusal(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)} ` +
         'Nothing was started.');
@@ -1915,7 +1915,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
   const units = unitsOf(record);
   let unseen = 0;
   for (const unit of units) {
-    const state = unitFileState(unit.file);
+    const state = pathState(unit.file);
     if (state === 'there') continue;
     unseen += 1;
     fail(state === 'gone' ? `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)}`

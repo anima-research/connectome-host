@@ -2123,7 +2123,8 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       const r = await run(at);
       expect(r.out).toContain(`✗ The install record names ${join(locked, 'data')} as the resident's data directory, and it ` +
         'can\'t be looked at (');
-      expect(r.out).toContain('), so whether it\'s there can\'t be told.');
+      expect(r.out).toContain('), so whether it\'s there can\'t be told. Give this user search on each directory on the way to ' +
+        'it, and run this again.');
       expect(r.out).not.toContain('and it isn\'t there');
     } finally {
       chmodSync(locked, 0o755);
