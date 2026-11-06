@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
@@ -12,6 +12,7 @@ import { buildCountCheck, buildShellCheck, type PanelAppRef } from '../src/web/p
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = join(resolve(TEST_DIR, '..'), 'src', 'index.ts');
+const LADDER = join(resolve(TEST_DIR, '..'), 'scripts', 'connectome-doctor');
 
 // Shaped like terminal-sessions-mcp 1.7.3 as it answered when probed:
 // `listSessions` answers its sessions as JSON text, and with a missing or
@@ -64,6 +65,20 @@ function lineReader(socket: Socket): Array<Record<string, unknown>> {
   return events;
 }
 
+// As journald keeps a unit's output: each line of either stream, stamped with when it came.
+function journalOf(stream: NodeJS.ReadableStream, path: string, pid: number): void {
+  let buf = '';
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk: string) => {
+    buf += chunk;
+    let i: number;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      appendFileSync(path, `${(Date.now() / 1000).toFixed(6)} host bun[${pid}]: ${buf.slice(0, i)}\n`);
+      buf = buf.slice(i + 1);
+    }
+  });
+}
+
 async function waitFor(check: () => boolean, timeoutMs: number, label: string): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -80,6 +95,8 @@ describe('doctor host checks over the socket', () => {
   let events: Array<Record<string, unknown>>;
   let countServer: ReturnType<typeof Bun.serve>;
   let recipePath: string;
+  let journalPath: string;
+  let started: number;
   const countedModels: string[] = [];
   const countedBodies: Array<{ model?: string; system?: unknown; tools?: unknown[]; messages?: unknown[] }> = [];
   let seq = 0;
@@ -139,7 +156,12 @@ describe('doctor host checks over the socket', () => {
     };
     delete env.COUNT_TOKENS_MODEL;
     delete env.MODEL;
-    child = spawn('bun', [INDEX_PATH, recipePath, '--headless'], { cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'] });
+    journalPath = join(dir, 'journal.txt');
+    writeFileSync(journalPath, '');
+    started = Math.floor(Date.now() / 1000);
+    child = spawn('bun', [INDEX_PATH, recipePath, '--headless'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    journalOf(child.stdout!, journalPath, child.pid!);
+    journalOf(child.stderr!, journalPath, child.pid!);
     const socketPath = join(dir, 'ipc.sock');
     await waitFor(() => existsSync(socketPath), 20_000, 'socket file appears');
     sock = await connectWhenAccepting(socketPath);
@@ -235,6 +257,50 @@ describe('doctor host checks over the socket', () => {
       recipeDigest: (recipe: unknown) => string;
     };
     expect((data as { recipeDigest?: unknown }).recipeDigest).toBe(recipeDigest((await loadRecipeDetailed(recipePath)).recipe));
+  }, 30_000);
+
+  test('the ladder reads this host\'s own gate dump from its journal, with the gate and active streams it reads', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'chost-doctor-ladder-'));
+    const bins = join(work, 'bin');
+    mkdirSync(bins);
+    mkdirSync(join(work, 'logs'));
+    writeFileSync(join(work, 'unit.txt'), '');
+    const tool = (name: string, lines: string[]): void => {
+      writeFileSync(join(bins, name), ['#!/bin/sh', ...lines, ''].join('\n'));
+      chmodSync(join(bins, name), 0o755);
+    };
+    const startStamp = new Date(started * 1000).toUTCString().replace('GMT', 'UTC');
+    tool('systemctl', [
+      'case "$*" in',
+      `  *FragmentPath*) echo ${join(work, 'unit.txt')} ;;`,
+      `  *--value*) echo ${child.pid} ;;`,
+      `  *) printf "ActiveState=active\\nSubState=running\\nNRestarts=0\\nExecMainStartTimestamp=${startStamp}\\nMainPID=${child.pid}\\n" ;;`,
+      'esac',
+    ]);
+    tool('journalctl', [
+      'unit="--user -u connectome-test.service"',
+      'case "$*" in',
+      `  "$unit -q --no-pager -n 1 -o short-unix") tail -n 1 ${journalPath} ;;`,
+      `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") awk -v since="\${7#@}" '$1 + 0 >= since' ${journalPath} | grep -P -- "$9" ;;`,
+      `  "$unit -o cat --no-pager --since @"*) awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journalPath} ;;`,
+      '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
+      'esac',
+    ]);
+    const ladder = spawn('python3', [LADDER, '--data-dir', dir, work, 'connectome-test.service'], {
+      env: { ...process.env, PATH: `${bins}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    ladder.stdout!.on('data', (chunk) => { out += chunk; });
+    ladder.stderr!.on('data', (chunk) => { out += chunk; });
+    await new Promise<void>((done) => ladder.once('close', () => done()));
+    rmSync(work, { recursive: true, force: true });
+    const said = out.split('\n').find((line) => line.startsWith('live gate dump'));
+    expect(said ?? out).toStartWith('live gate dump (SIGUSR2): {');
+    const dump = JSON.parse(said!.slice(said!.indexOf('{'))) as Record<string, unknown>;
+    // This host's recipe leaves out the wake module, so its framework has no event gate and the dump's gate is
+    // null, which the ladder reads as an empty gate.
+    expect({ gate: 'gate' in dump ? dump.gate : 'missing', activeStreams: Array.isArray(dump.activeStreams) })
+      .toEqual({ gate: null, activeStreams: true });
+    expect({ exitCode: child.exitCode, signalCode: child.signalCode }).toEqual({ exitCode: null, signalCode: null });
   }, 30_000);
 });
 
