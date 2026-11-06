@@ -58,6 +58,8 @@ module. Keep it on **loopback** and reach it via SSH tunnel. See
 
 ## Operating an agent
 
+In a shell command, put each path or value you fill in between single quotes, so that a space or a shell character in it stays part of it, and write each `'` inside one as `'\''`.
+
 **Recipe / config / data live in the install dir:**
 - `recipes/<agent>.json` — agent def, model, MCP servers (absolute paths to each
   `dist/`), wake-gate policies, modules.
@@ -100,10 +102,13 @@ immediately drains restored Context Manager compression/merge debt. This happens
 when the store has pending maintenance, and it is visible in the new process's
 `llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To drain what it can before the restart, stop the
 resident first, then drain the debt offline with `bun scripts/warmup-session.ts
-<session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`,
+'<session>' --agent '<recipe agent.name>' --data-dir '<DATA_DIR>' --model '<compressionModel>'`,
 where in an install setup made the script is
 `<install>/current/node_modules/@animalabs/connectome-host/scripts/warmup-session.ts`,
 `<install>` being the directory that holds the install's `connectome` command.
+Give the session's id as `<session>` where its name begins with `-`, which warmup takes
+for an option, or where several sessions share it, ignoring case, since warmup then
+warms only one of them.
 The script gives the strategy no tool definitions, so a chunk holding tool calls stays
 uncompressed, and with a Fable or Mythos compression model every chunk does.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
@@ -725,7 +730,7 @@ repo**:
   (`scripts/import-codex-rollout.ts`).
 - `scripts/compress-fresh.mjs` — drain the compression queue offline before
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
-  `scripts/warmup-session.ts <session>` (in an install setup made, under
+  `scripts/warmup-session.ts '<session>'` (in an install setup made, under
   `<install>/current/node_modules/@animalabs/connectome-host/`), which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
   not read from the recipe). It gives the strategy no tool definitions, so a
