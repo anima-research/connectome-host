@@ -58,6 +58,15 @@ function shellPackage(work: string): void {
   }));
 }
 
+function xmlPlistFields(path: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const [, key, value] of readFileSync(path, 'utf-8').matchAll(/<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g)) {
+    fields[key!] ??= value!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, '\'')
+      .replace(/&amp;/g, '&');
+  }
+  return fields;
+}
+
 function plistFields(args: string[], fields: Record<string, string | number>, converts = true): Ran {
   if (args[0] === '-convert') return converts ? ok(JSON.stringify(fields))
     : { status: 1, stdout: 'invalid object in plist for destination format\n', stderr: '' };
@@ -156,6 +165,7 @@ class FakeSystemd {
     this.envs.push(env);
     if (command === 'journalctl') return this.journalctl(args);
     if (command === 'launchctl') return this.launchctl(args);
+    if (command === 'plutil') return plistFields(args, xmlPlistFields(args.at(-1)!));
     if (command !== 'systemctl') return { status: 1, stdout: '', stderr: `${command}: not found` };
     const user = args[0] === '--user';
     const [verb, ...more] = user ? args.slice(1) : args;
@@ -585,6 +595,21 @@ for (const verb of ['stop', 'check'] as const) test('launchd query failure is di
   expect(said).not.toContain('has no com.animalabs.connectome.my-resident loaded');
 });
 
+test('this install\'s launch agent converted to a binary plist is still read as this install\'s', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(agentPlist(at), 'bplist00fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === agentPlist(at)
+    ? plistFields(args, { Label: 'com.animalabs.connectome.my-resident', WorkingDirectory: at.work })
+    : run(command, args, env);
+  f.out.length = 0;
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  expect(f.out).toContain('Stopped com.animalabs.connectome.my-resident.');
+  expect(f.err).toEqual([]);
+});
+
 test('a launch agent with no file whose state launchctl can\'t give is not taken as free', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin' });
@@ -741,7 +766,7 @@ test('macOS refuses another installed agent in this working directory, including
   mkdirSync(dirname(other), { recursive: true });
   writeFileSync(other, 'bplist00fixture');
   const run = f.system.run;
-  f.system.run = (command, args, env) => command === 'plutil'
+  f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === other
     ? plistFields(args, { Label: 'other.resident', WorkingDirectory: at.work })
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
@@ -759,7 +784,7 @@ test('an unreadable LaunchAgents plist is named with its reason rather than rule
   mkdirSync(dirname(other), { recursive: true });
   writeFileSync(other, 'unreadable fixture');
   const run = f.system.run;
-  f.system.run = (command, args, env) => command === 'plutil'
+  f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === other
     ? { status: 1, stdout: '', stderr: 'conversion denied' }
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -775,7 +800,7 @@ test('a converted agent for another working directory leaves this install availa
   mkdirSync(dirname(other), { recursive: true });
   writeFileSync(other, 'bplist00fixture');
   const run = f.system.run;
-  f.system.run = (command, args, env) => command === 'plutil'
+  f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === other
     ? plistFields(args, { Label: 'another.job', WorkingDirectory: at.home })
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
@@ -1047,7 +1072,7 @@ for (const property of ['date', 'data']) test('a valid agent with an unrelated '
   mkdirSync(dirname(other), { recursive: true });
   writeFileSync(other, 'bplist00 ' + property + ' fixture');
   const run = f.system.run;
-  f.system.run = (command, args, env) => command === 'plutil'
+  f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === other
     ? plistFields(args, { Label: 'older.host', WorkingDirectory: at.work }, false)
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
@@ -1063,7 +1088,8 @@ for (const fields of [{ Label: 'unrelated.job' }, { Label: 'unrelated.job', Work
     mkdirSync(dirname(other), { recursive: true });
     writeFileSync(other, 'fixture');
     const run = f.system.run;
-    f.system.run = (command, args, env) => command === 'plutil' ? plistFields(args, fields) : run(command, args, env);
+    f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === other
+      ? plistFields(args, fields) : run(command, args, env);
     expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
     expect(f.out.join('\n')).not.toContain("isn't ruled out");
   });
@@ -3569,7 +3595,7 @@ test('on macOS stop boots out the host, then its shell agent, says so of each an
   const calls = f.systemd.calls.length;
   f.out.length = 0;
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
-  expect(f.systemd.calls.slice(calls).filter((call) => !/^launchctl (list|print) /.test(call)))
+  expect(f.systemd.calls.slice(calls).filter((call) => !/^(launchctl (list|print)|plutil) /.test(call)))
     .toEqual([`launchctl bootout gui/1001/${host}`, `launchctl bootout gui/1001/${shell}`]);
   expect(f.systemd.agents.size).toBe(0);
   expect(f.out).toEqual([`Stopped ${host}.`, `${shell} wasn't running, and launchd no longer has it loaded.`,
@@ -3604,7 +3630,7 @@ test('on macOS stop and start refuse another-directory configuration, and stop r
     'install it runs can\'t be told. connectome service stop leaves it alone, and nothing was stopped. If it\'s this ' +
     `install's, stop it with launchctl bootout gui/1001/${host}, then run connectome service stop again, which stops ` +
     'the rest of the service; connectome service install sets its service up again when it\'s wanted back.']);
-  expect(f.systemd.calls.slice(calls).filter((call) => !call.startsWith('launchctl list'))).toEqual([]);
+  expect(f.systemd.calls.slice(calls).filter((call) => !/^(launchctl list|plutil) /.test(call))).toEqual([]);
   expect(f.systemd.agents.has(host)).toBe(true);
 });
 
@@ -5035,7 +5061,7 @@ test('macOS refuses another plist with this install\'s host label and working di
   mkdirSync(dirname(other), { recursive: true });
   writeFileSync(other, 'bplist00fixture');
   const run = f.system.run;
-  f.system.run = (command, args, env) => command === 'plutil'
+  f.system.run = (command, args, env) => command === 'plutil' && args.at(-1) === other
     ? plistFields(args, { Label: 'com.animalabs.connectome.my-resident', WorkingDirectory: at.work })
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);

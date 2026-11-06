@@ -506,8 +506,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     shellSettings: ownedSettings,
   };
   const previousShell = old?.units.shell;
+  const shellText = readOr(names.shell.file);
   const retiring = shell === null && (previousShell?.name === names.shell.name ||
-    fileDirectory(readOr(names.shell.file) ?? '', manager, sys.home) === realOrResolved(work))
+    (shellText !== null && fileDirectory(sys, env, manager, names.shell, shellText) === realOrResolved(work)))
     ? names.shell : undefined;
   const recorded: ServiceRecord = { ...record,
     units: { ...record.units, ...(retiring === undefined ? {} : { shell: retiring }) } };
@@ -1074,12 +1075,26 @@ function unitNames(manager: ServiceRecord['manager'], slug: string, sys: Service
   };
 }
 
-function fileDirectory(text: string, manager: ServiceRecord['manager'], home: string): string | null {
+function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
+  unit: ServiceUnit, text: string): string | null {
   const set = manager === 'systemd-user'
-    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%')
-    : /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(text)?.[1]?.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&apos;/g, '\'').replace(/&amp;/g, '&');
-  return set === undefined || set === '' ? null : realOrResolved(set === '~' ? home : set);
+    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%') ?? null
+    : plistField(sys, env, unit.file, 'WorkingDirectory');
+  return set === null || set === '' ? null : realOrResolved(set === '~' ? sys.home : set);
+}
+
+function plistField(sys: ServiceSystem, env: Record<string, string>, path: string, key: string): string | null {
+  const type = sys.run('plutil', ['-type', key, path], env);
+  if (type.status !== 0) {
+    const lint = sys.run('plutil', ['-lint', path], env);
+    if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
+    return null;
+  }
+  if (type.stdout !== 'string\n') return null;
+  const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
+  if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
+  // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
+  return raw.stdout.replace(/\n$/, '');
 }
 
 /** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
@@ -1098,7 +1113,7 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
   const here = realOrResolved(work);
   const text = readOr(unit.file);
   if (text !== null) {
-    const runsIn = fileDirectory(text, manager, sys.home);
+    const runsIn = fileDirectory(sys, env, manager, unit, text);
     if (runsIn !== here) return { kind: 'other', runsIn, from: unit.file };
   }
   if (manager !== 'systemd-user') {
@@ -1209,27 +1224,14 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warn(dir, errorText(error));
     return;
   }
-  const field = (path: string, key: string): string | null => {
-    const type = sys.run('plutil', ['-type', key, path], env);
-    if (type.status !== 0) {
-      const lint = sys.run('plutil', ['-lint', path], env);
-      if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
-      return null;
-    }
-    if (type.stdout !== 'string\n') return null;
-    const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
-    if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
-    // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
-    return raw.stdout.replace(/\n$/, '');
-  };
   for (const file of files.filter((file) => file.endsWith('.plist'))) {
     const path = join(dir, file);
     if (path === names.host.file || path === names.shell.file) continue;
     let label: string | null;
     try {
-      const directory = field(path, 'WorkingDirectory');
+      const directory = plistField(sys, env, path, 'WorkingDirectory');
       if (directory === null || realOrResolved(directory) !== realOrResolved(work)) continue;
-      label = field(path, 'Label');
+      label = plistField(sys, env, path, 'Label');
     } catch (error) {
       warn(path, errorText(error));
       continue;
@@ -1257,7 +1259,7 @@ async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<strin
   unit: ServiceUnit, work: string, cmd: string, recordedHere = false): Promise<boolean> {
   const here = realOrResolved(work);
   const text = readOr(unit.file);
-  let runsIn = text === null ? (recordedHere ? here : undefined) : fileDirectory(text, manager, sys.home);
+  let runsIn = text === null ? (recordedHere ? here : undefined) : fileDirectory(sys, env, manager, unit, text);
   let live: boolean;
   if (manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory']);
