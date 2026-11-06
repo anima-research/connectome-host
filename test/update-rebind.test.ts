@@ -345,7 +345,7 @@ describe('binding an install to the directory it is in', () => {
     const moved = join(dir, 'moved');
     renameSync(install, moved);
     const why = refusal(() => setup(options(moved, { places: [{ from: join(dir, 'elsewhere'), to: join(dir, 'other') }] })));
-    expect(why).toContain(`--place ${join(dir, 'elsewhere')} names no place this install's record, its copy's label or its Go backs' lists name. Those it names:\n  ${join(install, 'data')} (its data directory)`);
+    expect(why).toContain(`--place ${join(dir, 'elsewhere')} names no place this install's record, its copy's label or its Go backs' lists name. Those it names:\n  ${join(install, 'data')} (its data directory; not there now)`);
     expect(record(moved)!.workingDir).toBe(install);
   });
 
@@ -481,6 +481,23 @@ describe('binding an install to the directory it is in', () => {
       `the other, so a copy of the data would hold the copy itself. Give ${state} a place apart from the root with ` +
       '--place. Setup has changed nothing.');
     expect(tree(rootOf(copy))).toEqual(kept);
+  });
+
+  test('setup run by hand says which of the places it asks about isn\'t there now, as connectome setup\'s question does', () => {
+    const outside = join(dir, 'state.json');
+    writeFileSync(outside, 'state');
+    setup(options(install, { extraState: [outside] }));
+    updated(install, [outside]);
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [outside] });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const asked = refusal(() => setup(options(moved))).split('\n').filter((line) => line.startsWith('  '));
+    expect(asked.map((line) => line.trim().split(' (')[0]).sort()).toEqual([
+      join(install, 'data'), outside, join(install, 'mcpl-servers.agent.json'), join(install, 'mcpl-servers.json'),
+    ].sort());
+    for (const line of asked) {
+      expect(line.endsWith('; not there now)')).toBe(!line.startsWith(`  ${outside} (`));
+    }
   });
 
   test('a place inside another is asked about with it, and the places of state outside the data directory are asked about in the record\'s order', () => {

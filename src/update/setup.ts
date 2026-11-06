@@ -251,6 +251,7 @@ function placeLine(place: Place): string {
     ...place.data ? ['its data directory'] : [],
     ...place.extra ? ['state kept outside its data directory'] : [],
     ...place.files.length > 0 ? [`named by ${place.files.join(' and ')}`] : [],
+    ...existsSync(place.path) ? [] : ['not there now'],
   ];
   return `  ${place.path} (${what.join('; ')})`;
 }
