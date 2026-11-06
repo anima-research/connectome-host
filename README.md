@@ -32,9 +32,9 @@ depends on, showing its own progress, before setup says anything.
 The host's own agent sets the resident up from there, and asks you only what
 only you can answer. Afterwards the install's own `connectome` command looks
 after it: `./connectome-host/connectome` in that directory, or plain
-`connectome` once its directory is on your PATH, as setup shows. With nothing
-after it, it says how the install is. Type the package's whole name,
-`bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
+`connectome` once its directory comes first on your PATH, as setup shows.
+With nothing after it, it says how the install is. Type the package's whole
+name, `bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
 another package on npm.
 
 ## What people run on it

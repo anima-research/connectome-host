@@ -566,7 +566,7 @@ async function installAndStart(
         out(`${needs} For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it there:`);
         out(`  ${command.pathLine}`);
       } else {
-        out(`${needs} For that, put ${root} on your PATH as your shell sets it, and in its startup file to keep it there.`);
+        out(`${needs} For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
       }
     }
   }

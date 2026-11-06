@@ -596,7 +596,7 @@ test('a shell that isn\'t a Bourne shell, such as fish or tcsh, is told to put t
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
     expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
     const root = join(dir, 'connectome-host');
-    expect(text(made.seen.out), shell).toContain(`For that, put ${root} on your PATH as your shell sets it, and in its startup file to keep it there.`);
+    expect(text(made.seen.out), shell).toContain(`For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
     expect(text(made.seen.out), shell).not.toContain('export PATH=');
   }
 });
