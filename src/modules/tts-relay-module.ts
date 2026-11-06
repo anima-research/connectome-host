@@ -147,8 +147,6 @@ interface ActivationState {
   mcplChannelId?: string;
   rawChannelId?: string;
   announced: boolean;
-  /** Its text blocks' tokens so far. */
-  said: string;
   /** Where its announcement fell, once announced. */
   order: number;
 }
@@ -161,32 +159,22 @@ interface PublishedMessage {
   messageId?: string;
   text: string;
   at: number;
-  /** Where it falls among the relay's publishes and announced activations. */
-  order: number;
 }
 
 /** How many of a channel's latest publishes are kept to match its next interruption. */
 const PUBLISHED_PER_CHANNEL_MAX = 32;
-/** How many channels' texts (their publishes, and what was voiced there) are
- *  kept: those of the channels spoken in last. */
+/** How many channels' texts (their publishes, which are what the relay
+ *  voices there) are kept: those of the channels published in last. */
 const TEXT_CHANNELS_MAX = 32;
 /** How many of the heard words' characters a published message must start with. */
 const HEARD_PROBE_CHARS = 80;
 
 /** The agents whose activations were announced in a channel since its last
- *  interruption, in the order they were first announced, what each one's
- *  latest such activation said (its text blocks) while the channel's texts
- *  are kept (TEXT_CHANNELS_MAX), and whether the channel has had one. */
+ *  interruption, in the order they were first announced, and whether the
+ *  channel has had one. */
 interface VoicedInChannel {
   agents: Set<string>;
-  said: Map<string, Said>;
   interrupted: boolean;
-}
-
-/** An activation's text, and where its announcement fell (PublishedMessage.order). */
-interface Said {
-  text: string;
-  order: number;
 }
 
 function rawChannelId(mcplId: string): string {
@@ -220,17 +208,15 @@ export class TtsRelayModule implements Module {
    *  has ended, so an interruption can come once its activation is gone, and
    *  while another agent's has started. Every channel voiced in keeps its
    *  voiced agents' names: one let go would name only an agent voiced there
-   *  after it, though an earlier one's audio can still be queued. Each
-   *  agent's latest activation text there is kept only while the channel is
-   *  among the TEXT_CHANNELS_MAX spoken in last (spokeIn). */
+   *  after it, though an earlier one's audio can still be queued. */
   private voicedIn = new Map<string, VoicedInChannel>();
   /** Each raw channel's latest PUBLISHED_PER_CHANNEL_MAX publishes since its
    *  last interruption, oldest first, while it is among the
-   *  TEXT_CHANNELS_MAX channels spoken in last. */
+   *  TEXT_CHANNELS_MAX channels published in last. */
   private published = new Map<string, PublishedMessage[]>();
-  /** The channels whose texts are kept, the one spoken in longest ago first. */
+  /** The channels whose texts are kept, the one published in longest ago first. */
   private textsKeptFor = new Set<string>();
-  /** Orders the publishes and the announced activations. */
+  /** Orders the announced activations. */
   private order = 0;
   private unvoicedServers = new Set<string>();
 
@@ -290,7 +276,7 @@ export class TtsRelayModule implements Module {
   private activation(agentName: string): ActivationState {
     let st = this.activations.get(agentName);
     if (!st) {
-      st = { announced: false, said: '', order: 0 };
+      st = { announced: false, order: 0 };
       this.activations.set(agentName, st);
     }
     return st;
@@ -304,7 +290,7 @@ export class TtsRelayModule implements Module {
     if (!st.announced && st.rawChannelId) {
       st.announced = true;
       st.order = ++this.order;
-      const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), said: new Map<string, Said>(), interrupted: false };
+      const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), interrupted: false };
       voiced.agents.add(agentName);
       this.voicedIn.set(st.rawChannelId, voiced);
       this.client?.emit('activation_start', {
@@ -314,13 +300,11 @@ export class TtsRelayModule implements Module {
     }
   }
 
-  /** `channel` was spoken in: a publish there, or an activation's end. Past
-   *  TEXT_CHANNELS_MAX channels, the texts of the one spoken in longest ago
-   *  are let go, its publishes and what was voiced there together, and the
-   *  names of the agents voiced there are kept. So its next interruption
-   *  matches no message and edits nothing, and its note goes by those names
-   *  (speakerOf). A publish still kept never lacks a later activation's text
-   *  (voicedAfter): the texts of a channel go only all at once. */
+  /** `channel` was published in, which is what the relay voices. Past
+   *  TEXT_CHANNELS_MAX channels, the publishes of the one published in
+   *  longest ago are let go, and the names of the agents voiced there are
+   *  kept. So its next interruption matches no message and edits nothing,
+   *  and its note goes by those names (speakerOf). */
   private spokeIn(channel: string): void {
     this.textsKeptFor.delete(channel);
     this.textsKeptFor.add(channel);
@@ -328,18 +312,12 @@ export class TtsRelayModule implements Module {
     const [oldest] = this.textsKeptFor;
     this.textsKeptFor.delete(oldest!);
     this.published.delete(oldest!);
-    this.voicedIn.get(oldest!)?.said.clear();
   }
 
   private endActivation(agentName: string, reason: 'complete' | 'abort' | 'error'): void {
     const st = this.activations.get(agentName);
     this.activations.delete(agentName);
     if (!st?.announced || !st.rawChannelId) return;
-    const voiced = this.voicedIn.get(st.rawChannelId);
-    if (voiced) {
-      voiced.said.set(agentName, { text: st.said, order: st.order });
-      this.spokeIn(st.rawChannelId);
-    }
     this.client?.emit('activation_end', {
       channelId: st.rawChannelId,
       ...this.identity(agentName),
@@ -372,7 +350,6 @@ export class TtsRelayModule implements Module {
           messageId: event.messageId,
           text: event.text,
           at: event.timestamp,
-          order: ++this.order,
         });
         if (channel.length > PUBLISHED_PER_CHANNEL_MAX) channel.shift();
         this.published.set(raw, channel);
@@ -400,16 +377,10 @@ export class TtsRelayModule implements Module {
       }
 
       // The model's text, thinking and tool calls as written aren't what was
-      // published (an explicit-mode aside, a `>>` prefix, a held draft), so
-      // none of them is sent to the relay. The token traces give the turn's
-      // channel, and its text blocks' tokens go to `said`.
-      case 'inference:tokens': {
-        const st = this.activation(event.agentName);
-        this.adoptChannel(st, event.agentName, traceChannelId(event));
-        if (st.rawChannelId && event.blockType === 'text') st.said += event.content;
-        break;
-      }
-
+      // published (an explicit-mode aside, a `>>` prefix, a held draft): the
+      // token traces are read for the turn's channel only. So what an agent
+      // wrote and didn't publish holds back no interruption's edit.
+      case 'inference:tokens':
       case 'inference:content_block': {
         const st = this.activation(event.agentName);
         this.adoptChannel(st, event.agentName, traceChannelId(event));
@@ -453,25 +424,21 @@ export class TtsRelayModule implements Module {
       `[tts-relay] interruption in ${ev.channelId} (${ev.reason}): ${ev.spokenText.length} chars voiced`,
     );
 
+    // What the relay voiced in the channel since its last interruption is
+    // the messages published there (#317): another agent's voicing that the
+    // heard words also start is one of `matched`, so no one is told.
     const matched = this.publishesHeard(ev);
-    const best = this.interruptedMessage(ev, matched);
-    // Heard words that start what another agent voiced in the channel after
-    // the message could be that agent's: the message isn't trimmed to them,
-    // and neither agent is told.
-    const voicedAfter = best ? this.voicedAfter(ev, best) : [];
-    const target = voicedAfter.length > 0 ? null : best;
-    const speaker = voicedAfter.length > 0
-      ? { why: `the heard words start a message published by ${best!.agentName} and what ${voicedAfter.join(', ')} voiced in that channel after it` }
-      : this.speakerOf(ev, matched);
+    const target = this.interruptedMessage(ev, matched);
+    const speaker = this.speakerOf(ev, matched);
     // An interruption ends its channel's voicing: what was published there
     // before it isn't heard in a later one. An activation still live there
-    // goes on being voiced, so it is voiced there since, in the order the
-    // activations were announced.
+    // goes on, and what it publishes there is voiced, so it is voiced there
+    // since, in the order the activations were announced.
     const live = [...this.activations]
       .filter(([, st]) => st.announced && st.rawChannelId === ev.channelId)
       .sort(([, a], [, b]) => a.order - b.order)
       .map(([agent]) => agent);
-    this.voicedIn.set(ev.channelId, { agents: new Set(live), said: new Map(), interrupted: true });
+    this.voicedIn.set(ev.channelId, { agents: new Set(live), interrupted: true });
     this.published.delete(ev.channelId);
     this.textsKeptFor.delete(ev.channelId);
     let edited = false;
@@ -490,8 +457,6 @@ export class TtsRelayModule implements Module {
       if (!edited) {
         console.error(`[tts-relay] edit_message failed for ${target.messageId}:`, result.error);
       }
-    } else if (voicedAfter.length > 0) {
-      console.error(`[tts-relay] the heard words start ${best!.messageId ?? 'a published message'} and what ${voicedAfter.join(', ')} voiced after it — nothing edited`);
     } else if (!target?.messageId) {
       console.error('[tts-relay] no published message matched the interruption — nothing edited');
     }
@@ -515,7 +480,8 @@ export class TtsRelayModule implements Module {
    *  author of the published messages the heard words start (`matched`);
    *  with none matched, the one voiced in the interruption's channel: the
    *  agent whose activation there is live or was announced there since the
-   *  channel's last interruption (the relay voices a turn after it ends).
+   *  channel's last interruption (the relay voices a turn's messages after
+   *  it ends).
    *  Matched messages by more than one agent name none, as do two or more
    *  agents voiced in the channel, and so does an agent that is no longer
    *  registered. */
@@ -541,7 +507,7 @@ export class TtsRelayModule implements Module {
 
   /** The messages published in the interruption's channel since its previous
    *  interruption, its latest PUBLISHED_PER_CHANNEL_MAX while it is among the
-   *  TEXT_CHANNELS_MAX channels spoken in last, whose text starts with the
+   *  TEXT_CHANNELS_MAX channels published in last, whose text starts with the
    *  heard words' first HEARD_PROBE_CHARS characters, newest first.
    *  A publish they don't start is not taken: it would be edited to words it
    *  never said, and its author told of an interruption that cut off another
@@ -557,23 +523,6 @@ export class TtsRelayModule implements Module {
       if (collapseWs(r.text).startsWith(probe)) matched.push(r);
     }
     return matched;
-  }
-
-  /** The agents other than `message`'s author whose activation in the
-   *  interruption's channel was announced after `message` was published,
-   *  since the channel's previous interruption, and whose text so far starts
-   *  with the heard words' first HEARD_PROBE_CHARS characters: each live
-   *  activation's, and each agent's latest that has ended. The relay can't
-   *  tell which of these was being voiced. */
-  private voicedAfter(ev: InterruptionEvent, message: PublishedMessage): string[] {
-    const probe = collapseWs(ev.spokenText).slice(0, HEARD_PROBE_CHARS);
-    const said = new Map(this.voicedIn.get(ev.channelId)?.said ?? []);
-    for (const [agent, st] of this.activations) {
-      if (st.announced && st.rawChannelId === ev.channelId) said.set(agent, { text: st.said, order: st.order });
-    }
-    return [...said]
-      .filter(([agent, s]) => agent !== message.agentName && s.order > message.order && collapseWs(s.text).startsWith(probe))
-      .map(([agent]) => agent);
   }
 
   /** Of `matched` (newest first), the one whose text shares the longest

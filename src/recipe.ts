@@ -1214,10 +1214,10 @@ export interface RecipeModules {
    * channel, one the heard words match, to the text the client reports as
    * voiced, and, with `notifyOnInterruption` on (its default), puts a note
    * in the context of the agent voiced, when one agent can be named.
-   * Nothing is edited when no message matches, or when the words also start
-   * another agent's live activation there, or its latest since the
-   * channel's last interruption, voiced after it. Messages are matched in
-   * the 32 channels published in or voiced in last. `token` should be
+   * Nothing is edited when no message matches, and no note is written when
+   * the messages that match are by more than one agent. What an agent wrote
+   * and didn't publish isn't voiced, so it holds back no edit. Messages are
+   * matched in the 32 channels published in last. `token` should be
    * `${VAR}`-substituted from .env, never literal.
    */
   ttsRelay?: RecipeTtsRelay;
