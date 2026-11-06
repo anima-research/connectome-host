@@ -687,6 +687,18 @@ describe('the store audit', () => {
     }
   });
 
+  // Host #485 bot review wave 3, finding 22: the refusal named the field to
+  // remove and not the file it is in, a hidden one for a saved recipe.
+  test("a saved recipe the audit refuses is named, the file to fix", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    saveRecipe(dir, { ...DEFAULT_RECIPE, tuneOut: { enabled: true } } as never);
+    const { status, failed } = await audit([dir]);
+    expect(status).toBe(1);
+    expect(failed).toEqual([expect.stringMatching(new RegExp(
+      `^Couldn't audit ${dir}: its saved recipe, ${join(dir, '.recipe.json')}, can't be loaded: Recipe tuneOut.enabled was removed`,
+    ))]);
+  });
+
   test("an agent name the recipe takes from a variable is the one the audit's environment gives", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/Kid', crossed: true }]);
     saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, name: '${AUDIT_TEST_AGENT_NAME}' } });
@@ -1117,7 +1129,7 @@ describe('the store audit', () => {
     const { status, failed } = await audit([unreadable, missing, file, badIndex, dir]);
     expect(status).toBe(1);
     expect(failed).toEqual([
-      `Couldn't audit ${unreadable}: it isn't JSON`,
+      `Couldn't audit ${unreadable}: its saved recipe, ${join(unreadable, '.recipe.json')}, can't be loaded: it isn't JSON`,
       `Couldn't audit ${missing}: it isn't there`,
       `Couldn't audit ${file}: it isn't a directory`,
       expect.stringMatching(new RegExp(`^Couldn't audit ${badIndex}: its session index, sessions\\.json, can't be read: `)),
