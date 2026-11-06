@@ -251,25 +251,33 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     const read = readSetupState(statePath);
     if ('unreadable' in read) {
-      err(`Setup's kept answers in ${statePath} can't be read (${read.unreadable}), so it asks them again.`);
+      err(`Setup's kept answers in ${statePath} can't be read (${read.unreadable}), so setup doesn't go by them.`);
     }
     let state = 'state' in read ? read.state : null;
     if (state !== null) {
       out(`Setup keeps its answers here: the resident ${state.shell ? 'gets' : 'doesn\'t get'} a shell, ` +
         `and runs as this user, ${world.user}. They aren't asked again; setup's agent picks up where it stopped, and ` +
         'can change with you what it set up.');
-      if (state.finished !== undefined && !existsSync(root)) {
-        out(`This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
-          'outside the data directory, its releases and its Go back.');
-        const fresh = await yesNo(world, `Make a new install on ${join(dir, 'data')}? (yes/no) `);
-        if (fresh === null) {
-          out('Setup stopped. Run it again in this directory to go on.');
-          return 1;
-        }
-        if (!fresh) {
-          out('Put the root\'s backup back, if you have one, and run setup again.');
-          return 0;
-        }
+    }
+    const lost = existsSync(root) ? null
+      : state?.finished !== undefined
+        ? `This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
+          'outside the data directory, its releases and its Go back.'
+        : 'unreadable' in read
+          ? `This directory's install root, ${root}, isn't there, and setup can't tell whether a setup finished here, ` +
+            'since its kept answers can\'t be read. If one did, the root\'s record went with it: the places of state ' +
+            'kept outside the data directory, its releases and its Go back.'
+          : null;
+    if (lost !== null) {
+      out(lost);
+      const fresh = await yesNo(world, `Make a new install on ${join(dir, 'data')}? (yes/no) `);
+      if (fresh === null) {
+        out('Setup stopped. Run it again in this directory to go on.');
+        return 1;
+      }
+      if (!fresh) {
+        out('Put the root\'s backup back, if you have one, and run setup again.');
+        return 0;
       }
     }
     if (state === null) {

@@ -1087,7 +1087,7 @@ test('setup keeps a finished time it recorded with its answers, and calls answer
   writeFileSync(join(other, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false, finished: 5 }));
   const asked = world(other, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(other, ['discord'], asked)).toBe(0);
-  expect(text(asked.seen.err)).toContain('can\'t be read (it isn\'t the answers this setup keeps), so it asks them again');
+  expect(text(asked.seen.err)).toContain('can\'t be read (it isn\'t the answers this setup keeps), so setup doesn\'t go by them');
 });
 
 test('the line that goes on with setup, and the list of the state kept outside the data directory, come whatever status the agent\'s run ends with, 1 or 130', async () => {
@@ -1227,6 +1227,26 @@ test('a finished setup whose install root is gone says what went with it and ask
   expect(existsSync(join(root, 'install.json'))).toBe(true);
 });
 
+test('setup answers that can\'t be read, with no install root, say setup can\'t tell whether a setup finished here and ask before a new install, and on no stop with nothing written', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), 'not json');
+  const root = join(dir, 'connectome-host');
+  const unknown = `This directory's install root, ${root}, isn't there, and setup can't tell whether a setup finished here, ` +
+    'since its kept answers can\'t be read. If one did, the root\'s record went with it: the places of state kept outside ' +
+    'the data directory, its releases and its Go back.';
+  const declined = world(dir, { answers: ['no'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], declined)).toBe(0);
+  expect(declined.seen.out).toContain(unknown);
+  expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
+  expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
+  expect(existsSync(root)).toBe(false);
+  expect(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).toBe('not json');
+  const made = world(dir, { answers: ['yes', 'no', '2'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(existsSync(join(root, 'install.json'))).toBe(true);
+});
+
 test('a setup whose install keeps no state outside the data directory shows no list of it once its agent has ended, only the line that goes on with setup', async () => {
   const dir = directory();
   const none = [
@@ -1294,9 +1314,10 @@ test('kept answers setup can\'t read are asked again', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup-state.json'), '{"v": 1, "sh');
-  const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
+  const made = world(dir, { answers: ['yes', 'no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked[0]).toContain('Does the resident get a shell');
+  expect(made.seen.asked[0]).toBe(`Make a new install on ${join(dir, 'data')}? (yes/no) `);
+  expect(made.seen.asked[1]).toContain('Does the resident get a shell');
   expect(text(made.seen.err)).toContain(`Setup's kept answers in ${join(dir, '.setup', 'setup-state.json')} can't be read`);
 });
 
