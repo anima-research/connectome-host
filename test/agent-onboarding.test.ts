@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { COMMANDS } from '../src/cli/connectome.ts';
 import { parseHandWrittenJson } from '../src/hand-written-json.ts';
 import { WHOLE_OUTPUT_BYTES } from '../src/modules/setup-module.ts';
@@ -104,14 +104,17 @@ describe('what the guide names ships, or is the install\'s own', () => {
     const files = entries().filter((entry) => entry.server === 'discord')
       .flatMap((entry) => Object.entries(entry.env)).filter(([name]) => /^DISCORD_\w+_FILE$/.test(name));
     expect(files.length).toBeGreaterThan(0);
-    for (const [name, value] of files) expect({ name, inData: value.startsWith('<dir>/data/') }).toEqual({ name, inData: true });
+    for (const [name, value] of files) expect({ name, inData: posix.normalize(value).startsWith('<dir>/data/') }).toEqual({ name, inData: true });
   });
 
-  it('is pointed into, from README.md, ARCHITECTURE.md, docs, scripts and src, as `FILE.md`\'s "Heading", `FILE.md`, "Heading" or `FILE.md#anchor`, by parts the guide, DEPLOYMENTS.md and the README have, and by no section number', () => {
+  it('is pointed into, from README.md, ARCHITECTURE.md, docs, scripts and src, as `FILE.md`\'s "Heading", `FILE.md`, "Heading" or `FILE.md#anchor`, by parts the guide, DEPLOYMENTS.md, the ingest doc and the README have, and by no section number', () => {
     const lines = (path: string) => readFileSync(join(ROOT, path), 'utf-8').split('\n');
-    const headingsOf = (path: string) => lines(path).filter((line) => /^#{2,3} /.test(line)).map((line) => line.replace(/^#+ /, '').trim());
+    const headingsOf = (path: string) => lines(path).filter((line) => /^#{2,6} /.test(line)).map((line) => line.replace(/^#+ /, '').trim());
     const partsOf = (path: string) => [...headingsOf(path), ...lines(path).flatMap((line) => [...line.matchAll(/^\*\*([^*]+?)\.\*\*/g)].map((match) => match[1]!))];
-    const files = { 'AGENT-ONBOARDING.md': 'docs/AGENT-ONBOARDING.md', 'DEPLOYMENTS.md': 'docs/DEPLOYMENTS.md', 'README.md': 'README.md' };
+    const files = {
+      'AGENT-ONBOARDING.md': 'docs/AGENT-ONBOARDING.md', 'DEPLOYMENTS.md': 'docs/DEPLOYMENTS.md', 'claude-code-ingest.md': 'docs/claude-code-ingest.md',
+      'README.md': 'README.md',
+    };
     const docs = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, partsOf(path)])) as Record<keyof typeof files, string[]>;
     // An anchor names a heading alone, as GitHub renders one.
     const headings = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, headingsOf(path)])) as Record<keyof typeof files, string[]>;
@@ -121,16 +124,16 @@ describe('what the guide names ships, or is the install\'s own', () => {
       ...new Bun.Glob('scripts/**/*').scanSync({ cwd: ROOT }),
       ...new Bun.Glob('src/**/*.ts').scanSync({ cwd: ROOT }),
     ];
-    const slug = (heading: string) => heading.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s/g, '-');
+    const slug = (heading: string) => heading.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').trim().replace(/\s/g, '-');
     const pointers: Array<{ from: string; doc: keyof typeof docs; heading: string }> = [];
     const anchors: Array<{ from: string; doc: keyof typeof docs; anchor: string }> = [];
     for (const from of sources) {
       const text = readFileSync(join(ROOT, from), 'utf-8').replace(/\s*\n\s*/g, ' ');
-      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|<host>\/README)\.md`?\)?(?:\\?'s|,) ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
+      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|claude-code-ingest|<host>\/README)\.md`?\)?(?:\\?'s|,) ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
         const doc = `${match[1]!.replace('<host>/', '')}.md` as keyof typeof docs;
         for (const named of match[2]!.matchAll(/"([^"]+)"/g)) pointers.push({ from, doc, heading: named[1]!.replace(/`/g, '') });
       }
-      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS)\.md#([\w-]+)/g)) {
+      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|claude-code-ingest)\.md#([\p{L}\p{N}_-]+)/gu)) {
         anchors.push({ from, doc: `${match[1]}.md` as keyof typeof docs, anchor: match[2]! });
       }
     }
@@ -155,7 +158,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       }
     }
     const deployments = readFileSync(join(ROOT, 'docs', 'DEPLOYMENTS.md'), 'utf-8');
-    for (const [, anchor] of deployments.matchAll(/\]\(#([\w-]+)\)/g)) {
+    for (const [, anchor] of deployments.matchAll(/\]\(#([\p{L}\p{N}_-]+)\)/gu)) {
       expect({ anchor, there: headings['DEPLOYMENTS.md'].some((heading) => slug(heading) === anchor) }).toEqual({ anchor, there: true });
     }
   });
