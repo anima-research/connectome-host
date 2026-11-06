@@ -220,6 +220,17 @@ describe('installing a release beside the running one', () => {
       .toEqual([{ manager: 'npm', files: { 'package-lock.json': RUNNING_LOCK, 'package.json': RUNNING_PACKAGE } }]);
   });
 
+  test('with bun or npm, the running release\'s trustedDependencies go to the install as they are, and nothing asks Bun for its default list', async () => {
+    const theirs = `${JSON.stringify({ ...JSON.parse(RUNNING_PACKAGE), trustedDependencies: ['an-old-name', 'node-pty'] }, null, 2)}\n`;
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'package.json'), theirs);
+    await installRelease(here(), '0.12.0', manager());
+    rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lock'), '{"bun":"text"}\n');
+    await installRelease(here(), '0.12.1', manager());
+    expect(calls.map(({ manager, args, files }) => [manager, args[0], files['package.json']]))
+      .toEqual([['npm', 'install', theirs], ['bun', 'add', theirs]]);
+  });
+
   test('with no lockfile, npm from the package.json alone', async () => {
     rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
     await installRelease(here(), '0.12.0', manager());
@@ -416,7 +427,6 @@ describe('installing a release beside the running one', () => {
     }
     expect(error).not.toBeInstanceOf(ContractError);
     expect(error.message).toBe('EIO: i/o error, open');
-    await Bun.sleep(50);
     expect(installed()).toEqual(['0.11.0']);
   });
 

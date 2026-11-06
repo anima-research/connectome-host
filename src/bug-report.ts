@@ -86,7 +86,7 @@ const MODEL_FAMILY: Record<string, (first: string) => boolean> = {
 const BUILT_IN_MODULES = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc', 'channelMode',
-  'selfRestart', 'setup',
+  'selfRestart', 'setup', 'selfUpdate',
 ];
 const LIVE_MODULE_NAMES = new Set([
   'activity', 'api', 'channel-mode', 'discord', 'fleet', 'health', 'history', 'identity', 'instructions',

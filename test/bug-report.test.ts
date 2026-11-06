@@ -112,7 +112,7 @@ function canaryRecipe(model = `${CANARY}-finetune`) {
       proseRouting: 'locus',
       thinking: { enabled: true },
     },
-    modules: { subagents: true, wake: true, lessons: false, [`${CANARY}Module`]: true },
+    modules: { subagents: true, wake: true, lessons: false, selfUpdate: true, [`${CANARY}Module`]: true },
     extensions: { [`${CANARY}Ext`]: { path: `/home/${CANARY}/ext.js` } },
     mcpServers: {
       [`${CANARY}-server`]: { command: `/home/${CANARY}/bin/server`, args: [CANARY], env: { TOKEN: CANARY } },
@@ -163,7 +163,7 @@ describe('the guarantee', () => {
         expectNoCanary(text, where);
       }
       expect(full.report).toContain('provider: openai-compatible · model: custom');
-      expect(full.report).toContain('modules: subagents, wake · custom: 2');
+      expect(full.report).toContain('modules: subagents, wake, selfUpdate · custom: 2');
       expect(full.report).toContain('server 1: a local command · stdio · legacy · connected · 4 tools');
       expect(full.report).toContain('server 2: @animalabs/discord-mcpl@1.2.3 · stdio · legacy · retrying · 0 tools');
       expect(full.report).toContain('server 5: a registry package · stdio · legacy · connected · 1 tools');

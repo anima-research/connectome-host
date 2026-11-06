@@ -559,7 +559,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         const answering = import('./update/quiesce.js').then(({ answerSwitchRequest }) => answerSwitchRequest(app.framework, cmd.request));
         try {
           const data = await (asked === 'quiesce' ? trackOperatorWork(app, "the release switch's quiesce", answering) : answering);
-          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
+          const inFlight = asked === 'quiesce' ? workBesideTurns() : [];
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data: inFlight.length > 0 ? { ...data, inFlight } : data });
         } catch (error) {
           reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -607,11 +608,17 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     return textsProcessing.size > 0 || host.activeTurnAgents.some(own) || host.parkedAdmissions > 0 ||
       host.gatedRequests > 0 || app.framework.getQueueDepth() > 0;
   };
-  const quietButScripts = (): boolean => {
-    if (app.switching || turnWorkInFlight() || operatorWorkRunning(app) || app.credentials?.actionInFlight() === true) return false;
+  const workBesideTurns = (): string[] => {
     const subagents = subagentModule()?.getConcurrencyStatus();
-    return app.framework.getHostModeStatus().drained && (!subagents || (subagents.active === 0 && subagents.queued === 0));
+    return [
+      ...(app.switching ? ['a session switch'] : []),
+      ...(operatorWorkRunning(app) ? ['an operator\'s work'] : []),
+      ...(app.credentials?.actionInFlight() === true ? ['a credential action'] : []),
+      ...(subagents && (subagents.active > 0 || subagents.queued > 0) ? ['subagent runs'] : []),
+    ];
   };
+  const quietButScripts = (): boolean =>
+    !turnWorkInFlight() && workBesideTurns().length === 0 && app.framework.getHostModeStatus().drained;
   const nothingInFlight = (): boolean =>
     quietButScripts() && app.framework.getHostModeStatus().backgroundScripts === 0;
 
@@ -734,6 +741,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     app.stopping = true;
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
+    const dropped = hostUpdate.recordStop(reason);
+    if (dropped !== null) log(dropped);
     emit({ type: 'lifecycle', phase: 'exiting', reason });
 
     await new Promise((r) => setTimeout(r, EXITING_FLUSH_MS));
@@ -760,6 +769,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   hostUpdate.attachStop({
     supervised: true,
     stop: (reason, farewell) => { log(farewell); void gracefulShutdown(reason, RESTART_EXIT_CODE); },
+    stopping: () => app.stopping === true,
   });
 
   // `lifecycle:idle` fires once quiet follows an inference:started or a text, so the
@@ -771,13 +781,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // nothing at all has been in flight for the same 500 ms.
   {
     const IDLE_CONFIRM_MS = 500;
+    let lastTryLogged = '';
+    const logTry = (since: string, text: string) => {
+      if (`${since} ${text}` !== lastTryLogged) log(`[update] ${text}`);
+      lastTryLogged = `${since} ${text}`;
+    };
     let windowArmed = false;
 
     const idlePoll = setInterval(() => {
       if (app.stopping) { clearInterval(idlePoll); return; }
       const agents = app.framework.getAllAgents();
       const allIdle = agents.every((a) => a.state.status === 'idle');
-      const armed = selfRestart.isArmed();
+      const restartArmed = selfRestart.isArmed();
+      const updateArmed = hostUpdate.armedSwitch() !== null;
+      const armed = restartArmed || updateArmed;
       if (armed) hadAtLeastOneInference = true;
       if (armed !== windowArmed) { windowArmed = armed; idleSince = 0; exitSince = 0; }
       const turnWork = turnWorkInFlight();
@@ -813,9 +830,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       }
       if (exitSince === 0) { exitSince = now; return; }
       if (now - exitSince < IDLE_CONFIRM_MS || !idleEmitted) return;
-      if (armed) {
+      if (restartArmed) {
         clearInterval(idlePoll);
         void gracefulShutdown('self-restart', SELF_RESTART_EXIT_CODE);
+        return;
+      }
+      if (updateArmed) {
+        const since = hostUpdate.armedSwitch()?.since ?? '';
+        if (hostUpdate.armedDue()) {
+          const quietNow = () => app.framework.getAllAgents().every((a) => a.state.status === 'idle') && nothingInFlight();
+          void hostUpdate.runArmed(quietNow).then(
+            (answer) => { if (!answer.done) logTry(since, answer.lines.join(' ')); },
+            (err) => { logTry(since, `The armed update's try failed: ${String(err)}`); },
+          );
+        }
         return;
       }
       if (opts.exitWhenIdle) {

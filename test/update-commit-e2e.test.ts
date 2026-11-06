@@ -68,6 +68,7 @@ function startHost(
   if (root !== null) env.CONNECTOME_INSTALL_ROOT = root;
   else delete env.CONNECTOME_INSTALL_ROOT;
   delete env.NO_UPDATE_NOTIFIER;
+  if (more.CONNECTOME_SUPERVISED === undefined) delete env.CONNECTOME_SUPERVISED;
   const host = spawn('bun', [...preloads.flatMap((preload) => ['--preload', preload]), index, recipe, '--headless'], {
     cwd: dir,
     env,
@@ -460,7 +461,7 @@ describe("a host's update, on a real start", () => {
       '9.9.10 costs, then ask again.';
     const answers = () => frames.filter((frame) => frame.type === 'command-result').flatMap((frame) => frame.lines!.map((l) => l.text));
     await until(() => answers().length >= 2, 15_000, "the answer to the page's first restart");
-    expect(answers()).toEqual(['Restarting unless refused: turns in progress get up to 2 min to end…', refusal]);
+    expect(answers()).toEqual(["Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…", refusal]);
     expect(closed).toBe(false);
     page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.10' }));
     expect(await exit).toBe(75);
@@ -468,9 +469,9 @@ describe("a host's update, on a real start", () => {
     // after the close.
     await until(() => closed, 5_000, 'the page sees its connection close');
     expect(answers()).toEqual([
-      'Restarting unless refused: turns in progress get up to 2 min to end…',
+      "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
       refusal,
-      'Restarting unless refused: turns in progress get up to 2 min to end…',
+      "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
       "Stopping to switch to 9.9.10: the host's next start does it, which a service set up for updates makes by itself.",
     ]);
   }, 60_000);

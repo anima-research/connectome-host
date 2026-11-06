@@ -76,12 +76,26 @@ function childQuiet(name: string, answer: { ok: boolean; data?: unknown; error?:
     !isCount(data.backgroundScripts)) {
     return { host: name, answered: false, why: "its answer doesn't say whether it drained, who holds a turn and what scripts it runs" };
   }
-  return { host: name, answered: true, drained: data.drained, activeTurnAgents: holders as string[], backgroundScripts: data.backgroundScripts };
+  const work = data.inFlight === undefined ? [] : Array.isArray(data.inFlight) && data.inFlight.every((w) => typeof w === 'string')
+    ? data.inFlight as string[] : ['work outside any turn that its answer doesn\'t name plainly'];
+  const hold = data.operatorHold as { reason?: unknown } | undefined;
+  const operatorHold = hold !== null && typeof hold === 'object' && !Array.isArray(hold)
+    ? { operatorHold: typeof hold.reason === 'string' ? { reason: hold.reason } : {} } : {};
+  return {
+    host: name, answered: true, drained: data.drained, activeTurnAgents: holders as string[], backgroundScripts: data.backgroundScripts,
+    ...operatorHold, ...(work.length > 0 ? { inFlight: work } : {}),
+  };
 }
 
 async function askChildren(fleet: SwitchFleet | null, to: string, waitMs: number): Promise<HostQuiet[]> {
   return Promise.all((fleet?.runningChildren() ?? []).map(async ({ name }) =>
     childQuiet(name, await fleet!.requestSwitch(name, { op: 'quiesce', to, waitMs }, waitMs + ANSWER_MARGIN_MS))));
+}
+
+// agent-framework 0.28.0 waits up to a second for a busy host to drain
+// before it answers a quiesce (QUIESCE_TIMEOUT_MIN_MS).
+export async function lookAtChildren(fleet: SwitchFleet | null, to: string): Promise<HostQuiet[]> {
+  return askChildren(fleet, to, 0);
 }
 
 export async function quiesceForSwitch(
@@ -123,7 +137,9 @@ export async function answerSwitchRequest(framework: QuiesceFramework, request: 
   const asked = request as Record<string, unknown> | null;
   if (asked?.op === 'resume') return resumeIfSwitch(framework);
   if (asked?.op === 'quiesce' && typeof asked.to === 'string' && asked.to !== '' && isWait(asked.waitMs)) {
-    return quiet(THIS_HOST, await quiesceAndWait(framework, switchQuiesceReason(asked.to), asked.waitMs));
+    const status = await quiesceAndWait(framework, switchQuiesceReason(asked.to), asked.waitMs);
+    const held = status.quiesced && !isSwitchQuiesce(status.reason);
+    return { ...quiet(THIS_HOST, status), ...(held ? { operatorHold: status.reason ? { reason: status.reason } : {} } : {}) };
   }
   throw new Error(`This fleet child can't read the switch's request (${JSON.stringify(request)?.slice(0, 200)}), so it did ` +
     "nothing. It may run another release than the install's host does: fleet--restart of it starts it on the host's release.");

@@ -104,6 +104,9 @@ import {
   type McplLiveServer,
 } from '../web/panel-data.js';
 import { loadRecipeDetailed } from '../recipe.js';
+import { isSwitchQuiesce } from '../update/contract.js';
+import { hostUpdate } from '../update/update.js';
+import { PAGE_WAYS } from '../web/update-text.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -229,6 +232,24 @@ export function switchRefusalFor(
 ): WebUiServerMessage | null {
   if (message.type === 'cancel-subagent') return null;
   return refusalReply(message, (what) => refusedWhileSwitching(app, what));
+}
+
+export function switchQuiesceRefusalFor(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
+  message: WebUiClientMessage,
+  underWay: boolean | null = hostUpdate.switchUnderWay(),
+): WebUiServerMessage | null {
+  if (message.type !== 'host-quiesce') return null;
+  const status = app.framework.getHostModeStatus();
+  if (!status.quiesced || !isSwitchQuiesce(status.reason)) return null;
+  if (underWay === false) {
+    return refusalReply(message, (what) => `${what} refused: this host is still quiesced for a switch that isn't ` +
+      'going ahead, and a quiesce asked for now would be taken as that switch\'s, which the host\'s next start ends. ' +
+      `Nothing changed; ${PAGE_WAYS.resume} ends the switch's quiesce, and then quiesce again.`);
+  }
+  return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now, and ` +
+    'a quiesce asked for now would be taken as the switch\'s and end with it. Nothing changed; quiesce again once the ' +
+    'switch has gone ahead or ended.');
 }
 
 const CHANGES_STAMPED_WITH_THEIR_SESSION: ReadonlySet<string> = new Set([
@@ -1647,7 +1668,7 @@ export class WebUiModule implements Module {
       return;
     }
     const app = sharedServer.app;
-    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed);
+    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed) ?? switchQuiesceRefusalFor(app, parsed);
     if (refused) {
       this.send(client, refused);
       if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();

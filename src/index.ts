@@ -90,6 +90,7 @@ import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
+import { installCommandAt } from './cli/install-command.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
@@ -422,11 +423,16 @@ async function createFramework(
     moduleInstances.push(mcplAdminModule);
   }
 
-  if (modules.selfRestart !== undefined && modules.selfRestart !== false) {
+  const selfRestartOn = modules.selfRestart !== undefined && modules.selfRestart !== false;
+  if (selfRestartOn || modules.selfUpdate === true) {
     const srCfg = typeof modules.selfRestart === 'object' ? modules.selfRestart : {};
     moduleInstances.push(new LifecycleModule({
       dataDir: resolve(config.dataDir),
       timeZone,
+      selfRestart: selfRestartOn,
+      selfUpdate: modules.selfUpdate === true,
+      headless,
+      ...(installHere ? { installCommand: installCommandAt(installHere.root) } : {}),
       ...(srCfg.cooldownMinutes !== undefined ? { cooldownMinutes: srCfg.cooldownMinutes } : {}),
     }));
   }
@@ -1375,6 +1381,7 @@ async function main() {
   hostUpdate.configure({
     here: installHere,
     running: hostVersionOf(HOST_PACKAGE_JSON),
+    headless,
     host: {
       framework: () => app.framework,
       fleet: () => {

@@ -7,19 +7,21 @@ import {
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { bare, send } from '../src/cli/connectome.js';
+import { bare, send, update } from '../src/cli/connectome.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { installPaths } from '../src/update/contract.js';
-import { shellWord } from '../src/update/launcher.js';
+import { machineOps, shellWord, type LauncherOps } from '../src/update/launcher.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
 
 const REPO = resolve(import.meta.dir, '..');
 const BIN = join(REPO, 'src', 'cli', 'connectome.ts');
 const made: string[] = [];
 const servers: Server[] = [];
+const timers: Array<ReturnType<typeof setTimeout>> = [];
 
 afterEach(() => {
+  for (const timer of timers.splice(0)) clearTimeout(timer);
   for (const server of servers.splice(0)) server.close();
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -463,7 +465,7 @@ test('with its host running, bare says so and gives the update state as the host
   expect(ran.out).toContain('Its update state, as the running host gives it, from its last read of the registry at ' +
     '2026-10-26T06:30:00.000Z:\n  connectome-host 0.14.1.\n');
   expect(ran.out).toContain('\n  connectome-host 0.15.0 is out; this host runs 0.14.1.');
-  expect(ran.out).toContain('To take it: connectome update install, then connectome update restart.');
+  expect(ran.out).toContain(`To take it: ${path} update install, then ${path} update restart.`);
   expect(ran.out).not.toContain('older release');
   expect(asked).not.toContain('text');
   expect(asked).not.toContain('command');
@@ -655,7 +657,26 @@ test('bare, before the host has read the registry, says how to read it', async (
   const ran = await run(path, [], root);
   expect(ran.status).toBe(0);
   expect(ran.out).toContain('Its update state, as the running host gives it:\n  connectome-host 0.14.1.\n' +
-    '  The registry hasn\'t been read yet: connectome update check reads it.\n');
+    `  The registry hasn't been read yet: ${path} update check reads it.\n`);
+});
+
+test('bare gives a reason the host stored, such as an armed try\'s, in the words this shell takes', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  const waited = 'turns were still going. Ending the switch\'s quiesce didn\'t reach every host: kid: it didn\'t say why. ' +
+    'An operator\'s /update restart resume ends it, as does the host\'s next start.';
+  await fakeHost(data, (message, reply) => {
+    if (message.type === 'panel-request' && message.op === 'health') {
+      reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: { ...STATUS, armed: {
+        to: '0.15.0', why: 'update', keepData: true, since: '2026-10-26T06:00:00.000Z', by: 'resident',
+        lastTry: { at: '2026-10-26T06:10:00.000Z', waited, hosts: [] },
+      } } } });
+    }
+  });
+  const ran = await run(path, [], root);
+  expect(ran.status).toBe(0);
+  expect(ran.out).toContain(`An operator's ${path} update restart resume ends it`);
+  expect(ran.out).not.toContain('/update restart resume');
 });
 
 test('send isn\'t ended by an idle from before its line (texts 0), and ends at the idle that covers it', async () => {
@@ -770,7 +791,7 @@ test('update asks an older host, whose ready says nothing of turn work, nothing,
   expect(ran.status).toBe(1);
   expect(asked.filter((type) => type !== 'connected' && type !== 'subscribe')).toEqual([]);
   expect(ran.err).toContain('the running host is an older release');
-  expect(ran.err).toContain(`A host started with \`${process.execPath} ${join(root, 'start.js')}\` runs this release: have its service start it that way, followed by the arguments it gives the host now, and restart it. Then connectome update works.`);
+  expect(ran.err).toContain(`A host started with \`${process.execPath} ${join(root, 'start.js')}\` runs this release: have its service start it that way, followed by the arguments it gives the host now, and restart it. Then ${path} update works.`);
 });
 
 test('send that waits on the agent\'s turn past its limit sends nothing and says so', async () => {
@@ -1032,7 +1053,7 @@ test('update runs /update with the same words in the host and prints its answer 
   expect(ran.status).toBe(0);
   expect(asked).toEqual(['/update install']);
   expect(ran.out).toBe('Reading the registry, then installing…\nSee /update-log and /updates.\n' +
-    'Installed 0.15.0: connectome update restart switches to it.\n');
+    `Installed 0.15.0: ${path} update restart switches to it.\n`);
   expect(runningAtDone).toBe(true);
   const checked = await run(path, ['update', 'check'], root);
   expect(checked.status).toBe(0);
@@ -1056,6 +1077,28 @@ test('update the host answers no to prints its words and exits 1', async () => {
   expect(ran.err).toBe('');
 });
 
+test('update spells the install\'s command as plain `connectome` in its usage and the host\'s answer once that command is first on PATH', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  const wrong = await run(path, ['update', 'sideways'], root, undefined, root);
+  expect(wrong.err).toStartWith('connectome: usage: connectome update [check');
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'command') return;
+    reply({ type: 'command-output', text: 'Installed 0.15.0: /update restart switches to it.', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-done', corrId: message.corrId });
+  });
+  const ran = await run(path, ['update', 'install'], root, undefined, root);
+  expect(ran.out).toBe('Installed 0.15.0: connectome update restart switches to it.\n');
+  expect(ran.out).not.toContain(path);
+});
+
+test('update\'s usage error spells the install\'s command whatever its path holds', async () => {
+  const { root } = install('my$$install');
+  const ran = await updating(root, ['sideways']);
+  expect(ran.status).toBe(2);
+  expect(ran.err).toStartWith(`connectome: usage: ${shellWord(join(root, 'connectome'))} update [check`);
+});
+
 test('update whose command fails in the host says so and exits 1', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
@@ -1066,7 +1109,7 @@ test('update whose command fails in the host says so and exits 1', async () => {
   });
   const ran = await run(path, ['update'], root);
   expect(ran.status).toBe(1);
-  expect(ran.err).toContain('registry unreachable: try connectome update again');
+  expect(ran.err).toContain(`registry unreachable: try ${path} update again`);
   expect(ran.out).toBe('');
 });
 
@@ -1075,13 +1118,55 @@ test('update whose connection closes before its answer ends exits 1 and says how
   const { path } = writeInstallCommand(root, '');
   await fakeHost(data, (message, reply, socket) => {
     if (message.type !== 'command') return;
-    reply({ type: 'command-output', text: 'Restarting unless refused…', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-output', text: 'Asking the host to restart…', style: 'system', corrId: message.corrId });
     socket.end();
   });
   const ran = await run(path, ['update', 'restart'], root);
   expect(ran.status).toBe(1);
-  expect(ran.out).toBe('Restarting unless refused…\n');
+  expect(ran.out).toBe('Asking the host to restart…\n');
   expect(ran.err).toContain('closed the connection before its answer ended, so how it ended isn\'t known');
+});
+
+function farewellHost(data: string, said: { lines: string[]; refused?: boolean }): Promise<void> {
+  return fakeHost(data, (message, reply) => {
+    if (message.type !== 'command') return;
+    for (const text of said.lines) reply({ type: 'command-output', text, style: 'system', corrId: message.corrId });
+    reply({ type: 'command-done', corrId: message.corrId, ...(said.refused ? { refused: true } : {}) });
+  });
+}
+
+const FAREWELL = "Stopping to switch to 0.15.0. The service starts the host again by itself, and that start does it.";
+
+async function updating(root: string, argv: string[], ops?: LauncherOps): Promise<{ status: number; out: string; err: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const status = await update({ root, argv, out: (line) => out.push(line), err: (line) => err.push(line) }, ops);
+  return { status, out: out.join('\n'), err: err.join('\n') };
+}
+
+test('update restart or back that stops the host says, after the host\'s farewell, that bare connectome says what runs once the host is back, and exits 0', async () => {
+  for (const argv of [['restart'], ['restart', 'now'], ['back', 'keep'], ['back', 'restore', '0.14.0']]) {
+    const { root, data } = install();
+    const { path } = writeInstallCommand(root, '');
+    await farewellHost(data, { lines: [FAREWELL] });
+    const ran = await updating(root, argv);
+    expect([argv, ran.status, ran.out, ran.err]).toEqual([argv, 0, FAREWELL,
+      `connectome: once the host is back, \`${path}\` says which release runs and how the switch went.`]);
+  }
+});
+
+test('update says nothing of the host coming back after a word that doesn\'t stop it, or an answer no', async () => {
+  const cases = [
+    { argv: ['restart', 'resume'], refused: false, said: 'Calling the restart off…', status: 0 },
+    { argv: ['check'], refused: false, said: 'Running 0.14.1, the newest release.', status: 0 },
+    { argv: ['restart'], refused: true, said: 'Turns are still going: connectome update restart wait or now.', status: 1 },
+  ];
+  for (const each of cases) {
+    const { root, data } = install();
+    await farewellHost(data, { lines: [each.said], refused: each.refused });
+    const ran = await updating(root, each.argv);
+    expect([each.argv, ran.status, ran.out, ran.err]).toEqual([each.argv, each.status, each.said, '']);
+  }
 });
 
 test('update with words /update doesn\'t take is a usage error, and with no host answering nothing is asked', async () => {
@@ -1091,7 +1176,7 @@ test('update with words /update doesn\'t take is a usage error, and with no host
     ['back', 'later'], ['back', 'keep', 'soon']]) {
     const wrong = await run(path, ['update', ...words], root);
     expect(wrong.status).toBe(2);
-    expect(wrong.err).toBe('connectome: usage: connectome update [check | install | restart [wait | now | resume | ' +
+    expect(wrong.err).toBe(`connectome: usage: ${path} update [check | install | restart [wait | now | resume | ` +
       '<version>] | back [(keep | restore) [<version>]]]\n');
   }
   const ran = await run(path, ['update', 'install'], root);
@@ -1109,7 +1194,7 @@ test('update with a word it doesn\'t take is a usage error before any host is lo
   });
   const wrong = await run(path, ['update', 'sideways'], root);
   expect(wrong.status).toBe(2);
-  expect(wrong.err).toStartWith('connectome: usage: connectome update ');
+  expect(wrong.err).toStartWith(`connectome: usage: ${path} update `);
   expect(connections).toBe(0);
 });
 
@@ -1142,8 +1227,8 @@ test('update back with no host answering asks the next start to go back, as star
   const shown = await run(path, ['update', 'back'], root);
   expect({ status: shown.status, err: shown.err }).toEqual({ status: 0, err: '' });
   expect(shown.out).toContain('Going back to 0.13.0 is offered');
-  expect(shown.out).toContain('- connectome update back keep 0.13.0: ');
-  expect(shown.out).toContain('- connectome update back restore 0.13.0: ');
+  expect(shown.out).toContain(`- ${path} update back keep 0.13.0: `);
+  expect(shown.out).toContain(`- ${path} update back restore 0.13.0: `);
   expect(existsSync(join(root, 'mark.json'))).toBe(false);
   const wrong = await run(path, ['update', 'back', 'restore', '0.12.0'], root);
   expect(wrong.status).toBe(1);
@@ -1163,6 +1248,24 @@ test('update back with no host answering asks the next start to go back, as star
   const noCurrent = await run(path, ['update', 'back', 'keep'], root);
   expect(noCurrent.status).toBe(1);
   expect(noCurrent.err).toContain('has no current release');
+});
+
+test('update back with no host answering, whose lock stays held, gives the launcher\'s advice in the install\'s own words', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  offerGoBack(root, data);
+  const holder = spawn('sleep', ['30']);
+  writeFileSync(installPaths(root).lock, JSON.stringify({ v: 1, pid: holder.pid, bootId: null, at: new Date().toISOString() }));
+  try {
+    let clock = Date.parse('2026-11-01T03:00:00.000Z');
+    const ran = await updating(root, ['back', 'keep', '0.13.0'],
+      { ...machineOps(), now: () => new Date((clock += 61_000)), sleep: () => {} });
+    expect(ran.status).toBe(1);
+    expect(ran.err).toContain(`A host that's up goes back with \`${path} update back\``);
+    expect(ran.err).not.toContain('/update');
+  } finally {
+    holder.kill('SIGKILL');
+  }
 });
 
 test('update back for a release other than the offer\'s is refused at once, with no wait for a held lock', async () => {

@@ -59,7 +59,7 @@ describe('the update contract', () => {
     expect(installPaths('/r')).toEqual({
       root: '/r', releases: '/r/releases', current: '/r/current', install: '/r/install.json', mark: '/r/mark.json',
       journal: '/r/journal.jsonl', lock: '/r/lock.json', copy: '/r/copy', copyTmp: '/r/copy.tmp', copyPrev: '/r/copy.prev',
-      setAside: '/r/set-aside', trialLog: '/r/trial-log.json',
+      setAside: '/r/set-aside', trialLog: '/r/trial-log.json', armedDropped: '/r/armed-dropped.json',
     });
     expect(releaseDir('/r', '0.11.0')).toBe('/r/releases/0.11.0');
     expect(copyLabelPath('/r/copy.tmp')).toBe('/r/copy.tmp/copy.json');

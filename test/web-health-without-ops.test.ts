@@ -145,6 +145,8 @@ describe("the update section, with health and without ops", () => {
         { host: 'kid', answered: false, why: 'the socket said ECONNRESET' },
       ],
     },
+    armed: null,
+    armedDropped: null,
     operatorQuiesced: 'maintenance: disk swap tonight',
     switchQuiesceLeft: false,
     lastSwitch: { outcome: 'refused', step: 'children-check', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: 'fleet children are still running: kid (pid 4242, ANTHROPIC_API_KEY sk-ant-xyz)' },
@@ -175,6 +177,45 @@ describe("the update section, with health and without ops", () => {
     expect(sent({ update: fellBack }, HEALTH_STRINGS).update.lastSwitch).toEqual({
       outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: '', trialLog: [''],
     });
+  });
+
+  test("an agent's armed restart keeps its versions, times, names and the work a fleet child said it had going, and empties what its try waited on and why one was dropped", () => {
+    const armed: UpdateStatus = {
+      ...update,
+      armed: {
+        to: '0.12.2', why: 'update', keepData: false, since: '2026-10-22T11:00:00.000Z', by: 'alice',
+        lastTry: {
+          at: '2026-10-22T11:30:00.000Z', waited: 'a host didn\'t answer: ECONNRESET at /srv/root/sock.',
+          hosts: [
+            { host: 'kid', answered: false, why: 'the socket said ECONNRESET' },
+            {
+              host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2,
+              operatorHold: { reason: 'moving /srv/root' }, inFlight: ['a credential action'],
+            },
+          ],
+        },
+      },
+      armedDropped: {
+        to: '0.12.0', why: 'go-back', keepData: true, since: '2026-10-21T11:00:00.000Z', at: '2026-10-21T11:05:00.000Z',
+        reason: 'its mark couldn\'t be written: EACCES /srv/root/mark.json',
+      },
+    };
+    const shown = sent({ update: armed }, HEALTH_STRINGS).update;
+    expect(shown.armed).toEqual({
+      ...armed.armed!, lastTry: {
+        at: '2026-10-22T11:30:00.000Z', waited: '', hosts: [
+          { host: 'kid', answered: false, why: '' },
+          {
+            host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2,
+            operatorHold: { reason: '' }, inFlight: ['a credential action'],
+          },
+        ],
+      },
+    });
+    expect(shown.armedDropped).toEqual({ ...armed.armedDropped!, reason: '' });
+    const text = words(armed);
+    for (const secret of ['ECONNRESET', '/srv/root', 'EACCES']) expect(text).not.toContain(secret);
+    expect(text).toContain('A Go back to 0.12.0, keeping the newer data, armed at 2026-10-21T11:00:00.000Z didn\'t go ahead at 2026-10-21T11:05:00.000Z.');
   });
 
   test("a read that failed keeps its time and empties its error", () => {
