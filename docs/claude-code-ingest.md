@@ -83,7 +83,9 @@ once it has written the recipe ("The recipe"), before its "Going live", which st
 the resident: the seed has to be in the data directory before any host starts there
 (stage 2), and stage 3's check copies the recipe. Running setup again once the seed is
 in picks up where it stopped. Then make a `scripts/` directory in `<agent>-cm` for this
-stage's and the next stage's scripts.
+stage's and the next stage's scripts. In a shell command, put each path or value you fill
+in between single quotes, so that a space or a shell character in it stays part of it,
+and write each `'` inside one as `'\''`.
 
 Save as `<agent>-cm/scripts/build-seed.mjs`, edit the four constants, run with `node`.
 
@@ -371,7 +373,7 @@ nothing it does reaches the original:
    entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
    and a host it starts writes the install's own files. Start it in an environment of
    its own:
-   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE="$PWD/no-overlay.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE="$PWD/no-overlay.json" OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
    The host gets only the variables the command names, and from that directory Bun loads
    none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
    key is a mock, and with `HOME` the new directory, Codex has no login. Where the
@@ -393,7 +395,10 @@ nothing it does reaches the original:
    check names none. The recipe's absolute workspace mounts are the resident's own
    files, so run no tool in the check, as `/puppet` would. The overlay variable names a
    file in the new, empty directory, which doesn't exist, so the servers the resident
-   deployed for itself (`mcpl-servers.agent.json`) stay out too. Where the host asks the
+   deployed for itself (`mcpl-servers.agent.json`) stay out too. The observers variable
+   names a file there too, which doesn't exist either, so no observer the resident
+   granted (`observers.json`) gets into the copy's Web UI without the check's password.
+   Where the host asks the
    API for a count, the count fails, and where it asks for none, there's none live
    either. The rest still compiles. Then hit the endpoints with the check's username and
    password, such as `curl -u check http://127.0.0.1:<port>/debug/context`, which asks
