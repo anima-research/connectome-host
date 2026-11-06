@@ -1606,4 +1606,13 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.status).toBe(0);
   });
 
+  test('a ladder that can\'t be started is a problem, and doctor still ends with its closing line', async () => {
+    const at = install();
+    const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
+    writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, units: { host: { name: 'connectome-test\u0000.service', file: '/nowhere/x' } } }));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toMatch(/✗ The ladder couldn't be started: /);
+    expect(r.out).toMatch(/Doctor found \d+ problems?, marked ✗\.$/);
+  });
+
 });

@@ -399,38 +399,45 @@ export async function doctor(
     report.section('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it ' +
       'doesn\'t run.');
   } else {
-    ladderRan = true;
     report.section('Where an incoming message got to (scripts/connectome-doctor):');
-    const ran = spawnSync(parts.python, [LADDER, '--findings-json', '--data-dir', dataDir, work, service.units.host.name], {
-      encoding: 'utf-8',
-      timeout: parts.ladderLimitMs,
-      env: {
-        ...process.env,
-        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
-        CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.map((s) => [s.name, s.value])),
-      },
-    });
-    const said = (ran.stdout ?? '').split('\n');
-    const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
-    const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
-    for (const line of [...said, ...(ran.stderr ?? '').split('\n')]) if (line !== '') report.line(line);
-    if (ran.error !== undefined) {
-      const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
-      report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
-        'so what it would have shown after the lines above isn\'t known.');
-    } else if (ran.signal !== null) {
-      report.problem(`The ladder was ended by ${ran.signal}, so what it would have shown after the lines above isn't known.`);
-    } else if (ran.status !== 0) {
-      report.problem(`The ladder stopped (exit ${ran.status}) before it finished, so what it would have shown after ` +
-        'the lines above isn\'t known.');
-    } else {
-      try {
-        for (const { text, counts } of ladderFindings(findings)) {
-          if (counts) report.problem(text);
-          else report.line(text);
+    let ran: SpawnSyncReturns<string> | undefined;
+    try {
+      ran = spawnSync(parts.python, [LADDER, '--findings-json', '--data-dir', dataDir, work, service.units.host.name], {
+        encoding: 'utf-8',
+        timeout: parts.ladderLimitMs,
+        env: {
+          ...process.env,
+          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
+          CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.map((s) => [s.name, s.value])),
+        },
+      });
+    } catch (error) {
+      report.problem(`The ladder couldn't be started: ${errorText(error)}.`);
+    }
+    if (ran !== undefined) {
+      ladderRan = true;
+      const said = (ran.stdout ?? '').split('\n');
+      const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
+      const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
+      for (const line of [...said, ...(ran.stderr ?? '').split('\n')]) if (line !== '') report.line(line);
+      if (ran.error !== undefined) {
+        const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+        report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
+          'so what it would have shown after the lines above isn\'t known.');
+      } else if (ran.signal !== null) {
+        report.problem(`The ladder was ended by ${ran.signal}, so what it would have shown after the lines above isn't known.`);
+      } else if (ran.status !== 0) {
+        report.problem(`The ladder stopped (exit ${ran.status}) before it finished, so what it would have shown after ` +
+          'the lines above isn\'t known.');
+      } else {
+        try {
+          for (const { text, counts } of ladderFindings(findings)) {
+            if (counts) report.problem(text);
+            else report.line(text);
+          }
+        } catch (error) {
+          report.problem(`The ladder finished, but its findings can't be read: ${errorText(error)}.`);
         }
-      } catch (error) {
-        report.problem(`The ladder finished, but its findings can't be read: ${errorText(error)}.`);
       }
     }
   }
