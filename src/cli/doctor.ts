@@ -170,6 +170,7 @@ export async function doctor(
 
   let host: HostClient | NoHost = { reason: 'it wasn\'t asked', down: false };
   let stopped = false;
+  let fitUnchecked = false;
   const startCommand = `${typedCommand(root)} service start`;
   let dataDir: string | null = null;
   try {
@@ -279,8 +280,10 @@ export async function doctor(
         const model = recipeModel(loaded, env.MODEL);
         const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), recipeDigest(loaded));
         const fit = runningFit(loaded, env.MODEL, 'tokens' in counted ? counted.tokens : undefined);
-        if (!fit.checked) report.line(fit.line);
-        else if (!fit.fits) report.problem(fit.refusal);
+        if (!fit.checked) {
+          report.line(fit.line);
+          fitUnchecked = true;
+        } else if (!fit.fits) report.problem(fit.refusal);
         else if ('tokens' in counted && fit.spare !== undefined) {
           report.ok(`It fits ${model}'s window, with about ${n(fit.spare)} tokens left for the reply and for what modules add ` +
             `at each turn, by context-manager's estimate of the conversation: the system prompt and tools the host sends ` +
@@ -436,6 +439,8 @@ export async function doctor(
     ...('reason' in host ? ['the host\'s checks weren\'t made'] : []),
     ...(ladderRan ? [] : ['the ladder didn\'t run']),
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
+    ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
+    ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
   ];
   ctx.out('');
   ctx.out(report.redact(report.problems > 0

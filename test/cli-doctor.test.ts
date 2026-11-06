@@ -345,7 +345,7 @@ describe('connectome doctor', () => {
     const lines = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(lines.out).toMatch(/^  a line the ladder only says$/m);
     expect(lines.out).not.toContain('✗');
-    expect(lines.out).toMatch(/Doctor found no problem\.$/);
+    expect(lines.out).toMatch(/Doctor found no problem, though the fit wasn't checked, as said above\.$/);
     expect(lines.status).toBe(0);
     const garbled = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { end: 'garbled' }) }));
     expect(garbled.out).toMatch(/✗ The ladder finished, but its findings can't be read: /);
@@ -373,7 +373,7 @@ describe('connectome doctor', () => {
     const at = install();
     const clean = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { end: 'clean' }) }));
     expect(clean.out).not.toContain('✗');
-    expect(clean.out).toMatch(/Doctor found no problem\.$/);
+    expect(clean.out).toMatch(/Doctor found no problem, though the fit wasn't checked, as said above\.$/);
     expect(clean.status).toBe(0);
     const ended = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { end: 'signal' }) }));
     expect(ended.out).toMatch(/✗ The ladder was ended by SIGTERM/);
@@ -501,7 +501,7 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('the ladder read <DISCORD_TOKEN> alone\n');
     expect(r.out).toContain('the ladder read <SESSION_SERVER_TOKEN> and <LONELY_SECRET> (it holds values of `LONELY_SECRET` ' +
       'and `SESSION_SERVER_TOKEN`, which doctor hides while the names list is missing, so it isn\'t shown as a command to run)\n');
-    expect(r.out).toContain('Doctor found no problem, though it couldn\'t check the stored secrets, as said above.');
+    expect(r.out).toContain('Doctor found no problem, though it couldn\'t check the stored secrets and the fit wasn\'t checked, as said above.');
     expect(r.out).toContain(`  There's no ${join(at.work, '.setup', 'stored-secrets.json')}, so which secrets setup stored ` +
       'isn\'t known and doctor can\'t check them, and it hides every value of a name setup doesn\'t know: LONELY_SECRET, ' +
       'SESSION_SERVER_TOKEN. Write it as a JSON list of the name of every secret, those in .env and any the host is ' +
@@ -514,14 +514,14 @@ describe('connectome doctor', () => {
       'check them. Write it as a JSON list of the name of every secret, those in .env and any the host is given through ' +
       'its environment, and doctor checks them.');
     expect((await withHost(at, HEALTHY_HOST, () => run(at, { python: null }))).out).toContain('Doctor found no ' +
-      'problem, though the ladder didn\'t run and it couldn\'t check the stored secrets, as said above.');
+      'problem, though the ladder didn\'t run, it couldn\'t check the stored secrets and the fit wasn\'t checked, as said above.');
     const worded = install({ env: { WORD: 'stored' } });
     rmSync(join(worded.work, '.setup', 'stored-secrets.json'));
     const plain = join(worded.work, 'python3-plain');
     writeFileSync(plain, ['#!/bin/sh', 'printf \'%s\\n\' \'connectome-doctor findings: []\'', 'exit 0'].join('\n'));
     chmodSync(plain, 0o755);
     expect((await withHost(worded, HEALTHY_HOST, () => run(worded, { python: plain }))).out).toContain('Doctor found no ' +
-      'problem, though it couldn\'t check the <WORD> secrets, as said above. (it holds a value of `WORD`');
+      'problem, though it couldn\'t check the <WORD> secrets and the fit wasn\'t checked, as said above. (it holds a value of `WORD`');
     const named = install({ env: { PASSWORD: 'PASSWORD' } });
     rmSync(join(named.work, '.setup', 'stored-secrets.json'));
     const echo = join(named.work, 'python3-echo');
@@ -960,6 +960,7 @@ describe('connectome doctor', () => {
       'modules add at each turn, by context-manager\'s estimate of the conversation: the system prompt and tools the host sends ' +
       'count 20,000.');
     expect(fits.out).not.toContain('a reply that long');
+    expect(fits.out).toMatch(/Doctor found no problem\.$/);
     expect(fits.status).toBe(0);
     const tight = await withHost(at, counted(40_000), () => run(at));
     expect(tight.out).toContain('with about 8,384 tokens left for the reply');
@@ -1118,7 +1119,7 @@ describe('connectome doctor', () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { python: null }));
     expect(r.out).toMatch(/ladder needs python3/);
-    expect(r.out).toMatch(/Doctor found no problem, though the ladder didn't run, as said above\.$/);
+    expect(r.out).toMatch(/Doctor found no problem, though the ladder didn't run and the fit wasn't checked, as said above\.$/);
     expect(r.status).toBe(0);
   });
 
@@ -1213,7 +1214,7 @@ describe('connectome doctor', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).not.toContain('ladder args');
     expect(r.out).toMatch(/launchd/);
-    expect(r.out).toMatch(/Doctor found no problem, though the ladder didn't run, as said above\.$/);
+    expect(r.out).toMatch(/Doctor found no problem, though the ladder didn't run and the fit wasn't checked, as said above\.$/);
     expect(r.status).toBe(0);
   });
 
@@ -1478,13 +1479,13 @@ describe('connectome doctor: its waits, its remedies and its last line', () => {
       checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped.'], stopped: true }),
       python: fakePython(at.work, { end: 'clean' }),
     });
-    expect(stopped.out).toMatch(/Doctor found no problem, though the host's checks weren't made, as said above\.$/);
+    expect(stopped.out).toMatch(/Doctor found no problem, though the host's checks weren't made and the fit wasn't checked, as said above\.$/);
     expect(stopped.status).toBe(0);
     const unladdered = await run(at, {
       checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped.'], stopped: true }),
       python: null,
     });
-    expect(unladdered.out).toMatch(/Doctor found no problem, though the host's checks weren't made and the ladder didn't run, as said above\.$/);
+    expect(unladdered.out).toMatch(/Doctor found no problem, though the host's checks weren't made, the ladder didn't run and the fit wasn't checked, as said above\.$/);
   });
 
   test('with the recipe edited since the host started, the fit is the load\'s, by estimate, and says why', async () => {
@@ -1593,6 +1594,16 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).toContain('Channels the subscription GC closed (logs/failures.log):');
     expect(r.out).toContain('2 lines there name a subscription-gc-close but can\'t be read as one, cut short or missing a field, so a ' +
       'channel they would name may have been closed too.');
+  });
+
+  test('the closing line names an unchecked fit and a failures.log it couldn\'t read among what wasn\'t checked', async () => {
+    const at = install();
+    mkdirSync(join(at.work, 'logs'));
+    mkdirSync(join(at.work, 'logs', 'failures.log'));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { end: 'clean' }) }));
+    expect(r.out).toContain('[fit] Not checked:');
+    expect(r.out).toMatch(/Doctor found no problem, though the fit wasn't checked and the channels the subscription GC closed couldn't be read, as said above\.$/);
+    expect(r.status).toBe(0);
   });
 
 });
