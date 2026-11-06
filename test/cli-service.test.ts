@@ -4865,3 +4865,11 @@ test('a service record whose shellSettings hold a name this release doesn\'t kno
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
   expect(f.err).toEqual([]);
 });
+
+test('an install whose record isn\'t bound here is told to run setup discord', async () => {
+  const at = install();
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: at.data, extraState: [], workingDir: join(at.home, 'Elsewhere') }));
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('setup discord here to confirm each recorded place');
+});

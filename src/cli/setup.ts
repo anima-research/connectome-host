@@ -26,7 +26,7 @@ import {
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import { bindingOf, mapPath, type Binding } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, SETUP_RECIPE, SETUP_SURFACE, installCommandOf, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
@@ -37,7 +37,7 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
-const SURFACE = 'discord';
+const SURFACE = SETUP_SURFACE;
 const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
 const SHELL_NODE_TOP = 24;

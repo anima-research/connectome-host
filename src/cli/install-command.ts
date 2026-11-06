@@ -5,6 +5,7 @@ import { RELEASE_HOST, shellWord } from '../update/launcher.js';
 import { bindingCheckLines } from '../update/rebind.js';
 
 export const INSTALL_COMMAND = 'connectome';
+export const SETUP_SURFACE = 'discord';
 
 export const CLI_IN_RELEASE = ['node_modules', '@animalabs', 'connectome-host', 'src', 'cli', 'connectome.ts'];
 

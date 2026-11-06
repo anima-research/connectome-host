@@ -21,7 +21,7 @@ import {
 } from '../setup/secrets.js';
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, SETUP_SURFACE, typedCommand } from './install-command.js';
 
 /** Set to 1 in the host's service by `connectome service install`: in a systemd unit once systemd shows that it
  *  restarts the host when it exits with 75 and with 1, and in a launch agent, whose KeepAlive restarts the host
@@ -286,7 +286,7 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   const installed = readRecord<InstallRecord>(installPaths(root).install, 'install record');
   if (installed === null || !boundHere(installed, root)) {
     throw new Refusal(`The install record at ${installPaths(root).install} isn't bound to ${workingDirOf(root)}. ` +
-      `Run ${cmd} setup here to confirm each recorded place, then repeat this service install command.`);
+      `Run ${cmd} setup ${SETUP_SURFACE} here to confirm each recorded place, then repeat this service install command.`);
   }
   let old: ServiceRecord | null = null;
   try {
