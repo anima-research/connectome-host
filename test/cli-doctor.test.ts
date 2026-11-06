@@ -2053,4 +2053,15 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).not.toContain('stored-why-value');
     expect(r.out).toContain('✓ The host answers: pid 4242');
   });
+
+  test('a server\'s literal DISCORD_TOKEN that holds a ${NAME} among other text is hidden, since it goes to discord-mcpl as written', async () => {
+    const literal = 'prefix${NOT_FILLED}suffix';
+    const at = install();
+    writeFileSync(join(at.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: {
+      discord: { command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: literal, DISCORD_GUILD_ID: '100' } },
+    } }));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { ...reports(`the unit logged ${literal}`) }));
+    expect(r.out).toContain('the unit logged <DISCORD_TOKEN>');
+    expect(r.out).not.toContain(literal);
+  });
 });

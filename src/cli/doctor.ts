@@ -7,7 +7,7 @@ import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
-  ENV_REFERENCE, loadRecipeDocument, namesEnvReference, readRecipeDocument, recipeDigest, recipeModel, resolveProvider,
+  ENV_REFERENCE, loadRecipeDocument, readRecipeDocument, recipeDigest, recipeModel, resolveProvider,
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
@@ -203,7 +203,8 @@ export async function doctor(
         .loaded as Server[];
       secrets = [...secrets, ...servers.flatMap((server) => {
         const token = childEnv(server, env).DISCORD_TOKEN;
-        return token && !namesEnvReference(token) ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
+        return token && !new RegExp(`^${ENV_REFERENCE}$`).test(token)
+          ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
       })];
     } catch (error) {
       serversError = error;
