@@ -229,6 +229,7 @@ export async function doctor(
   let filesUnread = false;
   let pidUntold = false;
   let uncredentialed = false;
+  let unanswered = false;
   let closedTabs = false;
   const startCommand = `${typedCommand(root)} service start`;
   let dataDir: string | null = null;
@@ -409,7 +410,9 @@ export async function doctor(
         const answer = await read<CountCheck>('count-check', counting);
         if (answer !== null) {
           countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic');
-          uncredentialed = [answer.data.agent.source, answer.data.compression?.source].includes('count_tokens_no_credential');
+          const sources = [answer.data.agent.source, answer.data.compression?.source];
+          uncredentialed = sources.includes('count_tokens_no_credential');
+          unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
         }
       });
     }
@@ -544,6 +547,7 @@ export async function doctor(
     ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
     ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
     ...(uncredentialed ? ['count_tokens had no credential to count with'] : []),
+    ...(unanswered ? ['a count_tokens count got no answer it could read'] : []),
     ...(closedTabs ? ['a closed tab\'s connection wasn\'t checked'] : []),
     ...(pidUntold ? ['whether the host that answers is the service\'s couldn\'t be told'] : []),
   ];

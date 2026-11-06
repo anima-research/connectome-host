@@ -2141,4 +2141,25 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       expect(started.out).not.toContain('though the service is stopped');
     }
   });
+
+  test('the closing line names a count that timed out or got an answer it couldn\'t read, and not one that got an answer', async () => {
+    const count = (agent: string, compression: string) => ({
+      ...HEALTHY_HOST,
+      'count-check': {
+        beside: STANDIN_BESIDE,
+        agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: agent },
+        compression: { model: 'claude-old', countModel: 'claude-old', source: compression },
+      },
+    });
+    const closing = (out: string): string => out.split('\n').filter((line) => line.trim() !== '').at(-1)!;
+    for (const [agent, compression] of [['count_tokens_timeout', 'count_tokens'], ['count_tokens', 'count_tokens_error']]) {
+      const at = install();
+      const r = await withHost(at, count(agent!, compression!), () => run(at));
+      expect(closing(r.out)).toContain('a count_tokens count got no answer it could read');
+      expect(r.status).toBe(0);
+    }
+    const at = install();
+    const answered = await withHost(at, count('count_tokens_failed_404', 'count_tokens'), () => run(at));
+    expect(closing(answered.out)).not.toContain('a count_tokens count got no answer it could read');
+  });
 });
