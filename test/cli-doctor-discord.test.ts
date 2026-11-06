@@ -154,6 +154,19 @@ describe('doctor: Discord', () => {
     expect(raw.problems[0]).not.toMatch(/its message says/);
   });
 
+  test('a 403 or 404 to the bot\'s own user or application says what may be answering in Discord\'s place, and one to a server\'s read says what that read says', async () => {
+    const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    for (const status of [403, 404]) {
+      const own = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status }) } }));
+      expect(own.problems).toEqual([`Discord answered ${status} to GET /users/@me: Missing Access, so the Discord checks after it weren't made.${between}`]);
+      const app = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status }) } }));
+      expect(app.problems).toEqual([`Discord answered ${status} to GET /applications/@me: Missing Access (code 50001), so the Discord checks after it weren't made.${between}`]);
+    }
+    const server = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }));
+    expect(server.problems).toEqual([expect.stringContaining('Discord listed that server for the bot a moment before')]);
+    expect(server.problems[0]).not.toContain('Something between');
+  });
+
   test('an answer that can change by itself, Discord busy or limiting the rate, says to run doctor again', async () => {
     for (const status of [429, 503]) {
       const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => Response.json({ message: 'try later', code: 0 }, { status }) }));

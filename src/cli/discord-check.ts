@@ -111,7 +111,9 @@ export async function checkDiscord(
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}` +
         (typeof said?.message === 'string' ? `: ${said.message}${said.code !== undefined ? ` (code ${String(said.code)})` : ''}` : ', with no message') +
         `, ${wait ?? (res.status === 429 || res.status >= 500 ? again : unchecked)}.` +
-        ((res.status === 403 || res.status === 404) && path.startsWith('/guilds/') ? ` ${LISTED}` : ''));
+        (res.status === 403 || res.status === 404
+          ? path.startsWith('/guilds/') ? ` ${LISTED}` : path === '/applications/@me' ? ` ${between}` : ''
+          : ''));
     }
     if (body === undefined) {
       throw new DiscordAnswer(`Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`);
@@ -190,7 +192,8 @@ async function whoseToken(
       throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
         (check.said === null ? ', with no message' : `: ${check.said}`) +
         `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter)
-          : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.`);
+          : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.` +
+        (check.status === 403 || check.status === 404 ? ` ${words.between}` : ''));
   }
 }
 
