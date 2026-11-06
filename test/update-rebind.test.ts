@@ -416,6 +416,19 @@ describe('binding an install to the directory it is in', () => {
     expect(existsSync(join(rootOf(moved), REBIND_PLAN))).toBe(false);
   });
 
+  test('a place given with --place that holds the install root is refused, as --extra-state is, and nothing changes', () => {
+    const outside = join(dir, 'state.json');
+    writeFileSync(outside, 'state');
+    setup(options(install, { extraState: [outside] }));
+    updated(install, [outside]);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const kept = tree(rootOf(moved));
+    const why = refusal(() => setup(options(moved, { places: [{ from: outside, to: moved }] })));
+    expect(why).toContain(`The install root ${rootOf(moved)} and ${moved}, the place given for ${outside}, are one inside the other`);
+    expect(tree(rootOf(moved))).toEqual(kept);
+  });
+
   test('a place inside another is asked about with it, and the places of state outside the data directory are asked about in the record\'s order', () => {
     const [z, state, a] = ['z.json', 'state', 'a.json'].map((name) => join(dir, name));
     writeFileSync(z, z);
@@ -654,6 +667,20 @@ describe('a binding cut off', () => {
     renameSync(install, moved);
     const kept = tree(rootOf(moved));
     expect(refusal(() => setup(options(moved)))).toContain(`A setup run binding this install to ${install} was cut off before it finished, and the install is in ${moved} now`);
+    expect(tree(rootOf(moved))).toEqual(kept);
+  });
+
+  test('a plan cut off, then the install moved again, is refused as moved even when the data directory its plan names is gone, and nothing changes', () => {
+    const { places } = chained();
+    const root = rootOf(install);
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const kept = tree(rootOf(moved));
+    const why = refusal(() => setup(options(moved, { dataDir: join(install, 'data') })));
+    expect(why).toContain(`A setup run binding this install to ${install} was cut off before it finished, and the install is in ${moved} now`);
     expect(tree(rootOf(moved))).toEqual(kept);
   });
 

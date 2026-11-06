@@ -39,8 +39,8 @@ import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js
 import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launcher.js';
 import {
-  bindingCheckLines, bindingOf, boundFiles, changesFiles, lockForBinding, mapPath, newPlan, readPlan, removePlan,
-  rewriteFiles, sameDirectory, workingDirOf, writePlan, type BoundFile, type Place, type RebindPlan,
+  bindingCheckLines, bindingOf, boundFiles, changesFiles, lockForBinding, mapPath, newPlan, readPlan, rebindPath,
+  removePlan, rewriteFiles, sameDirectory, workingDirOf, writePlan, type BoundFile, type Place, type RebindPlan,
 } from './rebind.js';
 import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 
@@ -311,6 +311,16 @@ export function setup(options: SetupOptions): void {
   const { say } = options;
   const root = resolve(options.root);
   const paths = installPaths(root);
+  const movedAway = (plan: RebindPlan): ContractError | null => {
+    const here = workingDirOf(root);
+    return sameDirectory(plan.to, here) ? null : new ContractError(`A setup run binding this install to ${plan.to} was ` +
+      `cut off before it finished, and the install is in ${here} now, so the places its plan ` +
+      `(${rebindPath(root)}) gives are another directory's. Setup has changed nothing. Move the install back ` +
+      `to ${plan.to}, run setup there, which finishes that binding, and then move it.`);
+  };
+  const standing = existsSync(rebindPath(root)) ? readPlan(root) : null;
+  const moved = standing === null ? null : movedAway(standing);
+  if (moved !== null) throw moved;
   if (!existsSync(options.dataDir)) {
     throw new ContractError(`The data directory ${options.dataDir} isn't there. Run setup in the directory the service runs the ` +
       'host in, with the DATA_DIR it gives the host, after the host has run there once.');
@@ -389,12 +399,8 @@ export function setup(options: SetupOptions): void {
   if (bindingFound?.kind === 'resume') {
     const { plan } = bindingFound;
     const here = workingDirOf(root);
-    if (!sameDirectory(plan.to, here)) {
-      throw new ContractError(`A setup run binding this install to ${plan.to} was cut off before it finished, and the ` +
-        `install is in ${here} now, so the places its plan (${join(root, 'rebind.json')}) gives are another ` +
-        `directory's. Setup has changed nothing. Move the install back to ${plan.to}, run setup there, which finishes ` +
-        'that binding, and then move it.');
-    }
+    const away = movedAway(plan);
+    if (away !== null) throw away;
     lockForBinding(root, plan.from, ops);
     try {
       if (JSON.stringify(readPlan(root)) !== JSON.stringify(plan)) throw new ContractError(CHANGED_MEANWHILE);
@@ -612,6 +618,14 @@ export function setup(options: SetupOptions): void {
       'Choose another --root.');
   }
   const extraState = given ?? recorded?.map(placeHere) ?? [];
+  for (const [at, place] of extraState.entries()) {
+    const was = given === null ? recorded?.[at] : undefined;
+    if (was !== undefined && place !== was && (isUnder(rootReal, place) || isUnder(place, rootReal))) {
+      throw new ContractError(`The install root ${rootReal} and ${place}, the place given for ${was}, are one inside ` +
+        'the other, so a copy of the data would hold the copy itself. Give it a place apart from the root. Setup has ' +
+        'changed nothing.');
+    }
+  }
 
   // A module's own path is its real one, so a host reached through a link
   // reads as wherever the link leads: the directory's own node_modules says
