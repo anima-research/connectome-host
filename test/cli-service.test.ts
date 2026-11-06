@@ -4930,3 +4930,18 @@ test('an explicit install over a record it can\'t read in full still refuses one
   expect(f.err.join('\n')).toContain(`It names another working directory, ${elsewhere}`);
   expect(existsSync(hostUnit(at))).toBe(false);
 });
+
+test('macOS retires a same-directory record\'s agents under their recorded labels when the slug has changed', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const old = 'com.animalabs.connectome.old-name';
+  const dir = join(at.home, 'Library', 'LaunchAgents');
+  writeFileSync(join(at.root, 'service.json'), JSON.stringify({ v: 1, manager: 'launchd',
+    units: { host: { name: old, file: join(dir, `${old}.plist`) }, shell: { name: `${old}.shell`, file: join(dir, `${old}.shell.plist`) } },
+    hostArgs: [at.recipe, '--headless'], workingDirectory: at.work, logs: { kind: 'file', path: join(at.work, 'logs', 'agent.log') } }));
+  f.systemd.agents.set(old, { pid: 7001 });
+  f.systemd.agents.set(`${old}.shell`, { pid: 7002 });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.systemd.agents.has(old)).toBe(false);
+  expect(f.systemd.agents.has(`${old}.shell`)).toBe(false);
+});

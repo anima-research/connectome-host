@@ -487,7 +487,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       host: plist(names.host.name, work, hostArgv, [...hostVars, [SUPERVISED_ENV, '1']], logPath),
       unchecked: null,
     };
-  const dropped = shell === null ? [names.shell] : [];
+  const renamed = old !== null && sameDirectory(old.workingDirectory, work)
+    ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
+      unit.name !== names.host.name && unit.name !== names.shell.name)
+    : [];
+  const dropped = [...(shell === null ? [names.shell] : []), ...renamed];
 
   const record: ServiceRecord = {
     v: 1,
@@ -609,10 +613,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       for (const unit of dropped) {
         let removed = false;
         try {
-          removed = await removeUnit(ctx, sys, env, manager, unit, work, cmd);
+          removed = await removeUnit(ctx, sys, env, manager, unit, work, cmd, renamed.includes(unit));
           if (!removed) return 1;
         } finally {
-          if (!removed) ctx.out('Shell retirement is incomplete. Any existing shell settings were kept. ' +
+          if (!removed) ctx.out(`${renamed.includes(unit) ? `Retiring ${unit.name}, which this install's record named, is incomplete.`
+            : 'Shell retirement is incomplete.'} Any existing shell settings were kept. ` +
             'Resolve the reported state or ownership problem, then repeat this service install command. ' +
             'Use a native stop instruction only if that unit belongs to this install.');
         }
@@ -1236,10 +1241,10 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
 }
 
 async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
-  unit: ServiceUnit, work: string, cmd: string): Promise<boolean> {
+  unit: ServiceUnit, work: string, cmd: string, recordedHere = false): Promise<boolean> {
   const here = realOrResolved(work);
   const text = readOr(unit.file);
-  let runsIn = text === null ? undefined : fileDirectory(text, manager, sys.home);
+  let runsIn = text === null ? (recordedHere ? here : undefined) : fileDirectory(text, manager, sys.home);
   let live: boolean;
   if (manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory']);
