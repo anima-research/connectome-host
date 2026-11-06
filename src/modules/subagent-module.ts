@@ -3681,8 +3681,10 @@ export class SubagentModule implements Module {
     }
   }
 
-  // A row an undo or a shed took out of the window (`undone`) stays in the
-  // record, but the subagent isn't shown it, so it isn't the run's answer.
+  // Only a row the subagent's window holds is the run's answer: one an undo
+  // or a shed took out (`undone`) stays in the record, and one stored and not
+  // presented (`out`, another agent's mail held out past the run's end) was
+  // never shown to it.
   private extractLastAssistantText(contextManager: ContextManager): string {
     try {
       const messages = contextManager.getAllMessages();
@@ -3690,7 +3692,8 @@ export class SubagentModule implements Module {
         const msg = messages[i];
         if (msg.participant === 'user' || msg.participant === 'User') continue;
         if (storedInjectionMarkOf(msg.metadata) !== undefined) continue;
-        if (contextManager.windowStatusOf?.(msg.id) === 'undone') continue;
+        const status = contextManager.windowStatusOf?.(msg.id);
+        if (status !== undefined && status !== 'in') continue;
         const texts = msg.content
           .filter((b: ContentBlock) => b.type === 'text')
           .map((b: ContentBlock) => (b as { type: 'text'; text: string }).text);
