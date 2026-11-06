@@ -109,6 +109,7 @@ export interface SetupWorld {
   user: string;
   env: Record<string, string | undefined>;
   cwd: string;
+  execArgv: string[];
   bun: { path: string; version: string };
   hasSudo: boolean;
   lingerOf(user: string): boolean | null;
@@ -142,15 +143,30 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const pkg = packageJson();
   const version = pkg.version;
 
+  const command = existsSync(join(root, INSTALL_COMMAND)) ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}`
+    : firstLine();
   if (ctx.argv.length !== 1 || ctx.argv[0] !== SURFACE) {
-    err(`Usage: ${existsSync(join(root, INSTALL_COMMAND)) ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}`
-      : firstLine()}`);
+    err(`Usage: ${command}`);
     err('Discord is the one surface setup sets a resident up on.');
     return 2;
   }
   if (!world.terminal) {
     err('connectome setup needs a person at a terminal: it asks questions, and its agent talks with you in this ' +
       'terminal. Run it in one.');
+    return 1;
+  }
+  if (world.env.BUN_OPTIONS?.includes('--env-file')) {
+    err('connectome setup: BUN_OPTIONS holds --env-file, and Bun loads the file such a flag names into setup\'s own ' +
+      'environment as setup starts, where setup can\'t keep that file\'s values from its agent. Run setup again ' +
+      'without BUN_OPTIONS:');
+    err(`  env -u BUN_OPTIONS ${command}`);
+    err('or with only its --env-file taken out of BUN_OPTIONS.');
+    return 1;
+  }
+  if (world.execArgv.some((word) => word === '--env-file' || word.startsWith('--env-file='))) {
+    err('connectome setup: Bun was started with --env-file, and loads the file it names into setup\'s own environment ' +
+      'as setup starts, where setup can\'t keep that file\'s values from its agent. Run setup again without it:');
+    err(`  ${command}`);
     return 1;
   }
   const setupDir = join(dir, '.setup');
@@ -1093,6 +1109,7 @@ export function realWorld(): SetupWorld {
     user: userInfo().username,
     env: process.env,
     cwd: process.cwd(),
+    execArgv: process.execArgv,
     bun: { path: process.execPath, version: Bun.version },
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),

@@ -174,6 +174,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
       user: 'alice',
       env: { PATH: '/usr/bin:/bin', HOME: dir },
       cwd: dir,
+      execArgv: [],
       bun: { path: process.execPath, version: '1.4.4' },
       hasSudo: true,
       lingerOf: () => true,
@@ -235,6 +236,57 @@ test('setup\'s usage line is the command that runs it here: the package\'s first
   const installed = world(dir);
   expect(await runSetup(dir, ['telegram'], installed)).toBe(2);
   expect(installed.seen.err[0]).toBe(`Usage: ${shellWord(join(root, 'connectome'))} setup discord`);
+});
+
+test('a BUN_OPTIONS that holds --env-file is refused before any question, naming the line that runs setup without it', async () => {
+  // Each BUN_OPTIONS beside the execArgv Bun 1.4.4 gives under it.
+  for (const [options, execArgv] of [
+    ['--env-file=/elsewhere/.env', ['--env-file=/elsewhere/.env']],
+    ['--smol --env-file /elsewhere/.env', ['--smol', '--env-file', '/elsewhere/.env']],
+    ['"--env-file=/else where/.env"', ['--env-file=/else where/.env']],
+    ["--env-file='/else where/.env'", ["--env-file='/else where/.env'"]],
+  ] as const) {
+    const dir = directory();
+    const made = world(dir, {}, { env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: options }, execArgv: [...execArgv] });
+    expect(await runSetup(dir, ['discord'], made)).toBe(1);
+    expect(text(made.seen.err)).toContain('BUN_OPTIONS holds --env-file');
+    expect(text(made.seen.err)).not.toContain('Bun was started');
+    expect(made.seen.err).toContain(`  env -u BUN_OPTIONS ${firstLine()}`);
+    expect(made.seen.asked).toEqual([]);
+    expect(readdirSync(dir)).toEqual([]);
+  }
+  const dir = directory();
+  const root = join(dir, 'connectome-host');
+  mkdirSync(root);
+  writeInstallCommand(root, '');
+  const installed = world(dir, {}, {
+    env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: '--env-file=/elsewhere/.env' }, execArgv: ['--env-file=/elsewhere/.env'],
+  });
+  expect(await runSetup(dir, ['discord'], installed)).toBe(1);
+  expect(installed.seen.err).toContain(`  env -u BUN_OPTIONS ${shellWord(join(root, 'connectome'))} setup discord`);
+  expect(installed.seen.asked).toEqual([]);
+  expect(readdirSync(dir)).toEqual(['connectome-host']);
+});
+
+test('a Bun started with --env-file is refused before any question, naming setup\'s line to run without it', async () => {
+  for (const execArgv of [['--env-file=/elsewhere/.env'], ['--smol', '--env-file', '/elsewhere/.env']]) {
+    const dir = directory();
+    const made = world(dir, {}, { execArgv });
+    expect(await runSetup(dir, ['discord'], made)).toBe(1);
+    expect(text(made.seen.err)).toContain('Bun was started with --env-file');
+    expect(made.seen.err).toContain(`  ${firstLine()}`);
+    expect(text(made.seen.err)).not.toContain('BUN_OPTIONS');
+    expect(made.seen.asked).toEqual([]);
+    expect(readdirSync(dir)).toEqual([]);
+  }
+});
+
+test('a BUN_OPTIONS and a Bun start without --env-file leave setup to ask its questions', async () => {
+  const dir = directory();
+  const made = world(dir, {}, { env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: '--smol' }, execArgv: ['--smol'] });
+  await runSetup(dir, ['discord'], made);
+  expect(made.seen.asked.length).toBeGreaterThan(0);
+  expect(text(made.seen.err)).not.toContain('--env-file');
 });
 
 test('the package\'s bin, without a terminal, says setup needs a person at one and leaves the directory as it was',
