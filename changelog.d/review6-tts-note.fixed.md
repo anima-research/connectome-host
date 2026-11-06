@@ -15,3 +15,8 @@
   in its channel since the channel's previous interruption, which ended its
   voicing. A message published before that was matched again, so a later
   reply that opened with the same words had it edited again.
+- tts-relay keeps each channel's latest 32 publishes to match an
+  interruption there. It kept the latest 32 of every channel together, so
+  another channel's traffic could push out a message by one agent, and
+  heard words that started it and another agent's message were taken as
+  the other agent's alone.

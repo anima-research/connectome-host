@@ -299,6 +299,22 @@ describe('heard words that start more than one published message', () => {
     expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
 
+  // Host #485 bot review wave 3, finding 25: the publishes were one ring of
+  // 32 for every channel, so another channel's traffic pushed clerk's out,
+  // and mira was told as the only author matched.
+  test('by two agents with 33 publishes in another channel between them: the newest is edited, and no note is written', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    trace(publish('clerk', 'm-clerk', 'Yes, the ferry leaves at noon.'));
+    for (let i = 0; i < 33; i++) {
+      trace({ type: 'inference:published', agentName: 'mira', serverId: 'discord', channelId: 'g:43', inferenceId: `i-43-${i}`, index: 0, text: `Elsewhere ${i}.`, messageId: `m-43-${i}` });
+    }
+    trace(publish('mira', 'm-mira', 'Yes — and the bridge is closed.'));
+    const logged = await logOf(() => interrupt('Yes'));
+    expect(edited()).toEqual(['m-mira']);
+    expect(notes).toEqual([]);
+    expect(logged).toContain('the interruption in 42 is told to no agent: the heard words start messages published by clerk, mira');
+  });
+
   test('sharing their first 80 characters: the one that shares more of the heard words is edited, though older, and the note is for no agent', async () => {
     const shared = 'The ferry leaves at noon from the north pier, and the old bridge on the coast is';
     expect(shared).toHaveLength(80);

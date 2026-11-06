@@ -162,7 +162,8 @@ interface PublishedMessage {
   at: number;
 }
 
-const PUBLISHED_RING_MAX = 32;
+/** How many of a channel's latest publishes are kept to match its next interruption. */
+const PUBLISHED_PER_CHANNEL_MAX = 32;
 /** How many of the heard words' characters a published message must start with. */
 const HEARD_PROBE_CHARS = 80;
 
@@ -310,8 +311,12 @@ export class TtsRelayModule implements Module {
           text: event.text,
           at: event.timestamp,
         });
-        if (this.published.length > PUBLISHED_RING_MAX) {
-          this.published.splice(0, this.published.length - PUBLISHED_RING_MAX);
+        // Trimmed by channel: one ring for every channel let another
+        // channel's traffic push out a publish an interruption here can
+        // still match, so a match by two agents read as one agent's.
+        const channel = this.published.filter((r) => r.rawChannelId === rawChannelId(event.channelId));
+        if (channel.length > PUBLISHED_PER_CHANNEL_MAX) {
+          this.published.splice(this.published.indexOf(channel[0]!), 1);
         }
         break;
       }
@@ -454,8 +459,8 @@ export class TtsRelayModule implements Module {
   }
 
   /** The messages published in the interruption's channel since its previous
-   *  interruption whose text starts with the heard words' first
-   *  HEARD_PROBE_CHARS characters, newest first.
+   *  interruption, its latest PUBLISHED_PER_CHANNEL_MAX, whose text starts
+   *  with the heard words' first HEARD_PROBE_CHARS characters, newest first.
    *  A publish they don't start is not taken: it would be edited to words it
    *  never said, and its author told of an interruption that cut off another
    *  agent. */
