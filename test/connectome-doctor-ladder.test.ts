@@ -361,6 +361,19 @@ describe('where the ladder reads a unit\'s output', () => {
     expect(out).toMatch(new RegExp(`live gate dump: SIGUSR2 sent, but ${file} can't be read`));
     expect(out).not.toContain('no [diagnostics] line came');
   });
+
+  test('a unit file that can\'t be read is said, as a line that doesn\'t count, and the rest of the ladder still runs', async () => {
+    const at = await install({ listens: true });
+    const unitFile = join(at.work, 'unit.txt');
+    rmSync(unitFile);
+    mkdirSync(unitFile);
+    const { out } = ladder(at, ['--no-signal', '--findings-json']);
+    const line = out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
+    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
+      text: `connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
+        'output to a file isn\'t known', counts: false });
+    expect(out).toContain('400 prompt is too long');
+  });
 });
 
 describe('the ladder\'s recent failures', () => {

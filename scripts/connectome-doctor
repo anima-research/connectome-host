@@ -221,7 +221,11 @@ jts = (journal_entries(last_entry) or [(None, None)])[-1][0]
 log_redirect = None
 frag = sh(f"systemctl --user show {unit} -p FragmentPath --value")
 if frag and os.path.exists(frag):
-    m = re.search(r"Standard(?:Output|Error)=(?:append|file):(\S+)", open(frag).read())
+    frag_text, frag_why = read_text(frag)
+    if frag_text is None:
+        warn(f"{unit}'s unit file, {frag}, can't be read ({frag_why}), so whether it sends the host's output to a file "
+             "isn't known", counts=False)
+    m = re.search(r"Standard(?:Output|Error)=(?:append|file):(\S+)", frag_text or "")
     if m:
         log_redirect = m.group(1)
 
