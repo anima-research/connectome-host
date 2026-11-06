@@ -830,6 +830,16 @@ describe('a binding cut off', () => {
     expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
   });
 
+  test('a plan that\'s a link leading nowhere stops both entries, as a plan that\'s there does', () => {
+    setup(options(install));
+    const root = rootOf(install);
+    symlinkSync(join(dir, 'nowhere.json'), join(root, REBIND_PLAN));
+    for (const ran of [startOf(install), commandOf(install, 'update')]) {
+      expect(ran.exitCode).toBe(1);
+      expect(ran.stderr).toContain(`a setup binding this install was cut off before it finished (${join(root, REBIND_PLAN)} is its plan)`);
+    }
+  });
+
   test('a plan that isn\'t whole is refused as one this release can\'t finish, naming each file to put right, and nothing changes', () => {
     const { places } = chained();
     const root = rootOf(install);
