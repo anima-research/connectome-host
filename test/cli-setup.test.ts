@@ -801,7 +801,7 @@ test('with a shell, a node-pty that still opens no pty once installed again stop
   expect(text(made.seen.err)).toContain(`The resident's shell runs on node-pty, and here it doesn't work: Failed to load native module: pty.node, checked: build/Release. On Linux, its native part is built as it's installed, with python3, make and a C++ compiler; on Debian and Ubuntu, \`sudo apt install build-essential python3\` installs them, run by you if you can use sudo here, or by whoever administers this machine. Then run setup again, which installs node-pty again. Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where setup keeps its answers, and run setup again to answer no.`);
 });
 
-test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies before its add, prints no "Blocked" line of its own, and asks Bun for nothing more after its add', async () => {
+test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies before its add, prints no "Blocked" line of its own, and runs no `bun pm untrusted` after its add', async () => {
   const dir = directory();
   let atAdd: unknown = null;
   const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], atAdd: (cwd) => { atAdd = (JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf-8')) as { trustedDependencies?: unknown }).trustedDependencies; } });
