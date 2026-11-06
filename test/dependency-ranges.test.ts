@@ -63,9 +63,22 @@ function floorOf(range: string): string {
   return parts[1]!;
 }
 
-/** Whether every release the caret range `inner` admits, `outer` admits:
- *  caret ranges nest or are apart, so whether `outer` takes `inner`'s floor. */
-const within = (inner: string, outer: string): boolean => Bun.semver.satisfies(floorOf(inner), outer);
+/** The highest release the caret range admits, as far as a range check
+ *  needs: `^0.0.p` admits 0.0.p alone, `^0.m.p` the 0.m line, `^M.m.p` the M
+ *  line. */
+function topOf(range: string): string {
+  const [major, minor, patch] = floorOf(range).split('.').map(Number) as [number, number, number];
+  if (major > 0) return `${major}.999999.999999`;
+  if (minor > 0) return `0.${minor}.999999`;
+  return `0.0.${patch}`;
+}
+
+/** Whether every release the caret range `inner` admits, `outer` admits,
+ *  for an `outer` of carets, a union of them, or an exact release (no gap
+ *  inside one caret's line): whether `outer` takes `inner`'s floor and its
+ *  top. */
+const within = (inner: string, outer: string): boolean =>
+  Bun.semver.satisfies(floorOf(inner), outer) && Bun.semver.satisfies(topOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
   test("takes agent-framework from the presentation release, 0.33.0: not main's 0.30.0, 0.31.0 or 0.32.0, which have no presentation index", () => {
@@ -112,6 +125,19 @@ describe("the host's dependency ranges (#291's release set)", () => {
     }
     expect(shared).toEqual({ '@animalabs/membrane': 2, '@animalabs/chronicle': 2 });
     expect(apart).toEqual([]);
+  });
+
+  // Host #485 bot review wave 3, finding 34: the check asked only whether our
+  // floor satisfies their range, so an upstream that pinned 0.8.0 passed our
+  // ^0.8.0, which admits the 0.8.x it doesn't.
+  test("the containment check takes our range within theirs only when theirs admits our range's top too", () => {
+    expect(within('^0.8.0', '^0.8.0 || ^0.9.0')).toBe(true);
+    expect(within('^0.8.2', '^0.8.0')).toBe(true);
+    expect(within('^1.2.0', '^1.0.0')).toBe(true);
+    expect(within('^0.8.0', '0.8.0')).toBe(false);
+    expect(within('^0.8.0', '>=0.8.0 <0.8.5')).toBe(false);
+    expect(within('^1.2.0', '~1.2.0')).toBe(false);
+    expect(within('^0.7.0', '^0.8.0')).toBe(false);
   });
 
   test('takes the membrane the stack runs on', () => {
