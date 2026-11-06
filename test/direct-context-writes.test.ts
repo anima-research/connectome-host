@@ -48,6 +48,7 @@
 import { describe, test, expect } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { blankLiterals } from './blank-literals.js';
 
 const ROOT = join(import.meta.dir, '..');
 const SRC = join(ROOT, 'src');
@@ -72,80 +73,6 @@ function throughTheFramework(receiver: string, method: string): boolean {
   if (/(^|\.)ctx$/.test(plain)) return ['addMessage', 'editMessage', 'removeMessage'].includes(method);
   if (/(^|\.)framework$/.test(plain)) return method === 'switchBranch';
   return false;
-}
-
-const KEYWORDS_BEFORE_AN_EXPRESSION = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
-]);
-
-/** `code` with the text of each string literal, template and regular
- *  expression blanked, each character a space (line breaks kept), so a
- *  call's shape inside one isn't found; a template's `${…}` stays code. */
-function blankLiterals(code: string): string {
-  const out = code.split('');
-  const blank = (from: number, to: number) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '; };
-  // A `/` opens a regular expression where an expression can start: after an
-  // operator or punctuation, or a keyword such as `return`; after a name, a
-  // number, `)`, `]` or a postfix `++` or `--` it divides.
-  const opensRegExp = (at: number): boolean => {
-    let k = at - 1;
-    while (k >= 0 && /\s/.test(code[k]!)) k--;
-    if (k < 0) return true;
-    if (code[k] === ')' || code[k] === ']') return false;
-    if (k > 0 && (code.slice(k - 1, k + 1) === '++' || code.slice(k - 1, k + 1) === '--')) return false;
-    if (!/[\w$]/.test(code[k]!)) return true;
-    let from = k;
-    while (from > 0 && /[\w$]/.test(code[from - 1]!)) from--;
-    return KEYWORDS_BEFORE_AN_EXPRESSION.has(code.slice(from, k + 1));
-  };
-  const quoted = (at: number): number => {
-    let k = at + 1;
-    while (k < code.length && code[k] !== code[at]) k += code[k] === '\\' ? 2 : 1;
-    blank(at + 1, k);
-    return k + 1;
-  };
-  const regExp = (at: number): number => {
-    let k = at + 1;
-    let inClass = false;
-    while (k < code.length && code[k] !== '\n' && (inClass || code[k] !== '/')) {
-      if (code[k] === '[') inClass = true;
-      else if (code[k] === ']') inClass = false;
-      k += code[k] === '\\' ? 2 : 1;
-    }
-    blank(at + 1, k);
-    return k + 1;
-  };
-  const template = (at: number): number => {
-    let k = at + 1;
-    while (k < code.length && code[k] !== '`') {
-      if (code[k] === '$' && code[k + 1] === '{') { k = codeFrom(k + 2, true); continue; }
-      const step = code[k] === '\\' ? 2 : 1;
-      blank(k, k + step);
-      k += step;
-    }
-    return k + 1;
-  };
-  /** Past the code from `at`: to the end, or (`inner`) past the `}` that closes a template's `${`. */
-  function codeFrom(at: number, inner: boolean): number {
-    let depth = 0;
-    let k = at;
-    while (k < code.length) {
-      const c = code[k]!;
-      if (c === '"' || c === "'") k = quoted(k);
-      else if (c === '`') k = template(k);
-      else if (c === '/' && code[k + 1] === '*') k = code.includes('*/', k + 2) ? code.indexOf('*/', k + 2) + 2 : code.length;
-      else if (c === '/' && code[k + 1] === '/') k = code.includes('\n', k) ? code.indexOf('\n', k) : code.length;
-      else if (c === '/' && opensRegExp(k)) k = regExp(k);
-      else {
-        if (c === '{') depth++;
-        else if (c === '}' && inner && depth-- === 0) return k + 1;
-        k++;
-      }
-    }
-    return k;
-  }
-  codeFrom(0, false);
-  return out.join('');
 }
 
 const TRANSPILERS = { ts: new Bun.Transpiler({ loader: 'ts' }), tsx: new Bun.Transpiler({ loader: 'tsx' }) };
@@ -389,6 +316,18 @@ describe('direct context writes', () => {
       { call: 'cm.switchBranch', through: false },
       { call: 'cm.retractRows', through: false },
     ]);
+    // And scanCode counts the direct ones, each, and not the module
+    // context's or the framework's (#485 bot review 5, finding 28).
+    const found = new Map<string, number>();
+    scanCode('f.ts', code, found);
+    expect(Object.fromEntries(found)).toEqual({
+      'f.ts agent.getContextManager().addMessage': 1,
+      'f.ts app.framework.getAgent(id).getContextManager().addMessage': 1,
+      'f.ts cm.fork': 1,
+      'f.ts cm.branchAt': 1,
+      'f.ts cm.switchBranch': 1,
+      'f.ts cm.retractRows': 1,
+    });
   });
 
   test("the scan counts a writer's mention that isn't a call, storeOwnRow under an alias, and an EventResponse's addMessages", () => {
@@ -421,11 +360,14 @@ describe('direct context writes', () => {
       // Host #485 bot review wave 4, finding 17: a division after a postfix
       // `++` or `--`, which Bun keeps on the line of what follows it.
       "const up = a++ / 2 + cm.addMessage('user', []); const down = b-- / 2 + cm.fork(id);",
+      // Review wave 5, finding 27: a division right after a template's or a
+      // string's closing quote.
+      "const t = `${a}` / 2 + cm.addMessage('user', []); const s = '4' / b + cm.fork(id); const d = \"6\" / a + cm.branchAt(id);",
       "return `${cm.addMessage('user', [])} and ${half / 2}` + 'x' + re.source + cm.fork(id);",
       '}',
     ].join('\n'));
     expect([...code.matchAll(CALL)].map(([, receiver, method]) => `${receiver}.${method}`))
-      .toEqual(['cm.addMessage', 'cm.fork', 'cm.addMessage', 'cm.fork']);
+      .toEqual(['cm.addMessage', 'cm.fork', 'cm.addMessage', 'cm.fork', 'cm.branchAt', 'cm.addMessage', 'cm.fork']);
     expect(code).not.toContain('"\\/');
   });
 });

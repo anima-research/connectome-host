@@ -79,8 +79,10 @@
     included, each linked to its row as the turn ends (a backgrounded
     turn's replies as it returns, and marked then if a shed took them out
     meanwhile), never to another resident's row, a reply never to an
-    earlier row in the same words, and the same message sent twice in the
-    order sent, and draws below them an undone row stored since it loaded
+    earlier row in the same words, a message that was never stored (one
+    the framework refused, or one sent during a session switch that
+    failed) to no row, and the same message sent twice in the order sent,
+    and draws below them an undone row stored since it loaded
     the history that it has no line for, past the scrollback cap too, until
     a redo puts it back, but not one whose lines `/clear` or the scrollback
     cap took down, however many lines were drawn before its row was
@@ -123,7 +125,8 @@
   agent names, counts, ids and slots, never content. `window:undone`, an undo
   or a redo on a window, needs `messages`, and so does the new
   `undone-marks` frame, sent at each undo, redo or shed on the conversation
-  agent's window, which names each row of the transcript's record that an
+  agent's window and right after each welcome, which names each row of the
+  transcript's record that an
   undo or a shed took out of that window (status `undone`), from `fromIndex`
   0, as a welcome's and a history page's entries mark them (`undone: true`).
   Building it asks the status only of the rows out of that window that
@@ -131,6 +134,17 @@
   record (in the store the residents share, theirs too), on the host's
   event loop, at each undo, redo or shed. `undo:completed` and
   `redo:completed` are gone, with agent-framework's branch-moving undo.
+- **Web UI protocol 4:** reload an open Web UI page after updating. An undo
+  and a redo no longer move the branch, so a page from an earlier release,
+  which learned of them from the move, would show an undone turn as still
+  in context, and this release's page on an earlier host would show an
+  empty pin picker. Either way the page shows the protocol mismatch banner
+  until it is reloaded from a host of the same release. In a fleet, update
+  the parent and its children together: between releases on either side of
+  this one, observers miss each other's undo and redo frames (a parent of
+  this release scopes no `undo:completed`, an earlier one no
+  `window:undone`, and a frame no scope names goes to full clients only),
+  and the child's panels don't read again.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next

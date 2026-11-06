@@ -27,7 +27,7 @@
  * agents' windows and the requests the provider receives; the refusal cases
  * (a strategy change, a branch move) read the answer and the stored rows.
  */
-import { describe, test, expect, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, setDefaultTimeout, spyOn } from 'bun:test';
 import { audienceOf } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { AutobiographicalStrategy, type StoredMessage, type StrategyContext } from '@animalabs/context-manager';
@@ -129,6 +129,26 @@ describe("an operator's settings notice", () => {
       await h.cleanup();
     }
   });
+
+  // A stopped settings module writes nothing (noteForAgent returns false),
+  // and the notice says it was skipped (#485 bot review 5, finding 21).
+  test('is skipped with a warning, and no row, while the settings module is stopped', async () => {
+    const settings = new SettingsModule();
+    const h = await bootPresentedHost({ agents: ['clerk'], modules: [settings], prefix: 'settings-notice-stopped-' });
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await settings.stop();
+      const app = { framework: h.framework, recipe: DEFAULT_RECIPE } as unknown as PanelAppRef;
+      notifyAgentOfSettingsChange(app, 'clerk', 'update');
+      expect(warn.mock.calls.map((call) => String(call[0]))).toContain(
+        "[settings] notify skipped (change still applied): no started settings module to write clerk's notice through",
+      );
+      expect(h.rowWith('clerk', '[operator] context settings')).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+      await h.cleanup();
+    }
+  });
 });
 
 describe('/newtopic', () => {
@@ -161,17 +181,18 @@ describe('/newtopic', () => {
     }
   });
 
-  // /newtopic <text> stores its text as given, line breaks included, as the
-  // TUI and the Web UI send a multi-line one: the summary a bare /newtopic
-  // gives back there is to be passed as it (#485 bot review 2, finding 17).
-  test('given its text, stores it as given, its line breaks and spacing included', async () => {
+  // /newtopic <text> stores its text as given, but for the white space at
+  // its two ends, line breaks included, as the TUI and the Web UI send a
+  // multi-line one: the summary a bare /newtopic gives back there is to be
+  // passed as it (#485 bot review 2, finding 17; review 5, finding 10).
+  test('given its text, stores it as given but for the white space at its two ends, its line breaks and spacing included', async () => {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     const h = await bootPresentedHost({ agents: ['clerk'], agentConfig: () => ({ strategy }), prefix: 'newtopic-lines-' });
     try {
       await h.turn('clerk');
       const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
       const given = 'Done:\n- the ledger\n\n  Next:  the release.';
-      const outcome = await handleCommand(`/newtopic ${given}`, app).asyncWork!;
+      const outcome = await handleCommand(`/newtopic   ${given}\n\n`, app).asyncWork!;
       expect(outcome.lines[0]!.text).toBe('Topic reset. Transition summary:');
       expect(textOf(h.rowWith('clerk', '[Topic Transition]')!)).toBe(`[Topic Transition]\n\n${given}`);
     } finally {
@@ -393,19 +414,25 @@ describe('a bare /newtopic', () => {
   });
 
   // What the answer says moved is what did: rows that entered the window,
-  // rows that left it, or both (#485 bot review 3, finding 11).
+  // rows that left it, or both (#485 bot review 3, finding 11). A window
+  // that holds what it held at the start had rows leave it and enter it
+  // again, or enter it and leave it, which the two ends don't tell apart
+  // (#485 bot review 5, finding 35).
+  const SAME_ROWS = "rows entered clerk's window and left it, or left it and entered it again";
   for (const [moves, why] of [
-    ['/undo and /redo', "rows left clerk's window and entered it again"],
+    ['/undo and /redo', SAME_ROWS],
+    ['a whole turn and its /undo', SAME_ROWS],
     ['/undo and a whole turn', "rows entered clerk's window and rows left it"],
   ] as const) {
     test(`whose summary ${moves} ran during says what moved the window`, async () => {
-      const { h, app, summarized, releaseSummary } = await bare(`newtopic-bare-${moves === '/undo and /redo' ? 'redo' : 'undo-turn'}-`);
+      const { h, app, summarized, releaseSummary } = await bare(`newtopic-bare-${moves === '/undo and /redo' ? 'redo' : moves === '/undo and a whole turn' ? 'undo-turn' : 'turn-undo'}-`);
       try {
         const result = handleCommand('/newtopic', app);
         expect(summarized).toHaveLength(1);
+        if (moves === 'a whole turn and its /undo') await h.turn('clerk');
         expect(texts(handleCommand('/undo', app))[0]).toStartWith("Undone: clerk's last turn left its window");
         if (moves === '/undo and /redo') expect(texts(handleCommand('/redo', app))[0]).toStartWith("Redone: clerk's undone turn is back in its window");
-        else await h.turn('clerk');
+        else if (moves === '/undo and a whole turn') await h.turn('clerk');
         releaseSummary();
         expect(texts(await result.asyncWork!)).toEqual(refusedWith(why));
         expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
@@ -531,6 +558,9 @@ describe('a bare /newtopic', () => {
         '  Nothing was stored. Run /newtopic again once the turn has ended.',
       ]);
       expect(summarized).toEqual([]);
+      // Nothing was stored, as the refusal says (#485 bot review 5, finding 26).
+      expect(result.asyncWork).toBeUndefined();
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
     } finally {
       fw.pendingContinuationAgents = original;
       await h.cleanup();

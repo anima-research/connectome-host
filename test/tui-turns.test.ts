@@ -328,7 +328,11 @@ describe("the TUI's history after an undo", () => {
     expect(frameAt('redone')).toContain('three ledgers');
     expect(frameAt('redone')).toContain('💭 tally them first');
     expect(frameAt('redone')).not.toContain('(undone)');
+    // Another agent's undo leaves the history's lines drawn, unmarked.
     expect(frameAt('another agent')).not.toContain('(undone)');
+    expect(frameAt('another agent')).toContain('three ledgers');
+    expect(frameAt('another agent')).toContain('a fifth ledger');
+    expect(frameAt('another agent')).toContain('You: and the fifth?');
     // A row whose lines /clear took down isn't drawn again by a later undo
     // or redo while it stays out of the window, marked by an undo before the
     // clear or never marked.
@@ -387,7 +391,9 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(withText).toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
     const toolsOnly = steps.get('tools only')!.frame;
     expect(toolsOnly).not.toContain('(undone) Checking the ledgers');
+    expect(toolsOnly).toContain('Checking the ledgers, then counting.');
     expect(toolsOnly).not.toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
+    expect(toolsOnly).toMatch(/\d\d:\d\d \[tools\] search/);
     expect(times(toolsOnly, '[tools] tally')).toBe(1);
     expect(toolsOnly).toMatch(/\(undone\) \d\d:\d\d \[tools\] tally/);
   }, 40000);
@@ -480,16 +486,76 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(echoes[1]).not.toContain('(undone)');
     expect(undone).toContain('(undone) the first answer');
     expect(undone).not.toContain('(undone) the second answer');
+    expect(times(undone, 'the second answer')).toBe(1);
+  }, 40000);
+
+  // agent-framework traces no branch move, so the TUI reads the store's
+  // branch before it links or marks lines: another client's move is drawn
+  // then, or once a root turn running on it ends (#485 bot review 5,
+  // finding 6).
+  test("another client's branch move is drawn before the next link or mark, and a turn stored on the new branch is marked there", async () => {
+    const steps = await play('undone-moved-elsewhere');
+    const ended = steps.get('turn ended')!.frame;
+    expect(ended).toContain('Branch moved (by another client): side');
+    expect(ended).not.toContain('three ledgers');
+    expect(ended).toContain('── session history (3 messages) ──');
+    expect(times(ended, 'a fifth ledger')).toBe(1);
+    expect(times(ended, 'and the fifth?')).toBe(1);
+    const undone = steps.get('undone')!.frame;
+    expect(times(undone, 'a fifth ledger')).toBe(1);
+    expect(undone).toContain('(undone) a fifth ledger');
+    expect(times(undone, 'and the fifth?')).toBe(1);
+    expect(undone).toMatch(/\(undone\) .*and the fifth\?/);
+    expect(undone).not.toContain('(undone) user: count the ledgers');
+    // During a turn the branch waits for its end: the turn's stream goes on.
+    const during = steps.get('moved during a turn')!.frame;
+    expect(during).toContain('still counting');
+    expect(during).not.toContain('the other reply');
+    const after = steps.get('moved, turn ended')!.frame;
+    expect(after).toContain('Branch moved (by another client): other');
+    expect(after).toContain('(undone) the other reply');
+    expect(times(after, 'still counting')).toBe(1);
+    expect(after).not.toContain('a fifth ledger');
+    const failed = steps.get('moved, turn failed')!.frame;
+    expect(failed).toContain('Branch moved (by another client): third');
+    expect(failed).toContain('[✗ error]');
+  }, 40000);
+
+  // A send that is never stored, one the framework refused or one during a
+  // session switch that failed, is no row's: a later message in the same
+  // words takes its own echo (#485 bot review 5, finding 11).
+  test("the same words sent twice unstored, then once stored: an undo of the stored one marks its own echo", async () => {
+    const undone = await frameOf('undone-unsent', 'undone');
+    const echoes = undone.split('\n').filter((line) => line.includes('You: once more'));
+    expect(echoes).toHaveLength(3);
+    expect(echoes[0]).not.toContain('(undone)');
+    expect(echoes[1]).not.toContain('(undone)');
+    expect(echoes[2]).toContain('(undone)');
   }, 40000);
 
   // A turn that keeps more lines than the scrollback holds before its end
   // links them: the first rounds' rows, whose lines the scrollback took
   // down, aren't drawn again (#485 bot review 4, finding 5).
-  test("a turn of more rounds than the scrollback holds: an undo of its first round draws nothing again, and an undone row with no line is drawn", async () => {
-    const undone = await frameOf('undone-long-turn', 'undone');
+  test("a turn of more rounds than the scrollback holds: an undo of the whole turn marks its last rounds in place, draws the first ones the scrollback took down nothing again, and draws an undone row with no line", async () => {
+    const steps = await play('undone-long-turn');
+    // Round 0 was drawn, so its absence below is the scrollback's doing.
+    const early = steps.get('a few rounds in')!.frame;
+    expect(early).toContain('round 0');
+    expect(early).toContain('round 5');
+    const undone = steps.get('undone')!.frame;
     expect(undone).toContain('(undone) a twelfth ledger');
-    expect(undone).not.toContain('round 0');
-    expect(undone).not.toContain('(undone) [tools]');
+    expect(undone).not.toMatch(/round 0\b/);
+    // The rounds still drawn are marked where they are, each once, and
+    // nothing is drawn between the turn's reply and the row with no line.
+    expect(times(undone, 'round 1000')).toBe(1);
+    expect(undone).toContain('(undone) round 1000');
+    expect(undone).toContain('(undone) all rounds counted');
+    const rounds = undone.split('\n').filter((line) => /round \d+/.test(line));
+    expect(rounds.length).toBeGreaterThan(10);
+    for (const line of rounds) expect(line).toContain('(undone)');
+    for (const line of undone.split('\n').filter((l) => l.includes('[tools] tally'))) expect(line).toContain('(undone)');
+    const between = undone.slice(undone.indexOf('(undone) all rounds counted'), undone.indexOf('(undone) a twelfth ledger'));
+    expect(between).not.toMatch(/round \d+|\[tools\]/);
   }, 90000);
 });
 
@@ -524,12 +590,32 @@ describe("the TUI's branch moves, through runTui", () => {
     expect(ended.indexOf('the side branch reply')).toBeLessThan(ended.indexOf('puppet agent: tally'));
   }, 40000);
 
+  // A /clear while the redraw waits leaves the scrollback clear: the turn's
+  // end takes up the branch without drawing its history (#485 bot review 5,
+  // finding 12).
+  test("a /clear while a move's redraw waits for the turn's end leaves the scrollback clear, and the new branch's rows are read from its end", async () => {
+    const steps = await play('async-branch-turn-clear');
+    const ended = steps.get('turn ended')!.frame;
+    expect(ended).not.toContain('── session history');
+    expect(ended).not.toContain('the side branch reply');
+    expect(ended).not.toContain('Switched to branch side.');
+    // An answer drawn after the /clear stays where it is, drawn once.
+    expect(times(ended, 'result: tally done')).toBe(1);
+    expect(ended).toContain('[✓ idle]');
+    // The cursors are the new branch's: the turn's row, its first words
+    // cleared, isn't drawn again, and a row stored since is drawn, marked.
+    const undone = steps.get('undone')!.frame;
+    expect(undone).toContain('(undone) a side ledger');
+    expect(undone).not.toContain('on the side branch now');
+    expect(undone).not.toContain('── session history');
+  }, 40000);
+
   // An async command leaves the status of a root turn alone, from its
   // start to its answer (#485 bot review 4, finding 8).
   test("an async command started during a backgrounded or held root turn leaves its status as it is", async () => {
     const steps = await play('async-turn-status');
-    expect(steps.get('backgrounded')!.frame).toContain('[↓ background');
-    expect(steps.get('held')!.frame).toContain('[… attempt-failed');
+    for (const at of ['backgrounded, waiting', 'backgrounded']) expect(steps.get(at)!.frame, at).toContain('[↓ background');
+    for (const at of ['held, waiting', 'held']) expect(steps.get(at)!.frame, at).toContain('[… attempt-failed');
   }, 40000);
 
   // agent-framework's switchBranch and rollbackToMessage trace nothing: the

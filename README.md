@@ -973,7 +973,8 @@ answer says why. If a turn of the agent starts, rows enter or leave the
 agent's window (a whole turn, another `/newtopic`'s transition, an undo, a
 redo or a shed), or the session is switched or the host stops, meanwhile, it
 stores nothing. Its answer says which: rows entered the window, left it,
-both, or left it and entered it again (an undo and its redo). It gives the
+both, or entered it and left it, or left it and entered it again, which
+leave it holding what it held. It gives the
 summary it wrote back as a `/newtopic …` to run: in the TUI, the Web UI and
 headless mode as written, line breaks included, and in the readline and
 piped modes, which read each line as its own input, as one line, its line

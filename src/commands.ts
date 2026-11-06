@@ -1476,11 +1476,6 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   if (!target) return { lines: [{ text: `No message with id ${messageId} on current branch.`, style: 'system' }] };
   const newBranchName = `rollback-at-${messageId}-${Date.now()}`;
   const from = app.framework.getStore().currentBranch().name;
-  // The record's rows, for how many follow the rollback's tail: on a
-  // presented window the cut keeps those stored before the write that
-  // presented the target, a co-resident's among them, which the command
-  // agent's counts (rollbackKeptLines) leave out.
-  const ids = messages.map((m) => String(m.id));
   const asyncWork = app.framework.rollbackToMessage(agent.name, {
     messageId: String(messageId),
     requester: HOST_COMMAND,
@@ -1489,8 +1484,12 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   })
     .then((rolled) => {
       const kept = rollbackKeptLines(rolled, agent.name);
-      const tail = ids.indexOf(String(rolled.tailMessageId));
-      const everything = kept.length === 0 && tail >= 0 && rolled.messagesRemoved === ids.length - tail - 1;
+      // Everything after the target went when its tail is the new branch's
+      // last row: on a presented window the cut keeps the rows stored before
+      // the write that presented the target, a co-resident's among them,
+      // which the command agent's counts (rollbackKeptLines) leave out.
+      const last = cm.queryMessages({}).messages.at(-1);
+      const everything = kept.length === 0 && last !== undefined && String(last.id) === String(rolled.tailMessageId);
       const after = everything
         ? `Everything after [${rolled.tailMessageId}] is dropped on this branch`
         : `${rolled.messagesRemoved} message${rolled.messagesRemoved === 1 ? '' : 's'} after [${rolled.tailMessageId}] ${rolled.messagesRemoved === 1 ? 'is' : 'are'} dropped on this branch`;
@@ -1560,9 +1559,9 @@ function handleNewTopic(app: AppContext, text: string, input: CommandInput): Com
     };
   }
 
-  // The text as given, its line breaks included, as the TUI and the Web UI
-  // send a multi-line one: the summary a bare /newtopic gives back there is
-  // to be passed as it.
+  // The text as given, but for the white space at its two ends, its line
+  // breaks included, as the TUI and the Web UI send a multi-line one: the
+  // summary a bare /newtopic gives back there is to be passed as it.
   const userContext = text.trim() || undefined;
   const metadata = asOwnRow(undefined, agent.name);
   const reset = userContext !== undefined
@@ -1575,12 +1574,12 @@ function handleNewTopic(app: AppContext, text: string, input: CommandInput): Com
     ],
   })).catch(err => {
     const said = err instanceof Error ? err.message : String(err);
-    return {
-      lines: [{
-        text: app.stopping ? `Topic reset stopped: the host is stopping. What the reset said: ${said}` : `Topic reset failed: ${said}`,
-        style: 'system' as const,
-      }],
-    };
+    // A bare /newtopic's refusal for the stop (bareTransition) names it
+    // already.
+    const text = !app.stopping ? `Topic reset failed: ${said}`
+      : said.startsWith('the host is stopping') ? `Topic reset stopped: ${said}`
+      : `Topic reset stopped: the host is stopping. What the reset said: ${said}`;
+    return { lines: [{ text, style: 'system' as const }] };
   });
 
   return {
@@ -1652,11 +1651,14 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
     : !idleWithNoTurn(framework, agentName) ? `a turn of ${agentName}'s started`
     : windowMoved(cm, window, agentName);
   if (moved !== undefined) {
+    // A summary given back as the host stops is printed where the operator
+    // can store it once the host is started again.
+    const when = app.stopping ? ' after the restart' : '';
     throw new Error(
       `${moved} while the transition summary was written; nothing was stored. ` +
         (input.lineByLine
-          ? `To store it, run this one-line command:\n/newtopic ${oneLine(summary)}`
-          : `To store it, run /newtopic with it as the text:\n${summary}`),
+          ? `To store it${when}, run this one-line command:\n/newtopic ${oneLine(summary)}`
+          : `To store it${when}, run /newtopic with it as the text:\n${summary}`),
     );
   }
   return storeTransition(cm, summary, metadata);
@@ -1684,9 +1686,10 @@ function windowMark(cm: ContextManager): { at: string; ids: Set<string> } {
 }
 
 /** What moved the agent's window since `before` (windowMark), if anything:
- *  rows that entered it, rows that left it, both, or rows that left it and
- *  entered it again (an undo and its redo), which leave it holding what it
- *  held. */
+ *  rows that entered it, rows that left it, both, or, when it holds what it
+ *  held, rows that entered it and left it (a turn and its undo) or left it
+ *  and entered it again (an undo and its redo), which its two ends don't
+ *  tell apart. */
 function windowMoved(cm: ContextManager, before: { at: string; ids: Set<string> }, agentName: string): string | undefined {
   const now = windowMark(cm);
   if (now.at === before.at) return undefined;
@@ -1696,7 +1699,7 @@ function windowMoved(cm: ContextManager, before: { at: string; ids: Set<string> 
   return entered && left ? `rows entered ${window} and rows left it`
     : entered ? `rows entered ${window}`
     : left ? `rows left ${window}`
-    : `rows left ${window} and entered it again`;
+    : `rows entered ${window} and left it, or left it and entered it again`;
 }
 
 /**

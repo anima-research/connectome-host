@@ -33,6 +33,7 @@ import {
 import { WEB_PROTOCOL_VERSION, type WebUiServerMessage, type WelcomeMessage, type WelcomeMessageEntry } from '../src/web/protocol.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 import { BASIC, helloFor, makeKeypair } from './web-ui-observed-host.js';
+import { blankLiterals } from './blank-literals.js';
 
 describe('ObserverRegistry.verifyHello', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'observers-unit-'));
@@ -553,7 +554,9 @@ const TRANSPILER = new Bun.Transpiler({ loader: 'ts' });
 
 /** The traces raised at each emitTrace call (emitTrace, emitTraceFn,
  *  hooks.emitTrace, an optional call among them) in `source`, read as Bun
- *  transpiles it, so a call in a comment isn't read: the `type` of each
+ *  transpiles it, so a call in a comment isn't read, and found where the
+ *  code isn't a literal's text, so a call's shape in a string or a template
+ *  isn't either: the `type` of each
  *  object literal the call is given, whichever of its keys it is and
  *  however it is quoted, and of each object a conditional gives it
  *  (`ok ? { type: 'a' } : { type: 'b' }`). An object inside another, or
@@ -562,7 +565,9 @@ const TRANSPILER = new Bun.Transpiler({ loader: 'ts' });
 function emittedTypes(source: string): string[] {
   const code = TRANSPILER.transformSync(source);
   const types: string[] = [];
-  for (const call of code.matchAll(/\bemitTrace(?:Fn)?(?:\?\.)?\(/g)) {
+  // The literals' text is blanked where the calls are looked for, each
+  // character kept in place, and read from the code as it is.
+  for (const call of blankLiterals(code).matchAll(/\bemitTrace(?:Fn)?(?:\?\.)?\(/g)) {
     // The call's argument, read to its closing parenthesis: `view` holds the
     // top level of each object it's given, all else a space.
     const opened: string[] = [];
@@ -783,6 +788,8 @@ describe('scope filters', () => {
       "this.hooks.emitTrace?.({ type: 'gate:optional-call' });",
       "emitTrace({ type: 'gate:outer', detail: { type: 'nested:inner' } });",
       "emitTrace({ note: \"type: 'in:a-string'\", type: 'gate:after-a-string' });",
+      // Review wave 5, finding 29: a call's shape in a string or a template.
+      "console.log(\"emitTrace({ type: 'example:in-a-string' })\", `emitTrace({ type: 'example:in-a-template' })`);",
       "// this.emitTrace({ type: 'example:in-a-line-comment' });",
       "/* emitTrace({ type: 'example:in-a-block-comment' }) */",
       'return event;',

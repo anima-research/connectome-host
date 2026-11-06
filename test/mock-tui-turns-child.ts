@@ -58,6 +58,7 @@ const contextManager = () => (scenario.startsWith('undone')
   : scenario.startsWith('async-branch')
     ? {
         ...recordOf(history),
+        windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in'),
         listBranches: () => [{ id: 'b-main', name: 'main', head: 2 }, { id: 'b-side', name: 'side', head: 2 }],
         currentBranch: () => ({ id: `b-${storeBranch}`, name: storeBranch, head: 2 }),
       }
@@ -94,7 +95,10 @@ function fakeFramework(name: string) {
       this.send('inference:aborted', { agentName, reason });
       return true;
     },
-    pushEvent: () => {},
+    pushEvent: () => {
+      // agent-framework's queue throws once it is closed (a stop's).
+      if (refusePush) throw new Error('Queue is closed');
+    },
     stop: async () => {},
     getStore: () => ({ currentBranch: () => ({ name: storeBranch }) }),
     async switchBranch(branch: string) {
@@ -102,13 +106,30 @@ function fakeFramework(name: string) {
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
       if (scenario.startsWith('async-branch-turn')) await new Promise<void>((resolve) => { releaseMove = resolve; });
     },
-    // /puppet's call: an async command that moves no branch.
+    // /puppet's call: an async command that moves no branch, held while a
+    // scenario has set puppetGate.
     async puppetToolCall(_agentName: string, toolName: string) {
+      puppetCalls++;
+      await puppetGate;
       return { toolUseId: 'tu-1', result: { isError: false, data: `${toolName} done` } };
     },
   };
 }
 
+/** /puppet's calls so far, and while set, what each awaits before it answers. */
+let puppetCalls = 0;
+let puppetGate: Promise<void> | undefined;
+/** Start a /puppet whose answer waits until the returned function is called, once its call has started. */
+async function heldPuppet(text: string): Promise<() => void> {
+  let open!: () => void;
+  puppetGate = new Promise<void>((resolve) => { open = resolve; });
+  const before = puppetCalls;
+  await command(text);
+  await until(() => puppetCalls > before, 'the command to start');
+  return () => { puppetGate = undefined; open(); };
+}
+/** While set, the framework refuses a send, as its closed queue does. */
+let refusePush = false;
 /** In `async-branch-turn`, lets the moved store's answer go. */
 let releaseMove: (() => void) | undefined;
 /** The workspace module in `async-branch`: each mount refresh the TUI starts. */
@@ -724,6 +745,34 @@ async function play(): Promise<void> {
     first.send('inference:completed');
     await until(async () => (await frame()).includes('the side branch reply'), 'the branch drawn');
     await step('turn ended');
+  } else if (scenario === 'async-branch-turn-clear') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A /clear while the move's redraw waits for the turn's end
+    // (#485 bot review 5, finding 12).
+    await command('/checkout side');
+    await until(() => releaseMove !== undefined, 'the move');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'on the side ', blockType: 'text' });
+    releaseMove!();
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    await command('/clear');
+    await until(async () => !(await frame()).includes('Switched to branch side.'), 'the display to clear');
+    // A command's answer drawn after the /clear, before the turn ends.
+    await command('/puppet tally {}');
+    await until(async () => (await frame()).includes('tally done'), "the command's answer");
+    first.send('inference:tokens', { content: 'branch now', blockType: 'text' });
+    history.push({ id: 's2', participant: 'agent', content: [{ type: 'text', text: 'on the side branch now' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('[✓ idle]'), 'the turn to end');
+    await step('turn ended');
+    // An undo of the turn's row, whose first words /clear took down, and of
+    // a row stored since that the TUI drew no line for.
+    history.push({ id: 's3', participant: 'agent', content: [{ type: 'text', text: 'a side ledger' }] });
+    undoneRows.add('s2');
+    undoneRows.add('s3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a side ledger'), 'the mark');
+    await step('undone');
   } else if (scenario === 'async-turn-status') {
     // An async command started while a root turn is backgrounded, and one
     // started while its attempt failed and the framework holds it: neither
@@ -734,12 +783,18 @@ async function play(): Promise<void> {
     await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await until(async () => (await frame()).includes('[↓ background'), 'the background status');
-    await command('/puppet tally {}');
+    // Each command's answer waits, so the status is read between its start
+    // and its answer too (#485 bot review 5, finding 24).
+    let answer = await heldPuppet('/puppet tally {}');
+    await step('backgrounded, waiting');
+    answer();
     await until(async () => (await frame()).includes('tally done'), 'the answer');
     await step('backgrounded');
     first.send('inference:failed', { error: 'the provider is overloaded' });
     await until(async () => (await frame()).includes('[… attempt-failed'), 'the held status');
-    await command('/puppet weigh {}');
+    answer = await heldPuppet('/puppet weigh {}');
+    await step('held, waiting');
+    answer();
     await until(async () => (await frame()).includes('weigh done'), 'the answer');
     await step('held');
   } else if (scenario === 'undone-background-shed') {
@@ -822,6 +877,71 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 2 });
     await until(async () => (await frame()).includes('(undone) the first answer'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-unsent') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Two sends in the same words that are never stored: one the framework
+    // refuses, its queue closed, and one during a session switch that then
+    // fails. Then the same words sent again, stored, and its row undone
+    // (#485 bot review 5, finding 11).
+    refusePush = true;
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 1, 'the refused message to show');
+    refusePush = false;
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 2, 'the message during the switch to show');
+    endSwitch('failed');
+    await until(async () => (await frame()).includes('Session switch failed'), 'the switch to fail');
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 3, 'the stored message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'once more' }] });
+    undoneRows.add('u2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-moved-elsewhere') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Another client moves the store to a shorter branch, which
+    // agent-framework traces nothing of (#485 bot review 5, finding 6).
+    storeBranch = 'side';
+    history.splice(1, history.length);
+    // A turn of this session's on it: the operator's message and the
+    // reply, stored by the turn's end.
+    await command('and the fifth?');
+    await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'and the fifth?' }] });
+    await replied('a2', 'a fifth ledger');
+    await step('turn ended');
+    undoneRows.add('u2');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a fifth ledger'), 'the mark');
+    await step('undone');
+    // Another move while a root turn runs, and an undo then: the branch is
+    // drawn once the turn ends.
+    undoneRows.clear();
+    storeBranch = 'other';
+    history.splice(1, history.length, { id: 'o1', participant: 'agent', content: [{ type: 'text', text: 'the other reply' }] });
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'still counting', blockType: 'text' });
+    await until(async () => (await frame()).includes('still counting'), 'the stream');
+    undoneRows.add('o1');
+    first.send('window:undone', { retracted: 1 });
+    await step('moved during a turn');
+    history.push({ id: 'o2', participant: 'agent', content: [{ type: 'text', text: 'still counting' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the other reply'), 'the branch drawn');
+    await step('moved, turn ended');
+    // A move found at the end of a turn that failed: the branch is drawn,
+    // and the turn's status stays.
+    storeBranch = 'third';
+    history.splice(1, history.length, { id: 't1', participant: 'agent', content: [{ type: 'text', text: 'the third reply' }] });
+    first.send('inference:started');
+    first.send('inference:failed', { error: 'gave up' });
+    first.send('inference:exhausted', { error: 'gave up' });
+    await until(async () => (await frame()).includes('the third reply'), 'the branch drawn');
+    await step('moved, turn failed');
   } else if (scenario === 'undone-long-turn') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // One turn of more rounds than the scrollback holds lines: each round's
@@ -836,17 +956,22 @@ async function play(): Promise<void> {
         content: [{ type: 'text', text: `round ${i}` }, { type: 'tool_use', id: `t${i}`, name: 'tally', input: {} }],
       });
       first.send('inference:stream_resumed');
+      // The first rounds are drawn before the scrollback takes them down
+      // (#485 bot review 5, finding 23).
+      if (i === 5) await step('a few rounds in');
     }
     first.send('inference:tokens', { content: 'all rounds counted', blockType: 'text' });
     history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'all rounds counted' }] });
     first.send('inference:completed');
     await until(async () => (await frame()).includes('all rounds counted'), 'the reply');
-    // An undo of the first round, whose lines the scrollback took down, with
-    // a row stored since that the TUI drew no line for.
+    // An undo of the whole turn, as a real one takes it: every round,
+    // the first ones' lines taken down by the scrollback, and the reply,
+    // with a row stored since that the TUI drew no line for.
     history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a twelfth ledger' }] });
-    undoneRows.add('r0');
+    for (let i = 0; i <= 1000; i++) undoneRows.add(`r${i}`);
+    undoneRows.add('a2');
     undoneRows.add('a3');
-    first.send('window:undone', { retracted: 2 });
+    first.send('window:undone', { retracted: 1003 });
     await until(async () => (await frame()).includes('(undone) a twelfth ledger'), 'the mark');
     await step('undone');
   } else if (scenario === 'undone') {

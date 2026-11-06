@@ -1,6 +1,8 @@
 /**
  * A subagent run that ends on a tool call, with no speech, answers with the
- * newest assistant text its record holds (extractLastAssistantText). A text
+ * newest text its window holds that isn't the user's or a stored
+ * injection's (extractLastAssistantText): any other participant's, a message
+ * presented from another agent included, as main's filter took. A text
  * turn an undo or a shed took out of the subagent's window (agent-framework
  * #291: windowStatusOf 'undone') stays in the record, but the subagent was
  * not shown it again, so it is not the run's answer; nor is a stored row the

@@ -1,7 +1,7 @@
 /**
  * WebUI wire protocol — JSON-over-WebSocket envelope for the web admin client.
  *
- * Versioning: v3. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
+ * Versioning: v4. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
  * mismatch the Web UI page shows a banner saying what to do and keeps the
  * welcome, session and messages it had: `applyWelcome` returns before taking
  * any of them. The welcome's other readers still read it, among them the
@@ -32,13 +32,22 @@
  * after a command, reaches them before their next welcome. The new framework's
  * traces and stored messages don't, since the server follows a framework's
  * events only once it has started.
+ *
+ * v4: an undo and a redo leave the branch alone (agent-framework #291). The
+ * page learns of them from the `window:undone` trace and the `undone-marks`
+ * frame, and transcript entries carry `undone`, where a v3 host moved the
+ * branch and sent `branch-changed` and a fresh welcome. The local
+ * `pins-list` carries `candidates`, which the pin picker lists, where a v3
+ * page listed the transcript's loaded rows. A v3 page on a v4 host would show
+ * an undone turn as still in context, and a v4 page on a v3 host an empty
+ * picker, so each shows the mismatch banner instead.
  */
 
 import type { Line } from '../output-line.js';
 import type { AgentPhaseState } from '../state/agent-phases.js';
 import type { AgentPhase } from '../state/agent-tree-reducer.js';
 
-export const WEB_PROTOCOL_VERSION = 3;
+export const WEB_PROTOCOL_VERSION = 4;
 
 /** What an observer needs to be sent the agent trees, and so what a page
  *  needs to build and show them: every scope but 'debug'. A tree's nodes
@@ -361,12 +370,15 @@ export interface BranchChangedMessage {
 
 /** After an undo or a redo on the conversation agent's window
  *  (agent-framework #291, the `window:undone` trace), or a shed from it
- *  (`presentation:retracted`, reason `shed`): which of the transcript's
- *  rows from `fromIndex` on are out of that window as undone
- *  (`WelcomeMessageEntry.undone`), by store id. A row from there that isn't
- *  named isn't undone. This host sends `fromIndex` 0, every row of the
- *  record, so a page marks each row it holds, however far back its history
- *  reaches. A row before `fromIndex` would keep its mark. */
+ *  (`presentation:retracted`, reason `shed`), and right after each welcome:
+ *  which of the transcript's rows from `fromIndex` on are out of that window
+ *  as undone (`WelcomeMessageEntry.undone`), by store id. A row from there
+ *  that isn't named isn't undone. This host sends `fromIndex` 0, every row
+ *  of the record, so a page marks each row it holds, however far back its
+ *  history reaches, the rows older than a welcome's tail that the page keeps
+ *  across a reconnect included. A row before `fromIndex` would keep its
+ *  mark. The one after a welcome moved no window, so the page reads its
+ *  panels again at neither. */
 export interface UndoneMarksMessage {
   type: 'undone-marks';
   agent: string;
@@ -569,7 +581,10 @@ export interface PinsListMessage {
   /** Recent pinnable messages (REAL store ids) from the scoped process, the
    *  local one's as well as a fleet child's: the record's last 200 rows,
    *  less a row out of the agent's window as undone and a row whose audience
-   *  stamp leaves the agent out (another resident's on a shared store). */
+   *  stamp leaves the agent out (another resident's on a shared store), or,
+   *  on a legacy window, which reads no stamp, the rows the resident's view
+   *  leaves out instead (held traffic, suppressed rows, another agent's
+   *  stored injections). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
   /** Why the candidates couldn't be read; `candidates` is then absent. */
   candidatesError?: string;

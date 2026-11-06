@@ -28,8 +28,10 @@
     another `/newtopic`'s transition: the answer says `rows entered
     <agent>'s window`), rows leaving it (an undo or a shed: `rows left
     <agent>'s window`), both (`rows entered <agent>'s window and rows left
-    it`), an undo and its redo (`rows left <agent>'s window and entered it
-    again`), a session switch or the host's stop meanwhile
+    it`), rows that come and go and leave the window holding what it held,
+    as a turn and its undo or an undo and its redo do (`rows entered
+    <agent>'s window and left it, or left it and entered it again`), a
+    session switch or the host's stop meanwhile
     stores nothing either, and the answer gives the written summary back
     to run as `/newtopic <text>`: as written in the TUI, the Web UI and the
     headless mode, which send a multi-line command whole, and in the
@@ -39,8 +41,10 @@
     and sent the rest to the agent. One given back as the TUI stops
     is printed to the terminal the TUI leaves, if it comes before the host
     exits, as any command's answer that comes then now is: the TUI dropped
-    it, its scrollback gone. `/newtopic <text>` stores the
-    text as given, its line breaks included (a multi-line one needs the TUI
+    it, its scrollback gone. That answer names the stop once and says to
+    store the summary after the restart. `/newtopic <text>` stores its
+    text as given, but for the white space at its two ends, its line breaks
+    included (a multi-line one needs the TUI
     or the Web UI, which send a pasted text whole), where it joined its
     words with single spaces.
   - tts-relay's note that a voiced reply was interrupted is written for the
@@ -70,6 +74,8 @@
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.
 - A subagent run that ends on a tool call, with no speech, answers with the
-  newest text its window holds: a text row an undo or a shed took out of
+  newest text its window holds that isn't the user's or a stored
+  injection's (and `(no text output)` when there is none): a text row an
+  undo or a shed took out of
   it, or one stored and never shown to it (another agent's mail held out of
   it past the run's end), was the answer.

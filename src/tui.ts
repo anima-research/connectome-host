@@ -397,6 +397,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  root turn ran, the move's first: the branch is drawn once the turn
    *  ends, with these below it. */
   let redrawAfterTurn: Array<{ text: string; color: string }> | undefined;
+  /** A /clear came since the last move's answer while the redraw waited:
+   *  the turn's end takes up the branch the store is on, its rows read from
+   *  its end, and draws no line, so the scrollback stays clear. */
+  let redrawQuietly = false;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -798,8 +802,18 @@ export async function runTui(app: AppContext): Promise<void> {
    *  the scrollback has taken down by then, with no line (`parts` empty): a
    *  row that takes one isn't drawn again. A reply's go at its turn's end,
    *  by when its rows are stored; an operator's message's once its row
-   *  takes it. */
+   *  takes it, and the oldest past SCROLLBACK_CAP of them, each by then
+   *  more than twice that many lines old. */
   let evictedLines: StreamedLine[] = [];
+  /** The operator's messages sent while a session switch runs, undefined
+   *  while none runs: one that fails leaves them unstored, and the old
+   *  session's history isn't drawn again, so their entries go then. */
+  let sentDuringSwitch: StreamedLine[] | undefined;
+  /** The store's branch whose history loadSessionHistory drew. */
+  let drawnBranch: string | undefined;
+  /** Async commands whose answer hasn't come: one of them can have moved
+   *  the store already, and its answer draws the branch. */
+  let commandsAnswering = 0;
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
@@ -818,8 +832,22 @@ export async function runTui(app: AppContext): Promise<void> {
     streamedLines.push(kept);
     if (streamedLines.length > SCROLLBACK_CAP) {
       for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) evictedLines.push({ kind: gone.kind, said: gone.said, parts: [] });
+      // A reply's entries go at its turn's end; an operator's message's
+      // wait for its row, so they are bounded here.
+      if (evictedLines.length > SCROLLBACK_CAP) {
+        let over = evictedLines.filter((l) => l.kind === 'you').length - SCROLLBACK_CAP;
+        if (over > 0) evictedLines = evictedLines.filter((l) => l.kind !== 'you' || over-- <= 0);
+      }
     }
     return kept;
+  }
+
+  /** Let go of entries no row will take: the operator's messages that were
+   *  never stored. */
+  function dropEntries(gone: StreamedLine[]): void {
+    if (gone.length === 0) return;
+    const dropped = new Set(gone);
+    streamedLines = streamedLines.filter((l) => !dropped.has(l));
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -866,7 +894,10 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
-  function loadSessionHistory() {
+  /** Draw the root agent's history, from where the record starts, and read
+   *  its rows from the record's end from here on. With `draw` false it
+   *  draws nothing and only takes up the record (redrawQuietly). */
+  function loadSessionHistory(draw = true) {
     recordLines = [];
     historyRead = 0;
     linkedThrough = 0;
@@ -875,6 +906,7 @@ export async function runTui(app: AppContext): Promise<void> {
     streamedLines = [];
     evictedLines = [];
     clearedRows = new Set();
+    drawnBranch = storeBranchName();
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -882,7 +914,7 @@ export async function runTui(app: AppContext): Promise<void> {
     historyRead = all.length;
     linkedThrough = all.length;
     sentLinkedThrough = all.length;
-    if (all.length === 0) return;
+    if (all.length === 0 || !draw) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
     // The history is the record. A row an undo took out of the agent's
     // window (agent-framework #291) is still in it: drawn dim and marked,
@@ -896,6 +928,36 @@ export async function runTui(app: AppContext): Promise<void> {
     for (const msg of messages) drawRow(msg, undone(msg.id), false);
 
     addLine(`── end history ──`, DIM_GRAY);
+  }
+
+  function storeBranchName(): string | undefined {
+    try {
+      return app.framework.getStore().currentBranch().name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Whether the store is on another branch than the one drawn, moved by
+   *  another client (a Web UI /checkout, /restore or /branchto), which
+   *  agent-framework traces nothing of: the history's cursors are the drawn
+   *  branch's, so the branch is drawn now, or once a root turn running on
+   *  it ends (redrawAfterTurn), and the caller leaves the drawn lines
+   *  alone. A move of this TUI's own is drawn by its command's answer, and
+   *  a session switch's by its end. */
+  function branchMovedElsewhere(): boolean {
+    const branch = storeBranchName();
+    if (branch === undefined || drawnBranch === undefined || branch === drawnBranch) return false;
+    if (redrawAfterTurn) return true;
+    if (commandsAnswering > 0 || sentDuringSwitch) return false;
+    const line = { text: `${hhmm()} Branch moved (by another client): ${branch}`, color: CYAN };
+    if (rootTurnShowing || streaming) {
+      redrawAfterTurn = [line];
+      return true;
+    }
+    refreshFromStore({ mount: false });
+    addLine(line.text, line.color);
+    return true;
   }
 
   /** The streamed lines of a row stored after the history was drawn, each
@@ -948,7 +1010,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  entry the scrollback cap let go links its row as one whose line it
    *  took down. The operator's messages are read oldest first, as their
    *  echoes are, so the same words sent twice are linked in order though a
-   *  turn ends between their stores. The replies are read newest first, as
+   *  turn ends between their stores; an echo whose message is never stored
+   *  (one the framework refused, or one sent during a session switch that
+   *  failed) is let go first (dropEntries), so no later row takes it. The
+   *  replies are read newest first, as
    *  their lines are, so a line no row took (an attempt that failed, say)
    *  isn't taken for a later row in the same words. While a turn is
    *  backgrounded its replies wait: their lines are drawn when it returns.
@@ -956,6 +1021,7 @@ export async function runTui(app: AppContext): Promise<void> {
    *  the residents share) is no line's: the TUI streams the root agent's
    *  turns. */
   function linkStreamedLines(): void {
+    if (branchMovedElsewhere()) return;
     const cm = app.framework.getAgent(rootAgentName)?.getContextManager();
     if (!cm) return;
     const total = cm.getMessageCount();
@@ -1003,6 +1069,7 @@ export async function runTui(app: AppContext): Promise<void> {
    *  linked yet waits for the turn's return to draw its lines, and is
    *  marked then (remarkAfterBackground). */
   function remarkHistory() {
+    if (branchMovedElsewhere()) return;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -1042,9 +1109,13 @@ export async function runTui(app: AppContext): Promise<void> {
    *  rollbackToMessage (/restore to a message, /branchto) as it lets the
    *  store go, without awaiting the write, a failure only in agent-
    *  framework's log. A rollback that failed and left the store on the new
-   *  branch has it written by neither, and its answer says so. */
-  function refreshFromStore(opts: { mount?: boolean } = {}) {
+   *  branch has it written by neither, and its answer says so. `draw:
+   *  false` takes up the branch and draws nothing, leaving the scrollback's
+   *  lines as they are (redrawQuietly). */
+  function refreshFromStore(opts: { mount?: boolean; draw?: boolean } = {}) {
+    const draw = opts.draw !== false;
     redrawAfterTurn = undefined;
+    redrawQuietly = false;
     // Reset streaming state BEFORE destroying renderables so nothing can
     // touch a freed native buffer through currentStreamText.
     streaming = false;
@@ -1055,16 +1126,18 @@ export async function runTui(app: AppContext): Promise<void> {
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
 
-    const children = [...scrollBox.getChildren()];
-    for (const child of children) {
-      scrollBox.remove(child.id);
-      child.destroy();
+    if (draw) {
+      const children = [...scrollBox.getChildren()];
+      for (const child of children) {
+        scrollBox.remove(child.id);
+        child.destroy();
+      }
+      messageCounter = 0;
     }
-    messageCounter = 0;
     state.status = 'idle';
     state.tool = null;
 
-    loadSessionHistory();
+    loadSessionHistory(draw);
 
     if (subMod) {
       subMod.restoreFromStore();
@@ -1893,11 +1966,13 @@ export async function runTui(app: AppContext): Promise<void> {
     if (redrawAfterTurn && end.status !== 'attempt-failed') {
       // A branch move's follow-up came while this turn ran on the branch:
       // the branch is drawn now, and the move's answer again below it, with
-      // each command answer drawn since.
+      // each command answer drawn since. After a /clear meanwhile, the
+      // branch is taken up and nothing drawn.
       const answered = redrawAfterTurn;
-      refreshFromStore({ mount: false });
+      const quietly = redrawQuietly;
+      refreshFromStore({ mount: false, draw: !quietly });
       state.status = end.status;
-      for (const l of answered) addLine(l.text, l.color);
+      if (!quietly) for (const l of answered) addLine(l.text, l.color);
     }
     if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
     updateStatus();
@@ -2701,7 +2776,12 @@ export async function runTui(app: AppContext): Promise<void> {
           scrollBox.remove(child.id);
           child.destroy();
         }
-        if (redrawAfterTurn) redrawAfterTurn = [];
+        // A redraw waiting for a root turn's end draws nothing then: the
+        // branch is taken up, and the scrollback stays clear.
+        if (redrawAfterTurn) {
+          redrawAfterTurn = [];
+          redrawQuietly = true;
+        }
       } else {
         for (const l of result.lines) addAnswerLine(l.text, GRAY);
       }
@@ -2715,7 +2795,8 @@ export async function runTui(app: AppContext): Promise<void> {
         // as it is too.
         if (!(rootTurnShowing || streaming)) state.status = 'thinking';
         updateStatus();
-        result.asyncWork.then(asyncResult => {
+        commandsAnswering++;
+        result.asyncWork.finally(() => { commandsAnswering--; }).then(asyncResult => {
           // An answer that comes once the TUI has stopped, a bare
           // /newtopic's summary given back say, goes to the terminal: the
           // renderer is gone, and with it the scrollback.
@@ -2731,8 +2812,12 @@ export async function runTui(app: AppContext): Promise<void> {
           // changed is what has the TUI draw the branch the store is on, once
           // a turn that started on it since has ended (showRootTurnEnd).
           // The framework writes the `_config` mount for the move.
-          if (asyncResult.branchChanged && turnRunning) redrawAfterTurn ??= [];
-          else if (asyncResult.branchChanged) refreshFromStore({ mount: false });
+          if (asyncResult.branchChanged && turnRunning) {
+            redrawAfterTurn ??= [];
+            redrawQuietly = false;
+          } else if (asyncResult.branchChanged) {
+            refreshFromStore({ mount: false });
+          }
           for (const l of asyncResult.lines) addAnswerLine(l.text, GRAY);
           if (!turnRunning) state.status = 'idle';
           updateStatus();
@@ -2750,6 +2835,7 @@ export async function runTui(app: AppContext): Promise<void> {
       if (result.switchToSessionId) {
         state.status = 'switching';
         updateStatus();
+        sentDuringSwitch = [];
         interrupts.reset();
         rootTurnShowing = false;
         turnFailures = createTurnFailures();
@@ -2770,6 +2856,7 @@ export async function runTui(app: AppContext): Promise<void> {
           subscribeFleetOps();
           resetObservabilityState();
         }, () => app.framework).then(() => {
+          sentDuringSwitch = undefined;
           if (stopping) return;
           const session = app.sessionManager.getActiveSession();
           refreshFromStore();
@@ -2780,6 +2867,11 @@ export async function runTui(app: AppContext): Promise<void> {
           opsAlerts.clear();
           updateStatus();
         }).catch(err => {
+          // The messages sent while it ran went to the framework it stopped,
+          // or one it never started: none is stored, and the history isn't
+          // drawn again, so their entries go here.
+          if (sentDuringSwitch) dropEntries(sentDuringSwitch);
+          sentDuringSwitch = undefined;
           addLine(`Session switch failed: ${err}`, RED);
           state.status = 'error';
           updateStatus();
@@ -2820,15 +2912,24 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       const shown = `${hhmm()} You: ${raw}`;
       const echo = addLine(shown, GREEN);
-      if (echo) keepLine(echo, 'you', text, shown, GREEN);
+      const sent = echo ? keepLine(echo, 'you', text, shown, GREEN) : undefined;
+      if (sent) sentDuringSwitch?.push(sent);
       const agent = app.framework.getAgent(rootAgentName);
       const agentBusy = agent && (agent.state.status === 'streaming' || agent.state.status === 'inferring' || agent.state.status === 'waiting_for_tools');
       state.status = agentBusy ? 'queued' : 'thinking';
       updateStatus();
-      app.framework.pushEvent({
-        type: 'external-message', source: 'tui',
-        content: text, metadata: {}, triggerInference: true,
-      });
+      try {
+        app.framework.pushEvent({
+          type: 'external-message', source: 'tui',
+          content: text, metadata: {}, triggerInference: true,
+        });
+      } catch (err) {
+        // A send the framework refused (its queue closed by a stop) is never
+        // stored: its echo is no row's, so a later message in the same words
+        // takes its own.
+        if (sent) dropEntries([sent]);
+        throw err;
+      }
     }
   }
 

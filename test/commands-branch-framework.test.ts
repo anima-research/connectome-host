@@ -368,6 +368,41 @@ describe('/branchto on a presented window', () => {
     }
   });
 
+  // The answer's check compared messagesRemoved with a snapshot of the
+  // record taken before rollbackToMessage was called, so a row stored
+  // between the two and cut made up for a co-resident's row that stays
+  // (#485 bot review 5, finding 16). agent-framework plans the rollback
+  // before its first await, so no row comes between them today; a rollback
+  // that plans after one stands in for it here. The check reads the new
+  // branch instead.
+  test("doesn't say everything after the target was dropped when a row stored before the rollback's plan is cut and a co-resident's row stays", async () => {
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], prefix: 'cmd-branchto-late-row-' });
+    try {
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const t = arrival(h, 'T');
+      const m = cm.addMessage('someone', [{ type: 'text', text: 'M' } as ContentBlock], withAudience(undefined, ['mira']));
+      cm.presentRows([t]);
+      cm.presentRows([arrival(h, 'Z')]);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      const fw = h.framework as unknown as { rollbackToMessage: (...args: unknown[]) => Promise<unknown> };
+      const plan = fw.rollbackToMessage.bind(h.framework);
+      fw.rollbackToMessage = async (...args: unknown[]) => {
+        await Promise.resolve();
+        return plan(...args);
+      };
+
+      const result = handleCommand(`/branchto ${t}`, app as never);
+      // Stored and shown once the command has read the record, before the plan.
+      cm.presentRows([arrival(h, 'Y')]);
+      const said = (await result.asyncWork!).lines.map((l) => l.text);
+      expect(said[0]).toContain(`2 messages after [${t}] are dropped on this branch; old branch preserved.`);
+      expect(said[0]).not.toContain('Everything after');
+      expect(cm.getAllMessages().map((r) => r.id)).toEqual([t, m]);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test('says everything after the target was dropped when the cut took every row stored after it', async () => {
     const h = await bootPresentedHost({ agents: ['clerk', 'mira'], prefix: 'cmd-branchto-everything-' });
     try {

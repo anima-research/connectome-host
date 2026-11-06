@@ -708,7 +708,7 @@ describe('the store audit', () => {
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
     expect(failed).toEqual([expect.stringMatching(new RegExp(
-      `^Couldn't audit ${dir}: its saved recipe, ${join(dir, '.recipe.json')}, can't be loaded: Recipe tuneOut.enabled was removed`,
+      `^Couldn't audit ${literally(dir)}: its saved recipe, ${literally(join(dir, '.recipe.json'))}, can't be loaded: Recipe tuneOut\\.enabled was removed`,
     ))]);
   });
 
@@ -724,7 +724,26 @@ describe('the store audit', () => {
       const { status, failed } = await audit([dir], { recipe: 'agent' });
       expect(status).toBe(1);
       expect(failed).toEqual([expect.stringMatching(new RegExp(
-        `^Couldn't audit ${dir}: its recipe, agent, can't be loaded: Recipe tuneOut.enabled was removed in agent-framework`,
+        `^Couldn't audit ${literally(dir)}: its recipe, agent, can't be loaded: Recipe tuneOut\\.enabled was removed in agent-framework`,
+      ))]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  // A bare relative path, with no directory and no extension, can be one of
+  // the refusal's own words, as `Recipe` is of "Recipe tuneOut.enabled was
+  // removed" (#485 bot review 5, finding 9).
+  test("a recipe file the audit refuses is named, though its path given is a bare word the refusal uses", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    writeFileSync(join(root, 'Recipe'), JSON.stringify({ ...DEFAULT_RECIPE, tuneOut: { enabled: true } }));
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      const { status, failed } = await audit([dir], { recipe: 'Recipe' });
+      expect(status).toBe(1);
+      expect(failed).toEqual([expect.stringMatching(new RegExp(
+        `^Couldn't audit ${literally(dir)}: its recipe, Recipe, can't be loaded: Recipe tuneOut\\.enabled was removed`,
       ))]);
     } finally {
       process.chdir(cwd);

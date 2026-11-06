@@ -1630,7 +1630,10 @@ export function App() {
                   agent={pinsState()?.agent}
                   // The server's list for every scope: it leaves out the rows
                   // a pin on would hold nothing (an undone row, another
-                  // resident's), which the transcript doesn't tell apart.
+                  // resident's; on a legacy window, which reads no stamp, the
+                  // rows the resident's view leaves out instead: held
+                  // traffic, suppressed rows, another agent's stored
+                  // injections), which the transcript doesn't tell apart.
                   candidates={pinsState()?.candidates ?? []}
                   onRefresh={refreshPins}
                   onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
