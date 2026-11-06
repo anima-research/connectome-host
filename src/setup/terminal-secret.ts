@@ -1,5 +1,6 @@
 import type { Interface } from 'node:readline';
 import type { Writable } from 'node:stream';
+import type { BracketedPaste } from '../readline-paste.js';
 
 type Echoing = Interface & { _writeToOutput?: unknown; history?: unknown };
 
@@ -16,7 +17,7 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
 }
 
 export async function askHidden(
-  rl: Interface, output: Writable, label: string, pastingNow: () => boolean = () => false,
+  rl: Interface, output: Writable, label: string, paste?: Pick<BracketedPaste, 'pasting' | 'drop'>,
 ): Promise<string> {
   const echoing = rl as Echoing;
   const write = echoing._writeToOutput;
@@ -32,7 +33,7 @@ export async function askHidden(
   // Bun 1.4.4's readline tells a bracketed paste's start and end apart only as keypresses named paste-start and
   // paste-end (readline-paste.ts).
   const input = (rl as unknown as { input?: NodeJS.EventEmitter }).input;
-  if (input !== undefined && pastingNow()) {
+  if (input !== undefined && paste?.pasting()) {
     const ended = await new Promise<boolean>((resolve) => {
       const onKey = (_text: unknown, key: { name?: string } | undefined) => {
         if (key?.name === 'paste-end') done(true);
@@ -57,7 +58,7 @@ export async function askHidden(
   echoing._writeToOutput = () => {};
   const history = echoing.history as string[];
   const before = [...history];
-  const others = rl.listeners('line') as Array<(line: string) => void>;
+  const others = rl.rawListeners('line') as Array<(line: string) => void>;
   rl.removeAllListeners('line');
   const lines: string[] = [];
   let quiet: ReturnType<typeof setTimeout> | undefined;
@@ -118,6 +119,11 @@ export async function askHidden(
     echoing._writeToOutput = write;
     output.write('\n');
     const given = answer.trim();
+    const dropped = given === '' ? undefined : paste?.drop(given);
+    if (dropped !== undefined && dropped.taken > 0) {
+      output.write(`${dropped.taken === 1 ? '1 pasted line' : `${dropped.taken} pasted lines`} held what you just entered ` +
+        `hidden, so ${dropped.taken === 1 ? 'it was' : 'they were'} taken out${dropped.left > 0 ? '. Enter sends the rest' : ''}.\n`);
+    }
     if (draft !== '' && !gone && !(given !== '' && draft.includes(given))) rl.write(draft);
   }
 }

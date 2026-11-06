@@ -887,7 +887,7 @@ async function runPiped(app: AppContext) {
         const release = turns.holdCaps();
         try {
           return (await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`,
-            () => paste?.pasting() ?? false)) || null;
+            paste ?? undefined)) || null;
         } finally {
           release();
         }
