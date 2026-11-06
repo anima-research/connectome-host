@@ -196,8 +196,21 @@ action.
   `"mentions"` (closed; only addressed messages reach you) and `"debounced"`
   (opens the channel, prepends a rule debouncing its `chat:ambient` traffic —
   default 180000 ms — and pins the channel so it isn't auto-closed for being
-  chatty). Pass the id as events carry it (`discord:<guildId>:<channelId>`), or
-  the rule never matches. Each channel gets its own rule, so its own timer.
+  chatty). Pass the exact id as events carry it (for example `zulip:backend`,
+  `slack:<teamId>:<channelId>`, or `discord:<guildId>:<channelId>`), not a raw
+  platform id. Open, gate source, and close use the owning MCPL server from the
+  channel registry. If the id is not registered, a prefix before the first `:`
+  is used only when it names a connected server; `modules.channelMode.serverId`
+  is the explicit fallback for otherwise unresolved ids. There is no implicit
+  Discord fallback. Unknown, disconnected, or ambiguous ownership is refused
+  before opening, changing a rule, or pinning. Check the exact id and connect
+  its server (or configure the fallback for legacy ids) before retrying.
+  Each channel gets its own rule, so its own timer. This does not change the
+  framework's open/close semantics.
+
+  Subscription GC remains scoped to `modules.subscriptionGc.serverId` (default
+  `discord`): it ignores other servers' incoming and push events rather than
+  closing them on the wrong server. Configure it separately when needed.
 - **Your shell** — edit the file on disk. The gate notices a changed file (by
   mtime) when it evaluates the next event, checking at most once a second. A
   file that fails to parse or validate is ignored: the previous rules stay in
