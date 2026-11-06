@@ -121,7 +121,8 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   'with it): `connectome setup discord` asks about each in turn, and a setup run by hand lists them, each to be ' +
   'given with --place PATH PLACE. Then it writes the record, start.js and connectome again, or says what else stops ' +
   'it first, such as a current that names no release. Its service can keep running while you write the record, ' +
-  'since a running host doesn\'t read it. Where setup then has to rewrite a copy label or Go back list, or bind a ' +
+  'since a running host doesn\'t read it; a service restarting a host that isn\'t running would start it on the record ' +
+  'you write, so stop that service first. Where setup then has to rewrite a copy label or Go back list, or bind a ' +
   'place to a new path, it needs the host stopped, and says so. Don\'t restart or update the host until setup has ' +
   'run again: its next start runs start.js, whose launcher reads the record.';
 
