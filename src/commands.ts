@@ -1202,7 +1202,7 @@ function handleCheckpoint(app: AppContext, name?: string): CommandResult {
 
   const lines: Line[] = [{ text: `Checkpoint "${name}" saved at branch ${branch.name} (head: ${branch.head}).`, style: 'system' }];
   if (messageId !== undefined && undoneRow(cm, messageId)) {
-    const redo = redoKept(app.framework, agent.name) ? '/redo puts it back now, and ' : '';
+    const redo = redoKept(app.framework, agent.name) ? `${redoPutsBack(agent.name)}, and ` : '';
     lines.push({
       text: `  Its last row [${messageId}] is out of ${agent.name}'s window as undone: ${redo}a /restore to "${name}" puts it back once rows are stored after it.`,
       style: 'system',
@@ -1219,6 +1219,13 @@ function undoneRow(cm: ContextManager, id: string): boolean {
 /** Whether the agent's /redo has an undo to put back now (a shed keeps none). */
 function redoKept(framework: AgentFramework, agentName: string): boolean {
   return typeof framework.getUndoRedoState === 'function' && framework.getUndoRedoState(agentName).canRedo;
+}
+
+/** What a kept /redo puts back, for an undone row: the latest undo's rows,
+ *  which hold the row only if that undo took it out, not a shed or an
+ *  earlier undo. */
+function redoPutsBack(agentName: string): string {
+  return `/redo puts back what ${agentName}'s latest undo took out, this row if that undo took it`;
 }
 
 function handleRestore(app: AppContext, name?: string): CommandResult {
@@ -1258,7 +1265,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
       && messages[messages.length - 1]!.id === point.messageId;
     if (atCheckpoint) {
       const text = undoneRow(cm, point.messageId)
-        ? `Already at checkpoint "${name}". Its last row is out of ${agent.name}'s window as undone${redoKept(app.framework, agent.name) ? ': /redo puts it back' : ''}.`
+        ? `Already at checkpoint "${name}". Its last row is out of ${agent.name}'s window as undone${redoKept(app.framework, agent.name) ? `: ${redoPutsBack(agent.name)}` : ''}.`
         : `Already at checkpoint "${name}".`;
       return { lines: [{ text, style: 'system' }] };
     }
@@ -1270,10 +1277,16 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   }).then((result) => (result.branchChanged && note
     ? { ...result, lines: [...result.lines, { text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }] }
     : result));
-  // The checkpoint moves to the rollback's branch only once the rollback has
-  // landed, and only if it is still the one this restore read (#264): saved
-  // again, or cleared by a session reset, while the rollback waited, it is
-  // left as it is now.
+  // The checkpoint moves to the branch the store is on once the rollback has
+  // landed, or failed with the store left on its branch (rollbackFailed's
+  // branchChanged), and only if it is still the one this restore read
+  // (#264): saved again, or cleared by a session reset, while the rollback
+  // waited, it is left as it is now.
+  const moveCheckpoint = (branchName: string): void => {
+    if (app.branchState.checkpoints.get(name) === point) {
+      app.branchState.checkpoints.set(name, { branchName, messageId: point.messageId });
+    }
+  };
   const from = app.framework.getStore().currentBranch().name;
   const asyncWork = point.messageId
     ? app.framework.rollbackToMessage(agent.name, {
@@ -1282,9 +1295,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
         branchName: `restore-${name}-${Date.now()}`,
         note: `/restore ${name}`,
       }).then((rolled): CommandResult => {
-        if (app.branchState.checkpoints.get(name) === point) {
-          app.branchState.checkpoints.set(name, { branchName: rolled.targetBranch, messageId: point.messageId });
-        }
+        moveCheckpoint(rolled.targetBranch);
         return {
           lines: [
             { text: `Restored to checkpoint "${name}" (branch: ${rolled.targetBranch}).`, style: 'system' },
@@ -1297,7 +1308,9 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
         // with 'unknown-message' when it isn't there, as after a /branchto:
         // the restore then goes to the checkpoint's branch head.
         if ((err as { code?: unknown } | null)?.code === 'unknown-message') return toHead(true);
-        return rollbackFailed(app, from, 'Restore failed', err);
+        const failed = rollbackFailed(app, from, 'Restore failed', err);
+        if (failed.branchChanged) moveCheckpoint(app.framework.getStore().currentBranch().name);
+        return failed;
       }).catch((err: unknown) => ({
         lines: [{ text: `Restore failed: ${messageOf(err)}`, style: 'system' as const }],
       }))
@@ -1445,6 +1458,11 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   if (!target) return { lines: [{ text: `No message with id ${messageId} on current branch.`, style: 'system' }] };
   const newBranchName = `rollback-at-${messageId}-${Date.now()}`;
   const from = app.framework.getStore().currentBranch().name;
+  // The record's rows, for how many follow the rollback's tail: on a
+  // presented window the cut keeps those stored before the write that
+  // presented the target, a co-resident's among them, which the command
+  // agent's counts (rollbackKeptLines) leave out.
+  const ids = messages.map((m) => String(m.id));
   const asyncWork = app.framework.rollbackToMessage(agent.name, {
     messageId: String(messageId),
     requester: HOST_COMMAND,
@@ -1453,7 +1471,9 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   })
     .then((rolled) => {
       const kept = rollbackKeptLines(rolled, agent.name);
-      const after = kept.length === 0
+      const tail = ids.indexOf(String(rolled.tailMessageId));
+      const everything = kept.length === 0 && tail >= 0 && rolled.messagesRemoved === ids.length - tail - 1;
+      const after = everything
         ? `Everything after [${rolled.tailMessageId}] is dropped on this branch`
         : `${rolled.messagesRemoved} message${rolled.messagesRemoved === 1 ? '' : 's'} after [${rolled.tailMessageId}] ${rolled.messagesRemoved === 1 ? 'is' : 'are'} dropped on this branch`;
       return {

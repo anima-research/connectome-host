@@ -23,6 +23,7 @@
  * Each runs a real AgentFramework (test/presented-host.ts).
  */
 import { describe, test, expect, setDefaultTimeout } from 'bun:test';
+import { withAudience } from '@animalabs/agent-framework';
 import { AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { createBranchState, handleCommand, type CommandResult } from '../src/commands.js';
@@ -168,13 +169,13 @@ describe('/checkpoint and /restore with the last row undone', () => {
       await run('/undo', app);
       expect(clerk.windowStatusOf(last.id)).toBe('undone');
       expect((await run('/restore p', app)).all).toBe(
-        `Already at checkpoint "p". Its last row is out of clerk's window as undone: /redo puts it back.`,
+        `Already at checkpoint "p". Its last row is out of clerk's window as undone: /redo puts back what clerk's latest undo took out, this row if that undo took it.`,
       );
       const q = await run('/checkpoint q', app);
       expect(q.all).toBe([
         saved('q'),
-        `  Its last row [${last.id}] is out of clerk's window as undone: /redo puts it back now, ` +
-          'and a /restore to "q" puts it back once rows are stored after it.',
+        `  Its last row [${last.id}] is out of clerk's window as undone: /redo puts back what clerk's latest undo took out, ` +
+          'this row if that undo took it, and a /restore to "q" puts it back once rows are stored after it.',
       ].join('\n'));
 
       // Back in the window: at the checkpoint, nothing more to say.
@@ -209,6 +210,38 @@ describe('/checkpoint and /restore with the last row undone', () => {
         `  Its last row [${last.id}] is out of clerk's window as undone: a /restore to "s" puts it back once rows are stored after it.`,
       ]);
       expect((await run('/restore s', app)).all).toBe(`Already at checkpoint "s". Its last row is out of clerk's window as undone.`);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+// A redo puts back the latest undo's rows, which needn't hold the
+// checkpoint's last row (#485 bot review 2, finding 16): a shed took it out,
+// and an /undo after it took out the turn's other rows.
+describe('/checkpoint and /restore with the last row shed, then an /undo', () => {
+  test("don't promise that /redo puts that row back, which it doesn't", async () => {
+    const h = await bootPresentedHost({ agents: ['clerk'], prefix: 'cmd-checkpoint-shed-undo-' });
+    try {
+      await h.turn('clerk');
+      await h.turn('clerk');
+      const clerk = h.framework.getAgent('clerk')!.getContextManager();
+      const last = clerk.getAllMessages().at(-1)!;
+      clerk.retractRows([last.id], { undone: true });
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      await run('/undo', app);
+      expect(h.framework.getUndoRedoState('clerk').canRedo).toBe(true);
+      const said = (await run('/checkpoint s', app)).result.lines.map((l) => l.text).slice(1);
+      expect(said).toEqual([
+        `  Its last row [${last.id}] is out of clerk's window as undone: /redo puts back what clerk's latest undo took out, ` +
+          'this row if that undo took it, and a /restore to "s" puts it back once rows are stored after it.',
+      ]);
+      expect((await run('/restore s', app)).all).toBe(
+        `Already at checkpoint "s". Its last row is out of clerk's window as undone: /redo puts back what clerk's latest undo took out, this row if that undo took it.`,
+      );
+      // What the redo puts back is the undo's, and the row stays out.
+      await run('/redo', app);
+      expect(clerk.windowStatusOf(last.id)).toBe('undone');
     } finally {
       await h.cleanup();
     }
@@ -297,6 +330,50 @@ describe('/branchto on a presented window', () => {
           "The Web UI's suppress, or a hide by Discord message id, takes it out.",
       ]);
       expect(cm.getPresentedMessages().map((m) => m.id)).toEqual([a, b]);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  // The cut at the write that presented the target keeps a co-resident's
+  // row stored before it, which the command agent's window never held
+  // (#485 bot review 2, finding 15).
+  test("doesn't say everything after the target was dropped when a co-resident's row stored before it was shown stays", async () => {
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], prefix: 'cmd-branchto-co-resident-' });
+    try {
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const t = arrival(h, 'T');
+      const m = cm.addMessage('someone', [{ type: 'text', text: 'M' } as ContentBlock], withAudience(undefined, ['mira']));
+      cm.presentRows([t]);
+      cm.presentRows([arrival(h, 'Z')]);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+
+      const { follow } = await run(`/branchto ${t}`, app);
+      const said = follow!.lines.map((l) => l.text);
+      expect(said[0]).toContain(`1 message after [${t}] is dropped on this branch; old branch preserved.`);
+      expect(said[0]).not.toContain('Everything after');
+      expect(said).toHaveLength(1);
+      expect(cm.getAllMessages().map((r) => r.id)).toEqual([t, m]);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('says everything after the target was dropped when the cut took every row stored after it', async () => {
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], prefix: 'cmd-branchto-everything-' });
+    try {
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const t = arrival(h, 'T');
+      cm.presentRows([t]);
+      cm.addMessage('someone', [{ type: 'text', text: 'M' } as ContentBlock], withAudience(undefined, ['mira']));
+      cm.presentRows([arrival(h, 'Z')]);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+
+      const { follow } = await run(`/branchto ${t}`, app);
+      expect(follow!.lines.map((l) => l.text)).toEqual([
+        `Branched at [${t}] -> "${h.framework.getStore().currentBranch().name}" and switched. Everything after [${t}] is dropped on this branch; old branch preserved.`,
+      ]);
+      expect(cm.getAllMessages().map((r) => r.id)).toEqual([t]);
     } finally {
       await h.cleanup();
     }

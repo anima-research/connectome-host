@@ -58,6 +58,9 @@
     then. The Web UI's `surgery-result`
     frame carries them as `keptInWindowAfterTarget` and `returnedToArrivals`,
     and the Surgery panel's log summarizes a rollback's and a checkout's.
+    `/branchto` says everything after the message was dropped only when the
+    cut took every row stored after it, and otherwise how many it took: a
+    co-resident's row stored before the message was shown stays too.
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo took out (dimmed, and `(undone)` in the TUI, which marks
@@ -108,8 +111,9 @@
   row, an undone one included, as it did. `/undo` leaves that row the
   record's last, so after `/undo` a `/restore` to a checkpoint at the undone
   turn's last row, with no row stored since, says it is already there and
-  moves nothing (and names `/redo` where a redo exists: a shed marks rows
-  undone and keeps none); once a row is stored after the
+  moves nothing (and, where a redo exists, says `/redo` puts back what the
+  agent's latest undo took out, that row if the undo took it: a shed marks
+  rows undone and keeps none); once a row is stored after the
   checkpoint, a `/restore` to it rolls back with that turn in the window, a
   checkpoint taken after `/undo` included. **Unchanged:**
   `/checkout`, `/restore` and `/branchto` are still refused while any agent

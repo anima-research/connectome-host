@@ -348,6 +348,10 @@ describe('the framework\'s answer to a move decides what the session records', (
       expect(outcome.said).toContain(`failed: Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on ${w.branch()}`);
       expect(outcome.said).not.toContain('moved nothing');
       expect(outcome.branchChanged).toBe(true);
+      // The checkpoint names the branch the store is on, as for a restore
+      // that landed (#485 bot review 2, finding 13): the store is at it, and
+      // a later /restore that falls back to a branch head takes this one's.
+      if (command === '/restore cp') expect(w.app.branchState.checkpoints.get('cp')).toEqual({ branchName: w.branch(), messageId: 'a1' });
     });
   }
 
