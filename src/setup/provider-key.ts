@@ -5,6 +5,8 @@ export type ProviderAnswer<T> =
   | { kind: 'refused'; status: number }
   | { kind: 'unsendable' }
   | { kind: 'answered'; status: number; said: string | null }
+  | { kind: 'redirected'; status: number; to: string | null }
+  | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
 
 interface Request {
@@ -70,13 +72,17 @@ export function checkProviderKey(name: string, key: string, options: Options = {
     (body) => (provider.accepts(body) ? null : undefined));
 }
 
-export function listModels(name: string, key: string, options: Options = {}): Promise<ProviderAnswer<string[]>> | null {
+export function listModels(
+  name: string, key: string, options: Options = {},
+): Promise<ProviderAnswer<{ ids: string[]; more: boolean }>> | null {
   const provider = PROVIDER_KEYS[name];
   if (provider === undefined) return null;
   return ask(provider.models(key, options.env ?? new Map()), name, key, options, (body) => {
     const data = (body as { data?: unknown } | null)?.data;
     if (!Array.isArray(data)) return undefined;
-    return data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+    const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string')
+      .map((id) => hidden(id, key, name, options.hide));
+    return { ids, more: (body as { has_more?: unknown }).has_more === true };
   });
 }
 
@@ -104,6 +110,10 @@ async function ask<T>(
     return unanswered(error);
   }
   if (response.status === 401 || response.status === 403) return { kind: 'refused', status: response.status };
+  if (response.status >= 300 && response.status < 400) {
+    const to = response.headers.get('location');
+    return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, key, name, options.hide) };
+  }
   let text: string;
   try {
     text = await response.text();
@@ -118,6 +128,7 @@ async function ask<T>(
   }
   const value = response.ok ? read(body) : undefined;
   if (value !== undefined) return { kind: 'accepted', value };
+  if (response.ok && body === undefined) return { kind: 'unrecognized', status: response.status };
   const error = (body as { error?: unknown } | undefined)?.error;
   const message = typeof error === 'string' ? error
     : typeof (error as { message?: unknown } | undefined)?.message === 'string' ? (error as { message: string }).message

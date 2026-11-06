@@ -146,6 +146,23 @@ describe('setup--finished', () => {
     expect(module.finishRequested).toBe(false);
   });
 
+  test('where its answers can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
+    const { dir, module } = install();
+    mkdirSync(join(dir, '.setup'), { recursive: true });
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
+    chmodSync(join(dir, '.setup'), 0o500);
+    try {
+      const result = await call(module);
+      expect(result.success).toBe(false);
+      expect(String(result.error)).toStartWith(`${join(dir, '.setup', 'setup-state.json')} couldn't be written (`);
+      expect(String(result.error)).toEndWith('), so nothing was recorded and the conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished again once they have.');
+      expect(module.finishRequested).toBe(false);
+      expect(module.finishedAt()).toBeNull();
+    } finally {
+      chmodSync(join(dir, '.setup'), 0o700);
+    }
+  });
+
   test('a start after setup finished opens by saying so, and when', () => {
     expect(openingMessage(true, 'start', '2026-11-01T01:00:00.000Z')).toBe('From setup, not the person: they\'ve started setup again after it finished, at 2026-11-01T01:00:00.000Z, and this conversation picks up where it stopped.');
     expect(openingMessage(false, 'start', '2026-11-01T01:00:00.000Z')).toBe('From setup, not the person: they\'ve started setup again after it finished, at 2026-11-01T01:00:00.000Z. What setup has done stays on disk, and this conversation doesn\'t hold it.');
@@ -740,6 +757,40 @@ describe('setup--run', () => {
     }
   }, 20_000);
 
+  linuxTest('stopping the module kills what outlives its SIGTERM 5 s on by elapsed time, whatever the wall clock does', async () => {
+    const { dir, module } = install();
+    const pidFile = join(dir, 'stubborn.pid');
+    const pending = run(module, `trap '' TERM; sleep 60 & echo $! > ${pidFile}; sleep 60`);
+    const stubborn = Number(await waitForFile(pidFile));
+    const frozen = spyOn(Date, 'now').mockReturnValue(Date.now());
+    let stoppedInTime: boolean;
+    try {
+      stoppedInTime = await Promise.race([module.stop().then(() => true), Bun.sleep(10_000).then(() => false)]);
+    } finally {
+      frozen.mockRestore();
+    }
+    expect(stoppedInTime).toBe(true);
+    expect((await pending).signal).toBe('SIGKILL');
+    expect(await goneWithin(stubborn, 3_000)).toBe(true);
+  }, 30_000);
+
+  test('a command asked for while a secret is asked for waits for each secret asked for after it too, so nothing it does is shown while the person types', async () => {
+    const answers: Array<(value: string) => void> = [];
+    const made = install({ asker: { ask: () => new Promise<string>((resolve) => { answers.push(resolve); }) } });
+    const first = askSecret(made.module, { name: 'FIRST_TOKEN', purpose: 'a token' });
+    const ran = runCall(made.module, 'touch ran');
+    const second = askSecret(made.module, { name: 'SECOND_TOKEN', purpose: 'a token' });
+    while (answers.length < 1) await Bun.sleep(1);
+    answers[0]!('first-value');
+    while (answers.length < 2) await Bun.sleep(1);
+    expect(made.shown.filter((line) => line.startsWith('Setup\'s agent runs'))).toEqual([]);
+    answers[1]!('second-value');
+    expect((await first).success).toBe(true);
+    expect((await second).success).toBe(true);
+    expect((await ran).success).toBe(true);
+    expect(existsSync(join(made.dir, 'ran'))).toBe(true);
+  });
+
   linuxTest('stopping the module stops a command still running, every process in its group, one that ignores SIGTERM too', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'stubborn.pid');
@@ -942,7 +993,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
 });
 
 describe('checkDiscordToken', () => {
-  test('follows no redirect, and answers a 3xx as Discord answering otherwise', async () => {
+  test('follows no redirect, and answers a 3xx as a redirect, with where it leads', async () => {
     let redirect: RequestRedirect | undefined;
     const result = await checkDiscordToken('a-token', {
       fetch: (async (_url: string, init: RequestInit) => {
@@ -951,7 +1002,7 @@ describe('checkDiscordToken', () => {
       }) as unknown as typeof fetch,
     });
     expect(redirect).toBe('manual');
-    expect(result).toEqual({ kind: 'answered', status: 307, said: null });
+    expect(result).toEqual({ kind: 'redirected', status: 307, to: 'https://elsewhere.example/' });
   });
 
   test('a token passed with spaces around it is hidden in what an error quotes, as sent or trimmed', async () => {
@@ -978,8 +1029,10 @@ describe('checkDiscordToken', () => {
     expect(result).toEqual({ kind: 'unanswered', why: 'no answer within 0.05 s' });
   });
 
-  test('a 200 that isn\'t the bot user is Discord answering otherwise, and Discord\'s own words never show the token', async () => {
+  test('a 200 that isn\'t JSON is no answer of Discord\'s, one that isn\'t the bot user is Discord answering otherwise, and Discord\'s own words never show the token', async () => {
     expect(await checkDiscordToken('a-token', { fetch: (async () => new Response('<html>')) as unknown as typeof fetch }))
+      .toEqual({ kind: 'unrecognized', status: 200 });
+    expect(await checkDiscordToken('a-token', { fetch: (async () => Response.json({})) as unknown as typeof fetch }))
       .toEqual({ kind: 'answered', status: 200, said: null });
     expect(await checkDiscordToken('a-token', {
       fetch: (async () => Response.json({ message: 'bad token a-token' }, { status: 403 })) as unknown as typeof fetch,
@@ -1812,8 +1865,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(existsSync(join(dir, '.env'))).toBe(false);
   });
 
-  test('a 2xx answer that isn\'t the provider\'s list stores the key as not known to work, not as accepted', async () => {
-    for (const body of ['<html>Sign in</html>', '{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}']) {
+  test('a 2xx JSON answer that isn\'t the provider\'s list stores the key as not known to work, not as accepted', async () => {
+    for (const body of ['{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}']) {
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
       expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200.`);
@@ -1859,10 +1912,59 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   test('check_model says whether the provider offers a model isn\'t known where it answered otherwise or couldn\'t be asked', async () => {
     const overloaded = install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: (async () => Response.json({ error: { message: 'overloaded' } }, { status: 529 })) as unknown as typeof fetch });
     const answered = await checkModel(overloaded.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(answered.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 529: overloaded.');
+    expect(answered.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 529: overloaded. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
     const down = install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: (async () => { throw new Error('connect ECONNREFUSED'); }) as unknown as typeof fetch });
     const unasked = await checkModel(down.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(unasked.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic couldn\'t be asked (connect ECONNREFUSED).');
+    expect(unasked.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic couldn\'t be asked (connect ECONNREFUSED). Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
+  });
+
+  test('a 2xx that isn\'t the service\'s answer, such as a sign-in page, is said to be no check, of a key, a token and a model, with what to tell the person', async () => {
+    const portal = (async () => new Response('<html>Sign in to this network</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+    const key = install({ asker: typed('sk-ant-portal'), fetch: portal });
+    const stored = await askSecret(key.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
+    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: the answer wasn't Anthropic's, as a network's sign-in page isn't. Tell the person: their connection to it is theirs to check.`);
+    expect(key.shown).toContain('It couldn\'t be checked: the answer wasn\'t Anthropic\'s, as a network\'s sign-in page isn\'t.');
+    const token = install({ asker: typed('a-portal-token'), fetch: portal });
+    const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: the answer wasn't Discord's, as a network's sign-in page isn't. Tell the person: their connection to it is theirs to check.`);
+    const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: the answer wasn\'t Anthropic\'s, as a network\'s sign-in page isn\'t. Tell the person: their connection to it is theirs to check.');
+  });
+
+  test('a redirect is named, with where it leads, and what to set where a base URL can be set, for a key, a token and a model', async () => {
+    const redirecting = (async () => new Response(null, { status: 307, headers: { location: 'https://api.example.test/v1/models' } })) as unknown as typeof fetch;
+    const openai = install({ asker: typed('sk-openai-moved'), fetch: redirecting });
+    const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
+    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test/v1/models, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead there, ask the person to set it to where the redirect leads, then call again.`);
+    expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test/v1/models, which setup doesn\'t follow with a secret.');
+    const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
+    const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
+    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. Something between this machine and OpenRouter sent it: tell the person their connection is theirs to check.');
+    const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
+    const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test/v1/models, which setup doesn\'t follow with a secret. Something between this machine and Discord sent it: tell the person their connection is theirs to check.');
+    const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test/v1/models, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead there, ask the person to set it to where the redirect leads, then call again.');
+  });
+
+  test('check_model doesn\'t say a model is unlisted where the provider says it lists more than one answer holds', async () => {
+    const paged = install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: (async () => Response.json({ data: [{ id: 'claude-haiku-5-5' }], has_more: true })) as unknown as typeof fetch });
+    const absent = await checkModel(paged.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(absent.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: it lists more models than one answer holds, and claude-opus-5-5 isn\'t among the first 1. Ask the person whether claude-opus-5-5 is the one they meant before the recipe names it.');
+    const there = await checkModel(paged.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-haiku-5-5' });
+    expect(String(there.data)).toBe('Anthropic lists claude-haiku-5-5 among the first 1 models it offers the key stored as ANTHROPIC_API_KEY.');
+  });
+
+  test('check_model shows a model the provider lists by a stored secret\'s name where its id holds that secret, the key\'s own included', async () => {
+    const echo = install({
+      envFile: 'OPENAI_API_KEY=sk-openai-echo\nDISCORD_TOKEN=discord-echo-token\n',
+      fetch: (async () => models('gpt-sk-openai-echo', 'gpt-discord-echo-token', 'gpt-6.1')) as unknown as typeof fetch,
+    });
+    const result = await checkModel(echo.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
+    expect(result.error).toContain('gpt-<OPENAI_API_KEY>');
+    expect(result.error).toContain('gpt-<DISCORD_TOKEN>');
+    expect(said(echo, result)).not.toContain('sk-openai-echo');
+    expect(said(echo, result)).not.toContain('discord-echo-token');
   });
 
   test('a secret that is no provider key setup knows is stored without being checked', async () => {

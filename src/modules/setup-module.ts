@@ -280,7 +280,7 @@ export class SetupModule implements Module {
     this.stopping = true;
     const groups = [...this.groups];
     for (const group of groups) group.signal('SIGTERM');
-    for (const until = Date.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && Date.now() < until;) {
+    for (const until = performance.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && performance.now() < until;) {
       await new Promise((done) => setTimeout(done, 50));
     }
     for (const group of groups) if (group.alive()) group.signal('SIGKILL');
@@ -380,7 +380,13 @@ export class SetupModule implements Module {
         'the person: running setup again asks its questions again.');
     }
     const when = new Date().toISOString();
-    writeJsonAtomic(path, { ...read.state, finished: when }, 0o600);
+    try {
+      writeJsonAtomic(path, { ...read.state, finished: when }, 0o600);
+    } catch (error) {
+      return failed(`${path} couldn't be written (${(error as Error).message}), so nothing was recorded and the ` +
+        'conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished ' +
+        'again once they have.');
+    }
     this.finishRequested = true;
     return {
       success: true,
@@ -397,11 +403,17 @@ export class SetupModule implements Module {
       return turn;
     }
     if (call.name === 'check_model') {
-      // Once a secret being asked for is stored or refused, so it checks the key stored then.
-      return this.asking.then(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
+      return this.askedAll().then(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
     }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
+  }
+
+  private async askedAll(): Promise<void> {
+    for (let asking = this.asking; ; asking = this.asking) {
+      await asking;
+      if (asking === this.asking) return;
+    }
   }
 
   private secrets(): { names: string[]; values: Secret[]; guessed: string[] } {
@@ -431,7 +443,7 @@ export class SetupModule implements Module {
     if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0 || limit > MAX_TIMEOUT_MS) {
       return failed(`setup--run's timeoutMs is a number of ms above 0 and at most ${MAX_TIMEOUT_MS}.`);
     }
-    await this.asking;
+    await this.askedAll();
     if (this.stopping) return failed('The host is stopping, so setup--run runs nothing, and calling it again won\'t change that.');
     let atLaunch: { names: string[]; values: Secret[] };
     try {
@@ -714,13 +726,24 @@ export class SetupModule implements Module {
           `list of models, so whether it offers ${model} isn't known. ${LISTING_REFUSED} Ask the person to check what ` +
           'the key is allowed, or for a new key with setup--ask_secret.');
       }
-      return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ` +
-        `${keyNote(name, listed).replace(/^, but it isn't known to work: /, '').replace(/\.$/, '')}.`);
+      const why = keyNote(name, listed).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
+      return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ${why}` +
+        (listed.kind === 'answered' || listed.kind === 'unanswered'
+          ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : ''));
     }
-    const ids = listed.value;
+    const { ids, more } = listed.value;
     if (ids.includes(model)) {
       this.config.show(`${provider} lists ${shown(model)} for this key.`);
-      return { success: true, data: `${provider} lists ${model} among the ${ids.length} models it offers the key stored as ${name}.` };
+      return {
+        success: true,
+        data: `${provider} lists ${model} among the ${more ? 'first ' : ''}${ids.length} models it offers the key stored as ${name}.`,
+      };
+    }
+    if (more) {
+      this.config.show(`${provider} lists more models than one answer holds, and ${shown(model)} isn't among the first ${ids.length}.`);
+      return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: it lists more models ` +
+        `than one answer holds, and ${model} isn't among the first ${ids.length}. Ask the person whether ${model} is ` +
+        'the one they meant before the recipe names it.');
     }
     this.config.show(`${provider} doesn't list ${shown(model)} for this key.`);
     const family = familyOf(model);
@@ -748,6 +771,8 @@ function tokenLine(token: TokenCheck): string {
     case 'answered':
       return `Discord didn't say whether it works: it answered ${token.status}` +
         `${token.said === null ? '' : ` (${shown(token.said)})`}.`;
+    case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
+    case 'unrecognized': return `It couldn't be checked: ${unrecognized('Discord')}.`;
     case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
   }
 }
@@ -763,6 +788,8 @@ function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted:
     case 'answered':
       return `${provider} didn't say whether it works: it answered ${answer.status}` +
         `${answer.said === null ? '' : ` (${shown(answer.said)})`}.`;
+    case 'redirected': return `It isn't known to work: ${shown(redirect(provider, answer))}.`;
+    case 'unrecognized': return `It couldn't be checked: ${unrecognized(provider)}.`;
     case 'unanswered': return `${provider} couldn't be asked whether it works (${shown(answer.why)}).`;
   }
 }
@@ -777,6 +804,8 @@ function keyNote(name: string, answer: ProviderAnswer<unknown>): string {
     case 'answered':
       return `, but it isn't known to work: ${provider} answered ${answer.status}${answer.said === null ? '' : `: ${answer.said}`}.`;
     case 'unanswered': return `, but it isn't known to work: ${provider} couldn't be asked (${answer.why}).`;
+    case 'redirected': return `, but it isn't known to work: ${redirect(provider, answer)}${redirectRemedy(provider, name)}.`;
+    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized(provider)}. ${CONNECTION}`;
     case 'unsendable': return ', but it can\'t be a key: it holds a character a request header can\'t carry.';
     default: return '';
   }
@@ -788,6 +817,25 @@ function tokenNote(token: TokenCheck): string {
     case 'answered':
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}.`;
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}).`;
+    case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
+    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord')}. ${CONNECTION}`;
     default: return '';
   }
+}
+
+const CONNECTION = 'Tell the person: their connection to it is theirs to check.';
+
+function redirect(service: string, answer: { status: number; to: string | null }): string {
+  return `${service} answered ${answer.status}, a redirect${answer.to === null ? '' : ` to ${answer.to}`}, which setup ` +
+    'doesn\'t follow with a secret';
+}
+
+function redirectRemedy(service: string, name?: string): string {
+  const base = name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL' : null;
+  return base !== null ? `. If ${base} in .env is meant to lead there, ask the person to set it to where the redirect leads, then call again`
+    : `. Something between this machine and ${service} sent it: tell the person their connection is theirs to check`;
+}
+
+function unrecognized(service: string): string {
+  return `the answer wasn't ${service}'s, as a network's sign-in page isn't`;
 }
