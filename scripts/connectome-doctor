@@ -20,6 +20,7 @@ if not sys.stdout.isatty():
 
 NOW = time.time()
 WARNINGS = []
+DUMP_WAIT = 5
 
 
 def sh(cmd, timeout=15):
@@ -675,18 +676,22 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
         before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
         signalled = int(time.time())
         sh(f"kill -USR2 {pid} 2>/dev/null")
-        time.sleep(0.7)
+        deadline = time.time() + DUMP_WAIT
         dump = None
-        if journal_log:
-            said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}")
-            where = f"{unit}'s journal"
-        else:
-            said, why = read_text(agent_log, start=before)
-            where = agent_log
-        # Split at newlines only: the dump is JSON, which can hold U+2028.
-        for ln in (said or "").split("\n"):
-            if "[diagnostics]" in ln:
-                dump = ln
+        while True:
+            if journal_log:
+                said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}")
+                where = f"{unit}'s journal"
+            else:
+                said, why = read_text(agent_log, start=before)
+                where = agent_log
+            # Split at newlines only: the dump is JSON, which can hold U+2028.
+            for ln in (said or "").split("\n"):
+                if "[diagnostics]" in ln:
+                    dump = ln
+            if dump or why is not None or time.time() >= deadline:
+                break
+            time.sleep(0.1)
         if why is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but {where} can't be read ({why}), so whether a "
                   f"[diagnostics] line came isn't known{C_OFF}")
@@ -706,8 +711,8 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
             except Exception:
                 pass
         else:
-            print(f"live gate dump: {C_DIM}no [diagnostics] line came within 0.7 s of SIGUSR2, which the host "
-                  f"catches{C_OFF}")
+            print(f"live gate dump: {C_DIM}no [diagnostics] line came within {DUMP_WAIT} s of SIGUSR2, which the host "
+                  f"catches and answers by writing that line{C_OFF}")
 
 if findings_json:
     builtins.print("connectome-doctor findings: " + json.dumps([{"text": withheld(w), "counts": counts}

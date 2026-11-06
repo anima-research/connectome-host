@@ -37,13 +37,13 @@ interface Host {
   ticks: string;
 }
 
-async function standInHost(dir: string, listens: boolean, dumpsTo?: string): Promise<Host> {
+async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dumpDelay?: number): Promise<Host> {
   const signals = join(dir, 'signals');
   const ticks = join(dir, 'ticks');
   const dump = join(dir, 'dump-line');
   writeFileSync(dump, '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}\n');
   const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; ` : '';
-  const trap = listens ? `trap '${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
+  const trap = listens ? `trap '${dumpDelay ? `sleep ${dumpDelay}; ` : ''}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
   const process = spawn('sh', ['-c', `${trap}while :; do echo t >> ${ticks}; sleep 0.05; done`], { stdio: 'ignore' });
   children.push(process);
   await waitFor(() => lines(ticks) > 0, 'the stand-in host to start');
@@ -80,6 +80,7 @@ function systemctl(at: Install, unit: Unit = {}): void {
 
 async function install(opts: {
   listens: boolean; journalFails?: string; dumpReadFails?: boolean; dumpsTo?: string; grepRefused?: string;
+  dumpDelay?: number;
 }): Promise<Install> {
   const work = mkdtempSync(join(tmpdir(), 'chost-ladder-'));
   dirs.push(work);
@@ -87,7 +88,7 @@ async function install(opts: {
   mkdirSync(join(work, 'logs'));
   const bins = join(work, 'bin');
   mkdirSync(bins);
-  const host = await standInHost(work, opts.listens, opts.dumpsTo && join(work, opts.dumpsTo));
+  const host = await standInHost(work, opts.listens, opts.dumpsTo && join(work, opts.dumpsTo), opts.dumpDelay);
   const now = Math.floor(Date.now() / 1000);
   const at = { work, bins, host, started: now - 60, now };
   systemctl(at);
@@ -571,6 +572,13 @@ describe('the ladder\'s gate dump', () => {
     expect(out).not.toContain('no [diagnostics] line came');
     expect(out).toMatch(/=== findings ===[\s\S]*the gate dump isn't known/);
     expect(status).toBe(1);
+  });
+
+  test('a host that answers its SIGUSR2 a second late still has its dump read', async () => {
+    const at = await install({ listens: true, dumpDelay: 1 });
+    const { out } = ladder(at);
+    await settled(at.host);
+    expect(out).toContain('live gate dump (SIGUSR2): {"activeStreams":[]');
   });
 });
 
