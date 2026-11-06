@@ -45,7 +45,11 @@ async function harness(config: Partial<TtsRelayModuleConfig> = {}) {
     (module as unknown as { client: { isConnected(): boolean } | null }).client?.isConnected() ?? false;
   await waitFor(connected, 'the relay to authenticate the module');
   const emit = (event: Record<string, unknown>) => listener?.({ agentName: 'Wren', ...event } as unknown as TraceEvent);
-  return { received, emit };
+  const start = async () => {
+    await module.start(ctx);
+    await waitFor(connected, 'the relay to authenticate the module again');
+  };
+  return { received, emit, module, start };
 }
 
 const CHANNEL = 'discord:guild:123';
@@ -198,6 +202,25 @@ describe('what the relay is given to voice', () => {
         "[tts-relay] messages published on server 'zulip' aren't voiced: the relay voices only server 'discord', the default when modules.ttsRelay.editServerId is unset. Later ones on 'zulip' aren't logged.",
         "[tts-relay] messages published on server 'slack' aren't voiced: the relay voices only server 'discord', the default when modules.ttsRelay.editServerId is unset. Later ones on 'slack' aren't logged.",
       ]);
+    } finally {
+      errors.mockRestore();
+    }
+  }, 30_000);
+
+  test("a module stopped and started again logs a server's first unvoiced message again", async () => {
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { emit, module, start } = await harness();
+      const unvoiced = () => errors.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("on server 'zulip' aren't voiced"));
+      const publish = (messageId: string) =>
+        emit({ type: 'inference:published', serverId: 'zulip', channelId: 'zulip:stream:7', inferenceId: messageId, index: 0, text: 'Over there.', messageId });
+      publish('z1');
+      publish('z2');
+      expect(unvoiced()).toHaveLength(1);
+      await module.stop();
+      await start();
+      publish('z3');
+      expect(unvoiced()).toHaveLength(2);
     } finally {
       errors.mockRestore();
     }
