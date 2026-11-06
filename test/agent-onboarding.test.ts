@@ -23,10 +23,12 @@ const HEADINGS = PIECES.slice(1).map((piece) => piece.heading!);
 const SPANS = [...GUIDE.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]!);
 
 describe('the setup agent reads the guide through setup--run', () => {
-  it('gets the opening and each section back whole', () => {
+  it('gets the opening and each section back whole, with the next heading a sed range to it takes', () => {
     expect(HEADINGS.length).toBeGreaterThan(1);
-    for (const piece of PIECES) {
-      const bytes = Buffer.byteLength(piece.text);
+    for (const [at, piece] of PIECES.entries()) {
+      // `sed -n '<first>,<last>p'` with <last> the next heading's line, as `grep -n` lists it, prints that line too.
+      const next = PIECES[at + 1]?.text.split(/(?<=\n)/)[0] ?? '';
+      const bytes = Buffer.byteLength(piece.text + next);
       expect({ section: piece.heading ?? '(opening)', bytes, whole: bytes > 0 && bytes <= WHOLE_OUTPUT_BYTES })
         .toEqual({ section: piece.heading ?? '(opening)', bytes, whole: true });
     }
@@ -73,19 +75,21 @@ describe('what the guide names ships, or is the install\'s own', () => {
   });
 
   const serversSection = () => PIECES.find((piece) => piece.heading === 'The recipe\'s servers')!.text;
-  const servers = () => Object.assign({}, ...[...serversSection().matchAll(/```json\n([\s\S]*?)```/g)]
-    .map((match) => JSON.parse(`{${match[1]}}`))) as Record<string, { env: Record<string, string> }>;
+  const entries = () => [...serversSection().matchAll(/```json\n([\s\S]*?)```/g)]
+    .flatMap((match, fragment) => Object.entries(JSON.parse(`{${match[1]}}`) as Record<string, { env: Record<string, string> }>)
+      .map(([server, entry]) => ({ fragment, server, env: entry.env })));
 
   it('maps DISCORD_TOKEN and the shell\'s two values into their own servers\' env as ${NAME}, and gives every other value with a <placeholder> in it', () => {
-    const reads = { discord: ['DISCORD_TOKEN'], shell: ['SESSION_SERVER_PORT', 'SESSION_SERVER_TOKEN'] };
-    const recipe = servers();
-    for (const [server, names] of Object.entries(reads)) {
-      for (const name of names) expect({ server, name, value: recipe[server]?.env[name] }).toEqual({ server, name, value: `\${${name}}` });
-    }
-    for (const [server, { env }] of Object.entries(recipe)) {
+    const reads: Record<string, string[]> = { discord: ['DISCORD_TOKEN'], shell: ['SESSION_SERVER_PORT', 'SESSION_SERVER_TOKEN'] };
+    const shown = entries();
+    for (const server of Object.keys(reads)) expect({ server, shown: shown.some((entry) => entry.server === server) }).toEqual({ server, shown: true });
+    for (const { fragment, server, env } of shown) {
+      for (const name of reads[server] ?? []) {
+        expect({ fragment, server, name, value: env[name] }).toEqual({ fragment, server, name, value: `\${${name}}` });
+      }
       for (const [name, value] of Object.entries(env)) {
         const named = /^\$\{[A-Z_]+\}$/.test(value) || /<[^>]+>/.test(value);
-        expect({ server, name, value, named }).toEqual({ server, name, value, named: true });
+        expect({ fragment, server, name, value, named }).toEqual({ fragment, server, name, value, named: true });
       }
     }
   });
@@ -97,28 +101,41 @@ describe('what the guide names ships, or is the install\'s own', () => {
   });
 
   it('puts each discord-mcpl state file the example names in the data directory', () => {
-    const files = Object.entries(servers().discord!.env).filter(([name]) => /^DISCORD_\w+_FILE$/.test(name));
+    const files = entries().filter((entry) => entry.server === 'discord')
+      .flatMap((entry) => Object.entries(entry.env)).filter(([name]) => /^DISCORD_\w+_FILE$/.test(name));
     expect(files.length).toBeGreaterThan(0);
     for (const [name, value] of files) expect({ name, inData: value.startsWith('<dir>/data/') }).toEqual({ name, inData: true });
   });
 
-  it('is pointed into, from README.md, ARCHITECTURE.md, docs/*.md and src, as `FILE.md`\'s "Heading", by headings the guide and DEPLOYMENTS.md have, and by no section number', () => {
-    const headings = (file: string) => readFileSync(join(ROOT, 'docs', file), 'utf-8').split('\n')
-      .filter((line) => /^#{2,3} /.test(line)).map((line) => line.replace(/^#+ /, '').trim());
-    const docs = { 'AGENT-ONBOARDING.md': headings('AGENT-ONBOARDING.md'), 'DEPLOYMENTS.md': headings('DEPLOYMENTS.md') };
+  it('is pointed into, from README.md, ARCHITECTURE.md, docs, scripts and src, as `FILE.md`\'s "Heading", `FILE.md`, "Heading" or `FILE.md#anchor`, by parts the guide, DEPLOYMENTS.md and the README have, and by no section number', () => {
+    const lines = (path: string) => readFileSync(join(ROOT, path), 'utf-8').split('\n');
+    const headingsOf = (path: string) => lines(path).filter((line) => /^#{2,3} /.test(line)).map((line) => line.replace(/^#+ /, '').trim());
+    const partsOf = (path: string) => [...headingsOf(path), ...lines(path).flatMap((line) => [...line.matchAll(/^\*\*([^*]+?)\.\*\*/g)].map((match) => match[1]!))];
+    const files = { 'AGENT-ONBOARDING.md': 'docs/AGENT-ONBOARDING.md', 'DEPLOYMENTS.md': 'docs/DEPLOYMENTS.md', 'README.md': 'README.md' };
+    const docs = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, partsOf(path)])) as Record<keyof typeof files, string[]>;
+    // An anchor names a heading alone, as GitHub renders one.
+    const anchored = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, headingsOf(path)])) as Record<keyof typeof files, string[]>;
     const sources = [
       'README.md', 'ARCHITECTURE.md',
-      ...new Bun.Glob('docs/*.md').scanSync({ cwd: ROOT }),
+      ...new Bun.Glob('docs/**/*.md').scanSync({ cwd: ROOT }),
+      ...new Bun.Glob('scripts/**/*').scanSync({ cwd: ROOT }),
       ...new Bun.Glob('src/**/*.ts').scanSync({ cwd: ROOT }),
     ];
+    const slug = (heading: string) => heading.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s/g, '-');
     const pointers: Array<{ from: string; doc: keyof typeof docs; heading: string }> = [];
+    const anchors: Array<{ from: string; doc: keyof typeof docs; anchor: string }> = [];
     for (const from of sources) {
       const text = readFileSync(join(ROOT, from), 'utf-8').replace(/\s*\n\s*/g, ' ');
-      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS)\.md`?\)?\\?'s ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
-        for (const named of match[2]!.matchAll(/"([^"]+)"/g)) {
-          pointers.push({ from, doc: `${match[1]}.md` as keyof typeof docs, heading: named[1]!.replace(/`/g, '') });
-        }
+      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|<host>\/README)\.md`?\)?(?:\\?'s|,) ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
+        const doc = `${match[1]!.replace('<host>/', '')}.md` as keyof typeof docs;
+        for (const named of match[2]!.matchAll(/"([^"]+)"/g)) pointers.push({ from, doc, heading: named[1]!.replace(/`/g, '') });
       }
+      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS)\.md#([\w-]+)/g)) {
+        anchors.push({ from, doc: `${match[1]}.md` as keyof typeof docs, anchor: match[2]! });
+      }
+    }
+    for (const { from, doc, anchor } of anchors) {
+      expect({ from, doc, anchor, there: anchored[doc].some((heading) => slug(heading) === anchor) }).toEqual({ from, doc, anchor, there: true });
     }
     for (const from of sources) {
       const text = readFileSync(join(ROOT, from), 'utf-8').replace(/\s*\n\s*/g, ' ');
@@ -131,16 +148,15 @@ describe('what the guide names ships, or is the install\'s own', () => {
       expect({ ...pointer, there }).toEqual({ ...pointer, there: true });
     }
     const inner = { 'AGENT-ONBOARDING.md': /\("([^"]+)"(?:, (?:above|below))?\)/g, 'DEPLOYMENTS.md': /\("([^"]+)", (?:above|below)\)/g };
-    for (const doc of Object.keys(docs) as Array<keyof typeof docs>) {
+    for (const doc of Object.keys(inner) as Array<keyof typeof inner>) {
       const text = readFileSync(join(ROOT, 'docs', doc), 'utf-8');
       for (const [, heading] of text.matchAll(inner[doc])) {
         expect({ doc, heading, there: docs[doc].includes(heading!) }).toEqual({ doc, heading, there: true });
       }
     }
     const deployments = readFileSync(join(ROOT, 'docs', 'DEPLOYMENTS.md'), 'utf-8');
-    const slug = (heading: string) => heading.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s/g, '-');
     for (const [, anchor] of deployments.matchAll(/\]\(#([\w-]+)\)/g)) {
-      expect({ anchor, there: docs['DEPLOYMENTS.md'].some((heading) => slug(heading) === anchor) }).toEqual({ anchor, there: true });
+      expect({ anchor, there: anchored['DEPLOYMENTS.md'].some((heading) => slug(heading) === anchor) }).toEqual({ anchor, there: true });
     }
   });
 
@@ -149,7 +165,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
     expect(runs.length).toBeGreaterThan(0);
     for (const [, script, rest] of runs) {
       const source = readFileSync(join(ROOT, script!), 'utf-8');
-      for (const option of rest!.match(/--[a-z-]+/g) ?? []) {
+      for (const option of rest!.match(/--\w[\w-]*/g) ?? []) {
         expect({ script, option, taken: source.includes(`'${option}'`) }).toEqual({ script, option, taken: true });
       }
     }
@@ -161,7 +177,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       const scripts = [...piece.text.replace(/\\\n\s*/g, ' ').matchAll(/bun '?<host>\/(scripts\/[\w.-]+)/g)].map((match) => match[1]!);
       if (scripts.length === 0) continue;
       const sources = scripts.map((script) => readFileSync(join(ROOT, script), 'utf-8'));
-      for (const [, option] of piece.text.matchAll(/`(--[a-z-]+)[^`]*`/g)) {
+      for (const [, option] of piece.text.matchAll(/`(--\w[\w-]*)[^`]*`/g)) {
         named++;
         const taken = sources.some((source) => source.includes(`'${option}'`));
         expect({ section: piece.heading, option, taken }).toEqual({ section: piece.heading, option, taken: true });
