@@ -103,7 +103,9 @@ function envAssignments(path: string): Assignment[] {
 }
 
 // Bun 1.4.4 reads, from the directory it starts in, .env.<mode>.local, .env.local (not under test), .env.<mode> and
-// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise.
+// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise. It puts in
+// $NAME, ${NAME} and ${NAME:-default}, quoted or not, the last giving the default, itself put in, where nothing sets
+// NAME. It reads \$ as $, and leaves ${NAME-…}, ${NAME:=…}, ${NAME:+…} and ${NAME:?…} as written (probed).
 const DOTENV_MODES = ['development', 'production', 'test'] as const;
 
 function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
@@ -120,6 +122,19 @@ export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
     for (const { name } of dotenvAssignments(dir, file)) names.add(name);
+  }
+  return [...names];
+}
+
+export function dotenvReferences(dir: string): string[] {
+  const names = new Set<string>();
+  for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
+    for (const { value } of dotenvAssignments(dir, file)) {
+      const named = value.matchAll(/\\\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\}|:-)|\$([A-Za-z_][A-Za-z0-9_]*)/g);
+      for (const [, braced, bare] of named) {
+        if (braced ?? bare) names.add((braced ?? bare)!);
+      }
+    }
   }
   return [...names];
 }
@@ -424,4 +439,11 @@ export function storedSecretRedactor(
     const { text: redacted, replaced, guessed } = redact(bytes, 0, bytes.length);
     return { text: redacted, replaced, guessed };
   };
+}
+
+export function storedSecrets(workingDir: string, env: Record<string, string | undefined>,
+  probes: Record<string, string | undefined> = env): Secret[] {
+  const envFile = join(workingDir, '.env');
+  const names = secretNames(join(workingDir, '.setup'), envFile).names;
+  return secretValues(names, envFile, env, withoutSecrets(probes, names));
 }

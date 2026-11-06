@@ -111,6 +111,13 @@ export function standardKvUnifiedConfig(recipe: Recipe, model: string): RecipeKv
   };
 }
 
+export function compressionModelOf(recipe: Recipe, model: string): string | null {
+  const strategyConfig = recipe.agent.strategy;
+  const strategyType = strategyConfig?.type ?? 'autobiographical';
+  if (strategyType === 'passthrough' || !isBuiltinStrategyType(strategyType)) return null;
+  return strategyConfig?.compressionModel ?? model;
+}
+
 export function strategyMessageCap(recipe: Recipe): number | undefined {
   const strategyConfig = recipe.agent.strategy;
   const strategyType = strategyConfig?.type ?? 'autobiographical';
@@ -147,7 +154,7 @@ export function buildFrameworkStrategy(
   const autobiographicalOpts: Record<string, unknown> = {
     headWindowTokens: headWindowTokens(recipe),
     recentWindowTokens: strategyConfig?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model),
-    compressionModel: strategyConfig?.compressionModel ?? model,
+    compressionModel: compressionModelOf(recipe, model) ?? model,
     ...(strategyConfig?.compressionMaxTokens !== undefined
       ? { compressionMaxTokens: strategyConfig.compressionMaxTokens }
       : {}),

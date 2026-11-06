@@ -764,7 +764,10 @@ function tokenLine(token: TokenCheck): string {
       return `Discord didn't say whether it works: it answered ${token.status}` +
         `${token.said === null ? '' : ` (${shown(token.said)})`}.`;
     case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
-    case 'unrecognized': return `It couldn't be checked: ${unrecognized('Discord')}.`;
+    case 'unrecognized':
+      return token.status >= 200 && token.status < 300 ? `It couldn't be checked: ${unrecognized('Discord')}.`
+        : `Discord didn't say whether it works: it answered ${token.status}, with something other than JSON.` +
+          (busy(token.status) ? ` ${BUSY}` : '');
     case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
   }
 }
@@ -810,12 +813,21 @@ function tokenNote(token: TokenCheck): string {
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}.`;
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}).`;
     case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
-    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord')}. ${CONNECTION}`;
+    case 'unrecognized':
+      return token.status >= 200 && token.status < 300 ? `, but it couldn't be checked: ${unrecognized('Discord')}. ${CONNECTION}`
+        : `, but it isn't known to work: Discord answered ${token.status}, with something other than JSON. ` +
+          (busy(token.status) ? BUSY : CONNECTION);
     default: return '';
   }
 }
 
 const CONNECTION = 'Tell the person: their connection to it is theirs to check.';
+
+const BUSY = 'It may be busy: `connectome doctor` checks the token again when it runs.';
+
+function busy(status: number): boolean {
+  return status === 429 || status >= 500;
+}
 
 function redirect(service: string, answer: { status: number; to: string | null }): string {
   const origin = answer.to === null ? null : originOf(answer.to);

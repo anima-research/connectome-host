@@ -800,11 +800,27 @@ function stopUnits(ctx: CliContext, sys: ServiceSystem, env: Record<string, stri
 }
 
 function startsAgain(record: ServiceRecord, sys: ServiceSystem, env: Record<string, string>, cmd: string): string[] {
-  const gone = unitsOf(record).find((unit) => !existsSync(unit.file));
+  const gone = unitsOf(record).find((unit) => pathState(unit.file) === 'gone');
   if (gone === undefined) return [startsByItself(record, sys, env, true, cmd)];
   const refuses = `${gone.file}, ${gone.name}'s ${fileOf(record.manager)}, is gone, so ${cmd} service start ` +
     `refuses. ${serviceRepair(cmd)}`;
   return gone === record.units.host ? [refuses] : [startsByItself(record, sys, env, false, cmd), refuses];
+}
+
+export function pathState(path: string): 'there' | 'gone' | { why: string; repair: string } {
+  try {
+    statSync(path);
+    return 'there';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'gone';
+    return {
+      why: errorText(error).replace(/\.$/, ''),
+      repair: code === 'EACCES' || code === 'EPERM'
+        ? 'Give this user search on each directory on the way to it, and run this again.'
+        : 'Repair what that path runs through, and run this again.',
+    };
+  }
 }
 
 function startsByItself(record: ServiceRecord, sys: ServiceSystem, env: Record<string, string>,
@@ -890,9 +906,14 @@ async function startService(ctx: CliContext, sys: ServiceSystem): Promise<number
       'whoever runs this machine to run it from a terminal outside it, such as over ssh.');
   }
   for (const unit of units) {
-    if (!existsSync(unit.file)) {
+    const state = pathState(unit.file);
+    if (state === 'gone') {
       throw new Refusal(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)} ` +
         'Nothing was started.');
+    }
+    if (state !== 'there') {
+      throw new Refusal(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, can't be looked at (${state.why}), so ` +
+        `whether it's there can't be told. Nothing was started. ${state.repair}`);
     }
   }
   const env = childEnv(sys);
@@ -1637,6 +1658,17 @@ function pidOf(listed: string): string | undefined {
   return /"PID"\s*=\s*(\d+);/.exec(listed)?.[1];
 }
 
+export function servicePid(record: ServiceRecord, sys: ServiceSystem = machine(), env: Record<string, string> = childEnv(sys)):
+  { pid: string } | { why: string } {
+  if (record.manager === 'systemd-user') {
+    const shown = showUnit(sys, env, record.units.host.name, ['MainPID']);
+    return typeof shown === 'string' ? { why: shown } : { pid: shown.get('MainPID') ?? '0' };
+  }
+  const state = agentState(sys, env, record.units.host);
+  if (state.kind === 'unknown') return { why: state.why };
+  return { pid: state.kind === 'running' ? state.pid : '0' };
+}
+
 async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSystem,
   env: Record<string, string>): Promise<HostReady | string> {
   const until = sys.now() + READY_WAIT_MS;
@@ -1653,18 +1685,12 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
     if (!('reason' in host)) {
       const ready = host.ready;
       host.close();
-      let pid: string;
-      if (record.manager === 'systemd-user') {
-        const shown = showUnit(sys, env, name, ['MainPID']);
-        if (typeof shown === 'string') return shown;
-        pid = shown.get('MainPID') ?? '0';
-      } else {
-        const state = agentState(sys, env, record.units.host);
-        if (state.kind === 'unknown') return `Whether ${name} runs the answering host can't be told: ${state.why}.`;
-        pid = state.kind === 'running' ? state.pid : '0';
+      const own = servicePid(record, sys, env);
+      if ('why' in own) {
+        return record.manager === 'systemd-user' ? own.why : `Whether ${name} runs the answering host can't be told: ${own.why}.`;
       }
-      return pid === String(ready.pid) ? ready
-        : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${pid}. ` +
+      return own.pid === String(ready.pid) ? ready
+        : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${own.pid}. ` +
           "That answer doesn't establish that this service's host is ready.";
     }
     last = host.reason;
@@ -1747,8 +1773,8 @@ export function serviceLines(root: string, path: string | undefined = process.en
   ];
 }
 
-export async function checkService(root: string, sys: ServiceSystem = machine()):
-  Promise<{ passed: boolean; lines: string[] }> {
+export async function checkService(root: string, sys: ServiceSystem = machine(), stoppedIsFine = false):
+  Promise<{ passed: boolean; lines: string[]; stopped?: true }> {
   let record: ServiceRecord | null;
   try {
     record = readServiceRecord(root, typedCommand(root, sys.env.PATH));
@@ -1758,14 +1784,15 @@ export async function checkService(root: string, sys: ServiceSystem = machine())
   if (record === null) {
     return { passed: false, lines: [`No service is recorded for this install (${join(root, 'service.json')}).`] };
   }
-  return checkRecord(root, record, sys);
+  return checkRecord(root, record, sys, stoppedIsFine);
 }
 
-async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSystem):
-  Promise<{ passed: boolean; lines: string[] }> {
+async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSystem, stoppedIsFine = false):
+  Promise<{ passed: boolean; lines: string[]; stopped?: true }> {
   const cmd = typedCommand(root, sys.env.PATH);
   const lines: string[] = [];
   let passed = true;
+  let stopped = false;
   const fail = (line: string) => {
     passed = false;
     lines.push(line);
@@ -1885,10 +1912,26 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       }
     }
   };
+  const units = unitsOf(record);
+  let unseen = 0;
+  for (const unit of units) {
+    const state = pathState(unit.file);
+    if (state === 'there') continue;
+    unseen += 1;
+    fail(state === 'gone' ? `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)}`
+      : `${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, can't be looked at, so whether it's there can't be told: ` +
+        `${state.why}. ${state.repair}`);
+  }
   if (record.manager === 'systemd-user') {
-    for (const unit of [record.units.host, ...(record.units.shell ? [record.units.shell] : [])]) {
-      const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState', 'NRestarts',
-        'ExecMainStartTimestamp', 'ExecMainStatus', 'Environment', 'WorkingDirectory', 'InvocationID', RESTART_PROPERTIES]);
+    const shownAll = units.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
+      'NRestarts', 'ExecMainStartTimestamp', 'ExecMainStatus', 'Environment', 'WorkingDirectory', 'InvocationID',
+      'ConditionResult', 'ConditionTimestamp', RESTART_PROPERTIES]));
+    const skipped = (shown: Map<string, string>): boolean =>
+      shown.get('ConditionResult') === 'no' && (shown.get('ConditionTimestamp') ?? '') !== '';
+    stopped = stoppedIsFine && unseen === 0 && shownAll.every((shown) => typeof shown !== 'string' &&
+      shown.get('LoadState') === 'loaded' && shown.get('ActiveState') === 'inactive' && !skipped(shown));
+    for (const [index, unit] of units.entries()) {
+      const shown = shownAll[index]!;
       if (typeof shown === 'string') {
         fail(`${shown}.`);
         continue;
@@ -1910,6 +1953,10 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         lines.push(`${unit.name} is ${state} again: ${restarted}.`);
       } else {
         if (active) lines.push(`${unit.name} is ${state}.`);
+        else if (skipped(shown)) {
+          fail(`${unit.name} is ${state}: systemd skipped its last start, since a condition its unit or a drop-in sets ` +
+            `wasn't met: \`systemctl --user status ${unit.name}\` names it.`);
+        } else if (stopped) lines.push(`${unit.name} is stopped: systemd shows it ${state}.`);
         else if (unit === record.units.host) fail(`${unit.name} is ${state}, not active.`);
         else fail(`${unit.name} is ${state}, not active: journalctl --user -u ${unit.name} shows its log.`);
         const exited = active || (shown.get('ExecMainStartTimestamp') ?? '') === '' ? ''
@@ -1941,8 +1988,14 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       }
     }
   } else {
-    for (const unit of [record.units.host, ...(record.units.shell ? [record.units.shell] : [])]) {
-      const state = agentState(sys, env, unit);
+    const states = units.map((unit) => agentState(sys, env, unit));
+    stopped = stoppedIsFine && unseen === 0 && states.every((state) => state.kind === 'unloaded');
+    for (const [index, unit] of units.entries()) {
+      const state = states[index]!;
+      if (stopped) {
+        lines.push(`${unit.name} is stopped: launchd has it unloaded.`);
+        continue;
+      }
       if (state.kind === 'unknown') {
         fail(`Whether launchd has ${unit.name} loaded can't be told: ${state.why}.`);
         continue;
@@ -1968,7 +2021,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         `Its log ${record.logs.path} isn't there yet.`);
     }
   }
-  return { passed, lines };
+  return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}) };
 }
 
 function stateOf(shown: Map<string, string>): string {

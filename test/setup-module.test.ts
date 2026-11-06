@@ -1086,6 +1086,14 @@ describe('checkDiscordToken', () => {
     expect(result).toEqual({ kind: 'refused' });
   });
 
+  test('a 401 whose answer says it isn\'t JSON isn\'t read as Discord\'s refusal, and one that says JSON is a refusal before its body comes', async () => {
+    const answering = (type: string) => (async () => new Response('<html>Unauthorized</html>', { status: 401, headers: { 'content-type': type } })) as unknown as typeof fetch;
+    expect(await checkDiscordToken('a-token', { fetch: answering('text/html; charset=utf-8') })).toEqual({ kind: 'unrecognized', status: 401 });
+    expect(await checkDiscordToken('a-token', { fetch: answering('application/json') })).toEqual({ kind: 'refused' });
+    expect(await checkDiscordToken('a-token', { fetch: (async () => new Response(new ReadableStream({ start() {} }), { status: 401, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch })).toEqual({ kind: 'refused' });
+    expect(await checkDiscordToken('a-token', { fetch: (async () => new Response('<html>', { status: 403 })) as unknown as typeof fetch })).toEqual({ kind: 'unrecognized', status: 403 });
+  });
+
   test('no answer within its limit is unanswered, saying so', async () => {
     const result = await checkDiscordToken('a-token', {
       limitMs: 50,
@@ -2159,6 +2167,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
+  });
+
+  test('a token answered with an error that isn\'t JSON names its status, and a 429 or 5xx says doctor checks it again, in place of the connection advice', async () => {
+    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+    for (const [status, after] of [[503, BUSY], [429, BUSY], [403, ' Tell the person: their connection to it is theirs to check.']] as const) {
+      const page = (async () => new Response('<html>error</html>', { status, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+      const token = install({ asker: typed('a-page-token'), fetch: page });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to work: ` +
+        `Discord answered ${status}, with something other than JSON.${after}`);
+      expect(token.shown, String(status)).toContain(`Discord didn't say whether it works: it answered ${status}, with something other ` +
+        `than JSON.${after === BUSY ? BUSY : ''}`);
+      expect(token.shown.join('\n'), String(status)).not.toContain('sign-in page');
+    }
   });
 
   test('a redirect is named, with the server it leads to, and what to set where a base URL can be set, for a key, a token and a model', async () => {

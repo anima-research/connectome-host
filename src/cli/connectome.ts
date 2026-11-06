@@ -78,6 +78,14 @@ export const COMMANDS: CliCommand[] = [
     run: update,
   },
   serviceCommand,
+  {
+    name: 'doctor',
+    usage: 'connectome doctor',
+    summary: 'Checks the install whole, its service, host, recipe, servers and Discord, then shows where an ' +
+      'incoming message got to. Exits 1 when a check finds a problem. The host takes one client at a time, so ' +
+      'doctor\'s connection to it closes another command\'s.',
+    run: async (ctx) => (await import('./doctor.js')).doctor(ctx),
+  },
 ];
 
 const io = {

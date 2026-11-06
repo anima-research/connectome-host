@@ -190,6 +190,18 @@ export function mergeRecipeServers(
   return out;
 }
 
+export function serversForRecipe(
+  recipeServers: Record<string, unknown> | undefined,
+  configPath: string,
+  overlayPath: string,
+): { listed: MergedServer[]; loaded: Array<MergedServer | ({ id: string } & Record<string, unknown>)> } {
+  const listed = mergeRecipeServers(
+    (recipeServers ?? {}) as Record<string, Record<string, unknown>>,
+    loadMcplServers(configPath) as unknown as Array<{ id: string } & Record<string, unknown>>,
+  );
+  return { listed, loaded: applyAgentOverlay(listed, overlayPath) };
+}
+
 export { AGENT_OVERLAY_FILE_NAME, AGENT_OVERLAY_FILE_ENV } from './update/agent-overlay-path.js';
 
 /** The agent overlay's path: MCPL_AGENT_OVERLAY_FILE where the environment
