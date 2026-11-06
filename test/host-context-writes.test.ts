@@ -27,7 +27,7 @@
  * agents' windows and the requests the provider receives; the refusal cases
  * (a strategy change, a branch move) read the answer and the stored rows.
  */
-import { describe, test, expect, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, setDefaultTimeout, spyOn } from 'bun:test';
 import { audienceOf } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { AutobiographicalStrategy, type StoredMessage, type StrategyContext } from '@animalabs/context-manager';
@@ -126,6 +126,26 @@ describe("an operator's settings notice", () => {
       expect(h.inWindow('mira', row!.id)).toBe(false);
       expect(h.adapter.wireOf('mira').join('\n')).not.toContain('[operator] context settings');
     } finally {
+      await h.cleanup();
+    }
+  });
+
+  // A stopped settings module writes nothing (noteForAgent returns false),
+  // and the notice says it was skipped (#485 bot review 5, finding 21).
+  test('is skipped with a warning, and no row, while the settings module is stopped', async () => {
+    const settings = new SettingsModule();
+    const h = await bootPresentedHost({ agents: ['clerk'], modules: [settings], prefix: 'settings-notice-stopped-' });
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await settings.stop();
+      const app = { framework: h.framework, recipe: DEFAULT_RECIPE } as unknown as PanelAppRef;
+      notifyAgentOfSettingsChange(app, 'clerk', 'update');
+      expect(warn.mock.calls.map((call) => String(call[0]))).toContain(
+        "[settings] notify skipped (change still applied): no started settings module to write clerk's notice through",
+      );
+      expect(h.rowWith('clerk', '[operator] context settings')).toBeUndefined();
+    } finally {
+      warn.mockRestore();
       await h.cleanup();
     }
   });
