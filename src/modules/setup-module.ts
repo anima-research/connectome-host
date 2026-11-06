@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type {
   EventResponse,
@@ -499,7 +500,16 @@ export class SetupModule implements Module {
     });
     child.stdout!.destroy();
     child.stderr!.destroy();
-    if ('error' in ended) return failed(`setup--run couldn't start bash: ${ended.error.message}`);
+    if ('error' in ended) {
+      if ((ended.error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return failed(`setup--run couldn't start bash: ${ended.error.message}`);
+      }
+      return failed(statSync(this.config.dir, { throwIfNoEntry: false })?.isDirectory()
+        ? 'setup--run couldn\'t start bash: no bash this user can run is on the PATH setup started with, so calling it ' +
+          'again runs nothing until one is. Tell the person.'
+        : `setup--run couldn't start bash: the install directory it runs commands in, ${this.config.dir}, isn't there ` +
+          'now, so calling it again runs nothing until it is. Tell the person.');
+    }
     let secrets: Secret[];
     let guessed: string[];
     try {

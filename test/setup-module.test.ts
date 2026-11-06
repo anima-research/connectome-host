@@ -167,6 +167,23 @@ describe('setup--finished', () => {
 });
 
 describe('setup--run', () => {
+  test('with no bash it can run on the PATH setup started with, it says so, that calling again won\'t help until there is, and to tell the person', async () => {
+    const { module } = install({ env: { PATH: scratch() } });
+    const result = await runCall(module, 'echo reached');
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('setup--run couldn\'t start bash: no bash this user can run is on the PATH setup started with, so ' +
+      'calling it again runs nothing until one is. Tell the person.');
+  });
+
+  test('with the install directory gone, it says the directory isn\'t there, not that bash isn\'t', async () => {
+    const { dir, module } = install();
+    rmSync(dir, { recursive: true, force: true });
+    const result = await runCall(module, 'echo reached');
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(`setup--run couldn't start bash: the install directory it runs commands in, ${dir}, isn't there ` +
+      'now, so calling it again runs nothing until it is. Tell the person.');
+  });
+
   test('runs a command in the install directory and answers its exit status and output, keeping nothing between calls', async () => {
     const { dir, module } = install();
     const first = await run(module, 'export KEPT=yes; cd /; echo "in $PWD"; echo oops >&2; exit 3');
