@@ -2413,10 +2413,10 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. Something between this machine and OpenRouter sent it: tell the person their connection is theirs to check.');
+    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. Something between this machine and OpenRouter may have sent it, or OpenRouter itself: tell the person, and that if it wasn\'t OpenRouter, their connection is theirs to check.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord sent it: tell the person their connection is theirs to check.');
+    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, set ANTHROPIC_BASE_URL to it, then call again.');
   });

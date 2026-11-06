@@ -836,7 +836,8 @@ function redirectRemedy(service: string, name?: string): string {
   const base = name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL' : null;
   return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
       `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
-    : `. Something between this machine and ${service} sent it: tell the person their connection is theirs to check`;
+    : `. Something between this machine and ${service} may have sent it, or ${service} itself: tell the person, and that ` +
+      `if it wasn't ${service}, their connection is theirs to check`;
 }
 
 function unrecognized(service: string): string {
