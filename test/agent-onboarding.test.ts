@@ -114,7 +114,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
     const files = { 'AGENT-ONBOARDING.md': 'docs/AGENT-ONBOARDING.md', 'DEPLOYMENTS.md': 'docs/DEPLOYMENTS.md', 'README.md': 'README.md' };
     const docs = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, partsOf(path)])) as Record<keyof typeof files, string[]>;
     // An anchor names a heading alone, as GitHub renders one.
-    const anchored = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, headingsOf(path)])) as Record<keyof typeof files, string[]>;
+    const headings = Object.fromEntries(Object.entries(files).map(([doc, path]) => [doc, headingsOf(path)])) as Record<keyof typeof files, string[]>;
     const sources = [
       'README.md', 'ARCHITECTURE.md',
       ...new Bun.Glob('docs/**/*.md').scanSync({ cwd: ROOT }),
@@ -135,7 +135,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       }
     }
     for (const { from, doc, anchor } of anchors) {
-      expect({ from, doc, anchor, there: anchored[doc].some((heading) => slug(heading) === anchor) }).toEqual({ from, doc, anchor, there: true });
+      expect({ from, doc, anchor, there: headings[doc].some((heading) => slug(heading) === anchor) }).toEqual({ from, doc, anchor, there: true });
     }
     for (const from of sources) {
       const text = readFileSync(join(ROOT, from), 'utf-8').replace(/\s*\n\s*/g, ' ');
@@ -151,12 +151,12 @@ describe('what the guide names ships, or is the install\'s own', () => {
     for (const doc of Object.keys(inner) as Array<keyof typeof inner>) {
       const text = readFileSync(join(ROOT, 'docs', doc), 'utf-8');
       for (const [, heading] of text.matchAll(inner[doc])) {
-        expect({ doc, heading, there: docs[doc].includes(heading!) }).toEqual({ doc, heading, there: true });
+        expect({ doc, heading, there: headings[doc].includes(heading!) }).toEqual({ doc, heading, there: true });
       }
     }
     const deployments = readFileSync(join(ROOT, 'docs', 'DEPLOYMENTS.md'), 'utf-8');
     for (const [, anchor] of deployments.matchAll(/\]\(#([\w-]+)\)/g)) {
-      expect({ anchor, there: anchored['DEPLOYMENTS.md'].some((heading) => slug(heading) === anchor) }).toEqual({ anchor, there: true });
+      expect({ anchor, there: headings['DEPLOYMENTS.md'].some((heading) => slug(heading) === anchor) }).toEqual({ anchor, there: true });
     }
   });
 
