@@ -411,7 +411,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleRecipe(app);
 
     case 'newtopic':
-      return inFlightGuard(app, cmd) ?? handleNewTopic(app, args);
+      return inFlightGuard(app, cmd) ?? handleNewTopic(app, parseCommand(command).rest);
 
     case 'bug':
       return handleBug(command, app);
@@ -1509,7 +1509,7 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
  * /newtopic writes the strategy's summary of the head window first
  * (bareTransition).
  */
-function handleNewTopic(app: AppContext, args: string[]): CommandResult {
+function handleNewTopic(app: AppContext, text: string): CommandResult {
   const agent = commandAgent(app);
   const cm = agent?.getContextManager();
   if (!agent || !cm) return { lines: [{ text: 'No context manager.', style: 'system' }] };
@@ -1522,7 +1522,9 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
     };
   }
 
-  const userContext = args.join(' ').trim() || undefined;
+  // The text as given, its line breaks included: the summary a bare
+  // /newtopic gives back is to be passed as it.
+  const userContext = text.trim() || undefined;
   const metadata = asOwnRow(undefined, agent.name);
   const reset = userContext !== undefined
     ? storeTransition(cm, userContext, metadata)
@@ -1577,8 +1579,9 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
  * written, context-manager's generateTransitionSummary() refuses it, so
  * there is no summary: nothing is stored, and the answer says why. Once a
  * summary is written, it is stored if no turn of the agent is alive, no row
- * entered the agent's window (windowMark: a whole turn, or another
- * /newtopic's transition, enters rows), the session wasn't switched, the
+ * entered the agent's window or left it (windowMark: a whole turn, or
+ * another /newtopic's transition, enters rows, and an undo or a shed takes
+ * them out), the session wasn't switched, the
  * host isn't stopping and the agent is still registered with this context;
  * otherwise nothing is stored, and the answer gives the summary back, to
  * store with /newtopic <text>. The check of the branch and the strategy here
@@ -1607,8 +1610,7 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
     : framework.getAgent(agentName)?.getContextManager() !== cm ? `${agentName} is no longer registered with this context`
     : cm.getStrategy() !== strategy || cm.currentBranch().id !== branch ? 'the branch or the strategy changed'
     : !idleWithNoTurn(framework, agentName) ? `a turn of ${agentName}'s started`
-    : windowMark(cm) !== window ? `rows entered ${agentName}'s window`
-    : undefined;
+    : windowMoved(cm, window, agentName);
   if (moved !== undefined) {
     throw new Error(
       `${moved} while the transition summary was written; nothing was stored. ` +
@@ -1618,11 +1620,24 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   return storeTransition(cm, summary, metadata);
 }
 
-/** Where the agent's window stands: the ordinal its next presented row
- *  takes (indexLength), and in legacy mode, where the window is the record,
- *  how many rows the record holds. A row entering the window changes it. */
-function windowMark(cm: ContextManager): string {
-  return cm.windowMode() === 'legacy' ? `legacy ${cm.getMessageCount()}` : `presented ${cm.indexLength()}`;
+/** Where the agent's window stands (`at`): how many items its index has
+ *  written (indexLength), which a row entering the window moves, and a row
+ *  leaving it too (an undo's or a shed's tombstone is an item), and in
+ *  legacy mode, where the window is the record, how many rows the record
+ *  holds; with how many rows the window holds (`held`, presentedLength),
+ *  which tells rows that left it from rows that entered it. */
+function windowMark(cm: ContextManager): { at: string; held: number } {
+  return {
+    at: cm.windowMode() === 'legacy' ? `legacy ${cm.getMessageCount()}` : `presented ${cm.indexLength()}`,
+    held: cm.presentedLength(),
+  };
+}
+
+/** What moved the agent's window since `before` (windowMark), if anything. */
+function windowMoved(cm: ContextManager, before: { at: string; held: number }, agentName: string): string | undefined {
+  const now = windowMark(cm);
+  if (now.at === before.at) return undefined;
+  return `rows ${now.held < before.held ? 'left' : 'entered'} ${agentName}'s window`;
 }
 
 /**

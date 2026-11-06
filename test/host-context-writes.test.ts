@@ -159,6 +159,23 @@ describe('/newtopic', () => {
     }
   });
 
+  // The summary a bare /newtopic gives back is to be passed as its text,
+  // line breaks and all (#485 bot review 2, finding 17).
+  test('given its text, stores it as given, its line breaks and spacing included', async () => {
+    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
+    const h = await bootPresentedHost({ agents: ['clerk'], agentConfig: () => ({ strategy }), prefix: 'newtopic-lines-' });
+    try {
+      await h.turn('clerk');
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
+      const given = 'Done:\n- the ledger\n\n  Next:  the release.';
+      const outcome = await handleCommand(`/newtopic ${given}`, app).asyncWork!;
+      expect(outcome.lines[0]!.text).toBe('Topic reset. Transition summary:');
+      expect(textOf(h.rowWith('clerk', '[Topic Transition]')!)).toBe(`[Topic Transition]\n\n${given}`);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   // An idle agent's turn is alive while a continuation of it (a budget
   // restart's) or a retry (a provider hold's) is on its way: the agent's
   // status reads idle, and inFlightGuard, which reads only that, lets the
@@ -299,6 +316,31 @@ describe('a bare /newtopic', () => {
       await h.cleanup();
     }
   });
+
+  // An undo or a shed takes rows out of the window, and enters none: the
+  // summary of a window that held them is given back too, and the answer
+  // says rows left it (#485 bot review 2, finding 4).
+  for (const by of ['/undo', 'a shed'] as const) {
+    test(`whose summary ${by} ran during stores nothing, and its answer gives the summary back`, async () => {
+      const { h, app, summarized, releaseSummary } = await bare(`newtopic-bare-${by === '/undo' ? 'undo' : 'shed'}-`);
+      try {
+        const result = handleCommand('/newtopic', app);
+        expect(summarized).toHaveLength(1);
+        expect(summarized[0]!.join('\n')).toContain('clerk reply 1');
+        // clerk's last reply leaves its window while the summary is written,
+        // and clerk stays idle with no turn alive.
+        const reply = h.rowWith('clerk', 'clerk reply 1')!;
+        if (by === '/undo') expect(texts(handleCommand('/undo', app))[0]).toStartWith("Undone: clerk's last turn left its window");
+        else h.framework.getAgent('clerk')!.getContextManager().retractRows([reply.id], { undone: true });
+        expect(h.inWindow('clerk', reply.id)).toBe(false);
+        releaseSummary();
+        expect(texts(await result.asyncWork!)).toEqual(refusedWith("rows left clerk's window"));
+        expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+      } finally {
+        await h.cleanup();
+      }
+    });
+  }
 
   test('pending when a /newtopic with its text is stored, stores nothing, and its answer gives the summary back', async () => {
     const { h, app, strategy, summarized, releaseSummary } = await bare('newtopic-bare-explicit-');

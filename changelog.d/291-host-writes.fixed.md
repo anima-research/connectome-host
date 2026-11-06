@@ -20,15 +20,18 @@
     provider hold's retry waiting). Now `/newtopic` is refused while a
     continuation or a retry of the agent's turn is on its way, and a bare
     `/newtopic` stores its summary only if, once it is written, the agent
-    still has no turn alive, no row entered its window, and nothing moved
-    meanwhile. A branch or strategy change while it is written leaves no
+    still has no turn alive, no row entered or left its window, and nothing
+    moved meanwhile. A branch or strategy change while it is written leaves no
     summary: context-manager refuses one written across either, so nothing
     is stored and the answer says it couldn't be written. A turn's start,
     rows entering the agent's window (a turn that started and ended, or
     another `/newtopic`'s transition: the answer says `rows entered
+    <agent>'s window`), rows leaving it (an undo or a shed: `rows left
     <agent>'s window`), a session switch or the host's stop meanwhile
     stores nothing either, and the answer gives the written summary back,
-    to pass as `/newtopic <text>`.
+    to pass as `/newtopic <text>`. `/newtopic <text>` stores the text as
+    given, its line breaks included, where it joined its words with single
+    spaces.
   - tts-relay's note that a voiced reply was interrupted is written for the
     agent that spoke: the author of the published message the heard words
     start, else the agent voicing in its channel. It was written for no
