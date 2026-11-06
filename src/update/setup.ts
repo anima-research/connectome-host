@@ -450,6 +450,13 @@ export function setup(options: SetupOptions): void {
   if (binding !== null) {
     const known = (path: string) => binding.places.some((place) => place.path === path);
     const unknown = placed.find((place) => !known(place.from));
+    if (unknown !== undefined && given !== null && Array.isArray(existing?.extraState) &&
+      existing.extraState.includes(unknown.from)) {
+      throw new ContractError(`--place ${unknown.from} names a place of state this install's record lists, but this ` +
+        'run\'s --extra-state replaces the record\'s list, so the binding doesn\'t bind it, and the install goes on ' +
+        'without it. Run setup again without that --place, or with no --extra-state to keep the record\'s list. The ' +
+        `places it binds:\n${binding.places.map(placeLine).join('\n')}`);
+    }
     if (unknown !== undefined) {
       throw new ContractError(`--place ${unknown.from} names no place this install's record, its copy's label or its Go ` +
         `backs' lists name. Those it names:\n${binding.places.map(placeLine).join('\n')}`);
@@ -592,12 +599,15 @@ export function setup(options: SetupOptions): void {
   };
   const mappedData = existing === null ? null : placeHere(existing.dataDir);
   if (existing !== null && mappedData !== null && realOrResolved(mappedData) !== dataDir) {
+    const holder = binding?.places.find((place) => place.data)?.path ?? existing.dataDir;
     throw new ContractError(binding === null
       ? `The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an install of its own: ` +
         'give this one another --root.'
       : `Bound to ${binding.to}, the install at ${root} serves ${mappedData}, the place of the data directory its ` +
         `record names, ${existing.dataDir}, and setup was given DATA_DIR ${dataDir}. Setup has changed nothing. Run it ` +
-        `with DATA_DIR ${mappedData}, or with --place giving ${existing.dataDir} the place this install's data is in.`);
+        `with DATA_DIR ${mappedData}, or with --place giving ${holder === existing.dataDir
+          ? `${holder} the place this install's data is in`
+          : `${holder} its place in this install, since ${holder} holds ${existing.dataDir}`}.`);
   }
   const recorded = existing?.extraState;
   if (existing !== null && current() === null) {

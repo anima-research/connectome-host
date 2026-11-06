@@ -333,7 +333,8 @@ install set up before setup recorded its directory is checked for a move or
 a copy only after setup next runs there. That run takes each place under the
 directory that holds the install root as this install's, unless another
 install's root lies between, and asks the same of every other place it
-names. A binding that changes
+names. A run given `--extra-state` binds the places it gives, in place of
+the record's. A binding that changes
 the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
 root first; if it's cut off, nothing starts until setup, run again, finishes
 it from the plan, or says what stops it. A Go back to a release from before

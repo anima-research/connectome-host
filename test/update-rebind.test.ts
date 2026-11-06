@@ -187,6 +187,40 @@ afterEach(() => {
 });
 
 describe('binding an install to the directory it is in', () => {
+  test('a data directory inside a place of state, after a move with another DATA_DIR, is told to the place that holds it, which --place then takes', () => {
+    const state = join(dir, 'state');
+    mkdirSync(join(state, 'data', 'sessions'), { recursive: true });
+    setup(options(install, { dataDir: join(state, 'data'), extraState: [state] }));
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const state2 = join(dir, 'state2');
+    fs.cpSync(state, state2, { recursive: true });
+    const other = join(dir, 'other');
+    mkdirSync(join(other, 'data', 'sessions'), { recursive: true });
+    const why = refusal(() => setup(options(moved, { dataDir: join(other, 'data'), places: [{ from: state, to: state2 }] })));
+    expect(why).toContain(`Run it with DATA_DIR ${join(state2, 'data')}, or with --place giving ${state} its place in this ` +
+      `install, since ${state} holds ${join(state, 'data')}.`);
+    setup(options(moved, { dataDir: join(other, 'data'), places: [{ from: state, to: other }] }));
+    expect(record(moved)).toMatchObject({ dataDir: join(other, 'data'), extraState: [other], workingDir: moved });
+  });
+
+  test('a --place for a place of state the record lists, which this run\'s --extra-state replaces, is refused saying the binding leaves it out', () => {
+    const ext = join(dir, 'ext-data');
+    mkdirSync(join(ext, 'sessions'), { recursive: true });
+    const old = join(dir, 'old-state');
+    const fresh = join(dir, 'new-state');
+    mkdirSync(old);
+    mkdirSync(fresh);
+    setup(options(install, { dataDir: ext, extraState: [old] }));
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: ext, extraState: [old] });
+    const why = refusal(() => setup(options(install, {
+      dataDir: ext, extraState: [fresh], places: [{ from: ext, to: ext }, { from: old, to: old }],
+    })));
+    expect(why.split('\n')[0]).toBe(`--place ${old} names a place of state this install's record lists, but this run's ` +
+      '--extra-state replaces the record\'s list, so the binding doesn\'t bind it, and the install goes on without it. Run ' +
+      'setup again without that --place, or with no --extra-state to keep the record\'s list. The places it binds:');
+  });
+
   test('a setup run records the real path of the directory that holds the root, as the record\'s workingDir', () => {
     const linked = join(dir, 'linked');
     symlinkSync(install, linked);
