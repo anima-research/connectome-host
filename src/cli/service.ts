@@ -508,7 +508,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const previousShell = old?.units.shell;
   const shellText = readOr(names.shell.file);
   const retiring = shell === null && (previousShell?.name === names.shell.name ||
-    (shellText !== null && fileDirectory(sys, env, manager, names.shell, shellText) === realOrResolved(work)))
+    (shellText !== null && runsHere(fileDirectory(sys, env, manager, names.shell, shellText), work)))
     ? names.shell : undefined;
   const recorded: ServiceRecord = { ...record,
     units: { ...record.units, ...(retiring === undefined ? {} : { shell: retiring }) } };
@@ -536,7 +536,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         const loaded = showUnit(sys, env, names.host.name, ['LoadState', 'WorkingDirectory', RESTART_PROPERTIES]);
         if (typeof loaded === 'string') throw new Refusal(`${loaded}. Nothing was started.`);
         if (loaded.get('LoadState') !== 'loaded' ||
-          runsFrom(loaded.get('WorkingDirectory') ?? '', sys.home) !== realOrResolved(work)) {
+          !runsHere(runsFrom(loaded.get('WorkingDirectory') ?? '', sys.home), work)) {
           throw new Refusal(`systemd didn't load ${names.host.name} from ${names.host.file} with ${work} as its working ` +
             `directory (it shows ${loaded.get('LoadState') || 'no load state'}, in ` +
             `${loaded.get('WorkingDirectory') || 'no set directory'}), so whether it restarts the host can't be checked. ` +
@@ -1097,6 +1097,10 @@ function plistField(sys: ServiceSystem, env: Record<string, string>, path: strin
   return raw.stdout.replace(/\n$/, '');
 }
 
+function runsHere(directory: string | null, work: string): boolean {
+  return directory !== null && sameDirectory(directory, work);
+}
+
 /** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
  *  ! and the home, its default. */
 function runsFrom(shown: string, home: string): string | null {
@@ -1110,11 +1114,10 @@ type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: stri
 
 function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
   env: Record<string, string>): Owner {
-  const here = realOrResolved(work);
   const text = readOr(unit.file);
   if (text !== null) {
     const runsIn = fileDirectory(sys, env, manager, unit, text);
-    if (runsIn !== here) return { kind: 'other', runsIn, from: unit.file };
+    if (!runsHere(runsIn, work)) return { kind: 'other', runsIn, from: unit.file };
   }
   if (manager !== 'systemd-user') {
     if (text !== null) return { kind: 'ok' };
@@ -1128,7 +1131,8 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
     return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
-  return runsIn === here ? { kind: 'ok' } : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
+  return runsHere(runsIn, work) ? { kind: 'ok' }
+    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
@@ -1230,7 +1234,7 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
     let label: string | null;
     try {
       const directory = plistField(sys, env, path, 'WorkingDirectory');
-      if (directory === null || realOrResolved(directory) !== realOrResolved(work)) continue;
+      if (directory === null || !sameDirectory(directory, work)) continue;
       label = plistField(sys, env, path, 'Label');
     } catch (error) {
       warn(path, errorText(error));
@@ -1257,14 +1261,13 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
 
 async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
   unit: ServiceUnit, work: string, cmd: string, recordedHere = false): Promise<boolean> {
-  const here = realOrResolved(work);
   const text = readOr(unit.file);
-  let runsIn = text === null ? (recordedHere ? here : undefined) : fileDirectory(sys, env, manager, unit, text);
+  let runsIn = text === null ? (recordedHere ? realOrResolved(work) : undefined) : fileDirectory(sys, env, manager, unit, text);
   let live: boolean;
   if (manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory']);
     if (typeof shown === 'string') throw new Refusal(`${shown}, so whether it runs another install can't be told.`);
-    if ((runsIn === undefined || runsIn === here) && shown.get('LoadState') === 'loaded') {
+    if ((runsIn === undefined || runsHere(runsIn, work)) && shown.get('LoadState') === 'loaded') {
       runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
     }
     live = STOPPING.has(shown.get('ActiveState') ?? '');
@@ -1282,7 +1285,7 @@ async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<strin
     }
     return !live;
   }
-  if (runsIn !== here) {
+  if (!runsHere(runsIn, work)) {
     if (live) {
       ctx.out(configConflict(unit, unit.file, runsIn, work, stopLine(sys, manager, unit.name)));
       return false;
@@ -1838,7 +1841,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         continue;
       }
       const policy = restartPolicy(shown);
-      if (runsFrom(shown.get('WorkingDirectory') ?? '', sys.home) !== realOrResolved(record.workingDirectory)) {
+      if (!runsHere(runsFrom(shown.get('WorkingDirectory') ?? '', sys.home), record.workingDirectory)) {
         fail(`systemd runs ${unit.name} in ${shown.get('WorkingDirectory') || 'no set directory'}, not ${record.workingDirectory}.`);
       } else if (policy.restarts) {
         lines.push(`It restarts the host when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}).`);
