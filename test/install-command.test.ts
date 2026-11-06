@@ -129,8 +129,8 @@ test('where its release has no setup and the directory\'s package has none it ca
   const other = refusal('custom-root', true);
   expect(other.exitCode).toBe(1);
   expect(other.stderr).toContain(`The registry's setup takes ${join(dir, 'connectome-host')} for the install root, and this ` +
-    `one is ${other.root}, so run the setup of 1.0.0, the release whose setup wrote this file, from ${dir} with this ` +
-    `install's own DATA_DIR: \`bun --no-env-file ${other.ownSetup} --root ${other.root}\`.`);
+    `one is ${other.root}, so run the setup of 1.0.0, the release whose setup wrote this file: \`cd ${dir} && ` +
+    `DATA_DIR=${join(dir, 'data')} bun --no-env-file ${other.ownSetup} --root ${other.root}\`.`);
   const gone = refusal('another-root', false);
   expect(gone.stderr).toContain(`and this one is ${gone.root}, so run its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
 });

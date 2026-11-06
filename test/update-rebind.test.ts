@@ -252,7 +252,7 @@ describe('binding an install to the directory it is in', () => {
     expect(list(moved)!.rebound).toBe(bound.rebound);
     expect(existsSync(join(rootOf(moved), REBIND_PLAN))).toBe(false);
     expect(existsSync(installPaths(rootOf(moved)).lock)).toBe(false);
-    expect(said[0]).toBe(`Bound the install at ${rootOf(moved)} to ${moved}, where it serves ${join(moved, 'data')} and runs 0.10.2.`);
+    expect(said[0]).toBe(`Bound the install at ${rootOf(moved)} to ${moved}, where it serves ${join(moved, 'data')} and runs 0.10.2. Start its service again if it stopped.`);
   });
 
   test('a copy with a place outside its directory is refused until that place is given, changing nothing; given, the copy is bound to its own places and the original keeps its own', () => {

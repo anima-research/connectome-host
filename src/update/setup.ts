@@ -826,7 +826,8 @@ export function setup(options: SetupOptions): void {
   if (settingUp) {
     say(`Set up ${root} as the install of ${readCurrent(root)} that serves ${dataDir}.`);
   } else if (binding !== null) {
-    say(`Bound the install at ${root} to ${binding.to}, where it serves ${dataDir} and runs ${readCurrent(root)}.`);
+    say(`Bound the install at ${root} to ${binding.to}, where it serves ${dataDir} and runs ${readCurrent(root)}. ` +
+      'Start its service again if it stopped.');
   } else {
     say(`The install at ${root} serves ${written.dataDir} and runs ${readCurrent(root)}, as before.`);
   }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   INSTALL_ROOT_ENV, appendJournal, installPaths, moveCurrent, readJournal, readRecord, releaseDir, writeJsonAtomic, type Mark,
 } from '../src/update/contract.js';
@@ -170,11 +170,13 @@ describe('the binding check, before any release loads', () => {
     return { exitCode: run.exitCode ?? -1, stderr: run.stderr.toString() };
   };
 
-  const byHandLine = (copy: string, release: string) => {
+  const RESTARTS = 'A service that restarts the host will keep meeting this until setup has run: stop it first, and ' +
+    'start it again after.';
+  const byHandLine = (copy: string, release: string, served = join(copy, 'data')) => {
     const copyRoot = join(copy, 'connectome-host');
     return `run \`${join(copyRoot, 'connectome')} setup discord\`, or, for an install set up by hand, the setup of ${release}, ` +
-      `the release whose setup wrote this file, from ${copy} with this install's own DATA_DIR: \`bun --no-env-file ` +
-      `${join(releaseDir(copyRoot, release), RELEASE_HOST, 'src', 'update', 'setup.ts')} --root ${copyRoot}\`.`;
+      `the release whose setup wrote this file: \`cd ${copy} && DATA_DIR=${served} bun --no-env-file ` +
+      `${join(releaseDir(copyRoot, release), RELEASE_HOST, 'src', 'update', 'setup.ts')} --root ${copyRoot}\`. ${RESTARTS}`;
   };
   const setupFrom = (copy: string, hostRoot: string) => setup({
     cwd: copy, dataDir: join(copy, 'data'), root: join(copy, 'connectome-host'), extraState: null, hostRoot,
@@ -200,6 +202,38 @@ describe('the binding check, before any release loads', () => {
     expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.10.2', root: copyRoot, cwd: copy });
   });
 
+  test('a copy of an install serving a data directory other than ./data is sent to a setup command that, run as printed, binds it to its own data directory', () => {
+    const state = join(install, 'state');
+    mkdirSync(join(state, 'sessions'), { recursive: true });
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: state, extraState: [], workingDir: install });
+    const host = join(releaseDir(root, '0.10.2'), RELEASE_HOST);
+    mkdirSync(join(host, 'src', 'cli'));
+    cpSync(join(import.meta.dir, '..', 'src', 'cli', 'install-command.ts'), join(host, 'src', 'cli', 'install-command.ts'));
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const copyRoot = join(copy, 'connectome-host');
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(byHandLine(copy, '0.10.2', join(copy, 'state')));
+    const command = /the release whose setup wrote this file: `([^`]+)`/.exec(run.stderr)![1]!;
+    const ran = Bun.spawnSync(['sh', '-c', command], {
+      env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH}` }, stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(ran.stderr.toString()).toBe('');
+    expect(ran.exitCode).toBe(0);
+    expect(readRecord<{ workingDir?: string; dataDir: string }>(installPaths(copyRoot).install, 'record'))
+      .toMatchObject({ workingDir: copy, dataDir: join(copy, 'state') });
+  });
+
+  test('a record of a version this release can\'t read is not taken as moved: the start goes on to the launcher, which names that version', () => {
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 2, dataDir: data, extraState: [], workingDir: join(dir, 'elsewhere') }));
+    const run = start();
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).not.toContain('moved or copied');
+    expect(run.stderr).toContain('has version 2, and this release reads only version 1');
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test('a copy whose current names an older release than the one whose setup wrote its entries is sent to that setup, not current\'s, and once it binds, current starts on the copy\'s data', () => {
     hostPackage(join(releaseDir(root, '0.9.0'), RELEASE_HOST), '0.9.0');
     moveCurrent(root, '0.9.0');
@@ -222,7 +256,7 @@ describe('the binding check, before any release loads', () => {
     copyTo(copy);
     const run = startIn(copy);
     expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
+    expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. ${RESTARTS}`);
   });
 
   test('a record from before workingDir starts as it did', () => {
