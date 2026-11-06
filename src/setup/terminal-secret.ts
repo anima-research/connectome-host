@@ -133,6 +133,9 @@ export async function askHidden(
       output.write(`${dropped.taken === 1 ? '1 pasted line' : `${dropped.taken} pasted lines`} held what you just entered ` +
         `hidden, so ${dropped.taken === 1 ? 'it was' : 'they were'} taken out${dropped.left > 0 ? '. Enter sends the rest' : ''}.\n`);
     }
-    if (draft !== '' && !gone && !given.some((line) => draft.includes(line))) rl.write(draft);
+    if (draft !== '' && !gone) {
+      if (!given.some((line) => draft.includes(line))) rl.write(draft);
+      else output.write('What you\'d typed held what you just entered hidden, so it was taken out.\n');
+    }
   }
 }

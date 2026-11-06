@@ -1854,6 +1854,7 @@ describe("the terminal's hidden question", () => {
     input.write('tok-123456\r');
     expect(await answer).toBe('tok-123456');
     expect(rl.line).toBe('');
+    expect(shown()).toContain('What you\'d typed held what you just entered hidden, so it was taken out.');
     const after = nextLine();
     input.write('after\r');
     await after;
