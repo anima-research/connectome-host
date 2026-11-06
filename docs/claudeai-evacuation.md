@@ -146,7 +146,7 @@ Bulk-imported sessions land in Chronicle with thousands of raw messages and no a
 bun scripts/warmup-session.ts '<conversation name or session id>'
 ```
 
-The name or id goes between single quotes, so the shell passes it as it is, an apostrophe in it written `'\''`.
+The name or id goes between single quotes, so the shell passes it as it is, an apostrophe in it written `'\''`. A name that begins with `-` is taken for an option, so give its session id instead: the import prints each conversation's id beside its name, and once the host runs, `/session list` shows it in brackets.
 
 Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
@@ -201,7 +201,7 @@ Once you're on the right session, type a turn. The agent should recognize the co
 If you just want to verify the pipeline works end-to-end before committing to a long warmup, pick a 2–4 message conversation:
 
 ```
-bun scripts/import-claudeai-export.ts ~/claude-export --filter '<unique substring of the smoke convo name>'
+bun scripts/import-claudeai-export.ts ~/claude-export --filter '<a regular expression matching only the name of the smoke conversation>'
 bun src/index.ts recipes/claude-export-revive.json
 # in TUI:
 /session list
