@@ -4413,8 +4413,9 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' shell ret
   f.out.length = 0;
   expect(await installService(f.ctx(['install']), f.system)).toBe(0);
   expect(readServiceRecord(at.root)!.units.shell).toBeUndefined();
-  expect(f.out.join('\n')).toContain('To bring it back, run connectome service install <recipe>');
-  expect(f.out.join('\n')).toContain('SESSION_SERVER_TOKEN or SESSION_SERVER_PORT in its source');
+  expect(f.out).toContain(`A managed shell daemon needs term-sessions-mcp installed in ${at.work}. To bring it back, run ` +
+    'connectome service install <recipe> with a recipe that names the shell client or SESSION_SERVER_TOKEN or ' +
+    'SESSION_SERVER_PORT in its source.');
   writeFileSync(at.recipe, source);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(readServiceRecord(at.root)!.units.shell).toBeDefined();
