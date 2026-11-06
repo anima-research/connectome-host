@@ -708,7 +708,7 @@ describe('the store audit', () => {
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
     expect(failed).toEqual([expect.stringMatching(new RegExp(
-      `^Couldn't audit ${dir}: its saved recipe, ${join(dir, '.recipe.json')}, can't be loaded: Recipe tuneOut.enabled was removed`,
+      `^Couldn't audit ${literally(dir)}: its saved recipe, ${literally(join(dir, '.recipe.json'))}, can't be loaded: Recipe tuneOut\\.enabled was removed`,
     ))]);
   });
 
@@ -724,7 +724,7 @@ describe('the store audit', () => {
       const { status, failed } = await audit([dir], { recipe: 'agent' });
       expect(status).toBe(1);
       expect(failed).toEqual([expect.stringMatching(new RegExp(
-        `^Couldn't audit ${dir}: its recipe, agent, can't be loaded: Recipe tuneOut.enabled was removed in agent-framework`,
+        `^Couldn't audit ${literally(dir)}: its recipe, agent, can't be loaded: Recipe tuneOut\\.enabled was removed in agent-framework`,
       ))]);
     } finally {
       process.chdir(cwd);
