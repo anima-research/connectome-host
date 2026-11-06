@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   checkService, installService, loadRecipeAsHost, portFree, readRecipeAsHost, readServiceRecord, runService, serviceLines,
+  slugOf,
   type RecipeLoad, type ServiceSystem,
 } from '../src/cli/service.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
@@ -135,7 +136,14 @@ class FakeSystemd {
   unloadPolls = 0;
   unloading = new Map<string, number>();
   bootstraps: string[] = [];
+  primary = '';
+  pids = new Map<string, number>();
   private invocations = 0;
+
+  pidFor(unit: string): number {
+    if (!this.pids.has(unit)) this.pids.set(unit, unit === this.primary ? 4242 : 5000 + this.pids.size);
+    return this.pids.get(unit)!;
+  }
 
   constructor(private readonly home: string) {}
 
@@ -274,7 +282,7 @@ class FakeSystemd {
         NRestarts: String(this.nrestarts.get(unit) ?? 0),
         ExecMainStartTimestamp: this.latest.has(unit)
           ? 'Mon ' + new Date(STARTED_AT * 1000).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : '',
-        MainPID: running ? '4242' : '0',
+        MainPID: running ? String(this.pidFor(unit)) : '0',
         ExecMainStatus: this.crashing.has(unit) ? '1' : this.exitStatus.get(unit) ?? '0',
         Environment: (loaded?.environment ?? []).join(' '),
         InvocationID: this.running.get(unit) ?? this.latest.get(unit) ?? '',
@@ -340,7 +348,7 @@ class FakeSystemd {
       const label = basename(file!).replace(/\.plist$/, '');
       if (this.agents.has(label)) return { status: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error' };
       this.bootstraps.push(label);
-      this.agents.set(label, { pid: this.agentsExit ? null : 4242 });
+      this.agents.set(label, { pid: this.agentsExit ? null : this.pidFor(label) });
       return ok();
     }
     if (verb === 'bootout') {
@@ -352,7 +360,7 @@ class FakeSystemd {
     if (verb === 'kickstart') {
       const agent = this.agents.get(target!.split('/').at(-1)!);
       if (agent === undefined) return { status: 113, stdout: '', stderr: 'Could not find service in domain for port' };
-      if (!this.agentsExit) agent.pid = 4242;
+      if (!this.agentsExit) agent.pid = this.pidFor(target!.split('/').at(-1)!);
       return ok();
     }
     return { status: 1, stdout: '', stderr: `unknown launchctl verb ${verb}` };
@@ -403,6 +411,11 @@ function fake(at: Install, options: {
   recipeLoad?: RecipeLoad | ((env: Record<string, string>) => RecipeLoad);
 } = {}): Fake {
   const systemd = new FakeSystemd(at.home);
+  const hostOf = (root: string) => (options.platform === 'darwin' ? 'com.animalabs.connectome.' : 'connectome-') +
+    slugOf(basename(dirname(root))) + (options.platform === 'darwin' ? '' : '.service');
+  systemd.primary = hostOf(at.root);
+  // A test may hand this fake another's systemd; the host's socket answers from whichever systemd runs the units.
+  let faked: Fake;
   const out: string[] = [];
   const err: string[] = [];
   const loads: Fake['loads'] = [];
@@ -438,11 +451,12 @@ function fake(at: Install, options: {
     },
     linger: () => (options.linger === undefined ? true : options.linger),
     portFree: async (port) => !taken.has(port),
-    openHost: async () => {
+    openHost: async (root) => {
       asked++;
       return options.ready === false || asked <= (options.answersAfter ?? 0)
         ? { reason: 'no host is running', down: true }
-        : { ready: { pid: 4242, recipe: at.recipe }, close() {} } as never;
+        : { ready: { pid: faked.systemd.pidFor(hostOf(root)),
+          recipe: root === at.root ? at.recipe : join(dirname(root), 'resident.json') }, close() {} } as never;
     },
     sleep: async (ms) => {
       clock += ms;
@@ -450,11 +464,12 @@ function fake(at: Install, options: {
     },
     now: () => clock,
   };
-  return {
+  faked = {
     system, systemd, out, err, loads,
     slept: () => slept,
     ctx: (argv) => ({ root: at.root, argv, out: (line) => out.push(line), err: (line) => err.push(line) }),
   };
+  return faked;
 }
 
 function hostLoads(recipe: string, work: string, env: Record<string, string>): RecipeLoad {
@@ -4966,4 +4981,18 @@ test('a secret quoted with JSON escapes in the loader\'s words is masked too', a
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('agent.proseRouting');
   expect(f.err.join('\n')).not.toContain('en-value');
+});
+
+test('a host that answers with another install\'s process isn\'t taken as this install\'s', async () => {
+  const first = install();
+  const f = fake(first);
+  expect(await installService(f.ctx(['install', first.recipe]), f.system)).toBe(0);
+  const copy = install('Copy', { home: first.home });
+  const g = fake(copy);
+  g.systemd = f.systemd;
+  g.system.run = (command, args, env) => f.systemd.run(command, args, env);
+  const original = await f.system.openHost(first.root);
+  g.system.openHost = async () => original;
+  expect(await installService(g.ctx(['install', copy.recipe]), g.system)).toBe(1);
+  expect(g.err.join('\n')).toContain(`A host answers with pid 4242, but connectome-copy.service's main process is`);
 });
