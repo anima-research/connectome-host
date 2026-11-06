@@ -18,7 +18,7 @@ import type {
 import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { workspaceReadFields } from '../workspace-read-result.js';
-import { storedInjectionMarkOf } from '@animalabs/agent-framework';
+import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { continuesBody } from '@animalabs/context-manager';
 import { storedInjectionLabel } from '../stored-injection.js';
 import { speakerOf } from '../speaker.js';
@@ -843,7 +843,7 @@ export class WebUiModule implements Module {
     const cmw = agent.getContextManager() as unknown as Partial<UndoneReadableCm> | undefined;
     if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.ordinalOf !== 'function' || typeof cmw.getAllMessages !== 'function') return;
     try {
-      this.broadcast({ type: 'undone-marks', agent: agent.name, fromIndex: 0, undone: undoneRowIds(cmw as UndoneReadableCm) });
+      this.broadcast({ type: 'undone-marks', agent: agent.name, fromIndex: 0, undone: undoneRowIds(cmw as UndoneReadableCm, agent.name) });
     } catch (err) {
       console.error('[webui] undone marks failed:', err instanceof Error ? err.message : err);
     }
@@ -3358,7 +3358,7 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
 /** What undoneRowIds reads of a context manager. */
 export interface UndoneReadableCm {
   /** The record, in order: the store's listing, kept while it is unchanged. */
-  getAllMessages(): ReadonlyArray<{ id?: unknown }>;
+  getAllMessages(): ReadonlyArray<{ id?: unknown; metadata?: unknown }>;
   /** Undefined for a row not in the window (and for every row in legacy mode). */
   ordinalOf(id: string): number | undefined;
   windowStatusOf(id: string): string;
@@ -3370,12 +3370,18 @@ export interface UndoneReadableCm {
  * entry for a sharded body carries its first shard's. An undone row is out
  * of the window, and a row in it has an ordinal, so only the rows with
  * none are asked their status: one map lookup a row, where a status read
- * of every row took 0.4 to 0.7 s of the event loop at 50,000 rows.
+ * of every row took 0.4 to 0.7 s of the event loop at 50,000 rows. A row
+ * stamped for other residents only (a co-resident's, in the store the
+ * residents share, which the listing holds whole) never enters the agent's
+ * window, so it isn't asked either.
  */
-export function undoneRowIds(cm: UndoneReadableCm): string[] {
+export function undoneRowIds(cm: UndoneReadableCm, agentName: string): string[] {
   const undone: string[] = [];
-  for (const { id } of cm.getAllMessages()) {
-    if (typeof id === 'string' && cm.ordinalOf(id) === undefined && cm.windowStatusOf(id) === 'undone') undone.push(id);
+  for (const { id, metadata } of cm.getAllMessages()) {
+    if (typeof id !== 'string' || cm.ordinalOf(id) !== undefined) continue;
+    const stamp = audienceOf(metadata);
+    if (stamp && !stamp.audience.includes(agentName)) continue;
+    if (cm.windowStatusOf(id) === 'undone') undone.push(id);
   }
   return undone;
 }
