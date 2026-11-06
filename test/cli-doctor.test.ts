@@ -2102,4 +2102,12 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     const missing = await withHost(plain, HEALTHY_HOST, () => run(plain));
     expect(missing.out).toContain('✗ LONELY_SECRET is in setup\'s list of stored secrets');
   });
+
+  test('the dotenv files are read without the install root, as the launcher\'s Bun reads them, and the root is set after', async () => {
+    const at = install();
+    writeFileSync(join(at.work, '.env.local'), 'MODEL=claude-${CONNECTOME_INSTALL_ROOT:-root-unset}\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('claude-root-unset');
+    expect(r.out).not.toContain(`claude-${at.root}`);
+  });
 });

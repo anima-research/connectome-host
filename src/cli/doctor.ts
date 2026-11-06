@@ -989,7 +989,6 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       base.DATA_DIR = dataDirOf(root);
     } catch {}
   }
-  base[INSTALL_ROOT_ENV] = root;
   const ran = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
     cwd: work,
     env: base,
@@ -1008,13 +1007,17 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       'the service\'s environment, and its error isn\'t shown, since it can hold .env\'s values: run `bun -e 0` there to ' +
       'see it.');
   }
+  let env: Record<string, string>;
   try {
-    return { env: JSON.parse(ran.stdout) as Record<string, string>, base };
+    env = JSON.parse(ran.stdout) as Record<string, string>;
   } catch {
     throw new Error(`Bun's answer in ${work} wasn't an environment doctor could read: something else wrote to its ` +
       'output, as a bunfig.toml preload can. `bun -e 0`, run there, shows what writes; once nothing does, run doctor ' +
       'again.');
   }
+  env[INSTALL_ROOT_ENV] = root;
+  base[INSTALL_ROOT_ENV] = root;
+  return { env, base };
 }
 
 function stringValues(value: unknown): Record<string, string> {
