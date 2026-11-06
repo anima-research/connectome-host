@@ -2635,21 +2635,32 @@ test('setup\'s runner stops a program still running at its limit, and says so', 
   const dir = directory();
   const started = Date.now();
   const marker = `60.${process.pid}${Date.now() % 1000}`;
-  const ran = await realWorld().run(['sh', '-c', `echo started > started; exec sleep ${marker}`], { cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeoutMs: 3_000 });
-  expect(ran.timedOut).toBe(true);
-  expect(ran.status).toBeNull();
-  expect(Date.now() - started).toBeGreaterThanOrEqual(2_950);
-  expect(Date.now() - started).toBeLessThan(60_000);
-  expect(readFileSync(join(dir, 'started'), 'utf-8')).toBe('started\n');
-  if (process.platform !== 'linux') return;
-  const left = readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && running(Number(pid)) && (() => {
+  const left = () => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && running(Number(pid)) && (() => {
     try {
       return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').includes(marker);
     } catch {
       return false;
     }
   })());
-  expect(left).toEqual([]);
+  let settled = false;
+  const pending = realWorld().run(['sh', '-c', `echo started > started; exec sleep ${marker}`], { cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeoutMs: 3_000 })
+    .finally(() => { settled = true; });
+  try {
+    if (process.platform === 'linux') {
+      while (!settled && !existsSync(join(dir, 'started'))) await Bun.sleep(10);
+      expect(left()).not.toEqual([]);
+    }
+  } finally {
+    await pending;
+  }
+  const ran = await pending;
+  expect(ran.timedOut).toBe(true);
+  expect(ran.status).toBeNull();
+  expect(Date.now() - started).toBeGreaterThanOrEqual(2_950);
+  expect(Date.now() - started).toBeLessThan(60_000);
+  expect(readFileSync(join(dir, 'started'), 'utf-8')).toBe('started\n');
+  if (process.platform !== 'linux') return;
+  expect(left()).toEqual([]);
 }, 70_000);
 
 test('a program setup can\'t start is named with what the system said', async () => {
