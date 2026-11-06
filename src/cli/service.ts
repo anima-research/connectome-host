@@ -427,6 +427,19 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   insideNeither(sys, manager, names, units, cmd);
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
+  if (shell !== null && !shell.newPort && !(await sys.portFree(Number(shell.port))) &&
+    !shellRunning(sys, manager, env, names.shell)) {
+    throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something other than this install's ` +
+      `shell daemon, ${names.shell.name}, is listening on it, as a copied install's original daemon would be. This ` +
+      `install's shell clients would reach that process, with ${shell.newToken ? 'a new' : 'the stored'} token. Give ` +
+      `this install a port of its own as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one ` +
+      'picked, then repeat this service install command. Nothing was written.');
+  }
+  if (shell !== null && (!shell.newPort || !shell.newToken)) {
+    const kept = [...(shell.newPort ? [] : [`SESSION_SERVER_PORT ${shell.port}`]),
+      ...(shell.newToken ? [] : ['SESSION_SERVER_TOKEN, not shown'])];
+    ctx.out(`The shell daemon uses ${kept.join(' and ')}, as ${envFile} holds ${kept.length === 1 ? 'it' : 'them'}.`);
+  }
   if (wantsShell && shellBin === null) {
     ctx.out("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this directory, " +
       'so no daemon was set up. Doctor can check whether the shell is served.');
@@ -1344,6 +1357,23 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
       'but no node is on this PATH. Nothing was written.');
   }
   return resolve(pkg, bin);
+}
+
+function shellRunning(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
+  unit: ServiceUnit): boolean {
+  if (manager === 'launchd') {
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') {
+      throw new Refusal(`Whether ${unit.name} is running, and so holds the stored SESSION_SERVER_PORT, can't be told: ` +
+        `${state.why}. Nothing was written.`);
+    }
+    return state.kind === 'running';
+  }
+  const shown = showUnit(sys, env, unit.name, ['ActiveState']);
+  if (typeof shown === 'string') {
+    throw new Refusal(`${shown}, so whether it holds the stored SESSION_SERVER_PORT can't be told. Nothing was written.`);
+  }
+  return RUNNING.has(shown.get('ActiveState') ?? '');
 }
 
 async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise<ShellPlan> {

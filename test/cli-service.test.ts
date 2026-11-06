@@ -4840,3 +4840,16 @@ test('a unit in its manager\'s default directory, which is this install, and one
   expect(said).toContain(`old-host.service sets no working directory, so it runs in its systemd manager's default, which is ${at.work}.`);
   expect(said).toContain("The working directory of hidden.service, a user unit, couldn't be resolved");
 });
+
+test('a stored shell port held by something other than this install\'s shell daemon is refused, and reused settings are named', async () => {
+  const at = install('My Resident', { shell: true });
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_PORT="3150"\nSESSION_SERVER_TOKEN="abc123"\n', { mode: 0o600 });
+  const held = fake(at, { taken: [3150] });
+  expect(await installService(held.ctx(['install', at.recipe]), held.system)).toBe(1);
+  expect(held.err.join('\n')).toContain(`SESSION_SERVER_PORT in ${join(at.work, '.env')} is 3150, and something other than this install's shell daemon`);
+  expect(existsSync(shellUnit(at))).toBe(false);
+  const free = fake(at);
+  expect(await installService(free.ctx(['install', at.recipe]), free.system)).toBe(0);
+  expect(free.out).toContain(`The shell daemon uses SESSION_SERVER_PORT 3150 and SESSION_SERVER_TOKEN, not shown, as ${join(at.work, '.env')} holds them.`);
+  expect(free.out.join('\n')).not.toContain('abc123');
+});
