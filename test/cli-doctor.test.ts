@@ -2003,3 +2003,30 @@ describe('connectome doctor, its round on the review of e9bb852cc', () => {
     expect(r.out).toContain('✗ DISCORD_TOKEN is in setup\'s list of stored secrets and is empty in the service\'s environment');
   });
 });
+
+describe('connectome doctor, its round on the review of aa87d916b', () => {
+  test('a DISCORD_TOKEN in .env is hidden in the form Discord is sent it, even when Bun stops doctor before it reads the service\'s environment', async () => {
+    const at = install({ prefix: 'chost-sent-form-token-', env: { DISCORD_TOKEN: 'Bot sent-form-token ' } });
+    writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./pre.ts"]\n');
+    writeFileSync(join(at.work, 'pre.ts'), 'process.exit(1);\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.out).toContain('chost-<DISCORD_TOKEN>-');
+    expect(r.out).not.toContain('sent-form-token');
+  });
+
+  test('a DISCORD_TOKEN in doctor\'s own environment is hidden in the form Discord is sent it, even when doctor stops before it reads the service\'s', async () => {
+    const before = process.env.DISCORD_TOKEN;
+    process.env.DISCORD_TOKEN = 'Bot sent-form-token ';
+    try {
+      const at = install({ prefix: 'chost-sent-form-token-' });
+      writeFileSync(join(at.work, '.setup', 'stored-secrets.json'), 'not json');
+      const r = await withHost(at, HEALTHY_HOST, () => run(at));
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.out).toContain('<DISCORD_TOKEN>');
+      expect(r.out).not.toContain('sent-form-token');
+    } finally {
+      if (before === undefined) delete process.env.DISCORD_TOKEN; else process.env.DISCORD_TOKEN = before;
+    }
+  });
+});

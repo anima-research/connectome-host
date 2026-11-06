@@ -122,7 +122,7 @@ export async function doctor(
   }
   const banner = `connectome doctor: the install at ${root}`;
   let secrets: Secret[] = [...PROVIDER_SECRETS, 'DISCORD_TOKEN']
-    .flatMap((name) => process.env[name] ? [{ name, value: process.env[name]! }] : []);
+    .flatMap((name) => process.env[name] ? [{ name, value: process.env[name]! }] : []).flatMap(withSentForms);
   let guessed: string[] = [];
   const redact = (text: string): string => {
     const bytes = Buffer.from(text, 'utf-8');
@@ -146,7 +146,7 @@ export async function doctor(
     guessed = named.guessed;
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
-    secrets = [...secrets, ...known(process.env, systemVariables())];
+    secrets = [...secrets, ...known(process.env, systemVariables())].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
       ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
