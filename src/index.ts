@@ -918,7 +918,7 @@ async function runPiped(app: AppContext) {
     const promptIfDone = (): void => {
       if (closed || unanswered > 0) return;
       if (setupModule()?.finishRequested) {
-        if (!turns.running()) rl.close();
+        if (!turns.running() && !turns.owed()) rl.close();
         return;
       }
       rl.prompt();

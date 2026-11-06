@@ -25,9 +25,9 @@ export interface PipedTurns {
   endAll(): void;
   running(): boolean;
   takenIn(): void;
+  owed(): boolean;
 }
 
-/** The longest a line waits for its turn. */
 export const PIPED_TURN_CAP_MS = 120_000;
 
 export function createPipedTurns(
@@ -40,6 +40,7 @@ export function createPipedTurns(
   const streams = new Map<string, 'open' | 'failed'>();
   let failures = createTurnFailures();
   let turnsStarted = 0;
+  let lastTakenIn: number | null = null;
   let turnRunning = false;
   const waits: Array<{ after: number; arm: () => void; hold: () => void; done: () => void }> = [];
   let held = 0;
@@ -156,6 +157,7 @@ export function createPipedTurns(
   }
 
   function switched(): void {
+    lastTakenIn = null;
     streams.clear();
     failures = createTurnFailures();
     turnRunning = false;
@@ -179,11 +181,15 @@ export function createPipedTurns(
   }
 
   function takenIn(): void {
+    lastTakenIn = turnsStarted;
     const wait = waits.at(-1);
     if (wait !== undefined) wait.after = turnsStarted;
   }
 
-  return { onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn };
+  return {
+    onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn,
+    owed: () => lastTakenIn !== null && turnsStarted <= lastTakenIn,
+  };
 }
 
 export interface TraceSource {

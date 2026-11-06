@@ -55,6 +55,25 @@ describe('the wait for a line\'s turn', () => {
     });
   }
 
+  test('a line taken in while a turn runs is owed a turn after it, even once its wait has run out, until one starts', async () => {
+    await onFakeTimers(async (advance) => {
+      const { turns, emit } = setUp();
+      const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+      expect(turns.owed()).toBe(false);
+      emit('inference:started');
+      void turns.waitForTurn(400);
+      turns.takenIn();
+      expect(turns.owed()).toBe(true);
+      await advance(400);
+      emit(settledTrace);
+      expect({ running: turns.running(), owed: turns.owed() }).toEqual({ running: false, owed: true });
+      emit('inference:started');
+      expect(turns.owed()).toBe(false);
+      emit(settledTrace);
+      expect({ running: turns.running(), owed: turns.owed() }).toEqual({ running: false, owed: false });
+    });
+  });
+
   test('endAll ends every wait at once, and no cap fires after it', async () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();
