@@ -425,8 +425,62 @@ describe('binding an install to the directory it is in', () => {
     renameSync(install, moved);
     const kept = tree(rootOf(moved));
     const why = refusal(() => setup(options(moved, { places: [{ from: outside, to: moved }] })));
-    expect(why).toContain(`The install root ${rootOf(moved)} and ${moved}, the place given for ${outside}, are one inside the other`);
+    expect(why).toBe(`The binding puts ${outside} at ${moved}, and that and the install root ${rootOf(moved)} are one inside ` +
+      'the other, so a copy of the data would hold the copy itself. Give ' + outside + ' a place apart from the root with ' +
+      '--place. Setup has changed nothing.');
     expect(tree(rootOf(moved))).toEqual(kept);
+  });
+
+  test('a place only a copy\'s label and a Go back\'s list name, given a place inside the install root, is refused as one the record names is, and nothing changes', () => {
+    const outside = join(dir, 'state.json');
+    writeFileSync(outside, 'state');
+    setup(options(install));
+    updated(install, [outside]);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const kept = tree(rootOf(moved));
+    const inside = join(rootOf(moved), 'state.json');
+    const why = refusal(() => setup(options(moved, { places: [{ from: outside, to: inside }] })));
+    expect(why).toBe(`The binding puts ${outside} at ${inside}, and that and the install root ${rootOf(moved)} are one ` +
+      'inside the other, so a copy of the data would hold the copy itself. Give ' + outside + ' a place apart from the ' +
+      'root with --place. Setup has changed nothing.');
+    expect(tree(rootOf(moved))).toEqual(kept);
+  });
+
+  test('a place the binding moves under the new directory, there a link into the install root, is refused by where the link leads, and nothing changes', () => {
+    const state = join(install, 'state.json');
+    writeFileSync(state, 'state');
+    setup(options(install, { extraState: [state] }));
+    updated(install, [state]);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const into = join(rootOf(moved), 'inside.json');
+    writeFileSync(into, 'inside');
+    rmSync(join(moved, 'state.json'));
+    symlinkSync(into, join(moved, 'state.json'));
+    const kept = tree(rootOf(moved));
+    const why = refusal(() => setup(options(moved)));
+    expect(why).toBe(`The binding puts ${state} at ${join(moved, 'state.json')}, and that, which is ${into} once its ` +
+      `links are followed, and the install root ${rootOf(moved)} are one inside the other, so a copy of the data would ` +
+      `hold the copy itself. Give ${state} a place apart from the root with --place. Setup has changed nothing.`);
+    expect(tree(rootOf(moved))).toEqual(kept);
+    expect(record(moved)!.workingDir).toBe(install);
+  });
+
+  test('a place kept where it was, which a copy\'s install root now holds, is refused, and nothing changes', () => {
+    const copy = join(dir, 'copy');
+    const state = join(rootOf(copy), 'keep.json');
+    mkdirSync(rootOf(copy), { recursive: true });
+    writeFileSync(state, 'state');
+    setup(options(install, { extraState: [state] }));
+    updated(install, [state]);
+    expect(Bun.spawnSync(['cp', '-a', `${install}/.`, copy]).exitCode).toBe(0);
+    const kept = tree(rootOf(copy));
+    const why = refusal(() => setup(options(copy, { places: [{ from: state, to: state }] })));
+    expect(why).toBe(`The binding puts ${state} at ${state}, and that and the install root ${rootOf(copy)} are one inside ` +
+      `the other, so a copy of the data would hold the copy itself. Give ${state} a place apart from the root with ` +
+      '--place. Setup has changed nothing.');
+    expect(tree(rootOf(copy))).toEqual(kept);
   });
 
   test('a place inside another is asked about with it, and the places of state outside the data directory are asked about in the record\'s order', () => {

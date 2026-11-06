@@ -618,12 +618,21 @@ export function setup(options: SetupOptions): void {
       'Choose another --root.');
   }
   const extraState = given ?? recorded?.map(placeHere) ?? [];
-  for (const [at, place] of extraState.entries()) {
-    const was = given === null ? recorded?.[at] : undefined;
-    if (was !== undefined && place !== was && (isUnder(rootReal, place) || isUnder(place, rootReal))) {
-      throw new ContractError(`The install root ${rootReal} and ${place}, the place given for ${was}, are one inside ` +
-        'the other, so a copy of the data would hold the copy itself. Give it a place apart from the root. Setup has ' +
-        'changed nothing.');
+  if (binding !== null && bindShape !== null) {
+    const puts: Array<[string, string | null]> = [
+      ...given === null ? (recorded ?? []).map((was, at): [string, string | null] => [was, extraState[at]]) : [],
+      ...boundFiles(root).flatMap((file) => file.paths.map((was): [string, string | null] => [was, mapPath(was, bindShape)])),
+    ];
+    for (const [was, place] of puts) {
+      if (place === null) continue;
+      const real = realOrResolved(place);
+      if (isUnder(rootReal, real) || isUnder(real, rootReal)) {
+        const outer = binding.places.find((one) => isUnder(was, one.path))?.path ?? was;
+        throw new ContractError(`The binding puts ${was} at ${place}, and ${real === place ? 'that'
+          : `that, which is ${real} once its links are followed,`} and the install root ${rootReal} are one inside the ` +
+          `other, so a copy of the data would hold the copy itself. Give ${outer} a place apart from the root with ` +
+          '--place. Setup has changed nothing.');
+      }
     }
   }
 
