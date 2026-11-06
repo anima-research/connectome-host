@@ -85,7 +85,11 @@
     window of the agent they show, which they ask for by scope alone: the
     conversation agent's, or a fleet child's agent that its pins or
     settings answer named (any of the child's agents before one has), and
-    not another resident's or a subagent's. A figure
+    not another resident's or a subagent's. Another of the child's agents
+    moving its window has the page ask for the child's pins and settings
+    again, and an answer naming another agent than before (the child
+    restarted with it) reads the panels again, where they stayed on the
+    old agent until fetched again. A figure
     that comes back after a newer read of it started is dropped, and the
     coverage panel's five-second poll starts no read while one is pending,
     where a read slower than the poll had another started at each tick; a

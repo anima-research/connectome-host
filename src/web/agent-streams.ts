@@ -100,6 +100,10 @@ export interface WindowFrameHooks {
    *  coverage, the compiled context, the pins, whose candidates leave an
    *  undone row out) read it again. */
   readPanels(): void;
+  /** Ask a fleet child which agent its panels answer for (its pins and
+   *  settings, which name it): one of its agents other than the one they
+   *  named moved its window. */
+  askPanelsAgent(): void;
 }
 
 /**
@@ -116,7 +120,10 @@ export interface WindowFrameHooks {
  *   posts the window to count_tokens);
  * - for a fleet child, at a `child-event` of its `window:undone` or its
  *   shed (`presentation:retracted`, reason `shed`): for the agent the child's
- *   panels named, or for any of its agents before they have named one.
+ *   panels named, or for any of its agents before they have named one. For
+ *   another of its agents they ask which agent they answer for, since the
+ *   child may have restarted under the same scope with that one, and read
+ *   again once an answer names another than before (`named`).
  *
  * Another resident's window, a subagent's, and a scope the panels don't
  * show read nothing.
@@ -148,8 +155,19 @@ export class WindowFrames {
     if (msg.type === 'child-event' && !local && msg.childName === shown.scope) {
       const event = msg.event as { type?: unknown; agentName?: unknown; reason?: unknown } | undefined;
       const moved = event?.type === 'window:undone' || (event?.type === 'presentation:retracted' && event.reason === 'shed');
-      if (moved && (shown.agent === undefined || event.agentName === shown.agent)) hooks.readPanels();
+      if (!moved) return;
+      if (shown.agent === undefined || event.agentName === shown.agent) hooks.readPanels();
+      else hooks.askPanelsAgent();
     }
+  }
+
+  /** An answer that names the panels' agent (pins, settings) came: `before`
+   *  and `after` are the panels as it found and left them. When it names
+   *  another agent than they named before, in the same scope, a fleet child
+   *  that restarted with another agent say, they read again. */
+  named(before: ShownPanels, after: ShownPanels, hooks: Pick<WindowFrameHooks, 'readPanels'>): void {
+    if (before.scope !== after.scope || before.agent === undefined || after.agent === undefined) return;
+    if (before.agent !== after.agent) hooks.readPanels();
   }
 }
 
