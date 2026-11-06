@@ -1201,14 +1201,19 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
-   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
-   * the host mirrors the agent's streaming generation — chunks, block
-   * boundaries, activation start/end, tagged with the turn's channel — to
-   * the relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak
-   * it. Also handles the relay's `interruption` events: the just-posted
-   * Discord message is edited down to the words actually voiced, and a note
-   * lands in the agent's context. `token` should be `${VAR}`-substituted
-   * from .env, never literal.
+   * TTS relay tap (melodeus-tts-relay). Off by default. When set, the host
+   * sends the agent's turns (activation start/end, on the turn's channel)
+   * and each message its prose publishes on the server `editServerId` names
+   * (one text block, on the channel it was published to; a message that's
+   * only whitespace isn't sent) to the relay's `/bot` WebSocket, where
+   * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
+   * its thinking, tool calls and tool results, and messages sent by a tool
+   * call aren't sent, and nothing is sent while the host isn't connected to
+   * the relay. Also handles the relay's `interruption` events: the host
+   * edits at most one message it recently published in the interruption's
+   * channel, to the text the client reports as voiced, and, with
+   * `notifyOnInterruption` on (its default), puts a note in the agent's
+   * context. `token` should be `${VAR}`-substituted from .env, never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
@@ -1325,10 +1330,11 @@ export interface RecipeTtsRelay {
   userId?: string;
   /** Display name stamped on stream events. Defaults to the agent's name. */
   username?: string;
-  /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
+  /** MCPL server whose channels the relay voices, and which owns `edit_message` for interruption trims. Default 'discord'.
+   *  A message published on another server isn't voiced; the host logs a line naming that server at the first such message from it. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption trims a posted message. Default true. */
+  /** Whether an interruption puts a note in the agent's context, saying what was voiced and whether the posted message was trimmed. Default true. */
   notifyOnInterruption?: boolean;
 }
 
@@ -3266,6 +3272,9 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (typeof tr.token !== 'string' || !tr.token) {
         throw new Error('modules.ttsRelay.token must be a non-empty string (use ${VAR} substitution)');
+      }
+      if (tr.editServerId !== undefined && (typeof tr.editServerId !== 'string' || !tr.editServerId)) {
+        throw new Error("modules.ttsRelay.editServerId must be a non-empty string, the key of the server the relay voices (leave it out for 'discord')");
       }
     }
 
