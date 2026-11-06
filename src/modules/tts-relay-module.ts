@@ -150,6 +150,10 @@ interface ActivationState {
   rawChannelId?: string;
   announced: boolean;
   blocks: Map<number, string>;
+  /** Its text blocks' tokens so far, which the relay voices. */
+  said: string;
+  /** Where its announcement fell, once announced. */
+  order: number;
 }
 
 interface PublishedMessage {
@@ -160,6 +164,8 @@ interface PublishedMessage {
   messageId?: string;
   text: string;
   at: number;
+  /** Where it falls among the relay's publishes and announced activations. */
+  order: number;
 }
 
 /** How many of a channel's latest publishes are kept to match its next interruption. */
@@ -168,11 +174,19 @@ const PUBLISHED_PER_CHANNEL_MAX = 32;
 const HEARD_PROBE_CHARS = 80;
 
 /** The agents whose activations were announced in a channel since its last
- *  interruption, in the order they were first announced, and whether it has
- *  had one. */
+ *  interruption, in the order they were first announced, what each one's
+ *  latest such activation said (its text blocks), and whether the channel
+ *  has had one. */
 interface VoicedInChannel {
   agents: Set<string>;
+  said: Map<string, Said>;
   interrupted: boolean;
+}
+
+/** An activation's text, and where its announcement fell (PublishedMessage.order). */
+interface Said {
+  text: string;
+  order: number;
 }
 
 function rawChannelId(mcplId: string): string {
@@ -209,6 +223,8 @@ export class TtsRelayModule implements Module {
    *  after it, though an earlier one's audio can still be queued. */
   private voicedIn = new Map<string, VoicedInChannel>();
   private published: PublishedMessage[] = [];
+  /** Orders the publishes and the announced activations. */
+  private order = 0;
 
   constructor(private readonly config: TtsRelayModuleConfig) {}
 
@@ -264,7 +280,7 @@ export class TtsRelayModule implements Module {
   private activation(agentName: string): ActivationState {
     let st = this.activations.get(agentName);
     if (!st) {
-      st = { announced: false, blocks: new Map() };
+      st = { announced: false, blocks: new Map(), said: '', order: 0 };
       this.activations.set(agentName, st);
     }
     return st;
@@ -277,7 +293,8 @@ export class TtsRelayModule implements Module {
     }
     if (!st.announced && st.rawChannelId) {
       st.announced = true;
-      const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), interrupted: false };
+      st.order = ++this.order;
+      const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), said: new Map<string, Said>(), interrupted: false };
       voiced.agents.add(agentName);
       this.voicedIn.set(st.rawChannelId, voiced);
       this.client?.emit('activation_start', {
@@ -291,6 +308,7 @@ export class TtsRelayModule implements Module {
     const st = this.activations.get(agentName);
     this.activations.delete(agentName);
     if (!st?.announced || !st.rawChannelId) return;
+    this.voicedIn.get(st.rawChannelId)?.said.set(agentName, { text: st.said, order: st.order });
     this.client?.emit('activation_end', {
       channelId: st.rawChannelId,
       ...this.identity(agentName),
@@ -310,6 +328,7 @@ export class TtsRelayModule implements Module {
           messageId: event.messageId,
           text: event.text,
           at: event.timestamp,
+          order: ++this.order,
         });
         // Trimmed by channel: one ring for every channel let another
         // channel's traffic push out a publish an interruption here can
@@ -333,6 +352,7 @@ export class TtsRelayModule implements Module {
         this.adoptChannel(st, event.agentName, traceChannelId(event));
         if (!st.rawChannelId) break;
         st.blocks.set(event.blockIndex, (st.blocks.get(event.blockIndex) ?? '') + event.content);
+        if (event.blockType === 'text') st.said += event.content;
         this.client?.emit('chunk', {
           channelId: st.rawChannelId,
           ...this.identity(event.agentName),
@@ -389,11 +409,18 @@ export class TtsRelayModule implements Module {
     );
 
     const matched = this.publishesHeard(ev);
-    const target = this.interruptedMessage(ev, matched);
-    const speaker = this.speakerOf(ev, matched);
+    const best = this.interruptedMessage(ev, matched);
+    // Heard words that start what another agent voiced in the channel after
+    // the message could be that agent's: the message isn't trimmed to them,
+    // and neither agent is told.
+    const voicedAfter = best ? this.voicedAfter(ev, best) : [];
+    const target = voicedAfter.length > 0 ? null : best;
+    const speaker = voicedAfter.length > 0
+      ? { why: `the heard words start a message published by ${best!.agentName} and what ${voicedAfter.join(', ')} voiced in that channel after it` }
+      : this.speakerOf(ev, matched);
     // An interruption ends its channel's voicing: what was published there
     // before it isn't heard in a later one.
-    this.voicedIn.set(ev.channelId, { agents: new Set(), interrupted: true });
+    this.voicedIn.set(ev.channelId, { agents: new Set(), said: new Map(), interrupted: true });
     this.published = this.published.filter((r) => r.rawChannelId !== ev.channelId);
     let edited = false;
 
@@ -411,6 +438,8 @@ export class TtsRelayModule implements Module {
       if (!edited) {
         console.error(`[tts-relay] edit_message failed for ${target.messageId}:`, result.error);
       }
+    } else if (voicedAfter.length > 0) {
+      console.error(`[tts-relay] the heard words start ${best!.messageId ?? 'a published message'} and what ${voicedAfter.join(', ')} voiced after it — nothing edited`);
     } else if (!target?.messageId) {
       console.error('[tts-relay] no published message matched the interruption — nothing edited');
     }
@@ -474,6 +503,23 @@ export class TtsRelayModule implements Module {
       if (r.rawChannelId === ev.channelId && collapseWs(r.text).startsWith(probe)) matched.push(r);
     }
     return matched;
+  }
+
+  /** The agents other than `message`'s author whose activation in the
+   *  interruption's channel was announced after `message` was published,
+   *  since the channel's previous interruption, and whose text so far starts
+   *  with the heard words' first HEARD_PROBE_CHARS characters: each live
+   *  activation's, and each agent's latest that has ended. The relay can't
+   *  tell which of these was being voiced. */
+  private voicedAfter(ev: InterruptionEvent, message: PublishedMessage): string[] {
+    const probe = collapseWs(ev.spokenText).slice(0, HEARD_PROBE_CHARS);
+    const said = new Map(this.voicedIn.get(ev.channelId)?.said ?? []);
+    for (const [agent, st] of this.activations) {
+      if (st.announced && st.rawChannelId === ev.channelId) said.set(agent, { text: st.said, order: st.order });
+    }
+    return [...said]
+      .filter(([agent, s]) => agent !== message.agentName && s.order > message.order && collapseWs(s.text).startsWith(probe))
+      .map(([agent]) => agent);
   }
 
   /** Of `matched` (newest first), the one whose text shares the longest

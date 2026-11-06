@@ -20,3 +20,10 @@
   another channel's traffic could push out a message by one agent, and
   heard words that started it and another agent's message were taken as
   the other agent's alone.
+- tts-relay neither edits a published message nor writes a note when the
+  heard words start it and also what another agent voiced in the channel
+  after it was published (that agent's live activation there, or its
+  latest since the channel's previous interruption), and the log names
+  both: the relay can't tell whose voicing was cut. The message was
+  trimmed to the heard words and its author told, a fully voiced message
+  included, before the channel's first interruption as after one.
