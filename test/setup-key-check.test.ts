@@ -95,12 +95,6 @@ const server = Bun.serve({
     if (choice === 'errortype') return Response.json({ type: 'error', role: 'assistant', content: [] });
     if (choice === 'typekey') return new Response('<html></html>', { headers: { 'content-type': `text/html; key=${key}` } });
     if (choice === 'waitkey') return new Response('', { status: 429, headers: { 'retry-after': `${key}` } });
-    if (choice === 'stall' || choice === 'stall401' || choice === 'stall429') {
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"type":')); } }), {
-        status: choice === 'stall' ? 200 : Number(choice.slice(5)),
-        headers: { 'content-type': 'application/json', 'retry-after': '37' },
-      });
-    }
     if (choice === 'waitempty') return new Response('', { status: 429, headers: { 'retry-after': '' } });
     if (choice === 'waitdate') return new Response('', { status: 429, headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } });
     if (choice === 'echo') return Response.json({ type: 'error', error: { type: 'x', message: `no such key: ${key}` } }, { status: 401 });
@@ -381,24 +375,27 @@ describe("the key's one real call", () => {
     }
   });
 
-  test('a 2xx whose body never comes is named as a server that didn\'t answer, not as a wrong answer', async () => {
-    let answered = false;
-    const result = await checkKey({
-      key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300,
-      fetch: (async (url: string, init: RequestInit) => {
-        const response = await fetch(url, init);
-        answered = true;
-        return response;
-      }) as unknown as typeof fetch,
+  const stalled = (status: number) => (async (_url: string, init: RequestInit) => {
+    let end: (reason: unknown) => void = () => {};
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"type":'));
+        end = (reason) => controller.error(reason);
+      },
     });
-    expect(answered).toBe(true);
+    init.signal?.addEventListener('abort', () => end(init.signal!.reason), { once: true });
+    return new Response(body, { status, headers: { 'content-type': 'application/json', 'retry-after': '37' } });
+  }) as unknown as typeof fetch;
+
+  test('a 2xx whose body never comes is named as a server that didn\'t answer, not as a wrong answer', async () => {
+    const result = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(200) });
     expect(result).toEqual({ ok: false, cause: expect.stringContaining("didn't answer within 0.3 s"), anotherKeyMayHelp: false });
   });
 
   test('a refusal whose body never comes keeps its status\'s cause, and its Retry-After', async () => {
-    const refused = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall401'), timeoutMs: 300 });
+    const refused = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(401) });
     expect(refused).toEqual({ ok: false, cause: expect.stringContaining('refused the key (401)'), anotherKeyMayHelp: true });
-    const limited = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall429'), timeoutMs: 300 });
+    const limited = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(429) });
     expect(limited).toEqual({ ok: false, cause: expect.stringContaining('(429)'), anotherKeyMayHelp: false });
     expect(cause(limited)).toContain('a wait of 37 s');
   });

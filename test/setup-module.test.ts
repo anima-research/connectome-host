@@ -77,8 +77,14 @@ function alive(pid: number): boolean {
     // kill(pid, 0) succeeds for a zombie too, so read the state /proc gives after the name in parentheses.
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
     return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -296,18 +302,17 @@ describe('setup--run', () => {
     expect(await goneWithin(Number(readFileSync(pidFile, 'utf-8')), 3_000)).toBe(true);
   }, 20_000);
 
-  linuxTest('kills a process in its group that ignores SIGTERM, 5 s after the limit, even once the command itself has ended', async () => {
+  linuxTest('kills a process in its group that outlives its SIGTERM, 5 s after that SIGTERM, even once the command itself has ended', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'stubborn.pid');
-    const started = Date.now();
-    const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
+    const termFile = join(dir, 'term-at');
+    const answer = await run(module, `(trap 'date +%s%3N > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do sleep 0.1; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
     expect(answer.stoppedAtLimit).toBe(true);
     const stubborn = Number(readFileSync(pidFile, 'utf-8'));
-    // The limit passes no sooner than 3 s after `started`, so the kill comes no sooner than 8 s after it.
-    const limit = started + 3_000;
-    await Bun.sleep(Math.max(0, limit + 4_500 - Date.now()));
+    const termAt = Number(await waitForFile(termFile));
+    await Bun.sleep(Math.max(0, termAt + 4_500 - Date.now()));
     expect(alive(stubborn)).toBe(true);
-    expect(await goneWithin(stubborn, limit + 15_000 - Date.now())).toBe(true);
+    expect(await goneWithin(stubborn, termAt + 15_000 - Date.now())).toBe(true);
   }, 30_000);
 
   linuxTest('stopping the module within 5 s of a limit still stops what that command left in its group, a SIGTERM-ignoring process too', async () => {
@@ -603,7 +608,7 @@ describe('setup--run', () => {
       const result = await runCall(module, 'touch ran; cat .env');
       expect(result.isError, envFile).toBe(true);
       expect(result.error, envFile).toBe(`setup--run ran nothing: ${outside(join(dir, '.env'), line, why, others)}. While .env holds such a line, what Bun reads from it, and so what a command prints of a secret, isn't known, so ask the person to put that right; you can't, since setup--run runs nothing meanwhile.`);
-      for (const part of ['first-half', 'second-half', 'a note', 'over two']) expect(result.error, envFile).not.toContain(part);
+      for (const part of ['first-half', 'second-half', 'a note', 'over two']) expect(JSON.stringify(result), envFile).not.toContain(part);
       expect(existsSync(join(dir, 'ran')), envFile).toBe(false);
     }
   });
@@ -615,7 +620,7 @@ describe('setup--run', () => {
     expect(existsSync(join(dir, 'ran'))).toBe(true);
     expect(result.isError).toBe(true);
     expect(result.error).toContain(outside(join(dir, '.env'), 1, WHY.value, 1));
-    for (const part of ['printed-line', 'first-half', 'second-half']) expect(result.error).not.toContain(part);
+    for (const part of ['printed-line', 'first-half', 'second-half']) expect(JSON.stringify(result)).not.toContain(part);
   });
 
   test('replaces a secret stored while its command was running', async () => {
@@ -996,7 +1001,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     expect(readEnvFile(join(made.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-four');
   });
 
-  test('asks Discord nothing about a secret of any other name, and stores it as typed, spaces and all', async () => {
+  test('asks Discord nothing about a secret of a name no service checks, and stores it as typed, spaces and all', async () => {
     let called = 0;
     const made = install({ asker: typed('  a-value '), fetch: (async () => { called += 1; return new Response(''); }) as unknown as typeof fetch });
     expect((await askSecret(made.module, { name: 'DISCORD_TOKEN_NOTE', purpose: 'x' })).success).toBe(true);
@@ -1058,7 +1063,7 @@ describe('checkDiscordToken', () => {
 });
 
 describe('setup--ask_secret', () => {
-  test('asks the person, stores the value in .env (0600) beside what is there, and answers only where it went', async () => {
+  test('asks the person, stores the value in .env (0600) beside what is there, and answers where it went and what Discord said of it', async () => {
     const asked: Array<{ name: string; purpose: string }> = [];
     const { dir, module } = install({
       envFile: 'ANTHROPIC_API_KEY="sk-ant-the-key"\nDISCORD_TOKEN="old"\n',

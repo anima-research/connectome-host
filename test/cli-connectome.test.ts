@@ -250,7 +250,7 @@ test('help lists the commands, and a word that isn\'t one is a usage error', asy
   expect(wrong.err).toContain('there\'s no command frobnicate');
 });
 
-test('every command help and the hints print is plain `connectome` once the install\'s own command is the first on PATH', async () => {
+test('help names no command by the install\'s path, and its usage lines and send\'s usage hint name plain `connectome`, once the install\'s own command is the first on PATH', async () => {
   const { root } = install();
   const { path } = writeInstallCommand(root, '');
   const help = await run(path, ['help'], root, undefined, root);

@@ -31,7 +31,7 @@ async function until(check: () => boolean, ms: number, label: string): Promise<v
 }
 
 test.skipIf(process.platform !== 'linux')(
-  'in readline mode, a Ctrl-C while a turn waits on its model ends the host by its own shutdown, with exit 0 and no error (Linux only)',
+  'in readline mode, a Ctrl-C while a turn waits on its model ends the host by its own shutdown, with exit 0 and without readline\'s use-after-close error (Linux only)',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'readline-interrupt-'));
     dirs.push(dir);
@@ -160,6 +160,7 @@ test.skipIf(process.platform !== 'linux')(
     expect(output).not.toContain('the-typed-value');
     host.stdin!.write('/quit\r');
     expect(await exit).toBe(0);
+    expect(output).not.toContain('the-typed-value');
   },
   120_000,
 );
@@ -399,6 +400,7 @@ linux('setup--ask_secret takes a token pasted in a bracketed paste with its own 
     expect(pasted.seen.output).not.toContain('the-pasted.value-1');
     hosts.at(-1)!.stdin!.write('/quit\r');
     expect(await pasted.exit).toBe(0);
+    expect(pasted.seen.output).not.toContain('the-pasted.value-1');
 
     const other = mkdtempSync(join(tmpdir(), 'readline-paste-secret-c-'));
     dirs.push(other);
