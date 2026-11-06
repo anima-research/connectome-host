@@ -388,16 +388,16 @@ export class SetupModule implements Module {
       return turn;
     }
     if (call.name === 'check_model') {
-      return this.askedAll().then(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
+      return this.afterAsked(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
     }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
   }
 
-  private async askedAll(): Promise<void> {
+  private async afterAsked(work: () => Promise<ToolResult>): Promise<ToolResult> {
     for (let asking = this.asking; ; asking = this.asking) {
       await asking;
-      if (asking === this.asking) return;
+      if (asking === this.asking) return work();
     }
   }
 
@@ -434,7 +434,11 @@ export class SetupModule implements Module {
       const given = typeof limit === 'number' ? String(limit) : JSON.stringify(limit);
       return failed(`setup--run's timeoutMs was ${given}: it's a number of ms above 0 and at most ${MAX_TIMEOUT_MS}.`);
     }
-    await this.askedAll();
+    const command = input.command;
+    return this.afterAsked(() => this.launch(command, limit));
+  }
+
+  private async launch(command: string, limit: number): Promise<ToolResult> {
     if (this.stopping) return failed('The host is stopping, so setup--run runs nothing, and calling it again won\'t change that.');
     let atLaunch: { names: string[]; values: Secret[] };
     try {
@@ -443,14 +447,14 @@ export class SetupModule implements Module {
       return this.damaged(error, 'setup--run ran nothing');
     }
     this.config.show('Setup\'s agent runs:');
-    for (const line of shownCommand(input.command, atLaunch.values)) this.config.show(`  ${line}`);
+    for (const line of shownCommand(command, atLaunch.values)) this.config.show(`  ${line}`);
     // 4 bytes more: UTF-8's longest character (RFC 3629, section 3), so a cut can be moved back to fall between
     // characters.
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);
     const env = this.commandEnv(atLaunch.names);
-    const child = spawn('bash', ['--norc', '-c', input.command], {
+    const child = spawn('bash', ['--norc', '-c', command], {
       cwd: this.config.dir,
       env,
       detached: true,

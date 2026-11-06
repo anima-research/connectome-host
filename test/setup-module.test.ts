@@ -290,6 +290,52 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('token <constructor>\n');
   });
 
+  // A second question asked from a handler on the first one's chain, which runs as the wait for the first ends: the
+  // tool's start line is shown before that question is asked, or after it's answered, never between.
+  async function startedWhileOpen(call: ToolCall, startLine: string, firstName: string, extra: { fetch?: typeof fetch } = {}) {
+    let releaseFirst: (value: string | null) => void = () => {};
+    let releaseSecond: (value: string | null) => void = () => {};
+    const answers = [
+      new Promise<string | null>((done) => { releaseFirst = done; }),
+      new Promise<string | null>((done) => { releaseSecond = done; }),
+    ];
+    let asks = 0;
+    const made = install({ ...extra, asker: { ask: () => { asks += 1; return answers.shift()!; } } });
+    const first = askSecret(made.module, { name: firstName, purpose: 'x' });
+    const pending = made.module.handleToolCall(call);
+    let second: Promise<unknown> | undefined;
+    let askedAt = -1;
+    void (made.module as unknown as { asking: Promise<unknown> }).asking.then(() => {
+      askedAt = made.shown.length;
+      second = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
+    });
+    releaseFirst('sk-first-value');
+    await first;
+    await Bun.sleep(50);
+    const answeredAt = made.shown.length;
+    releaseSecond('second-value');
+    await second;
+    const result = await pending;
+    const started = made.shown.findIndex((line) => line.includes(startLine));
+    return { result, started: started >= 0, whileAsked: started >= askedAt && started < answeredAt, asks };
+  }
+
+  test('a command doesn\'t start while a question asked as its wait for the earlier ones ended is unanswered', async () => {
+    const { result, ...when } = await startedWhileOpen(
+      { id: 'r1', name: 'run', input: { command: 'echo ran' } } as ToolCall, 'Setup\'s agent runs:', 'MY_TOKEN');
+    expect(when).toEqual({ started: true, whileAsked: false, asks: 2 });
+    expect(result.success).toBe(true);
+  });
+
+  test('a model check doesn\'t start while a question asked as its wait for the earlier ones ended is unanswered', async () => {
+    const fetchModels = (async () => Response.json({ data: [{ id: 'gpt-6.1-terra' }] })) as unknown as typeof fetch;
+    const { result, ...when } = await startedWhileOpen(
+      { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall,
+      'Checking gpt-6.1-terra', 'OPENAI_API_KEY', { fetch: fetchModels });
+    expect(when).toEqual({ started: true, whileAsked: false, asks: 2 });
+    expect(result.success).toBe(true);
+  });
+
   test('a timeoutMs out of its range is refused, naming the value given', async () => {
     const { module } = install();
     const result = await runCall(module, 'true', -5);
