@@ -3273,6 +3273,9 @@ export function validateRecipe(raw: unknown): Recipe {
       if (typeof tr.token !== 'string' || !tr.token) {
         throw new Error('modules.ttsRelay.token must be a non-empty string (use ${VAR} substitution)');
       }
+      if (tr.editServerId !== undefined && (typeof tr.editServerId !== 'string' || !tr.editServerId)) {
+        throw new Error("modules.ttsRelay.editServerId must be a non-empty string, the key of the server the relay voices (leave it out for 'discord')");
+      }
     }
 
     if (mods.fleet && typeof mods.fleet === 'object') {

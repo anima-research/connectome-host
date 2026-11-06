@@ -8,3 +8,7 @@
   and the server the relay voices. Unchanged: a host whose Discord server's
   key is `discord`, or whose `editServerId` already names it, needs no
   change to its recipe.
+- **Operators whose `modules.ttsRelay.editServerId` is empty or isn't a
+  string:** the host now refuses the recipe at load, naming the field.
+  Set it to the key of the server the relay voices, or leave it out for
+  `discord`.
