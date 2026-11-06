@@ -15,6 +15,7 @@ import {
   unwritableValue, withoutSecrets, writeEnvValue, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
+import { originOf } from '../setup/key-check.js';
 import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAnswer } from '../setup/provider-key.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { writeJsonAtomic } from '../update/contract.js';
@@ -808,16 +809,18 @@ function tokenNote(token: TokenCheck): string {
 const CONNECTION = 'Tell the person: their connection to it is theirs to check.';
 
 function redirect(service: string, answer: { status: number; to: string | null }): string {
-  return `${service} answered ${answer.status}, a redirect${answer.to === null ? '' : ` to ${answer.to}`}, which setup ` +
+  const origin = answer.to === null ? null : originOf(answer.to);
+  return `${service} answered ${answer.status}, a redirect${origin === null ? '' : ` to ${origin}`}, which setup ` +
     'doesn\'t follow with a secret';
 }
 
 function redirectRemedy(service: string, name?: string): string {
   const base = name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL' : null;
-  return base !== null ? `. If ${base} in .env is meant to lead there, ask the person to set it to where the redirect leads, then call again`
+  return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
+      `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
     : `. Something between this machine and ${service} sent it: tell the person their connection is theirs to check`;
 }
 
 function unrecognized(service: string): string {
-  return `the answer wasn't ${service}'s, as a network's sign-in page isn't`;
+  return `its answer wasn't JSON, as ${service}'s are: a network's sign-in page is one such answer`;
 }

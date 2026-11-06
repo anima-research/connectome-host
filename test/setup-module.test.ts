@@ -1977,33 +1977,45 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(unasked.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic couldn\'t be asked (connect ECONNREFUSED). Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
   });
 
-  test('a 2xx that isn\'t the service\'s answer, such as a sign-in page, is said to be no check, of a key, a token and a model, with what to tell the person', async () => {
+  test('a 2xx that isn\'t JSON, such as a sign-in page, is said to be no check, of a key, a token and a model, with what to tell the person', async () => {
     const portal = (async () => new Response('<html>Sign in to this network</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const key = install({ asker: typed('sk-ant-portal'), fetch: portal });
     const stored = await askSecret(key.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: the answer wasn't Anthropic's, as a network's sign-in page isn't. Tell the person: their connection to it is theirs to check.`);
-    expect(key.shown).toContain('It couldn\'t be checked: the answer wasn\'t Anthropic\'s, as a network\'s sign-in page isn\'t.');
+    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Anthropic's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
+    expect(key.shown).toContain('It couldn\'t be checked: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer.');
     const token = install({ asker: typed('a-portal-token'), fetch: portal });
     const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: the answer wasn't Discord's, as a network's sign-in page isn't. Tell the person: their connection to it is theirs to check.`);
+    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: the answer wasn\'t Anthropic\'s, as a network\'s sign-in page isn\'t. Tell the person: their connection to it is theirs to check.');
+    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
   });
 
-  test('a redirect is named, with where it leads, and what to set where a base URL can be set, for a key, a token and a model', async () => {
-    const redirecting = (async () => new Response(null, { status: 307, headers: { location: 'https://api.example.test/v1/models' } })) as unknown as typeof fetch;
+  test('a redirect is named, with the server it leads to, and what to set where a base URL can be set, for a key, a token and a model', async () => {
+    const redirecting = (async () => new Response(null, { status: 307, headers: { location: 'https://api.example.test/v1/models?from=old' } })) as unknown as typeof fetch;
     const openai = install({ asker: typed('sk-openai-moved'), fetch: redirecting });
     const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test/v1/models, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead there, ask the person to set it to where the redirect leads, then call again.`);
-    expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test/v1/models, which setup doesn\'t follow with a secret.');
+    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, set OPENAI_BASE_URL to it, then call again.`);
+    expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
     expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. Something between this machine and OpenRouter sent it: tell the person their connection is theirs to check.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test/v1/models, which setup doesn\'t follow with a secret. Something between this machine and Discord sent it: tell the person their connection is theirs to check.');
+    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord sent it: tell the person their connection is theirs to check.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test/v1/models, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead there, ask the person to set it to where the redirect leads, then call again.');
+    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, set ANTHROPIC_BASE_URL to it, then call again.');
+  });
+
+  test('a redirect shows no part of a base URL that carries a credential, its path included', async () => {
+    const moved = (async () => new Response(null, { status: 302, headers: { location: 'https://other.example/private-token/v1/models' } })) as unknown as typeof fetch;
+    const made = install({ envFile: 'OPENAI_BASE_URL="https://proxy.example/private-token/v1"\n', asker: typed('sk-openai-moved'), fetch: moved });
+    listSecrets(made.module, 'OPENAI_BASE_URL');
+    const stored = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
+    expect(String(stored.data)).not.toContain('private-token');
+    expect(made.shown.join('\n')).not.toContain('private-token');
+    expect(String(stored.data)).toContain('a redirect to https://other.example, which setup doesn\'t follow with a secret.');
+    const model = await checkModel(install({ envFile: 'OPENAI_BASE_URL="https://proxy.example/private-token/v1"\nOPENAI_API_KEY="sk-openai"\n', fetch: moved }).module, { name: 'OPENAI_API_KEY', model: 'gpt-5' });
+    expect(model.error).not.toContain('private-token');
   });
 
   test('check_model doesn\'t say a model is unlisted where the provider says it lists more than one answer holds', async () => {
