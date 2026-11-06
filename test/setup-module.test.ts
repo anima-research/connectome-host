@@ -1139,6 +1139,32 @@ describe('checkProviderKey', () => {
     });
     expect(result).toEqual({ kind: 'redirected', status: 302, to: 'https://<OPENROUTER_API_KEY>.example/' });
   });
+
+  test('another stored secret is hidden in what the provider says, in its trimmed form as well as whole', async () => {
+    const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
+      hide: [{ name: 'MY_TOKEN', value: '  abc123  ' }],
+      fetch: (async () => Response.json({ error: { message: 'no route for abc123' } }, { status: 400 })) as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ kind: 'answered', status: 400, said: 'no route for <MY_TOKEN>' });
+  });
+
+  test('a 401 or 403 in a body that isn\'t JSON is no answer of the provider\'s, decided before the body, and one in JSON is its refusal', async () => {
+    const answering = (status: number, type: string | null, body: BodyInit | null) => (async () =>
+      new Response(body, { status, headers: type === null ? {} : { 'content-type': type } })) as unknown as typeof fetch;
+    const never = () => new ReadableStream({ start() {} });
+    for (const status of [401, 403]) {
+      const results = {
+        html: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, 'text/html; charset=utf-8', never()) }),
+        json: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, 'application/json; charset=utf-8', never()) }),
+        problem: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, 'application/problem+json', never()) }),
+        untyped: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, null, never()) }),
+      };
+      expect({ status, ...results }).toEqual({
+        status, html: { kind: 'unrecognized', status }, json: { kind: 'refused', status },
+        problem: { kind: 'refused', status }, untyped: { kind: 'refused', status },
+      });
+    }
+  });
 });
 
 describe('checkDiscordToken', () => {
@@ -1177,6 +1203,16 @@ describe('checkDiscordToken', () => {
       fetch: (async () => new Response(new ReadableStream({ start() {} }), { status: 401 })) as unknown as typeof fetch,
     });
     expect(result).toEqual({ kind: 'refused' });
+  });
+
+  test('a 401 in a body that isn\'t JSON is no answer of Discord\'s, decided before the body, and one in JSON is its refusal', async () => {
+    const answering = (type: string) => (async () => new Response(new ReadableStream({ start() {} }), {
+      status: 401, headers: { 'content-type': type },
+    })) as unknown as typeof fetch;
+    expect({
+      html: await checkDiscordToken('a-token', { fetch: answering('text/html; charset=utf-8') }),
+      json: await checkDiscordToken('a-token', { fetch: answering('application/json') }),
+    }).toEqual({ html: { kind: 'unrecognized', status: 401 }, json: { kind: 'refused' } });
   });
 
   test('no answer within its limit is unanswered, saying so', async () => {

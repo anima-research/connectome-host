@@ -35,7 +35,8 @@ const listed = (body: unknown): boolean => idsOf(body) !== undefined;
 // ending in / takes the path without its first /.
 const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
 
-// A Location may be relative to the URL asked (RFC 9110, 10.2.2).
+// A relative Location is resolved against the origin of the URL asked, not the whole URL as RFC 9110 (10.2.2) has
+// it, so a credential in the URL's user part stays out of the target.
 export function redirectTarget(location: string, asked: string): string {
   try {
     return new URL(location, new URL(asked).origin).href;
@@ -120,7 +121,12 @@ async function ask<T>(
   } catch (error) {
     return unanswered(error);
   }
-  if (response.status === 401 || response.status === 403) return { kind: 'refused', status: response.status };
+  // A refusal in a body that isn't JSON, such as a network's sign-in page, isn't the provider's.
+  const type = response.headers.get('content-type');
+  if (response.status === 401 || response.status === 403) {
+    return type === null || /^application\/([\w.+-]+\+)?json\b/i.test(type.trim())
+      ? { kind: 'refused', status: response.status } : { kind: 'unrecognized', status: response.status };
+  }
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
     return {
@@ -161,7 +167,7 @@ async function ask<T>(
 // The key under test in any letter case, since a server that puts it in a URL's host gives it back lowercased.
 function hidden(words: string, key: string, name: string, also: Options['hide'] = []): string {
   const forms = [...[key, key.trim()].map((value) => ({ name, value, anyCase: true })),
-    ...also.map((form) => ({ ...form, anyCase: false }))]
+    ...also.flatMap((form) => [form.value, form.value.trim()].map((value) => ({ name: form.name, value, anyCase: false })))]
     .filter(({ value }) => value !== '').sort((a, b) => b.value.length - a.value.length);
   for (const form of forms) {
     words = words.replace(new RegExp(form.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), form.anyCase ? 'gi' : 'g'),

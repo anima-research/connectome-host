@@ -49,7 +49,12 @@ export async function checkDiscordToken(
   } catch (error) {
     return unanswered(error);
   }
-  if (response.status === 401) return { kind: 'refused' };
+  // A refusal in a body that isn't JSON, such as a network's sign-in page, isn't Discord's.
+  const type = response.headers.get('content-type');
+  if (response.status === 401) {
+    return type === null || /^application\/json\b/i.test(type.trim())
+      ? { kind: 'refused' } : { kind: 'unrecognized', status: response.status };
+  }
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
     return { kind: 'redirected', status: response.status, to: to === null ? null : redirectTarget(hidden(to, token), DISCORD_API) };
