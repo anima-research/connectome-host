@@ -296,7 +296,8 @@ test('the makeup gives count_tokens_error, and no total, for a count answered 20
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   };
-  globalThis.fetch = (async () => Response.json({})) as unknown as typeof fetch;
+  let asked = 0;
+  globalThis.fetch = (async () => { asked += 1; return Response.json({}); }) as unknown as typeof fetch;
   try {
     process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
     process.env.ANTHROPIC_API_KEY = 'sk-makeup-test';
@@ -309,6 +310,7 @@ test('the makeup gives count_tokens_error, and no total, for a count answered 20
       },
     } as unknown as PanelAppRef;
     const makeup = await buildContextMakeup(app, 'agent');
+    expect(asked).toBe(1);
     expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_error', null]);
   } finally {
     globalThis.fetch = realFetch;
