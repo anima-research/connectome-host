@@ -294,15 +294,17 @@ below says. A clone updates by hand.
 `DATA_DIR` as the service gives the host:
 
 ```bash
-DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]... [--place PATH PLACE]...
+DATA_DIR='...' bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root 'DIR'] [--extra-state 'PATH']... [--place 'PATH' 'PLACE']...
 ```
 
-It copies the install as the first release of an install root,
+Here, and in the service's, moving and Go back commands below, each path goes
+between single quotes, so the shell passes it as it is, an apostrophe in it
+written `'\''`. It copies the install as the first release of an install root,
 `./connectome-host` unless `--root` names another, and writes the entry point
 `start.js` there, with the install's own command, `connectome`, beside it.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
-Then have the service start the host with `bun <root>/start.js`, followed by
+Then have the service start the host with `bun '<root>/start.js'`, followed by
 the arguments it gives the host now, and restart it. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
@@ -311,15 +313,18 @@ its fallback need: systemd's `Restart=on-failure` does.
 install root, and `start.js` and `connectome` refuse to run an install moved
 or copied away from it, since its record still names the places of the
 install it was. Run setup again in the new directory:
-`<root>/connectome setup discord` for an install `connectome setup` made, or
+`'<root>/connectome' setup discord` for an install `connectome setup` made, or
 for one set up by hand, the setup of the release the install runs, with the
 new `DATA_DIR`:
 
 ```bash
-DATA_DIR=... bun <root>/current/node_modules/@animalabs/connectome-host/src/update/setup.ts --root <root> [--extra-state PATH]... [--place PATH PLACE]...
+DATA_DIR='<data directory>' bun '<root>/current/node_modules/@animalabs/connectome-host/src/update/setup.ts' --root '<root>'
 ```
 
-with `<root>` the install root's absolute path where it is now. An update
+with `<root>` the install root's absolute path where it is now, and
+`<data directory>` the new `DATA_DIR`. Add `--place 'PATH' 'PLACE'` for each
+place setup names, as below, and `--extra-state 'PATH'`, as when setting it
+up, only to give the places of state kept outside the data directory anew. An update
 installs each release in the install root and leaves the package in the
 directory as it was, so after one, that package's setup is an older
 release's, which may not bind the install. Setup binds the install there:
@@ -428,7 +433,7 @@ reasons unless the grant holds `ops` too.
   puts the newer release and its data back by itself, and restoring the
   copy is the way from there.
 - **When the new release keeps exiting after its commit,** it's never up to
-  ask. Each start's log names the command instead: `bun <root>/start.js
+  ask. Each start's log names the command instead: `bun '<root>/start.js'
   --go-back`, with `--keep-data` to keep the newer data. It waits up to a
   minute for the host to give up the install's lock, which one that keeps
   exiting does between starts, writes the request, and the service's next
