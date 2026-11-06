@@ -186,6 +186,8 @@ describe("the key's one real call", () => {
       fetch: (async () => sse(new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode(named([started(MESSAGE)])));
+        },
+        pull(controller) {
           controller.error(reset);
         },
       }))) as unknown as typeof fetch,
