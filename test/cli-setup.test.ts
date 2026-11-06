@@ -350,7 +350,7 @@ test('the real world asks getent whether a name is an account here: root is, and
   expect(realWorld().userExists(`nobody-made-${process.pid}`)).toBe(false);
 });
 
-test('a user of its own is never an account the machine already has: setup asks for another name, saying why', async () => {
+test('a name the machine says is already an account isn\'t taken for the resident\'s own user: setup asks for another, saying why', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['yes', '1', 'root', 'connectome'] }, { userExists: (user: string) => user === 'root' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -883,11 +883,10 @@ test('once its agent has recorded setup finished in this run, setup says it\'s f
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(made.seen.out).toContain(finishedLine(dir));
   expect(made.seen.out).not.toContain(resumeLine(dir));
-  // The clock set back during the conversation: the finish recorded in this run counts all the same.
-  const back = directory();
-  const stepped = finishing(back, () => '2000-01-01T00:00:00.000Z');
-  expect(await runSetup(back, ['discord'], stepped)).toBe(0);
-  expect(stepped.seen.out).toContain(finishedLine(back));
+  const clockSetBack = directory();
+  const finishedEarlier = finishing(clockSetBack, () => '2000-01-01T00:00:00.000Z');
+  expect(await runSetup(clockSetBack, ['discord'], finishedEarlier)).toBe(0);
+  expect(finishedEarlier.seen.out).toContain(finishedLine(clockSetBack));
   const earlier = directory();
   mkdirSync(join(earlier, '.setup'), { recursive: true });
   writeFileSync(state(earlier), JSON.stringify({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' }));
@@ -945,14 +944,17 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
     });
     return made;
   };
+  let printed = '';
   const added = changing(() => {
-    const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: string[] };
+    printed = readFileSync(record, 'utf-8');
+    const kept = JSON.parse(printed) as { extraState: string[] };
     writeFileSync(record, JSON.stringify({ ...kept, extraState: [...kept.extraState, '/srv/new'] }));
   });
   expect(await runSetup(dir, ['discord'], added)).toBe(0);
   const said = (made: ReturnType<typeof changing>) => made.seen.out.slice(made.seen.outAtLaunch!);
   const notListed = 'The places outside the data directory that an update copies aren\'t listed here: ';
   expect(said(added)).toEqual([resumeLine(dir), `${notListed}they changed during the conversation, and ${record}, the install record, holds them now, under "extraState".`]);
+  writeFileSync(record, printed);
   const swapped = changing(() => {
     const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: string[] };
     writeFileSync(record, JSON.stringify({ ...kept, extraState: kept.extraState.map((place, at) => at === 0 ? '/srv/other' : place) }));
@@ -1246,7 +1248,7 @@ test('before its agent starts, setup names its model and prices, and what five t
   expect(at).toBeLessThan(made.seen.outAtLaunch!);
 });
 
-test('the agent runs from the release current names, on setup\'s recipe and data, with the key setup checked, and starts in .setup, where no mcpl-servers.json or agent overlay is, so the resident\'s servers and overlay don\'t reach it',
+test('the agent runs from the release current named once the install\'s own setup finished, even if current moves meanwhile, on setup\'s recipe and data, with the key setup checked, and starts in .setup, where no mcpl-servers.json or agent overlay is, so the resident\'s servers and overlay don\'t reach it',
   async () => {
     const dir = directory();
     const root = join(dir, 'connectome-host');
@@ -1394,7 +1396,7 @@ test('a name the shell exports that a plain object inherits, such as toString, r
   expect(Object.hasOwn(made.seen.launched!.env, 'constructor') && made.seen.launched!.env.constructor).toBe('exported-constructor');
 });
 
-test('a .env.tmp a write cut off left beside .env is taken away before setup does anything else', async () => {
+test('a .env.tmp a write cut off left beside .env is taken away once setup holds its lock, before it asks anything', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   const tmp = join(dir, '.env.tmp');
