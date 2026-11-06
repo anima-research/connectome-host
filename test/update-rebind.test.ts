@@ -918,6 +918,25 @@ describe('a start', () => {
       releaseLock(root);
     }
   });
+
+  test('the launcher\'s refusal of a plan it finds under the lock gives the install\'s command as a shell takes it, where its path holds a space', async () => {
+    const spaced = join(dir, 'my resident');
+    makeInstall(spaced);
+    setup(options(spaced));
+    const root = rootOf(spaced);
+    const lock = installPaths(root).lock;
+    const realLink = fs.linkSync;
+    const links = spyOn(fs, 'linkSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      realLink(from, to);
+      if (String(to) === lock) writeFileSync(join(root, REBIND_PLAN), '{}');
+    }) as typeof fs.linkSync);
+    try {
+      await expect(decide(root, machineOps())).rejects.toThrow(`run \`'${join(root, 'connectome')}' setup discord\``);
+    } finally {
+      links.mockRestore();
+      releaseLock(root);
+    }
+  });
 });
 
 describe('the lock across a move or a copy', () => {

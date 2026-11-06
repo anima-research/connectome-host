@@ -1040,7 +1040,7 @@ export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   if (exists(plan)) {
     throw new ContractError(`Nothing runs in this install, since a setup binding this install was cut off before it ` +
       `finished (${plan} is its plan), so the places it names may be half bound. Setup, run again, finishes it from ` +
-      `its plan without asking about its places again, or says what stops it: run \`${join(root, 'connectome')} ` +
+      `its plan without asking about its places again, or says what stops it: run \`${shellWord(join(root, 'connectome'))} ` +
       'setup discord`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.');
   }
   settleCopy(root, ops);
