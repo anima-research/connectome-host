@@ -753,16 +753,24 @@ async function runPiped(app: AppContext) {
   let session = 0;
   let conversationEnded = false;
   let linesWaiting = 0;
+  const waitingLines = new Set<{ line: string; holdsHidden: boolean }>();
   const inOrder = async (send: () => Promise<void>, line?: string): Promise<void> => {
     const before = lastMessage;
     const sentIn = session;
     let done!: () => void;
     lastMessage = new Promise((resolve) => { done = resolve; });
+    const waiting = line === undefined ? undefined : { line, holdsHidden: false };
+    if (waiting !== undefined) waitingLines.add(waiting);
     if (line !== undefined) linesWaiting++;
     try {
       await before;
       if (line !== undefined) linesWaiting--;
+      if (waiting !== undefined) waitingLines.delete(waiting);
       if (conversationEnded) return;
+      if (waiting?.holdsHidden) {
+        say('Not sent, since it holds what you entered hidden.');
+        return;
+      }
       if (sentIn !== session) {
         const first = line?.split('\n')[0];
         if (first !== undefined) {
@@ -773,6 +781,7 @@ async function runPiped(app: AppContext) {
       }
       await send();
     } finally {
+      if (waiting !== undefined) waitingLines.delete(waiting);
       done();
     }
   };
@@ -888,8 +897,13 @@ async function runPiped(app: AppContext) {
       ask: async (name, purpose) => {
         const release = turns.holdCaps();
         try {
-          return (await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`,
-            paste ?? undefined)) || null;
+          const answer = await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`,
+            paste ?? undefined);
+          const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+          for (const waiting of waitingLines) {
+            if (given.some((line) => waiting.line.includes(line))) waiting.holdsHidden = true;
+          }
+          return answer || null;
         } finally {
           release();
         }

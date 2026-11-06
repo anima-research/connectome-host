@@ -551,6 +551,83 @@ linux('a line still waiting to go in when the person ends the conversation isn\'
   120_000,
 );
 
+linux('a line typed while a turn runs that holds what the person then enters hidden isn\'t sent, and the host says so without quoting it (Linux only)',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'readline-hidden-queued-'));
+    dirs.push(dir);
+    let output = (): string => '';
+    const answers = async (body: Body, bodies: Body[]) => {
+      const tool = body.tools?.find((each) => each.name.endsWith('ask_secret'))?.name;
+      if (bodies.length === 2 && tool) {
+        await until(() => /my token is tok-hidden-9\r*\n/.test(output()), 30_000, 'the queued line\'s Enter, echoed by readline');
+        return reply('msg_ask', 'tool_use', { type: 'tool_use', id: 'toolu_ask', name: tool, input: {} },
+          { type: 'input_json_delta', partial_json: JSON.stringify({ name: 'TEST_SECRET', purpose: 'a test secret' }) });
+      }
+      return said(`Answer number ${bodies.length}.`)(body, bodies);
+    };
+    const host = startHost(dir, { setup: true }, answers, ['setup--ask_secret']);
+    output = () => host.seen.output;
+    await until(() => promptAfterLast(host.seen.output, 'Answer number 1.'), 60_000,
+      `the opening's answer and a prompt (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('first line\r');
+    await until(() => host.bodies.length === 2, 30_000, `the first line's request (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('my token is tok-hidden-9\r');
+    await until(() => host.seen.output.includes('TEST_SECRET (a test secret), typed hidden'), 30_000,
+      `the hidden question (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('tok-hidden-9\r');
+    await until(() => host.seen.output.includes('Not sent, since it holds what you entered hidden.') || host.bodies.length >= 4, 30_000,
+      `the queued line's fate (output: ${host.seen.output.slice(-1500)})`);
+    await Bun.sleep(500);
+    hosts.at(-1)!.stdin!.write('/quit\r');
+    expect(await host.exit).toBe(0);
+    expect(host.seen.output).toContain('Not sent, since it holds what you entered hidden.');
+    expect(JSON.stringify(host.bodies)).not.toContain('tok-hidden-9');
+    expect(readEnvFile(join(dir, '.env')).get('TEST_SECRET')).toBe('tok-hidden-9');
+  },
+  180_000,
+);
+
+linux('a line typed while a turn runs that holds what the person then enters hidden, and that a session switch then overtakes, isn\'t sent or quoted (Linux only)',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'readline-hidden-switch-'));
+    dirs.push(dir);
+    let output = (): string => '';
+    const answers = async (body: Body, bodies: Body[]) => {
+      const tool = body.tools?.find((each) => each.name.endsWith('ask_secret'))?.name;
+      if (bodies.length === 2 && tool) {
+        await until(() => /my token is tok-hidden-7\r*\n/.test(output()), 30_000, 'the queued line\'s Enter, echoed by readline');
+        return reply('msg_ask', 'tool_use', { type: 'tool_use', id: 'toolu_ask', name: tool, input: {} },
+          { type: 'input_json_delta', partial_json: JSON.stringify({ name: 'TEST_SECRET', purpose: 'a test secret' }) });
+      }
+      if (bodies.length === 3) await until(() => /\/session new\r*\n/.test(output()), 30_000, 'the switch\'s Enter, echoed by readline');
+      return said(`Answer number ${bodies.length}.`)(body, bodies);
+    };
+    const host = startHost(dir, { setup: true }, answers, ['setup--ask_secret']);
+    output = () => host.seen.output;
+    await until(() => promptAfterLast(host.seen.output, 'Answer number 1.'), 60_000,
+      `the opening's answer and a prompt (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('first line\r');
+    await until(() => host.bodies.length === 2, 30_000, `the first line's request (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('my token is tok-hidden-7\r');
+    await until(() => host.seen.output.includes('TEST_SECRET (a test secret), typed hidden'), 30_000,
+      `the hidden question (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('tok-hidden-7\r');
+    await until(() => host.bodies.length === 3, 30_000, `the hidden answer's request (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('/session new\r');
+    await until(() => host.bodies.length === 4 && promptAfterLast(host.seen.output, 'Answer number 4.'), 60_000,
+      `the new conversation's opening answer and a prompt (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('/quit\r');
+    expect(await host.exit).toBe(0);
+    expect(host.seen.output).not.toContain('"my token is tok-hidden-7"');
+    expect(host.seen.output).toContain('Not sent, since it holds what you entered hidden.');
+    expect(host.bodies).toHaveLength(4);
+    expect(carries(lastFromPerson(host.bodies[3]!), 'From setup, not the person: they\'ve started a new conversation with setup. What setup has done stays on disk, and this conversation doesn\'t hold it.'), lastFromPerson(host.bodies[3]!)).toBe(true);
+    expect(JSON.stringify(host.bodies)).not.toContain('tok-hidden-7');
+    expect(readEnvFile(join(dir, '.env')).get('TEST_SECRET')).toBe('tok-hidden-7');
+  },
+  180_000,
+);
+
 linux('what a setup host\'s libraries say on stderr while it starts goes to its readline log, not the person\'s terminal, and a start that fails still says why there (Linux only)',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'readline-setup-quiet-'));
