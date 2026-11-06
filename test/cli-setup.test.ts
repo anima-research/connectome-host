@@ -2642,13 +2642,12 @@ test('setup\'s runner stops a program still running at its limit, and says so', 
       return false;
     }
   })());
-  let settled = false;
-  const pending = realWorld().run(['sh', '-c', `echo started > started; exec sleep ${marker}`], { cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeoutMs: 3_000 })
-    .finally(() => { settled = true; });
+  const pending = realWorld().run(['sh', '-c', `echo started > started; exec sleep ${marker}`], { cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeoutMs: 3_000 });
   try {
     if (process.platform === 'linux') {
-      while (!settled && !existsSync(join(dir, 'started'))) await Bun.sleep(10);
-      expect(left()).not.toEqual([]);
+      let seen = left();
+      for (const until = performance.now() + 5_000; seen.length === 0 && performance.now() < until;) seen = left();
+      expect(seen).not.toEqual([]);
     }
   } finally {
     await pending;
