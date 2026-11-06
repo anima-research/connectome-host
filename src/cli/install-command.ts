@@ -12,17 +12,16 @@ export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 
 const parts = (path: string[]) => path.map((part) => `'${part}'`).join(', ');
 
-export function installCommandText(): string {
+export function installCommandText(release: string | null = null): string {
   return [
     '#!/usr/bin/env bun',
     '// Written by this install\'s setup. Link to it rather than move it: it runs the install it sits in.',
     "import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
-    "import { dirname, join } from 'node:path';",
+    "import { basename, dirname, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',
-    ...bindingCheckLines('connectome', true),
-    "const word = (path) => /^[\\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\\\''`)}'`;",
+    ...bindingCheckLines('connectome', true, release),
     `const fromPackage = process.argv[2] === 'setup' && !existsSync(join(root, 'current', ${parts(SETUP_RECIPE.split(sep))}));`,
     `const cli = join(fromPackage ? dirname(root) : join(root, 'current'), ${parts(CLI_IN_RELEASE)});`,
     "if (!fromPackage && !existsSync(join(root, 'current'))) {",
@@ -40,11 +39,13 @@ export function installCommandText(): string {
     '  const why = error instanceof Error ? error.message : error;',
     '  console.error(fromPackage',
     "    ? `connectome: the release this install runs has no setup, so setup runs the connectome-host installed in ` +",
-    "      `${dirname(root)}, which has none it can run (${cli}): ${why}. In ${dirname(root)}, ` +",
-    "      '\\`bunx @animalabs/connectome-host setup discord\\` runs setup from the registry.'",
+    "      `${dirname(root)}, which has none it can run (${cli}): ${why}. ` + (basename(root) === 'connectome-host'",
+    "        ? `In ${dirname(root)}, \\`bunx @animalabs/connectome-host setup discord\\` runs setup from the registry.`",
+    "        : `The registry's setup takes ${join(dirname(root), 'connectome-host')} for the install root, and this one is ` +",
+    "          `${root}, so run ${byHand}.`)",
     "    : `connectome: the release this install runs has no connectome command that loads (${cli}): ${why}. If its ` +",
     "      `host still starts, its /update, in the TUI or the Web UI, updates it. If this release is broken, ` +",
-    "      `\\`bun ${word(join(root, 'start.js'))} --go-back\\` asks the next start to go back, when a Go back is offered.`);",
+    "      `\\`bun ${quoted(join(root, 'start.js'))} --go-back\\` asks the next start to go back, when a Go back is offered.`);",
     '  process.exit(1);',
     '}',
     'process.exit(await main(root, process.argv.slice(2)));',
@@ -85,8 +86,8 @@ export function installCommandOf(root: string, path: string | undefined = proces
   return { path: join(root, INSTALL_COMMAND), pathLine: plain ? null : `export PATH=${shellWord(root)}:"$PATH"` };
 }
 
-export function writeInstallCommand(root: string, path: string | undefined = process.env.PATH):
-  { path: string; pathLine: string | null } {
-  writeTextAtomic(join(root, INSTALL_COMMAND), installCommandText(), 0o755);
+export function writeInstallCommand(root: string, path: string | undefined = process.env.PATH,
+  release: string | null = null): { path: string; pathLine: string | null } {
+  writeTextAtomic(join(root, INSTALL_COMMAND), installCommandText(release), 0o755);
   return installCommandOf(root, path);
 }

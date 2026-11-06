@@ -170,7 +170,18 @@ describe('the binding check, before any release loads', () => {
     return { exitCode: run.exitCode ?? -1, stderr: run.stderr.toString() };
   };
 
-  test('a copy\'s start, and its --go-back, are refused before its launcher runs, naming both directories and setup; once setup binds it, it starts on its own data', () => {
+  const byHandLine = (copy: string, release: string) => {
+    const copyRoot = join(copy, 'connectome-host');
+    return `run \`${join(copyRoot, 'connectome')} setup discord\`, or, for an install set up by hand, the setup of ${release}, ` +
+      `the release whose setup wrote this file, from ${copy} with this install's own DATA_DIR: \`bun --no-env-file ` +
+      `${join(releaseDir(copyRoot, release), RELEASE_HOST, 'src', 'update', 'setup.ts')} --root ${copyRoot}\`.`;
+  };
+  const setupFrom = (copy: string, hostRoot: string) => setup({
+    cwd: copy, dataDir: join(copy, 'data'), root: join(copy, 'connectome-host'), extraState: null, hostRoot,
+    say: () => {}, units: () => ({ found: [], unasked: [], unresolved: [], defaulted: [] }),
+  });
+
+  test('a copy\'s start, and its --go-back, are refused before its launcher runs, naming both directories and the setup of the release whose setup wrote it; once that setup binds it, it starts on its own data', () => {
     const copy = join(dir, 'copy');
     copyTo(copy);
     const copyRoot = join(copy, 'connectome-host');
@@ -178,19 +189,40 @@ describe('the binding check, before any release loads', () => {
       const run = startIn(copy, ...args);
       expect(run.exitCode).toBe(1);
       expect(run.stderr).toContain(`connectome-host: nothing runs in this install, since its record is bound to ${install}, and it's in ${copy}, so it was moved or copied here`);
-      expect(run.stderr).toContain(`run \`${join(copyRoot, 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
+      expect(run.stderr).toContain(byHandLine(copy, '0.10.2'));
     }
     expect(existsSync(marker)).toBe(false);
     expect(readJournal(copyRoot)).toEqual([]);
     expect(existsSync(installPaths(copyRoot).lock)).toBe(false);
-    setup({
-      cwd: copy, dataDir: join(copy, 'data'), root: copyRoot, extraState: null,
-      hostRoot: join(copy, 'node_modules', '@animalabs', 'connectome-host'),
-      say: () => {}, units: () => ({ found: [], unasked: [], unresolved: [], defaulted: [] }),
-    });
+    setupFrom(copy, join(releaseDir(copyRoot, '0.10.2'), RELEASE_HOST));
     const run = startIn(copy);
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.10.2', root: copyRoot, cwd: copy });
+  });
+
+  test('a copy whose current names an older release than the one whose setup wrote its entries is sent to that setup, not current\'s, and once it binds, current starts on the copy\'s data', () => {
+    hostPackage(join(releaseDir(root, '0.9.0'), RELEASE_HOST), '0.9.0');
+    moveCurrent(root, '0.9.0');
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const copyRoot = join(copy, 'connectome-host');
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(byHandLine(copy, '0.10.2'));
+    setupFrom(copy, join(releaseDir(copyRoot, '0.10.2'), RELEASE_HOST));
+    expect(readRecord<{ workingDir?: string; dataDir: string }>(installPaths(copyRoot).install, 'record'))
+      .toMatchObject({ workingDir: copy, dataDir: join(copy, 'data') });
+    expect(startIn(copy).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.9.0', root: copyRoot, cwd: copy });
+  });
+
+  test('a copy whose entries\' release holds no setup in its releases now is sent to its setup by hand, as docs/DEPLOYMENTS.md shows', () => {
+    rmSync(join(releaseDir(root, '0.10.2'), RELEASE_HOST, 'src', 'update', 'setup.ts'));
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
   });
 
   test('a record from before workingDir starts as it did', () => {

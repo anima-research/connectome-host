@@ -53,7 +53,7 @@ export { ENTRY_POINT };
 
 const RELEASE_FILES = ['package.json', 'package-lock.json', 'bun.lock', 'bun.lockb', 'node_modules'];
 
-export function entryPointText(): string {
+export function entryPointText(release: string | null = null): string {
   return [
     '// The entry point of this connectome-host install, written by its setup. A',
     '// service starts the host here with the arguments it would give the host:',
@@ -64,7 +64,7 @@ export function entryPointText(): string {
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',
-    ...bindingCheckLines('connectome-host', false),
+    ...bindingCheckLines('connectome-host', false, release),
     `const launcher = join(root, 'current', ${LAUNCHER.split(sep).map((part) => `'${part}'`).join(', ')});`,
     'let launch;',
     'try {',
@@ -78,6 +78,15 @@ export function entryPointText(): string {
     'await launch(root, process.argv.slice(2));',
     '',
   ].join('\n');
+}
+
+function releaseOf(hostRoot: string): string | null {
+  try {
+    const { version } = JSON.parse(readFileSync(join(hostRoot, 'package.json'), 'utf-8')) as { version?: unknown };
+    return typeof version === 'string' && version !== '' ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 function setupCommand(install: string, dataDir: string, root: string): string {
@@ -397,8 +406,9 @@ export function setup(options: SetupOptions): void {
   const ops = machineOps();
   const entry = join(root, ENTRY_POINT);
   const writeEntries = () => {
-    writeTextAtomic(entry, entryPointText());
-    return writeInstallCommand(root);
+    const release = releaseOf(options.hostRoot);
+    writeTextAtomic(entry, entryPointText(release));
+    return writeInstallCommand(root, undefined, release);
   };
   const placed = (options.places ?? []).map(({ from, to }) => ({ from, to: realOrResolved(to) }));
   const bindingFound = existing === null ? null : bindingOf(root, given === null ? existing : { ...existing, extraState: [] });

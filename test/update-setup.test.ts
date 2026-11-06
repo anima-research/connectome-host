@@ -868,7 +868,7 @@ describe('setup', () => {
     writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [], workingDir: install }));
     setup(options());
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
-    expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText());
+    expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText('0.10.2'));
     expect(existsSync(join(root, INSTALL_COMMAND))).toBe(true);
   });
 
@@ -915,7 +915,7 @@ describe('setup', () => {
     for (const name of ['install.json.tmp', `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`]) symlinkSync(outside, join(root, name));
     setup(options());
     expect(readFileSync(outside, 'utf-8')).toBe('keep');
-    expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText());
+    expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText('0.10.2'));
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
     for (const name of ['install.json.tmp', `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`]) {
       expect(fs.lstatSync(join(root, name), { throwIfNoEntry: false })).toBeUndefined();

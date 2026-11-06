@@ -324,7 +324,14 @@ DATA_DIR='<data directory>' bun '<root>/current/node_modules/@animalabs/connecto
 with `<root>` the install root's absolute path where it is now, and
 `<data directory>` the new `DATA_DIR`. Add `--place 'PATH' 'PLACE'` for each
 place setup names, as below, and `--extra-state 'PATH'`, as when setting it
-up, only to give the places of state kept outside the data directory anew. An update
+up, only to give the places of state kept outside the data directory anew.
+After a Go back to a release from before this one, the release the install
+runs is that older one, whose setup doesn't bind the install: run with the
+old `DATA_DIR`, it leaves the copy's record, label and Go back lists naming
+the original's places, so the copy runs on the original's data. Run instead
+the setup of the release whose setup wrote its `start.js`,
+`'<root>/releases/<that release>/node_modules/@animalabs/connectome-host/src/update/setup.ts'`,
+which the refusal names while the install's releases hold it. An update
 installs each release in the install root and leaves the package in the
 directory as it was, so after one, that package's setup is an older
 release's, which may not bind the install. Setup binds the install there:

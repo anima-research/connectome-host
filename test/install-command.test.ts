@@ -104,6 +104,37 @@ test('setup refuses, before any CLI loads, where neither current\'s release nor 
   expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host setup discord\` runs setup from the registry.`);
 });
 
+test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
+  dirs.push(dir);
+  const refusal = (name: string, withSetup: boolean) => {
+    const root = join(dir, name);
+    const release = join(root, 'releases', '1.0.0');
+    mkdirSync(join(release, ...CLI_IN_RELEASE.slice(0, -1)), { recursive: true });
+    writeFileSync(join(release, ...CLI_IN_RELEASE), 'export async function main() { return 0; }\n');
+    const ownSetup = join(release, 'node_modules', '@animalabs', 'connectome-host', 'src', 'update', 'setup.ts');
+    if (withSetup) {
+      mkdirSync(dirname(ownSetup), { recursive: true });
+      writeFileSync(ownSetup, '// setup\n');
+    }
+    symlinkSync(join('releases', '1.0.0'), join(root, 'current'));
+    writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir }));
+    writeInstallCommand(root, '', '1.0.0');
+    const ran = Bun.spawnSync([process.execPath, join(root, 'connectome'), 'setup', 'discord'], { stderr: 'pipe' });
+    return { exitCode: ran.exitCode, stderr: ran.stderr.toString(), root, ownSetup };
+  };
+  const named = refusal('connectome-host', true);
+  expect(named.exitCode).toBe(1);
+  expect(named.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host setup discord\` runs setup from the registry.`);
+  const other = refusal('custom-root', true);
+  expect(other.exitCode).toBe(1);
+  expect(other.stderr).toContain(`The registry's setup takes ${join(dir, 'connectome-host')} for the install root, and this ` +
+    `one is ${other.root}, so run the setup of 1.0.0, the release whose setup wrote this file, from ${dir} with this ` +
+    `install's own DATA_DIR: \`bun --no-env-file ${other.ownSetup} --root ${other.root}\`.`);
+  const gone = refusal('another-root', false);
+  expect(gone.stderr).toContain(`and this one is ${gone.root}, so run its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
+});
+
 test('a record bound to another directory refuses the bare command, update and send, and a binding\'s plan standing refuses update, each before any CLI loads, while setup runs in both', () => {
   const { dir, root, run } = withCommands(true);
   const elsewhere = join(dirname(dir), 'elsewhere');

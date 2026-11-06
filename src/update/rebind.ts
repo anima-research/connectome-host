@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ContractError, REBIND_PLAN, copyLabelPath, installPaths, readRecord, syncDir, writeJsonAtomic,
   type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
 } from './contract.js';
-import { isUnder, lockLive, takeLock, type LauncherOps } from './launcher.js';
+import { RELEASE_HOST, isUnder, lockLive, takeLock, type LauncherOps } from './launcher.js';
 
 export interface RebindPlan {
   v: 1;
@@ -320,8 +320,16 @@ function setAsideCopied(lock: string, holder: LockRecord): void {
   syncDir(dirname(lock));
 }
 
-export function bindingCheckLines(said: string, allowSetup: boolean): string[] {
+export function bindingCheckLines(said: string, allowSetup: boolean, release: string | null): string[] {
+  const setupInRelease = [...RELEASE_HOST.split(sep), 'src', 'update', 'setup.ts'].map((part) => `'${part}'`).join(', ');
   return [
+    "const quoted = (path) => /^[\\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\\\''`)}'`;",
+    `const writer = ${JSON.stringify(release)};`,
+    `const ownSetup = writer === null ? null : join(root, 'releases', writer, ${setupInRelease});`,
+    'const byHand = ownSetup !== null && existsSync(ownSetup)',
+    '  ? `the setup of ${writer}, the release whose setup wrote this file, from ${dirname(root)} with this install\'s own ` +',
+    "    `DATA_DIR: \\`bun --no-env-file ${quoted(ownSetup)} --root ${quoted(root)}\\``",
+    "  : 'its setup by hand again, as docs/DEPLOYMENTS.md shows';",
     '{',
     `  const plan = join(root, ${JSON.stringify(REBIND_PLAN)});`,
     '  const sameDirectory = (a, b) => {',
@@ -351,9 +359,8 @@ export function bindingCheckLines(said: string, allowSetup: boolean): string[] {
     '    }',
     '  }',
     `  if (refused !== null${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
-    "    const quoted = (path) => /^[\\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\\\''`)}'`;",
     `    console.error(\`${said}: nothing runs in this install, since \${refused}: run \\\`\${quoted(join(root, 'connectome'))} \` +`,
-    "      'setup discord\\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.');",
+    "      `setup discord\\`, or, for an install set up by hand, ${byHand}.`);",
     '    process.exit(1);',
     '  }',
     '}',
