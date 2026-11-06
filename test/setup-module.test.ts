@@ -2238,6 +2238,19 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(unasked.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic couldn\'t be asked (connect ECONNREFUSED). Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
   });
 
+  test('check_model passes on the wait a provider asks for with Retry-After, in seconds or as a date, in place of a minute', async () => {
+    const limited = (after: string) => install({
+      envFile: 'ANTHROPIC_API_KEY=sk-ant\n',
+      fetch: (async () => Response.json({ error: { message: 'rate limited' } }, { status: 429, headers: { 'retry-after': after } })) as unknown as typeof fetch,
+    });
+    const seconds = await checkModel(limited('3600').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(seconds.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 429: rate limited. It asks for a wait of 3600 s before the next call: call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them what it says and how long it asks them to wait.');
+    const date = await checkModel(limited('Fri, 06 Nov 2026 16:00:00 GMT').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(date.error).toEndWith('It asks for no call before Fri, 06 Nov 2026 16:00:00 GMT: call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them what it says and how long it asks them to wait.');
+    const neither = await checkModel(limited('ask again later').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(neither.error).toEndWith('Anthropic answered 429: rate limited. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
+  });
+
   test('a 2xx that isn\'t JSON, such as a sign-in page, is said to be no check, of a key, a token and a model, with what to tell the person', async () => {
     const portal = (async () => new Response('<html>Sign in to this network</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const key = install({ asker: typed('sk-ant-portal'), fetch: portal });

@@ -716,9 +716,14 @@ export class SetupModule implements Module {
           'the key is allowed, or for a new key with setup--ask_secret.');
       }
       const why = keyNote(name, listed).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
+      const after = listed.kind === 'answered' ? listed.retryAfter : undefined;
       return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ${why}` +
-        (listed.kind === 'answered' || listed.kind === 'unanswered'
-          ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : ''));
+        (after !== undefined
+          ? ` It asks for ${/^\d+$/.test(after) ? `a wait of ${after} s before the next call` : `no call before ${after}`}: ` +
+            'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
+            'what it says and how long it asks them to wait.'
+          : listed.kind === 'answered' || listed.kind === 'unanswered'
+            ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : ''));
     }
     const { ids, shownIds, more } = listed.value;
     if (ids.includes(model)) {
