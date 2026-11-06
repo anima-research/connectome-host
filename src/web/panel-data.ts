@@ -1,4 +1,4 @@
-import { audienceOf, type AgentFramework } from '@animalabs/agent-framework';
+import { audienceOf, residentViewFilter, type AgentFramework } from '@animalabs/agent-framework';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
@@ -545,7 +545,11 @@ export function buildPinsSnapshot(
  * constrains is the window's, so a pin on it would hold nothing. Nor is a
  * row whose audience stamp leaves the agent out (another resident's row on
  * a shared store, or one a tune-out held from every resident), which never
- * enters that window. A row with no stamp (stored before it existed) and a
+ * enters that window. A legacy window (windowMode 'legacy') is the record
+ * through the resident's view, which reads no stamp: there a row is a
+ * candidate when that view keeps it (residentViewFilter: not held traffic,
+ * a suppressed row or another agent's stored injection), another
+ * resident's row included. A row with no stamp (stored before it existed) and a
  * stored arrival the agent's window doesn't hold yet (status 'out'), which
  * enters it at the agent's next turn, are candidates. A message stored in
  * parts (context-manager's shards of one body) is one candidate, as it is one
@@ -566,10 +570,12 @@ function buildPinCandidates(
         offset: number, limit: number, opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
       ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown } & BodyShard>; startIndex: number };
       windowStatusOf?: (id: string) => string;
+      windowMode?: () => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
       return { candidates: [] };
     }
+    const legacyView = cm.windowMode?.() === 'legacy' ? residentViewFilter(agentName) : undefined;
     const total = cm.getMessageCount();
     const start = Math.max(0, total - PIN_CANDIDATE_LIMIT);
     // Rows that start inside a message stored in parts reach back to its
@@ -597,8 +603,12 @@ function buildPinCandidates(
       }
       if (!m.id) continue;
       if (cm.windowStatusOf?.(String(m.id)) === 'undone') continue;
-      const stamp = audienceOf(m.metadata);
-      if (stamp && !stamp.audience.includes(agentName)) continue;
+      if (legacyView) {
+        if (!legacyView(m as unknown as Parameters<typeof legacyView>[0])) continue;
+      } else {
+        const stamp = audienceOf(m.metadata);
+        if (stamp && !stamp.audience.includes(agentName)) continue;
+      }
       out.push({
         id: String(m.id),
         index: win.startIndex + first,

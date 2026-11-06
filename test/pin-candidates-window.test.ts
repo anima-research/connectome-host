@@ -6,7 +6,9 @@
  * plan a pin constrains is the window's (DQ-4), and neither is a row stamped
  * for other residents only (its audience leaves the agent out), which never
  * enters that window. A stored arrival not yet presented to the agent is
- * one: it enters the window at the agent's next turn.
+ * one: it enters the window at the agent's next turn. A legacy window is
+ * the record through the resident's view, which reads no stamp, so there the
+ * view decides.
  */
 import { describe, expect, test } from 'bun:test';
 import { bodyStart, type BodyShard } from '@animalabs/context-manager';
@@ -16,8 +18,10 @@ function appOver(
   rows: Array<Record<string, unknown>>,
   statusOf: (agent: string, id: string) => string,
   agents: string[],
+  mode: 'legacy' | 'presented' = 'presented',
 ): PanelAppRef {
   const cmFor = (agent: string) => ({
+    windowMode: () => mode,
     getMessageCount: () => rows.length,
     // context-manager's getMessageWindow: `alignToBodyGroups` walks the start
     // back to the first part of a message stored in parts.
@@ -71,6 +75,26 @@ describe("a pins snapshot's candidates", () => {
     const ids = (agent: string) => buildPinsSnapshot(app, agent, { withCandidates: true }).candidates?.map((c) => c.id);
     expect(ids('clerk')).toEqual(['s1', 'c1', 'o1', 'n1']);
     expect(ids('mira')).toEqual(['s1', 'r1', 'r2', 'o1', 'n1']);
+  });
+
+  // Host #485 bot review wave 4, finding 23: a legacy window is the record
+  // through the resident's view, which reads no audience stamp, so a
+  // co-resident's row is in it, and was left out of the picker. The view
+  // leaves out held traffic, suppressed rows and another agent's stored
+  // injections, which windowStatusOf ('in' for every row there) doesn't.
+  test("on a legacy window, keep another resident's rows, and leave out what the resident's view leaves out", () => {
+    const rows = [
+      say('s1', 'user', 'count the ledgers', { audience: ['clerk', 'mira'] }),
+      say('r1', 'mira', 'four', { audience: ['mira'], ownRowOf: 'mira' }),
+      say('h1', 'user', 'held by a tune-out', { audience: [], tuneOut: { epochId: 'e' } }),
+      say('x1', 'user', 'suppressed', { audience: [], suppressed: { rule: 'noise' } }),
+      say('i1', 'user', "mira's stored injection", { audience: ['mira'], ownRowOf: 'mira', contextInjection: { agent: 'mira', namespace: 'n', contentHash: 'h', part: 0, parts: 1 } }),
+      say('i2', 'user', "clerk's stored injection", { audience: ['clerk'], ownRowOf: 'clerk', contextInjection: { agent: 'clerk', namespace: 'n', contentHash: 'h', part: 0, parts: 1 } }),
+      say('o1', 'user', 'a row stored before the stamp'),
+    ];
+    const app = appOver(rows, () => 'in', ['clerk'], 'legacy');
+    const ids = buildPinsSnapshot(app, 'clerk', { withCandidates: true }).candidates?.map((c) => c.id);
+    expect(ids).toEqual(['s1', 'r1', 'i2', 'o1']);
   });
 
   // Host #485 bot review wave 2, finding 21: a message stored in parts (its
