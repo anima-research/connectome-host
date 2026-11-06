@@ -209,7 +209,7 @@ function recipeCheck<T extends { loads: true }>(bun: string, recipe: string, wor
     { loads: null, why: 'the loader exited without reporting its recipe result' };
   if (ran.exitedDueToTimeout) return { loads: null, why: "it hadn't loaded after " + RECIPE_CHECK_MS / 1000 + ' s' };
   if (ran.exitCode === 1 && typeof result?.refused === 'string') return { loads: false, words: result.refused };
-  const said = ran.stderr.toString().trim().split('\n').at(-1)?.trim();
+  const said = ran.stderr.toString().trim();
   return { loads: null, why: said || 'the loader exited with ' + (ran.exitCode ?? ran.signalCode) };
 }
 
@@ -1019,7 +1019,9 @@ function recipeProblem(loaded: Exclude<RecipeLoad, { loads: true }>, work: strin
       `shown, since the install's secrets can't all be kept out of them: ${errorText(error).replace(/\.+$/, '')}. ` +
       `Nothing was written or restarted. Put that right, then repeat this service install command with the same recipe.`);
   }
-  const redacted = redact(loaded.loads === false ? loaded.words : loaded.why);
+  const whole = redact(loaded.loads === false ? loaded.words : loaded.why);
+  const redacted = loaded.loads === false ? whole
+    : { ...whole, text: whole.text.trim().split('\n').at(-1)?.trim() ?? '' };
   throw new Refusal((loaded.loads === false
     ? 'the host\'s own recipe loader, run in the working directory with .env, refuses the recipe: ' +
       `${redacted.text.replace(/\.+$/, '')}. Nothing was written or restarted.`

@@ -4945,3 +4945,15 @@ test('macOS retires a same-directory record\'s agents under their recorded label
   expect(f.systemd.agents.has(old)).toBe(false);
   expect(f.systemd.agents.has(`${old}.shell`)).toBe(false);
 });
+
+test('a loader\'s stderr is redacted whole before its last line is shown', async () => {
+  const at = install();
+  const secret = 'first-half\nsecond-half';
+  const f = fake(at, { env: { PATH: `${at.root}:/usr/bin:/bin`, SESSION_SERVER_TOKEN: secret } });
+  const loader = join(at.work, 'failing-loader');
+  writeFileSync(loader, `#!/bin/sh\nprintf 'loading\\nfirst-half\\nsecond-half\\n' >&2\nexit 3\n`, { mode: 0o755 });
+  f.system.loadRecipe = (recipe, work, env, document) => loadRecipeAsHost(loader, recipe, work, env, document);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain("whether the host can load the recipe couldn't be checked");
+  expect(f.err.join('\n')).not.toContain('second-half');
+});
