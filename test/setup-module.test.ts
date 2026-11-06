@@ -9,6 +9,7 @@ import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
 import { EnvFormError, envForm, readEnvFile, storedSecretRedactor, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
+import { processEnded, waitForEnd } from './process-ended.js';
 import { bracketedPaste } from '../src/readline-paste.js';
 import { checkDiscordToken } from '../src/setup/discord-token.js';
 import { checkProviderKey } from '../src/setup/provider-key.js';
@@ -74,28 +75,7 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
 // For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
 const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
 
-function alive(pid: number): boolean {
-  try {
-    // kill(pid, 0) succeeds for a zombie too, so read the state /proc gives after the name in parentheses.
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
-
-async function goneWithin(pid: number, ms: number): Promise<boolean> {
-  for (const until = Date.now() + ms; alive(pid) && Date.now() < until;) await Bun.sleep(20);
-  return !alive(pid);
-}
 
 async function waitForFile(path: string): Promise<string> {
   for (const until = Date.now() + 10_000; Date.now() < until; await Bun.sleep(10)) {
@@ -379,7 +359,7 @@ describe('setup--run', () => {
     expect(answer.stoppedAtLimit).toBe(true);
     expect(answer.note).toContain('500 ms limit');
     expect(answer.stdout.text).toBe('begun\n');
-    expect(await goneWithin(Number(readFileSync(pidFile, 'utf-8')), 3_000)).toBe(true);
+    expect(await waitForEnd(Number(readFileSync(pidFile, 'utf-8')), 3_000)).toBe(true);
   }, 20_000);
 
   linuxTest('kills a process in its group that outlives its SIGTERM, 5 s after that SIGTERM, even once the command itself has ended', async () => {
@@ -391,7 +371,7 @@ describe('setup--run', () => {
     const termAt = Number(await waitForFile(termFile));
     let goneAt: number | null = null;
     for (const until = termAt + 15; goneAt === null && uptime() < until; await Bun.sleep(20)) {
-      if (!alive(stubborn)) goneAt = uptime();
+      if (processEnded(stubborn)) goneAt = uptime();
     }
     const answer = await answering;
     expect(answer.stoppedAtLimit).toBe(true);
@@ -405,9 +385,9 @@ describe('setup--run', () => {
     const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
     expect(answer.stoppedAtLimit).toBe(true);
     const stubborn = Number(readFileSync(pidFile, 'utf-8'));
-    expect(alive(stubborn)).toBe(true);
+    expect(processEnded(stubborn)).toBe(false);
     await module.stop();
-    expect(await goneWithin(stubborn, 1_000)).toBe(true);
+    expect(await waitForEnd(stubborn, 1_000)).toBe(true);
   }, 20_000);
 
   linuxTest('a command that ends before its limit is not stopped at it while its output drains, nor is what it left running', async () => {
@@ -420,7 +400,7 @@ describe('setup--run', () => {
       expect(answer.outputHeldOpen).toBe(true);
       expect(answer.stoppedAtLimit).toBe(false);
       expect(answer.note).not.toContain('limit');
-      expect(alive(holder)).toBe(true);
+      expect(processEnded(holder)).toBe(false);
     } finally {
       if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
     }
@@ -442,7 +422,7 @@ describe('setup--run', () => {
       const tookByWallClock = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
       const answeredAfter = Math.round(performance.now() - monoBefore);
       holder = Number(readFileSync(pidFile, 'utf-8'));
-      expect(alive(holder)).toBe(true);
+      expect(processEnded(holder)).toBe(false);
       const said = JSON.stringify({
         outputHeldOpen: answer.outputHeldOpen, note: answer.note, stdout: answer.stdout.text, exitCode: answer.exitCode,
         signal: answer.signal, answeredAfter, tookByWallClock,
@@ -887,7 +867,7 @@ describe('setup--run', () => {
       await run(module, `sleep 60 > /dev/null 2>&1 & echo $! > ${pidFile}`);
       left = Number(readFileSync(pidFile, 'utf-8'));
       await module.stop();
-      expect(alive(left)).toBe(true);
+      expect(processEnded(left)).toBe(false);
       const after = await runCall(module, 'touch ran');
       expect(after.isError).toBe(true);
       expect(after.error).toContain('won\'t change that');
@@ -911,7 +891,7 @@ describe('setup--run', () => {
     }
     expect(stoppedInTime).toBe(true);
     expect((await pending).signal).toBe('SIGKILL');
-    expect(await goneWithin(stubborn, 3_000)).toBe(true);
+    expect(await waitForEnd(stubborn, 3_000)).toBe(true);
   }, 30_000);
 
   test('a command asked for while a secret is asked for waits for each secret asked for after it too, so nothing it does is shown while the person types', async () => {
@@ -939,7 +919,7 @@ describe('setup--run', () => {
     await module.stop();
     const answer = await pending;
     expect(answer.signal).toBe('SIGKILL');
-    expect(await goneWithin(stubborn, 3_000)).toBe(true);
+    expect(await waitForEnd(stubborn, 3_000)).toBe(true);
   }, 20_000);
   test('a command still running, or still being stopped, when its host process ends goes with it: at an uncaught error, an exit, a SIGHUP, a SIGINT and a SIGTERM, and at a SIGINT while stop() waits on a process that outlived its SIGTERM; the host still ends as it was ended; and a process left by a command that ended before keeps running', async () => {
     const dir = scratch();

@@ -18,6 +18,7 @@ import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, instal
 import { entryPointText } from '../src/update/setup.js';
 import { machineOps, shellWord, takeLock } from '../src/update/launcher.js';
 import { HostUpdate } from '../src/update/update.js';
+import { processEnded } from './process-ended.js';
 
 const REPO = resolve(import.meta.dir, '..');
 const BIN = join(REPO, 'src', 'cli', 'connectome.ts');
@@ -2884,20 +2885,11 @@ test('a setup.lock that isn\'t setup\'s lock is named, with what to do, and noth
   expect(made.seen.asked).toEqual([]);
 });
 
-function running(pid: number): boolean {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-  } catch {
-    return false;
-  }
-}
-
 test('setup\'s runner stops a program still running at its limit, and says so', async () => {
   const dir = directory();
   const started = Date.now();
   const marker = `60.${process.pid}${Date.now() % 1000}`;
-  const left = () => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && running(Number(pid)) && (() => {
+  const left = () => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && !processEnded(Number(pid)) && (() => {
     try {
       return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').includes(marker);
     } catch {
