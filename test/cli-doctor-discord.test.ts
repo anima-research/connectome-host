@@ -222,6 +222,16 @@ describe('doctor: Discord', () => {
     expect(unsaid.problems).toEqual([]);
   });
 
+  test('an answer doctor can\'t read the way it reads Discord\'s stops the check, and what it found before is still said', async () => {
+    for (const list of [null, {}]) {
+      const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ guilds: [HOME], answers: { '/users/@me/guilds': () => Response.json(list) } }));
+      expect(r.lines[0]).toBe('\u2713 The token in DISCORD_TOKEN works: the bot is ember (900).');
+      expect(r.problems).toHaveLength(2);
+      expect(r.problems[0]).toStartWith('The Message Content intent is off');
+      expect(r.problems[1]).toStartWith('The Discord check stopped: ');
+    }
+  });
+
   test('a redirect, to the first request or a later one, is reported, not followed with the token', async () => {
     const moved = () => new Response(null, { status: 307, headers: { location: 'https://elsewhere.example/' } });
     for (const path of ['/users/@me', '/applications/@me', '/guilds/100/roles']) {

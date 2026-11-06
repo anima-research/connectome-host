@@ -162,8 +162,7 @@ export async function checkDiscord(
 
     for (const line of scopeLines(env, options.workingDir, guilds, problem)) lines.push(line);
   } catch (error) {
-    if (!(error instanceof DiscordAnswer)) throw error;
-    problem(error.message);
+    problem(error instanceof DiscordAnswer ? error.message : `The Discord check stopped: ${errorText(error)}`);
   }
   return { lines, problems };
 }
