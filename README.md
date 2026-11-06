@@ -974,10 +974,12 @@ agent's window (a whole turn, another `/newtopic`'s transition, an undo, a
 redo or a shed), or the session is switched or the host stops, meanwhile, it
 stores nothing. Its answer says which: rows entered the window, left it,
 both, or left it and entered it again (an undo and its redo). It gives the
-summary it wrote back as one `/newtopic …` line to run, its line breaks
-folded to spaces, which every input mode takes whole (the readline and piped
-modes read each line as its own input). A `/newtopic <text>` on several
-lines needs the TUI or the Web UI, which send a pasted text whole.
+summary it wrote back as a `/newtopic …` to run: in the TUI, the Web UI and
+headless mode as written, line breaks included, and in the readline and
+piped modes, which read each line as its own input, as one line, its line
+breaks folded to spaces. A `/newtopic <text>` on several lines needs the
+TUI or the Web UI, which send a pasted text whole, or headless mode's
+`command`, which carries its text whole.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the
