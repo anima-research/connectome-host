@@ -531,6 +531,23 @@ describe('following one framework at a time', () => {
     expect(seen).toEqual(['a1', 'b1', 'b3']);
   });
 
+  test('a turn the old framework starts after the switch is asked for is forgotten once it\'s no longer followed, so the new framework\'s first turn ends the opening\'s wait', async () => {
+    const { turns } = setUp();
+    const traces = traceFollower((event) => { turns.onTrace(event as { type: string }); });
+    const old = source(), fresh = source();
+    let current: TraceSource & { emit(event: unknown): void } = old;
+    const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+    traces.follow(old);
+    turns.switched();
+    old.emit({ type: 'inference:started', agentName: 'clerk' });
+    await switchFollowing(traces, async () => { current = fresh; }, () => current, () => turns.switched());
+    const opening = turns.waitForTurn(null);
+    turns.takenIn();
+    fresh.emit({ type: 'inference:started', agentName: 'clerk' });
+    fresh.emit({ type: settledTrace, agentName: 'clerk' });
+    expect(await settled(opening)).toBe(true);
+  });
+
   test('a session switch stops following first, and follows what the host holds after it, also when it throws', async () => {
     const seen: unknown[] = [];
     const traces = traceFollower((event) => { seen.push(event); });

@@ -804,7 +804,8 @@ async function runPiped(app: AppContext) {
         turns.switched();
         await inOrder(async () => {
           app.switching = false;
-          const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+          const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework,
+            () => turns.switched());
           console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
           await afterSwitch(switched);
         });

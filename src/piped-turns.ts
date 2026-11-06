@@ -228,8 +228,10 @@ export async function switchFollowing<T>(
   traces: { follow(source: TraceSource): void; stop(): void },
   switchSession: () => Promise<T>,
   framework: () => TraceSource,
+  stopped: () => void = () => {},
 ): Promise<T> {
   traces.stop();
+  stopped();
   try {
     return await switchSession();
   } finally {
