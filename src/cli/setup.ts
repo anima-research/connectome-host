@@ -242,6 +242,19 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       out(`Setup keeps its answers here: the resident ${state.shell ? 'gets' : 'doesn\'t get'} a shell, ` +
         `and runs as this user, ${world.user}. They aren't asked again; setup's agent picks up where it stopped, and ` +
         'can change with you what it set up.');
+      if (state.finished !== undefined && !existsSync(root)) {
+        out(`This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
+          'outside the data directory, its releases and its Go back.');
+        const fresh = await yesNo(world, `Make a new install on ${join(dir, 'data')}? (yes/no) `);
+        if (fresh === null) {
+          out('Setup stopped. Run it again in this directory to go on.');
+          return 1;
+        }
+        if (!fresh) {
+          out('Put the root\'s backup back, if you have one, and run setup again.');
+          return 0;
+        }
+      }
     }
     if (state === null) {
       out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. Setup asks a few ` +
