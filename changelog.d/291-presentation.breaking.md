@@ -79,8 +79,10 @@
     included, each linked to its row as the turn ends (a backgrounded
     turn's replies as it returns, and marked then if a shed took them out
     meanwhile), never to another resident's row, a reply never to an
-    earlier row in the same words, and the same message sent twice in the
-    order sent, and draws below them an undone row stored since it loaded
+    earlier row in the same words, a message that was never stored (one
+    the framework refused, or one sent during a session switch that
+    failed) to no row, and the same message sent twice in the order sent,
+    and draws below them an undone row stored since it loaded
     the history that it has no line for, past the scrollback cap too, until
     a redo puts it back, but not one whose lines `/clear` or the scrollback
     cap took down, however many lines were drawn before its row was

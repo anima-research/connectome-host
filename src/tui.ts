@@ -798,8 +798,13 @@ export async function runTui(app: AppContext): Promise<void> {
    *  the scrollback has taken down by then, with no line (`parts` empty): a
    *  row that takes one isn't drawn again. A reply's go at its turn's end,
    *  by when its rows are stored; an operator's message's once its row
-   *  takes it. */
+   *  takes it, and the oldest past SCROLLBACK_CAP of them, each by then
+   *  more than twice that many lines old. */
   let evictedLines: StreamedLine[] = [];
+  /** The operator's messages sent while a session switch runs: one that
+   *  fails leaves them unstored, and the old session's history isn't drawn
+   *  again, so their entries go then. */
+  let sentDuringSwitch: StreamedLine[] | undefined;
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
@@ -818,8 +823,22 @@ export async function runTui(app: AppContext): Promise<void> {
     streamedLines.push(kept);
     if (streamedLines.length > SCROLLBACK_CAP) {
       for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) evictedLines.push({ kind: gone.kind, said: gone.said, parts: [] });
+      // A reply's entries go at its turn's end; an operator's message's
+      // wait for its row, so they are bounded here.
+      if (evictedLines.length > SCROLLBACK_CAP) {
+        let over = evictedLines.filter((l) => l.kind === 'you').length - SCROLLBACK_CAP;
+        if (over > 0) evictedLines = evictedLines.filter((l) => l.kind !== 'you' || over-- <= 0);
+      }
     }
     return kept;
+  }
+
+  /** Let go of entries no row will take: the operator's messages that were
+   *  never stored. */
+  function dropEntries(gone: StreamedLine[]): void {
+    if (gone.length === 0) return;
+    const dropped = new Set(gone);
+    streamedLines = streamedLines.filter((l) => !dropped.has(l));
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -948,7 +967,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  entry the scrollback cap let go links its row as one whose line it
    *  took down. The operator's messages are read oldest first, as their
    *  echoes are, so the same words sent twice are linked in order though a
-   *  turn ends between their stores. The replies are read newest first, as
+   *  turn ends between their stores; an echo whose message is never stored
+   *  (one the framework refused, or one sent during a session switch that
+   *  failed) is let go first (dropEntries), so no later row takes it. The
+   *  replies are read newest first, as
    *  their lines are, so a line no row took (an attempt that failed, say)
    *  isn't taken for a later row in the same words. While a turn is
    *  backgrounded its replies wait: their lines are drawn when it returns.
@@ -2750,6 +2772,7 @@ export async function runTui(app: AppContext): Promise<void> {
       if (result.switchToSessionId) {
         state.status = 'switching';
         updateStatus();
+        sentDuringSwitch = [];
         interrupts.reset();
         rootTurnShowing = false;
         turnFailures = createTurnFailures();
@@ -2770,6 +2793,7 @@ export async function runTui(app: AppContext): Promise<void> {
           subscribeFleetOps();
           resetObservabilityState();
         }, () => app.framework).then(() => {
+          sentDuringSwitch = undefined;
           if (stopping) return;
           const session = app.sessionManager.getActiveSession();
           refreshFromStore();
@@ -2780,6 +2804,11 @@ export async function runTui(app: AppContext): Promise<void> {
           opsAlerts.clear();
           updateStatus();
         }).catch(err => {
+          // The messages sent while it ran went to the framework it stopped,
+          // or one it never started: none is stored, and the history isn't
+          // drawn again, so their entries go here.
+          if (sentDuringSwitch) dropEntries(sentDuringSwitch);
+          sentDuringSwitch = undefined;
           addLine(`Session switch failed: ${err}`, RED);
           state.status = 'error';
           updateStatus();
@@ -2820,15 +2849,24 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       const shown = `${hhmm()} You: ${raw}`;
       const echo = addLine(shown, GREEN);
-      if (echo) keepLine(echo, 'you', text, shown, GREEN);
+      const sent = echo ? keepLine(echo, 'you', text, shown, GREEN) : undefined;
+      if (sent) sentDuringSwitch?.push(sent);
       const agent = app.framework.getAgent(rootAgentName);
       const agentBusy = agent && (agent.state.status === 'streaming' || agent.state.status === 'inferring' || agent.state.status === 'waiting_for_tools');
       state.status = agentBusy ? 'queued' : 'thinking';
       updateStatus();
-      app.framework.pushEvent({
-        type: 'external-message', source: 'tui',
-        content: text, metadata: {}, triggerInference: true,
-      });
+      try {
+        app.framework.pushEvent({
+          type: 'external-message', source: 'tui',
+          content: text, metadata: {}, triggerInference: true,
+        });
+      } catch (err) {
+        // A send the framework refused (its queue closed by a stop) is never
+        // stored: its echo is no row's, so a later message in the same words
+        // takes its own.
+        if (sent) dropEntries([sent]);
+        throw err;
+      }
     }
   }
 

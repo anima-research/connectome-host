@@ -482,6 +482,18 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(undone).not.toContain('(undone) the second answer');
   }, 40000);
 
+  // A send that is never stored, one the framework refused or one during a
+  // session switch that failed, is no row's: a later message in the same
+  // words takes its own echo (#485 bot review 5, finding 11).
+  test("the same words sent twice unstored, then once stored: an undo of the stored one marks its own echo", async () => {
+    const undone = await frameOf('undone-unsent', 'undone');
+    const echoes = undone.split('\n').filter((line) => line.includes('You: once more'));
+    expect(echoes).toHaveLength(3);
+    expect(echoes[0]).not.toContain('(undone)');
+    expect(echoes[1]).not.toContain('(undone)');
+    expect(echoes[2]).toContain('(undone)');
+  }, 40000);
+
   // A turn that keeps more lines than the scrollback holds before its end
   // links them: the first rounds' rows, whose lines the scrollback took
   // down, aren't drawn again (#485 bot review 4, finding 5).

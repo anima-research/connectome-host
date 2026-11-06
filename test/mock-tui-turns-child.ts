@@ -94,7 +94,10 @@ function fakeFramework(name: string) {
       this.send('inference:aborted', { agentName, reason });
       return true;
     },
-    pushEvent: () => {},
+    pushEvent: () => {
+      // agent-framework's queue throws once it is closed (a stop's).
+      if (refusePush) throw new Error('Queue is closed');
+    },
     stop: async () => {},
     getStore: () => ({ currentBranch: () => ({ name: storeBranch }) }),
     async switchBranch(branch: string) {
@@ -109,6 +112,8 @@ function fakeFramework(name: string) {
   };
 }
 
+/** While set, the framework refuses a send, as its closed queue does. */
+let refusePush = false;
 /** In `async-branch-turn`, lets the moved store's answer go. */
 let releaseMove: (() => void) | undefined;
 /** The workspace module in `async-branch`: each mount refresh the TUI starts. */
@@ -821,6 +826,29 @@ async function play(): Promise<void> {
     undoneRows.add('a2');
     first.send('window:undone', { retracted: 2 });
     await until(async () => (await frame()).includes('(undone) the first answer'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-unsent') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Two sends in the same words that are never stored: one the framework
+    // refuses, its queue closed, and one during a session switch that then
+    // fails. Then the same words sent again, stored, and its row undone
+    // (#485 bot review 5, finding 11).
+    refusePush = true;
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 1, 'the refused message to show');
+    refusePush = false;
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 2, 'the message during the switch to show');
+    endSwitch('failed');
+    await until(async () => (await frame()).includes('Session switch failed'), 'the switch to fail');
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 3, 'the stored message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'once more' }] });
+    undoneRows.add('u2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
     await step('undone');
   } else if (scenario === 'undone-long-turn') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
