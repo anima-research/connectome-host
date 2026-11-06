@@ -640,7 +640,7 @@ for (const port of ['0', '65536', '3.1', 'word', '-1']) test('an invalid stored 
   writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_PORT=' + port + '\n');
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain(JSON.stringify(port));
+  expect(f.err.join('\n')).toContain(`SESSION_SERVER_PORT in ${join(at.work, '.env')} isn't an integer from 1 to 65535.`);
   expect(existsSync(hostUnit(at))).toBe(false);
   expect(existsSync(shellUnit(at))).toBe(false);
 });
@@ -1921,6 +1921,17 @@ test('with no port free for the shell daemon it refuses, writing nothing', async
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('SESSION_SERVER_PORT');
   nothingWritten(at);
+});
+
+test('a stored shell port that isn\'t a port is refused without printing it, writing nothing', async () => {
+  const at = install('My Resident', { shell: true });
+  writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_PORT="sk-pasted-credential"\n', { mode: 0o600 });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const said = [...f.out, ...f.err].join('\n');
+  expect(said).toContain(`SESSION_SERVER_PORT in ${join(at.work, '.env')} isn't an integer from 1 to 65535.`);
+  expect(said).not.toContain('sk-pasted-credential');
+  expect(existsSync(hostUnit(at))).toBe(false);
 });
 
 test('a .env others can read that gets the shell daemon\'s new token is made readable by its user alone, and said', async () => {

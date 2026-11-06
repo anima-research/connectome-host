@@ -1411,7 +1411,7 @@ async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise
   const known = readEnvFile(file);
   let port = known.get('SESSION_SERVER_PORT');
   if (port && (!/^\d+$/.test(port) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) {
-    throw new Refusal(`SESSION_SERVER_PORT in ${file} is ${JSON.stringify(port)}, not an integer from 1 to 65535. ` +
+    throw new Refusal(`SESSION_SERVER_PORT in ${file} isn't an integer from 1 to 65535. ` +
       'Set a TCP port in that range, then repeat this service install command. Nothing was written.');
   }
   const newPort = !port;
