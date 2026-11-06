@@ -73,7 +73,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { LifecycleModule } from './modules/lifecycle-module.js';
 import {
-  REFUSED_BEFORE, REFUSED_TURN, SETUP_MODULE, SetupModule, lastReplyRefused, openingMessage, showsItself, type SecretAsker,
+  REFUSED_TURN, SETUP_MODULE, SetupModule, lastReplyRefused, openingMessage, showsItself, type SecretAsker,
 } from './modules/setup-module.js';
 import { bracketedPaste } from './readline-paste.js';
 import { speakerOf } from './speaker.js';
@@ -944,7 +944,6 @@ async function runPiped(app: AppContext) {
     answeredUnwaited = () => { if (!atPrompt) promptIfDone(); };
     const opening = async (after: 'start' | 'switch'): Promise<void> => {
       const held = app.framework.getAgent(app.agentName)?.getContextManager()?.queryMessages({}).messages ?? [];
-      if (lastReplyRefused(app.framework, app.agentName)) say(REFUSED_BEFORE);
       const opened = turns.waitForTurn(null);
       try {
         app.framework.pushEvent({

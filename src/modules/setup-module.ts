@@ -196,10 +196,6 @@ export const REFUSED_TURN = 'The model refused that turn. This can come from any
   'you just wrote. Try once more; if it refuses again, /session new starts a new conversation with setup\'s agent, and ' +
   'what setup has done stays on disk.';
 
-export const REFUSED_BEFORE = 'Setup\'s agent\'s last reply was refused by the model. This can come from anything in the ' +
-  'conversation. If it\'s refused again, /session new starts a new conversation with setup\'s agent, and what setup has ' +
-  'done stays on disk.';
-
 export function lastReplyRefused(
   framework: { queryInferenceLogs(query: { agentName: string; limit: number }): { entries: Array<{ summary?: { stopReason?: string } }> } },
   agentName: string,
