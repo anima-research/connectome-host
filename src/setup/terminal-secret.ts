@@ -113,9 +113,18 @@ export async function askHidden(
     const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
     history.splice(0, history.length, ...before.filter((entry) => !given.some((line) => entry.includes(line))));
     const held = rl as unknown as Record<symbol, unknown>;
+    const ring = killRing.find(([key]) => key.description === '_killRing')?.[1];
+    const kept = Array.isArray(ring) ? ring.filter((entry) => !given.some((line) => String(entry).includes(line))) : ring;
+    // Ctrl-Y yanks the ring's entry at its cursor, which can be past the end once entries are gone, and Meta-Y takes out
+    // the last yank by that entry's length. So with entries gone, the cursor goes back to the newest and no yank goes on.
+    const moved = Array.isArray(ring) && (kept as unknown[]).length < ring.length;
     for (const [key, value] of killRing) {
-      if (Array.isArray(value) && Array.isArray(held[key])) (held[key] as unknown[]).splice(0, Infinity, ...value);
-      else held[key] = value;
+      const back = key.description === '_killRing' ? kept
+        : !moved ? value
+        : key.description === '_killRingCursor' ? 0
+        : false;
+      if (Array.isArray(back) && Array.isArray(held[key])) (held[key] as unknown[]).splice(0, Infinity, ...back);
+      else held[key] = back;
     }
     echoing._writeToOutput = write;
     output.write('\n');

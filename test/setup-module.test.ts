@@ -1878,6 +1878,22 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
+  test('a line killed before a hidden question that holds its answer is taken out of the kill ring too, and Ctrl-Y after yanks the newest kill left, even where Meta-Y had moved the ring on', async () => {
+    for (const [before, sent] of [['other\x15tok-123456\x15', []], ['other\x15tok-123456\x15\x19\x1by\r', ['other']]] as const) {
+      const { input, output, rl, lines, nextLine } = terminal();
+      input.write(before);
+      await Bun.sleep(10);
+      const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
+      input.write('tok-123456\r');
+      expect(await answer).toBe('tok-123456');
+      const yanked = nextLine();
+      input.write('\x19\r');
+      await yanked;
+      expect(lines).toEqual([...sent, 'other']);
+      rl.close();
+    }
+  });
+
   test('an answer of more than one line is matched line by line, so a paste of it held for the conversation, and its last line left unsent, are taken out', async () => {
     const { input, output, rl, shown } = terminal();
     const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
