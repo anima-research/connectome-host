@@ -35,6 +35,15 @@ const listed = (body: unknown): boolean => idsOf(body) !== undefined;
 // ending in / takes the path without its first /.
 const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
 
+// A Location may be relative to the URL asked (RFC 9110, 10.2.2).
+export function redirectTarget(location: string, asked: string): string {
+  try {
+    return new URL(location, new URL(asked).origin).href;
+  } catch {
+    return location;
+  }
+}
+
 function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
   return { url: under(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1', '/models'), headers: bearer(key) };
 }
@@ -114,7 +123,10 @@ async function ask<T>(
   if (response.status === 401 || response.status === 403) return { kind: 'refused', status: response.status };
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
-    return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, key, name, options.hide) };
+    return {
+      kind: 'redirected', status: response.status,
+      to: to === null ? null : redirectTarget(hidden(to, key, name, options.hide), request.url),
+    };
   }
   let text: string;
   try {

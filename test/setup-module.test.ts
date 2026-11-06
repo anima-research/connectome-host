@@ -1107,6 +1107,10 @@ describe('checkDiscordToken', () => {
     });
     expect(redirect).toBe('manual');
     expect(result).toEqual({ kind: 'redirected', status: 307, to: 'https://elsewhere.example/' });
+    const relative = await checkDiscordToken('a-token', {
+      fetch: (async () => new Response(null, { status: 302, headers: { location: '/login' } })) as unknown as typeof fetch,
+    });
+    expect(relative).toEqual({ kind: 'redirected', status: 302, to: 'https://discord.com/login' });
   });
 
   test('a token a redirect puts in a host, lowercased, is hidden in where it leads', async () => {
@@ -2263,6 +2267,22 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord sent it: tell the person their connection is theirs to check.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, set ANTHROPIC_BASE_URL to it, then call again.');
+  });
+
+  test('a redirect whose Location is relative names the server that was asked, and none of a credential its base URL carries, for a key, a token and a model', async () => {
+    const relative = (async (_url: string, init?: RequestInit) => init?.redirect === 'manual'
+      ? new Response(null, { status: 302, headers: { location: '/login?next=models' } })
+      : Response.json({ data: [] })) as unknown as typeof fetch;
+    const openai = install({ asker: typed('sk-openai-moved'), fetch: relative });
+    const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
+    expect(String(stored.data)).toContain('OpenAI answered 302, a redirect to https://api.openai.com, which setup doesn\'t follow with a secret.');
+    const discord = install({ asker: typed('a-moved-token'), fetch: relative });
+    const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(String(token.data)).toContain('Discord answered 302, a redirect to https://discord.com, which setup doesn\'t follow with a secret.');
+    const gateway = install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\nANTHROPIC_BASE_URL=https://someone:private-pass@gateway.example.test/anthropic\n', fetch: relative });
+    const model = await checkModel(gateway.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(model.error).toContain('Anthropic answered 302, a redirect to https://gateway.example.test, which setup doesn\'t follow with a secret.');
+    expect(model.error).not.toContain('private-pass');
   });
 
   test('a redirect shows no part of a base URL that carries a credential, its path included', async () => {

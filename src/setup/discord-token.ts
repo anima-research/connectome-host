@@ -1,5 +1,6 @@
 import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { hostVersionOf } from '../update/update.js';
+import { redirectTarget } from './provider-key.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
@@ -51,7 +52,7 @@ export async function checkDiscordToken(
   if (response.status === 401) return { kind: 'refused' };
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
-    return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, token) };
+    return { kind: 'redirected', status: response.status, to: to === null ? null : redirectTarget(hidden(to, token), DISCORD_API) };
   }
   let text: string;
   try {
