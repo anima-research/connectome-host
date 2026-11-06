@@ -44,7 +44,7 @@ const SHELL_NODE_TOP = 24;
 const BOOT_TIMEOUT_MS = 60_000;
 // Bun 1.4.3's `bun add --no-env-file` still gives a package's install script the working directory's .env, where
 // 1.4.4's gives none (probed), and setup's bun add runs where the resident's secrets are.
-const SETUP_BUN_FLOOR = '>=1.4.4';
+export const SETUP_BUN_FLOOR = '>=1.4.4';
 const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',

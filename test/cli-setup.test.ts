@@ -6,7 +6,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { SETUP_BUN_FLOOR, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { bunBelowFloor } from '../src/bun-floor.js';
 import { defaultTrusted } from '../src/setup/default-trusted.js';
 import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 import { lingerOf } from '../src/setup/linger.js';
@@ -708,7 +709,7 @@ test('where the running Bun\'s default trusted list can\'t be read whole, setup 
   }
 });
 
-test('the Bun running these tests prints a default trusted list setup reads whole, node-pty among it', async () => {
+test.skipIf(bunBelowFloor(SETUP_BUN_FLOOR, Bun.version) === true)('the Bun running these tests prints a default trusted list setup reads whole, node-pty among it', async () => {
   const read = await defaultTrusted(async (_manager, argv, cwd) => {
     const ran = Bun.spawnSync([process.execPath, '--no-env-file', ...argv], { cwd });
     return { status: ran.exitCode, output: `${ran.stdout}${ran.stderr}` };
