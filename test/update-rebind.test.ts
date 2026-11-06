@@ -400,6 +400,22 @@ describe('binding an install to the directory it is in', () => {
       .toContain(`${join(rootOf(moved), 'copy', 'copy.json')} names ${install}/./mcpl-servers.json, which isn't in the plain form`);
   });
 
+  test('a record from before workingDir, its install moved and a link left at the old directory, is bound to the real directory: the record, the copy\'s label and the Go back\'s list all name the places there, and nothing is asked', () => {
+    setup(options(install));
+    updated(install);
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [] });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    symlinkSync(moved, install);
+    setup(options(moved, { dataDir: join(install, 'data') }));
+    const here = [join(moved, 'data'), join(moved, 'mcpl-servers.json')];
+    expect(record(moved)).toEqual({ v: 1, dataDir: join(moved, 'data'), extraState: [], workingDir: moved });
+    expect(label(moved)!.items.map((item) => item.path)).toEqual(here);
+    expect(label(moved)!.absent!.map((item) => item.path)).toEqual([join(moved, 'mcpl-servers.agent.json')]);
+    expect(list(moved)!.places.map((place) => place.path)).toEqual(here);
+    expect(existsSync(join(rootOf(moved), REBIND_PLAN))).toBe(false);
+  });
+
   test('a place inside another is asked about with it, and the places of state outside the data directory are asked about in the record\'s order', () => {
     const [z, state, a] = ['z.json', 'state', 'a.json'].map((name) => join(dir, name));
     writeFileSync(z, z);

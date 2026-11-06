@@ -143,10 +143,10 @@ export type Binding =
   | { kind: 'resume'; plan: RebindPlan }
   | { kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: RebindPlan['places'] };
 
-function keptHere(path: string, to: string, rootName: string): boolean {
+function keptHere(path: string, to: string, rootName: string): string | null {
   for (let at = path; ; at = dirname(at)) {
-    if (sameDirectory(at, to)) return true;
-    if (existsSync(join(at, rootName, 'install.json')) || dirname(at) === at) return false;
+    if (sameDirectory(at, to)) return join(to, relative(at, path));
+    if (existsSync(join(at, rootName, 'install.json')) || dirname(at) === at) return null;
   }
 }
 
@@ -170,11 +170,16 @@ export function bindingOf(root: string, record: InstallRecord): Binding {
       ', and run setup again. Setup has changed nothing.');
   }
   const places = placesOf(record, files);
-  const kept = from === null ? places.filter((place) => keptHere(place.path, to, basename(root))) : [];
+  const kept = from === null
+    ? places.flatMap((place) => {
+      const here = keptHere(place.path, to, basename(root));
+      return here === null ? [] : [{ from: place.path, to: here }];
+    })
+    : [];
   return {
     kind: 'bind', from, to, places,
-    ask: places.filter((place) => from === null ? !kept.includes(place) : !isUnder(place.path, from)),
-    kept: kept.map((place) => ({ from: place.path, to: place.path })),
+    ask: places.filter((place) => from === null ? !kept.some((one) => one.from === place.path) : !isUnder(place.path, from)),
+    kept,
   };
 }
 
