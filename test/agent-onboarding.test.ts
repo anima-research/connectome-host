@@ -111,6 +111,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
 
   it('is pointed into, from README.md, ARCHITECTURE.md, docs, scripts and src, as `FILE.md`\'s "Heading", `FILE.md`, "Heading" or `FILE.md#anchor`, by parts the guide, DEPLOYMENTS.md, the ingest doc and the README have, and by no section number', () => {
     const lines = (path: string) => readFileSync(join(ROOT, path), 'utf-8').split('\n');
+    const joined = (path: string) => readFileSync(join(ROOT, path), 'utf-8').replace(/\s*\n\s*/g, ' ').replace(/(['"`])\s*\+\s*\1/g, '');
     const headingsOf = (path: string) => lines(path).filter((line) => /^#{2,6} /.test(line)).map((line) => line.replace(/^#+ /, '').trim());
     const partsOf = (path: string) => [...headingsOf(path), ...lines(path).flatMap((line) => [...line.matchAll(/^\*\*([^*]+?)\.\*\*/g)].map((match) => match[1]!))];
     const files = {
@@ -130,7 +131,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
     const pointers: Array<{ from: string; doc: keyof typeof docs; heading: string }> = [];
     const anchors: Array<{ from: string; doc: keyof typeof docs; anchor: string }> = [];
     for (const from of sources) {
-      const text = readFileSync(join(ROOT, from), 'utf-8').replace(/\s*\n\s*/g, ' ');
+      const text = joined(from);
       for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|claude-code-ingest|<host>\/README)\.md`?\)?(?:\\?'s|,) ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
         const doc = `${match[1]!.replace('<host>/', '')}.md` as keyof typeof docs;
         for (const named of match[2]!.matchAll(/"([^"]+)"/g)) pointers.push({ from, doc, heading: named[1]!.replace(/`/g, '') });
@@ -143,7 +144,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       expect({ from, doc, anchor, there: headings[doc].some((heading) => slug(heading) === anchor) }).toEqual({ from, doc, anchor, there: true });
     }
     for (const from of sources) {
-      const text = readFileSync(join(ROOT, from), 'utf-8').replace(/\s*\n\s*/g, ' ');
+      const text = joined(from);
       const numbered = text.match(/(?:AGENT-ONBOARDING(?:\.md)?|onboarding)[^.]{0,40}?(?:§|\bsection)\s?\d|(?:§|\bsection)\s?\d[\w.]*\s+of the onboarding/gi) ?? [];
       expect({ from, numbered }).toEqual({ from, numbered: [] });
     }
