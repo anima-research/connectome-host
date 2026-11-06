@@ -6,8 +6,6 @@ import { runHeadless } from '../src/headless.ts';
 import type { AppContext } from '../src/index.ts';
 import { TuiModule } from '../src/modules/tui-module.ts';
 
-// Blocks stream as membrane's Anthropic adapter streams them with thinking
-// on: each block's start, its deltas, then its finished payload.
 type Block =
   | { type: 'thinking'; thinking: string; signature: string }
   | { type: 'text'; text: string }
