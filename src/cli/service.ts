@@ -49,9 +49,9 @@ const STOPPING = new Set([...RUNNING, 'deactivating']);
 const recordAgain = (cmd: string) =>
   `Name the recipe to write the service and its record again: ${cmd} service install <recipe>.`;
 const guessedSecretsNotice = (work: string) =>
-  `The secret-name list ${join(work, '.setup', 'stored-secrets.json')} is missing, so additional .env names were ` +
-  'treated as potentially secret. For later service checks, write it as a JSON list of the name of every secret, ' +
-  'those in .env and any the host is given through its environment, to keep other values visible.';
+  `The secret-name list ${join(work, '.setup', 'stored-secrets.json')} is missing, so every name in .env and the ` +
+  'dotenv files beside it was treated as potentially secret. For later service checks, write it as a JSON list of ' +
+  'the name of every secret in those files, to keep other values visible.';
 const serviceRepair = (cmd: string) =>
   `Run ${cmd} service install to check and repair the service for its recorded recipe. ` +
   'If it asks you to stop a loaded unit whose file is gone, follow its conditional stop instruction, then repeat install.';

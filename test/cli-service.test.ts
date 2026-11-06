@@ -4670,9 +4670,9 @@ for (const operation of ['stop', 'retire']) test(`Mac ${operation} keeps the gua
 
 function missingListWords(at: Install): string {
   return 'The secret-name list ' + join(at.work, '.setup', 'stored-secrets.json') +
-    ' is missing, so additional .env names were treated as potentially secret. ' +
-    'For later service checks, write it as a JSON list of the name of every secret, those in .env and any the host is ' +
-    'given through its environment, to keep other values visible.';
+    ' is missing, so every name in .env and the dotenv files beside it was treated as potentially secret. ' +
+    'For later service checks, write it as a JSON list of the name of every secret in those files, to keep other ' +
+    'values visible.';
 }
 
 for (const platform of ['linux', 'darwin']) test(`${platform} service excerpts explain missing-list redaction of Discord and short custom values`, async () => {
