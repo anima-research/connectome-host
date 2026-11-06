@@ -558,6 +558,9 @@ describe('a bare /newtopic', () => {
         '  Nothing was stored. Run /newtopic again once the turn has ended.',
       ]);
       expect(summarized).toEqual([]);
+      // Nothing was stored, as the refusal says (#485 bot review 5, finding 26).
+      expect(result.asyncWork).toBeUndefined();
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
     } finally {
       fw.pendingContinuationAgents = original;
       await h.cleanup();
