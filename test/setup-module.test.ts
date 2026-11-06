@@ -1861,6 +1861,23 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
+  test('a pasted line that holds the answer just given hidden is taken out of readline\'s history too, and the lines that don\'t stay', async () => {
+    const { input, output, rl } = terminal();
+    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
+    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
+    rl.on('line', (line) => { paste.take(line); });
+    input.write('\x1b[200~my token is\r tok-123456 \rthe token is tok-123456\r\x1b[201~');
+    await Bun.sleep(30);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
+    input.write('tok-123456\r');
+    expect(await answer).toBe('tok-123456');
+    const history = (rl as unknown as { history: string[] }).history;
+    expect(history.some((entry) => entry.includes('tok-123456'))).toBe(false);
+    expect(history).toContain('my token is');
+    paste.end();
+    rl.close();
+  });
+
   test('an answer of more than one line is matched line by line, so a paste of it held for the conversation, and its last line left unsent, are taken out', async () => {
     const { input, output, rl, shown } = terminal();
     const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };

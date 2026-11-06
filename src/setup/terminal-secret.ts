@@ -110,7 +110,8 @@ export async function askHidden(
     rl.off('close', onClose);
     rl.off('line', take);
     for (const listener of others) rl.on('line', listener);
-    history.splice(0, history.length, ...before);
+    const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    history.splice(0, history.length, ...before.filter((entry) => !given.some((line) => entry.includes(line))));
     const held = rl as unknown as Record<symbol, unknown>;
     for (const [key, value] of killRing) {
       if (Array.isArray(value) && Array.isArray(held[key])) (held[key] as unknown[]).splice(0, Infinity, ...value);
@@ -118,7 +119,6 @@ export async function askHidden(
     }
     echoing._writeToOutput = write;
     output.write('\n');
-    const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
     const dropped = given.length === 0 ? undefined : paste?.drop(given);
     if (dropped !== undefined && dropped.taken > 0) {
       output.write(`${dropped.taken === 1 ? '1 pasted line' : `${dropped.taken} pasted lines`} held what you just entered ` +
