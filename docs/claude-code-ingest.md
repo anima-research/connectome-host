@@ -364,10 +364,11 @@ reading them, with its `setup--ask_secret`. Claude-Code-specific choices:
   `adaptiveResolution`, `targetChunkTokens`, `compressionSlackRatio`, `mergeThreshold`,
   `headWindowTokens`, `recentWindowTokens`, `maxMessageTokens`, `enforceBudget`,
   `overBudgetGraceRatio`, `maxSpeculativeL1s`, `summaryParticipant` and
-  `compressionRecallBudgetTokens`. Leave out `autoTickOnNewMessage`, which is off only
-  for the import, and `foldingStrategy`: new residents fold with kv-unified, the host
-  default (`DEPLOYMENTS.md`'s "The folding solver"). Decide *before* first boot, since
-  switching later is a layout change.
+  `compressionRecallBudgetTokens`. Set `foldingStrategy` to `"kv-stable"` too: the
+  script builds the store under it, and a resident whose store was built under kv-stable
+  pins it (the README's "Recipes"). Left out, it would be kv-unified, the host
+  default (`DEPLOYMENTS.md`'s "The folding solver"), and switching later is a layout
+  change. Leave out `autoTickOnNewMessage`, which is off only for the import.
 - **The Web UI** (`modules.webui`), for stage 3's checks and this stage's, which read
   its `/debug/context`, `/debug/context/makeup` and `/healthz`. The host starts it only
   when the recipe names it, so a resident that doesn't need those checks can leave it
