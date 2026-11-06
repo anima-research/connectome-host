@@ -1479,15 +1479,20 @@ function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings,
     const current = readEnvFile(join(work, '.env'));
     const remove = SHELL_SETTING_NAMES.filter((name) => owned[name] !== undefined && current.get(name) === owned[name]);
     const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
-    stored.names();
+    const listed = stored.names();
     removeEnvValues(join(work, '.env'), remove, owned);
     const gone = SHELL_SETTING_NAMES.filter((name) => recorded[name] !== undefined && !current.has(name));
     const forgetting = [...new Set([...remove, ...gone])];
     const still = new Set(secretValues(forgetting, join(work, '.env'), env).map((secret) => secret.name));
-    stored.forget(forgetting.filter((name) => !still.has(name)));
+    const forgot = forgetting.filter((name) => !still.has(name) && listed.includes(name));
+    stored.forget(forgot);
     ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
-    if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
-    for (const name of still) {
+    if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env.`);
+    for (const name of forgot) {
+      ctx.out(`Forgot ${name} among setup's stored-secret names: no .env line, dotenv file beside it or environment ` +
+        'value gives it now.');
+    }
+    for (const name of forgetting.filter((each) => still.has(each) && listed.includes(each))) {
       ctx.out(`Kept ${name} among setup's stored-secret names: another .env line, a dotenv file beside it or the ` +
         'environment still gives it.');
     }

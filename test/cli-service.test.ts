@@ -4984,6 +4984,8 @@ test('retiring the shell settings keeps the token\'s stored-secret name while .e
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(new StoredSecrets(join(at.work, '.setup')).names()).toContain('SESSION_SERVER_TOKEN');
   expect(f.out.join('\n')).not.toContain('local-value');
+  expect(f.out.join('\n')).toContain('Kept SESSION_SERVER_TOKEN among setup\'s stored-secret names');
+  expect(f.out.filter((line) => line.includes('SESSION_SERVER_TOKEN') && line.includes('orgot'))).toEqual([]);
 });
 
 test('a retry forgets the recorded shell names whose values an interrupted retirement already removed', async () => {
@@ -4995,6 +4997,8 @@ test('a retry forgets the recorded shell names whose values an interrupted retir
   writeFileSync(at.recipe, JSON.stringify({}));
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(new StoredSecrets(join(at.work, '.setup')).names()).not.toContain('SESSION_SERVER_TOKEN');
+  expect(f.out).toContain('Forgot SESSION_SERVER_TOKEN among setup\'s stored-secret names: no .env line, dotenv ' +
+    'file beside it or environment value gives it now.');
 });
 
 test('an explicit install over a record it can\'t read in full still refuses one naming another working directory', async () => {
