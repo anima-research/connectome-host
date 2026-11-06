@@ -7,8 +7,8 @@ import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
-  ENV_REFERENCE, loadRecipeDocument, readRecipeDocument, recipeDigest, recipeModel, runningFit, unknownRecipeKeys,
-  type Recipe, type RecipeDocument,
+  ENV_REFERENCE, loadRecipeDocument, namesEnvReference, readRecipeDocument, recipeDigest, recipeModel, runningFit,
+  unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
   PROVIDER_SECRETS, StoredSecrets, dotenvReferences, readEnvFile, redactWindow, secretNames, storedSecrets, type Secret,
@@ -329,6 +329,10 @@ export async function doctor(
       try {
         servers = serversForRecipe(recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
           .loaded as Server[];
+        secrets = [...secrets, ...servers.flatMap((server) => {
+          const token = childEnv(server, env).DISCORD_TOKEN;
+          return token && !namesEnvReference(token) ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
+        })];
       } catch (error) {
         report.problem(`The recipe's server list doesn't resolve: ${errorText(error)}`);
         unknown = 'the recipe\'s server list doesn\'t resolve';

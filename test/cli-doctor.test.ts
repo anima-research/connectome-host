@@ -1558,4 +1558,18 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.status).toBe(1);
   });
 
+  test('a literal DISCORD_TOKEN in a server\'s own entry is withheld too', async () => {
+    const literal = 'literal-entry-token';
+    const at = install();
+    writeFileSync(join(at.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: {
+      discord: { command: join(at.work, 'node_modules/.bin/discord-mcpl'), env: { DISCORD_TOKEN: literal, DISCORD_GUILD_ID: '100' } },
+    } }));
+    const echoing = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+      new URL(String(input)).pathname.endsWith('/users/@me') ? Response.json({ id: '902', username: 'literal' })
+        : Response.json({ message: `proxy refused ${new Headers(init?.headers).get('authorization')}`, code: 0 }, { status: 403 })) as typeof fetch;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: echoing }));
+    expect(r.out).toContain('proxy refused Bot <DISCORD_TOKEN>');
+    expect(r.out).not.toContain(literal);
+  });
+
 });
