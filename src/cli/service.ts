@@ -17,7 +17,8 @@ import { boundHere, sameDirectory, workingDirOf } from '../update/rebind.js';
 import { lingerOf } from '../setup/linger.js';
 import { takeFileLock } from '../setup/file-lock.js';
 import {
-  StoredSecrets, envForm, readEnvFile, removeEnvValues, storedSecretRedactor, storedSecretWindowRedactor, writeEnvValue,
+  StoredSecrets, envForm, readEnvFile, removeEnvValues, secretValues, storedSecretRedactor, storedSecretWindowRedactor,
+  writeEnvValue,
 } from '../setup/secrets.js';
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
@@ -621,7 +622,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         retained = false;
       }
       if (!wantsShell) {
-        dropShellSettings(ctx, work, ownedSettings);
+        dropShellSettings(ctx, work, ownedSettings, sys.env);
         const withoutSettings = { ...record };
         delete withoutSettings.shellSettings;
         writeJsonAtomic(join(root, 'service.json'), withoutSettings, 0o600);
@@ -1438,7 +1439,8 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings): void {
+function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings,
+  env: Record<string, string | undefined>): void {
   const stored = new StoredSecrets(join(work, '.setup'));
   try {
     const current = readEnvFile(join(work, '.env'));
@@ -1446,9 +1448,14 @@ function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings):
     const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
     stored.names();
     removeEnvValues(join(work, '.env'), remove, owned);
-    stored.forget(remove);
+    const still = new Set(secretValues(remove, join(work, '.env'), env).map((secret) => secret.name));
+    stored.forget(remove.filter((name) => !still.has(name)));
     ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
     if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
+    for (const name of still) {
+      ctx.out(`Kept ${name} among setup's stored-secret names: another .env line, a dotenv file beside it or the ` +
+        'environment still gives it.');
+    }
     for (const name of keep) ctx.out(`Kept ${name} in .env: its current value isn't recorded as written by this service.`);
   } catch (error) {
     throw new Refusal("No shell daemon was requested, but its recorded settings couldn't be removed from .env and " +

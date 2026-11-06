@@ -4896,3 +4896,14 @@ test('retiring the shell settings removes only the lines holding the values this
   expect(readEnvFile(file).get('SESSION_SERVER_TOKEN')).toBe('personal');
   expect(readEnvFile(file).has('SESSION_SERVER_PORT')).toBe(false);
 });
+
+test('retiring the shell settings keeps the token\'s stored-secret name while .env.local still gives it', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(join(at.work, '.env.local'), 'SESSION_SERVER_TOKEN="local-value"\n', { mode: 0o600 });
+  writeFileSync(at.recipe, JSON.stringify({}));
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(new StoredSecrets(join(at.work, '.setup')).names()).toContain('SESSION_SERVER_TOKEN');
+  expect(f.out.join('\n')).not.toContain('local-value');
+});
