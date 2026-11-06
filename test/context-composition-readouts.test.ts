@@ -196,14 +196,18 @@ describe('the makeup endpoint', () => {
   }
 });
 
-test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a count that carried no credential', async () => {
+test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a count that carried no credential, and sends no credential\'s value', async () => {
   const realFetch = globalThis.fetch;
   const prior = { model: process.env.COUNT_TOKENS_MODEL, key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
   const restore = (name: string, value: string | undefined) => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   };
-  globalThis.fetch = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch;
+  const sent: Array<Record<string, string>> = [];
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    sent.push(Object.fromEntries(new Headers(init?.headers).entries()));
+    return new Response('{}', { status: 401 });
+  }) as unknown as typeof fetch;
   try {
     process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
     delete process.env.ANTHROPIC_API_KEY;
@@ -217,6 +221,9 @@ test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a 
     } as unknown as PanelAppRef;
     const makeup = await buildContextMakeup(app, 'agent');
     expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_no_credential', null]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.authorization).toBeUndefined();
+    expect(sent[0]!['x-api-key'] ?? '').toBe('');
   } finally {
     globalThis.fetch = realFetch;
     restore('COUNT_TOKENS_MODEL', prior.model);
@@ -281,4 +288,33 @@ describe("the health snapshot's contextComposition and contextCompositionNotKept
     expect(sent.readFailures.broken.contextComposition).toBe('');
     expect(healthComposition(sent, 'broken')).toBeNull();
   });
+});
+
+test('the makeup gives count_tokens_error, and no total, for a count answered 200 with no input_tokens', async () => {
+  const realFetch = globalThis.fetch;
+  const prior = { model: process.env.COUNT_TOKENS_MODEL, key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  globalThis.fetch = (async () => Response.json({})) as unknown as typeof fetch;
+  try {
+    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    process.env.ANTHROPIC_API_KEY = 'sk-makeup-test';
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    const app = {
+      recipe: { agent: { name: 'agent' } },
+      framework: {
+        getAgent: () => ({ model: 'claude-haiku-4-5', getContextManager: () => cmWith(null, true) }),
+        previewActivation: async () => ({ messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'hi' }] }] }),
+      },
+    } as unknown as PanelAppRef;
+    const makeup = await buildContextMakeup(app, 'agent');
+    expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_error', null]);
+  } finally {
+    globalThis.fetch = realFetch;
+    restore('COUNT_TOKENS_MODEL', prior.model);
+    restore('ANTHROPIC_API_KEY', prior.key);
+    restore('ANTHROPIC_AUTH_TOKEN', prior.token);
+  }
 });

@@ -1104,8 +1104,9 @@ async function countTokens(
       const source = res.status === 401 && !bearer && !key ? 'count_tokens_no_credential' : `count_tokens_failed_${res.status}`;
       return { tokens: null, source };
     }
-    const j = (await res.json()) as { input_tokens?: number };
-    return { tokens: j.input_tokens ?? null, source: 'count_tokens' };
+    const j = (await res.json()) as { input_tokens?: unknown } | null;
+    return typeof j?.input_tokens === 'number' ? { tokens: j.input_tokens, source: 'count_tokens' }
+      : { tokens: null, source: 'count_tokens_error' };
   } catch (error) {
     return { tokens: null, source: (error as Error | undefined)?.name === 'TimeoutError' ? 'count_tokens_timeout' : 'count_tokens_error' };
   }
@@ -1124,6 +1125,7 @@ const COUNT_CHECK_PAYLOAD = { messages: [{ role: 'user', content: 'ping' }] };
 const COUNT_CHECK_MESSAGE: NormalizedMessage = { participant: 'User', content: [{ type: 'text', text: 'ping' }] };
 
 export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS): Promise<CountCheck> {
+  const framework = app.framework;
   const agentName = resolveAgent(app);
   const agent = requireAgent(app, agentName);
   const model = (agent as { model?: string }).model ?? null;
@@ -1136,7 +1138,7 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
   let sent: CountTokensPayload | { error: string } | null = null;
   if (countModel) {
     try {
-      const request = await app.framework.previewActivation(agentName);
+      const request = await framework.previewActivation(agentName);
       sent = countablePayload(app, agentName, { ...(request as unknown as CountablePreview), messages: [COUNT_CHECK_MESSAGE] });
     } catch (error) {
       sent = { error: error instanceof Error ? error.message : String(error) };
@@ -1147,11 +1149,12 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
     compressionModel === null ? null : count(compressionCountModel),
     sent === null || 'error' in sent ? null : count(countModel, sent),
   ]);
-  const beside: CountCheck['beside'] = sent === null ? unsupported
+  const beside: CountCheck['beside'] = app.framework !== framework ? { tokens: null, source: 'session_switched' }
+    : sent === null ? unsupported
     : 'error' in sent ? { tokens: null, source: 'preview_failed', error: sent.error }
     : withSent!.tokens !== null && ping.tokens !== null ? { tokens: withSent!.tokens - ping.tokens, source: 'count_tokens' }
     : { tokens: null, source: withSent!.source !== 'count_tokens' ? withSent!.source : ping.source };
-  const live = (app.framework as unknown as {
+  const live = (framework as unknown as {
     getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number };
   }).getAgentRuntimeSettings?.(agentName)?.contextBudgetTokens;
   return {

@@ -543,3 +543,57 @@ describe('compressionModelOf', () => {
     expect(compressionModelOf(withStrategy({ type: 'my-ext', compressionModel: 'claude-c' }), 'claude-x')).toBeNull();
   });
 });
+
+describe('count-check, in the round on the review of 4a79597ff', () => {
+  const appWith = (): PanelAppRef => ({
+    recipe: { name: 'r', agent: { name: 'resident', systemPrompt: '', strategy: { type: 'autobiographical', compressionModel: 'claude-compress-test' } } } as unknown as Recipe,
+    framework: {
+      getAgent: () => ({ model: 'claude-agent-test' }),
+      getAllAgents: () => [{ name: 'resident' }],
+      previewActivation: async () => ({ system: '', tools: [], messages: [{ participant: 'Ann', content: [{ type: 'text', text: 'hi' }] }] }),
+      getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456 }),
+    } as unknown as PanelAppRef['framework'],
+  });
+  const saved: Record<string, string | undefined> = {};
+  const setEnv = (values: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(values)) {
+      if (!(k in saved)) saved[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+
+  test('a count answered 200 with no input_tokens is no count: each source says it failed, and nothing reads as counted', async () => {
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(req) { await req.text(); return Response.json({}); } });
+    try {
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
+      const check = await buildCountCheck(appWith(), 2_000);
+      expect([check.agent.source, check.compression?.source, check.beside]).toEqual(
+        ['count_tokens_error', 'count_tokens_error', { tokens: null, source: 'count_tokens_error' }]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('a session switched while the counts were asked is said as that, not counted against the new session', async () => {
+    const app = appWith();
+    const next = { ...app.framework } as PanelAppRef['framework'];
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        await req.text();
+        app.framework = next;
+        return Response.json({ input_tokens: 10 });
+      },
+    });
+    try {
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
+      const check = await buildCountCheck(app, 2_000);
+      expect(check.beside).toEqual({ tokens: null, source: 'session_switched' });
+    } finally {
+      server.stop(true);
+    }
+  });
+});
