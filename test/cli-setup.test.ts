@@ -1759,15 +1759,18 @@ test('one setup at a time in a directory: another running refuses this one befor
   async () => {
     const dir = directory();
     const holder = await holdLock(dir);
-    writeFileSync(join(dir, '.env.tmp'), 'DISCORD_TOKEN="being-written"\n', { mode: 0o600 });
-    const refused = world(dir, { answers: ['no', ''], secrets: [KEY] });
-    expect(await runSetup(dir, ['discord'], refused)).toBe(1);
-    expect(readFileSync(join(dir, '.env.tmp'), 'utf-8')).toBe('DISCORD_TOKEN="being-written"\n');
-    expect(text(refused.seen.err)).toContain(`Another setup is running in ${dir}`);
-    expect(text(refused.seen.err)).toContain('Wait for it to end, or end it, and run setup again.');
-    expect(refused.seen.asked).toEqual([]);
-    expect(refused.seen.ran).toEqual([]);
-    await holder.kill();
+    try {
+      writeFileSync(join(dir, '.env.tmp'), 'DISCORD_TOKEN="being-written"\n', { mode: 0o600 });
+      const refused = world(dir, { answers: ['no', ''], secrets: [KEY] });
+      expect(await runSetup(dir, ['discord'], refused)).toBe(1);
+      expect(readFileSync(join(dir, '.env.tmp'), 'utf-8')).toBe('DISCORD_TOKEN="being-written"\n');
+      expect(text(refused.seen.err)).toContain(`Another setup is running in ${dir}`);
+      expect(text(refused.seen.err)).toContain('Wait for it to end, or end it, and run setup again.');
+      expect(refused.seen.asked).toEqual([]);
+      expect(refused.seen.ran).toEqual([]);
+    } finally {
+      await holder.kill();
+    }
     const after = world(dir, { answers: ['no', ''], secrets: [KEY] });
     expect(await runSetup(dir, ['discord'], after)).toBe(0);
     expect(after.seen.launched).not.toBeNull();
