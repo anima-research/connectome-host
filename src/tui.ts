@@ -2643,6 +2643,13 @@ export async function runTui(app: AppContext): Promise<void> {
         state.status = 'thinking';
         updateStatus();
         result.asyncWork.then(asyncResult => {
+          // An answer that comes once the TUI has stopped, a bare
+          // /newtopic's summary given back say, goes to the terminal: the
+          // renderer is gone, and with it the scrollback.
+          if (stopping) {
+            for (const l of asyncResult.lines) console.log(l.text);
+            return;
+          }
           // A turn of the root agent's can have started since the command:
           // its stream and its status are left as they are.
           const turnRunning = rootTurnShowing || streaming;
@@ -2659,6 +2666,10 @@ export async function runTui(app: AppContext): Promise<void> {
           if (!turnRunning) state.status = 'idle';
           updateStatus();
         }).catch(err => {
+          if (stopping) {
+            console.log(`Async command failed: ${err}`);
+            return;
+          }
           addLine(`Async command failed: ${err}`, RED);
           state.status = 'error';
           updateStatus();
