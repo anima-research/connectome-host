@@ -143,8 +143,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const pkg = packageJson();
   const version = pkg.version;
 
-  const command = existsSync(join(root, INSTALL_COMMAND)) ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}`
-    : firstLine();
+  const command = existsSync(join(root, INSTALL_COMMAND)) && existsSync(join(root, 'current', SETUP_RECIPE))
+    ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}` : firstLine();
   if (ctx.argv.length !== 1 || ctx.argv[0] !== SURFACE) {
     err(`Usage: ${command}`);
     err('Discord is the one surface setup sets a resident up on.');

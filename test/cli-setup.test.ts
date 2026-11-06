@@ -13,7 +13,7 @@ import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-
 import { lingerOf } from '../src/setup/linger.js';
 import { SetupModule } from '../src/modules/setup-module.js';
 import { readEnvFile } from '../src/setup/secrets.js';
-import { writeInstallCommand } from '../src/cli/install-command.js';
+import { SETUP_RECIPE, writeInstallCommand } from '../src/cli/install-command.js';
 import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths, keptOutsideLines } from '../src/update/contract.js';
 import { entryPointText } from '../src/update/setup.js';
 import { machineOps, shellWord, takeLock } from '../src/update/launcher.js';
@@ -226,7 +226,7 @@ test('setup sets up Discord alone, and names it when asked for anything else', a
   expect(readdirSync(dir)).toEqual([]);
 });
 
-test('setup\'s usage line is the command that runs it here: the package\'s first line, or the install\'s own command', async () => {
+test('setup\'s usage line is the command that runs it here: the install\'s own command where the release it runs has setup, and otherwise the package\'s first line', async () => {
   const dir = directory();
   const fresh = world(dir);
   expect(await runSetup(dir, ['telegram'], fresh)).toBe(2);
@@ -234,6 +234,11 @@ test('setup\'s usage line is the command that runs it here: the package\'s first
   const root = join(dir, 'connectome-host');
   mkdirSync(root);
   writeInstallCommand(root, '');
+  const withoutSetup = world(dir);
+  expect(await runSetup(dir, ['telegram'], withoutSetup)).toBe(2);
+  expect(withoutSetup.seen.err[0]).toBe(`Usage: ${firstLine()}`);
+  mkdirSync(dirname(join(root, 'current', SETUP_RECIPE)), { recursive: true });
+  writeFileSync(join(root, 'current', SETUP_RECIPE), '{}');
   const installed = world(dir);
   expect(await runSetup(dir, ['telegram'], installed)).toBe(2);
   expect(installed.seen.err[0]).toBe(`Usage: ${shellWord(join(root, 'connectome'))} setup discord`);
@@ -258,7 +263,8 @@ test('a BUN_OPTIONS that holds --env-file is refused before any question, naming
   }
   const dir = directory();
   const root = join(dir, 'connectome-host');
-  mkdirSync(root);
+  mkdirSync(dirname(join(root, 'current', SETUP_RECIPE)), { recursive: true });
+  writeFileSync(join(root, 'current', SETUP_RECIPE), '{}');
   writeInstallCommand(root, '');
   const installed = world(dir, {}, {
     env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: '--env-file=/elsewhere/.env' }, execArgv: ['--env-file=/elsewhere/.env'],
