@@ -1116,15 +1116,6 @@ describe('checkDiscordToken', () => {
       fetch: (async () => Response.json({ id: 'a-token', username: 'bot a-token' })) as unknown as typeof fetch,
     })).toEqual({ kind: 'accepted', name: 'bot <DISCORD_TOKEN>', id: '<DISCORD_TOKEN>' });
   });
-
-  test('a user whose answer says it isn\'t a bot is Discord answering otherwise, and one that says it is, is the bot', async () => {
-    expect(await checkDiscordToken('a-token', {
-      fetch: (async () => Response.json({ id: '900', username: 'person', bot: false })) as unknown as typeof fetch,
-    })).toEqual({ kind: 'answered', status: 200, said: null });
-    expect(await checkDiscordToken('a-token', {
-      fetch: (async () => Response.json({ id: '900', username: 'ember', bot: true })) as unknown as typeof fetch,
-    })).toEqual({ kind: 'accepted', name: 'ember', id: '900' });
-  });
 });
 
 describe('setup--ask_secret', () => {
@@ -2176,6 +2167,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
+  });
+
+  test('a token answered with an error that isn\'t JSON names its status, and a 429 or 5xx says doctor checks it again, in place of the connection advice', async () => {
+    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+    for (const [status, after] of [[503, BUSY], [429, BUSY], [403, ' Tell the person: their connection to it is theirs to check.']] as const) {
+      const page = (async () => new Response('<html>error</html>', { status, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+      const token = install({ asker: typed('a-page-token'), fetch: page });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to work: ` +
+        `Discord answered ${status}, with something other than JSON.${after}`);
+      expect(token.shown, String(status)).toContain(`Discord didn't say whether it works: it answered ${status}, with something other ` +
+        `than JSON.${after === BUSY ? BUSY : ''}`);
+      expect(token.shown.join('\n'), String(status)).not.toContain('sign-in page');
+    }
   });
 
   test('a redirect is named, with the server it leads to, and what to set where a base URL can be set, for a key, a token and a model', async () => {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { checkDiscordToken, DISCORD_API, discordUserAgent } from '../setup/discord-token.js';
 
@@ -258,7 +258,7 @@ function scopeLines(
   let atStart = false;
   if (env.DISCORD_FILTERS_FILE) {
     const path = resolve(workingDir, env.DISCORD_FILTERS_FILE);
-    if (!existsSync(path)) {
+    if (missing(path)) {
       lines.push(`${path} (DISCORD_FILTERS_FILE) isn't there. discord-mcpl writes it from DISCORD_GUILD_ID when it ` +
         'starts, so that is the scope it starts with. If a running discord-mcpl had read it, and it was removed since, ' +
         'the last filters it read stay in force until the file is back.');
@@ -361,4 +361,14 @@ function filtersFromFile(path: string): Filters | null {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function missing(path: string): boolean {
+  try {
+    statSync(path);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
 }

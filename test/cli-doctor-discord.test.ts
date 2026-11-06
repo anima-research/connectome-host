@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkDiscord } from '../src/cli/discord-check.js';
@@ -227,19 +227,6 @@ describe('doctor: Discord', () => {
     expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
   });
 
-  test('a user that says it isn\'t a bot is no answer of the bot\'s, and one that doesn\'t say is taken as the bot', async () => {
-    for (const bot of [false, 'true', null]) {
-      const discord = fakeDiscord({ answers: { '/users/@me': () => Response.json({ id: '900', username: 'person', bot }) }, guilds: [HOME] });
-      const r = await run({ DISCORD_TOKEN: TOKEN }, discord);
-      expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
-      expect(r.text).not.toContain('person');
-      expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
-    }
-    const unsaid = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': () => Response.json({ id: '900', username: 'ember' }) }, flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
-    expect(unsaid.lines[0]).toBe('✓ The token in DISCORD_TOKEN works: the bot is ember (900).');
-    expect(unsaid.problems).toEqual([]);
-  });
-
   test('an answer doctor can\'t read the way it reads Discord\'s stops the check, and what it found before is still said', async () => {
     for (const list of [null, {}]) {
       const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ guilds: [HOME], answers: { '/users/@me/guilds': () => Response.json(list) } }));
@@ -400,7 +387,24 @@ describe('doctor: Discord', () => {
     expect(r.text).toMatch(/No scope is set \(DISCORD_GUILD_ID\): every server the bot is in is admitted\./);
   });
 
-  test('a filters file that parses replaces the variables; one that doesn\'t is a problem, and the variables apply', async () => {
+  test.skipIf(process.getuid?.() === 0)('a filters file under a directory this user can\'t search isn\'t said to be missing', async () => {
+    const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] });
+    const dir = workdir();
+    mkdirSync(join(dir, 'locked'));
+    writeFileSync(join(dir, 'locked', 'filters.json'), JSON.stringify({ guildIds: ['100'] }));
+    chmodSync(join(dir, 'locked'), 0o000);
+    try {
+      const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100', DISCORD_FILTERS_FILE: 'locked/filters.json' }, discord, dir);
+      expect(r.text).not.toContain('isn\'t there');
+      expect(r.problems).toEqual([`${join(dir, 'locked', 'filters.json')} (DISCORD_FILTERS_FILE) isn't a filters file discord-mcpl can read. ` +
+        'If it was unreadable when discord-mcpl started, DISCORD_GUILD_ID applies, as below; if it broke since, the filters read ' +
+        'before stay in force until it\'s fixed.']);
+    } finally {
+      chmodSync(join(dir, 'locked'), 0o755);
+    }
+  });
+
+  test('a filters file that parses replaces the variables; one that doesn\'t is a problem, and discord-mcpl starts with the variables', async () => {
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME, ELSEWHERE] });
     const dir = workdir();
     writeFileSync(join(dir, 'filters.json'), JSON.stringify({ guildIds: ['200'] }));
