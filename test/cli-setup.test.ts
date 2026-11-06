@@ -710,6 +710,53 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(text(made.seen.out)).not.toContain('Blocked');
 });
 
+// Bun's isolated linker: term-sessions-mcp is a link into node_modules/.bun, and its node-pty is there beside it.
+function isolatedNodePty(cwd: string): string {
+  const store = join(cwd, 'node_modules', '.bun');
+  const server = join(store, 'term-sessions-mcp@1.7.3', 'node_modules', 'term-sessions-mcp');
+  const pty = join(store, 'node-pty@1.1.0', 'node_modules', 'node-pty');
+  rmSync(join(cwd, 'node_modules', 'term-sessions-mcp'), { recursive: true, force: true });
+  mkdirSync(server, { recursive: true });
+  writeFileSync(join(server, 'package.json'), '{"name":"term-sessions-mcp","version":"1.7.3"}');
+  mkdirSync(pty, { recursive: true });
+  writeFileSync(join(pty, 'package.json'), '{"name":"node-pty","version":"1.1.0","main":"index.js"}');
+  writeFileSync(join(pty, 'index.js'), '');
+  for (const prebuild of ['darwin-arm64', 'darwin-x64']) {
+    const helper = join(pty, 'prebuilds', prebuild, 'spawn-helper');
+    mkdirSync(dirname(helper), { recursive: true });
+    writeFileSync(helper, '');
+    chmodSync(helper, 0o644);
+  }
+  rmSync(join(dirname(server), 'node-pty'), { force: true });
+  symlinkSync(pty, join(dirname(server), 'node-pty'));
+  symlinkSync(server, join(cwd, 'node_modules', 'term-sessions-mcp'));
+  return pty;
+}
+
+test('under Bun\'s isolated linker, the node-pty installed again is the one term-sessions-mcp loads, and on macOS its spawn-helper is made executable', async () => {
+  const dir = directory();
+  let pty = '';
+  let leftAtInstall: boolean | null = null;
+  const linux = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'Failed to load native module: pty.node\n' }],
+    atAdd: (cwd) => { pty = isolatedNodePty(cwd); },
+    atInstall: (cwd) => { leftAtInstall = existsSync(pty); isolatedNodePty(cwd); },
+  });
+  expect(await runSetup(dir, ['discord'], linux)).toBe(0);
+  expect(leftAtInstall).toBe(false);
+  const mac = directory();
+  const modes: number[][] = [];
+  let helpers: string[] = [];
+  const made = world(mac, {
+    answers: ['yes', 'yes'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' }],
+    atAdd: (cwd) => { const at = isolatedNodePty(cwd); helpers = ['darwin-arm64', 'darwin-x64'].map((prebuild) => join(at, 'prebuilds', prebuild, 'spawn-helper')); },
+    atInstall: (cwd) => { isolatedNodePty(cwd); },
+    atPtyCheck: () => modes.push(helpers.map((helper) => statSync(helper).mode & 0o777)),
+  }, { platform: 'darwin' });
+  expect(await runSetup(mac, ['discord'], made)).toBe(0);
+  expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
+});
+
 const SPAWN_HELPERS = ['darwin-arm64', 'darwin-x64'];
 
 function shipNodePty(cwd: string): string[] {
@@ -2005,6 +2052,39 @@ test('a binding a setup run cut off goes to the install\'s own setup to finish, 
   expect(again.seen.asked).toEqual([]);
   expect(text(again.seen.out)).toContain(`A setup run binding this install to ${dir} was cut off before it finished. Setup finishes it from its plan, with the places that run was given, or says what stops it.`);
   expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root], dataDir: join(dir, 'data') });
+});
+
+test('setup shows each line its install\'s own setup gives before the list of state kept outside, so a finished binding\'s summary shows too', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = join(dir, 'connectome-host');
+  const says = [
+    `Finished binding the install at ${root} to ${dir}, which a setup run cut off had begun, with the places that run was given.`,
+    `The install at ${root} serves ${join(dir, 'data')} and runs ${VERSION}, as before.`,
+  ];
+  const again = world(dir, { installSetup: { status: 0, stdout: `${says.join('\n')}\n${EXTRA_STATE_LINE}: the places listed here:\n  none\n`, stderr: '' } });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  for (const line of says) expect(again.seen.out).toContain(line);
+  expect(again.seen.out).not.toContain('  none');
+});
+
+test('where the install\'s own setup fails, setup shows all its lines, not a last part of them', async () => {
+  const dir = directory();
+  const lines = Array.from({ length: 25 }, (_, at) => `line ${at + 1} of what went wrong`);
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetup: { status: 1, stdout: '', stderr: `${lines.join('\n')}\n` } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  for (const line of lines) expect(made.seen.err).toContain(`  ${line}`);
+});
+
+test('on Linux without systemd, setup says the resident can\'t run as a systemd user service here, and what another service manager must do', async () => {
+  const dir = directory();
+  const made = world(dir, { answers: ['no', 'yes'], secrets: [KEY] }, { lingerOf: () => null });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.out).toContain('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
+  const mac = directory();
+  const onMac = world(mac, { answers: ['no', 'yes'], secrets: [KEY] }, { platform: 'darwin', lingerOf: () => null });
+  expect(await runSetup(mac, ['discord'], onMac)).toBe(0);
+  expect(text(onMac.seen.out)).not.toContain('systemd');
 });
 
 test('an install whose recorded data directory has gone gets that directory from setup, not a new one, and setup stops where its own setup refuses it', async () => {

@@ -15,12 +15,12 @@ import {
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type SetupState } from '../setup/state.js';
-import { makeSpawnHelperExecutable } from '../setup/node-pty.js';
+import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
   writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
@@ -303,8 +303,7 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
   if (choice === '1') {
     const name = await userName(world, out);
     if (name === null) return -1;
-    // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run. Pasted
-    // again after a step failed, it goes on: a user already there isn't made again, and a failed download fails it.
+    // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
     out('Run this line where you can use sudo: it makes its user, unless one by that name is there already, keeps ' +
       'its services running while it\'s logged out, and gives it Bun on its PATH. If a step fails, put right what ' +
       'it names and run the line again.');
@@ -339,6 +338,11 @@ async function installAndStart(
   const { out, err } = ctx;
   const envFile = join(dir, '.env');
   const linger = world.lingerOf(world.user);
+  if (linger === null && world.platform === 'linux') {
+    out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
+      'guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it ' +
+      'when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
+  }
   if (linger === false) {
     out(`Linger is off for ${world.user}, so a service of ${world.user}'s would stop when ${world.user} logs out, and ` +
       'the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once ' +
@@ -433,15 +437,14 @@ async function installAndStart(
   }
 
   if (state.shell) {
-    const nodeModules = join(dir, 'node_modules');
-    let helper = makeSpawnHelperExecutable(nodeModules, world.platform);
+    let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
     let pty = await ptyWorks(world, dir, programEnv);
     if (pty !== null) {
       out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
         'setup installs it again:');
-      rmSync(join(nodeModules, 'node-pty'), { recursive: true, force: true });
+      rmSync(nodePtyDir(dir), { recursive: true, force: true });
       const again = await world.run([world.bun.path, '--no-env-file', 'install'], { cwd: dir, env: programEnv, show: true });
-      if (again.status === 0) helper = makeSpawnHelperExecutable(nodeModules, world.platform);
+      if (again.status === 0) helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
       pty = again.status === 0 ? await ptyWorks(world, dir, programEnv)
         : `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
     }
@@ -513,11 +516,14 @@ async function installAndStart(
   });
   if (made.status !== 0) {
     err(`The install's own setup (${copySetup}) didn't finish (${ended(made)}):`);
-    for (const line of lastLines(made, 20)) err(`  ${line}`);
+    for (const line of outputLines(made)) err(`  ${line}`);
     err('Once what the lines above say is put right, run setup again.');
     return 1;
   }
-  out(made.stdout.split('\n')[0] ?? '');
+  for (const line of made.stdout.split('\n')) {
+    if (line.startsWith(EXTRA_STATE_LINE)) break;
+    if (line.trim() !== '') out(line);
+  }
   const keptOutside = keptOutsideLines(made.stdout);
 
   const running = readCurrent(root);
@@ -589,7 +595,7 @@ async function installAndStart(
         ? `The installed host (${running}, ${entry}) didn't finish booting on a mock recipe in batch mode within ` +
           `${BOOT_TIMEOUT_MS / 1000} s, so setup stopped it.`
         : `The installed host (${running}, ${entry}) doesn't start on a mock recipe in batch mode: ${ended(boot)}.`);
-      for (const line of lastLines(boot, 20)) err(`  ${line}`);
+      for (const line of outputLines(boot)) err(`  ${line}`);
       err('Where the host\'s own lines above name something of this machine\'s, such as a file it can\'t read, put ' +
         'that right. Where they name the host\'s code or a package it brings, such as a module it can\'t find, ' +
         `that's for its makers: report them, with this output, at ${pkg.bugs.url}. Once what made its boot fail is ` +
@@ -985,8 +991,8 @@ function ended(ran: Ran): string {
   return `exit ${ran.status}`;
 }
 
-function lastLines(ran: Ran, count: number): string[] {
-  return `${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '').slice(-count);
+function outputLines(ran: Ran): string[] {
+  return `${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '');
 }
 
 function dollars(amount: number): string {
