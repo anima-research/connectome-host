@@ -714,11 +714,28 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('DISCORD_TOKEN="<DISCORD_TOKEN>"\n');
   });
 
-  test('replaces a value stored and then replaced while its command ran', async () => {
+  test('replaces a value known at launch and then replaced while its command ran', async () => {
     const values = ['first-stored-value', 'second-stored-value'];
     const { dir, module } = install({ asker: { ask: async () => values.shift() ?? null } });
     const [one, done, two] = ['one', 'done', 'two'].map((name) => join(dir, name));
     const pending = run(module, `while [ ! -e ${one} ]; do sleep 0.02; done; cat .env > snapshot; touch ${done}; while [ ! -e ${two} ]; do sleep 0.02; done; cat snapshot`);
+    expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
+    writeFileSync(one, '');
+    for (const until = Date.now() + 10_000; !existsSync(done) && Date.now() < until;) await Bun.sleep(10);
+    expect(existsSync(done)).toBe(true);
+    expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
+    writeFileSync(two, '');
+    const answer = await pending;
+    expect(answer.stdout.text).toBe('DISCORD_TOKEN="<DISCORD_TOKEN>"\n');
+  });
+
+  test('replaces a value stored and then replaced while its command ran', async () => {
+    const values = ['first-stored-value', 'second-stored-value'];
+    const { dir, module } = install({ asker: { ask: async () => values.shift() ?? null } });
+    const [started, one, done, two] = ['started', 'one', 'done', 'two'].map((name) => join(dir, name));
+    const pending = run(module, `touch ${started}; while [ ! -e ${one} ]; do sleep 0.02; done; cat .env > snapshot; touch ${done}; while [ ! -e ${two} ]; do sleep 0.02; done; cat snapshot`);
+    for (const until = Date.now() + 10_000; !existsSync(started) && Date.now() < until;) await Bun.sleep(10);
+    expect(existsSync(started)).toBe(true);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
     writeFileSync(one, '');
     for (const until = Date.now() + 10_000; !existsSync(done) && Date.now() < until;) await Bun.sleep(10);
