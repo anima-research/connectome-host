@@ -106,6 +106,24 @@ describe('the wait for a line\'s turn', () => {
     expect(await settled(wait)).toBe(true);
   });
 
+  test('a line whose wait ran out before it was taken in is owed a turn until its take-in comes and a turn starts, and a switch forgets it', async () => {
+    await onFakeTimers(async (advance) => {
+      const { turns, emit } = setUp();
+      void turns.waitForTurn(400);
+      await advance(400);
+      expect(turns.owed()).toBe(true);
+      turns.takenIn();
+      expect(turns.owed()).toBe(true);
+      emit('inference:started');
+      expect(turns.owed()).toBe(false);
+      void turns.waitForTurn(400);
+      await advance(400);
+      expect(turns.owed()).toBe(true);
+      turns.switched();
+      expect(turns.owed()).toBe(false);
+    });
+  });
+
   test('endAll ends every wait at once, and no cap fires after it', async () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();

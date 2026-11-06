@@ -198,7 +198,7 @@ export function createPipedTurns(
 
   return {
     onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn,
-    owed: () => lastTakenIn !== null && turnsStarted <= lastTakenIn,
+    owed: () => lateTakeIns > 0 || (lastTakenIn !== null && turnsStarted <= lastTakenIn),
   };
 }
 
