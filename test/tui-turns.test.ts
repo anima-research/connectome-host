@@ -328,7 +328,11 @@ describe("the TUI's history after an undo", () => {
     expect(frameAt('redone')).toContain('three ledgers');
     expect(frameAt('redone')).toContain('💭 tally them first');
     expect(frameAt('redone')).not.toContain('(undone)');
+    // Another agent's undo leaves the history's lines drawn, unmarked.
     expect(frameAt('another agent')).not.toContain('(undone)');
+    expect(frameAt('another agent')).toContain('three ledgers');
+    expect(frameAt('another agent')).toContain('a fifth ledger');
+    expect(frameAt('another agent')).toContain('You: and the fifth?');
     // A row whose lines /clear took down isn't drawn again by a later undo
     // or redo while it stays out of the window, marked by an undo before the
     // clear or never marked.
@@ -387,7 +391,9 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(withText).toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
     const toolsOnly = steps.get('tools only')!.frame;
     expect(toolsOnly).not.toContain('(undone) Checking the ledgers');
+    expect(toolsOnly).toContain('Checking the ledgers, then counting.');
     expect(toolsOnly).not.toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
+    expect(toolsOnly).toMatch(/\d\d:\d\d \[tools\] search/);
     expect(times(toolsOnly, '[tools] tally')).toBe(1);
     expect(toolsOnly).toMatch(/\(undone\) \d\d:\d\d \[tools\] tally/);
   }, 40000);
@@ -480,6 +486,7 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(echoes[1]).not.toContain('(undone)');
     expect(undone).toContain('(undone) the first answer');
     expect(undone).not.toContain('(undone) the second answer');
+    expect(times(undone, 'the second answer')).toBe(1);
   }, 40000);
 
   // agent-framework traces no branch move, so the TUI reads the store's
