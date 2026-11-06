@@ -443,6 +443,8 @@ describe("the key's one real call", () => {
     expect(cause(empty)).toContain('Try again shortly.');
     const dated = await checkKey({ key: 'k', model: 'm', baseUrl: at('waitdate') });
     expect(cause(dated)).toContain('It asks for no call before Wed, 21 Oct 2026 07:28:00 GMT.');
+    const hidden = await checkKey({ key: '3', model: 'm', baseUrl: at('wait') });
+    expect(cause(hidden)).toContain('It asks for a wait of <ANTHROPIC_API_KEY>7 s before the next call.');
   });
 
   test('a refused connection says it was refused, where, and what to check, showing only where ANTHROPIC_BASE_URL leads', async () => {

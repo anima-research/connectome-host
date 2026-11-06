@@ -724,7 +724,7 @@ export class SetupModule implements Module {
       const after = listed.kind === 'answered' ? listed.retryAfter : undefined;
       return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ${why}` +
         (after !== undefined
-          ? ` It asks for ${/^\d+$/.test(after) ? `a wait of ${after} s before the next call` : `no call before ${after}`}: ` +
+          ? ` It asks for ${after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`}: ` +
             'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
             'what it says and how long it asks them to wait.'
           : listed.kind === 'answered' || listed.kind === 'unanswered'

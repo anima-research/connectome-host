@@ -4,7 +4,7 @@ export type ProviderAnswer<T> =
   | { kind: 'accepted'; value: T }
   | { kind: 'refused'; status: number }
   | { kind: 'unsendable' }
-  | { kind: 'answered'; status: number; said: string | null; retryAfter?: string }
+  | { kind: 'answered'; status: number; said: string | null; retryAfter?: { shown: string; seconds: boolean } }
   | { kind: 'redirected'; status: number; to: string | null }
   | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
@@ -150,10 +150,11 @@ async function ask<T>(
   // Retry-After is a number of seconds or an HTTP date (RFC 9110, 10.2.3); anything that isn't digits or a date
   // JavaScript reads is no wait asked for.
   const after = response.headers.get('retry-after')?.trim() ?? '';
-  const asked = /^\d+$/.test(after) || !Number.isNaN(Date.parse(after));
+  const seconds = /^\d+$/.test(after);
   return {
     kind: 'answered', status: response.status, said: message === null ? null : hidden(message, key, name, options.hide),
-    ...(asked ? { retryAfter: hidden(after, key, name, options.hide) } : {}),
+    ...(seconds || !Number.isNaN(Date.parse(after))
+      ? { retryAfter: { shown: hidden(after, key, name, options.hide), seconds } } : {}),
   };
 }
 

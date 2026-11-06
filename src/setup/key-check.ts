@@ -214,9 +214,10 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
           `${dotenv} and type the key again: each try reads it there.`
         : `${host} has no model ${model} for this key (404).${quoted}`, true);
     case 429: {
-      const after = quote(response.headers.get('retry-after') ?? '') || null;
+      const raw = (response.headers.get('retry-after') ?? '').trim();
+      const after = quote(raw) || null;
       const wait = after === null ? 'Try again shortly.'
-        : /^\d+$/.test(after) ? `It asks for a wait of ${after} s before the next call.`
+        : /^\d+$/.test(raw) ? `It asks for a wait of ${after} s before the next call.`
           : `It asks for no call before ${after}.`;
       return failed(`${host} is limiting this key's requests (429).${quoted} ${wait}`, false);
     }

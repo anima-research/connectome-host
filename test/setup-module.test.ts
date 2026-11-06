@@ -2343,6 +2343,12 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(seconds.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 429: rate limited. It asks for a wait of 3600 s before the next call: call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them what it says and how long it asks them to wait.');
     const date = await checkModel(limited('Fri, 06 Nov 2026 16:00:00 GMT').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(date.error).toEndWith('It asks for no call before Fri, 06 Nov 2026 16:00:00 GMT: call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them what it says and how long it asks them to wait.');
+    const guessed = install({
+      envFile: 'ANTHROPIC_API_KEY=sk-ant\nNOT_SETUPS=0\n',
+      fetch: (async () => Response.json({ error: { message: 'rate limited' } }, { status: 429, headers: { 'retry-after': '60' } })) as unknown as typeof fetch,
+    });
+    const hiddenDigits = await checkModel(guessed.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
+    expect(hiddenDigits.error).toContain('It asks for a wait of 6<NOT_SETUPS> s before the next call');
     const neither = await checkModel(limited('ask again later').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(neither.error).toEndWith('Anthropic answered 429: rate limited. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
   });
