@@ -1572,4 +1572,13 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).not.toContain(literal);
   });
 
+  test('a stored secret only .env.local gives, which the service\'s manager sets empty, is said to be empty there, not missing from every file', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LOCAL_TOKEN'] });
+    writeFileSync(join(at.work, '.env.local'), 'LOCAL_TOKEN=local-token-value\n');
+    const manager = fakeManager(at.work, { env: ['LOCAL_TOKEN='] });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('✗ LOCAL_TOKEN is in setup\'s list of stored secrets and is empty in the service\'s environment');
+    expect(r.out).not.toMatch(/LOCAL_TOKEN is in setup's list of stored secrets \(.*\), and no file Bun reads/);
+  });
+
 });

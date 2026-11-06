@@ -11,7 +11,7 @@ import {
   unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
-  PROVIDER_SECRETS, StoredSecrets, dotenvReferences, readEnvFile, redactWindow, secretNames, storedSecrets, type Secret,
+  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, redactWindow, secretNames, storedSecrets, type Secret,
 } from '../setup/secrets.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
 import { INSTALL_ROOT_ENV } from '../update/contract.js';
@@ -609,11 +609,11 @@ function storedSecretLines(
       'environment, and doctor checks them' +
       (guessed.length === 0 ? '.' : ' and shows the other values.'));
   }
-  const inEnvFile = readEnvFile(join(work, '.env'));
+  const inDotenv = new Set(dotenvNames(work));
   const provider: readonly string[] = PROVIDER_SECRETS;
   const mapped: string[] = [];
   for (const name of names ?? []) {
-    if (!env[name] && !inEnvFile.has(name)) {
+    if (!env[name] && !inDotenv.has(name)) {
       report.problem(`${name} is in setup's list of stored secrets (${join(work, '.setup', 'stored-secrets.json')}), and ` +
         `no file Bun reads for the service gives it a value, ${join(work, '.env')} included: put it in ` +
         `${join(work, '.env')} and restart the service, or, if it isn't a secret, take it out of that list. ${BEFORE_ENV}: ` +
