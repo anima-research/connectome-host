@@ -100,6 +100,7 @@ import {
   applyPinAdd,
   applyPinRemove,
   PanelError,
+  COUNT_LIMIT_MS,
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
@@ -1103,7 +1104,7 @@ export class WebUiModule implements Module {
         { status: 404 },
       );
     }
-    const result = await fleet.requestPanel(childName, op, params);
+    const result = await fleet.requestPanel(childName, op, params, op === 'context-makeup' ? COUNT_LIMIT_MS + 15_000 : undefined);
     if (!result.ok) {
       const failed = { error: result.error ?? 'panel request failed' };
       return Response.json(keptStrings ? keepNamedStrings(failed, keptStrings) : failed, { status: result.status ?? 502 });

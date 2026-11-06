@@ -1073,7 +1073,7 @@ function agentCountModel(agent: unknown): string | null {
   return process.env.COUNT_TOKENS_MODEL || anthropicCountModel((agent as { model?: string }).model);
 }
 
-const COUNT_LIMIT_MS = 30_000;
+export const COUNT_LIMIT_MS = 30_000;
 
 async function countTokens(
   app: PanelAppRef,

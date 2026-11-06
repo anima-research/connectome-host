@@ -542,6 +542,23 @@ describe('what each client is sent', () => {
     }
   });
 
+  test("a fleet child's makeup is asked with a deadline past the child's own count limit, and its other reads with the fleet's own", async () => {
+    const request = fleet.requestPanel;
+    const deadlines: Array<[string, number | undefined]> = [];
+    try {
+      (fleet as { requestPanel: unknown }).requestPanel = async (_child: string, op: string, _params?: unknown, timeoutMs?: number) => {
+        deadlines.push([op, timeoutMs]);
+        return { ok: true, data: {} };
+      };
+      for (const path of ['/debug/context/makeup?scope=kid', '/healthz?scope=kid']) {
+        await fetch(`http://127.0.0.1:${host.port}${path}`, { headers: { authorization: BASIC } });
+      }
+      expect(deadlines).toEqual([['context-makeup', 45_000], ['health', undefined]]);
+    } finally {
+      (fleet as { requestPanel: unknown }).requestPanel = request;
+    }
+  });
+
   test("a health read that fails whole still says it failed to a client that holds health and not ops, without what the failure said", async () => {
     const c = await everyone();
     const app = (host.module as unknown as { panelApp(): { framework: { healthSnapshot: () => unknown } } }).panelApp();

@@ -477,7 +477,8 @@ by a reducer.
   `/healthz`, `/quota` and `/media` accept `?scope=<child>` and are answered by
   that child through `FleetModule.requestPanel()` (404 unknown child, 502 for
   a child it can't reach or whose connection closed before it answered, 504
-  after the 30 s default timeout; otherwise the child's own status). WebSocket panel messages carry `scope` the same way, and the
+  after the 30 s default timeout, or 45 s for `/debug/context/makeup`, whose child waits up to 30 s for `count_tokens` after it
+  builds its preview; otherwise the child's own status). WebSocket panel messages carry `scope` the same way, and the
   sidebar's "inspecting:" selector drives it.
 
 ---
