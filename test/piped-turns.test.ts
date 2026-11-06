@@ -192,11 +192,26 @@ describe('the wait for a line\'s turn', () => {
       expect(await settledNow(typed)).toBe(false);
       expect(out.some((line) => line.includes('no answer after'))).toBe(false);
       release();
-      await advance(100);
+      await advance(249);
       expect(await settledNow(typed)).toBe(false);
-      await advance(250);
+      await advance(1);
       expect(await settledNow(typed)).toBe(true);
       expect(out.at(-1)).toBe('err:(no answer after 0.4 s: going on without it)');
+    });
+  });
+
+  test('a wait cancelled, as when its line never went in, leaves nothing behind it: the next line\'s cap counts from its own ask', async () => {
+    await onFakeTimers(async (advance, settledNow) => {
+      const { out, turns } = setUp();
+      const failed = turns.waitForTurn(400);
+      failed.cancel();
+      expect(await settledNow(failed)).toBe(true);
+      const next = turns.waitForTurn(400);
+      await advance(399);
+      expect(await settledNow(next)).toBe(false);
+      await advance(1);
+      expect(await settledNow(next)).toBe(true);
+      expect(out.filter((line) => line.includes('no answer after'))).toEqual(['err:(no answer after 0.4 s: going on without it)']);
     });
   });
 

@@ -40,7 +40,7 @@ export interface PipedOutput {
 
 export interface PipedTurns {
   onTrace(event: { type: string; [key: string]: unknown }): void;
-  waitForTurn(capMs?: number | null): Promise<void>;
+  waitForTurn(capMs?: number | null): Promise<void> & { cancel(): void };
   /** The host follows another framework, whose turns owe nothing to the
    *  failures counted so far, and a line waiting on the old one's turn is
    *  released. */
@@ -133,8 +133,9 @@ export function createPipedTurns(
     }
   }
 
-  function waitForTurn(capMs: number | null = PIPED_TURN_CAP_MS): Promise<void> {
-    return new Promise((resolve) => {
+  function waitForTurn(capMs: number | null = PIPED_TURN_CAP_MS): Promise<void> & { cancel(): void } {
+    let asked: (typeof waits)[number] | undefined;
+    const answered = new Promise<void>((resolve) => {
       // A pending timer holds the event loop open, so it's cleared once the turn
       // settles.
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -160,8 +161,18 @@ export function createPipedTurns(
         },
         done: (): void => { clearTimeout(timer); resolve(); },
       };
+      asked = wait;
       waits.push(wait);
       if (waits[0] === wait) wait.arm();
+    });
+    const wait = asked!;
+    return Object.assign(answered, {
+      cancel: (): void => {
+        if (!waits.includes(wait)) return;
+        const first = waits[0] === wait;
+        end(wait);
+        if (first) waits[0]?.arm();
+      },
     });
   }
 

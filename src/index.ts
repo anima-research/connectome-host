@@ -736,7 +736,8 @@ async function runPiped(app: AppContext) {
     write: (text) => { atPrompt = false; process.stdout.write(text); },
     log: (line) => { atPrompt = false; console.log(line); },
     error: (line) => { say(line); },
-  }, failureHint(app.recipe, process.env, app.credentials), showsItself, () => { answeredUnwaited(); });
+  }, failureHint(app.recipe, process.env, app.credentials), app.recipe.modules?.setup === true ? showsItself : undefined,
+  () => { answeredUnwaited(); });
   const traces = traceFollower((event) => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
@@ -809,10 +810,15 @@ async function runPiped(app: AppContext) {
     } else {
       await inOrder(async () => {
         const answered = turns.waitForTurn();
-        app.framework.pushEvent({
-          type: 'external-message', source: 'cli',
-          content: trimmed, metadata: {}, triggerInference: true,
-        });
+        try {
+          app.framework.pushEvent({
+            type: 'external-message', source: 'cli',
+            content: trimmed, metadata: {}, triggerInference: true,
+          });
+        } catch (error) {
+          answered.cancel();
+          throw error;
+        }
         await answered;
       }, trimmed);
     }
