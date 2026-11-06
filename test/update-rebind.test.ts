@@ -806,10 +806,16 @@ describe('a start', () => {
   test('the launcher refuses a binding\'s plan it finds once it holds the lock', async () => {
     setup(options(install));
     const root = rootOf(install);
-    writeFileSync(join(root, REBIND_PLAN), '{}');
+    const lock = installPaths(root).lock;
+    const realLink = fs.linkSync;
+    const links = spyOn(fs, 'linkSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      realLink(from, to);
+      if (String(to) === lock) writeFileSync(join(root, REBIND_PLAN), '{}');
+    }) as typeof fs.linkSync);
     try {
       await expect(decide(root, machineOps())).rejects.toThrow(`Nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, REBIND_PLAN)} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
     } finally {
+      links.mockRestore();
       releaseLock(root);
     }
   });

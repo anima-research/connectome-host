@@ -69,8 +69,8 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
   return module.handleToolCall({ id: 'c2', name: 'ask_secret', input } as ToolCall);
 }
 
-// For tests that read /proc or run setsid(1), neither of which macOS has.
-const linuxTest = test.skipIf(process.platform !== 'linux');
+// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
+const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
 
 function alive(pid: number): boolean {
   try {
@@ -317,9 +317,12 @@ describe('setup--run', () => {
     expect(answer.stoppedAtLimit).toBe(true);
     const stubborn = Number(readFileSync(pidFile, 'utf-8'));
     const termAt = Number(await waitForFile(termFile));
-    await Bun.sleep(Math.max(0, termAt + 4_500 - Date.now()));
-    expect(alive(stubborn)).toBe(true);
-    expect(await goneWithin(stubborn, termAt + 15_000 - Date.now())).toBe(true);
+    let goneAt: number | null = null;
+    for (const until = termAt + 15_000; goneAt === null && Date.now() < until; await Bun.sleep(20)) {
+      if (!alive(stubborn)) goneAt = Date.now();
+    }
+    expect(goneAt).not.toBeNull();
+    expect(goneAt! - termAt).toBeGreaterThanOrEqual(4_500);
   }, 30_000);
 
   linuxTest('stopping the module within 5 s of a limit still stops what that command left in its group, a SIGTERM-ignoring process too', async () => {
