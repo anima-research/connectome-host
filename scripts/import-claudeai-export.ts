@@ -96,18 +96,29 @@ function parseArgs(argv: string[]): Opts {
       process.exit(1);
     }
   }
-  return { exportDir, outDir, agentName, personName: personName ?? personNameOf(exportDir), filter, dryRun, interactive };
+  const named = personName === undefined ? exportedName(exportDir) : personName.trim();
+  if (named === ANONYMOUS_PARTICIPANT) {
+    console.error(`${personName === undefined ? 'The export\'s users.json names its one user' : '--person names the person'} ` +
+      `"${ANONYMOUS_PARTICIPANT}", which is the name the host gives a turn whose author has no name, so their turns ` +
+      'would go in unnamed. Give the name to use with --person <name>.');
+    process.exit(1);
+  }
+  return { exportDir, outDir, agentName, personName: personName ?? named ?? ANONYMOUS_PARTICIPANT, filter, dryRun, interactive };
 }
 
-export function personNameOf(exportDir: string): string {
+function exportedName(exportDir: string): string | null {
   let users: unknown;
   try {
     users = JSON.parse(readFileSync(join(exportDir, 'users.json'), 'utf-8'));
   } catch {
-    return 'user';
+    return null;
   }
   const name = Array.isArray(users) && users.length === 1 ? (users[0] as { full_name?: unknown } | null)?.full_name : undefined;
-  return typeof name === 'string' && name.trim() !== '' ? name.trim() : 'user';
+  return typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+}
+
+export function personNameOf(exportDir: string): string {
+  return exportedName(exportDir) ?? ANONYMOUS_PARTICIPANT;
 }
 
 export function importedMessages(
