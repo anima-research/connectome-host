@@ -186,11 +186,6 @@ export interface InstallRecord {
   dataDir: string;
   /** State kept outside the data directory, which each update copies with it. */
   extraState: string[];
-  /** The directory that holds the install's root, which setup bound the record's places to (rebind.ts): its
-   *  real path as setup bound it, kept as written by later setup runs while it still names this directory. The
-   *  entry point and the install's command compare it with the directory they're in by device and inode, and
-   *  refuse a record bound to another, so a moved or copied install runs only once setup has bound it where it is.
-   *  A record without it says nothing of where the install was set up, and setup's next run binds it. */
   workingDir?: string;
 }
 
@@ -373,7 +368,6 @@ export interface CopyLabel {
    *  switch to the same release left can't stand in for this one's; a label
    *  without it is no switch's copy a fallback can use. */
   mark?: string;
-  /** The id of the setup binding (RebindPlan) that last rewrote this label's paths. */
   rebound?: string;
 }
 
@@ -391,7 +385,6 @@ export type PlaceKind = typeof PLACE_KINDS[number];
 export interface GoBackList {
   v: 1;
   places: Array<{ path: string; name: string; before: PlaceKind; target: PlaceKind }>;
-  /** The id of the setup binding (RebindPlan) that last rewrote this list's paths. */
   rebound?: string;
 }
 
