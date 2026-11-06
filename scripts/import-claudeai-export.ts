@@ -34,9 +34,10 @@
  *                     `agent.name` to. The chosen value is written into the
  *                     per-session import-source sidecar, so warmup and conhost
  *                     can read it back without re-passing the flag.
- *   --person <name>   The name the person's turns carry, as a channel
- *                     message names its author. Default: the name in the
- *                     export's users.json.
+ *   --person <name>   The name the person's turns carry in their text, as
+ *                     a channel message's author line does; the screens
+ *                     still label those turns user. Default: the name in
+ *                     the export's users.json.
  *   --filter <regex>  Only import conversations whose name matches (case-insens.)
  *   --dry-run         Parse and report; don't write
  */
