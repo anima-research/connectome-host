@@ -221,7 +221,7 @@ the resident already has a history of its own, and this method seeds only a firs
 // One-shot: seed.json → chronicle.  Remove the data/store an earlier run made before re-running.
 //   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const DATA_DIR = process.env.SEED_DATA_DIR ?? '/home/<agent>/<agent>-cm/data/store';
@@ -237,12 +237,13 @@ if (lstatSync(resolve(DATA_DIR), { throwIfNoEntry: false })?.isSymbolicLink()) {
 }
 const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
 const SESSIONS = join(dirname(resolve(DATA_DIR)), 'sessions');
-if (existsSync(INDEX)) {
-  console.error(`${INDEX} exists: a host's first start or an import wrote it, and no start migrates a seed written now (stage 2).`);
+const there = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+if (there(INDEX)) {
+  console.error(`${INDEX} is there: a host's first start or an import writes it, and no start migrates a seed written now (stage 2).`);
   process.exit(1);
 }
-if (existsSync(DATA_DIR) || existsSync(SESSIONS)) {
-  console.error(`${existsSync(DATA_DIR) ? DATA_DIR : SESSIONS} already exists: this data directory holds a store or sessions (stage 2).`);
+if (there(resolve(DATA_DIR)) || there(SESSIONS)) {
+  console.error(`${there(resolve(DATA_DIR)) ? DATA_DIR : SESSIONS} is there: the seed needs a data directory with no store or sessions in it (stage 2).`);
   process.exit(1);
 }
 const bundle = JSON.parse(readFileSync(src, 'utf8'));
