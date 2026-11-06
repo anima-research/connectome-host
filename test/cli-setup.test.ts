@@ -499,7 +499,7 @@ test('before its first question setup says what it does, the choices of who the 
   expect(again.seen.out[0]).toBe('Setup keeps its answers here: the resident doesn\'t get a shell, and runs as this user, alice. They aren\'t asked again; setup\'s agent picks up where it stopped, and can change with you what it set up.');
 });
 
-test('setup never runs sudo, whatever is chosen', async () => {
+test('setup runs no sudo, for a resident with a shell and a user of its own, or with no shell as this user', async () => {
   for (const answers of [['yes', '1', 'resident'], ['no', '2']]) {
     const dir = directory();
     const made = world(dir, { answers, secrets: [KEY] });
