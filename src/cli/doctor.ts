@@ -546,6 +546,8 @@ export async function doctor(
     ...(filesUnread ? ['the files its unit reads its environment from weren\'t read'] : []),
     ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
     ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
+    ...(typeof closed !== 'string' && closed.undecoded > 0
+      ? ['a line naming a channel the subscription GC closed couldn\'t be read'] : []),
     ...(uncredentialed ? ['count_tokens had no credential to count with'] : []),
     ...(unanswered ? ['a count_tokens count got no answer it could read'] : []),
     ...(closedTabs ? ['a closed tab\'s connection wasn\'t checked'] : []),

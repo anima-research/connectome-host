@@ -2162,4 +2162,15 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     const answered = await withHost(at, count('count_tokens_failed_404', 'count_tokens'), () => run(at));
     expect(closing(answered.out)).not.toContain('a count_tokens count got no answer it could read');
   });
+
+  test('the closing line names a subscription-gc-close line in failures.log that couldn\'t be read', async () => {
+    const at = install();
+    mkdirSync(join(at.work, 'logs'));
+    writeFileSync(join(at.work, 'logs', 'failures.log'),
+      '{"at":"2026-11-06T00:00:00.000Z","kind":"subscription-gc-close","channelId":"12\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('A line there names a subscription-gc-close but can\'t be read as one');
+    expect(r.out.split('\n').filter((line) => line.trim() !== '').at(-1)).toMatch(
+      /^Doctor found no problem, though .*a line naming a channel the subscription GC closed couldn't be read/);
+  });
 });
