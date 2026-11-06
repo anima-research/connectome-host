@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
 import { EnvFormError, envForm, readEnvFile, storedSecretRedactor, writeEnvValue } from '../src/setup/secrets.js';
-import { askHidden } from '../src/setup/terminal-secret.js';
+import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
 import { checkDiscordToken } from '../src/setup/discord-token.js';
 
 const dirs: string[] = [];
@@ -1591,6 +1591,35 @@ describe("the terminal's hidden question", () => {
     expect(shown()).toContain('DISCORD_TOKEN (the bot token)');
     expect((rl as unknown as { history: string[] }).history).not.toContain('s3cret-value');
     rl.close();
+  });
+
+  test('a bracketed paste that opens with a line break and pauses before the rest is one answer, none of it left for the conversation', async () => {
+    const { input, output, rl, lines, nextLine, shown } = terminal();
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
+    input.write('\x1b[200~\r');
+    await Bun.sleep(PASTE_QUIET_MS + 100);
+    input.write('pasted-token\r\x1b[201~');
+    expect(await answer).toBe('pasted-token');
+    const after = nextLine();
+    input.write('after\r');
+    await after;
+    expect(lines).toEqual(['after']);
+    expect(shown()).not.toContain('pasted-token');
+    rl.close();
+  });
+
+  test('asks nothing where readline keeps its kill ring or its history where setup can\'t find them, and says so', async () => {
+    for (const hide of ['kill ring', 'history']) {
+      const { output, rl, shown } = terminal();
+      const held = rl as unknown as Record<string | symbol, unknown>;
+      if (hide === 'history') delete held.history;
+      else for (const key of Object.getOwnPropertySymbols(rl)) if (key.description === '_killRing') delete held[key];
+      let refused = '';
+      await askHidden(rl, output, 'DISCORD_TOKEN (the bot token)').catch((error: Error) => { refused = error.message; });
+      expect({ hide, refused }).toEqual({ hide, refused: 'setup can\'t find this terminal\'s readline history or kill ring, so it couldn\'t keep what\'s typed out of them' });
+      expect(shown()).not.toContain('DISCORD_TOKEN');
+      rl.close();
+    }
   });
 
   test('keeps a hidden answer out of reach of the keys typed after it in the same input, Up recalling nothing', async () => {
