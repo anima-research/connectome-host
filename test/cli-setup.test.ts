@@ -7,6 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { defaultTrusted } from '../src/setup/default-trusted.js';
 import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 import { lingerOf } from '../src/setup/linger.js';
 import { SetupModule } from '../src/modules/setup-module.js';
@@ -653,6 +654,15 @@ test('where the running Bun\'s default trusted list can\'t be read whole, setup 
     expect(text(made.seen.out)).toContain(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} (`);
     expect(made.seen.launched).not.toBeNull();
   }
+});
+
+test('the Bun running these tests prints a default trusted list setup reads whole, node-pty among it', async () => {
+  const read = await defaultTrusted(async (_manager, argv, cwd) => {
+    const ran = Bun.spawnSync([process.execPath, '--no-env-file', ...argv], { cwd });
+    return { status: ran.exitCode, output: `${ran.stdout}${ran.stderr}` };
+  }, directory());
+  expect(Array.isArray(read), JSON.stringify(read)).toBe(true);
+  expect(read).toContain('node-pty');
 });
 
 test('a package a bun add that failed partway left in node_modules, never declared, is added again on the next run', async () => {
