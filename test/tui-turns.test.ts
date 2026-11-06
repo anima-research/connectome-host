@@ -454,6 +454,21 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(returned).not.toContain('[tools] tally');
   }, 40000);
 
+  // Text on both sides of a thinking block streams as two lines, so a
+  // backgrounded reply comes back as two (#485 bot review 4, finding 7).
+  test('a backgrounded reply whose text goes on after a thinking block comes back a line for each side, and an undo marks both in place', async () => {
+    const steps = await play('undone-background-thinking');
+    const returned = steps.get('returned')!.frame;
+    expect(returned).toMatch(/\nledgers now\. *\n/);
+    expect(returned).toMatch(/\nThere are three\. *\n/);
+    expect(returned).not.toContain('weigh the count');
+    const undone = steps.get('undone')!.frame;
+    for (const words of ['Counting the', 'ledgers now.', 'There are three.']) {
+      expect(times(undone, words)).toBe(1);
+      expect(undone).toContain(`(undone) ${words}`);
+    }
+  }, 40000);
+
   // Every message the operator sends is echoed, and stored, in order: the
   // first row takes the first echo though a turn ends between the two rows'
   // stores (#485 bot review 4, finding 4).

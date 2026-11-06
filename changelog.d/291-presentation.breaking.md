@@ -72,9 +72,10 @@
     which marks its lines in place, a reply it streamed (text on both
     sides of a tool call is one line, as it streams it), the `[tools]` line
     of each round it streamed, a reply backgrounded with Ctrl+B (which now
-    comes back a line per round, the first after the words streamed before
-    the press, its thinking left out, where it came back as one line with
-    its thinking's words run into its text) and a message sent from it
+    comes back a line per round, and one for its text on each side of a
+    thinking block, the first after the words streamed before the press,
+    its thinking left out, where it came back as one line with its
+    thinking's words run into its text) and a message sent from it
     included, each linked to its row as the turn ends (a backgrounded
     turn's replies as it returns, and marked then if a shed took them out
     meanwhile), never to another resident's row, a reply never to an

@@ -735,6 +735,35 @@ async function play(): Promise<void> {
     first.send('inference:completed');
     await until(async () => (await frame()).includes('returned from background'), 'the return');
     await step('returned');
+  } else if (scenario === 'undone-background-thinking') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A reply backgrounded mid-stream whose text goes on on both sides of a
+    // thinking block (#485 bot review 4, finding 7).
+    first.send('inference:started');
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'Counting the ', blockType: 'text' });
+    await until(async () => (await frame()).includes('Counting the'), 'the words before the press');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'ledgers now.', blockType: 'text' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'thinking' });
+    first.send('inference:tokens', { content: 'weigh the count', blockType: 'thinking' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'There are three.', blockType: 'text' });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [
+        { type: 'text', text: 'Counting the ledgers now.' },
+        { type: 'thinking', thinking: 'weigh the count' },
+        { type: 'text', text: 'There are three.' },
+      ],
+    });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('returned from background'), 'the return');
+    await step('returned');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) There are three.'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone-queued') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // The same words sent twice while the agent is busy: each is echoed as

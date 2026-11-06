@@ -384,8 +384,9 @@ export async function runTui(app: AppContext): Promise<void> {
   let backgrounded = false;
   /** What a backgrounded root turn's text says since Ctrl+B, shown when it
    *  returns: a line per round, each ending where `backgroundBreaks` says a
-   *  tool call ended one. Its thinking is left out, as a collapsed thinking
-   *  line shows none of its words. */
+   *  tool call ended one, or a thinking block ended its text, as streaming
+   *  draws the text on its two sides as two lines. Its thinking is left out,
+   *  as a collapsed thinking line shows none of its words. */
   let backgroundBuffer = '';
   let backgroundBreaks: number[] = [];
   /** The text line streamed before Ctrl+B, which the first round's words
@@ -1825,18 +1826,27 @@ export async function runTui(app: AppContext): Promise<void> {
     backgroundPartial = undefined;
   }
 
-  /** Draw what a backgrounded turn said, a line per round, each kept for its
-   *  row: the first one's words with the line streamed before Ctrl+B. */
+  /** A thinking block of a backgrounded turn's: the text buffered since the
+   *  last break is a line of its own, and with none, the line streamed
+   *  before Ctrl+B takes no more words. */
+  function breakBackgroundText(): void {
+    if (backgroundBuffer.length > (backgroundBreaks.at(-1) ?? 0)) backgroundBreaks.push(backgroundBuffer.length);
+    else if (backgroundBreaks.length === 0) backgroundPartial = undefined;
+  }
+
+  /** Draw what a backgrounded turn said, a line per round (and per text on
+   *  each side of a thinking block), each kept for its row: the first one's
+   *  words with the line streamed before Ctrl+B. */
   function showBackgroundRounds(): void {
     const ends = [...backgroundBreaks, backgroundBuffer.length];
     let from = 0;
-    ends.forEach((end, round) => {
+    ends.forEach((end, i) => {
       const said = backgroundBuffer.slice(from, end);
       from = end;
       if (!said.trim()) return;
       const line = addLine(said, WHITE);
       if (!line) return;
-      const partial = round === 0 ? backgroundPartial : undefined;
+      const partial = i === 0 ? backgroundPartial : undefined;
       const at = partial ? streamedLines.indexOf(partial) : -1;
       if (at < 0) {
         keepLine(line, 'text', said, said, WHITE);
@@ -1925,7 +1935,10 @@ export async function runTui(app: AppContext): Promise<void> {
       case 'inference:content_block': {
         if (agent === rootAgentName && event.phase === 'block_start') {
           const bt = event.blockType as string;
-          if (bt === 'text' || bt === 'thinking') {
+          // A backgrounded turn draws its words when it returns.
+          if (backgrounded) {
+            if (bt === 'thinking') breakBackgroundText();
+          } else if (bt === 'text' || bt === 'thinking') {
             if (!streaming) beginStream();
             switchStreamBlock(bt);
           }
@@ -1939,6 +1952,7 @@ export async function runTui(app: AppContext): Promise<void> {
         if (content) {
           if (agent === rootAgentName && backgrounded) {
             if (blockType !== 'thinking') backgroundBuffer += content;
+            else breakBackgroundText();
             streamOutputTokens += Math.ceil(content.length / 4);
           } else if (agent === rootAgentName && streaming) {
             if (blockType && (blockType === 'text' || blockType === 'thinking')
