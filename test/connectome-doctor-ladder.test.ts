@@ -507,6 +507,30 @@ describe('the ladder\'s recent failures', () => {
     }
   });
 
+  test('a call log that can\'t be looked at leaves the inference stage not known, naming it, and the stages after it still print', async () => {
+    const at = await install({ listens: true });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    symlinkSync(calls, calls);
+    const { out } = ladder(at, ['--no-signal']);
+    expect(out).toMatch(/· inference \(llm call\) +can't be seen here: \S+\/llm-calls\.2026-10-30T00-00-00\.jsonl can't be read \(Too many levels of symbolic links\)$/m);
+    expect(out).toMatch(/routeSpeech delivery .*routed 12ch -> discord:1\/2/);
+    expect(out).toContain('recent failures in connectome-test.service\'s journal:');
+  });
+
+  test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be listed leaves the inference stage not known, naming it, and the stages after it still print', async () => {
+    const at = await install({ listens: true });
+    const data = join(at.work, 'data');
+    chmodSync(data, 0o000);
+    try {
+      const { out } = ladder(at, ['--no-signal']);
+      expect(out).toMatch(/· inference \(llm call\) +can't be seen here: \S+\/data can't be read \(Permission denied\)$/m);
+      expect(out).toMatch(/routeSpeech delivery .*routed 12ch -> discord:1\/2/);
+      expect(out).toContain('recent failures in connectome-test.service\'s journal:');
+    } finally {
+      chmodSync(data, 0o755);
+    }
+  });
+
   test('the journal\'s failures and failures.log\'s are each shown, under where they came from', async () => {
     const at = await install({ listens: true });
     const records = Array.from({ length: 6 }, (_, i) => JSON.stringify({ reason: `record ${i}` }));

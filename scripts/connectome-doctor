@@ -407,14 +407,20 @@ if not os.path.isdir(data_dir):
     warn(f"there's no data directory at {data_dir}, so the discord, mcpl, chronicle and inference stages read nothing"
          + ("" if findings_json else "; if the host keeps it elsewhere, run this script with --data-dir DIR"),
          counts=False)
-llm_files = sorted(
-    (f for f in (os.listdir(data_dir) if os.path.isdir(data_dir) else []) if f.startswith("llm-calls.")),
-    key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
-)
+try:
+    llm_files = sorted(
+        (f for f in (os.listdir(data_dir) if os.path.isdir(data_dir) else []) if f.startswith("llm-calls.")),
+        key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
+    )
+    if llm_files:
+        newest = os.path.join(data_dir, llm_files[-1])
+        size = os.path.getsize(newest)
+        llm_written_at = os.path.getmtime(newest)
+except OSError as e:
+    llm_files, llm_written_at = [], None
+    llm_unread = e.strerror or str(e)
+    llm_detail = f"{e.filename or data_dir} can't be read ({llm_unread})"
 if llm_files:
-    newest = os.path.join(data_dir, llm_files[-1])
-    size = os.path.getsize(newest)
-    llm_written_at = os.path.getmtime(newest)
     where = "the newest file's last 30 MB" if size > LLM_WINDOW + 1 else "the newest file"
     # Split at newlines only: splitlines() also splits at U+2028, U+2029 and
     # U+0085, which JSON.stringify leaves unescaped inside a row.
@@ -571,7 +577,7 @@ for name, ts, detail in stages:
 NO_TURN = "NO turn was recorded after it"
 no_turn_after = turn_ts is None or (rec_ts is not None and turn_ts < rec_ts - 120)
 window_from = llm_window_from if llm_window_from is not None else llm_written_at
-turn_unknown = bool(llm_files) and (llm_unsure or (turn_ts is None and (
+turn_unknown = (bool(llm_files) or llm_unread is not None) and (llm_unsure or (turn_ts is None and (
     window_from is None or (rec_ts is not None and rec_ts < window_from))))
 if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not turn_unknown:
     warn(f"a gate-TRIGGERED event was ingested but {NO_TURN} — events may be "
