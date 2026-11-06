@@ -349,13 +349,19 @@ old directory becomes the same place under the new one, in the record, in
 the copy labels and in each Go back's list. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
-`PLACE` the same path after a move, or the copy's own after a copy. An
+`PLACE` the same path after a move, or the copy's own after a copy; a
+place inside another goes with it. An
 install set up before setup recorded its directory is checked for a move or
-a copy only after setup next runs there, and that run asks the same of
-every place it names, its data directory included. A binding that changes
+a copy only after setup next runs there. That run takes each place under the
+directory that holds the install root as this install's, unless another
+install's root lies between, and asks the same of every other place it
+names. A binding that changes
 the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
 root first; if it's cut off, nothing starts until setup, run again, finishes
-it from the plan.
+it from the plan, or says what stops it. A Go back to a release from before
+this one keeps that refusal only until that release's own setup runs there,
+since that setup writes `start.js`, and `connectome` where it has one,
+without it, and the record without `workingDir`.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.

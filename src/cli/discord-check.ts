@@ -173,12 +173,12 @@ async function whoseToken(
       throw new DiscordAnswer('The bot token the server is given as DISCORD_TOKEN holds a character a request header ' +
         `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source}`);
     case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.reach}.`);
+    case 'redirected':
+      throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
+        `with the token, ${words.unchecked}. ${words.between}`);
+    case 'unrecognized':
     case 'answered':
-      if (check.status >= 300 && check.status < 400) {
-        throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
-          `with the token, ${words.unchecked}. ${words.between}`);
-      }
-      if (check.status >= 200 && check.status < 300) {
+      if (check.kind === 'unrecognized' || (check.status >= 200 && check.status < 300)) {
         throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +
           words.between);
       }

@@ -17,26 +17,26 @@ import { boundHere, sameDirectory, workingDirOf } from '../update/rebind.js';
 import { lingerOf } from '../setup/linger.js';
 import { takeFileLock } from '../setup/file-lock.js';
 import {
-  StoredSecrets, envForm, readEnvFile, removeEnvValues, storedSecretRedactor, storedSecretWindowRedactor, writeEnvValue,
+  StoredSecrets, envForm, readEnvFile, removeEnvValues, secretValues, storedSecretRedactor, storedSecretWindowRedactor,
+  writeEnvValue,
 } from '../setup/secrets.js';
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, SETUP_SURFACE, typedCommand } from './install-command.js';
 
-/** Set to 1 in the host's service by `connectome service install`: in a systemd unit once systemd shows that it
- *  restarts the host when it exits with 75 and with 1, and in a launch agent, whose KeepAlive restarts the host
- *  whenever it exits other than with 0. */
 export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
 const SHELL_BIN = 'session-server';
-const SHELL_PORTS = { first: 3100, last: 3199 };
+// term-sessions-mcp's own default port is 3100. Picked ports stay below the platforms' default ephemeral ranges, from
+// which the kernel hands out ports for outgoing connections: Linux's from 32768 (ip_local_port_range), macOS's from
+// 49152 (net.inet.ip.portrange.first).
+const SHELL_PORTS = { first: 3100, last: 32767 };
 const READY_WAIT_MS = 60_000;
 const RECIPE_CHECK_MS = 60_000;
 const FIRST_MINUTE_S = 60;
 const LOG_LINES = 40;
-const LOG_BYTES = 40 * 1024;
-const ENDED_ENTRIES = 200;
+const TAIL_STEP_BYTES = 64 * 1024;
 const INVOCATION_FIELDS = ['_SYSTEMD_INVOCATION_ID', 'USER_INVOCATION_ID', 'INVOCATION_ID'];
 export const EXCERPT_LEAD = "Lines starting with | are reports from the process named above each excerpt, " +
   "not findings of this check. Current known secret values are redacted; older or unrecorded credentials can remain. " +
@@ -48,9 +48,9 @@ const STOPPING = new Set([...RUNNING, 'deactivating']);
 const recordAgain = (cmd: string) =>
   `Name the recipe to write the service and its record again: ${cmd} service install <recipe>.`;
 const guessedSecretsNotice = (work: string) =>
-  `The secret-name list ${join(work, '.setup', 'stored-secrets.json')} is missing, so additional .env names were ` +
-  'treated as potentially secret. For later service checks, write it as a JSON list of the name of every secret, ' +
-  'those in .env and any the host is given through its environment, to keep other values visible.';
+  `The secret-name list ${join(work, '.setup', 'stored-secrets.json')} is missing, so every name in .env and the ` +
+  'dotenv files beside it was treated as potentially secret. For later service checks, write it as a JSON list of ' +
+  'the name of every secret in those files, to keep other values visible.';
 const serviceRepair = (cmd: string) =>
   `Run ${cmd} service install to check and repair the service for its recorded recipe. ` +
   'If it asks you to stop a loaded unit whose file is gone, follow its conditional stop instruction, then repeat install.';
@@ -91,7 +91,6 @@ export interface ServiceSystem {
   cwd: string;
   env: Record<string, string | undefined>;
   bun: string;
-  /** This process's /proc/self/cgroup, or null where there's none to read. */
   cgroup(): string | null;
   which(name: string): string | null;
   run(command: string, args: string[], env: Record<string, string>): Ran;
@@ -155,9 +154,10 @@ export async function portFree(port: number): Promise<boolean> {
 }
 
 const RECIPE_LOADER = fileURLToPath(new URL('../recipe.js', import.meta.url));
+const RECIPE_DOCUMENT = fileURLToPath(new URL('../recipe-document.js', import.meta.url));
 
 export function readRecipeAsHost(bun: string, recipe: string, work: string, env: Record<string, string>): RecipeRead {
-  return recipeCheck(bun, recipe, work, env, [
+  return recipeCheck(bun, recipe, work, env, { from: RECIPE_DOCUMENT, names: ['readRecipeDocument', 'substituteEnvVars'] }, [
     'const usesShell = (document) => {',
     '  if (["SESSION_SERVER_TOKEN", "SESSION_SERVER_PORT"].some((name) => JSON.stringify(document).includes(name))) return true;',
     '  const value = substituteEnvVars(document, source);',
@@ -173,7 +173,7 @@ export function readRecipeAsHost(bun: string, recipe: string, work: string, env:
 
 export function loadRecipeAsHost(bun: string, recipe: string, work: string, env: Record<string, string>,
   document?: unknown): RecipeLoad {
-  return recipeCheck(bun, recipe, work, env, [
+  return recipeCheck(bun, recipe, work, env, { from: RECIPE_LOADER, names: ['loadRecipeDocument', 'loadRecipeDetailed'] }, [
     document === undefined ? 'await loadRecipeDetailed(source);'
       : 'await loadRecipeDocument(JSON.parse(await Bun.stdin.text()), source);',
     'console.log("\\n" + JSON.stringify({ loaded: true }));',
@@ -181,11 +181,10 @@ export function loadRecipeAsHost(bun: string, recipe: string, work: string, env:
 }
 
 function recipeCheck<T extends { loads: true }>(bun: string, recipe: string, work: string, env: Record<string, string>,
-  body: string[], decode: (result: Record<string, unknown>) => T | null, document?: unknown):
-  T | Exclude<RecipeLoad, { loads: true }> {
+  imports: { from: string; names: string[] }, body: string[], decode: (result: Record<string, unknown>) => T | null,
+  document?: unknown): T | Exclude<RecipeLoad, { loads: true }> {
   const script = [
-    'const { readRecipeDocument, loadRecipeDocument, loadRecipeDetailed, substituteEnvVars } = await import(' +
-      JSON.stringify(RECIPE_LOADER) + ');',
+    `const { ${imports.names.join(', ')} } = await import(${JSON.stringify(imports.from)});`,
     'const source = ' + JSON.stringify(recipe) + ';',
     'try {',
     ...body,
@@ -208,7 +207,7 @@ function recipeCheck<T extends { loads: true }>(bun: string, recipe: string, wor
     { loads: null, why: 'the loader exited without reporting its recipe result' };
   if (ran.exitedDueToTimeout) return { loads: null, why: "it hadn't loaded after " + RECIPE_CHECK_MS / 1000 + ' s' };
   if (ran.exitCode === 1 && typeof result?.refused === 'string') return { loads: false, words: result.refused };
-  const said = ran.stderr.toString().trim().split('\n').at(-1)?.trim();
+  const said = ran.stderr.toString().trim();
   return { loads: null, why: said || 'the loader exited with ' + (ran.exitCode ?? ran.signalCode) };
 }
 
@@ -286,7 +285,7 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   const installed = readRecord<InstallRecord>(installPaths(root).install, 'install record');
   if (installed === null || !boundHere(installed, root)) {
     throw new Refusal(`The install record at ${installPaths(root).install} isn't bound to ${workingDirOf(root)}. ` +
-      `Run ${cmd} setup here to confirm each recorded place, then repeat this service install command.`);
+      `Run ${cmd} setup ${SETUP_SURFACE} here to confirm each recorded place, then repeat this service install command.`);
   }
   let old: ServiceRecord | null = null;
   try {
@@ -295,6 +294,15 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
     if (given === undefined) {
       ctx.err(`connectome: ${errorText(error)}`);
       return 1;
+    }
+    if (!(lstatSync(join(root, 'service.json'), { throwIfNoEntry: false })?.isFile() ?? true)) {
+      throw new Refusal(`${errorText(error)} Nothing was written.`);
+    }
+    const elsewhere = recordedDirectory(join(root, 'service.json'));
+    if (elsewhere !== null && !sameDirectory(elsewhere, workingDirOf(root))) {
+      throw new Refusal(`${errorText(error).replace(/\.+$/, '')}. It names another working directory, ${elsewhere}, ` +
+        'whose units this release can\'t check from it. Take that install\'s units away there, or move this record ' +
+        'aside if they\'re gone, then repeat this service install command. Nothing was written.');
     }
     ctx.out(`${errorText(error).replace(/\.+$/, '')}. This run replaces it with a new record once it has written a unit file.`);
   }
@@ -414,7 +422,10 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const envBefore = readOr(envFile);
   const knownSettings = readEnvFile(envFile);
   const externalToken = knownSettings.get('SESSION_SERVER_TOKEN');
-  const ownedSettings: ShellSettings = {};
+  const unknownSettings: ShellSettings = old !== null && sameDirectory(old.workingDirectory, work) ? Object.fromEntries(
+    Object.entries(old.shellSettings ?? {}).filter(([name]) => !SHELL_SETTING_NAMES.includes(name as keyof ShellSettings)))
+    : {};
+  const ownedSettings: ShellSettings = { ...unknownSettings };
   for (const name of SHELL_SETTING_NAMES) {
     const value = old?.shellSettings?.[name];
     if (value !== undefined && value === knownSettings.get(name)) ownedSettings[name] = value;
@@ -426,7 +437,28 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const units = shellBin === null ? [names.host] : [names.shell, names.host];
   insideNeither(sys, manager, names, units, cmd);
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
+  const renamed = old !== null && sameDirectory(old.workingDirectory, work)
+    ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
+      unit.name !== names.host.name && unit.name !== names.shell.name)
+    : [];
+  for (const unit of renamed) {
+    const host = unit.name === old!.units.host.name;
+    if (host || shellBin !== null) renamedStopped(sys, manager, env, unit, host);
+  }
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
+  if (shell !== null && !shell.newPort && !(await sys.portFree(Number(shell.port))) &&
+    !shellRunning(sys, manager, env, names.shell)) {
+    throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something other than this install's ` +
+      `shell daemon, ${names.shell.name}, is listening on it, as a copied install's original daemon would be. This ` +
+      `install's shell clients would reach that process, with ${shell.newToken ? 'a new' : 'the stored'} token. Give ` +
+      `this install a port of its own as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one ` +
+      'picked, then repeat this service install command. Nothing was written.');
+  }
+  if (shell !== null && (!shell.newPort || !shell.newToken)) {
+    const kept = [...(shell.newPort ? [] : [`SESSION_SERVER_PORT ${shell.port}`]),
+      ...(shell.newToken ? [] : ['SESSION_SERVER_TOKEN, not shown'])];
+    ctx.out(`The shell daemon uses ${kept.join(' and ')}, as ${envFile} holds ${kept.length === 1 ? 'it' : 'them'}.`);
+  }
   if (wantsShell && shellBin === null) {
     ctx.out("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this directory, " +
       'so no daemon was set up. Doctor can check whether the shell is served.');
@@ -443,8 +475,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       'Repeat this service install command with the same recipe so it uses that file as it is now.');
   }
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
-  if (manager === 'systemd-user') noOtherHost(ctx, work, names, sys, env, cmd);
-  else noOtherAgent(ctx, work, names, sys, env);
+  if (manager === 'systemd-user') noOtherHost(ctx, work, names, renamed, sys, env, cmd);
+  else noOtherAgent(ctx, work, names, renamed, sys, env);
   if (!wantsShell) {
     try {
       new StoredSecrets(join(work, '.setup')).names();
@@ -467,7 +499,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       host: plist(names.host.name, work, hostArgv, [...hostVars, [SUPERVISED_ENV, '1']], logPath),
       unchecked: null,
     };
-  const dropped = shell === null ? [names.shell] : [];
+  const dropped = [...(shell === null ? [names.shell] : []), ...renamed];
 
   const record: ServiceRecord = {
     v: 1,
@@ -479,8 +511,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     shellSettings: ownedSettings,
   };
   const previousShell = old?.units.shell;
+  const shellText = readOr(names.shell.file);
   const retiring = shell === null && (previousShell?.name === names.shell.name ||
-    fileDirectory(readOr(names.shell.file) ?? '', manager, sys.home) === realOrResolved(work))
+    (shellText !== null && runsHere(fileDirectory(sys, env, manager, names.shell, shellText), work)))
     ? names.shell : undefined;
   const recorded: ServiceRecord = { ...record,
     units: { ...record.units, ...(retiring === undefined ? {} : { shell: retiring }) } };
@@ -508,7 +541,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         const loaded = showUnit(sys, env, names.host.name, ['LoadState', 'WorkingDirectory', RESTART_PROPERTIES]);
         if (typeof loaded === 'string') throw new Refusal(`${loaded}. Nothing was started.`);
         if (loaded.get('LoadState') !== 'loaded' ||
-          runsFrom(loaded.get('WorkingDirectory') ?? '', sys.home) !== realOrResolved(work)) {
+          !runsHere(runsFrom(loaded.get('WorkingDirectory') ?? '', sys.home), work)) {
           throw new Refusal(`systemd didn't load ${names.host.name} from ${names.host.file} with ${work} as its working ` +
             `directory (it shows ${loaded.get('LoadState') || 'no load state'}, in ` +
             `${loaded.get('WorkingDirectory') || 'no set directory'}), so whether it restarts the host can't be checked. ` +
@@ -538,7 +571,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           const shown = showUnit(sys, env, unit.name, ['ActiveState']);
           if (typeof shown === 'string') {
             throw new Refusal(`${shown}. The units' files are written and enabled, and recorded: run ${cmd} service ` +
-              'install again to start what isn\'t running.');
+              'start to start what isn\'t running.');
           }
           const running = RUNNING.has(shown.get('ActiveState') ?? '');
           systemctl(sys, env, cmd, ['restart', unit.name]);
@@ -589,10 +622,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       for (const unit of dropped) {
         let removed = false;
         try {
-          removed = await removeUnit(ctx, sys, env, manager, unit, work, cmd);
+          removed = await removeUnit(ctx, sys, env, manager, unit, work, cmd, renamed.includes(unit));
           if (!removed) return 1;
         } finally {
-          if (!removed) ctx.out('Shell retirement is incomplete. Any existing shell settings were kept. ' +
+          if (!removed) ctx.out(`${renamed.includes(unit) ? `Retiring ${unit.name}, which this install's record named, is incomplete.`
+            : 'Shell retirement is incomplete.'} Any existing shell settings were kept. ` +
             'Resolve the reported state or ownership problem, then repeat this service install command. ' +
             'Use a native stop instruction only if that unit belongs to this install.');
         }
@@ -608,9 +642,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         retained = false;
       }
       if (!wantsShell) {
-        dropShellSettings(ctx, work, ownedSettings);
-        const withoutSettings = { ...record };
-        delete withoutSettings.shellSettings;
+        dropShellSettings(ctx, work, ownedSettings, sys.env, old?.shellSettings ?? {});
+        const withoutSettings: ServiceRecord = { ...record, shellSettings: unknownSettings };
+        if (Object.keys(unknownSettings).length === 0) delete withoutSettings.shellSettings;
         writeJsonAtomic(join(root, 'service.json'), withoutSettings, 0o600);
       }
     }
@@ -994,7 +1028,9 @@ function recipeProblem(loaded: Exclude<RecipeLoad, { loads: true }>, work: strin
       `shown, since the install's secrets can't all be kept out of them: ${errorText(error).replace(/\.+$/, '')}. ` +
       `Nothing was written or restarted. Put that right, then repeat this service install command with the same recipe.`);
   }
-  const redacted = redact(loaded.loads === false ? loaded.words : loaded.why);
+  const whole = redact(loaded.loads === false ? loaded.words : loaded.why);
+  const redacted = loaded.loads === false ? whole
+    : { ...whole, text: whole.text.trim().split('\n').at(-1)?.trim() ?? '' };
   throw new Refusal((loaded.loads === false
     ? 'the host\'s own recipe loader, run in the working directory with .env, refuses the recipe: ' +
       `${redacted.text.replace(/\.+$/, '')}. Nothing was written or restarted.`
@@ -1044,12 +1080,30 @@ function unitNames(manager: ServiceRecord['manager'], slug: string, sys: Service
   };
 }
 
-function fileDirectory(text: string, manager: ServiceRecord['manager'], home: string): string | null {
+function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
+  unit: ServiceUnit, text: string): string | null {
   const set = manager === 'systemd-user'
-    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%')
-    : /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(text)?.[1]?.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&apos;/g, '\'').replace(/&amp;/g, '&');
-  return set === undefined || set === '' ? null : realOrResolved(set === '~' ? home : set);
+    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%') ?? null
+    : plistField(sys, env, unit.file, 'WorkingDirectory');
+  return set === null || set === '' ? null : realOrResolved(set === '~' ? sys.home : set);
+}
+
+function plistField(sys: ServiceSystem, env: Record<string, string>, path: string, key: string): string | null {
+  const type = sys.run('plutil', ['-type', key, path], env);
+  if (type.status !== 0) {
+    const lint = sys.run('plutil', ['-lint', path], env);
+    if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
+    return null;
+  }
+  if (type.stdout !== 'string\n') return null;
+  const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
+  if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
+  // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
+  return raw.stdout.replace(/\n$/, '');
+}
+
+function runsHere(directory: string | null, work: string): boolean {
+  return directory !== null && sameDirectory(directory, work);
 }
 
 /** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
@@ -1065,15 +1119,16 @@ type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: stri
 
 function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
   env: Record<string, string>): Owner {
-  const here = realOrResolved(work);
   const text = readOr(unit.file);
   if (text !== null) {
-    const runsIn = fileDirectory(text, manager, sys.home);
-    if (runsIn !== here) return { kind: 'other', runsIn, from: unit.file };
+    const runsIn = fileDirectory(sys, env, manager, unit, text);
+    if (!runsHere(runsIn, work)) return { kind: 'other', runsIn, from: unit.file };
   }
   if (manager !== 'systemd-user') {
-    const loaded = text === null && sys.run('launchctl', ['list', unit.name], env).status === 0;
-    return loaded ? { kind: 'untold' } : { kind: 'ok' };
+    if (text !== null) return { kind: 'ok' };
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
+    return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
   }
   const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath']);
   if (typeof shown === 'string') return { kind: 'unshown', shown };
@@ -1081,7 +1136,8 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
     return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
-  return runsIn === here ? { kind: 'ok' } : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
+  return runsHere(runsIn, work) ? { kind: 'ok' }
+    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
@@ -1108,6 +1164,31 @@ function untold(sys: ServiceSystem, manager: ServiceRecord['manager'], unit: Ser
     'gone, so which install it runs can\'t be told';
 }
 
+function renamedStopped(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
+  unit: ServiceUnit, host: boolean): void {
+  const whose = `${unit.name}, this install's own ${host ? 'host' : 'shell daemon'} under its earlier name,`;
+  let live: boolean;
+  if (manager === 'launchd') {
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') {
+      throw new Refusal(`Whether ${whose} is loaded can't be told: ${state.why}. Nothing was written.`);
+    }
+    live = state.kind !== 'unloaded';
+  } else {
+    const shown = showUnit(sys, env, unit.name, ['ActiveState']);
+    if (typeof shown === 'string') {
+      throw new Refusal(`${shown}, so whether ${whose} is running can't be told. Nothing was written.`);
+    }
+    live = RUNNING.has(shown.get('ActiveState') ?? '') || shown.get('ActiveState') === 'deactivating';
+  }
+  if (!live) return;
+  throw new Refusal(`${whose} is ${manager === 'launchd' ? 'loaded' : 'running'}, and ${host
+    ? "a host started beside it couldn't open the install's store, which it holds"
+    : "a shell daemon started beside it couldn't take the stored port, which it holds"}. Stop it when it suits you: ` +
+    `${stopLine(sys, manager, unit.name)}. Then repeat this service install command with the same recipe, which ` +
+    'retires its files once the new host passes its checks. Nothing was written.');
+}
+
 function stopLine(sys: ServiceSystem, manager: ServiceRecord['manager'], name: string): string {
   return manager === 'systemd-user' ? systemctlLine(sys, `stop ${name}`) : `launchctl bootout gui/${sys.uid}/${name}`;
 }
@@ -1117,19 +1198,19 @@ function configConflict(unit: ServiceUnit, from: string, runsIn: string | null, 
     `${work}. Its running process may still be this install's. If so, stop it with ${stop}.`;
 }
 
-function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit }, sys: ServiceSystem,
-  env: Record<string, string>, cmd: string): void {
+function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
+  recorded: ServiceUnit[], sys: ServiceSystem, env: Record<string, string>, cmd: string): void {
   const run = (args: string[]) => {
     const ran = sys.run('systemctl', args, env);
     return { exitCode: ran.status, stdout: Buffer.from(ran.stdout) };
   };
-  const listed = systemdUnits(work, run as never, sys.home);
+  const listed = systemdUnits(work, run as never, sys.home, undefined, (directory) => sameDirectory(directory, work));
   for (const scope of listed.unasked) {
     ctx.out(`systemd's ${scope} manager couldn't be asked which of its units run from ${work}, so one that runs a ` +
       'host there isn\'t ruled out.');
   }
   const others = listed.found.filter((unit) => unit.scope === 'system' ||
-    (unit.id !== names.host.name && unit.id !== names.shell.name));
+    (unit.id !== names.host.name && unit.id !== names.shell.name && !recorded.some((own) => own.name === unit.id)));
   if (others.length > 0) {
     const steps = (['user', 'system'] as const).flatMap((scope) => {
       const these = others.filter((unit) => unit.scope === scope);
@@ -1154,10 +1235,26 @@ function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; 
       `${steps.join('; and ')}. If ${others.length === 1 ? 'it runs' : 'they run'} something other than a host, give ` +
       `${them} another working directory instead. Then repeat this service install command with the same recipe. Nothing was written.`);
   }
+  const few = listed.defaulted.length === 1;
+  if (listed.defaulted.length > 0) {
+    ctx.out(`${listed.defaulted.join(', ')} ${few ? 'sets' : 'set'} no working directory, so ${few ? 'it runs' :
+      'they run'} in ${few ? 'its' : 'their'} systemd manager's default, which is ${work}. Most units that do are no ` +
+      `host's, so ${few ? 'it isn\'t' : 'they aren\'t'} checked. If ${few ? 'it runs' : 'one of them runs'} a host, two ` +
+      'hosts would serve this install\'s data: give it a working directory of its own, or take it away.');
+  }
+  const one = listed.unresolved.length === 1;
+  const scoped = (['user', 'system'] as const).flatMap((scope) => {
+    const ids = listed.unresolved.filter((unit) => unit.scope === scope).map((unit) => unit.id);
+    return ids.length === 0 ? [] : [`the ${scope} unit${ids.length === 1 ? '' : 's'} ${ids.join(', ')}`];
+  }).join(' and ');
+  if (listed.unresolved.length > 0) {
+    ctx.out(`The working director${one ? 'y' : 'ies'} of ${scoped} couldn't be resolved, so whether ` +
+      `${one ? 'it runs' : 'one of them runs'} a host from ${work} can't be told, and one that does isn't ruled out.`);
+  }
 }
 
 function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
-  sys: ServiceSystem, env: Record<string, string>): void {
+  recorded: ServiceUnit[], sys: ServiceSystem, env: Record<string, string>): void {
   const dir = join(sys.home, 'Library', 'LaunchAgents');
   const warn = (file: string, why: string) => ctx.out(`${file} couldn't be checked: ${why}. ` +
     `Another agent running a host from ${work} isn't ruled out.`);
@@ -1168,27 +1265,14 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warn(dir, errorText(error));
     return;
   }
-  const field = (path: string, key: string): string | null => {
-    const type = sys.run('plutil', ['-type', key, path], env);
-    if (type.status !== 0) {
-      const lint = sys.run('plutil', ['-lint', path], env);
-      if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
-      return null;
-    }
-    if (type.stdout !== 'string\n') return null;
-    const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
-    if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
-    // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
-    return raw.stdout.replace(/\n$/, '');
-  };
   for (const file of files.filter((file) => file.endsWith('.plist'))) {
     const path = join(dir, file);
-    if (path === names.host.file || path === names.shell.file) continue;
+    if (path === names.host.file || path === names.shell.file || recorded.some((own) => own.file === path)) continue;
     let label: string | null;
     try {
-      const directory = field(path, 'WorkingDirectory');
-      if (directory === null || realOrResolved(directory) !== realOrResolved(work)) continue;
-      label = field(path, 'Label');
+      const directory = plistField(sys, env, path, 'WorkingDirectory');
+      if (directory === null || !sameDirectory(directory, work)) continue;
+      label = plistField(sys, env, path, 'Label');
     } catch (error) {
       warn(path, errorText(error));
       continue;
@@ -1197,25 +1281,31 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
       warn(path, 'no launch-agent Label');
       continue;
     }
-    if (label === names.host.name || label === names.shell.name) continue;
+    if (label === names.host.name || label === names.shell.name) {
+      const own = label === names.host.name ? names.host.file : names.shell.file;
+      throw new Refusal(`${path} has the label ${label} and runs from ${work}, as this install's agent, ${own}, is to: ` +
+        'with two plists of one label, launchd loads either at login. If it\'s an old copy of this install\'s agent, ' +
+        `unload it with launchctl bootout gui/${sys.uid} ${shellWord(path)} if launchctl print ` +
+        `gui/${sys.uid}/${shellWord(label)} finds it, then remove that plist. Then repeat this service install command ` +
+        'with the same recipe. Nothing was written.');
+    }
     throw new Refusal(`${label} (${path}) is already set up to run from ${work}, and two hosts there would both ` +
       `serve its data. Inspect it with launchctl print gui/${sys.uid}/${shellWord(label)}. If it's an obsolete host, ` +
-      `retire it with launchctl bootout gui/${sys.uid} ${shellWord(path)}, then remove that plist. ` +
-      'If it runs something other than a host, give it another working directory. Then repeat this service install ' +
-      'command with the same recipe. Nothing was written.');
+      `unload it with launchctl bootout gui/${sys.uid} ${shellWord(path)} if launchctl print finds it, then remove ` +
+      'that plist. If it runs something other than a host, give it another working directory. Then repeat this ' +
+      'service install command with the same recipe. Nothing was written.');
   }
 }
 
 async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
-  unit: ServiceUnit, work: string, cmd: string): Promise<boolean> {
-  const here = realOrResolved(work);
+  unit: ServiceUnit, work: string, cmd: string, recordedHere = false): Promise<boolean> {
   const text = readOr(unit.file);
-  let runsIn = text === null ? undefined : fileDirectory(text, manager, sys.home);
+  let runsIn = text === null ? (recordedHere ? realOrResolved(work) : undefined) : fileDirectory(sys, env, manager, unit, text);
   let live: boolean;
   if (manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory']);
     if (typeof shown === 'string') throw new Refusal(`${shown}, so whether it runs another install can't be told.`);
-    if ((runsIn === undefined || runsIn === here) && shown.get('LoadState') === 'loaded') {
+    if ((runsIn === undefined || runsHere(runsIn, work)) && shown.get('LoadState') === 'loaded') {
       runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
     }
     live = STOPPING.has(shown.get('ActiveState') ?? '');
@@ -1233,7 +1323,7 @@ async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<strin
     }
     return !live;
   }
-  if (runsIn !== here) {
+  if (!runsHere(runsIn, work)) {
     if (live) {
       ctx.out(configConflict(unit, unit.file, runsIn, work, stopLine(sys, manager, unit.name)));
       return false;
@@ -1337,12 +1427,29 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
   return resolve(pkg, bin);
 }
 
+function shellRunning(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
+  unit: ServiceUnit): boolean {
+  if (manager === 'launchd') {
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') {
+      throw new Refusal(`Whether ${unit.name} is running, and so holds the stored SESSION_SERVER_PORT, can't be told: ` +
+        `${state.why}. Nothing was written.`);
+    }
+    return state.kind === 'running';
+  }
+  const shown = showUnit(sys, env, unit.name, ['ActiveState']);
+  if (typeof shown === 'string') {
+    throw new Refusal(`${shown}, so whether it holds the stored SESSION_SERVER_PORT can't be told. Nothing was written.`);
+  }
+  return RUNNING.has(shown.get('ActiveState') ?? '');
+}
+
 async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise<ShellPlan> {
   const file = join(work, '.env');
   const known = readEnvFile(file);
   let port = known.get('SESSION_SERVER_PORT');
   if (port && (!/^\d+$/.test(port) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) {
-    throw new Refusal(`SESSION_SERVER_PORT in ${file} is ${JSON.stringify(port)}, not an integer from 1 to 65535. ` +
+    throw new Refusal(`SESSION_SERVER_PORT in ${file} isn't an integer from 1 to 65535. ` +
       'Set a TCP port in that range, then repeat this service install command. Nothing was written.');
   }
   const newPort = !port;
@@ -1399,17 +1506,30 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings): void {
+function dropShellSettings(ctx: CliContext, work: string, owned: ShellSettings,
+  env: Record<string, string | undefined>, recorded: ShellSettings): void {
   const stored = new StoredSecrets(join(work, '.setup'));
   try {
     const current = readEnvFile(join(work, '.env'));
     const remove = SHELL_SETTING_NAMES.filter((name) => owned[name] !== undefined && current.get(name) === owned[name]);
     const keep = SHELL_SETTING_NAMES.filter((name) => current.has(name) && !remove.includes(name));
-    stored.names();
-    removeEnvValues(join(work, '.env'), remove);
-    stored.forget(remove);
+    const listed = stored.names();
+    removeEnvValues(join(work, '.env'), remove, owned);
+    const gone = SHELL_SETTING_NAMES.filter((name) => recorded[name] !== undefined && !current.has(name));
+    const forgetting = [...new Set([...remove, ...gone])];
+    const still = new Set(secretValues(forgetting, join(work, '.env'), env).map((secret) => secret.name));
+    const forgot = forgetting.filter((name) => !still.has(name) && listed.includes(name));
+    stored.forget(forgot);
     ctx.out('No shell daemon was set up: the recipe source names no shell client or shell setting.');
-    if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env and forgot any stored-secret names among them.`);
+    if (remove.length > 0) ctx.out(`Removed ${remove.join(' and ')} from .env.`);
+    for (const name of forgot) {
+      ctx.out(`Forgot ${name} among setup's stored-secret names: no .env line, dotenv file beside it or environment ` +
+        'value gives it now.');
+    }
+    for (const name of forgetting.filter((each) => still.has(each) && listed.includes(each))) {
+      ctx.out(`Kept ${name} among setup's stored-secret names: another .env line, a dotenv file beside it or the ` +
+        'environment still gives it.');
+    }
     for (const name of keep) ctx.out(`Kept ${name} in .env: its current value isn't recorded as written by this service.`);
   } catch (error) {
     throw new Refusal("No shell daemon was requested, but its recorded settings couldn't be removed from .env and " +
@@ -1573,6 +1693,15 @@ export function readServiceRecord(root: string, cmd = typedCommand(root)): Servi
   return record;
 }
 
+function recordedDirectory(path: string): string | null {
+  try {
+    const value = (JSON.parse(readFileSync(path, 'utf-8')) as { workingDirectory?: unknown }).workingDirectory;
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function readServiceRecordFile(root: string, cmd: string, repair = true): ServiceRecord | null {
   const path = join(root, 'service.json');
   try {
@@ -1588,13 +1717,17 @@ function readServiceRecordFile(root: string, cmd: string, repair = true): Servic
       (logs?.kind === 'journal' || (logs?.kind === 'file' && typeof logs.path === 'string'));
     const settings = record.shellSettings;
     const settingsFit = settings === undefined || (settings !== null && typeof settings === 'object' && !Array.isArray(settings) &&
-      Object.entries(settings).every(([name, value]) => SHELL_SETTING_NAMES.includes(name as keyof ShellSettings) &&
-        typeof value === 'string'));
+      SHELL_SETTING_NAMES.every((name) => settings[name] === undefined || typeof settings[name] === 'string'));
     if (!fits || !settingsFit) throw new ContractError(`The service record at ${path} doesn't hold a service record's fields.`);
     return record;
   } catch (error) {
     const why = error instanceof ContractError ? errorText(error)
       : `The service record at ${path} can't be read: ${errorText(error).replace(/\.+$/, '')}.`;
+    const kind = lstatSync(path, { throwIfNoEntry: false });
+    if (kind !== undefined && !kind.isFile()) {
+      throw new ContractError(`${why} It isn't a file, so no install can write the record there: move it aside or ` +
+        `take it away${repair ? `, then ${recordAgain(cmd).replace(/^N/, 'n').replace(/\.$/, '')}` : ''}.`);
+    }
     throw new ContractError(`${why}${repair ? ' ' + recordAgain(cmd) : ''}`);
   }
 }
@@ -1685,14 +1818,35 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       const { bytes, from, offset } = readLogTail(fd, window.contextBytes);
       const rendered = window.redact(bytes, from, bytes.length);
       const before = offset + rendered.start;
-      const partial = before > 0 && bytes[rendered.start - 1] !== 0x0a;
-      const scope = before === 0 ? undefined : `${before} earlier file bytes are outside this window. ` +
-        (partial ? 'The first line starts partway through a file line. ' : '') +
-        'Line counts below cover only this window.';
+      const scope = before === 0 ? undefined : `${before} earlier file bytes are outside this window.`;
       showLog(bytes.toString('utf-8', rendered.start, rendered.end), rendered, what, true, scope);
     } finally {
       closeSync(fd);
     }
+  };
+  const secretLines = (what: string): number | null => {
+    try {
+      return storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']).contextLines;
+    } catch (error) {
+      fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
+      return null;
+    }
+  };
+  const tail = (text: string, what: string, whole: boolean) => {
+    if (whole) {
+      log(text, what, true);
+      return;
+    }
+    let window: ReturnType<typeof storedSecretWindowRedactor>;
+    try {
+      window = storedSecretWindowRedactor(workingDirectory, sys.env, true, ['SESSION_SERVER_TOKEN']);
+    } catch (error) {
+      fail(`${what} isn't shown, since the install's secrets can't all be kept out of it: ${errorText(error)}`);
+      return;
+    }
+    const bytes = Buffer.from(text, 'utf-8');
+    const rendered = window.redact(bytes, Math.max(0, linesStart(bytes, LOG_LINES, false)), bytes.length);
+    showLog(bytes.toString('utf-8', rendered.start, rendered.end), rendered, what, true, 'Its earlier lines aren\'t shown.');
   };
   const latestStart = (unit: ServiceUnit, shown: Map<string, string>, active: boolean, whose: string):
     { invocation: string; started: string } | null => {
@@ -1705,16 +1859,32 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       lines.push(`Its latest start isn't known, so its log isn't shown: journalctl --user -u ${unit.name} shows it.`);
       return null;
     }
-    const logged = sys.run('journalctl', ['--user', `_SYSTEMD_INVOCATION_ID=${invocation}`, '--since', `@${started}`,
-      ...(active ? ['--until', `@${Number(started) + FIRST_MINUTE_S}`] : ['-n', String(ENDED_ENTRIES)]),
-      '-o', 'cat', '--no-pager'], env);
-    if (logged.status !== 0) {
-      fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
-      return null;
+    const read = (more: string[]) => sys.run('journalctl', ['--user', `_SYSTEMD_INVOCATION_ID=${invocation}`, '--since',
+      `@${started}`, ...more, '-o', 'cat', '--no-pager'], env);
+    if (active) {
+      const logged = read(['--until', `@${Number(started) + FIRST_MINUTE_S}`]);
+      if (logged.status !== 0) {
+        fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
+        return null;
+      }
+      log(logged.stdout, `The journal's lines from ${whose} in the first minute of its latest start`);
+      return { invocation, started };
     }
-    if (active) log(logged.stdout, `The journal's lines from ${whose} in the first minute of its latest start`);
-    else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended (last ${ENDED_ENTRIES} entries)`, true);
-    return { invocation, started };
+    const what = `The journal's last lines from ${whose}'s latest start, which ended`;
+    const context = secretLines(what);
+    if (context === null) return { invocation, started };
+    for (let asked = LOG_LINES + context; ; asked *= 2) {
+      const logged = read(['-n', String(asked)]);
+      if (logged.status !== 0) {
+        fail(`Its log couldn't be read: journalctl --user failed: ${stderrOf(logged)}.`);
+        return null;
+      }
+      const whole = (logged.stdout === '' ? 0 : logged.stdout.replace(/\n$/, '').split('\n').length) < asked;
+      if (whole || tailHolds(logged.stdout, context)) {
+        tail(logged.stdout, what, whole);
+        return { invocation, started };
+      }
+    }
   };
   const units = unitsOf(record);
   const gone = units.filter((unit) => !existsSync(unit.file));
@@ -1762,7 +1932,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         continue;
       }
       const policy = restartPolicy(shown);
-      if (runsFrom(shown.get('WorkingDirectory') ?? '', sys.home) !== realOrResolved(record.workingDirectory)) {
+      if (!runsHere(runsFrom(shown.get('WorkingDirectory') ?? '', sys.home), record.workingDirectory)) {
         fail(`systemd runs ${unit.name} in ${shown.get('WorkingDirectory') || 'no set directory'}, not ${record.workingDirectory}.`);
       } else if (policy.restarts) {
         lines.push(`It restarts the host when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}).`);
@@ -1777,7 +1947,8 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       }
       const start = latestStart(unit, shown, active, 'the host');
       if (start !== null && restarts > 0 && active) {
-        endedStart(sys, env, unit.name, start.invocation, start.started, lines, log);
+        const context = secretLines('The journal\'s last lines about the newest earlier start it holds, which ended');
+        if (context !== null) endedStart(sys, env, unit.name, start.invocation, start.started, context, lines, tail);
       }
     }
   } else {
@@ -1825,9 +1996,10 @@ function stateOf(shown: Map<string, string>): string {
 function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
   properties: string[]): Map<string, string> | string {
   const timestamp = properties.includes('ExecMainStartTimestamp');
-  // systemd 247 ignores show's timestamp style. TZ and LC_ALL also fix its default output to numeric UTC seconds.
-  const ran = sys.run('systemctl', ['--user', 'show', ...(timestamp ? ['--timestamp=utc'] : []),
-    `--property=${properties.join(',')}`, '--', name], timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
+  // TZ and LC_ALL give show's default timestamp style in UTC, in C's words. systemctl's --timestamp= only exists
+  // from systemd 247, which ignores it for show, and on 257 it changes nothing under them.
+  const ran = sys.run('systemctl', ['--user', 'show', `--property=${properties.join(',')}`, '--', name],
+    timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
   if (ran.status !== 0) {
     return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
       `(${systemctlLine(sys, `show ${name}`)})`;
@@ -1837,39 +2009,65 @@ function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
 }
 
 function endedStart(sys: ServiceSystem, env: Record<string, string>, name: string, invocation: string, started: string,
-  lines: string[], log: (text: string, what: string, ended: boolean) => void): void {
-  const ran = sys.run('journalctl', ['--user', '-u', name, '--until', `@${Number(started) + 1}`, '-n', String(ENDED_ENTRIES),
-    '-o', 'json', `--output-fields=MESSAGE,${INVOCATION_FIELDS.join(',')}`, '--no-pager'], env);
-  if (ran.status !== 0) {
-    lines.push(`Its start before the latest isn't shown: journalctl --user failed: ${stderrOf(ran)}.`);
+  context: number, lines: string[], tail: (text: string, what: string, whole: boolean) => void): void {
+  for (let asked = LOG_LINES + context + 1; ; asked *= 2) {
+    // --all: without it, journalctl's json gives a field over 4096 bytes as null.
+    const ran = sys.run('journalctl', ['--user', '-u', name, '--until', `@${Number(started) + 1}`, '-n', String(asked),
+      '-o', 'json', '--all', `--output-fields=MESSAGE,${INVOCATION_FIELDS.join(',')}`, '--no-pager'], env);
+    if (ran.status !== 0) {
+      lines.push(`Its start before the latest isn't shown: journalctl --user failed: ${stderrOf(ran)}.`);
+      return;
+    }
+    const given = ran.stdout.split('\n').filter((line) => line.trim() !== '');
+    const all = given.length < asked;
+    let unread = 0;
+    const entries = given.flatMap((line) => {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown> | null;
+        const id = entry && INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
+        if (typeof id === 'string' && typeof entry!.MESSAGE === 'string') return [{ id, message: entry!.MESSAGE }];
+      } catch {}
+      unread++;
+      return [];
+    });
+    const latest = entries.findIndex((entry) => entry.id === invocation);
+    const earlier = latest === -1 ? [] : entries.slice(0, latest);
+    const ended = earlier.at(-1)?.id;
+    const whole = all || earlier.some((entry) => entry.id !== ended);
+    const its = earlier.filter((entry) => entry.id === ended).map((entry) => entry.message).join('\n');
+    if (latest !== -1 && !all && (ended === undefined || (!whole && !tailHolds(its, context)))) continue;
+    if (unread > 0) lines.push(`${unread} journal entr${unread === 1 ? 'y' : 'ies'} couldn't be interpreted; ` +
+      'the earlier-start selection uses only the remaining entries.');
+    const held = 'Its journal entries up to a second past its latest start';
+    if (latest === -1) {
+      lines.push(`${held} hold none of that start's, so which start ended before it can't be told.`);
+      return;
+    }
+    if (ended === undefined) {
+      lines.push(`${held} hold no earlier start of it.`);
+      return;
+    }
+    tail(its, 'The journal\'s last lines about the newest earlier start it holds, which ended', whole);
     return;
   }
-  let unread = 0;
-  const entries = ran.stdout.split('\n').filter((line) => line.trim() !== '').flatMap((line) => {
-    try {
-      const entry = JSON.parse(line) as Record<string, unknown> | null;
-      const id = entry && INVOCATION_FIELDS.map((field) => entry[field]).find((value) => typeof value === 'string');
-      if (typeof id === 'string' && typeof entry!.MESSAGE === 'string') return [{ id, message: entry!.MESSAGE }];
-    } catch {}
-    unread++;
-    return [];
-  });
-  if (unread > 0) lines.push(`${unread} journal entr${unread === 1 ? 'y' : 'ies'} couldn't be interpreted; ` +
-    'the earlier-start selection uses only the remaining entries.');
-  const latest = entries.findIndex((entry) => entry.id === invocation);
-  const read = `Its last ${ENDED_ENTRIES} journal entries, up to a second past its latest start,`;
-  if (latest === -1) {
-    lines.push(`${read} hold none of that start's, so which start ended before it can't be told.`);
-    return;
+}
+
+function tailHolds(text: string, context: number): boolean {
+  const bytes = Buffer.from(text, 'utf-8');
+  const at = linesStart(bytes, LOG_LINES, false);
+  return at >= 0 && bytes.subarray(0, at).toString('utf-8').split('\n').length - 1 >= context;
+}
+
+function linesStart(bytes: Buffer, count: number, cut: boolean): number {
+  let seen = 0;
+  for (let end = bytes.length; ;) {
+    const newline = end === 0 ? -1 : bytes.lastIndexOf(0x0a, end - 1);
+    if (newline === -1 && cut) return -1;
+    if (bytes.toString('utf-8', newline + 1, end).trim() !== '') seen++;
+    if (seen === count) return newline + 1;
+    if (newline === -1) return -1;
+    end = newline;
   }
-  const earlier = entries.slice(0, latest);
-  const ended = earlier.at(-1)?.id;
-  if (ended === undefined) {
-    lines.push(`${read} hold no earlier start of it.`);
-    return;
-  }
-  log(earlier.filter((entry) => entry.id === ended).map((entry) => entry.message).join('\n'),
-    'The journal\'s last lines about the newest earlier start it holds, which ended', true);
 }
 
 function logLines(original: string, text: string, what: string, lines: string[], ended: boolean,
@@ -1904,20 +2102,29 @@ function logLines(original: string, text: string, what: string, lines: string[],
 
 function readLogTail(fd: number, contextBytes: number): { bytes: Buffer; from: number; offset: number } {
   const size = fstatSync(fd).size;
-  const windowStart = Math.max(0, size - LOG_BYTES);
+  let windowStart = 0;
+  for (let step = TAIL_STEP_BYTES; ; step *= 2) {
+    const start = Math.max(0, size - step);
+    const at = linesStart(readAt(fd, start, size), LOG_LINES, start > 0);
+    if (at >= 0) {
+      windowStart = start + at;
+      break;
+    }
+    if (start === 0) break;
+  }
   const offset = Math.max(0, windowStart - contextBytes - 1);
-  const buffer = Buffer.alloc(size - offset);
+  return { bytes: readAt(fd, offset, size), from: windowStart - offset, offset };
+}
+
+function readAt(fd: number, from: number, to: number): Buffer {
+  const buffer = Buffer.alloc(to - from);
   let read = 0;
   while (read < buffer.length) {
-    const count = readSync(fd, buffer, read, buffer.length - read, offset + read);
+    const count = readSync(fd, buffer, read, buffer.length - read, from + read);
     if (count === 0) break;
     read += count;
   }
-  const bytes = buffer.subarray(0, read);
-  let from = Math.min(read, windowStart - offset);
-  // Buffer decoding would turn a partial UTF-8 character at the cut into a replacement character.
-  while (from < bytes.length && (bytes[from]! & 0xc0) === 0x80) from++;
-  return { bytes, from, offset };
+  return buffer.subarray(0, read);
 }
 
 function readOr(path: string): string | null {

@@ -59,7 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
-import { TuiModule } from './modules/tui-module.js';
+import { TuiModule, onHostLineTakenIn } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -730,7 +730,9 @@ async function runPiped(app: AppContext) {
     write: (text) => { atPrompt = false; process.stdout.write(text); },
     log: (line) => { atPrompt = false; console.log(line); },
     error: (line) => { say(line); },
-  }, failureHint(app.recipe, process.env, app.credentials), showsItself, () => { answeredUnwaited(); });
+  }, failureHint(app.recipe, process.env, app.credentials), app.recipe.modules?.setup === true ? showsItself : undefined,
+  () => { answeredUnwaited(); });
+  onHostLineTakenIn(() => turns.takenIn());
   const traces = traceFollower((event) => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
@@ -803,10 +805,15 @@ async function runPiped(app: AppContext) {
     } else {
       await inOrder(async () => {
         const answered = turns.waitForTurn();
-        app.framework.pushEvent({
-          type: 'external-message', source: 'cli',
-          content: trimmed, metadata: {}, triggerInference: true,
-        });
+        try {
+          app.framework.pushEvent({
+            type: 'external-message', source: 'cli',
+            content: trimmed, metadata: {}, triggerInference: true,
+          });
+        } catch (error) {
+          answered.cancel();
+          throw error;
+        }
         await answered;
       }, trimmed);
     }
@@ -857,7 +864,7 @@ async function runPiped(app: AppContext) {
       setup ? app.framework.getModule(SETUP_MODULE) as SetupModule | undefined : undefined;
     onAlert = (event) => {
       const alert = opsAlertOf(event);
-      if (setup && alert.kind === 'refusal') return;
+      if (setup && alert.kind === 'refusal' && alert.agent === app.agentName) return;
       showAlert(alert);
     };
     // agent-framework logs a turn's last inference, and notes a refusal, after the turn's inference:completed trace in
@@ -873,7 +880,8 @@ async function runPiped(app: AppContext) {
       ask: async (name, purpose) => {
         const release = turns.holdCaps();
         try {
-          return (await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`)) || null;
+          return (await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`,
+            paste ?? undefined)) || null;
         } finally {
           release();
         }
@@ -890,6 +898,7 @@ async function runPiped(app: AppContext) {
     rl.on('close', () => {
       terminalAsker = null;
       closed = true;
+      turns.endAll();
       conversationEnded = true;
       atPrompt = false;
       paste?.end();
@@ -903,7 +912,7 @@ async function runPiped(app: AppContext) {
     const promptIfDone = (): void => {
       if (closed || unanswered > 0) return;
       if (setupModule()?.finishRequested) {
-        rl.close();
+        if (!turns.running()) rl.close();
         return;
       }
       rl.prompt();
@@ -914,13 +923,18 @@ async function runPiped(app: AppContext) {
       const held = app.framework.getAgent(app.agentName)?.getContextManager()?.queryMessages({}).messages ?? [];
       if (lastReplyRefused(app.framework, app.agentName)) say(REFUSED_BEFORE);
       const opened = turns.waitForTurn(null);
-      app.framework.pushEvent({
-        type: 'external-message', source: 'system',
-        content: openingMessage(
-          held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
-          after, setupModule()?.finishedAt() ?? null),
-        metadata: {}, triggerInference: true,
-      });
+      try {
+        app.framework.pushEvent({
+          type: 'external-message', source: 'system',
+          content: openingMessage(
+            held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
+            after, setupModule()?.finishedAt() ?? null),
+          metadata: {}, triggerInference: true,
+        });
+      } catch (error) {
+        opened.cancel();
+        throw error;
+      }
       await Promise.race([opened, ended]);
     };
     afterSwitch = async (switched) => {
@@ -936,7 +950,7 @@ async function runPiped(app: AppContext) {
       try {
         quit = await processLine(message);
       } catch (error) {
-        say(`That line failed, and nothing more came of it: ${error instanceof Error ? error.message : String(error)}`);
+        say(`That line stopped at an error, and nothing after the error ran: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         unanswered--;
       }

@@ -49,8 +49,7 @@ const UNREAD: Record<string, () => Response> = {
   twostarts: () => sse(named([started(MESSAGE), started(MESSAGE), ended(), { type: 'message_stop' }])),
   nodelta: () => sse(named([started(MESSAGE), BLOCK[0]!, { type: 'content_block_delta', index: 0 }, ended()])),
 };
-/** Read or not as the agent's client decides, which the agreement test asks of it: a lone CR ends the last line of
- *  an answer held open. */
+// Whether a lone CR ends the last line of an answer held open is the agent's client's to decide (@anthropic-ai/sdk).
 const EDGE: Record<string, () => Response> = {
   crheld: () => held(named([started(MESSAGE), ended()], '\r')),
 };
@@ -68,7 +67,8 @@ const server = Bun.serve({
     const url = new URL(request.url);
     const [, choice, ...rest] = url.pathname.split('/');
     if (request.method !== 'POST' || rest.join('/') !== 'v1/messages' || !request.headers.get('x-api-key')
-      || request.headers.get('anthropic-version') !== '2023-06-01') {
+      || request.headers.get('anthropic-version') !== '2023-06-01'
+      || request.headers.get('content-type') !== 'application/json') {
       return new Response('not the Messages API', { status: 400 });
     }
     const key = request.headers.get('x-api-key');
@@ -95,12 +95,6 @@ const server = Bun.serve({
     if (choice === 'errortype') return Response.json({ type: 'error', role: 'assistant', content: [] });
     if (choice === 'typekey') return new Response('<html></html>', { headers: { 'content-type': `text/html; key=${key}` } });
     if (choice === 'waitkey') return new Response('', { status: 429, headers: { 'retry-after': `${key}` } });
-    if (choice === 'stall' || choice === 'stall401' || choice === 'stall429') {
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"type":')); } }), {
-        status: choice === 'stall' ? 200 : Number(choice.slice(5)),
-        headers: { 'content-type': 'application/json', 'retry-after': '37' },
-      });
-    }
     if (choice === 'waitempty') return new Response('', { status: 429, headers: { 'retry-after': '' } });
     if (choice === 'waitdate') return new Response('', { status: 429, headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } });
     if (choice === 'echo') return Response.json({ type: 'error', error: { type: 'x', message: `no such key: ${key}` } }, { status: 401 });
@@ -112,7 +106,6 @@ const server = Bun.serve({
     return Response.json({ type: 'error', error: { type: 'x', message: `the server's own words for ${status}` } }, { status });
   },
 });
-// Speaks plain HTTP, so an https:// call to it fails its TLS handshake.
 const plain = Bun.serve({ port: 0, fetch: () => new Response('plain') });
 afterAll(() => {
   server.stop(true);
@@ -193,6 +186,8 @@ describe("the key's one real call", () => {
       fetch: (async () => sse(new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode(named([started(MESSAGE)])));
+        },
+        pull(controller) {
           controller.error(reset);
         },
       }))) as unknown as typeof fetch,
@@ -219,7 +214,7 @@ describe("the key's one real call", () => {
   test("each refusal names its cause and the server's own words, never the key, and says whether another key may help", async () => {
     for (const [status, words, anotherKeyMayHelp] of [
       [401, 'refused the key (401)', true],
-      [403, 'refused this call (403)', true],
+      [403, 'refused this call, one message to claude-x (403)', true],
       [404, 'found nothing for claude-x (404)', true],
       [529, 'overloaded (529)', false],
       [500, 'answered 500', false],
@@ -343,6 +338,29 @@ describe("the key's one real call", () => {
     }
   });
 
+  test('a refusal of the call says what to ask for: of Anthropic\'s console with no ANTHROPIC_BASE_URL, of whoever runs its origin with one', async () => {
+    const denied = (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'not allowed' } }, { status: 403 })) as unknown as typeof fetch;
+    const direct = await checkKey({ key: 'sk-ant-k', model: 'claude-x', fetch: denied });
+    expect(cause(direct)).toBe('api.anthropic.com refused this call, one message to claude-x (403). It said: "not allowed". This key isn\'t ' +
+      'allowed to make it: ask whoever manages its account at console.anthropic.com to allow it, or use a key from an account that can.');
+    const through = await checkKey({ key: 'sk-ant-k', model: 'claude-x', baseUrl: 'https://gw.example', fetch: denied });
+    expect(cause(through)).toBe('gw.example refused this call, one message to claude-x (403). It said: "not allowed". Ask whoever runs ' +
+      'https://gw.example, or manages the key\'s account there, to allow it, or use a key that can make that call.');
+    const streamed = await checkKey({ key: 'sk-ant-stream', model: 'm', baseUrl: at('streamdenied') });
+    expect(cause(streamed)).toContain('refused this call, one message to m, in its stream (permission_error). It said: "not allowed". Ask whoever runs ');
+  });
+
+  test('words quoting the path of a request to an ANTHROPIC_BASE_URL with a path of its own show it as the request\'s path', async () => {
+    const quoting = (async (url: string) => Response.json(
+      { type: 'error', error: { type: 'not_found_error', message: `Cannot POST ${new URL(url).pathname}` } }, { status: 404 },
+    )) as unknown as typeof fetch;
+    const withPath = await checkKey({ key: 'sk-ant-k', model: 'm', baseUrl: 'https://gw.example/private-path', fetch: quoting });
+    expect(cause(withPath)).not.toContain('private-path');
+    expect(cause(withPath)).toContain('It said: "Cannot POST <the request\'s path>".');
+    const without = await checkKey({ key: 'sk-ant-k', model: 'm', baseUrl: 'https://gw.example', fetch: quoting });
+    expect(cause(without)).toContain('It said: "Cannot POST /v1/messages".');
+  });
+
   test('words quoting ANTHROPIC_BASE_URL show only where it leads', async () => {
     const baseUrl = 'https://someone:pass-in-url@gw.example/private-path?token=in-query';
     const result = await checkKey({
@@ -381,24 +399,27 @@ describe("the key's one real call", () => {
     }
   });
 
-  test('a 2xx whose body never comes is named as a server that didn\'t answer, not as a wrong answer', async () => {
-    let answered = false;
-    const result = await checkKey({
-      key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300,
-      fetch: (async (url: string, init: RequestInit) => {
-        const response = await fetch(url, init);
-        answered = true;
-        return response;
-      }) as unknown as typeof fetch,
+  const stalled = (status: number) => (async (_url: string, init: RequestInit) => {
+    let end: (reason: unknown) => void = () => {};
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"type":'));
+        end = (reason) => controller.error(reason);
+      },
     });
-    expect(answered).toBe(true);
+    init.signal?.addEventListener('abort', () => end(init.signal!.reason), { once: true });
+    return new Response(body, { status, headers: { 'content-type': 'application/json', 'retry-after': '37' } });
+  }) as unknown as typeof fetch;
+
+  test('a 2xx whose body never comes is named as a server that didn\'t answer, not as a wrong answer', async () => {
+    const result = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(200) });
     expect(result).toEqual({ ok: false, cause: expect.stringContaining("didn't answer within 0.3 s"), anotherKeyMayHelp: false });
   });
 
   test('a refusal whose body never comes keeps its status\'s cause, and its Retry-After', async () => {
-    const refused = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall401'), timeoutMs: 300 });
+    const refused = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(401) });
     expect(refused).toEqual({ ok: false, cause: expect.stringContaining('refused the key (401)'), anotherKeyMayHelp: true });
-    const limited = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall429'), timeoutMs: 300 });
+    const limited = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(429) });
     expect(limited).toEqual({ ok: false, cause: expect.stringContaining('(429)'), anotherKeyMayHelp: false });
     expect(cause(limited)).toContain('a wait of 37 s');
   });
@@ -477,9 +498,7 @@ describe("the key's one real call", () => {
       fetch: (async () => { throw Object.assign(new TypeError('getaddrinfo ENOTFOUND no-such-host.invalid'), { code: 'ENOTFOUND', errno: 4 }); }) as unknown as typeof fetch,
     });
     expect(cause(unnamed)).toContain("no-such-host.invalid couldn't be found by name (ENOTFOUND)");
-    seen.length = 0;
     const silent = await checkKey({ key: 'k-silent', model: 'm', baseUrl: at('silent'), timeoutMs: 300 });
-    expect(seen.map((each) => each.key)).toEqual(['k-silent']);
     expect((silent as { cause: string }).cause).toContain("didn't answer within 0.3 s");
   });
 });

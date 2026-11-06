@@ -15,18 +15,18 @@ import {
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type SetupState } from '../setup/state.js';
-import { makeSpawnHelperExecutable } from '../setup/node-pty.js';
+import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
   writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import { bindingOf, mapPath, type Binding } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, SETUP_RECIPE, SETUP_SURFACE, installCommandOf, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
@@ -37,7 +37,7 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
-const SURFACE = 'discord';
+const SURFACE = SETUP_SURFACE;
 const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
 const SHELL_NODE_TOP = 24;
@@ -61,8 +61,6 @@ function packageJson(): PackageJson {
   return JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf-8')) as PackageJson;
 }
 
-/** The line that sets a resident up with this version of the host. */
-/** The command that runs this release of the package where no install's own command does. */
 export function packageCommand(): string {
   return `bunx ${PACKAGE}@${packageJson().version}`;
 }
@@ -83,52 +81,12 @@ function homeDirectory(home: string | undefined): string | null {
   }
 }
 
-async function makeResidentDirectory(world: SetupWorld, home: string, state: SetupState, { out, err }: Io): Promise<number | null> {
-  for (;;) {
-    const name = await world.ask('The resident\'s directory, made in your home, whose name its service takes [resident]: ');
-    if (name === null) return null;
-    const chosen = name.trim() === '' ? 'resident' : name.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(chosen) || !/[A-Za-z]/.test(chosen)) {
-      out('A directory\'s name here is one word of letters, digits, ".", "_" and "-", with a letter in it, since the ' +
-        'service takes it.');
-      continue;
-    }
-    const path = join(home, chosen);
-    if (existsSync(path)) {
-      out(`${path} is there already: choose another name.`);
-      continue;
-    }
-    let made = false;
-    try {
-      mkdirSync(path);
-      made = true;
-      mkdirSync(join(path, '.setup'), { mode: 0o700 });
-      writeJsonAtomic(join(path, '.setup', 'setup-state.json'), state, 0o600);
-    } catch (error) {
-      if (made) rmSync(path, { recursive: true, force: true });
-      err(`connectome setup: setup couldn't make ${path} for the resident (${(error as Error).message}), and left ` +
-        'nothing of it behind. The resident needs a directory you can write in: make one where you can, or have whoever ' +
-        'administers this machine make one for you, and run this same version of setup in it, where its questions ' +
-        'come again:');
-      err(`  ${firstLine()}`);
-      return 1;
-    }
-    out(`Setup made ${path} for the resident, and keeps your answers there. Run this same version of setup there:`);
-    out(`  cd ${shellWord(path)}`);
-    out(`  ${firstLine()}`);
-    return 0;
-  }
-}
-
 export interface Ran {
-  /** null when the program couldn't be started, was stopped at its limit, or was ended by a signal. */
   status: number | null;
   stdout: string;
   stderr: string;
-  /** What the system said when the program couldn't be started. */
   startError?: { code?: string; message: string };
   timedOut?: boolean;
-  /** The signal that ended it, other than setup's own at its limit. */
   signal?: NodeJS.Signals;
 }
 
@@ -136,7 +94,6 @@ export interface RunOptions {
   cwd: string;
   env: Record<string, string>;
   timeoutMs?: number;
-  /** Let the person see its output as it comes, rather than keep it. */
   show?: boolean;
 }
 
@@ -146,28 +103,20 @@ export interface AgentLaunch {
   env: Record<string, string>;
 }
 
-/** Everything setup reaches outside its directory: the terminal, the programs it runs, the system it asks
- *  about and the network. */
 export interface SetupWorld {
-  /** Whether a person is at a terminal on stdin and stdout. */
   terminal: boolean;
   platform: NodeJS.Platform;
   user: string;
   env: Record<string, string | undefined>;
-  /** The directory setup was started in, whose dotenv files Bun read into `env`. */
   cwd: string;
   bun: { path: string; version: string };
   hasSudo: boolean;
-  /** Whether `user`'s linger is on, or null where there's no systemd. */
   lingerOf(user: string): boolean | null;
   userExists(user: string): boolean | null;
-  /** The line typed, or null once the terminal is gone (Ctrl-C, Ctrl-D). */
   ask(question: string): Promise<string | null>;
-  /** Asks with nothing echoed: the line typed, or null once the terminal is gone. */
   askHidden(label: string): Promise<string | null>;
   run(argv: string[], options: RunOptions): Promise<Ran>;
   checkKey(options: KeyCheckOptions): Promise<KeyCheck>;
-  /** Runs the setup agent's host in this terminal, to its end, and gives its exit status. */
   startAgent(launch: AgentLaunch): Promise<number>;
 }
 
@@ -176,7 +125,6 @@ interface Io {
   err: (line: string) => void;
 }
 
-/** `connectome setup discord`, for the install at `root` (its working directory is root's parent). */
 export async function setup(ctx: CliContext & { root: string }, world: SetupWorld = realWorld()): Promise<number> {
   const { err } = ctx;
   try {
@@ -208,7 +156,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const setupDir = join(dir, '.setup');
   const statePath = join(setupDir, 'setup-state.json');
   const entries = readdirSync(dir);
-  const ours = entries.includes('.setup') || existsSync(join(root, 'install.json'));
+  const ours = existsSync(join(setupDir, 'setup.lock')) || existsSync(statePath) || existsSync(join(root, 'install.json'));
   let kept = false;
   const stopped = () => {
     out(kept ? 'Setup stopped. Run it again in this directory to go on.'
@@ -241,11 +189,16 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     };
     if (!ownUserPossible(world) || home === null) return elsewhere();
     out(`${RESIDENT} ${what}, so setup won't install there. It asks first whether the resident gets a shell and who it ` +
-      `runs as: if it runs as this user, ${world.user}, setup then makes its directory with you, in ${home}, and keeps ` +
-      'your answers there, so they aren\'t asked again.');
+      'runs as, since those say where setup runs next.');
     const answered = await askWhoAndShell(world, { out, err });
     if (typeof answered === 'number') return answered === -1 ? stoppedElsewhere() : answered;
-    return await makeResidentDirectory(world, home, answered, { out, err }) ?? stoppedElsewhere();
+    out('Then make a new directory for the resident in your home, and run this same version of setup there, where its ' +
+      'questions come again. Its service takes the directory\'s name, so choose another than resident if you like, or ' +
+      'if ~/resident is already there:');
+    out('  mkdir ~/resident && cd ~/resident');
+    out(`  ${firstLine()}`);
+    out('Nothing was installed here.');
+    return 0;
   }
   mkdirSync(setupDir, { recursive: true, mode: 0o700 });
   const lock = takeSetupLock(join(setupDir, 'setup.lock'));
@@ -327,7 +280,8 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
     'files, keys and other programs), and whoever talks to it on Discord can ask it to.';
   if (!ownUserPossible(world)) {
     const why = world.platform === 'darwin' ? 'On macOS, setup has no root lines for a user of its own'
-      : 'There\'s no sudo on this machine';
+      : !world.hasSudo ? 'There\'s no sudo on this machine'
+        : 'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running';
     out(`${why}, so the resident runs as this user, ${world.user}.${shell ? ` ${isolation}` : ''}`);
     const go = await yesNo(world, `Go on as ${world.user}? (yes/no) `);
     if (go === null) return -1;
@@ -349,8 +303,7 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
   if (choice === '1') {
     const name = await userName(world, out);
     if (name === null) return -1;
-    // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run. Pasted
-    // again after a step failed, it goes on: a user already there isn't made again, and a failed download fails it.
+    // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
     out('Run this line where you can use sudo: it makes its user, unless one by that name is there already, keeps ' +
       'its services running while it\'s logged out, and gives it Bun on its PATH. If a step fails, put right what ' +
       'it names and run the line again.');
@@ -385,6 +338,11 @@ async function installAndStart(
   const { out, err } = ctx;
   const envFile = join(dir, '.env');
   const linger = world.lingerOf(world.user);
+  if (linger === null && world.platform === 'linux') {
+    out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
+      'guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it ' +
+      'when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
+  }
   if (linger === false) {
     out(`Linger is off for ${world.user}, so a service of ${world.user}'s would stop when ${world.user} logs out, and ` +
       'the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once ' +
@@ -454,7 +412,8 @@ async function installAndStart(
     : trusted.reason;
   if (untrusted !== null) {
     out(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} ` +
-      `(${untrusted}), so Bun runs no install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
+      `(${untrusted}), so unless it already names ${SERVERS.shell} among its trustedDependencies, Bun runs no install ` +
+      `script of ${SERVERS.shell}'s, and through a mirror or a company ` +
       'registry it may run none of the others\'.');
   }
 
@@ -478,15 +437,14 @@ async function installAndStart(
   }
 
   if (state.shell) {
-    const nodeModules = join(dir, 'node_modules');
-    let helper = makeSpawnHelperExecutable(nodeModules, world.platform);
+    let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
     let pty = await ptyWorks(world, dir, programEnv);
     if (pty !== null) {
       out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
         'setup installs it again:');
-      rmSync(join(nodeModules, 'node-pty'), { recursive: true, force: true });
+      rmSync(nodePtyDir(dir), { recursive: true, force: true });
       const again = await world.run([world.bun.path, '--no-env-file', 'install'], { cwd: dir, env: programEnv, show: true });
-      if (again.status === 0) helper = makeSpawnHelperExecutable(nodeModules, world.platform);
+      if (again.status === 0) helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
       pty = again.status === 0 ? await ptyWorks(world, dir, programEnv)
         : `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
     }
@@ -558,11 +516,14 @@ async function installAndStart(
   });
   if (made.status !== 0) {
     err(`The install's own setup (${copySetup}) didn't finish (${ended(made)}):`);
-    for (const line of lastLines(made, 20)) err(`  ${line}`);
+    for (const line of outputLines(made)) err(`  ${line}`);
     err('Once what the lines above say is put right, run setup again.');
     return 1;
   }
-  out(made.stdout.split('\n')[0] ?? '');
+  for (const line of made.stdout.split('\n')) {
+    if (line.startsWith(EXTRA_STATE_LINE)) break;
+    if (line.trim() !== '') out(line);
+  }
   const keptOutside = keptOutsideLines(made.stdout);
 
   const running = readCurrent(root);
@@ -634,7 +595,7 @@ async function installAndStart(
         ? `The installed host (${running}, ${entry}) didn't finish booting on a mock recipe in batch mode within ` +
           `${BOOT_TIMEOUT_MS / 1000} s, so setup stopped it.`
         : `The installed host (${running}, ${entry}) doesn't start on a mock recipe in batch mode: ${ended(boot)}.`);
-      for (const line of lastLines(boot, 20)) err(`  ${line}`);
+      for (const line of outputLines(boot)) err(`  ${line}`);
       err('Where the host\'s own lines above name something of this machine\'s, such as a file it can\'t read, put ' +
         'that right. Where they name the host\'s code or a package it brings, such as a module it can\'t find, ' +
         `that's for its makers: report them, with this output, at ${pkg.bugs.url}. Once what made its boot fail is ` +
@@ -798,8 +759,6 @@ async function installAndStart(
   return agentStatus;
 }
 
-/** The data directory the install's own setup is given, and a --place for each place setup asked about, for an
- *  install whose record is bound to another directory or to none: -1 when the terminal went. */
 async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, { out, err }: Io):
   Promise<{ dataDir: string; placeArgs: string[] } | number> {
   let binding: Binding;
@@ -811,21 +770,24 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
   }
   if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
   if (binding.kind === 'resume') {
-    out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished, so setup finishes it, ` +
-      'with the places that run was given.');
+    out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished. Setup finishes it from ` +
+      'its plan, with the places that run was given, or says what stops it.');
     return { dataDir: binding.plan.record.dataDir, placeArgs: [] };
   }
-  const { from, to, ask } = binding;
+  const { from, to, ask, kept } = binding;
   const answer = ask.length === 0 ? '' : ' Press Enter where a place is this install\'s, or type the path of this ' +
     'install\'s own, as after a copy.';
   out(from === null
-    ? 'This install\'s record is from a release that didn\'t record which directory an install is in, so setup can\'t ' +
-      'tell whether it was moved or copied here, or whose each place it names is. Setup asks about each, once, and ' +
-      `then records this directory.${answer}`
+    ? 'This install\'s record is from a release that didn\'t record which directory an install is in. Setup binds it ' +
+      `here: each place under ${to}, other than inside another install's directory, stays as it is.` +
+      (ask.length === 0 ? '' : ' It asks about each place outside it, or inside another install\'s directory ' +
+        'within it, since it can\'t tell whether that came with the install, as after a move, or is still another ' +
+        `install's, as after a copy. A place inside another goes with it.${answer}`)
     : `This install's record is bound to ${from}, and the install is in ${to}, so it was moved or copied here. Setup ` +
       `binds it here: each place under ${from} becomes the same place under ${to}.` +
       (ask.length === 0 ? '' : ` It asks about each place outside ${from}, since it can't tell whether that came ` +
-        `with the install, as after a move, or is still the other install's, as after a copy.${answer}`));
+        `with the install, as after a move, or is still the other install's, as after a copy. A place inside another ` +
+        `goes with it.${answer}`));
   const places: Array<{ from: string; to: string }> = [];
   for (const place of ask) {
     const what = place.data ? 'its data directory' : place.extra ? 'state kept outside its data directory'
@@ -850,7 +812,7 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
     }
   }
   return {
-    dataDir: mapPath(record.dataDir, { from, to, places })!,
+    dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...kept] })!,
     placeArgs: places.flatMap((place) => ['--place', place.from, place.to]),
   };
 }
@@ -870,17 +832,14 @@ function takeSetupLock(file: string): { release(): void } | null {
   }
 }
 
-// What Bun read from the directory's dotenv files, which are the resident's, stays out of the agent's environment and
-// its commands': each name any of them gives, in any mode, since NODE_ENV can itself be one a file gave. By name, as
-// Bun puts in $NAME as it reads, so a value read there needn't match the file's text. A name the person also
-// exported goes too, with its exported value.
+// By name, since Bun puts in $NAME as it reads a dotenv file, so a value it read there needn't match the file's text.
 function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Record<string, string | undefined> {
   const names = new Set(dotenvNames(cwd));
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
 
-// What the shell setup was started from exported, for what setup says of it: the rest of what Bun gave setup, and
-// each name a dotenv file gives whose value isn't one the files give it, since an exported value wins over theirs.
+// Bun keeps an exported value over a dotenv file's, so a name the files give, holding a value none of them gives, was
+// exported.
 function exportedOf(given: Record<string, string | undefined>, rest: Record<string, string | undefined>, cwd: string):
   Record<string, string> {
   const fromFiles = dotenvValues(cwd, rest);
@@ -921,7 +880,7 @@ async function yesNo(world: SetupWorld, question: string): Promise<boolean | nul
 }
 
 function ownUserPossible(world: SetupWorld): boolean {
-  return world.platform === 'linux' && world.hasSudo;
+  return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null;
 }
 
 async function pick(world: SetupWorld, question: string, fallback: '1' | '2' | null): Promise<'1' | '2' | null> {
@@ -969,7 +928,8 @@ function addTrusted(file: string, names: string[]): string | null {
   if (added.length === 0 && Array.isArray(manifest.trustedDependencies)) return null;
   manifest.trustedDependencies = [...held, ...added];
   try {
-    writeTextAtomic(file, `${JSON.stringify(manifest, null, 2)}\n`, 0o644);
+    const was = lstatSync(file, { throwIfNoEntry: false });
+    writeTextAtomic(file, `${JSON.stringify(manifest, null, 2)}\n`, was?.isFile() ? was.mode & 0o777 : 0o644);
   } catch (error) {
     return `${file} can't be written (${(error as Error).message})`;
   }
@@ -991,7 +951,8 @@ function declaredDependencies(dir: string): Set<string> | null {
   }
 }
 
-const PTY_CHECK = "let p;try{p=require('node-pty').spawn('/bin/echo',['pty-ok'],{})}catch(e){console.error(String(e.message)" +
+const PTY_CHECK = "let p;try{p=require('module').createRequire(require('fs').realpathSync('node_modules/term-sessions-mcp')+'/package.json')('node-pty')" +
+  ".spawn('/bin/echo',['pty-ok'],{})}catch(e){console.error(String(e.message)" +
   ".split('\\n')[0]);process.exit(1)}let o='';p.onData(d=>{o+=d});p.onExit(()=>{if(o.includes('pty-ok'))process.exit(0);" +
   "console.error('a pty it opened gave back nothing');process.exit(1)})";
 
@@ -1023,8 +984,8 @@ function ended(ran: Ran): string {
   return `exit ${ran.status}`;
 }
 
-function lastLines(ran: Ran, count: number): string[] {
-  return `${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '').slice(-count);
+function outputLines(ran: Ran): string[] {
+  return `${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '');
 }
 
 function dollars(amount: number): string {
@@ -1052,8 +1013,8 @@ export function costLine(model: string, gateway: boolean): string {
     cacheWrite1hTokens: tokens.cacheWrite,
   })?.total ?? 0;
   const walks = model === WALKS_MODEL
-    ? `In five test setups, with a tester playing the person, setup's agent cost between ${dollars(cost(FEWEST))} ` +
-      `and ${dollars(cost(MOST))} each at these prices; the higher figure includes the new resident's first calls, ` +
+    ? `In five test setups, with a tester playing the person, setup's agent cost between ${dollars(cost(CHEAPEST_TEST_SETUP))} ` +
+      `and ${dollars(cost(COSTLIEST_TEST_SETUP))} each at these prices; the higher figure includes the new resident's first calls, ` +
       'which couldn\'t be told apart from setup\'s.'
     : length;
   // agent-framework's Agent caches for an hour when its config sets no cacheTtl, as setup.json's doesn't.
@@ -1068,11 +1029,8 @@ interface WalkTokens { input: number; output: number; cacheRead: number; cacheWr
 
 const WALKS_MODEL = 'claude-opus-5-5';
 
-// The measured tokens of the cheapest and the costliest of five test setups at anthropic-public-2026-10-19's prices:
-// one setup's calls before its resident's began, all of them setup's, and another's to its end, which holds its
-// resident's first calls too.
-const FEWEST: WalkTokens = { input: 27505, output: 6594, cacheRead: 208026, cacheWrite: 20223 };
-const MOST: WalkTokens = { input: 199250, output: 27589, cacheRead: 1854547, cacheWrite: 122949 };
+const CHEAPEST_TEST_SETUP: WalkTokens = { input: 27505, output: 6594, cacheRead: 208026, cacheWrite: 20223 };
+const COSTLIEST_TEST_SETUP: WalkTokens = { input: 199250, output: 27589, cacheRead: 1854547, cacheWrite: 122949 };
 
 export function realWorld(): SetupWorld {
   // One interface a question: readline holds the terminal raw while it's open, so Ctrl-C between questions, as
@@ -1096,7 +1054,7 @@ export function realWorld(): SetupWorld {
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),
     userExists: (user) => {
-      const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore' });
+      const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       return found.status === 0 ? true : found.status === 2 ? false : null;
     },
     ask: (text) => question((rl) => new Promise((done) => rl.question(text, done))),

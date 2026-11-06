@@ -407,6 +407,22 @@ describe('the person\'s name', () => {
     expect(existsSync(out)).toBe(false);
   });
 
+  test('"user", given with --person or named in users.json, is refused, saying why and to give another, writing nothing', () => {
+    for (const [users, extra, said] of [
+      [null, ['--person', 'user'], '--person names the person "user"'],
+      [JSON.stringify([{ uuid: 'u1', full_name: ' user ' }]), [], 'The export\'s users.json names its one user "user"'],
+    ] as const) {
+      const dir = exportWith(users);
+      writeFileSync(join(dir, 'conversations.json'), '[]');
+      const out = join(dir, 'out');
+      const ran = Bun.spawnSync([process.execPath, join(import.meta.dir, '..', 'scripts', 'import-claudeai-export.ts'), dir,
+        '--out', out, '--no-interactive', ...extra], { stdin: 'ignore' });
+      expect(ran.exitCode, said).toBe(1);
+      expect(ran.stderr.toString()).toContain(`${said}, which is the name the host gives a turn whose author has no name, so their turns would go in unnamed. Give the name to use with --person <name>.`);
+      expect(existsSync(out)).toBe(false);
+    }
+  });
+
   test('is "user" where users.json is missing, isn\'t JSON, names no one, more than one, or a blank name', () => {
     for (const users of [null, '{not json', '[]', JSON.stringify([{ full_name: 'A' }, { full_name: 'B' }]), JSON.stringify([{ full_name: '  ' }]), JSON.stringify([{}])]) {
       expect(personNameOf(exportWith(users)), String(users)).toBe('user');
@@ -478,6 +494,14 @@ describe('an import, run as a person runs it', () => {
       { participant: 'Claude', author: null, text: 'Plenty of time.' },
     ]);
     expect((await imported(dir, ['--person', 'ra']))[0]).toEqual({ participant: 'user', author: { name: 'ra' }, text: 'ra: Four days in Lisbon?' });
+  }, 60_000);
+
+  test('takes --person trimmed, and an empty one leaves the person\'s turns as before', async () => {
+    const dir = exportOf([]);
+    expect((await imported(dir, ['--person', ' ra ']))[0]).toEqual({ participant: 'user', author: { name: 'ra' }, text: 'ra: Four days in Lisbon?' });
+    for (const empty of ['', '  ']) {
+      expect((await imported(dir, ['--person', empty]))[0]).toEqual({ participant: 'user', author: null, text: 'Four days in Lisbon?' });
+    }
   }, 60_000);
 
   test('leaves the person\'s turns as before where the export names no one and no --person is given', async () => {

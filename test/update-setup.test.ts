@@ -95,7 +95,7 @@ beforeEach(() => {
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 const RECORD_AGAIN = 'To put it right, write the record again as\n' +
-  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>], "workingDir": "<working directory>"}\n' +
+  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>]}\n' +
   'where <data directory> is the absolute path of the data directory its host was started with: the DATA_DIR its ' +
   'service gives it, or else the one Bun reads from the .env files in the service\'s working directory, or else ' +
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
@@ -114,12 +114,13 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   'An update copies only the places the ' +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
-  'And <working directory> is the real path of the directory that holds the record\'s directory, as `realpath .` ' +
-  'prints it in that directory: the record is bound to it, and start.js and connectome refuse a record bound to ' +
-  'another.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
-  'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
-  'as a current that names no release. Its service can keep running ' +
+  'records only those. A record written this way doesn\'t say which directory the install was set up in, so setup ' +
+  'takes each place under the directory that holds the record\'s directory as this install\'s, unless another ' +
+  'install\'s root lies between, and asks where each other place is in this install: `connectome setup discord` ' +
+  'asks about each in turn, and a setup run by hand lists them, each to be given with --place PATH PLACE. Then it ' +
+  'writes the record, start.js and connectome again, ' +
+  'or says what else stops it first, such as a current that names no release. Its service can keep running ' +
   'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
   'again: its next start runs start.js, whose launcher reads the record.';
 
@@ -524,10 +525,9 @@ describe('setup', () => {
   test('the remedy\'s rerun says it writes again or says what else stops it first, which a current whose release has lost its host does', () => {
     setup(options());
     rmSync(installPaths(root).install);
-    expect(refusal(() => setup(options()))).toContain('Then run setup again as before, with no --extra-state, so it ' +
-      'keeps the list as written, since a run given any records only those: it writes the record, start.js and ' +
-      'connectome again, or says what else stops it first, such as a current that names no release.');
-    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [], workingDir: install }));
+    expect(refusal(() => setup(options()))).toContain('Then it writes the record, start.js and connectome again, or ' +
+      'says what else stops it first, such as a current that names no release.');
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
     rmSync(join(releaseDir(root, '0.10.2'), HOST_ENTRY));
     expect(refusal(() => setup(options()))).toContain(`names 0.10.2, and there's no host at ` +
       `${join(releaseDir(root, '0.10.2'), HOST_ENTRY)}, so the entry point would start nothing.`);

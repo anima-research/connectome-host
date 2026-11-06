@@ -1,9 +1,9 @@
 import type { Interface } from 'node:readline';
 import type { Writable } from 'node:stream';
+import type { BracketedPaste } from '../readline-paste.js';
 
 type Echoing = Interface & { _writeToOutput?: unknown; history?: unknown };
 
-/** How long input must stay quiet after a hidden answer before it counts as whole. */
 export const PASTE_QUIET_MS = 250;
 
 // Bun 1.4.4's readline keeps text killed with Ctrl-U, Ctrl-K or Ctrl-W in a kill ring that Ctrl-Y yanks back, under
@@ -16,15 +16,9 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
     .map((key) => [key, Array.isArray(held[key]) ? [...held[key] as unknown[]] : held[key]]);
 }
 
-/** Asks for one line after `label` and a colon, on a line of its own, with nothing echoed: the line typed, or '' if
- *  the interface closes before the answer is whole. The label says what Enter alone does where it's asked.
- *  Text typed but not sent when it asks is taken away first, so it can't start the answer. The lines that come
- *  within PASTE_QUIET_MS of each other after it, as the rest of a pasted text, join it with line breaks, a last line
- *  with no line break of its own included, and lines with nothing on them are left out. None of them reaches the
- *  'line' listeners the interface had when asked. Its history holds nothing while it asks, so Up recalls nothing,
- *  and is left as it was before the question, and so is its kill ring, so text killed while it asks can't be yanked
- *  after. Throws, asking nothing, where readline offers no way to hide what's typed. */
-export async function askHidden(rl: Interface, output: Writable, label: string): Promise<string> {
+export async function askHidden(
+  rl: Interface, output: Writable, label: string, paste?: Pick<BracketedPaste, 'pasting' | 'drop'>,
+): Promise<string> {
   const echoing = rl as Echoing;
   const write = echoing._writeToOutput;
   // readline echoes what's typed through its own _writeToOutput, which isn't part of its documented interface.
@@ -32,29 +26,68 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
     throw new Error('this terminal\'s readline offers no way to keep what\'s typed from showing');
   }
   const killRing = killRingOf(rl);
-  if (rl.line !== '') {
+  if (!killRing.some(([key]) => key.description === '_killRing') || !Array.isArray(echoing.history)) {
+    throw new Error('setup can\'t find this terminal\'s readline history or kill ring, so it couldn\'t keep what\'s typed ' +
+      'out of them');
+  }
+  // Bun 1.4.4's readline tells a bracketed paste's start and end apart only as keypresses named paste-start and
+  // paste-end (readline-paste.ts).
+  const input = (rl as unknown as { input?: NodeJS.EventEmitter }).input;
+  if (input !== undefined && paste?.pasting()) {
+    const ended = await new Promise<boolean>((resolve) => {
+      const onKey = (_text: unknown, key: { name?: string } | undefined) => {
+        if (key?.name === 'paste-end') done(true);
+      };
+      const onClose = () => done(false);
+      const done = (value: boolean) => {
+        input.off('keypress', onKey);
+        rl.off('close', onClose);
+        resolve(value);
+      };
+      input.on('keypress', onKey);
+      rl.once('close', onClose);
+    });
+    if (!ended) return '';
+  }
+  const draft = rl.line;
+  if (draft !== '') {
     rl.write(null, { ctrl: true, name: 'e' });
     rl.write(null, { ctrl: true, name: 'u' });
   }
   output.write(`\n${label}: `);
   echoing._writeToOutput = () => {};
-  const history = Array.isArray(echoing.history) ? echoing.history as string[] : null;
-  const before = history ? [...history] : [];
-  const others = rl.listeners('line') as Array<(line: string) => void>;
+  const history = echoing.history as string[];
+  const before = [...history];
+  const others = rl.rawListeners('line') as Array<(line: string) => void>;
   rl.removeAllListeners('line');
   const lines: string[] = [];
   let quiet: ReturnType<typeof setTimeout> | undefined;
   let whole = () => {};
   let closed = () => {};
+  let gone = false;
+  let pasting = false;
+  let answer = '';
+  let tookInPaste = false;
   const take = (line: string) => {
     // readline puts a line in its history before it hands the line on.
-    history?.splice(0);
+    history.splice(0);
     if (line !== '') lines.push(line);
     clearTimeout(quiet);
-    quiet = setTimeout(() => whole(), PASTE_QUIET_MS);
+    if (pasting) tookInPaste = true;
+    else quiet = setTimeout(() => whole(), PASTE_QUIET_MS);
+  };
+  const pasted = (_text: unknown, key: { name?: string } | undefined) => {
+    if (key?.name === 'paste-start') {
+      pasting = true;
+      clearTimeout(quiet);
+    } else if (key?.name === 'paste-end') {
+      pasting = false;
+      if (tookInPaste) quiet = setTimeout(() => whole(), PASTE_QUIET_MS);
+    }
   };
   try {
-    history?.splice(0);
+    history.splice(0);
+    input?.on('keypress', pasted);
     rl.on('line', take);
     return await new Promise<string>((resolve) => {
       whole = () => {
@@ -62,17 +95,22 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
         // would send it on; written a line break, readline ends it as Enter would, handing it to take.
         if (rl.line !== '') rl.write('\n');
         clearTimeout(quiet);
-        resolve(lines.join('\n'));
+        answer = lines.join('\n');
+        resolve(answer);
       };
-      closed = () => resolve('');
+      closed = () => {
+        gone = true;
+        resolve('');
+      };
       rl.once('close', closed);
     });
   } finally {
     clearTimeout(quiet);
+    input?.off('keypress', pasted);
     rl.off('close', closed);
     rl.off('line', take);
     for (const listener of others) rl.on('line', listener);
-    if (history) history.splice(0, history.length, ...before);
+    history.splice(0, history.length, ...before);
     const held = rl as unknown as Record<symbol, unknown>;
     for (const [key, value] of killRing) {
       if (Array.isArray(value) && Array.isArray(held[key])) (held[key] as unknown[]).splice(0, Infinity, ...value);
@@ -80,5 +118,12 @@ export async function askHidden(rl: Interface, output: Writable, label: string):
     }
     echoing._writeToOutput = write;
     output.write('\n');
+    const given = answer.trim();
+    const dropped = given === '' ? undefined : paste?.drop(given);
+    if (dropped !== undefined && dropped.taken > 0) {
+      output.write(`${dropped.taken === 1 ? '1 pasted line' : `${dropped.taken} pasted lines`} held what you just entered ` +
+        `hidden, so ${dropped.taken === 1 ? 'it was' : 'they were'} taken out${dropped.left > 0 ? '. Enter sends the rest' : ''}.\n`);
+    }
+    if (draft !== '' && !gone && !(given !== '' && draft.includes(given))) rl.write(draft);
   }
 }

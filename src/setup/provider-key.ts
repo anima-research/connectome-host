@@ -5,6 +5,8 @@ export type ProviderAnswer<T> =
   | { kind: 'refused'; status: number }
   | { kind: 'unsendable' }
   | { kind: 'answered'; status: number; said: string | null }
+  | { kind: 'redirected'; status: number; to: string | null }
+  | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
 
 interface Request {
@@ -31,6 +33,7 @@ function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
   return { url: under(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1', '/models'), headers: bearer(key) };
 }
 
+// Anthropic's List Models takes `limit` from 1 to 1000 (https://docs.anthropic.com/en/api/models-list).
 function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request {
   return {
     url: under(env.get('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com', '/v1/models?limit=1000'),
@@ -38,9 +41,7 @@ function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request
   };
 }
 
-/** The provider keys setup checks, by the name each is stored as in the install's .env. Bedrock's keys aren't among
- *  them, since a request with them needs AWS's signing; nor Codex's, a ChatGPT login rather than a key; nor
- *  OPENAI_COMPATIBLE_API_KEY, whose base URL is the recipe's. */
+// Not Bedrock's keys, since a request with them needs AWS's signing, nor Codex's, a ChatGPT login rather than a key.
 export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
   OPENAI_API_KEY: { provider: 'OpenAI', check: openaiModels, accepts: listed, models: openaiModels },
   ANTHROPIC_API_KEY: { provider: 'Anthropic', check: anthropicModels, accepts: listed, models: anthropicModels },
@@ -59,7 +60,6 @@ interface Options {
   fetch?: typeof fetch;
   limitMs?: number;
   env?: ReadonlyMap<string, string>;
-  /** Values that an answer quoting them shows by their names, as `<NAME>`, beside the key's own. */
   hide?: readonly { name: string; value: string }[];
 }
 
@@ -70,13 +70,17 @@ export function checkProviderKey(name: string, key: string, options: Options = {
     (body) => (provider.accepts(body) ? null : undefined));
 }
 
-export function listModels(name: string, key: string, options: Options = {}): Promise<ProviderAnswer<string[]>> | null {
+export function listModels(
+  name: string, key: string, options: Options = {},
+): Promise<ProviderAnswer<{ ids: string[]; shownIds: string[]; more: boolean }>> | null {
   const provider = PROVIDER_KEYS[name];
   if (provider === undefined) return null;
   return ask(provider.models(key, options.env ?? new Map()), name, key, options, (body) => {
     const data = (body as { data?: unknown } | null)?.data;
     if (!Array.isArray(data)) return undefined;
-    return data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+    const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+    if (ids.length !== data.length) return undefined;
+    return { ids, shownIds: ids.map((id) => hidden(id, key, name, options.hide)), more: (body as { has_more?: unknown }).has_more === true };
   });
 }
 
@@ -104,6 +108,10 @@ async function ask<T>(
     return unanswered(error);
   }
   if (response.status === 401 || response.status === 403) return { kind: 'refused', status: response.status };
+  if (response.status >= 300 && response.status < 400) {
+    const to = response.headers.get('location');
+    return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, key, name, options.hide) };
+  }
   let text: string;
   try {
     text = await response.text();
@@ -118,6 +126,7 @@ async function ask<T>(
   }
   const value = response.ok ? read(body) : undefined;
   if (value !== undefined) return { kind: 'accepted', value };
+  if (response.ok && body === undefined) return { kind: 'unrecognized', status: response.status };
   const error = (body as { error?: unknown } | undefined)?.error;
   const message = typeof error === 'string' ? error
     : typeof (error as { message?: unknown } | undefined)?.message === 'string' ? (error as { message: string }).message

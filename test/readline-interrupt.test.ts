@@ -31,7 +31,7 @@ async function until(check: () => boolean, ms: number, label: string): Promise<v
 }
 
 test.skipIf(process.platform !== 'linux')(
-  'in readline mode, a Ctrl-C while a turn waits on its model ends the host by its own shutdown, with exit 0 and no error (Linux only)',
+  'in readline mode, a Ctrl-C while a turn waits on its model ends the host by its own shutdown, with exit 0 and without readline\'s use-after-close error (Linux only)',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'readline-interrupt-'));
     dirs.push(dir);
@@ -160,6 +160,7 @@ test.skipIf(process.platform !== 'linux')(
     expect(output).not.toContain('the-typed-value');
     host.stdin!.write('/quit\r');
     expect(await exit).toBe(0);
+    expect(output).not.toContain('the-typed-value');
   },
   120_000,
 );
@@ -207,6 +208,7 @@ function startHost(dir: string, modules: Record<string, unknown>,
     THINKING_BINDING_PROBE: 'off',
     DATA_DIR: join(dir, 'data'),
     CONNECTOME_SETUP_DIR: dir,
+    CONNECTOME_UPDATE_CHECK: '0',
     TERM: 'xterm-256color',
   });
   const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`;
@@ -247,6 +249,10 @@ linux('in readline mode, a bracketed paste is held until Enter and sent as one m
     await until(() => seen.output.includes('Got it.'), 30_000, `the answer (requests: ${bodies.length}; output: ${seen.output.slice(-1500)})`);
     expect(bodies).toHaveLength(1);
     expect(carries(lastFromPerson(bodies[0]!), '/quit\nsecond\nthird and more'), lastFromPerson(bodies[0]!)).toBe(true);
+    host.stdin!.write('fourth\r');
+    await until(() => bodies.length >= 2 && seen.output.split('Got it.').length >= 3, 30_000, `the second answer (requests: ${bodies.length})`);
+    expect(bodies).toHaveLength(2);
+    expect(carries(lastFromPerson(bodies[1]!), 'fourth'), lastFromPerson(bodies[1]!)).toBe(true);
     host.stdin!.write('\x1b[200~/quit\x1b[201~\r');
     expect(await exit).toBe(0);
     expect(givenBack(seen.output)).toBe(true);
@@ -277,7 +283,8 @@ linux('in readline mode, two lines entered together, as a terminal without brack
     const second = seen.output.indexOf('Answer number 2.');
     expect(first).toBeGreaterThanOrEqual(0);
     expect(second).toBeGreaterThan(first);
-    expect(seen.output.slice(seen.output.lastIndexOf('second line'), second)).not.toContain('> ');
+    expect(seen.output.slice(seen.output.indexOf('first line'), second)).not.toContain('> ');
+    expect(seen.output.slice(second).split('> ')).toHaveLength(2);
     expect(carries(lastFromPerson(bodies[0]!), 'first line'), lastFromPerson(bodies[0]!)).toBe(true);
     expect(carries(lastFromPerson(bodies[1]!), 'second line'), lastFromPerson(bodies[1]!)).toBe(true);
     host.stdin!.write('/quit\r');
@@ -398,6 +405,7 @@ linux('setup--ask_secret takes a token pasted in a bracketed paste with its own 
     expect(pasted.seen.output).not.toContain('the-pasted.value-1');
     hosts.at(-1)!.stdin!.write('/quit\r');
     expect(await pasted.exit).toBe(0);
+    expect(pasted.seen.output).not.toContain('the-pasted.value-1');
 
     const other = mkdtempSync(join(tmpdir(), 'readline-paste-secret-c-'));
     dirs.push(other);
@@ -466,7 +474,7 @@ linux('a line typed while setup\'s opening turn waits on its model is answered a
     const answer = output.indexOf('Answer to hi.');
     expect(opening).toBeGreaterThanOrEqual(0);
     expect(answer).toBeGreaterThan(opening);
-    expect(output.slice(opening, answer)).not.toContain('> ');
+    expect(output.slice(0, answer)).not.toContain('> ');
     expect(output.slice(answer).split('> ')).toHaveLength(2);
     expect(carries(lastFromPerson(typed.bodies[1]!), 'typed-while-held'), lastFromPerson(typed.bodies[1]!)).toBe(true);
     hosts.at(-1)!.stdin!.write('/quit\r');
@@ -494,7 +502,7 @@ linux('a line still waiting to go in when the person switches session isn\'t sen
     };
     const host = startHost(dir, { setup: true }, answers, ['setup--finished']);
     output = () => host.seen.output;
-    await until(() => promptAfter(host.seen.output, 'Answer number 1.'), 60_000,
+    await until(() => promptAfterLast(host.seen.output, 'Answer number 1.'), 60_000,
       `the opening's answer and a prompt (output: ${host.seen.output.slice(-1500)})`);
     hosts.at(-1)!.stdin!.write('held line\r');
     await until(() => host.bodies.length === 2, 30_000, `the held line's request (output: ${host.seen.output.slice(-1500)})`);
@@ -578,8 +586,7 @@ const REFUSED_BEFORE = 'Setup\'s agent\'s last reply was refused by the model. T
 const refuses = (_body: Body, bodies: Body[]) =>
   reply(`msg_${bodies.length}`, 'refusal', { type: 'text', text: '' }, { type: 'text_delta', text: 'Partial.' });
 
-/** Whether a prompt is drawn after the last place `text` was said. */
-const promptAfter = (output: string, text: string): boolean =>
+const promptAfterLast = (output: string, text: string): boolean =>
   output.includes(text) && output.slice(output.lastIndexOf(text)).includes('> ');
 
 linux('in setup, a refused turn says so and a prompt follows, with no refusal-streak alert; the next start says first that the last reply was refused; /session new opens a new conversation; and only a conversation whose own last reply was refused says so (Linux only)',
@@ -587,10 +594,10 @@ linux('in setup, a refused turn says so and a prompt follows, with no refusal-st
     const dir = mkdtempSync(join(tmpdir(), 'readline-setup-refused-'));
     dirs.push(dir);
     const refused = startHost(dir, { setup: true }, refuses, ['setup--run']);
-    await until(() => promptAfter(refused.seen.output, REFUSED_TURN), 60_000,
+    await until(() => promptAfterLast(refused.seen.output, REFUSED_TURN), 60_000,
       `the refused opening's line and a prompt (requests: ${refused.bodies.length}; output: ${refused.seen.output.slice(-1500)})`);
     hosts.at(-1)!.stdin!.write('hi\r');
-    await until(() => refused.seen.output.split(REFUSED_TURN).length === 3 && promptAfter(refused.seen.output, REFUSED_TURN), 60_000,
+    await until(() => refused.seen.output.split(REFUSED_TURN).length === 3 && promptAfterLast(refused.seen.output, REFUSED_TURN), 60_000,
       `the refused answer's line and a prompt (requests: ${refused.bodies.length}; output: ${refused.seen.output.slice(-1500)})`);
     expect(refused.seen.output).not.toContain('refusal streak');
     expect(refused.seen.output).not.toContain(REFUSED_BEFORE);
@@ -600,14 +607,14 @@ linux('in setup, a refused turn says so and a prompt follows, with no refusal-st
     const answers = (_body: Body, bodies: Body[]) =>
       bodies.length === 1 ? refuses(_body, bodies) : said('A new conversation.')(_body, bodies);
     const again = startHost(dir, { setup: true }, answers, ['setup--run']);
-    await until(() => promptAfter(again.seen.output, REFUSED_TURN), 60_000,
+    await until(() => promptAfterLast(again.seen.output, REFUSED_TURN), 60_000,
       `the refused reopening's line and a prompt (requests: ${again.bodies.length}; output: ${again.seen.output.slice(-1500)})`);
     const before = again.seen.output.indexOf(REFUSED_BEFORE);
     expect(before).toBeGreaterThanOrEqual(0);
     expect(before).toBeLessThan(again.seen.output.indexOf(REFUSED_TURN));
     expect(carries(lastFromPerson(again.bodies[0]!), 'From setup, not the person: they\'ve started setup again, and this conversation picks up where it stopped.')).toBe(true);
     hosts.at(-1)!.stdin!.write('/session new\r');
-    await until(() => promptAfter(again.seen.output, 'A new conversation.'), 60_000,
+    await until(() => promptAfterLast(again.seen.output, 'A new conversation.'), 60_000,
       `the new conversation's opening answer and a prompt (requests: ${again.bodies.length}; output: ${again.seen.output.slice(-1500)})`);
     const fresh = again.bodies[1]!;
     expect(carries(lastFromPerson(fresh), 'From setup, not the person: they\'ve started a new conversation with setup. What setup has done stays on disk, and this conversation doesn\'t hold it.'), lastFromPerson(fresh)).toBe(true);
@@ -618,7 +625,7 @@ linux('in setup, a refused turn says so and a prompt follows, with no refusal-st
     expect(await again.exit).toBe(0);
 
     const third = startHost(dir, { setup: true }, said('Hello again.'), ['setup--run']);
-    await until(() => promptAfter(third.seen.output, 'Hello again.'), 60_000,
+    await until(() => promptAfterLast(third.seen.output, 'Hello again.'), 60_000,
       `setup's words on its third start (requests: ${third.bodies.length}; output: ${third.seen.output.slice(-1500)})`);
     expect(third.seen.output).not.toContain(REFUSED_BEFORE);
     const listed = third.seen.output.length;
@@ -630,7 +637,7 @@ linux('in setup, a refused turn says so and a prompt follows, with no refusal-st
     expect(id).toBeDefined();
     const switching = third.seen.output.length;
     hosts.at(-1)!.stdin!.write(`/session switch ${id}\r`);
-    await until(() => third.bodies.length >= 2 && promptAfter(third.seen.output.slice(switching), 'Hello again.'), 60_000,
+    await until(() => third.bodies.length >= 2 && promptAfterLast(third.seen.output.slice(switching), 'Hello again.'), 60_000,
       `the switched conversation's opening answer (requests: ${third.bodies.length}; output: ${third.seen.output.slice(-1500)})`);
     expect(third.seen.output.slice(switching)).toContain(REFUSED_BEFORE);
     expect(carries(lastFromPerson(third.bodies[1]!), 'From setup, not the person: they\'ve switched to this conversation, and it picks up where it stopped.'), lastFromPerson(third.bodies[1]!)).toBe(true);
