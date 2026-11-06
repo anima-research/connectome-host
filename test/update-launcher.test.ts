@@ -2519,7 +2519,7 @@ describe('a Go back from a shell', () => {
     expect(readRecord<{ v: 1; pid: number }>(installPaths(root).lock, 'lock')?.pid).toBe(4242);
     expect(reports[0]).toContain("Waiting up to 60 s for this install's host to give up its lock");
     expect(reports.at(-1)).toMatch(/^\[update\] Nothing was asked for: this install's lock has been held for the last 60 s\. Another start .* holds its lock .*`\/update back`/);
-    expect(reports.at(-1)).toEndWith('Otherwise stop the service, run this again, and start the service.');
+    expect(reports.at(-1)).toEndWith('If that process is this install\'s own host, it goes back with `/update back`, which lets its turns end first, or stop the service, run this again, and start the service.');
   });
 
   test('takes the lock a host that keeps exiting gives up, writes the mark with no servers recorded, gives the lock up, and the next start goes back', async () => {

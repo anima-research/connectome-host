@@ -1038,7 +1038,7 @@ export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   takeLock(root, ops);
   const plan = join(root, REBIND_PLAN);
   if (exists(plan)) {
-    throw new ContractError(`Nothing runs in this install, since a setup binding this install was cut off before it ` +
+    throw new ContractError(`a setup binding this install was cut off before it ` +
       `finished (${plan} is its plan), so the places it names may be half bound. Setup, run again, finishes it from ` +
       `its plan without asking about its places again, or says what stops it: run \`${shellWord(join(root, 'connectome'))} ` +
       'setup discord`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.');
@@ -1151,8 +1151,9 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
       }
       if (ops.now().getTime() >= until) {
         ops.report(`[update] Nothing was asked for: this install's lock has been held for the last ` +
-          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`/update back\`, ` +
-          'which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
+          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} If that process is this install's own host, it goes ` +
+          'back with `/update back`, which lets its turns end first, or stop the service, run this again, and start the ' +
+          'service.');
         return 1;
       }
       if (!waiting) {

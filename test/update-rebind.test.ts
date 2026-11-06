@@ -1024,7 +1024,8 @@ describe('a start', () => {
       if (String(to) === lock) writeFileSync(join(root, REBIND_PLAN), '{}');
     }) as typeof fs.linkSync);
     try {
-      await expect(decide(root, machineOps())).rejects.toThrow(`Nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, REBIND_PLAN)} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
+      const refused = await decide(root, machineOps()).then(() => null, (error: Error) => error.message);
+      expect(refused).toStartWith(`a setup binding this install was cut off before it finished (${join(root, REBIND_PLAN)} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
     } finally {
       links.mockRestore();
       releaseLock(root);
