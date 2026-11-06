@@ -2297,6 +2297,22 @@ test('a record from before workingDir takes each place under this directory as t
   });
 });
 
+test('a fleet child\'s data directory that holds the data directory, found once the data directory is answered, is asked about in its place, and its own setup is given only the place that holds both', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const outer = directory();
+  const data = join(outer, 'data');
+  mkdirSync(data);
+  writeFileSync(join(data, 'fleet-children.json'),
+    JSON.stringify({ v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: outer }] }));
+  writeFileSync(join(dir, 'connectome-host', 'install.json'), JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
+  const again = world(dir, { answers: ['', ''] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([`${data} (its data directory): `, `${outer} (its data directory): `]);
+  expect(text(again.seen.out)).toContain(`${outer} holds ${data}, so the answer for ${outer} decides where ${data} is, in place of the one given for it.`);
+  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(dir, 'connectome-host'), '--place', outer, outer], dataDir: data });
+});
+
 test('a binding setup refuses, here a copy\'s label it can\'t read, stops it before it changes package.json or installs anything', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);

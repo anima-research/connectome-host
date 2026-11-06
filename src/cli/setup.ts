@@ -23,7 +23,7 @@ import {
   ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
   writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
-import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
+import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import { bindingOf, mapPath, type Binding, type Place } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
@@ -869,7 +869,17 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
         err(`connectome setup: ${(error as Error).message}`);
         return 1;
       }
-      if (again.kind === 'bind') asking = again;
+      if (again.kind === 'bind') {
+        asking = again;
+        for (const given of places.filter((one) => !again.places.some((place) => place.path === one.from))) {
+          const holder = again.places.find((place) => isUnder(given.from, place.path))?.path;
+          if (holder !== undefined) {
+            out(`${holder} holds ${given.from}, so the answer for ${holder} decides where ${given.from} is, in place ` +
+              'of the one given for it.');
+          }
+        }
+        places.splice(0, places.length, ...places.filter((given) => again.places.some((one) => one.path === given.from)));
+      }
     }
   }
   return {
