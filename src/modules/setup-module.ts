@@ -21,18 +21,13 @@ import { writeJsonAtomic } from '../update/contract.js';
 import { readSetupState } from '../setup/state.js';
 
 export interface SecretAsker {
-  /** The value the person typed, or null when they declined or the terminal closed. */
   ask(name: string, purpose: string): Promise<string | null>;
 }
 
 export interface SetupModuleConfig {
-  /** The install's working directory: where commands run, where .env is, and where setup keeps .setup/. */
   dir: string;
-  /** The environment commands start from, before the secrets are taken out. */
   env: Record<string, string | undefined>;
-  /** The terminal to ask on, once readline mode has one. */
   asker: () => SecretAsker | null;
-  /** Shows the person a line on the terminal the host runs in. */
   show: (line: string) => void;
   fetch?: typeof fetch;
 }
@@ -44,7 +39,6 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
 // cuts the answer, and stderr's tail with it, for ordinary output: one dense in what JSON escapes, or in short
 // secrets under long names, can still pass it.
 const KEPT_BYTES = 4 * 1024;
-/** The longest a stream's output comes back whole: past it, setup--run gives its head and tail. */
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
@@ -85,9 +79,6 @@ class Capture {
     if (this.tail.length > this.window) this.tail = this.tail.subarray(this.tail.length - this.window);
   }
 
-  /** The stream whole while it's 8 KiB or less, else its first and last 4 KiB, each secret replaced by its name. A
-   *  secret the cut runs through is shown whole on its side, and where that takes the two to meet, the stream comes
-   *  back whole. */
   result(secrets: Secret[], replaced: Set<string>): Stream {
     const all = this.full ? Buffer.concat(this.full) : null;
     const whole = (): Stream =>
@@ -170,8 +161,6 @@ function groupOf(pid: number | undefined): Group {
 // fillers, U+034F), and the blank braille cell, U+2800, which is drawn as a space.
 const UNSHOWN = /(?! )[\p{Cc}\p{Cf}\p{Z}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 
-/** A line as the person is shown it: each character UNSHOWN takes as its \u escape, so nothing in it moves, hides or
- *  reorders what's shown. */
 function shown(line: string): string {
   return line.replace(UNSHOWN, (character) => {
     const hex = character.codePointAt(0)!.toString(16);
@@ -225,8 +214,6 @@ export function showsItself(tool: string): boolean {
   return tool.startsWith(`${SETUP_MODULE}--`);
 }
 
-/** A command's lines as the person is shown them: each secret's value as its name, as in the answer, and each line
- *  as shown() gives it. */
 function shownCommand(command: string, secrets: Secret[]): string[] {
   const bytes = Buffer.from(command);
   return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text.split('\n').map(shown);
@@ -274,8 +261,6 @@ export class SetupModule implements Module {
 
   async start(_ctx: ModuleContext): Promise<void> {}
 
-  /** Stops each command still running, and each one stopped at its limit less than 5 s before: SIGTERM to its
-   *  process group, and SIGKILL to each group with any of it left 5 s on. Commands asked for afterwards are refused. */
   async stop(): Promise<void> {
     this.stopping = true;
     const groups = [...this.groups];
@@ -453,12 +438,9 @@ export class SetupModule implements Module {
     }
     this.config.show('Setup\'s agent runs:');
     for (const line of shownCommand(input.command, atLaunch.values)) this.config.show(`  ${line}`);
-    // 4 bytes more: the longest UTF-8 character, so a cut can be moved back to fall between characters.
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);
-    // Setup's own variables are for its host alone: a resident started from a command serves its own data directory
-    // and checks for updates as its service would.
     const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
     const env = withoutSecrets(this.config.env,
       [...atLaunch.names, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);

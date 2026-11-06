@@ -338,7 +338,7 @@ describe('setup--run', () => {
       expect(answer.note).not.toContain('limit');
       expect(alive(holder)).toBe(true);
     } finally {
-      if (holder) try { process.kill(holder, 'SIGKILL'); } catch { /* gone */ }
+      if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
     }
   }, 20_000);
 
@@ -360,7 +360,7 @@ describe('setup--run', () => {
       expect(answer.note).toContain('still holds the output open');
       expect(answer.stdout.text).toBe('begun\nlate\n');
     } finally {
-      if (holder) try { process.kill(holder, 'SIGKILL'); } catch { /* gone */ }
+      if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
     }
   }, 20_000);
 
@@ -772,7 +772,7 @@ describe('setup--run', () => {
       expect(after.error).toContain('won\'t change that');
       expect(existsSync(join(dir, 'ran'))).toBe(false);
     } finally {
-      if (left) try { process.kill(left, 'SIGKILL'); } catch { /* gone */ }
+      if (left) try { process.kill(left, 'SIGKILL'); } catch {}
     }
   }, 20_000);
 

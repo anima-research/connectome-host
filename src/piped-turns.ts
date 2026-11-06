@@ -1,32 +1,9 @@
 /**
- * Piped mode's view of the agent's turns (`--no-tui`, or batch mode when
- * stdin isn't a TTY): it prints every agent's prose and each tool call as
- * they stream, but for a tool that shows the person what it does itself,
- * and waits for the turn an input line started before it takes the next
- * line.
- *
- * The wait follows the primary agent alone, by the name the framework's
- * agent was created with: a sync subagent streams inside the primary's
- * turn, and its end isn't the end of the line's turn. The wait ends at one
- * of the primary's TURN_SETTLED_TRACES. At `inference:failed` it prints
- * the error, unless it repeats the error the turn's last failure printed,
- * and keeps waiting, since the framework may retry the turn, or
- * hold it and run it again, and either answers the line. The wait's cap
- * still bounds it, counted from when no wait asked before it is left: at
- * the ask, or when the last of those ends, by its turn or its own cap; and
- * not while the terminal asks the person something (holdCaps). A
- * turn held longer than the cap lets the next line go in, with a line on
- * stderr saying so, and that turn's answer prints if it
- * comes while piped mode still runs; after a batch's last line, the host
- * goes on to its teardown. The framework's traces don't say which events
- * started a turn, so a wait ends at the end of the first turn of the
- * primary's that starts after the wait was asked for: ask for it before the
- * line goes in, and a line that goes in while a turn runs waits for the turn
- * after that one, which the framework starts for every request queued while
- * the agent was busy. Another turn of the primary's that starts first, such
- * as a wake's, ends it too. A turn of the primary's that ends no wait, with
- * none left, such as one whose wait its cap ended, or a wake's, is told to
- * `settledUnwaited`.
+ * The framework's traces don't say which events started a turn, so a line's wait ends at the end of the first turn of
+ * the primary's that starts after the wait was asked for: a line that goes in while a turn runs waits for the turn
+ * after that one, which the framework starts for every request queued while the agent was busy, and another turn of
+ * the primary's that starts first, such as a wake's, ends it too. At `inference:failed` the wait goes on, since the
+ * framework may retry the turn, or hold it and run it again, and either answers the line.
  */
 
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES, traceError } from './state/turn-trace.js';

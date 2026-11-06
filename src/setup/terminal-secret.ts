@@ -3,7 +3,6 @@ import type { Writable } from 'node:stream';
 
 type Echoing = Interface & { _writeToOutput?: unknown; history?: unknown };
 
-/** How long input must stay quiet after a hidden answer before it counts as whole. */
 export const PASTE_QUIET_MS = 250;
 
 // Bun 1.4.4's readline keeps text killed with Ctrl-U, Ctrl-K or Ctrl-W in a kill ring that Ctrl-Y yanks back, under
@@ -16,14 +15,6 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
     .map((key) => [key, Array.isArray(held[key]) ? [...held[key] as unknown[]] : held[key]]);
 }
 
-/** Asks for one line after `label` and a colon, on a line of its own, with nothing echoed: the line typed, or '' if
- *  the interface closes before the answer is whole. The label says what Enter alone does where it's asked.
- *  Text typed but not sent when it asks is taken away first, so it can't start the answer. The lines that come
- *  within PASTE_QUIET_MS of each other after it, as the rest of a pasted text, join it with line breaks, a last line
- *  with no line break of its own included, and lines with nothing on them are left out. None of them reaches the
- *  'line' listeners the interface had when asked. Its history holds nothing while it asks, so Up recalls nothing,
- *  and is left as it was before the question, and so is its kill ring, so text killed while it asks can't be yanked
- *  after. Throws, asking nothing, where readline offers no way to hide what's typed. */
 export async function askHidden(rl: Interface, output: Writable, label: string): Promise<string> {
   const echoing = rl as Echoing;
   const write = echoing._writeToOutput;

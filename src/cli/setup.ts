@@ -61,7 +61,6 @@ function packageJson(): PackageJson {
   return JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf-8')) as PackageJson;
 }
 
-/** The line that sets a resident up with this version of the host. */
 /** The command that runs this release of the package where no install's own command does. */
 export function packageCommand(): string {
   return `bunx ${PACKAGE}@${packageJson().version}`;
@@ -84,7 +83,6 @@ function homeDirectory(home: string | undefined): string | null {
 }
 
 export interface Ran {
-  /** null when the program couldn't be started, was stopped at its limit, or was ended by a signal. */
   status: number | null;
   stdout: string;
   stderr: string;
@@ -109,8 +107,6 @@ export interface AgentLaunch {
   env: Record<string, string>;
 }
 
-/** Everything setup reaches outside its directory: the terminal, the programs it runs, the system it asks
- *  about and the network. */
 export interface SetupWorld {
   /** Whether a person is at a terminal on stdin and stdout. */
   terminal: boolean;
@@ -139,7 +135,6 @@ interface Io {
   err: (line: string) => void;
 }
 
-/** `connectome setup discord`, for the install at `root` (its working directory is root's parent). */
 export async function setup(ctx: CliContext & { root: string }, world: SetupWorld = realWorld()): Promise<number> {
   const { err } = ctx;
   try {
@@ -768,8 +763,6 @@ async function installAndStart(
   return agentStatus;
 }
 
-/** The data directory the install's own setup is given, and a --place for each place setup asked about, for an
- *  install whose record is bound to another directory or to none: -1 when the terminal went. */
 async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, { out, err }: Io):
   Promise<{ dataDir: string; placeArgs: string[] } | number> {
   let binding: Binding;
@@ -1034,8 +1027,8 @@ export function costLine(model: string, gateway: boolean): string {
     cacheWrite1hTokens: tokens.cacheWrite,
   })?.total ?? 0;
   const walks = model === WALKS_MODEL
-    ? `In five test setups, with a tester playing the person, setup's agent cost between ${dollars(cost(FEWEST))} ` +
-      `and ${dollars(cost(MOST))} each at these prices; the higher figure includes the new resident's first calls, ` +
+    ? `In five test setups, with a tester playing the person, setup's agent cost between ${dollars(cost(CHEAPEST_TEST_SETUP))} ` +
+      `and ${dollars(cost(COSTLIEST_TEST_SETUP))} each at these prices; the higher figure includes the new resident's first calls, ` +
       'which couldn\'t be told apart from setup\'s.'
     : length;
   // agent-framework's Agent caches for an hour when its config sets no cacheTtl, as setup.json's doesn't.
@@ -1050,11 +1043,8 @@ interface WalkTokens { input: number; output: number; cacheRead: number; cacheWr
 
 const WALKS_MODEL = 'claude-opus-5-5';
 
-// The measured tokens of the cheapest and the costliest of five test setups at anthropic-public-2026-10-19's prices:
-// one setup's calls before its resident's began, all of them setup's, and another's to its end, which holds its
-// resident's first calls too.
-const FEWEST: WalkTokens = { input: 27505, output: 6594, cacheRead: 208026, cacheWrite: 20223 };
-const MOST: WalkTokens = { input: 199250, output: 27589, cacheRead: 1854547, cacheWrite: 122949 };
+const CHEAPEST_TEST_SETUP: WalkTokens = { input: 27505, output: 6594, cacheRead: 208026, cacheWrite: 20223 };
+const COSTLIEST_TEST_SETUP: WalkTokens = { input: 199250, output: 27589, cacheRead: 1854547, cacheWrite: 122949 };
 
 export function realWorld(): SetupWorld {
   // One interface a question: readline holds the terminal raw while it's open, so Ctrl-C between questions, as

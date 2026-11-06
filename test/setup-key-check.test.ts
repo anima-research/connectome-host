@@ -49,8 +49,7 @@ const UNREAD: Record<string, () => Response> = {
   twostarts: () => sse(named([started(MESSAGE), started(MESSAGE), ended(), { type: 'message_stop' }])),
   nodelta: () => sse(named([started(MESSAGE), BLOCK[0]!, { type: 'content_block_delta', index: 0 }, ended()])),
 };
-/** Read or not as the agent's client decides, which the agreement test asks of it: a lone CR ends the last line of
- *  an answer held open. */
+// Whether a lone CR ends the last line of an answer held open is the agent's client's to decide (@anthropic-ai/sdk).
 const EDGE: Record<string, () => Response> = {
   crheld: () => held(named([started(MESSAGE), ended()], '\r')),
 };
@@ -106,7 +105,6 @@ const server = Bun.serve({
     return Response.json({ type: 'error', error: { type: 'x', message: `the server's own words for ${status}` } }, { status });
   },
 });
-// Speaks plain HTTP, so an https:// call to it fails its TLS handshake.
 const plain = Bun.serve({ port: 0, fetch: () => new Response('plain') });
 afterAll(() => {
   server.stop(true);

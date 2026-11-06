@@ -36,7 +36,6 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 const FORM_VALUE = /^(?:[^ #$"'`\\]*|"[^"$\\]*"|'[^'$\\]*')$/;
 
-/** Why a value can't be written to .env in setup's form, double-quoted as setup writes it, or null when it can. */
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';
   if (CONTROL.test(value)) return 'it holds a line break, a tab or another control character';
@@ -52,13 +51,11 @@ interface Assignment {
   value: string;
 }
 
-/** A .env line, from 1, outside setup's form, and why it's outside. */
 interface Outside {
   line: number;
   why: string;
 }
 
-/** The .env text's assignments, line by line, and its lines outside setup's form. */
 function envLines(text: string): { assignments: Assignment[]; outside: Outside[] } {
   const assignments: Assignment[] = [];
   const outside: Outside[] = [];
@@ -80,9 +77,6 @@ function envLines(text: string): { assignments: Assignment[]; outside: Outside[]
   return { assignments, outside };
 }
 
-/** What setup's reading and writing of a .env outside its form throw. Its words name the first line outside it by
- *  its number alone, never anything it holds, its name included, since the text before an = isn't known to be a
- *  name; then how many others there are, the form, and what to do with a line outside it. */
 export class EnvFormError extends Error {
   constructor(path: string, outside: Outside[]) {
     const [{ line, why }] = outside as [Outside];
@@ -108,8 +102,6 @@ function envText(path: string): string {
   }
 }
 
-/** The assignments of a .env file in setup's form, or none when there's no file. One outside the form throws an
- *  EnvFormError, and one that can't be read an Error naming it. */
 function envAssignments(path: string): Assignment[] {
   const { assignments, outside } = envLines(envText(path));
   if (outside.length > 0) throw new EnvFormError(path, outside);
@@ -133,7 +125,6 @@ function dotenvAssignments(dir: string, file: string): Assignment[] {
   return Object.entries(parseEnv(envText(path))).map(([name, value]) => ({ name, value: value ?? '' }));
 }
 
-/** Every name a dotenv file Bun reads in a directory gives, in any mode, whatever the environment holds. */
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
@@ -181,33 +172,23 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
   return values;
 }
 
-/** Each name's value in a .env file in setup's form, as Bun reads it: the last line for the name. Throws as
- *  envAssignments does. */
 export function readEnvFile(path: string): Map<string, string> {
   return new Map(envAssignments(path).map(({ name, value }) => [name, value]));
 }
 
-/** The refusal of a .env outside setup's form, or null when it's in it or there's none. One that can't be read
- *  throws, naming it. */
 export function envForm(path: string): EnvFormError | null {
   const { outside } = envLines(envText(path));
   return outside.length > 0 ? new EnvFormError(path, outside) : null;
 }
 
-/** What writeEnvValue throws for a link at the path it would write. */
 export class EnvLinkError extends Error {}
 
-/** The refusal of a link at `path`, naming where it leads, or null when there's none. */
 export function envLink(path: string): EnvLinkError | null {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
   return new EnvLinkError(`${path} is a link to ${readlinkSync(path)}, and it's written only as a file of its own, ` +
     'not through a link or over one');
 }
 
-/** Writes NAME="value" in .env, readable by this user only: in place of the first line for NAME, with any later
- *  ones taken out, or after the others, every other line as it was, short of a BOM at the start, which Bun skips.
- *  The value must be one `unwritableValue` passes. A link found at `path` throws, naming where it leads, rather than
- *  being written through or replaced, and a file outside setup's form throws an EnvFormError, writing nothing. */
 export function writeEnvValue(path: string, name: string, value: string): void {
   const link = envLink(path);
   if (link) throw link;
@@ -225,7 +206,6 @@ export function writeEnvValue(path: string, name: string, value: string): void {
   writeTextAtomic(path, `${kept.join('\n')}\n`, 0o600);
 }
 
-/** The names of the secrets setup stored, kept in its own data directory so a resumed setup knows them. */
 export class StoredSecrets {
   readonly file: string;
 
@@ -273,11 +253,6 @@ export interface Secret {
   value: string;
 }
 
-/** Each secret's name and value: from each of .env's lines for it, which in setup's form spell a value as Bun reads
- *  it, from each value Bun can give it from the dotenv files beside .env, in a process whose environment is the
- *  given one without the secrets, as a setup--run command's is, and from the given environment. A .env outside the
- *  form throws an EnvFormError, as it does at setup's start: what Bun reads from it, and so what a command prints of
- *  a secret, isn't known. */
 export function secretValues(names: string[], envFile: string, env: Record<string, string | undefined>): Secret[] {
   const assignments = envAssignments(envFile);
   const fromFiles = dotenvValues(dirname(envFile), withoutSecrets(env, names));
@@ -345,9 +320,6 @@ function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   return spans;
 }
 
-/** The bytes from `from` to `to` as text, with each secret's value replaced by `<NAME>` and its name added to
- *  `replaced`. A value that crosses either end is replaced whole, so the window widens to take it in; `start`
- *  and `end` say where it began and ended. `from` and `to` must fall between characters. */
 export function redactWindow(
   bytes: Buffer,
   from: number,
@@ -382,12 +354,6 @@ export interface RedactedWindow {
   guessed: string[];
 }
 
-/** For a reader of part of a log: replaces, in the bytes from `from` to `to`, the values of the secrets setup
- *  stored in an install, as the list and .env hold them now, and of the provider credentials in `env`, with their
- *  names, as redactWindow does. A value that crosses `from` is replaced whole when the bytes hold it whole, which
- *  they do when they start `contextBytes` before `from`, the longest value's length. It has only those values: one
- *  .env held earlier, which a running setup--run also replaces, isn't among them. Throws as `StoredSecrets.names`
- *  does. */
 export function storedSecretWindowRedactor(
   workingDir: string,
   env: Record<string, string | undefined> = process.env,
@@ -405,7 +371,6 @@ export function storedSecretWindowRedactor(
   };
 }
 
-/** storedSecretWindowRedactor over the whole of a text. */
 export function storedSecretRedactor(
   workingDir: string,
   env: Record<string, string | undefined> = process.env,

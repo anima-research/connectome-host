@@ -8,7 +8,6 @@ export const INSTALL_COMMAND = 'connectome';
 
 export const CLI_IN_RELEASE = ['node_modules', '@animalabs', 'connectome-host', 'src', 'cli', 'connectome.ts'];
 
-/** The setup agent's recipe, in a release: a release that has it has `connectome setup`. */
 export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 
 const parts = (path: string[]) => path.map((part) => `'${part}'`).join(', ');
