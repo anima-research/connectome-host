@@ -2254,7 +2254,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       fetch: (async () => Response.json({ error: { message: 'overloaded' } }, { status: 529 })) as unknown as typeof fetch,
     });
     const first = await askSecret(answered.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
-    expect(String(first.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(answered.dir, '.env')}, but it isn't known to work: Anthropic answered 529: overloaded.`);
+    expect(String(first.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(answered.dir, '.env')}, but it isn't known to work: Anthropic answered 529: overloaded. Call setup--check_model in a minute, to check the key again.`);
     expect(readEnvFile(join(answered.dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('key-one');
     const unasked = install({
       asker: typed('key-two'),
@@ -2387,6 +2387,22 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(hiddenDigits.error).toContain('It asks for a wait of 6<NOT_SETUPS> s before the next call');
     const neither = await checkModel(limited('ask again later').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(neither.error).toEndWith('Anthropic answered 429: rate limited. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
+  });
+
+  test('a key answered 429 or 5xx at ask_secret gives the wait asked for, and says to check it again with setup--check_model', async () => {
+    const answering = (status: number, after?: string) => (async () => Response.json({ error: { message: 'busy' } },
+      { status, headers: after === undefined ? {} : { 'retry-after': after } })) as unknown as typeof fetch;
+    const waited = install({ asker: typed('sk-ant-waited'), fetch: answering(429, '60') });
+    expect(String((await askSecret(waited.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
+      'but it isn\'t known to work: Anthropic answered 429: busy. It asks for a wait of 60 s before the next call: call ' +
+      'setup--check_model once that has passed, to check the key again.');
+    expect(waited.shown).toContain('Anthropic didn\'t say whether it works: it answered 429 (busy). It asks for a wait of 60 s before the next call.');
+    const down = install({ asker: typed('sk-ant-down'), fetch: answering(503) });
+    expect(String((await askSecret(down.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
+      'but it isn\'t known to work: Anthropic answered 503: busy. Call setup--check_model in a minute, to check the key again.');
+    const other = install({ asker: typed('sk-ant-other'), fetch: answering(400) });
+    expect(String((await askSecret(other.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
+      'but it isn\'t known to work: Anthropic answered 400: busy.');
   });
 
   test('a refusal whose type isn\'t JSON is said not to say it\'s JSON, and a 2xx typed JSON whose body isn\'t is said not to be JSON', async () => {

@@ -727,11 +727,11 @@ export class SetupModule implements Module {
           `list of models, so whether it offers ${model} isn't known. ${LISTING_REFUSED} Ask the person to check what ` +
           'the key is allowed, or for a new key with setup--ask_secret.');
       }
-      const why = keyNote(name, listed).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
+      const why = keyNote(name, listed, false).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
       const after = listed.kind === 'answered' ? listed.retryAfter : undefined;
       return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ${why}` +
         (after !== undefined
-          ? ` It asks for ${after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`}: ` +
+          ? ` It asks for ${waitAsked(after)}: ` +
             'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
             'what it says and how long it asks them to wait.'
           : listed.kind === 'answered' || listed.kind === 'unanswered'
@@ -794,22 +794,36 @@ function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted:
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a key: nothing was stored.';
     case 'answered':
       return `${provider} didn't say whether it works: it answered ${answer.status}` +
-        `${answer.said === null ? '' : ` (${shown(answer.said)})`}.`;
+        `${answer.said === null ? '' : ` (${shown(answer.said)})`}.` +
+        (answer.retryAfter === undefined ? '' : ` It asks for ${shown(waitAsked(answer.retryAfter))}.`);
     case 'redirected': return `It isn't known to work: ${shown(redirect(provider, answer))}.`;
     case 'unrecognized': return `It couldn't be checked: ${unrecognized(provider, answer.status)}.`;
     case 'unanswered': return `${provider} couldn't be asked whether it works (${shown(answer.why)}).`;
   }
 }
 
-function keyNote(name: string, answer: ProviderAnswer<unknown>): string {
+function waitAsked(after: { shown: string; seconds: boolean }): string {
+  return after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`;
+}
+
+function keyNote(name: string, answer: ProviderAnswer<unknown>, again = true): string {
   const provider = PROVIDER_KEYS[name]!.provider;
   switch (answer.kind) {
     case 'accepted':
       return name === 'OPENROUTER_API_KEY' ? `. ${provider} accepted it: it answered for the key.`
         : `. ${provider} accepted it: it listed the models the key can use, which shows the key is accepted, not ` +
           'that a call to one of them succeeds.';
-    case 'answered':
-      return `, but it isn't known to work: ${provider} answered ${answer.status}${answer.said === null ? '' : `: ${answer.said}`}.`;
+    case 'answered': {
+      const passing = answer.status === 429 || answer.status >= 500;
+      const after = answer.retryAfter;
+      const next = !again ? ''
+        : after !== undefined
+          ? ` It asks for ${waitAsked(after)}` +
+            `${passing ? ': call setup--check_model once that has passed, to check the key again' : ''}.`
+          : passing ? ' Call setup--check_model in a minute, to check the key again.' : '';
+      return `, but it isn't known to work: ${provider} answered ${answer.status}` +
+        `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
+    }
     case 'unanswered': return `, but it isn't known to work: ${provider} couldn't be asked (${answer.why}).`;
     case 'redirected': return `, but it isn't known to work: ${redirect(provider, answer)}${redirectRemedy(provider, name)}.`;
     case 'unrecognized': return `, but it couldn't be checked: ${unrecognized(provider, answer.status)}. ${CONNECTION}`;
