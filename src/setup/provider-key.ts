@@ -24,7 +24,13 @@ interface ProviderKey {
 const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
 const dataOf = (body: unknown): unknown =>
   (body !== null && typeof body === 'object' ? (body as { data?: unknown }).data : undefined);
-const listed = (body: unknown): boolean => Array.isArray(dataOf(body));
+const idsOf = (body: unknown): string[] | undefined => {
+  const data = dataOf(body);
+  if (!Array.isArray(data)) return undefined;
+  const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+  return ids.length === data.length ? ids : undefined;
+};
+const listed = (body: unknown): boolean => idsOf(body) !== undefined;
 // A base URL and a path joined as @anthropic-ai/sdk 0.52.0's buildURL joins them, as the key check does: a base
 // ending in / takes the path without its first /.
 const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
@@ -76,10 +82,8 @@ export function listModels(
   const provider = PROVIDER_KEYS[name];
   if (provider === undefined) return null;
   return ask(provider.models(key, options.env ?? new Map()), name, key, options, (body) => {
-    const data = (body as { data?: unknown } | null)?.data;
-    if (!Array.isArray(data)) return undefined;
-    const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
-    if (ids.length !== data.length) return undefined;
+    const ids = idsOf(body);
+    if (ids === undefined) return undefined;
     return { ids, shownIds: ids.map((id) => hidden(id, key, name, options.hide)), more: (body as { has_more?: unknown }).has_more === true };
   });
 }

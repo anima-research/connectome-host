@@ -2182,7 +2182,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   });
 
   test('a 2xx JSON answer that isn\'t the provider\'s list stores the key as not known to work, not as accepted', async () => {
-    for (const body of ['{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}']) {
+    for (const body of ['{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}', '{"data":[{"name":"error"}]}']) {
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
       expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200.`);
@@ -2193,7 +2193,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   test('Anthropic accepts a key by listing models under data, even none, and nothing else 2xx', async () => {
     const accepted = install({ asker: typed('sk-ant-key'), fetch: (async () => Response.json({ data: [] })) as unknown as typeof fetch });
     expect(String((await askSecret(accepted.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(accepted.dir, '.env')}. Anthropic accepted it: it listed the models the key can use, which shows the key is accepted, not that a call to one of them succeeds.`);
-    for (const body of ['{"data":null}', '{"data":{}}', '{}']) {
+    for (const body of ['{"data":null}', '{"data":{}}', '{}', '{"data":[{"name":"error"}]}']) {
       const made = install({ asker: typed('sk-ant-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       expect(String((await askSecret(made.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as ANTHROPIC_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: Anthropic answered 200.`);
     }
