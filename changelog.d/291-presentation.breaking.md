@@ -14,8 +14,10 @@
     off the current branch, and another
     resident's newer row is left alone, where `/undo` used to branch the store
     before the record's newest reply, whoever's it was. `/redo` puts the turn
-    back. Both are refused while the agent's own turn is alive, and for an
-    agent whose window couldn't be written down when it started. Another
+    back until the agent's next turn, a branch move or a restart, as `/undo`'s
+    answer says (agent-framework keeps the redo in memory only). Both are
+    refused while the agent's own turn is alive, and for an agent whose
+    window couldn't be written down when it started. Another
     agent's turn no longer refuses them: the 0.16.0 entry for #264 had them
     refused, as a branch move is, while any agent sharing the store was
     mid-turn.
@@ -64,11 +66,17 @@
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
-    which marks its lines in place, a reply it streamed and a message sent
-    from it included, never taking another resident's row for one of them,
-    and draws below them an undone row stored since it loaded the history
-    that it has no line for, until a redo puts it back, but not one whose
-    lines `/clear` or the scrollback cap took down), and the Web
+    which marks its lines in place, a reply it streamed (text on both
+    sides of a tool call is one line, as it streams it), the `[tools]` line
+    of each round it streamed, a reply backgrounded with Ctrl+B (which now
+    comes back a line per round, the first after the words streamed before
+    the press, its thinking left out, where it came back as one line with
+    its thinking's words run into its text) and a message sent from it
+    included, each linked to its row as the turn ends, never to
+    another resident's row or an earlier row in the same words, and draws
+    below them an undone row stored since it loaded the history that it has
+    no line for, past the scrollback cap too, until a redo puts it back, but
+    not one whose lines `/clear` or the scrollback cap took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again, once, at each undo, redo or shed. A figure
     that comes back after a newer read of it started is dropped, and the

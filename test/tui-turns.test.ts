@@ -347,7 +347,48 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(undone).toContain('(undone) the first half, the second half');
   }, 40000);
 
-  test("a streamed line whose entry the scrollback cap pushed out isn't drawn again below, after a /clear or without one", async () => {
+  // The stream draws text on both sides of a tool call as one line, so
+  // the row's two texts are one run (#485 second reading, wave-2 finding 22).
+  test('text on both sides of a tool call, streamed as one line, is matched as one, and the line is marked in place', async () => {
+    const undone = await frameOf('undone-tools', 'text around a tool call');
+    expect(times(undone, 'Checking the ledgers,')).toBe(1);
+    expect(times(undone, 'then counting.')).toBe(1);
+    expect(undone).toContain('(undone) Checking the ledgers, then counting.');
+  }, 40000);
+
+  // The session's `[tools]` line is its row's, as a history row's is
+  // (#485 bot review 3, finding 5).
+  test("a streamed round's [tools] line is marked in place with its row, a round that only calls a tool's too", async () => {
+    const steps = await play('undone-tools');
+    const withText = steps.get('text around a tool call')!.frame;
+    expect(times(withText, '[tools] search')).toBe(1);
+    expect(withText).toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
+    const toolsOnly = steps.get('tools only')!.frame;
+    expect(toolsOnly).not.toContain('(undone) Checking the ledgers');
+    expect(toolsOnly).not.toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
+    expect(times(toolsOnly, '[tools] tally')).toBe(1);
+    expect(toolsOnly).toMatch(/\(undone\) \d\d:\d\d \[tools\] tally/);
+  }, 40000);
+
+  // A reply backgrounded with Ctrl+B comes back a line per round, the
+  // first after the line streamed before the press, each its row's
+  // (#485 bot review 3, finding 4).
+  test('a reply backgrounded mid-stream comes back a line per round, without its thinking, and an undo marks its lines in place', async () => {
+    const steps = await play('undone-background');
+    const returned = steps.get('returned')!.frame;
+    expect(returned).toMatch(/\nledgers now\. *\n/);
+    expect(returned).toMatch(/\nThere are three\. *\n/);
+    expect(returned).not.toContain('weigh the count');
+    const undone = steps.get('undone')!.frame;
+    for (const words of ['Counting the', 'ledgers now.', 'There are three.']) {
+      expect(times(undone, words)).toBe(1);
+      expect(undone).toContain(`(undone) ${words}`);
+    }
+    expect(undone).not.toContain('weigh the count');
+    expect(undone).not.toContain('[tools] tally');
+  }, 40000);
+
+  test("past the scrollback cap: a streamed line it pushed out isn't drawn again below, after a /clear or without one, an undone row with no line is, and a reply keeps its line from an earlier one in the same words", async () => {
     const steps = await play('undone-evicted');
     const cleared = steps.get('cleared, then pushed out')!.frame;
     expect(cleared).toContain('(undone) a ninth ledger');
@@ -355,10 +396,39 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     const pushed = steps.get('pushed out')!.frame;
     expect(pushed).toContain('(undone) a tenth ledger');
     expect(pushed).not.toContain('a stray ledger');
-  }, 60000);
+    // Past the cap, an undone row the TUI drew no line for is still drawn
+    // below, marked (#485 bot review 3, finding 14).
+    const noLine = steps.get('no line, past the cap')!.frame;
+    expect(times(noLine, 'an eleventh ledger')).toBe(1);
+    expect(noLine).toContain('(undone) an eleventh ledger');
+    // A reply's line is its own row's, though an earlier reply in the same
+    // words lost its line to the cap first (finding 2).
+    const same = steps.get('same words, pushed out')!.frame;
+    expect(times(same, 'Done.')).toBe(1);
+    expect(same).toContain('(undone) Done.');
+  }, 90000);
 });
 
 describe("the TUI's branch moves, through runTui", () => {
+  // agent-framework holds every agent's turn until the move releases the
+  // store, and the follow-up comes a few awaits later: a turn that started
+  // in between streams on, and the branch is drawn once it ends
+  // (#485 bot review 2, finding 24).
+  test("a root turn that started before a move's follow-up came streams on, and the branch is drawn once it ends", async () => {
+    const steps = await play('async-branch-turn');
+    const streaming = steps.get('streaming at the follow-up')!.frame;
+    expect(streaming).toContain('on the side branch now');
+    expect(streaming).toContain('Switched to branch side.');
+    expect(streaming).not.toContain('[✓ idle]');
+    const ended = steps.get('turn ended')!.frame;
+    expect(ended).toContain('the side branch reply');
+    expect(ended).not.toContain('three ledgers');
+    expect(times(ended, 'on the side branch now')).toBe(1);
+    expect(ended.indexOf('on the side branch now')).toBeLessThan(ended.indexOf('Switched to branch side.'));
+    expect(ended).toContain('[✓ idle]');
+    expect(steps.get('turn ended')!.mountRefreshes).toEqual([]);
+  }, 40000);
+
   // agent-framework's switchBranch and rollbackToMessage trace nothing: the
   // command's follow-up saying the branch changed is what tells the TUI.
   test("a command whose follow-up says the branch changed draws the history of the branch the store is on", async () => {

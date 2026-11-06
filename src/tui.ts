@@ -382,8 +382,19 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
+  /** What a backgrounded root turn's text says since Ctrl+B, shown when it
+   *  returns: a line per round, each ending where `backgroundBreaks` says a
+   *  tool call ended one. Its thinking is left out, as a collapsed thinking
+   *  line shows none of its words. */
   let backgroundBuffer = '';
+  let backgroundBreaks: number[] = [];
+  /** The text line streamed before Ctrl+B, which the first round's words
+   *  in the buffer continue: one row holds both. */
+  let backgroundPartial: StreamedLine | undefined;
   let attemptStart = 0;
+  /** A branch move's answer that came while a root turn ran: the branch is
+   *  drawn once the turn ends, with this answer below it. */
+  let redrawAfterTurn: Array<{ text: string }> | undefined;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -738,9 +749,9 @@ export async function runTui(app: AppContext): Promise<void> {
     showStream(currentStreamBuffer);
   }
 
-  function endStream() {
+  function endStream(): StreamedLine | undefined {
     finalizeCollapsedThinking();
-    keepStreamedLine();
+    const kept = keepStreamedLine();
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
@@ -748,12 +759,13 @@ export async function runTui(app: AppContext): Promise<void> {
     currentStreamKind = 'text';
     currentStreamSaid = '';
     currentStreamShown = '';
+    return kept;
   }
 
-  /** Keep the line just streamed, for remarkHistory to link to its row. */
-  function keepStreamedLine() {
-    if (!currentStreamText || !currentStreamSaid.trim()) return;
-    keepLine(currentStreamText, currentStreamKind, currentStreamSaid, currentStreamShown, currentStreamKind === 'thinking' ? THINKING_DIM : WHITE);
+  /** Keep the line just streamed, for linkStreamedLines to link to its row. */
+  function keepStreamedLine(): StreamedLine | undefined {
+    if (!currentStreamText || !currentStreamSaid.trim()) return undefined;
+    return keepLine(currentStreamText, currentStreamKind, currentStreamSaid, currentStreamShown, currentStreamKind === 'thinking' ? THINKING_DIM : WHITE);
   }
 
   const HISTORY_REPLAY_MAX = 50;
@@ -767,25 +779,31 @@ export async function runTui(app: AppContext): Promise<void> {
   /** How many of the record's rows the session history read: a row past them was stored after it was drawn. */
   let historyRead = 0;
   /** A line drawn as it was streamed or sent, before its row was stored: a
-   *  block of a root turn's reply (its text or its thinking), or the
-   *  operator's message. `said` is what the row holds for it, `shown` and
-   *  `color` how the line draws it. remarkHistory links it to its row. */
-  interface StreamedLine { line: TextRenderable; kind: 'text' | 'thinking' | 'you'; said: string; shown: string; color: string }
+   *  block of a root turn's reply (its text or its thinking), the tools a
+   *  round of it called, or the operator's message. `said` is what the row
+   *  holds for it (for `tools`, the calls' names joined by `, `), and each
+   *  part a line that draws it, `shown` and `color` how: one line, or for
+   *  a reply backgrounded mid-stream the line streamed before Ctrl+B and the
+   *  line its return drew. linkStreamedLines links it to its row. */
+  interface StreamedLine {
+    kind: 'text' | 'thinking' | 'tools' | 'you';
+    said: string;
+    parts: Array<{ line: TextRenderable; shown: string; color: string }>;
+  }
+  /** The lines streamed or sent that no row has taken yet. */
   let streamedLines: StreamedLine[] = [];
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
-  /** How many rows the record held when streamedLines last let an entry go:
-   *  past the cap, the scrollback has taken that entry's line down, so a row
-   *  stored by then, which no entry may link any more, isn't drawn again. */
-  let droppedBefore = 0;
+  /** How many of the record's rows linkStreamedLines has read: the rows
+   *  past them were stored since. */
+  let linkedThrough = 0;
 
-  function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string) {
-    streamedLines.push({ line, kind, said, shown, color });
-    if (streamedLines.length > SCROLLBACK_CAP) {
-      streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
-      droppedBefore = app.framework.getAgent(rootAgentName)?.getContextManager().getMessageCount() ?? droppedBefore;
-    }
+  function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string): StreamedLine {
+    const kept: StreamedLine = { kind, said, parts: [{ line, shown, color }] };
+    streamedLines.push(kept);
+    if (streamedLines.length > SCROLLBACK_CAP) streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP);
+    return kept;
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -835,14 +853,15 @@ export async function runTui(app: AppContext): Promise<void> {
   function loadSessionHistory() {
     recordLines = [];
     historyRead = 0;
+    linkedThrough = 0;
     streamedLines = [];
     clearedRows = new Set();
-    droppedBefore = 0;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
     const all = cm.getAllMessages();
     historyRead = all.length;
+    linkedThrough = all.length;
     if (all.length === 0) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
     // The history is the record. A row an undo took out of the agent's
@@ -860,33 +879,78 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   /** The streamed lines of a row stored after the history was drawn, each
-   *  the first one not linked yet whose kind and words are a run of the
-   *  row's blocks (its text or its thinking, or the operator's message),
-   *  taken out of streamedLines. A run is the consecutive blocks of one
-   *  kind, which streaming draws as one line (switchStreamBlock). */
+   *  the newest one not linked yet whose kind and words are a run of the
+   *  row's blocks (its text or its thinking, or the operator's message), or
+   *  the tools it called, taken out of streamedLines. A run is the blocks of one kind with no
+   *  block of the other kind between them, which streaming draws as one
+   *  line: it starts a line only where text and thinking meet
+   *  (switchStreamBlock), not at a tool call or another block. */
   function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
     const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
+    const tools: string[] = [];
     let previous: StreamedLine['kind'] | undefined;
     for (const block of msg.content) {
+      if (block.type === 'tool_use') tools.push((block as { name: string }).name);
       const said = block.type === 'text' ? (block as { text?: string }).text ?? ''
         : block.type === 'thinking' ? (block as { thinking?: string }).thinking ?? ''
         : undefined;
-      if (said === undefined) {
-        previous = undefined;
-        continue;
-      }
+      if (said === undefined) continue;
       const kind = block.type === 'thinking' ? 'thinking' : msg.participant === 'user' ? 'you' : 'text';
       if (kind === previous) runs[runs.length - 1]!.said += said;
       else runs.push({ kind, said });
       previous = kind;
     }
+    if (tools.length > 0) runs.push({ kind: 'tools', said: tools.join(', ') });
     const taken: StreamedLine[] = [];
     for (const { kind, said } of runs) {
       if (!said.trim()) continue;
-      const at = streamedLines.findIndex((l) => l.kind === kind && l.said.trim() === said.trim());
-      if (at >= 0) taken.push(...streamedLines.splice(at, 1));
+      for (let at = streamedLines.length - 1; at >= 0; at--) {
+        const l = streamedLines[at]!;
+        if (l.kind !== kind || l.said.trim() !== said.trim()) continue;
+        taken.push(...streamedLines.splice(at, 1));
+        break;
+      }
     }
     return taken;
+  }
+
+  /** Link the lines streamed or sent to the rows stored since the last
+   *  call, each row once: at each root turn's end, once its last line is
+   *  kept, and before each remark. A line is linked while it is fresh, so a
+   *  later line in the same words, or the scrollback cap letting its entry
+   *  go, can't leave its row without it. The rows are read newest first, as
+   *  the lines are, so a line no row took (an attempt that failed, say)
+   *  isn't taken for a later row in the same words. While a turn is
+   *  backgrounded its rows wait: their lines are drawn when it returns. A
+   *  row stamped for other residents only (a co-resident's, in the store the
+   *  residents share) is no line's: the TUI streams the root agent's turns. */
+  function linkStreamedLines(): void {
+    if (backgrounded) return;
+    const cm = app.framework.getAgent(rootAgentName)?.getContextManager();
+    if (!cm) return;
+    const total = cm.getMessageCount();
+    const from = Math.min(linkedThrough, total);
+    linkedThrough = total;
+    if (streamedLines.length === 0 || from === total) return;
+    const stored = cm.getMessageWindow(from, total - from, { resolveBlobs: false }).messages;
+    for (let i = stored.length - 1; i >= 0 && streamedLines.length > 0; i--) {
+      const msg = stored[i]!;
+      const stamp = audienceOf(msg.metadata);
+      if (stamp && !stamp.audience.includes(rootAgentName)) continue;
+      const parts = takeStreamedLines(msg).flatMap((l) => l.parts);
+      if (parts.some((part) => part.line.isDestroyed)) clearedRows.add(msg.id);
+      for (const part of parts) {
+        if (!part.line.isDestroyed) recordLines.push({ line: part.line, id: msg.id, text: part.shown, color: part.color, appended: false });
+      }
+    }
+    // The scrollback takes old lines down: a linked line it took down leaves
+    // the list, its row in clearedRows, so an undo doesn't draw it again.
+    if (recordLines.length > 2 * SCROLLBACK_CAP) {
+      recordLines = recordLines.filter((record) => {
+        if (record.line.isDestroyed) clearedRows.add(record.id);
+        return !record.line.isDestroyed;
+      });
+    }
   }
 
   /** Mark the history's lines again in place, as an undo or a redo on the
@@ -894,32 +958,16 @@ export async function runTui(app: AppContext): Promise<void> {
    *  leave every other line as it is. A row stored after the history was
    *  drawn (a turn of this session) has the lines streamed for it, its
    *  reply's and the operator's message, marked in place, once linked to it
-   *  by their words. An undone one with no such line is drawn below,
-   *  marked, and taken down again once a redo puts it back in the window.
-   *  A row whose lines /clear or the scrollback cap took down isn't drawn
-   *  again. A row stamped for other residents only (a co-resident's, in the
-   *  store the residents share) is no line's: the TUI streams the root
-   *  agent's turns. */
+   *  by their words (linkStreamedLines). An undone one with no such line is
+   *  drawn below, marked, and taken down again once a redo puts it back in
+   *  the window. A row whose lines /clear or the scrollback cap took down
+   *  isn't drawn again. */
   function remarkHistory() {
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
+    linkStreamedLines();
     const undone = undoneIn(cm);
-    const stored = cm.getAllMessages().slice(historyRead);
-    const linked = new Set(recordLines.map((record) => record.id));
-    for (const msg of stored) {
-      if (streamedLines.length === 0) break;
-      if (linked.has(msg.id) || clearedRows.has(msg.id)) continue;
-      const stamp = audienceOf(msg.metadata);
-      if (stamp && !stamp.audience.includes(rootAgentName)) continue;
-      const lines = takeStreamedLines(msg);
-      if (lines.length === 0) continue;
-      linked.add(msg.id);
-      if (lines.some((l) => l.line.isDestroyed)) clearedRows.add(msg.id);
-      for (const l of lines) {
-        if (!l.line.isDestroyed) recordLines.push({ line: l.line, id: msg.id, text: l.shown, color: l.color, appended: false });
-      }
-    }
     const kept: RecordLine[] = [];
     for (const record of recordLines) {
       if (record.line.isDestroyed) {
@@ -938,17 +986,22 @@ export async function runTui(app: AppContext): Promise<void> {
     }
     recordLines = kept;
     const drawn = new Set(kept.map((record) => record.id));
-    stored.forEach((msg, i) => {
-      if (historyRead + i < droppedBefore) return;
+    const total = cm.getMessageCount();
+    for (const msg of cm.getMessageWindow(historyRead, total - historyRead, { resolveBlobs: false }).messages) {
       if (!drawn.has(msg.id) && !clearedRows.has(msg.id) && undone(msg.id)) drawRow(msg, true, true);
-    });
+    }
   }
 
   /** Draw the store's branch again. `mount: false` leaves the `_config`
-   *  mount alone, for a branch move agent-framework has refreshed it for
-   *  inside its reservation of the store (switchBranch and rollbackToMessage),
-   *  whose answer says if that failed. */
+   *  mount alone, for a branch move agent-framework writes it for:
+   *  switchBranch (/checkout, and /restore to a branch head) inside its
+   *  reservation of the store, the move's answer saying if that failed, and
+   *  rollbackToMessage (/restore to a message, /branchto) as it lets the
+   *  store go, without awaiting the write, a failure only in agent-
+   *  framework's log. A rollback that failed and left the store on the new
+   *  branch has it written by neither, and its answer says so. */
   function refreshFromStore(opts: { mount?: boolean } = {}) {
+    redrawAfterTurn = undefined;
     // Reset streaming state BEFORE destroying renderables so nothing can
     // touch a freed native buffer through currentStreamText.
     streaming = false;
@@ -1724,21 +1777,64 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
+  function leaveBackground(): void {
+    backgrounded = false;
+    backgroundBuffer = '';
+    backgroundBreaks = [];
+    backgroundPartial = undefined;
+  }
+
+  /** Draw what a backgrounded turn said, a line per round, each kept for its
+   *  row: the first one's words with the line streamed before Ctrl+B. */
+  function showBackgroundRounds(): void {
+    const ends = [...backgroundBreaks, backgroundBuffer.length];
+    let from = 0;
+    ends.forEach((end, round) => {
+      const said = backgroundBuffer.slice(from, end);
+      from = end;
+      if (!said.trim()) return;
+      const line = addLine(said, WHITE);
+      if (!line) return;
+      const partial = round === 0 ? backgroundPartial : undefined;
+      const at = partial ? streamedLines.indexOf(partial) : -1;
+      if (at < 0) {
+        keepLine(line, 'text', said, said, WHITE);
+        return;
+      }
+      streamedLines.splice(at, 1);
+      streamedLines.push({ kind: 'text', said: partial!.said + said, parts: [...partial!.parts, { line, shown: said, color: WHITE }] });
+    });
+  }
+
   function showRootTurnEnd(end: RootTurnEnd): void {
     state.status = end.status;
     state.tool = null;
     state.toolStartedAt = null;
     if (backgrounded && end.background === 'cut') {
       backgroundBuffer = backgroundBuffer.slice(0, attemptStart);
+      backgroundBreaks = backgroundBreaks.filter((at) => at <= attemptStart);
+      // The attempt streaming at Ctrl+B failed before its round ended: the
+      // words streamed before the press are no row's start.
+      if (backgroundBreaks.length === 0) backgroundPartial = undefined;
     } else if (backgrounded) {
       if (end.background === 'show') {
-        if (backgroundBuffer.trim()) addLine(backgroundBuffer, WHITE);
+        showBackgroundRounds();
         addEvent('  (researcher returned from background)', CYAN);
       }
-      backgrounded = false;
-      backgroundBuffer = '';
+      leaveBackground();
     }
     if (streaming) endStream();
+    // The turn's rows are stored by its end, its last reply's before the
+    // trace: each takes its lines now.
+    linkStreamedLines();
+    if (redrawAfterTurn && end.status !== 'attempt-failed') {
+      // A branch move's follow-up came while this turn ran on the branch:
+      // the branch is drawn now, and the move's answer again below it.
+      const answered = redrawAfterTurn;
+      refreshFromStore({ mount: false });
+      state.status = end.status;
+      for (const l of answered) addLine(l.text, GRAY);
+    }
     if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
     updateStatus();
   }
@@ -1797,7 +1893,7 @@ export async function runTui(app: AppContext): Promise<void> {
         const blockType = event.blockType as string | undefined;
         if (content) {
           if (agent === rootAgentName && backgrounded) {
-            backgroundBuffer += content;
+            if (blockType !== 'thinking') backgroundBuffer += content;
             streamOutputTokens += Math.ceil(content.length / 4);
           } else if (agent === rootAgentName && streaming) {
             if (blockType && (blockType === 'text' || blockType === 'thinking')
@@ -1896,10 +1992,16 @@ export async function runTui(app: AppContext): Promise<void> {
 
         if (agent === rootAgentName) {
           attemptStart = backgroundBuffer.length;
+          if (backgrounded) backgroundBreaks.push(backgroundBuffer.length);
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
-          if (!backgrounded) addEvent(`[tools] ${names}`, YELLOW);
+          if (!backgrounded) {
+            // Kept, as the round's text is, for the row that holds its calls.
+            const shown = `${hhmm()} [tools] ${names}`;
+            const line = addLine(shown, YELLOW);
+            if (line && names) keepLine(line, 'tools', names, shown, YELLOW);
+          }
         } else {
           const short = shortAgentName(agent ?? '');
           addLine(`  [${short}] ${names}`, DIM_GRAY);
@@ -2318,8 +2420,9 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       if (streaming && state.status !== 'idle') {
-        endStream();
+        const partial = endStream();
         backgrounded = true;
+        backgroundPartial = partial?.kind === 'text' ? partial : undefined;
         addLine('  (researcher moved to background — result will appear when done)', CYAN);
         updateStatus();
         acted = true;
@@ -2347,10 +2450,7 @@ export async function runTui(app: AppContext): Promise<void> {
           const shown = escapeLine(interrupts.interrupt(rootAgentName, reason), stopped);
           if (shown.endsTurn) {
             if (streaming) endStream();
-            if (backgrounded) {
-              backgrounded = false;
-              backgroundBuffer = '';
-            }
+            if (backgrounded) leaveBackground();
             state.status = 'idle';
             state.tool = null;
           }
@@ -2547,17 +2647,33 @@ export async function runTui(app: AppContext): Promise<void> {
         state.status = 'thinking';
         updateStatus();
         result.asyncWork.then(asyncResult => {
+          // An answer that comes once the TUI has stopped, a bare
+          // /newtopic's summary given back say, goes to the terminal: the
+          // renderer is gone, and with it the scrollback.
+          if (stopping) {
+            for (const l of asyncResult.lines) console.log(l.text);
+            return;
+          }
+          // A turn of the root agent's can have started since the command:
+          // its stream and its status are left as they are.
+          const turnRunning = rootTurnShowing || streaming;
           // A branch move or a rollback lands in the follow-up, and
           // agent-framework traces neither: the follow-up saying the branch
-          // changed is what has the TUI draw the branch the store is on.
-          // The framework refreshed the `_config` mount for the move.
-          if (asyncResult.branchChanged) refreshFromStore({ mount: false });
+          // changed is what has the TUI draw the branch the store is on, once
+          // a turn that started on it since has ended (showRootTurnEnd).
+          // The framework writes the `_config` mount for the move.
+          if (asyncResult.branchChanged && turnRunning) redrawAfterTurn = asyncResult.lines;
+          else if (asyncResult.branchChanged) refreshFromStore({ mount: false });
           for (const l of asyncResult.lines) {
             addLine(l.text, GRAY);
           }
-          state.status = 'idle';
+          if (!turnRunning) state.status = 'idle';
           updateStatus();
         }).catch(err => {
+          if (stopping) {
+            console.log(`Async command failed: ${err}`);
+            return;
+          }
           addLine(`Async command failed: ${err}`, RED);
           state.status = 'error';
           updateStatus();
@@ -2579,8 +2695,7 @@ export async function runTui(app: AppContext): Promise<void> {
         };
         void switchFollowing(follower, async () => {
           await app.switchSession(sessionId);
-          backgrounded = false;
-          backgroundBuffer = '';
+          leaveBackground();
           attemptStart = 0;
           if (stopping) return;
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;

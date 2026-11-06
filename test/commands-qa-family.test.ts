@@ -330,7 +330,7 @@ describe('/newtopic cut short by a stop', () => {
         getStrategy: () => ({}),
         windowMode: () => 'presented',
         indexLength: () => 0,
-        presentedLength: () => 0,
+        getPresentedMessages: () => [],
         generateTransitionSummary: async () => {
           if (stopping) app.stopping = true;
           throw new Error(CROSSED);

@@ -42,19 +42,26 @@ const history: Array<{ id: string; participant: string; content: Array<Record<st
 const undoneRows = new Set<string>();
 /** The store's branch in `async-branch`, which a /checkout moves (the framework's switchBranch traces nothing). */
 let storeBranch = 'main';
+/** The record's reads the TUI makes of the agent's context, over `rows`. */
+const recordOf = (rows: typeof history) => ({
+  getAllMessages: () => rows,
+  getMessageCount: () => rows.length,
+  getMessageWindow: (offset: number, limit: number) => ({
+    messages: rows.slice(offset, offset + limit), startIndex: offset, totalCount: rows.length,
+  }),
+});
 const contextManager = () => (scenario.startsWith('undone')
   ? {
-      getAllMessages: () => history,
-      getMessageCount: () => history.length,
+      ...recordOf(history),
       windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in'),
     }
-  : scenario === 'async-branch'
+  : scenario.startsWith('async-branch')
     ? {
-        getAllMessages: () => history,
+        ...recordOf(history),
         listBranches: () => [{ id: 'b-main', name: 'main', head: 2 }, { id: 'b-side', name: 'side', head: 2 }],
         currentBranch: () => ({ id: `b-${storeBranch}`, name: storeBranch, head: 2 }),
       }
-    : { getAllMessages: () => [] });
+    : recordOf([]));
 
 function fakeFramework(name: string) {
   const listeners = new Set<Listener>();
@@ -69,9 +76,9 @@ function fakeFramework(name: string) {
     },
     getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'numbered-fork-failed-then-started', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }]
-      : scenario === 'async-branch' ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
+      : scenario.startsWith('async-branch') ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
       : [{ name: 'agent' }]),
-    getModule: (moduleName: string) => (scenario === 'async-branch' && moduleName === 'workspace' ? workspace : undefined),
+    getModule: (moduleName: string) => (scenario.startsWith('async-branch') && moduleName === 'workspace' ? workspace : undefined),
     getAgent: (agentName: string) => agentName === 'agent'
       ? { name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }
       : undefined,
@@ -93,10 +100,13 @@ function fakeFramework(name: string) {
     async switchBranch(branch: string) {
       storeBranch = branch;
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
+      if (scenario === 'async-branch-turn') await new Promise<void>((resolve) => { releaseMove = resolve; });
     },
   };
 }
 
+/** In `async-branch-turn`, lets the moved store's answer go. */
+let releaseMove: (() => void) | undefined;
 /** The workspace module in `async-branch`: each mount refresh the TUI starts. */
 const mountRefreshes: string[] = [];
 const workspace = { name: 'workspace', materializeMount: async (mount: string) => { mountRefreshes.push(mount); } };
@@ -172,6 +182,16 @@ async function streamed(...parts: string[]): Promise<void> {
   for (const content of parts) first.send('inference:tokens', { content, blockType: 'text' });
   first.send('inference:completed');
   await until(async () => (await frame()).includes(parts.join('')), 'the reply');
+}
+
+/** A reply of the root agent's, streamed and stored as agent-framework
+ *  stores a turn's last reply: its row before inference:completed. */
+async function replied(id: string, text: string): Promise<void> {
+  first.send('inference:started');
+  first.send('inference:tokens', { content: text, blockType: 'text' });
+  history.push({ id, participant: 'agent', content: [{ type: 'text', text }] });
+  first.send('inference:completed');
+  await until(async () => (await frame()).includes(text), 'the reply');
 }
 
 async function command(text: string): Promise<void> {
@@ -468,6 +488,22 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:exhausted', { agentName, error: 'after switch' });
     await step('after switch');
+  } else if (scenario === 'async-branch-turn') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A turn of the root agent's starts on the branch the store moved to
+    // before the move's follow-up is drawn (#485 bot review 2, finding 24).
+    await command('/checkout side');
+    await until(() => releaseMove !== undefined, 'the move');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'on the side ', blockType: 'text' });
+    releaseMove!();
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    first.send('inference:tokens', { content: 'branch now', blockType: 'text' });
+    await step('streaming at the follow-up');
+    history.push({ id: 's2', participant: 'agent', content: [{ type: 'text', text: 'on the side branch now' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the side branch reply'), 'the branch drawn');
+    await step('turn ended');
   } else if (scenario === 'async-branch') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // The store moves in the command's follow-up, with no trace of it.
@@ -522,6 +558,68 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('(undone) the first half, the second half'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-tools') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A reply with text after its tool call: the stream changes lines only
+    // between text and thinking, so the TUI draws the two texts as one line.
+    first.send('inference:started');
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'Checking the ledgers, ', blockType: 'text' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'tool_use' });
+    first.send('inference:content_block', { phase: 'block_start', blockType: 'text' });
+    first.send('inference:tokens', { content: 'then counting.', blockType: 'text' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'text', text: 'Checking the ledgers, ' }, { type: 'tool_use', id: 't1', name: 'search', input: {} }, { type: 'text', text: 'then counting.' }],
+    });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('Checking the ledgers, then counting.'), 'the reply');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) Checking the ledgers, then counting.'), 'the mark');
+    await step('text around a tool call');
+    // A round that only calls a tool (#485 bot review 3, finding 5).
+    undoneRows.clear();
+    first.send('window:undone', { retracted: 0, represented: 1 });
+    first.send('inference:started');
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'tool_use', id: 't2', name: 'tally', input: {} }] });
+    first.send('inference:completed');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => /\(undone\).*\[tools\] tally/.test(await frame()), 'the mark');
+    await step('tools only');
+  } else if (scenario === 'undone-background') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Ctrl+B while a reply streams: its first round's words before the
+    // press are drawn, the rest come back with the turn (#485 bot review 3,
+    // finding 4).
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'Counting the ', blockType: 'text' });
+    await until(async () => (await frame()).includes('Counting the'), 'the words before the press');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'ledgers now.', blockType: 'text' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'text', text: 'Counting the ledgers now.' }, { type: 'tool_use', id: 't1', name: 'tally', input: {} }],
+    });
+    first.send('inference:stream_resumed');
+    first.send('inference:tokens', { content: 'weigh the count', blockType: 'thinking' });
+    first.send('inference:tokens', { content: 'There are three.', blockType: 'text' });
+    history.push({
+      id: 'a3', participant: 'agent',
+      content: [{ type: 'thinking', thinking: 'weigh the count' }, { type: 'text', text: 'There are three.' }],
+    });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('returned from background'), 'the return');
+    await step('returned');
+    undoneRows.add('a2');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) There are three.'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone-evicted') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     /** More streamed lines than the scrollback holds, none of them a row's. */
@@ -556,6 +654,28 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 2 });
     await until(async () => (await frame()).includes('(undone) a tenth ledger'), 'the mark');
     await step('pushed out');
+    // Past the cap, a row stored with no line of the TUI's (a turn it
+    // didn't stream), then one more streamed line, then its undo
+    // (#485 bot review 3, finding 14).
+    undoneRows.clear();
+    fill('third');
+    history.push({ id: 'a6', participant: 'agent', content: [{ type: 'text', text: 'an eleventh ledger' }] });
+    await streamed('one more line');
+    undoneRows.add('a6');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('one more line'), 'the line');
+    await step('no line, past the cap');
+    // A reply whose line the cap pushed out, then a later reply in the same
+    // words, then an undo of the later one (finding 2).
+    undoneRows.clear();
+    first.send('window:undone', { retracted: 0, represented: 1 });
+    await replied('a7', 'Done.');
+    fill('fourth');
+    await replied('a8', 'Done.');
+    undoneRows.add('a8');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('Done.'), 'the reply');
+    await step('same words, pushed out');
   } else if (scenario === 'undone') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     await step('history');

@@ -231,7 +231,7 @@ describe('/newtopic', () => {
 describe('a bare /newtopic', () => {
   const SUMMARY = 'The ledger work is done; next is the release.';
 
-  async function bare(prefix: string) {
+  async function bare(prefix: string, summary = SUMMARY) {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     let releaseSummary!: () => void;
     const summaryGate = new Promise<void>((resolve) => { releaseSummary = resolve; });
@@ -239,7 +239,7 @@ describe('a bare /newtopic', () => {
     (strategy as unknown as { generateTransitionSummary: (ctx: StrategyContext) => Promise<string> }).generateTransitionSummary = async (ctx) => {
       summarized.push(ctx.messageStore.getAll().map(textOf));
       await summaryGate;
-      return SUMMARY;
+      return summary;
     };
     const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix });
     await h.turn('clerk');
@@ -247,9 +247,9 @@ describe('a bare /newtopic', () => {
     return { h, app, strategy, summarized, releaseSummary };
   }
   const texts = (result: { lines: Array<{ text: string }> }) => result.lines.map((l) => l.text);
-  const refusedWith = (why: string) => [
+  const refusedWith = (why: string, oneLine = SUMMARY) => [
     `Topic reset failed: ${why} while the transition summary was written; nothing was stored. ` +
-      `To store it, run /newtopic with it as the text:\n${SUMMARY}`,
+      `To store it, run this one-line command:\n/newtopic ${oneLine}`,
   ];
 
   test("with the agent idle throughout, stores the summary of the agent's context as its own row, where the head window starts", async () => {
@@ -335,6 +335,51 @@ describe('a bare /newtopic', () => {
         expect(h.inWindow('clerk', reply.id)).toBe(false);
         releaseSummary();
         expect(texts(await result.asyncWork!)).toEqual(refusedWith("rows left clerk's window"));
+        expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+      } finally {
+        await h.cleanup();
+      }
+    });
+  }
+
+  // The readline and piped modes dispatch each line alone, so the summary
+  // is given back on one line, its line breaks folded to spaces, which
+  // every input mode takes as one command (#485 bot review 3, finding 1).
+  test('whose summary has line breaks gives it back as one /newtopic line, which stores it whole', async () => {
+    const summary = 'Done:\n- the ledger\n\n  Next: the release.';
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-lines-', summary);
+    try {
+      const result = handleCommand('/newtopic', app);
+      expect(summarized).toHaveLength(1);
+      await h.turn('clerk');
+      releaseSummary();
+      const answer = texts(await result.asyncWork!);
+      expect(answer).toEqual(refusedWith("rows entered clerk's window", 'Done: - the ledger Next: the release.'));
+      const command = answer[0]!.split('\n').at(-1)!;
+      expect(command).toBe('/newtopic Done: - the ledger Next: the release.');
+      expect((await handleCommand(command, app).asyncWork!).lines[0]!.text).toBe('Topic reset. Transition summary:');
+      expect(textOf(h.rowWith('clerk', '[Topic Transition]')!)).toBe('[Topic Transition]\n\nDone: - the ledger Next: the release.');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  // What the answer says moved is what did: rows that entered the window,
+  // rows that left it, or both (#485 bot review 3, finding 11).
+  for (const [moves, why] of [
+    ['/undo and /redo', "rows left clerk's window and entered it again"],
+    ['/undo and a whole turn', "rows entered clerk's window and rows left it"],
+  ] as const) {
+    test(`whose summary ${moves} ran during says what moved the window`, async () => {
+      const { h, app, summarized, releaseSummary } = await bare(`newtopic-bare-${moves === '/undo and /redo' ? 'redo' : 'undo-turn'}-`);
+      try {
+        const result = handleCommand('/newtopic', app);
+        expect(summarized).toHaveLength(1);
+        expect(texts(handleCommand('/undo', app))[0]).toStartWith("Undone: clerk's last turn left its window");
+        if (moves === '/undo and /redo') expect(texts(handleCommand('/redo', app))[0]).toStartWith("Redone: clerk's undone turn is back in its window");
+        else await h.turn('clerk');
+        releaseSummary();
+        expect(texts(await result.asyncWork!)).toEqual(refusedWith(why));
         expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
       } finally {
         await h.cleanup();

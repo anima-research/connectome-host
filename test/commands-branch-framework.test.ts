@@ -61,6 +61,10 @@ describe('/undo and /redo', () => {
       const undo = await run('/undo', app);
       expect(undo.result.branchChanged).toBeFalsy();
       expect(undo.all).toContain("clerk's last turn left its window");
+      // agent-framework keeps the redo in memory only, until the agent's
+      // next turn or a branch move (#485 second reading of the wave-2
+      // answer, finding 11).
+      expect(undo.all).toContain("/redo puts it back until clerk's next turn, a branch move or a restart");
       expect(h.framework.getStore().currentBranch().name).toBe(branch);
       expect(clerk.windowStatusOf(clerkReply.id)).toBe('undone');
       // The record keeps both, and mira's window is as it was.

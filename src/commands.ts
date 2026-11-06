@@ -234,13 +234,20 @@ function switchStore(
  * diagnosis. When putting the store back failed too, the store is still on
  * the new branch (`from` is the branch it was on before the rollback): the
  * answer then says the branch changed, so the TUI and the Web UI show the
- * branch the store is on.
+ * branch the store is on, and that the gate's files may still be the
+ * previous branch's, since agent-framework writes the `_config` mount only
+ * for a rollback that landed (and the TUI's redraw after a move writes it
+ * for none).
  */
 function rollbackFailed(app: AppContext, from: string, failed: string, err: unknown): CommandResult {
   const lines: Line[] = [{ text: `${failed}: ${messageOf(err)}`, style: 'system' }];
   // A refusal comes before anything moves, whatever branch the store is on by then.
   const refused = err instanceof OperatorActionError && err.code !== 'failed';
-  if (!refused && app.framework.getStore().currentBranch().name !== from) return { lines, branchChanged: true };
+  const on = app.framework.getStore().currentBranch().name;
+  if (!refused && on !== from) {
+    lines.push({ text: `  The _config mount wasn't written from ${on}: the gate's files may still be the previous branch's. /checkout ${on} writes them.`, style: 'system' });
+    return { lines, branchChanged: true };
+  }
   if (!(err instanceof OperatorActionError && err.code === 'failed')) lines.push(movedNothing(err));
   return { lines };
 }
@@ -1154,7 +1161,7 @@ function handleUndo(app: AppContext): CommandResult {
   return {
     lines: [
       { text: `Undone: ${agent.name}'s last turn left its window (${rows} row${rows === 1 ? '' : 's'} from its start: the turn's own, and any other, which its next turn shows again).`, style: 'system' },
-      { text: '  The record keeps it, and no branch moved: /redo puts it back, /branchto <msgId> reverts the record.', style: 'system' },
+      { text: `  The record keeps it, and no branch moved: /redo puts it back until ${agent.name}'s next turn, a branch move or a restart, and /branchto <msgId> reverts the record.`, style: 'system' },
     ],
   };
 }
@@ -1442,11 +1449,15 @@ function rollbackKeptLines(
 }
 
 /**
- * /branchto: the framework's rollback to a message (rollbackToMessage): the
- * message becomes the tail of a new branch, which the store moves to with
- * every agent sharing it idle; the old branch keeps everything after it.
- * On a presented window some rows after the message can stay, and the
- * answer says which (rollbackKeptLines). Logged as an operator's rollback.
+ * /branchto: the framework's rollback to a message (rollbackToMessage): a
+ * new branch cut where the agent was shown the message, which on a
+ * presented window is the write that presented it, and the store moved to
+ * it with every agent sharing it idle; the old branch keeps everything.
+ * Rows after the message that the cut keeps stay on the new branch: rows
+ * that write showed with it, rows stored before it and shown after it,
+ * and another resident's rows stored before it. The answer says which of
+ * the agent's (rollbackKeptLines), and counts the rows the cut took. Logged
+ * as an operator's rollback.
  */
 function handleBranchTo(app: AppContext, messageId: string | undefined): CommandResult {
   const agent = commandAgent(app);
@@ -1603,8 +1614,8 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
  * another /newtopic's transition, enters rows, and an undo or a shed takes
  * them out), the session wasn't switched, the
  * host isn't stopping and the agent is still registered with this context;
- * otherwise nothing is stored, and the answer gives the summary back, to
- * store with /newtopic <text>. The check of the branch and the strategy here
+ * otherwise nothing is stored, and the answer gives the summary back as a
+ * one-line /newtopic <text> to store it with (oneLine). The check of the branch and the strategy here
  * is a backstop for a move after context-manager's own check, and gives the
  * summary back too.
  *
@@ -1634,30 +1645,47 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   if (moved !== undefined) {
     throw new Error(
       `${moved} while the transition summary was written; nothing was stored. ` +
-        `To store it, run /newtopic with it as the text:\n${summary}`,
+        `To store it, run this one-line command:\n/newtopic ${oneLine(summary)}`,
     );
   }
   return storeTransition(cm, summary, metadata);
+}
+
+/** The summary on one line, its line breaks folded to spaces: the readline
+ *  and piped modes dispatch each line they read as its own input, so a
+ *  `/newtopic` given back with its line breaks would store its first line
+ *  alone there, and send the rest as messages or commands. */
+function oneLine(summary: string): string {
+  return summary.split(/\r\n|\r|\n/).map((line) => line.trim()).filter(Boolean).join(' ');
 }
 
 /** Where the agent's window stands (`at`): how many items its index has
  *  written (indexLength), which a row entering the window moves, and a row
  *  leaving it too (an undo's or a shed's tombstone is an item), and in
  *  legacy mode, where the window is the record, how many rows the record
- *  holds; with how many rows the window holds (`held`, presentedLength),
- *  which tells rows that left it from rows that entered it. */
-function windowMark(cm: ContextManager): { at: string; held: number } {
+ *  holds; with the rows the window holds (`ids`, getPresentedMessages),
+ *  which tell rows that left it from rows that entered it. */
+function windowMark(cm: ContextManager): { at: string; ids: Set<string> } {
   return {
     at: cm.windowMode() === 'legacy' ? `legacy ${cm.getMessageCount()}` : `presented ${cm.indexLength()}`,
-    held: cm.presentedLength(),
+    ids: new Set(cm.getPresentedMessages().map((m) => String(m.id))),
   };
 }
 
-/** What moved the agent's window since `before` (windowMark), if anything. */
-function windowMoved(cm: ContextManager, before: { at: string; held: number }, agentName: string): string | undefined {
+/** What moved the agent's window since `before` (windowMark), if anything:
+ *  rows that entered it, rows that left it, both, or rows that left it and
+ *  entered it again (an undo and its redo), which leave it holding what it
+ *  held. */
+function windowMoved(cm: ContextManager, before: { at: string; ids: Set<string> }, agentName: string): string | undefined {
   const now = windowMark(cm);
   if (now.at === before.at) return undefined;
-  return `rows ${now.held < before.held ? 'left' : 'entered'} ${agentName}'s window`;
+  const entered = [...now.ids].some((id) => !before.ids.has(id));
+  const left = [...before.ids].some((id) => !now.ids.has(id));
+  const window = `${agentName}'s window`;
+  return entered && left ? `rows entered ${window} and rows left it`
+    : entered ? `rows entered ${window}`
+    : left ? `rows left ${window}`
+    : `rows left ${window} and entered it again`;
 }
 
 /**
