@@ -2041,4 +2041,16 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).toContain('| the journal says <MANAGER_SECRET> and <MANAGER_SECRET>');
     expect(r.out).not.toContain('manager-given-value');
   });
+
+  test('a unit that sets a variable named why is read as its environment, not as a failure to give one', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'why'] });
+    const unit = Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' ') +
+      ' why=stored-why-value';
+    const manager = fakeManager(at.work, { unit });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).not.toContain('systemd didn\'t say the environment');
+    expect(r.out).not.toContain('stored-why-value');
+    expect(r.out).toContain('✓ The host answers: pid 4242');
+  });
 });

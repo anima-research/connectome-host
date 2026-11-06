@@ -169,7 +169,7 @@ export async function doctor(
         : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
           '`connectome service install` writes the unit anew.');
     }
-    const built = serviceEnv(work, root, managed, unit, parts.envLimitMs);
+    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs);
     env = built.env;
     secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -895,7 +895,7 @@ function shownWords(text: string): string[] {
   return words;
 }
 
-function unitEnv(service: ServiceRecord, parts: DoctorParts): Record<string, string> | { why: string } {
+function unitEnv(service: ServiceRecord, parts: DoctorParts): { env: Record<string, string> } | { why: string } {
   const name = service.units.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
@@ -918,10 +918,10 @@ function unitEnv(service: ServiceRecord, parts: DoctorParts): Record<string, str
       const at = word.indexOf('=');
       if (at > 0) out[word.slice(0, at)] = word.slice(at + 1);
     }
-    return out;
+    return { env: out };
   }
   try {
-    return stringValues(JSON.parse(ran.stdout));
+    return { env: stringValues(JSON.parse(ran.stdout)) };
   } catch {
     return { why: 'plutil\'s answer wasn\'t JSON' };
   }
