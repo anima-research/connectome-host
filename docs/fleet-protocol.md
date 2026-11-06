@@ -399,7 +399,16 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
   also lists there each fleet child's store audit while it runs (`<child>'s
   store audit`, with its pid), which the launcher's fallback waits for like a
   child (`src/update/audit-stores.ts`).
-- **Adopt on start.** For each persisted child whose record allows it (`ready`
+- **Adopt on start.** On a host with a children file, a persisted child whose
+  data directory is there, but isn't where this install keeps that child, is
+  another install's, as after a copy of the install: it isn't probed, adopted
+  or kept in the record, and the host logs one line naming both directories.
+  Where the install keeps it is the children file's entry of that name, as
+  the host finds the file at its start, else the recipe's child of that name,
+  compared by device and inode as setup's binding compares them. A child
+  neither names, or whose data directory is gone, as after a move, is taken
+  as below.
+  For each persisted child whose record allows it (`ready`
   or `starting` with no exit time, or `crashed` by an earlier failed
   adoption): check the pid is alive and the socket path is a socket, connect,
   and require the connection's first line to be a `ready` whose `pid` equals
