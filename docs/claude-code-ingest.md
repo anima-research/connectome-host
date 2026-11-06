@@ -345,11 +345,12 @@ nothing it does reaches the original:
    discord-mcpl would put the resident on Discord, a fleet child starts on its own data
    directory under `<agent>-cm`, a heartbeat state path resolves from there too, and an
    extension's code runs in the host's process. So a recipe whose strategy comes from an
-   extension gets no pre-boot check this way. For an `openai-compatible` recipe, set
-   `agent.baseUrl` to `http://127.0.0.1:9/v1`, where nothing answers, since its own
-   endpoint may answer with no key at all. Where `agent.systemPrompt` is a URL, put the
-   text it gives in its place, since the host fetches it as it loads the recipe. In
-   place of any Web UI the recipe has, give the copy one of its own under `modules`,
+   extension gets no pre-boot check this way. For an `openai-compatible` recipe, whose
+   own endpoint may answer with no key at all, set `agent.baseUrl` to
+   `http://127.0.0.1:9/v1`, where nothing answers, as `curl http://127.0.0.1:9/` failing
+   to connect shows. Where `agent.systemPrompt` is a URL, or a `${…}` whose value is one,
+   put the text it gives in its place, since the host fetches it as it loads the recipe.
+   In place of any Web UI the recipe has, give the copy one of its own under `modules`,
    with a password you make up for the check:
    `"webui": { "port": <port>, "host": "127.0.0.1", "basicAuth": { "username": "check", "password": "<password>" } }`.
    Without `basicAuth`, every account on the machine could read the copy's
@@ -371,10 +372,11 @@ nothing it does reaches the original:
    `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. Give any other
    variable the copy names as `${…}` too, since the host fills each from its environment
    and won't load a recipe naming one it can't, with a mock value where it's a
-   credential. So every request the host makes is refused, and a turn it starts on its
-   own, such as for a heartbeat that fell due while the resident was down, gets no reply
-   and calls no tool. The `mock` provider is the exception: it needs no key, and a turn
-   on it gets the reply the recipe's `agent.mock` gives, by default an echo of the turn.
+   credential, and `http://127.0.0.1:9` where it's a provider's base URL. So every request
+   the host makes is refused, and a turn it starts on its own, such as for a heartbeat
+   that fell due while the resident was down, gets no reply and calls no tool. The `mock`
+   provider is the exception: it needs no key, and a turn on it gets the reply the
+   recipe's `agent.mock` gives, by default an echo of the turn.
    On a gateway, the check can leave out a binding model's changed thinking that the
    resident sends, since what the host found of the account is kept per base URL and the
    check names none. The recipe's absolute workspace mounts are the resident's own
