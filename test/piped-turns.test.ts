@@ -124,6 +124,23 @@ describe('the wait for a line\'s turn', () => {
     });
   });
 
+  test('a line whose wait ran out and the line after it, both taken in before one turn, are answered by that turn', async () => {
+    await onFakeTimers(async (advance, settledNow) => {
+      const { turns, emit } = setUp();
+      const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+      void turns.waitForTurn(400);
+      await advance(400);
+      const second = turns.waitForTurn(400);
+      turns.takenIn();
+      turns.takenIn();
+      emit('inference:started');
+      expect(await settledNow(second)).toBe(false);
+      emit(settledTrace);
+      expect(await settledNow(second)).toBe(true);
+      expect(turns.owed()).toBe(false);
+    });
+  });
+
   test('endAll ends every wait at once, and no cap fires after it', async () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();
