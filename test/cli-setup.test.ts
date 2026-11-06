@@ -1069,6 +1069,29 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   expect(said(broken)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, can't be read: The install record at ${record} isn't JSON, so this release can't read it.`]);
 });
 
+test('a setup whose install kept no state outside the data directory says so once its agent has ended, where the record gained a place meanwhile', async () => {
+  const dir = directory();
+  const record = join(dir, 'connectome-host', 'install.json');
+  const none = [
+    `${EXTRA_STATE_LINE}: an update copies the data directory, ${join(dir, 'data')}, and outside it only the places listed here:`,
+    '  none',
+    `${LIST_A_PLACE}, run setup again with every place: \`setup --extra-state PATH\`.`,
+  ];
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...none, ''].join('\n') }, {
+    startAgent: async (launch) => {
+      made.seen.launched = launch;
+      made.seen.outAtLaunch = made.seen.out.length;
+      const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: string[] };
+      writeFileSync(record, JSON.stringify({ ...kept, extraState: [...kept.extraState, '/srv/new'] }));
+      return 0;
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.out.slice(made.seen.outAtLaunch!)).toEqual([resumeLine(dir), 'The places outside the data directory ' +
+    `that an update copies aren't listed here: they changed during the conversation, and ${record}, the install record, ` +
+    'holds them now, under "extraState".']);
+});
+
 test('where setup\'s kept answers are gone or can\'t be read once its agent has ended, setup says whether it finished isn\'t known, and why', async () => {
   const dir = directory();
   const state = join(dir, '.setup', 'setup-state.json');

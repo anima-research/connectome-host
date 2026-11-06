@@ -752,26 +752,22 @@ async function installAndStart(
       `${'absent' in readAfter ? 'is gone' : `can't be read (${readAfter.unreadable})`}.`);
   }
   const printed = keptOutside.filter((line) => line.startsWith('  ') && line !== '  none').map((line) => line.slice(2));
-  if (printed.length > 0) {
-    const recordPath = join(root, 'install.json');
-    let why = '';
-    try {
-      const now = readRecord<InstallRecord>(recordPath, 'install record');
-      if (now === null) why = `${recordPath}, the install record, is gone`;
-      else if (!Array.isArray(now.extraState) || now.extraState.some((place) => typeof place !== 'string')) {
-        why = `${recordPath}, the install record, holds no list of places under "extraState"`;
-      } else if (now.extraState.length !== printed.length || printed.some((place, at) => now.extraState[at] !== place)) {
-        why = `they changed during the conversation, and ${recordPath}, the install record, holds them now, under ` +
-          '"extraState"';
-      }
-    } catch (error) {
-      why = `${recordPath}, the install record, can't be read: ${(error as Error).message.replace(/\.+$/, '')}`;
+  const recordPath = join(root, 'install.json');
+  let why = '';
+  try {
+    const now = readRecord<InstallRecord>(recordPath, 'install record');
+    if (now === null) why = `${recordPath}, the install record, is gone`;
+    else if (!Array.isArray(now.extraState) || now.extraState.some((place) => typeof place !== 'string')) {
+      why = `${recordPath}, the install record, holds no list of places under "extraState"`;
+    } else if (now.extraState.length !== printed.length || printed.some((place, at) => now.extraState[at] !== place)) {
+      why = `they changed during the conversation, and ${recordPath}, the install record, holds them now, under ` +
+        '"extraState"';
     }
-    if (why === '') for (const line of keptOutside) out(line);
-    else {
-      out(`The places outside the data directory that an update copies aren't listed here: ${why}.`);
-    }
+  } catch (error) {
+    why = `${recordPath}, the install record, can't be read: ${(error as Error).message.replace(/\.+$/, '')}`;
   }
+  if (why !== '') out(`The places outside the data directory that an update copies aren't listed here: ${why}.`);
+  else if (printed.length > 0) for (const line of keptOutside) out(line);
   return agentStatus;
 }
 
