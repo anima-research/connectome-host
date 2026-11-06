@@ -412,6 +412,8 @@ describe('the ladder\'s recent failures', () => {
     writeFileSync(join(at.work, 'journal.txt'), '');
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 300) * 1000).toISOString(),
       agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
+      timestamp: new Date((at.now - 400) * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
     expect(ladder(at, ['--no-signal']).out).toMatch(
       /\* inference failures, the last \d+m ago, with no successful turn found since — if the reason repeats/);
     const line = ladder(at, ['--no-signal', '--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
@@ -505,6 +507,19 @@ describe('the ladder\'s recent failures', () => {
     } finally {
       chmodSync(calls, 0o644);
     }
+  });
+
+  test('with no call log, the inference stage says so, and with failures on record, whether a turn has succeeded since is not known, and doesn\'t count', async () => {
+    const at = await install({ listens: true });
+    const data = join(at.work, 'data');
+    const found = (): { text: string; counts: boolean }[] => JSON.parse(ladder(at, ['--no-signal', '--findings-json']).out.split('\n')
+      .find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
+    expect(ladder(at, ['--no-signal']).out).toContain(`· inference (llm call)       can't be seen here: no call log in ${data}\n`);
+    expect(found()).toContainEqual({ text: expect.stringMatching(new RegExp('^inference failures, the last \\S+ ago; whether a turn ' +
+      `has succeeded since isn't known, since there's no call log in ${data}$`)), counts: false });
+    expect(found().some((f) => f.text.includes('no successful turn found since'))).toBe(false);
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    expect(ladder(at, ['--no-signal']).out).toMatch(new RegExp(`x inference \\(llm call\\) +--:--:-- +\\( +never\\) +no call log in ${data}$`, 'm'));
   });
 
   test('a call log that can\'t be looked at leaves the inference stage not known, naming it, and the stages after it still print', async () => {

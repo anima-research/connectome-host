@@ -488,6 +488,8 @@ if llm_files:
         llm_detail += f"  {C_YEL}{unreadable} row(s){' since the last turn' if turn_ts else ''} unreadable{C_OFF}"
     if incomplete:
         llm_detail += f"  {C_YEL}last row incomplete (being written, or cut off){C_OFF}"
+elif llm_unread is None and os.path.isdir(data_dir):
+    llm_detail = f"no call log in {data_dir}"
 INFERENCE = "inference (llm call)"
 stages.append((INFERENCE, llm_ts, llm_detail))
 
@@ -553,6 +555,54 @@ elif last is not None:
         warn(f"the last reply wasn't delivered: {line}")
 stages.append((DELIVERY, del_ts, del_detail))
 
+
+def file_failures(path, is_failure):
+    text, why = read_text(path, last=400_000)
+    if text is None:
+        return path, None, f"it can't be read ({why})", f"{path} can't be read ({why}), so its failures aren't shown"
+    return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None, None
+
+
+def record_of(ln, kind):
+    try:
+        record = json.loads(ln)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) and record.get("kind") == kind else None
+
+
+def exhausted(ln):
+    return record_of(ln, "inference-exhausted")
+
+
+sources = []
+if journal_log:
+    sources.append((f"{unit}'s journal", None if journal_error is not None
+                    else [msg for _, msg in journal if re.search(FAILURE, msg)],
+                    f"it {journal_unread} ({journal_error})", None))
+else:
+    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
+failures_log = os.path.join(logs_dir, "failures.log")
+if os.path.exists(failures_log):
+    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
+times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
+untimed = False
+for index, (_, found, _, _) in enumerate(sources):
+    for ln in found or []:
+        record = exhausted(ln)
+        if record is not None:
+            ts = parse_iso(record["at"]) if isinstance(record.get("at"), str) else None
+            if ts is None:
+                untimed = True
+            else:
+                times.append(ts)
+        elif "inference-failed" in ln and not (journal_log and index == 0):
+            untimed = True
+unseen_why = "the call log can't be read here"
+if (times or untimed) and not llm_files and llm_unread is None and os.path.isdir(data_dir):
+    unknown.add(INFERENCE)
+    unseen_why = f"there's no call log in {data_dir}"
+
 print()
 print("pipeline ladder (last seen per stage):")
 prev_ts = None
@@ -585,39 +635,9 @@ if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not 
          "budget failures / [diagnostics] dump below)")
 
 print()
-
-
-def file_failures(path, is_failure):
-    text, why = read_text(path, last=400_000)
-    if text is None:
-        warn(f"{path} can't be read ({why}), so its failures aren't shown", counts=False)
-        return path, None, f"it can't be read ({why})"
-    return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None
-
-
-def record_of(ln, kind):
-    try:
-        record = json.loads(ln)
-    except ValueError:
-        return None
-    return record if isinstance(record, dict) and record.get("kind") == kind else None
-
-
-def exhausted(ln):
-    return record_of(ln, "inference-exhausted")
-
-
-sources = []
-if journal_log:
-    sources.append((f"{unit}'s journal", None if journal_error is not None
-                    else [msg for _, msg in journal if re.search(FAILURE, msg)],
-                    f"it {journal_unread} ({journal_error})"))
-else:
-    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
-failures_log = os.path.join(logs_dir, "failures.log")
-if os.path.exists(failures_log):
-    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
-for where, found, why in sources:
+for where, found, why, unread in sources:
+    if unread is not None:
+        warn(unread, counts=False)
     if found is None:
         print(f"recent failures in {where}: {C_YEL}not known: {why}{C_OFF}")
     elif found:
@@ -626,19 +646,6 @@ for where, found, why in sources:
             print(f"  {C_RED}{withheld(ln)[:150]}{C_OFF}")
     else:
         print(f"recent failures in {where}: {C_GRN}none found{C_OFF}")
-times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
-untimed = False
-for index, (_, found, _) in enumerate(sources):
-    for ln in found or []:
-        record = exhausted(ln)
-        if record is not None:
-            ts = parse_iso(record["at"]) if isinstance(record.get("at"), str) else None
-            if ts is None:
-                untimed = True
-            else:
-                times.append(ts)
-        elif "inference-failed" in ln and not (journal_log and index == 0):
-            untimed = True
 if times or untimed:
     failed_at = max(times) if times else None
     timed = " whose time is known" if untimed else ""
@@ -647,7 +654,7 @@ if times or untimed:
              "doesn't say whose, so whether the agent that failed has recovered isn't known", counts=False)
     elif failed_at is not None and INFERENCE in unknown:
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
-             "since the call log can't be read here", counts=False)
+             f"since {unseen_why}", counts=False)
     elif failed_at is not None:
         warn(f"inference failures, the last{timed} {age(failed_at)}, with no successful turn found since — if the reason "
              "repeats identically, the agent is hard-down until config changes (e.g. budget)")
