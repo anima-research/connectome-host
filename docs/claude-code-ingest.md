@@ -364,7 +364,8 @@ nothing it does reaches the original:
    check names none. The recipe's absolute workspace mounts are the resident's own
    files, so run no tool in the check, as `/puppet` would. The overlay variable names a
    file that doesn't exist, so the servers the resident deployed for itself
-   (`mcpl-servers.agent.json`) stay out too. The API's count fails and the rest still
+   (`mcpl-servers.agent.json`) stay out too. Where the host asks the API for a count,
+   the count fails, and where it asks for none, there's none live either. The rest still
    compiles. Then hit the endpoints, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
