@@ -267,7 +267,7 @@ describe('setup--run', () => {
     const { module } = install({
       env: { DATA_DIR: '/setup/data', CONNECTOME_UPDATE_CHECK: '0', CONNECTOME_SETUP_INSTALL: '/setup/root', KEEP_ME: 'kept' },
     });
-    const answer = await run(module, 'env | grep -E "^(DATA_DIR|CONNECTOME_|KEEP_ME)=" | sort');
+    const answer = await run(module, 'env | grep -E "^(DATA_DIR|CONNECTOME_[A-Z0-9_]*|KEEP_ME)=" | sort');
     expect(answer.stdout.text).toBe('KEEP_ME=kept\n');
   });
 
