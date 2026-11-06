@@ -79,8 +79,9 @@ here, setup has run there, and the setup agent goes live only after the import.
 Otherwise run `bunx @animalabs/connectome-host setup discord` first, in a new, empty
 `<agent>-cm`: setup installs only into an empty directory or one it set up. Tell its
 agent that you'll bring in a Claude Code history yourself, and leave it with `/quit`
-before its "Going live", which starts the resident: the seed has to be in the data
-directory before any host starts there (stage 2). Running setup again once the seed is
+once it has written the recipe ("The recipe"), before its "Going live", which starts
+the resident: the seed has to be in the data directory before any host starts there
+(stage 2), and stage 3's check copies the recipe. Running setup again once the seed is
 in picks up where it stopped. Then make a `scripts/` directory in `<agent>-cm` for this
 stage's and the next stage's scripts.
 
