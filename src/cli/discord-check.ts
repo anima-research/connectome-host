@@ -135,7 +135,7 @@ export async function checkDiscord(
         'its text. Turn it on in the Developer Portal, under Bot, Privileged Gateway Intents.');
     }
 
-    const joined: Array<{ id: string; name: string }> = [];
+    const joined: Array<{ id: string; name: string; owner?: boolean }> = [];
     for (;;) {
       const after = joined.length === 0 ? '' : `&after=${joined[joined.length - 1]!.id}`;
       const page = await get<typeof joined>(`/users/@me/guilds?limit=${GUILD_PAGE}${after}`);
@@ -143,13 +143,13 @@ export async function checkDiscord(
       if (page.length < GUILD_PAGE) break;
     }
     const guilds: Guild[] = [];
-    for (const { id, name } of joined) {
+    for (const { id, name, owner } of joined) {
       const roles = new Map((await get<Array<{ id: string; permissions: string }>>(`/guilds/${id}/roles`))
         .map((r) => [r.id, BigInt(r.permissions)] as const));
       const member = await get<{ roles: string[] }>(`/guilds/${id}/members/${bot.id}`);
       const channels = await get<Channel[]>(`/guilds/${id}/channels`);
       guilds.push({
-        id, name, visible: channels.filter((c) => canView(id, bot.id, roles, member.roles, c)), ids: new Set(channels.map((c) => c.id)),
+        id, name, visible: channels.filter((c) => canView(owner === true, id, bot.id, roles, member.roles, c)), ids: new Set(channels.map((c) => c.id)),
       });
     }
     lines.push(guilds.length === 0
@@ -211,7 +211,8 @@ export function mappingRemedy(name: string, envOnly = false): string {
     'whichever then defines it. Then restart the service.';
 }
 
-function canView(guildId: string, botId: string, roles: Map<string, bigint>, botRoles: string[], channel: Channel): boolean {
+function canView(owner: boolean, guildId: string, botId: string, roles: Map<string, bigint>, botRoles: string[], channel: Channel): boolean {
+  if (owner) return true;
   let base = roles.get(guildId) ?? 0n;
   for (const role of botRoles) base |= roles.get(role) ?? 0n;
   if ((base & ADMINISTRATOR) !== 0n) return true;

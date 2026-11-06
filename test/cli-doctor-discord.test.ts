@@ -13,6 +13,7 @@ const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
 interface FakeGuild {
   id: string;
   name: string;
+  owner?: boolean;
   everyone: number;
   roles: Array<{ id: string; permissions: number }>;
   botRoles: string[];
@@ -49,7 +50,7 @@ function fakeDiscord(opts: {
       const limit = Number(url.searchParams.get('limit') ?? 200);
       const after = url.searchParams.get('after');
       const from = after === null ? 0 : guilds.findIndex((g) => g.id === after) + 1;
-      return Response.json(guilds.slice(from, from + Math.min(limit, 200)).map((g) => ({ id: g.id, name: g.name })));
+      return Response.json(guilds.slice(from, from + Math.min(limit, 200)).map((g) => ({ id: g.id, name: g.name, owner: g.owner ?? false })));
     }
     const m = /^\/guilds\/(\d+)\/(roles|channels|members\/900)$/.exec(path);
     const guild = m ? guilds.find((g) => g.id === m[1]) : undefined;
@@ -333,6 +334,18 @@ describe('doctor: Discord', () => {
     expect(r.text).toContain('garden');
     expect(r.text).not.toContain('secret-room');
     expect(r.text).toContain('lobby'); // an administrator sees every channel
+  });
+
+  test('a server the bot owns shows every channel, since its owner holds every permission', async () => {
+    const owned: FakeGuild = {
+      id: '300', name: 'Its own', owner: true, everyone: 0, roles: [], botRoles: [],
+      channels: [{ id: '301', name: 'hall', type: 0 }, { id: '302', name: 'closed', type: 0, overwrites: [{ id: '300', type: 0, deny: VIEW }] }],
+    };
+    const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [owned] }));
+    expect(r.lines).toContain('  Its own (300)');
+    expect(r.lines).toContain('    #hall (301)');
+    expect(r.lines).toContain('    #closed (302)');
+    expect(r.problems).toEqual([]);
   });
 
   test('the scope reads back by name, and a server the bot isn\'t in, or a channel it can\'t see, is a problem', async () => {
