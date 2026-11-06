@@ -158,8 +158,8 @@ the working directory):
   `invalid_request` rejections of the history itself, a poison-history breaker
   sheds the newest complete exchange and retries, capped by
   `refusalHandling.maxRewinds` (default 3) per episode.
-- **`scripts/connectome-doctor [--no-signal] [--data-dir DIR] [--findings-json]
-  [INSTALL_DIR] [UNIT]`** — one-shot "why isn't the agent responding?"
+- **`scripts/connectome-doctor [--data-dir DIR] [--findings-json] [INSTALL_DIR]
+  [UNIT]`** — one-shot "why isn't the agent responding?"
   (python3; systemd-user boxes). Prints service state, disk, a last-seen
   ladder per pipeline stage (discord event → chronicle ingest → `llm-calls` →
   delivery), recent failures, and a live gate dump via `SIGUSR2`. It reads the
@@ -181,7 +181,7 @@ the working directory):
   only to a host whose `/proc/PID/status` says it catches the signal: a host
   that hasn't built its framework yet has no listener, and the signal's
   default action ends it. It waits up to 5 s for the host's `[diagnostics]`
-  line. `--no-signal` leaves the dump out. `--data-dir`
+  line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   `CONNECTOME_DOCTOR_WITHHOLD`, a JSON list of `[name, value]` pairs, has each
   value replaced by `<name>` in everything the ladder prints, its findings

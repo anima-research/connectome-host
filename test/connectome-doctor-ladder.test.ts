@@ -58,6 +58,7 @@ interface Install {
   host: Host;
   started: number;
   now: number;
+  mainPidNow?: string;
 }
 
 interface Unit {
@@ -74,7 +75,7 @@ function systemctl(at: Install, unit: Unit = {}): void {
   bin(at.bins, 'systemctl', [
     'case "$*" in',
     `  *FragmentPath*) echo ${join(at.work, 'unit.txt')} ;;`,
-    `  *--value*) echo ${unit.mainPidNow ?? at.host.process.pid} ;;`,
+    `  *--value*) echo ${unit.mainPidNow ?? at.mainPidNow ?? at.host.process.pid} ;;`,
     `  *) printf "ActiveState=${unit.active ?? 'active'}\\nSubState=running\\nNRestarts=${unit.restarts ?? '0'}\\nExecMainStartTimestamp=${startStamp}\\nMainPID=${at.host.process.pid}\\n" ;;`,
     'esac',
   ].join('\n'));
@@ -82,7 +83,7 @@ function systemctl(at: Install, unit: Unit = {}): void {
 
 async function install(opts: {
   listens: boolean; journalFails?: string; dumpReadFails?: boolean; dumpsTo?: string; grepRefused?: string;
-  dumpDelay?: number;
+  dumpDelay?: number; mainPidNow?: string;
 }): Promise<Install> {
   const work = mkdtempSync(join(tmpdir(), 'chost-ladder-'));
   dirs.push(work);
@@ -92,7 +93,7 @@ async function install(opts: {
   mkdirSync(bins);
   const host = await standInHost(work, opts.listens, opts.dumpsTo && join(work, opts.dumpsTo), opts.dumpDelay);
   const now = Math.floor(Date.now() / 1000);
-  const at = { work, bins, host, started: now - 60, now };
+  const at = { work, bins, host, started: now - 60, now, mainPidNow: opts.mainPidNow };
   systemctl(at);
   const journal = join(work, 'journal.txt');
   bin(bins, 'journalctl', opts.journalFails !== undefined
@@ -154,32 +155,32 @@ describe('the ladder, for a unit that logs to the journal', () => {
   });
 
   test('the delivery stage is the time of the journal\'s last delivery, not of its last entry', async () => {
-    const at = await install({ listens: true });
-    const { out } = ladder(at, ['--no-signal']);
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const { out } = ladder(at);
     expect(out).toMatch(new RegExp(`o routeSpeech delivery +${stamp(at.now - 10)}`));
   });
 
   test('a reply that wasn\'t delivered after the last one that was is shown as not delivered, and is a finding with the whole line', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)`,
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the channel refused it: ${'r'.repeat(160)} — speech NOT routed (12 chars stay in chronicle)`,
       '',
     ].join('\n'));
-    const { out, status } = ladder(at, ['--no-signal']);
+    const { out, status } = ladder(at);
     expect(out).toMatch(new RegExp(`x routeSpeech delivery +${stamp(at.now - 10)}.*NOT delivered`));
     expect(out).toMatch(/=== findings ===[\s\S]*the last reply wasn't delivered: discord:1\/2: the channel refused it: r+ — speech NOT routed \(12 chars stay in chronicle\)/);
     expect(status).toBe(1);
   });
 
   test('a reply whose delivery wasn\'t confirmed is shown as that, beside the last delivery\'s time, and is a finding that it may have reached its channel', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)`,
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the connector timed out — speech delivery NOT confirmed (12 chars stay in chronicle)`,
       '',
     ].join('\n'));
-    const { out, status } = ladder(at, ['--no-signal']);
+    const { out, status } = ladder(at);
     expect(out).toMatch(new RegExp(`\\? routeSpeech delivery +${stamp(at.now - 10)} +\\( *\\d+s ago\\) +delivery NOT confirmed`));
     expect(out).not.toContain('NOT delivered');
     expect(out).toMatch(/=== findings ===[\s\S]*the last reply's delivery wasn't confirmed, so it may or may not be in its channel: discord:1\/2: the connector timed out/);
@@ -187,53 +188,53 @@ describe('the ladder, for a unit that logs to the journal', () => {
   });
 
   test('a reply that had no locus is shown as that', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)`,
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: turn has no locus (no home/trigger channel; nothing to deliver into) — speech NOT routed (12 chars stay in chronicle)`,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/x routeSpeech delivery .*NO LOCUS/);
     expect(out).toMatch(/=== findings ===[\s\S]*the last reply had no locus, so it wasn't delivered and stays in the chronicle: discord:1\/2: turn has no locus \(no home\/trigger channel; nothing to deliver into\) — speech NOT routed/);
   });
 
   test('a line about a locus that was closed, after a delivery, leaves the delivery stage at that delivery', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)`,
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: locus discord:1/2 was closed — opened by delivery (speech implies engagement)`,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(new RegExp(`o routeSpeech delivery +${stamp(at.now - 10)} .*routed 12ch -> discord:1/2`));
   });
 
   test('a reply line cut short after its arrow isn\'t taken for a delivery, and doesn\'t stop the ladder', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)`,
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> `,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).not.toContain('Traceback');
     expect(out).toMatch(new RegExp(`o routeSpeech delivery +${stamp(at.now - 10)} .*routed 12ch -> discord:1/2`));
   });
 
   test('a window with no reply line in it leaves the last delivery\'s time not known, naming the window', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), `${at.now - 3}.000000 host bun[1]: an ordinary line\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(/· routeSpeech delivery +can't be seen here: none in the journal since the unit's latest start$/m);
+    expect(ladder(at).out).toMatch(/· routeSpeech delivery +can't be seen here: none in the journal since the unit's latest start$/m);
     writeFileSync(join(at.work, 'logs', 'agent.log'), 'an ordinary line\n');
-    expect(ladder(at, ['--no-signal']).out).toMatch(/· routeSpeech delivery +can't be seen here: none in its last 2 MB$/m);
+    expect(ladder(at).out).toMatch(/· routeSpeech delivery +can't be seen here: none in its last 2 MB$/m);
   });
 
   test('replies with no delivery among them leave the last delivery\'s time not known, not never', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'),
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the channel refused it — speech NOT routed (12 chars stay in chronicle)\n`);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/x routeSpeech delivery +--:--:-- +\(not known\) +NOT delivered/);
     expect(out).not.toMatch(/routeSpeech delivery .*never/);
   });
@@ -259,13 +260,13 @@ describe('the ladder, for a unit that logs to the journal', () => {
   });
 
   test('the journal is read from the unit\'s latest start on, so an earlier run\'s failure isn\'t shown', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.started - 10}.000000 host bun[1]: [inference-failed] a failure of the run before`,
       `${at.now - 20}.000000 host bun[1]: [inference-failed] a failure of this run`,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toContain('a failure of this run');
     expect(out).not.toContain('a failure of the run before');
   });
@@ -286,12 +287,12 @@ describe('the ladder, for a unit that logs to the journal', () => {
   });
 
   test('a journal time keeps its fraction of a second, so a call earlier in a failure\'s second isn\'t taken as after it', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'),
       `${at.now - 20}.900000 host bun[1]: [inference-failed] the model call failed: 529 overloaded\n`);
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
       timestamp: new Date((at.now - 20) * 1000 + 100).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/\* inference failures, the last \S+ ago, with no successful turn found since/);
     expect(out).not.toContain('a later call');
   });
@@ -301,22 +302,22 @@ describe('where the ladder reads a unit\'s output', () => {
   const failing = (what: string): string => `[inference-failed] ${what}\n`;
 
   test('a unit whose unit file sends its output to a file is read from that file', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const file = join(at.work, 'host.err');
     writeFileSync(file, failing('from the stderr file'));
     systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toContain('from the stderr file');
     expect(out).not.toContain('400 prompt is too long');
     expect(out).toContain(`(stdout/err -> ${file})`);
   });
 
   test('a journalctl that refuses its pattern says nothing of it for a unit whose output goes to a file', async () => {
-    const at = await install({ listens: true, grepRefused: 'Compiled without pattern matching support' });
+    const at = await install({ listens: true, grepRefused: 'Compiled without pattern matching support', mainPidNow: '0' });
     const file = join(at.work, 'host.err');
     writeFileSync(file, failing('from the stderr file'));
     systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toContain(`(stdout/err -> ${file})`);
     expect(out).toContain('from the stderr file');
     expect(out).not.toContain('Compiled without pattern matching support');
@@ -335,20 +336,20 @@ describe('where the ladder reads a unit\'s output', () => {
   });
 
   test('a reply line in logs/agent.log is read whole, even where it holds a Unicode line separator', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'logs', 'agent.log'), [
       '[routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)',
       '[routeSpeech] discord:1/2: the channel refused it\u2028twice — speech NOT routed (12 chars stay in chronicle)',
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/x routeSpeech delivery .*NOT delivered/);
   });
 
   test('a logs/agent.log written since the unit started is read', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'logs', 'agent.log'), failing('from agent.log'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toContain('from agent.log');
     expect(out).not.toContain('400 prompt is too long');
   });
@@ -365,11 +366,11 @@ describe('where the ladder reads a unit\'s output', () => {
   });
 
   test('a unit file that can\'t be read is said, as a line that doesn\'t count, and the rest of the ladder still runs', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const unitFile = join(at.work, 'unit.txt');
     rmSync(unitFile);
     mkdirSync(unitFile);
-    const { out } = ladder(at, ['--no-signal', '--findings-json']);
+    const { out } = ladder(at, ['--findings-json']);
     const line = out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
     expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
       text: `connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
@@ -380,47 +381,47 @@ describe('where the ladder reads a unit\'s output', () => {
 
 describe('the ladder\'s recent failures', () => {
   test('an inference failure a later successful call followed is said with when it was, and that whose call isn\'t known, as a line that doesn\'t count', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const call = (s: number, error?: string, kind = 'stream') => JSON.stringify({ timestamp: new Date(s * 1000).toISOString(),
       kind, rawResponse: { stop_reason: error ? null : 'end_turn', ...(error ? { error } : {}) } });
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
     writeFileSync(calls, `${call(at.now - 5)}\n`);
-    const fixed = ladder(at, ['--no-signal']).out;
+    const fixed = ladder(at).out;
     expect(fixed).toMatch(new RegExp(`last inference failure \\S+ ago: a later call, at ${stamp(at.now - 5)}, succeeded; the call ` +
       'log doesn\'t say whose, so whether the agent that failed has recovered isn\'t known'));
-    const line = ladder(at, ['--no-signal', '--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
+    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
     expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
       text: expect.stringMatching(/^last inference failure \S+ ago: a later call/), counts: false });
     expect(fixed).not.toContain('hard-down');
     const finding = /\* inference failures, the last \S+ ago, with no successful turn found since — if the reason repeats/;
     writeFileSync(calls, `${call(at.now - 25)}\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(finding);
+    expect(ladder(at).out).toMatch(finding);
     writeFileSync(calls, `${call(at.now - 5, '400 prompt is too long')}\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(finding);
+    expect(ladder(at).out).toMatch(finding);
     writeFileSync(calls, `${call(at.now - 25)}\n${call(at.now - 5, undefined, 'complete')}\n`);
-    const compressed = ladder(at, ['--no-signal']).out;
+    const compressed = ladder(at).out;
     expect(compressed).toMatch(finding);
     expect(compressed).not.toContain('a later call');
     const later = (fields: Record<string, unknown>) => JSON.stringify({ timestamp: new Date((at.now - 5) * 1000).toISOString(),
       kind: 'stream', rawResponse: { stop_reason: 'end_turn' }, ...fields });
     for (const failed of [later({ type: 'error' }), later({ error: 'overloaded' })]) {
       writeFileSync(calls, `${failed}\n`);
-      expect(ladder(at, ['--no-signal']).out).toMatch(finding);
+      expect(ladder(at).out).toMatch(finding);
     }
   });
 
   test('a later successful call with newer rows of the call log that can\'t be read says that whether a call after it failed isn\'t known, whenever those rows were written', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const call = (s: number) => JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind: 'stream',
       rawResponse: { stop_reason: 'end_turn' } });
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
     const unsure = /a later call, at \S+ \S+, succeeded; the call log doesn't say whose, so whether the agent that failed has recovered isn't known; newer rows of the call log can't be read, so whether a call after it failed isn't known/;
     writeFileSync(calls, `${call(at.now - 5)}\n{"timestamp":"${new Date((at.now - 4) * 1000).toISOString()}","kind":"str`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(unsure);
+    expect(ladder(at).out).toMatch(unsure);
     writeFileSync(calls, `${call(at.now - 5)}\n{ not a row }\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(unsure);
+    expect(ladder(at).out).toMatch(unsure);
     writeFileSync(calls, `${call(at.now - 5)}\n`);
-    const whole = ladder(at, ['--no-signal']).out;
+    const whole = ladder(at).out;
     expect(whole).toMatch(/a later call, at \S+ \S+, succeeded; the call log doesn't say whose/);
     expect(whole).not.toContain('newer rows of the call log');
     writeFileSync(join(at.work, 'journal.txt'), '');
@@ -433,35 +434,35 @@ describe('the ladder\'s recent failures', () => {
     const payload = [...Buffer.from(JSON.stringify({ triggered: false }))].join(',');
     writeFileSync(join(at.work, 'data', 'sessions', 's-1', 'records.log'),
       `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${(at.now - 100) * 1_000_000}}\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(unsure);
+    expect(ladder(at).out).toMatch(unsure);
   });
 
   test('an exhausted inference that only failures.log still holds is a finding, with its time from the record', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), '');
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 300) * 1000).toISOString(),
       agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
       timestamp: new Date((at.now - 400) * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(
+    expect(ladder(at).out).toMatch(
       /\* inference failures, the last \d+m ago, with no successful turn found since — if the reason repeats/);
-    const line = ladder(at, ['--no-signal', '--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
+    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
     expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
       text: expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/), counts: true });
   });
 
   test('a failures.log record of another kind makes no inference summary', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), '');
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 300) * 1000).toISOString(),
       agent: 'resident', kind: 'refusal', category: 'policy', streak: 1 })}\n`);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toContain('"kind":"refusal"');
     expect(out).not.toMatch(/inference failure/);
   });
 
   test('a failure whose time can\'t be read, beside one whose time can, leaves the finding to the newest failure whose time is known, and says so', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const file = join(at.work, 'host.err');
     writeFileSync(file, '[inference-failed] agent=resident consecutive=1: 529 overloaded\n');
     systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
@@ -470,7 +471,7 @@ describe('the ladder\'s recent failures', () => {
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
     const success = (s: number) => `${JSON.stringify({
       timestamp: new Date(s * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`;
-    const findings = () => JSON.parse(ladder(at, ['--no-signal', '--findings-json']).out.split('\n')
+    const findings = () => JSON.parse(ladder(at, ['--findings-json']).out.split('\n')
       .find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
     writeFileSync(calls, success(at.now - 400));
     expect(findings()).toContainEqual({ text: expect.stringMatching(
@@ -488,11 +489,11 @@ describe('the ladder\'s recent failures', () => {
   });
 
   test('failures whose time the journal can\'t give are said, with that time not known, as a line that doesn\'t count', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const file = join(at.work, 'host.err');
     writeFileSync(file, '[inference-failed] the model call failed: 400 prompt is too long\n');
     systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
-    const { out } = ladder(at, ['--no-signal', '--findings-json']);
+    const { out } = ladder(at, ['--findings-json']);
     const line = out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
     expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
       text: expect.stringMatching(/^inference failures present, and when the last was isn't known here/), counts: false });
@@ -500,26 +501,26 @@ describe('the ladder\'s recent failures', () => {
 
 
   test('every logs/failures.log record but a channel\'s auto-close is a failure, whatever its reason says', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: '529 overloaded' })}\n${JSON.stringify({
       kind: 'subscription-gc-close', channelId: '101', at: new Date().toISOString(), limitChars: 4000, restore: 'channel_open' })}\n`);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/recent failures in .*failures\.log:\n.*529 overloaded/);
     expect(out).not.toContain('subscription-gc-close');
   });
 
   test('a newest call log that can\'t be read leaves the inference stage not known, saying so, not never', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     mkdirSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/· inference \(llm call\) +can't be seen here: the newest call log, llm-calls\.2026-10-30T00-00-00\.jsonl, can't be read \(Is a directory\)/);
     expect(out).not.toContain('no readable model call');
   });
 
   test('with a failure on record and a newest call log that can\'t be read, whether a turn has succeeded since is not known, and doesn\'t count', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     mkdirSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'));
-    const line = ladder(at, ['--no-signal', '--findings-json']).out.split('\n')
+    const line = ladder(at, ['--findings-json']).out.split('\n')
       .find((l) => l.startsWith('connectome-doctor findings: '))!;
     const found = JSON.parse(line.slice('connectome-doctor findings: '.length)) as { text: string; counts: boolean }[];
     expect(found).toContainEqual({ text: expect.stringMatching(/^inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since the call log can't be read here$/), counts: false });
@@ -527,34 +528,34 @@ describe('the ladder\'s recent failures', () => {
   });
 
   test('with no call log, the inference stage says so, and with failures on record, whether a turn has succeeded since is not known, and doesn\'t count', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const data = join(at.work, 'data');
-    const found = (): { text: string; counts: boolean }[] => JSON.parse(ladder(at, ['--no-signal', '--findings-json']).out.split('\n')
+    const found = (): { text: string; counts: boolean }[] => JSON.parse(ladder(at, ['--findings-json']).out.split('\n')
       .find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
-    expect(ladder(at, ['--no-signal']).out).toContain(`· inference (llm call)       can't be seen here: no call log in ${data}\n`);
+    expect(ladder(at).out).toContain(`· inference (llm call)       can't be seen here: no call log in ${data}\n`);
     expect(found()).toContainEqual({ text: expect.stringMatching(new RegExp('^inference failures, the last \\S+ ago; whether a turn ' +
       `has succeeded since isn't known, since there's no call log in ${data}$`)), counts: false });
     expect(found().some((f) => f.text.includes('no successful turn found since'))).toBe(false);
     writeFileSync(join(at.work, 'journal.txt'), '');
-    expect(ladder(at, ['--no-signal']).out).toMatch(new RegExp(`x inference \\(llm call\\) +--:--:-- +\\( +never\\) +no call log in ${data}$`, 'm'));
+    expect(ladder(at).out).toMatch(new RegExp(`x inference \\(llm call\\) +--:--:-- +\\( +never\\) +no call log in ${data}$`, 'm'));
   });
 
   test('a call log that can\'t be looked at leaves the inference stage not known, naming it, and the stages after it still print', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
     symlinkSync(calls, calls);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/· inference \(llm call\) +can't be seen here: \S+\/llm-calls\.2026-10-30T00-00-00\.jsonl can't be read \(Too many levels of symbolic links\)$/m);
     expect(out).toMatch(/routeSpeech delivery .*routed 12ch -> discord:1\/2/);
     expect(out).toContain('recent failures in connectome-test.service\'s journal:');
   });
 
   test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be listed leaves the inference stage not known, naming it, and the stages after it still print', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const data = join(at.work, 'data');
     chmodSync(data, 0o000);
     try {
-      const { out } = ladder(at, ['--no-signal']);
+      const { out } = ladder(at);
       expect(out).toMatch(/· inference \(llm call\) +can't be seen here: \S+\/data can't be read \(Permission denied\)$/m);
       expect(out).toMatch(/routeSpeech delivery .*routed 12ch -> discord:1\/2/);
       expect(out).toContain('recent failures in connectome-test.service\'s journal:');
@@ -564,24 +565,24 @@ describe('the ladder\'s recent failures', () => {
   });
 
   test('the journal\'s failures and failures.log\'s are each shown, under where they came from', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const records = Array.from({ length: 6 }, (_, i) => JSON.stringify({ reason: `record ${i}` }));
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${records.join('\n')}\n`);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/recent failures in connectome-test\.service's journal:\n.*400 prompt is too long/);
     expect(out).toMatch(/recent failures in .*failures\.log:\n(.*record [1-5].*\n){5}/);
     expect(out).not.toContain('record 0');
   });
 
   test('a failures.log that can\'t be read, or a link to nothing, is said, not taken as one with no failures or as none there', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     mkdirSync(join(at.work, 'logs', 'failures.log'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/failures\.log: not known: it can't be read/);
     expect(out).not.toMatch(/failures\.log: none found/);
     rmSync(join(at.work, 'logs', 'failures.log'), { recursive: true });
     symlinkSync('moved-away.log', join(at.work, 'logs', 'failures.log'));
-    const dangling = ladder(at, ['--no-signal']).out;
+    const dangling = ladder(at).out;
     expect(dangling).toMatch(/failures\.log: not known: it can't be read \(No such file or directory\)/);
     expect(dangling).not.toMatch(/failures\.log: none found/);
   });
@@ -652,15 +653,6 @@ describe('the ladder\'s gate dump', () => {
     expect(alive(at.host)).toBe(true);
   });
 
-  test('--no-signal sends no SIGUSR2, even to a host that listens, and says the dump was left out', async () => {
-    const at = await install({ listens: true });
-    const { out } = ladder(at, ['--no-signal']);
-    await settled(at.host);
-    expect(signalled(at.host)).toBe(false);
-    expect(out).not.toContain('live gate dump (SIGUSR2): {');
-    expect(out).toMatch(/gate dump.*left out/i);
-  });
-
   test('a gate dump whose journal read fails says so, not that the host didn\'t answer, and is a finding', async () => {
     const at = await install({ listens: true, dumpReadFails: true });
     const { out, status } = ladder(at);
@@ -681,9 +673,9 @@ describe('the ladder\'s gate dump', () => {
 
 describe('the start command', () => {
   test('a service that isn\'t active is told to start it with systemctl', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     systemctl(at, { active: 'inactive' });
-    expect(ladder(at, ['--no-signal']).out).toContain('* service is inactive — start it: systemctl --user start connectome-test.service');
+    expect(ladder(at).out).toContain('* service is inactive — start it: systemctl --user start connectome-test.service');
   });
 });
 
@@ -691,26 +683,26 @@ describe('the ladder\'s recent start', () => {
   const recent = /service started only .* recent restart\/crash\?/;
 
   test('a start in the last five minutes is called recent, and an older one isn\'t', async () => {
-    const at = await install({ listens: true });
-    expect(ladder(at, ['--no-signal']).out).toMatch(recent);
+    const at = await install({ listens: true, mainPidNow: '0' });
+    expect(ladder(at).out).toMatch(recent);
     at.started = at.now - 600;
     systemctl(at);
-    expect(ladder(at, ['--no-signal']).out).not.toMatch(recent);
+    expect(ladder(at).out).not.toMatch(recent);
   });
 
   test('a unit with no start time still gets the whole ladder', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     systemctl(at, { neverStarted: true });
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).not.toMatch(recent);
     expect(out).toMatch(/^=== (findings|no obvious problems)/m);
     expect(out).toMatch(/· routeSpeech delivery +can't be seen here: the unit has no start time, so no run's journal is read$/m);
   });
 
   test('a unit with no start time leaves its journal\'s failures not known, since no search ran, not none found', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     systemctl(at, { neverStarted: true });
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toContain('recent failures in connectome-test.service\'s journal: not known: it wasn\'t searched (the unit\'s ' +
       'start time isn\'t known)');
     expect(out).toContain('connectome-test.service\'s journal wasn\'t searched (the unit\'s start time isn\'t known), so its ' +
@@ -722,55 +714,55 @@ describe('the ladder\'s recent start', () => {
 
 describe('the ladder\'s data directory', () => {
   test('--data-dir reads the data directory it names, not INSTALL_DIR/data', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const data = mkdtempSync(join(tmpdir(), 'chost-ladder-data-'));
     dirs.push(data);
     rmSync(join(at.work, 'data'), { recursive: true });
     const row = { timestamp: new Date().toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } };
     writeFileSync(join(data, 'llm-calls.2026-10-27T00-00-00.jsonl'), `${JSON.stringify(row)}\n`);
-    const { out } = ladder(at, ['--no-signal', '--data-dir', data]);
+    const { out } = ladder(at, ['--data-dir', data]);
     expect(out).toContain('stop=end_turn');
   });
 
   test('a model call that answered with no stop reason in its record says it answered, not stop=None, and one that failed says only its error', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const answered = { timestamp: new Date().toISOString(), kind: 'stream', rawResponse: { status: 'completed' } };
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-27T00-00-00.jsonl'), `${JSON.stringify(answered)}\n`);
-    const ok = ladder(at, ['--no-signal']).out;
+    const ok = ladder(at).out;
     expect(ok).toMatch(/o inference \(llm call\) .* answered$/m);
     expect(ok).not.toContain('stop=None');
     const failed = { timestamp: new Date().toISOString(), kind: 'stream', type: 'error', error: 'overloaded' };
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-27T00-00-00.jsonl'), `${JSON.stringify(failed)}\n`);
-    const bad = ladder(at, ['--no-signal']).out;
+    const bad = ladder(at).out;
     expect(bad).toMatch(/inference \(llm call\) .* err=overloaded/);
     expect(bad).not.toContain('stop=None');
   });
 
   test('with no data directory, the ingest and inference stages can\'t be seen, naming it', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     rmSync(join(at.work, 'data'), { recursive: true });
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     const data = join(at.work, 'data');
     expect(out).toContain(`· chronicle ingest (+gate)   can't be seen here: there's no data directory at ${data}`);
     expect(out).toContain(`· inference (llm call)       can't be seen here: there's no data directory at ${data}`);
     expect(out).not.toMatch(/(chronicle ingest|inference \(llm call\)) .*never/);
     expect(out).toContain('run this script with --data-dir DIR');
-    const json = ladder(at, ['--no-signal', '--findings-json']).out;
+    const json = ladder(at, ['--findings-json']).out;
     expect(json).toContain(`there's no data directory at ${data}`);
     expect(json).not.toContain('--data-dir');
   });
 
   test('a data directory that isn\'t there is a finding, not a crash', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     rmSync(join(at.work, 'data'), { recursive: true });
-    const { out, status } = ladder(at, ['--no-signal']);
+    const { out, status } = ladder(at);
     expect(out).not.toContain('Traceback');
     expect(out).toMatch(/=== findings ===[\s\S]*there's no data directory at .*--data-dir/);
     expect(status).toBe(1);
   });
 
   test('the ingest stage reads the active session\'s records, as sessions.json names it, not another session\'s', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const record = (room: string, at_s: number) => {
       const payload = [...Buffer.from(JSON.stringify({ triggered: true, channelName: room, participant: 'ann' }))].join(',');
       return `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${at_s * 1_000_000}}\n`;
@@ -784,76 +776,76 @@ describe('the ladder\'s data directory', () => {
       utimesSync(file, when, when);
     }
     writeFileSync(join(at.work, 'data', 'sessions.json'), JSON.stringify({ activeSessionId: 's-active', sessions: {} }));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/chronicle ingest \(\+gate\) .*#active-room/);
     expect(out).not.toContain('#other-room');
   });
 
   test('an index naming no session leaves the active one not known, a session with no store is never, and one whose store has no records.log, or session data that can\'t be read, is not known; none takes another session\'s records', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const payload = [...Buffer.from(JSON.stringify({ triggered: true, channelName: 'other-room', participant: 'ann' }))].join(',');
     mkdirSync(join(at.work, 'data', 'sessions', 's-other'), { recursive: true });
     writeFileSync(join(at.work, 'data', 'sessions', 's-other', 'records.log'),
       `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${(at.now - 40) * 1_000_000}}\n`);
     const index = join(at.work, 'data', 'sessions.json');
     writeFileSync(index, JSON.stringify({ activeSessionId: 's-gone-Zq9-SID-SECRET', sessions: {} }));
-    const named = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
+    const named = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
     expect(named).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\).*the active session, s-gone-<DISCORD_TOKEN>, has no records\.log/);
     expect(named).not.toContain('Zq9-SID-SECRET');
     expect(named).not.toContain('#other-room');
     for (const activeSessionId of [null, '', 42]) {
       writeFileSync(index, JSON.stringify({ activeSessionId, sessions: {} }));
-      const none = ladder(at, ['--no-signal']).out;
+      const none = ladder(at).out;
       expect(none).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json names no active session, which no start of the host leaves, so which session is active isn't known/);
       expect(none).not.toContain('#other-room');
     }
     mkdirSync(join(at.work, 'data', 'sessions', 's-bare-Zq9-SID-SECRET'));
     writeFileSync(index, JSON.stringify({ activeSessionId: 's-bare-Zq9-SID-SECRET', sessions: {} }));
-    const bare = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
+    const bare = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
     expect(bare).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*the active session's store, \S*sessions\/s-bare-<DISCORD_TOKEN>, is there without a records\.log, which the host writes when it opens the store, so what was ingested isn't known/);
     expect(bare).not.toContain('Zq9-SID-SECRET');
     expect(bare).not.toContain('#other-room');
     writeFileSync(index, '{ not json');
-    const unread = ladder(at, ['--no-signal']).out;
+    const unread = ladder(at).out;
     expect(unread).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json can't be read as the host's session index \(Expecting property name/);
     expect(unread).not.toContain('#other-room');
     writeFileSync(index, '[]');
-    const listed = ladder(at, ['--no-signal']).out;
+    const listed = ladder(at).out;
     expect(listed).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json can't be read as the host's session index \(it isn't a JSON object\)/);
     expect(listed).not.toContain('#other-room');
     const withhold = { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) };
     mkdirSync(join(at.work, 'data', 'sessions', 's-dir-Zq9-SID-SECRET', 'records.log'), { recursive: true });
     writeFileSync(index, JSON.stringify({ activeSessionId: 's-dir-Zq9-SID-SECRET', sessions: {} }));
-    const records = ladder(at, ['--no-signal'], withhold).out;
+    const records = ladder(at, [], withhold).out;
     expect(records).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*s-dir-<DISCORD_TOKEN>\/records\.log can't be read \(Is a directory\)/);
     expect(records).not.toContain('Zq9-SID-SECRET');
     expect(records).not.toContain('#other-room');
     mkdirSync(join(at.work, 'data', 'sessions', 's-loop-Zq9-SID-SECRET'));
     symlinkSync('records.log', join(at.work, 'data', 'sessions', 's-loop-Zq9-SID-SECRET', 'records.log'));
     writeFileSync(index, JSON.stringify({ activeSessionId: 's-loop-Zq9-SID-SECRET', sessions: {} }));
-    const loop = ladder(at, ['--no-signal'], withhold).out;
+    const loop = ladder(at, [], withhold).out;
     expect(loop).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*s-loop-<DISCORD_TOKEN>\/records\.log can't be read \(Too many levels of symbolic links\)/);
     expect(loop).not.toContain('Zq9-SID-SECRET');
     expect(loop).not.toContain('#other-room');
   });
 
   test('with no index, a sessions directory that can\'t be listed is said, not taken as one with no records', async () => {
-    const at = await install({ listens: true });
-    const fresh = ladder(at, ['--no-signal']).out;
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const fresh = ladder(at).out;
     expect(fresh).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\)/);
     expect(fresh).not.toMatch(/chronicle ingest \(\+gate\) +can't be seen here/);
     mkdirSync(join(at.work, 'data', 'sessions'));
-    const empty = ladder(at, ['--no-signal']).out;
+    const empty = ladder(at).out;
     expect(empty).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\)/);
     expect(empty).not.toMatch(/chronicle ingest \(\+gate\) +can't be seen here/);
     rmSync(join(at.work, 'data', 'sessions'), { recursive: true });
     writeFileSync(join(at.work, 'data', 'sessions'), 'not a directory');
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions can't be listed \(Not a directory\)/);
   });
 
   test('a records.log with content and no message record the ladder reads leaves the ingest stage not known, naming what it read; only an empty one is never', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const session = join(at.work, 'data', 'sessions', 's-active');
     mkdirSync(session, { recursive: true });
     writeFileSync(join(at.work, 'data', 'sessions.json'), JSON.stringify({ activeSessionId: 's-active', sessions: {} }));
@@ -872,29 +864,29 @@ describe('the ladder\'s data directory', () => {
       `${record(1, 'other')}\n`,
     ]) {
       writeFileSync(log, content);
-      const { out } = ladder(at, ['--no-signal']);
+      const { out } = ladder(at);
       expect(out).toMatch(unknown);
       expect(out).not.toMatch(/chronicle ingest \(\+gate\) .*never/);
     }
     writeFileSync(log, `${filler}\n${record(1, 'messages', at.now - 60)}\n`);
-    expect(ladder(at, ['--no-signal']).out).toMatch(/o chronicle ingest \(\+gate\) .*\( *\d+s ago\)/);
+    expect(ladder(at).out).toMatch(/o chronicle ingest \(\+gate\) .*\( *\d+s ago\)/);
     writeFileSync(log, '');
-    expect(ladder(at, ['--no-signal']).out).toMatch(/x chronicle ingest \(\+gate\) .*never/);
+    expect(ladder(at).out).toMatch(/x chronicle ingest \(\+gate\) .*never/);
   });
 
   test('with no session index, sessions on disk leave the active one not known, and no session\'s records are read', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const payload = [...Buffer.from(JSON.stringify({ triggered: true, channelName: 'some-room', participant: 'ann' }))].join(',');
     mkdirSync(join(at.work, 'data', 'sessions', 's-a'), { recursive: true });
     writeFileSync(join(at.work, 'data', 'sessions', 's-a', 'records.log'),
       `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${(at.now - 40) * 1_000_000}}\n`);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*no sessions\.json names the active session/);
     expect(out).not.toContain('#some-room');
   });
 
   test('the last Discord drop discord-mcpl logged in the last hour is shown with its reason, on the forward stage', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const iso = (s: number) => new Date(s * 1000).toISOString();
     const log = join(at.work, 'data', 'discord-mcpl-debug.log');
     writeFileSync(log, [
@@ -903,7 +895,7 @@ describe('the ladder\'s data directory', () => {
       `${iso(at.now - 45)} handleDiscordMessage:drop {"reason":"channel not in scope"}`,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/mcpl forward to host .*last drop .*: channel not in scope/);
     expect(out).not.toContain('bot message');
     writeFileSync(log, [
@@ -911,12 +903,12 @@ describe('the ladder\'s data directory', () => {
       `${iso(at.now - 3_700)} handleDiscordMessage:drop {"reason":"channel not in scope"}`,
       '',
     ].join('\n'));
-    expect(ladder(at, ['--no-signal']).out).not.toContain('last drop');
+    expect(ladder(at).out).not.toContain('last drop');
   });
 
   test('with no discord-mcpl debug log where it reads one, both Discord stages are not known, with why, and not never', async () => {
-    const at = await install({ listens: true });
-    const { out } = ladder(at, ['--no-signal']);
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const { out } = ladder(at);
     const log = join(at.work, 'data', 'discord-mcpl-debug.log');
     expect(out).toMatch(/· discord event seen +can't be seen here: discord-mcpl's debug log isn't at (\S+), and it writes one only when DISCORD_MCPL_DEBUG_LOG names it$/m);
     expect(out.match(/debug log isn't at (\S+),/)?.[1]).toBe(log);
@@ -926,129 +918,129 @@ describe('the ladder\'s data directory', () => {
   });
 
   test('a debug log that can\'t be read leaves both Discord stages not known, with why, not never', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     mkdirSync(join(at.work, 'data', 'discord-mcpl-debug.log'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/· discord event seen +can't be seen here: discord-mcpl's debug log at \S+ can't be read \(.+\)$/m);
     expect(out).toMatch(/· mcpl forward to host +can't be seen here: it's read from the same debug log$/m);
   });
 
   test('with nothing found, the summary names the stages the ladder couldn\'t see, not that the pipeline looks alive', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'),
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)\n`);
     at.started = at.now - 600;
     systemctl(at);
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/^=== no obvious problems in what it could see; not known: (.+, )?discord event seen, mcpl forward to host(, .+)? ===$/m);
     expect(out).not.toContain('pipeline looks alive');
   });
 
   test('a last drop for a channel that isn\'t open shows discord-mcpl\'s own reason on the forward stage', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const iso = (s: number) => new Date(s * 1000).toISOString();
     writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'), [
       `${iso(at.now - 50)} handleDiscordMessage:enter {"channelName":"bloop","contentPreview":"hi"}`,
       `${iso(at.now - 49)} handleDiscordMessage:drop {"reason":"ambient-not-subscribed","channelId":"2","channelName":"bloop","tracked":false}`,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(/o discord event seen .*#bloop: hi/);
     expect(out).toMatch(/mcpl forward to host .*last drop .*: ambient-not-subscribed$/m);
     expect(out).not.toContain('isn\'t open to it');
   });
 
   test('the forward stage shows the last message passed on to the host', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const iso = (s: number) => new Date(s * 1000).toISOString();
     writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'), [
       `${iso(at.now - 50)} handleDiscordMessage:enter {"channelName":"bloop","contentPreview":"hi"}`,
       `${iso(at.now - 49)} handleDiscordMessage:forwarding {"via":"push/event"}`,
       '',
     ].join('\n'));
-    const { out } = ladder(at, ['--no-signal']);
+    const { out } = ladder(at);
     expect(out).toMatch(new RegExp(`o mcpl forward to host +${stamp(at.now - 49)} .*push/event`));
   });
 
   test('the last message discord-mcpl\'s filters refused within the hour is shown on the first stage, with its reason, leaving out the bot\'s own', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const iso = (s: number) => new Date(s * 1000).toISOString();
     const log = join(at.work, 'data', 'discord-mcpl-debug.log');
     const drop = (s: number, reason: string) =>
       `${iso(s)} gateway:message-create-drop {"msgId":"9","guildId":"1","channelId":"7","authorId":"5","reason":"${reason}"}`;
     for (const reason of ['channel-not-allowed', 'guild-not-allowed', 'dm-user-not-allowed']) {
       writeFileSync(log, `${drop(at.now - 40, reason)}\n${drop(at.now - 30, 'self-authored')}\n`);
-      expect(ladder(at, ['--no-signal']).out).toMatch(new RegExp(`x discord event seen .*never.*last filter drop .*: ${reason}$`, 'm'));
+      expect(ladder(at).out).toMatch(new RegExp(`x discord event seen .*never.*last filter drop .*: ${reason}$`, 'm'));
     }
     writeFileSync(log, `${drop(at.now - 3_700, 'channel-not-allowed')}\n`);
-    expect(ladder(at, ['--no-signal']).out).not.toContain('last filter drop');
+    expect(ladder(at).out).not.toContain('last filter drop');
   });
 });
 
 describe('what the ladder withholds', () => {
   test('a value it\'s given to withhold is replaced where it reads it, before any line is cut short', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const secret = 'Zq9-SECRET-77';
     const long = `[inference-failed] ${'x'.repeat(125)}${secret} and the rest`;
     writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: ${long}\n`);
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: `Error: ${'y'.repeat(120)}${secret}` })}\n`);
-    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
     expect(out).toContain('<DISC');
     expect(out).not.toContain('Zq9');
   });
 
   test('two values that overlap where they\'re read leave no part of either', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: [inference-failed] key aaQ1-bbQ2-ccQ3 refused\n`);
     const withhold = JSON.stringify([['FIRST', 'aaQ1-bbQ2'], ['SECOND', 'bbQ2-ccQ3']]);
-    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
     expect(out).toContain('key <FIRST> refused');
     for (const part of ['aaQ1', 'bbQ2', 'ccQ3']) expect(out).not.toContain(part);
   });
 
   test('a value at the start of a file\'s tail, cut through, leaves no part of it', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const secret = 'Zq9-STRADDLE-SECRET-41';
     const first = `${'x'.repeat(100)}${secret} tail\n`;
     const cut = Buffer.byteLength(first) - (100 + 10);
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${first}${'y'.repeat(400_000 - cut - 1)}\n`);
-    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
     expect(out).toContain('yyyy');
     expect(out).not.toContain(secret.slice(10));
   });
 
   test('a failed command\'s error is withheld too', async () => {
-    const at = await install({ listens: true, journalFails: 'Failed: the token Zq9-SECRET-77 was refused' });
-    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SECRET-77']]) });
+    const at = await install({ listens: true, journalFails: 'Failed: the token Zq9-SECRET-77 was refused', mainPidNow: '0' });
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SECRET-77']]) });
     expect(out).toContain('the token <DISCORD_TOKEN> was refused');
     expect(out).not.toContain('Zq9');
   });
 
   test('a value it withholds is still read as what it is: a call row with that value in it counts, and a channel\'s auto-close stays one', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
       timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', cached: true, rawResponse: { stop_reason: 'end_turn' } })}\n`);
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({
       kind: 'subscription-gc-close', channelId: '101', at: new Date().toISOString(), limitChars: 4000, restore: 'channel_open' })}\n`);
     const withhold = JSON.stringify([['FIRST', 'true'], ['SECOND', 'gc-close']]);
-    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
     expect(out).toMatch(/o inference \(llm call\) .*stop=end_turn/);
     expect(out).not.toContain('unreadable');
     expect(out).toMatch(/recent failures in .*failures\.log: none found/);
   });
 
   test('what it prints from its own arguments and commands is withheld too', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     const name = at.work.split('/').at(-1)!;
-    const { out } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['PATHNAME', name], ['STATE', 'running']]) });
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['PATHNAME', name], ['STATE', 'running']]) });
     expect(out).toContain('<PATHNAME>');
     expect(out).toContain('active/<STATE>');
     expect(out).not.toContain(name);
   });
 
   test('a CONNECTOME_DOCTOR_WITHHOLD it can\'t read stops the ladder before it reads anything', async () => {
-    const at = await install({ listens: true });
-    const { out, status } = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: '{"DISCORD_TOKEN":"x"}' });
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const { out, status } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: '{"DISCORD_TOKEN":"x"}' });
     expect(status).toBe(2);
     expect(out).toContain("CONNECTOME_DOCTOR_WITHHOLD can't be read");
     expect(out).not.toContain('400 prompt is too long');
@@ -1063,13 +1055,13 @@ describe('the ladder run by doctor, with --findings-json', () => {
   };
 
   test('its findings are its last line, each with whether it counts, with no block or closing line, and it exits 0', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), [
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the channel refused it — speech NOT routed (12 chars stay in chronicle)`,
       '',
     ].join('\n'));
     rmSync(join(at.work, 'data'), { recursive: true });
-    const { out, status } = ladder(at, ['--no-signal', '--findings-json']);
+    const { out, status } = ladder(at, ['--findings-json']);
     expect(out.trimEnd().split('\n').at(-1)).toMatch(/^connectome-doctor findings: /);
     expect(findings(out)).toEqual([
       { text: expect.stringMatching(/^there's no data directory at /), counts: false },
@@ -1080,26 +1072,26 @@ describe('the ladder run by doctor, with --findings-json', () => {
   });
 
   test('nothing found is an empty list, and still no closing line', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'),
       `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)\n`);
-    const { out, status } = ladder(at, ['--no-signal', '--findings-json']);
+    const { out, status } = ladder(at, ['--findings-json']);
     expect(findings(out)).toEqual([]);
     expect(out).not.toContain('=== ');
     expect(status).toBe(0);
   });
 
   test('the service\'s state is left to doctor: one that isn\'t active, or started a minute ago, makes no finding and no row', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     systemctl(at, { active: 'inactive' });
-    const { out } = ladder(at, ['--no-signal', '--findings-json']);
+    const { out } = ladder(at, ['--findings-json']);
     expect(out).not.toMatch(/^service +:/m);
     expect(findings(out).map((f) => f.text).join('\n')).not.toMatch(/service is inactive|service started only/);
   });
 
   test('what the ladder can\'t see is a line that doesn\'t count', async () => {
-    const at = await install({ listens: true, journalFails: 'Failed to open the journal: Permission denied' });
-    const { out } = ladder(at, ['--no-signal', '--findings-json']);
+    const at = await install({ listens: true, journalFails: 'Failed to open the journal: Permission denied', mainPidNow: '0' });
+    const { out } = ladder(at, ['--findings-json']);
     expect(findings(out)).toContainEqual({ text: expect.stringMatching(/journal can't be read/), counts: false });
     expect(findings(out).filter((f) => f.counts)).toEqual([]);
   });
@@ -1108,10 +1100,10 @@ describe('the ladder run by doctor, with --findings-json', () => {
     JSON.parse(out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
 
   test('an unconfirmed delivery is a line that doesn\'t count', async () => {
-    const at = await install({ listens: true });
+    const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'),
       `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the connector timed out — speech delivery NOT confirmed (12 chars stay in chronicle)\n`);
-    expect(findingsOf(ladder(at, ['--no-signal', '--findings-json']).out)).toContainEqual(
+    expect(findingsOf(ladder(at, ['--findings-json']).out)).toContainEqual(
       { text: expect.stringMatching(/^the last reply's delivery wasn't confirmed/), counts: false });
   });
 

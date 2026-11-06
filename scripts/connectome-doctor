@@ -133,14 +133,11 @@ def read_text(path, last=None, start=0):
 
 
 args = []
-no_signal = False
 data_dir = None
 findings_json = False
 argv = iter(sys.argv[1:])
 for a in argv:
-    if a == "--no-signal":
-        no_signal = True
-    elif a == "--data-dir":
+    if a == "--data-dir":
         data_dir = next(argv, None)
     elif a == "--findings-json":
         findings_json = True
@@ -699,10 +696,7 @@ def usr2_listener(pid):
     return None
 
 
-if no_signal:
-    print()
-    print(f"live gate dump: {C_DIM}left out (--no-signal), so the host got no SIGUSR2{C_OFF}")
-elif pid not in ("0", "", None) and active in ("active", "running"):
+if pid not in ("0", "", None) and active in ("active", "running"):
     pid = sh(f"systemctl --user show {unit} -p MainPID --value") or "0"
     listening = usr2_listener(pid) if pid != "0" else None
     print()
