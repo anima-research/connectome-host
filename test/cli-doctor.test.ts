@@ -130,7 +130,7 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
     '#!/bin/sh',
     'shift',
     'echo "ladder args: $*"',
-    `case "$CONNECTOME_DOCTOR_WITHHOLD" in *${SECRETS.DISCORD_TOKEN}*) echo "ladder withholds DISCORD_TOKEN's value" ;; esac`,
+    `case "$CONNECTOME_DOCTOR_WITHHOLD" in *'${JSON.stringify(['DISCORD_TOKEN', SECRETS.DISCORD_TOKEN])}'*) echo "ladder withholds DISCORD_TOKEN's value" ;; esac`,
     'echo "ladder XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"',
     `echo "recent failure: Error token=${SECRETS.DISCORD_TOKEN}"`,
     ...(opts.sleep ? [`sleep ${opts.sleep}`] : []),
