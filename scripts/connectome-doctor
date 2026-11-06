@@ -329,13 +329,21 @@ if os.path.lexists(session_index):
     else:
         active_session = index.get("activeSessionId")
         if not isinstance(active_session, str) or not active_session:
-            rec_detail = "sessions.json names no active session"
+            ingest_unknown = True
+            rec_detail = ("sessions.json names no active session, which no start of the host leaves, so which session "
+                          "is active isn't known")
         else:
             path = os.path.join(sessions_dir, active_session, "records.log")
             try:
                 os.stat(path)
             except (FileNotFoundError, NotADirectoryError):
-                rec_detail = f"the active session, {active_session}, has no records.log"
+                store = os.path.join(sessions_dir, active_session)
+                if os.path.lexists(store):
+                    ingest_unknown = True
+                    rec_detail = (f"the active session's store, {store}, is there without a records.log, which the host "
+                                  "writes when it opens the store, so what was ingested isn't known")
+                else:
+                    rec_detail = f"the active session, {active_session}, has no records.log"
             except OSError as e:
                 ingest_unknown = True
                 rec_detail = f"{path} can't be read ({e.strerror or str(e)})"

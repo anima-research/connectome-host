@@ -744,7 +744,7 @@ describe('the ladder\'s data directory', () => {
     expect(out).not.toContain('#other-room');
   });
 
-  test('an index naming no session or a session with no records.log, or session data that can\'t be read, takes no other session\'s records', async () => {
+  test('an index naming no session leaves the active one not known, a session with no store is never, and one whose store has no records.log, or session data that can\'t be read, is not known; none takes another session\'s records', async () => {
     const at = await install({ listens: true });
     const payload = [...Buffer.from(JSON.stringify({ triggered: true, channelName: 'other-room', participant: 'ann' }))].join(',');
     mkdirSync(join(at.work, 'data', 'sessions', 's-other'), { recursive: true });
@@ -756,10 +756,18 @@ describe('the ladder\'s data directory', () => {
     expect(named).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\).*the active session, s-gone-<DISCORD_TOKEN>, has no records\.log/);
     expect(named).not.toContain('Zq9-SID-SECRET');
     expect(named).not.toContain('#other-room');
-    writeFileSync(index, JSON.stringify({ activeSessionId: null, sessions: {} }));
-    const none = ladder(at, ['--no-signal']).out;
-    expect(none).toMatch(/chronicle ingest \(\+gate\) .*\(\s*never\).*sessions\.json names no active session/);
-    expect(none).not.toContain('#other-room');
+    for (const activeSessionId of [null, '', 42]) {
+      writeFileSync(index, JSON.stringify({ activeSessionId, sessions: {} }));
+      const none = ladder(at, ['--no-signal']).out;
+      expect(none).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json names no active session, which no start of the host leaves, so which session is active isn't known/);
+      expect(none).not.toContain('#other-room');
+    }
+    mkdirSync(join(at.work, 'data', 'sessions', 's-bare-Zq9-SID-SECRET'));
+    writeFileSync(index, JSON.stringify({ activeSessionId: 's-bare-Zq9-SID-SECRET', sessions: {} }));
+    const bare = ladder(at, ['--no-signal'], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', 'Zq9-SID-SECRET']]) }).out;
+    expect(bare).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*the active session's store, \S*sessions\/s-bare-<DISCORD_TOKEN>, is there without a records\.log, which the host writes when it opens the store, so what was ingested isn't known/);
+    expect(bare).not.toContain('Zq9-SID-SECRET');
+    expect(bare).not.toContain('#other-room');
     writeFileSync(index, '{ not json');
     const unread = ladder(at, ['--no-signal']).out;
     expect(unread).toMatch(/· chronicle ingest \(\+gate\) +can't be seen here: .*sessions\.json can't be read as the host's session index \(Expecting property name/);
