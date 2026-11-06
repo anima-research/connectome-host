@@ -87,10 +87,10 @@ interface Message {
   streaming?: boolean;
   /** The row is out of the conversation agent's window as an undone turn's
    *  (agent-framework #291): an undo (which /redo puts back until the
-   *  agent's next turn or a branch move) or a shed after a refusal or failed
-   *  inference (which it doesn't). The record keeps it, its next request is
-   *  built without it. From the welcome, a history page or an undone-marks
-   *  frame. */
+   *  agent's next turn, a branch move or a restart) or a shed after a
+   *  refusal or failed inference (which it doesn't). The record keeps it,
+   *  its next request is built without it. From the welcome, a history page
+   *  or an undone-marks frame. */
   undone?: boolean;
   trigger?: {
     origin: string;
@@ -1967,7 +1967,7 @@ function MessageRow(props: {
       <Show when={props.undone}>
         <div
           class="text-[10px] font-mono text-amber-300/80 mb-0.5"
-          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back until the agent's next turn or a branch move) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
+          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back until the agent's next turn, a branch move or a restart) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
         >undone · not in the agent's context</div>
       </Show>
       <Show when={actionable()}>
