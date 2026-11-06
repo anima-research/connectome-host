@@ -106,7 +106,7 @@ function parseArgs(argv: string[]): Opts {
   return { exportDir, outDir, agentName, personName: named ?? ANONYMOUS_PARTICIPANT, filter, dryRun, interactive };
 }
 
-function exportedName(exportDir: string): string | null {
+export function exportedName(exportDir: string): string | null {
   let users: unknown;
   try {
     users = JSON.parse(readFileSync(join(exportDir, 'users.json'), 'utf-8'));
@@ -115,10 +115,6 @@ function exportedName(exportDir: string): string | null {
   }
   const name = Array.isArray(users) && users.length === 1 ? (users[0] as { full_name?: unknown } | null)?.full_name : undefined;
   return typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
-}
-
-export function personNameOf(exportDir: string): string {
-  return exportedName(exportDir) ?? ANONYMOUS_PARTICIPANT;
 }
 
 export function importedMessages(

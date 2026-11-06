@@ -1,8 +1,8 @@
 import { describe, test, expect } from 'bun:test';
 import {
+  exportedName,
   importedMessages,
   linearize,
-  personNameOf,
   transformContent,
   parseToggleSpec,
   splitMixedToolMessages,
@@ -393,7 +393,7 @@ describe('the person\'s name', () => {
   };
 
   test('is the full_name of the one user the export\'s users.json gives, trimmed', () => {
-    expect(personNameOf(exportWith(JSON.stringify([{ uuid: 'u1', full_name: ' Walk Three ', email_address: 'w@example.invalid', verified_phone_number: null }])))).toBe('Walk Three');
+    expect(exportedName(exportWith(JSON.stringify([{ uuid: 'u1', full_name: ' Walk Three ', email_address: 'w@example.invalid', verified_phone_number: null }])))).toBe('Walk Three');
   });
 
   test('--person with no name after it is refused, writing nothing, rather than taking the next option as the name', () => {
@@ -423,9 +423,9 @@ describe('the person\'s name', () => {
     }
   });
 
-  test('is "user" where users.json is missing, isn\'t JSON, names no one, more than one, or a blank name', () => {
+  test('is none where users.json is missing, isn\'t JSON, names no one, more than one, or a blank name', () => {
     for (const users of [null, '{not json', '[]', JSON.stringify([{ full_name: 'A' }, { full_name: 'B' }]), JSON.stringify([{ full_name: '  ' }]), JSON.stringify([{}])]) {
-      expect(personNameOf(exportWith(users)), String(users)).toBe('user');
+      expect(exportedName(exportWith(users)), String(users)).toBeNull();
     }
   });
 
