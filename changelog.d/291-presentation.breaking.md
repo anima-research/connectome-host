@@ -139,7 +139,12 @@
   which learned of them from the move, would show an undone turn as still
   in context, and this release's page on an earlier host would show an
   empty pin picker. Either way the page shows the protocol mismatch banner
-  until it is reloaded from a host of the same release.
+  until it is reloaded from a host of the same release. In a fleet, update
+  the parent and its children together: between releases on either side of
+  this one, observers miss each other's undo and redo frames (a parent of
+  this release scopes no `undo:completed`, an earlier one no
+  `window:undone`, and a frame no scope names goes to full clients only),
+  and the child's panels don't read again.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next
