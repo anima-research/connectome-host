@@ -644,7 +644,9 @@ describe('setup--run', () => {
   test('replaces a secret stored while its command was running', async () => {
     const { dir, module } = install({ asker: { ask: async () => 'stored-mid-run-value' } });
     const flag = join(dir, 'stored');
-    const pending = run(module, `while [ ! -e ${flag} ]; do sleep 0.02; done; cat .env`);
+    const pending = run(module, `touch started; while [ ! -e ${flag} ]; do sleep 0.02; done; cat .env`);
+    for (const begun = Date.now(); !existsSync(join(dir, 'started')) && Date.now() - begun < 10_000; await Bun.sleep(10));
+    expect(existsSync(join(dir, 'started'))).toBe(true);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).success).toBe(true);
     writeFileSync(flag, '');
     const answer = await pending;
