@@ -19,7 +19,6 @@ function install(): string {
   return dir;
 }
 
-/** The window a reader of a log's tail takes: from `windowStart` to the end, with `contextBytes` before it. */
 function tail(log: string, windowStart: number, contextBytes: number): { bytes: Buffer; from: number } {
   const whole = Buffer.from(log, 'utf-8');
   const bufferStart = Math.max(0, windowStart - contextBytes);

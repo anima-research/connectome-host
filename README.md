@@ -943,7 +943,7 @@ headless socket.
 
 | Command | Effect |
 |---------|--------|
-| `/help` | List all commands |
+| `/help` | List all commands (in `connectome setup`'s conversation, the three setup uses: `/quit`, `/session new` and `/help`) |
 | `/quit`, `/q` | Exit (exports lessons if the lessons module is loaded; asks first if fleet children are running) |
 | `/recipe` | Show current recipe info |
 | `/status` | Show agent state, branch, queue depth |

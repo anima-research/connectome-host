@@ -1,14 +1,9 @@
+import { spawnSync } from 'node:child_process';
 import { lstatSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
 
-/** The provider credentials the host reads from its environment (src/index.ts, membrane's Bedrock provider and
- *  src/codex-subscription-adapter.ts), and the providers' base URLs it reads there, which can carry one, kept out
- *  of the setup agent's commands whether or not setup stored them. ANTHROPIC_OAUTH_CREDENTIALS_FILE names a file,
- *  and is here since a host started from such a command would sign in with it in place of the checked key; other
- *  places that hold a credential, such as CODEX_HOME and IDENTITY_KEY_FILE, stay, since stripping one changes which
- *  file a command reads and hides nothing a command can't read. */
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
   'OPENROUTER_API_KEY', 'OPENAI_COMPATIBLE_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -35,7 +30,6 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 const FORM_VALUE = /^(?:[^ #$"'`\\]*|"[^"$\\]*"|'[^'$\\]*')$/;
 
-/** Why a value can't be written to .env in setup's form, double-quoted as setup writes it, or null when it can. */
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';
   if (CONTROL.test(value)) return 'it holds a line break, a tab or another control character';
@@ -51,13 +45,11 @@ interface Assignment {
   value: string;
 }
 
-/** A .env line, from 1, outside setup's form, and why it's outside. */
 interface Outside {
   line: number;
   why: string;
 }
 
-/** The .env text's assignments, line by line, and its lines outside setup's form. */
 function envLines(text: string): { assignments: Assignment[]; outside: Outside[] } {
   const assignments: Assignment[] = [];
   const outside: Outside[] = [];
@@ -79,9 +71,6 @@ function envLines(text: string): { assignments: Assignment[]; outside: Outside[]
   return { assignments, outside };
 }
 
-/** What setup's reading and writing of a .env outside its form throw. Its words name the first line outside it by
- *  its number alone, never anything it holds, its name included, since the text before an = isn't known to be a
- *  name; then how many others there are, the form, and what to do with a line outside it. */
 export class EnvFormError extends Error {
   constructor(path: string, outside: Outside[]) {
     const [{ line, why }] = outside as [Outside];
@@ -107,8 +96,6 @@ function envText(path: string): string {
   }
 }
 
-/** The assignments of a .env file in setup's form, or none when there's no file. One outside the form throws an
- *  EnvFormError, and one that can't be read an Error naming it. */
 function envAssignments(path: string): Assignment[] {
   const { assignments, outside } = envLines(envText(path));
   if (outside.length > 0) throw new EnvFormError(path, outside);
@@ -116,25 +103,19 @@ function envAssignments(path: string): Assignment[] {
 }
 
 // Bun 1.4.4 reads, from the directory it starts in, .env.<mode>.local, .env.local (not under test), .env.<mode> and
-// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise. A name the
-// environment or an earlier file gives keeps that value, and within a file a later line takes an earlier one's place.
-// It puts in $NAME and ${NAME}, quoted or not, from what it has so far, or nothing, and reads \$ as $ (probed).
+// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise.
 const DOTENV_MODES = ['development', 'production', 'test'] as const;
 
 function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
-/** A dotenv file's assignments in its order: .env in setup's form, throwing as envAssignments does, and the others
- *  in any form, as node:util's parseEnv reads them, which is as Bun 1.4.4 does but that it keeps \$ and puts in no
- *  $NAME. None when the file isn't there; one that can't be read throws, naming it. */
 function dotenvAssignments(dir: string, file: string): Assignment[] {
   const path = join(dir, file);
   if (file === '.env') return envAssignments(path);
   return Object.entries(parseEnv(envText(path))).map(([name, value]) => ({ name, value: value ?? '' }));
 }
 
-/** Every name a dotenv file Bun reads in a directory gives, in any mode, whatever the environment holds. */
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
@@ -143,59 +124,71 @@ export function dotenvNames(dir: string): string[] {
   return [...names];
 }
 
-/** Each value Bun can give a name from a directory's dotenv files, in any mode, with `env` as the environment it
- *  starts with: a name `env` gives takes none from the files. */
+const READ_LIMIT_MS = 10_000;
+
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
+  const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
+  if (names.length === 0) return values;
+  const given: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && name !== 'BUN_OPTIONS' && name !== 'NODE_ENV') given[name] = value;
+  }
+  const own = env.NODE_ENV;
+  const development = own !== undefined && own !== 'production' && own !== 'test' ? { ...given, NODE_ENV: own } : given;
   for (const mode of DOTENV_MODES) {
-    const has = new Map<string, string>();
-    for (const [name, value] of Object.entries(env)) if (value !== undefined) has.set(name, value);
-    const fixed = new Set(has.keys());
-    for (const file of dotenvFiles(mode)) {
-      const ours = new Set<string>();
-      for (const { name, value } of dotenvAssignments(dir, file)) {
-        if (fixed.has(name)) continue;
-        has.set(name, value.replace(/\\\$|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
-          (whole, braced?: string, bare?: string) => (whole === '\\$' ? '$' : has.get(braced ?? bare!) ?? '')));
-        ours.add(name);
-      }
-      for (const name of ours) {
-        fixed.add(name);
-        if (!values.has(name)) values.set(name, new Set());
-        values.get(name)!.add(has.get(name)!);
-      }
+    // --config=/dev/null: a bunfig.toml in the directory would otherwise run its preload here. Bun's mode is
+    // development where NODE_ENV is unset or names neither production nor test, and a NODE_ENV the environment gives
+    // wins over a file's: the development run goes with the environment's own, as a command does, or else with none,
+    // and only there does a file's NODE_ENV come through.
+    const ran = spawnSync(process.execPath, ['--config=/dev/null', '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+      cwd: dir, env: mode === 'development' ? development : { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS,
+      encoding: 'utf-8', maxBuffer: Infinity,
+    });
+    if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      throw new Error(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
+    }
+    if (ran.error || ran.status !== 0) {
+      const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);
+      const how = ran.error ? ran.error.message : ran.status === null ? `killed by ${ran.signal}` : `exit ${ran.status}`;
+      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}${last ? `: ${last}` : ''})`);
+    }
+    let read: Record<string, unknown> | null = null;
+    try {
+      read = JSON.parse(ran.stdout) as Record<string, unknown> | null;
+    } catch {
+    }
+    if (read === null || typeof read !== 'object') {
+      throw new Error(`Bun's reading of the dotenv files in ${dir} gave output setup can't read`);
+    }
+    for (const name of names) {
+      if (name === 'NODE_ENV' && mode !== 'development') continue;
+      const value = read[name];
+      if (typeof value !== 'string') continue;
+      if (!values.has(name)) values.set(name, new Set());
+      values.get(name)!.add(value);
     }
   }
   return values;
 }
 
-/** Each name's value in a .env file in setup's form, as Bun reads it: the last line for the name. Throws as
- *  envAssignments does. */
 export function readEnvFile(path: string): Map<string, string> {
   return new Map(envAssignments(path).map(({ name, value }) => [name, value]));
 }
 
-/** The refusal of a .env outside setup's form, or null when it's in it or there's none. One that can't be read
- *  throws, naming it. */
 export function envForm(path: string): EnvFormError | null {
   const { outside } = envLines(envText(path));
   return outside.length > 0 ? new EnvFormError(path, outside) : null;
 }
 
-/** What writeEnvValue throws for a link at the path it would write. */
 export class EnvLinkError extends Error {}
 
-/** The refusal of a link at `path`, naming where it leads, or null when there's none. */
 export function envLink(path: string): EnvLinkError | null {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
   return new EnvLinkError(`${path} is a link to ${readlinkSync(path)}, and it's written only as a file of its own, ` +
     'not through a link or over one');
 }
 
-/** Writes NAME="value" in .env, readable by this user only: in place of the first line for NAME, with any later
- *  ones taken out, or after the others, every other line as it was, short of a BOM at the start, which Bun skips.
- *  The value must be one `unwritableValue` passes. A link found at `path` throws, naming where it leads, rather than
- *  being written through or replaced, and a file outside setup's form throws an EnvFormError, writing nothing. */
 export function writeEnvValue(path: string, name: string, value: string): void {
   const link = envLink(path);
   if (link) throw link;
@@ -234,7 +227,6 @@ export function removeEnvValues(path: string, names: readonly string[],
   return true;
 }
 
-/** The names of the secrets setup stored, kept in its own data directory so a resumed setup knows them. */
 export class StoredSecrets {
   readonly file: string;
 
@@ -290,14 +282,12 @@ export interface Secret {
   value: string;
 }
 
-/** Each secret's name and value: from each of .env's lines for it, which in setup's form spell a value as Bun reads
- *  it, from each value Bun can give it from the dotenv files beside .env, in a process whose environment is the
- *  given one without the secrets, as a setup--run command's is, and from the given environment. A .env outside the
- *  form throws an EnvFormError, as it does at setup's start: what Bun reads from it, and so what a command prints of
- *  a secret, isn't known. */
-export function secretValues(names: string[], envFile: string, env: Record<string, string | undefined>): Secret[] {
+export function secretValues(
+  names: string[], envFile: string, env: Record<string, string | undefined>,
+  commandEnv: Record<string, string | undefined> = withoutSecrets(env, names),
+): Secret[] {
   const assignments = envAssignments(envFile);
-  const fromFiles = dotenvValues(dirname(envFile), withoutSecrets(env, names));
+  const fromFiles = dotenvValues(dirname(envFile), commandEnv);
   const found: Secret[] = [];
   const add = (name: string, value: string | undefined) => {
     if (value && !found.some((seen) => seen.name === name && seen.value === value)) found.push({ name, value });
@@ -422,7 +412,6 @@ export function storedSecretWindowRedactor(
   };
 }
 
-/** storedSecretWindowRedactor over the whole of a text. */
 export function storedSecretRedactor(
   workingDir: string,
   env: Record<string, string | undefined> = process.env,

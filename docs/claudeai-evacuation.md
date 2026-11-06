@@ -86,7 +86,7 @@ Useful flags:
 |---|---|
 | `--out <dir>` | Conhost data dir (default `./data`) |
 | `--agent <name>` | Participant name for assistant turns (default `Claude`). The import-source sidecar carries it to warmup. The evacuator reads a selected warmup session's sidecar before pinning its recipe name; otherwise use its `--agent` flag for custom names. The bundled `claude-export-revive.json` recipe pins `Claude`. |
-| `--person <name>` | Name for the person's turns (default: the one user `users.json` names). Each of their turns opens with `Name: `. With no name there, their turns are imported as written, and a turn that returns a tool result always is. |
+| `--person <name>` | Name for the person's turns (default: the one user `users.json` names). Each of their turns opens with `Name: `. With no name there, their turns are imported as written, and a turn that returns a tool result always is. The name `user`, given or in `users.json`, is refused: it's the name the host gives a turn whose author has no name. |
 | `--filter <regex>` | Case-insensitive name regex; combines with the interactive picker |
 | `--dry-run` | Parse + report, don't write |
 | `--no-interactive` | Skip the picker; import everything (after `--filter`) |

@@ -9,17 +9,15 @@ const ENDING_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
 
 export interface BracketedPaste {
   take(line: string): string | null;
+  pasting(): boolean;
+  drop(secret: string): { taken: number; left: number };
   end(): void;
 }
 
 /**
- * Bracketed paste for readline mode. Readline hands each line of a paste to its 'line' listeners as if it were typed,
- * and Bun's readline (1.4.4, probed) tells a bracketed paste's start and end apart only as keypresses named
- * paste-start and paste-end. So the terminal's bracketed paste is turned on here, the lines that end inside a paste
- * are held, and the person's next Enter sends them with the line it ends; `held` is told how many lines wait after a
- * paste that left any. A terminal that doesn't support the mode sends no paste-start, and its lines go on as typed.
- * The mode goes off again however the host leaves: end(), the process exiting, or a SIGTERM, SIGINT or SIGHUP, whose
- * own death this restores when nothing else in the process handles the signal.
+ * Readline hands each line of a paste to its 'line' listeners as if it were typed, and Bun's readline (1.4.4, probed)
+ * tells a bracketed paste's start and end apart only as keypresses named paste-start and paste-end. A terminal that
+ * doesn't support the mode sends no paste-start.
  */
 export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: NodeJS.WriteStream,
   held: (lines: number) => void, signals: Signals = process): BracketedPaste {
@@ -54,6 +52,12 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
   for (const each of ENDING_SIGNALS) signals.on(each, onEach[each]);
   output.write(PASTE_ON);
   return {
+    pasting: () => pasting,
+    drop(secret) {
+      const before = lines.length;
+      for (let at = lines.length - 1; at >= 0; at--) if (lines[at]!.includes(secret)) lines.splice(at, 1);
+      return { taken: before - lines.length, left: lines.length };
+    },
     take(line) {
       if (pasting) {
         lines.push(line);

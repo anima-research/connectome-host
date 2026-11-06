@@ -4,12 +4,13 @@ import { hostVersionOf } from '../update/update.js';
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
 
-/** What Discord said of a bot token: whose it is, that it refused it, something else, or nothing at all. */
 export type TokenCheck =
   | { kind: 'accepted'; name: string; id: string }
   | { kind: 'refused' }
   | { kind: 'unsendable' }
   | { kind: 'answered'; status: number; said: string | null }
+  | { kind: 'redirected'; status: number; to: string | null }
+  | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
 
 /** Discord asks API callers for a User-Agent naming their library; one with none can get a 403 unrelated to its
@@ -18,9 +19,6 @@ export function discordUserAgent(): string {
   return `DiscordBot (https://github.com/anima-research/connectome-host, ${hostVersionOf(HOST_PACKAGE_JSON)})`;
 }
 
-/** Asks Discord whose bot token this is (GET /users/@me), calling `asking` just before it asks; a token a request
- *  header can't carry is never sent. No answer holds the token: where an error's words quote it, they show
- *  <DISCORD_TOKEN> in its place. */
 export async function checkDiscordToken(
   token: string,
   options: { fetch?: typeof fetch; limitMs?: number; asking?: () => void } = {},
@@ -51,6 +49,10 @@ export async function checkDiscordToken(
     return unanswered(error);
   }
   if (response.status === 401) return { kind: 'refused' };
+  if (response.status >= 300 && response.status < 400) {
+    const to = response.headers.get('location');
+    return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, token) };
+  }
   let text: string;
   try {
     text = await response.text();
@@ -66,6 +68,7 @@ export async function checkDiscordToken(
   if (response.ok && typeof body?.id === 'string' && typeof body.username === 'string') {
     return { kind: 'accepted', name: hidden(body.username, token), id: hidden(body.id, token) };
   }
+  if (response.ok && body === undefined) return { kind: 'unrecognized', status: response.status };
   const said = typeof body?.message === 'string' ? hidden(body.message, token) : null;
   return { kind: 'answered', status: response.status, said };
 }

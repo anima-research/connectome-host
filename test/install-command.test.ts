@@ -106,7 +106,7 @@ test('a record bound to another directory, or a binding\'s plan standing, refuse
   writeFileSync(join(root, 'rebind.json'), '{}');
   const refused = run('update');
   expect(refused.ran).toBeNull();
-  expect(refused.stderr).toContain(`connectome: nothing runs in this install, since a setup binding this install to ${dir} was cut off before it finished (${join(root, 'rebind.json')} is its plan), so the places it names may be half bound. Setup finishes it, without asking about its places again`);
+  expect(refused.stderr).toContain(`connectome: nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, 'rebind.json')} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
   expect(run('setup', 'discord').ran?.who).toBe('current');
 });
 
