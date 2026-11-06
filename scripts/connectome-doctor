@@ -475,8 +475,6 @@ if llm_files:
             turn_resp = r.get("rawResponse") or {}
             turn_resp = turn_resp.get("response") or turn_resp
             turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
-            # Not llm_unsure, which leaves out rows from before the last ingest: whether a call after this
-            # turn failed rests on every row after it.
             newer_unread = incomplete or unreadable > 0
             llm_window_from = None
             break
