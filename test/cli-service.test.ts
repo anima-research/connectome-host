@@ -1538,7 +1538,7 @@ test('the loader\'s words show no secret\'s value, and none at all when the secr
   expect(existsSync(hostUnit(bare))).toBe(false);
 });
 
-test('the actual shell token is replaced whole in the loader\'s words, before redacting stored secrets', async () => {
+test('the actual shell token is replaced whole in the loader\'s words, though a stored secret\'s value lies inside it', async () => {
   const at = install('My Resident', { shell: true });
   writeFileSync(join(at.work, '.env'), 'SESSION_SERVER_PORT="3150"\nSESSION_SERVER_TOKEN="abc123"\nDISCORD_TOKEN="b"\n',
     { mode: 0o600 });
@@ -3058,7 +3058,7 @@ test('a path with a quote, a percent sign or a dollar sign is written so systemd
     .toContain(`DATA_DIR=${at.data}`);
 });
 
-test('nothing the install prints holds a secret\'s value, from what it reads or what the host logs', async () => {
+test('nothing the install prints holds a known or recorded secret\'s value or the shell token, from what it reads or what the host logs', async () => {
   const at = install('My Resident', { shell: true });
   writeFileSync(join(at.work, '.env'),
     'DISCORD_TOKEN="discord-secret-value"\nANTHROPIC_API_KEY="sk-secret"\nSESSION_SERVER_PORT="3150"\n' +

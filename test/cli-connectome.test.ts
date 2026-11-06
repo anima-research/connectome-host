@@ -388,7 +388,7 @@ test('service is one of the commands: help lists its install, stop and start, an
   expect(wrong.err).toBe(`Usage: ${path} service install [<recipe>] | stop | start\n`);
 });
 
-test('every command help and the hints print is plain `connectome` once the install\'s own command is the first on PATH', async () => {
+test('help, and send\'s hint and usage, print plain `connectome` once the install\'s own command is the first on PATH', async () => {
   const { root, work } = install();
   const { path } = writeInstallCommand(root, '');
   serviceRecord(root, work);
