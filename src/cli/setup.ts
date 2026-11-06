@@ -14,7 +14,7 @@ import {
   EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, writeEnvValue,
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
-import { readSetupState, type SetupState } from '../setup/state.js';
+import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
@@ -737,17 +737,20 @@ async function installAndStart(
   out(commandsShownNote(dir));
   out(`Starting setup's agent. It speaks first. /quit leaves the conversation, and ` +
     `\`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\` picks it up where it stopped.`);
-  const finishedAt = () => {
-    const read = readSetupState(join(dir, '.setup', 'setup-state.json'));
-    return 'state' in read ? read.state.finished : undefined;
-  };
-  const before = finishedAt();
+  const statePath = join(dir, '.setup', 'setup-state.json');
+  const finishedAt = (read: KeptState) => 'state' in read ? read.state.finished : undefined;
+  const before = finishedAt(readSetupState(statePath));
   const agentStatus = await world.startAgent(launch);
-  const after = finishedAt();
+  const readAfter = readSetupState(statePath);
+  const after = finishedAt(readAfter);
   const finished = after !== undefined && after !== before;
   out(finished
     ? `Setup is finished. To change something it set up, run setup again: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`
     : `To go on with setup where it stopped: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`);
+  if (!('state' in readAfter)) {
+    out(`Whether setup finished isn't known: ${statePath}, where setup keeps its answers, ` +
+      `${'absent' in readAfter ? 'is gone' : `can't be read (${readAfter.unreadable})`}.`);
+  }
   const printed = keptOutside.filter((line) => line.startsWith('  ') && line !== '  none').map((line) => line.slice(2));
   if (printed.length > 0) {
     const recordPath = join(root, 'install.json');

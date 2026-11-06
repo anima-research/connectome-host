@@ -152,7 +152,11 @@ describe('setup--finished', () => {
     const { dir, module } = install();
     const result = await call(module);
     expect(result.success).toBe(false);
-    expect(String(result.error)).toBe(`${join(dir, '.setup', 'setup-state.json')} doesn't hold setup's answers, so nothing was recorded and the conversation goes on. Tell the person: running setup again asks its questions again.`);
+    expect(String(result.error)).toBe(`${join(dir, '.setup', 'setup-state.json')} isn't there, so nothing was recorded and the conversation goes on. Tell the person: running setup again asks its questions again.`);
+    mkdirSync(join(dir, '.setup'), { recursive: true });
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), 'not json');
+    const unreadable = await call(module);
+    expect(String(unreadable.error)).toBe(`${join(dir, '.setup', 'setup-state.json')} can't be read (it isn't JSON), so nothing was recorded and the conversation goes on. Tell the person: while it can't be read, running setup again asks its questions again.`);
     expect(module.finishRequested).toBe(false);
   });
 

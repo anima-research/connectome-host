@@ -360,8 +360,9 @@ export class SetupModule implements Module {
     const path = join(this.config.dir, '.setup', 'setup-state.json');
     const read = readSetupState(path);
     if (!('state' in read)) {
-      return failed(`${path} doesn't hold setup's answers, so nothing was recorded and the conversation goes on. Tell ` +
-        'the person: running setup again asks its questions again.');
+      return failed(`${path} ${'absent' in read ? 'isn\'t there' : `can't be read (${read.unreadable})`}, so nothing was ` +
+        'recorded and the conversation goes on. Tell the person: ' +
+        `${'absent' in read ? '' : 'while it can\'t be read, '}running setup again asks its questions again.`);
     }
     const when = new Date().toISOString();
     try {

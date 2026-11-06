@@ -1069,6 +1069,30 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   expect(said(broken)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, can't be read: The install record at ${record} isn't JSON, so this release can't read it.`]);
 });
 
+test('where setup\'s kept answers are gone or can\'t be read once its agent has ended, setup says whether it finished isn\'t known, and why', async () => {
+  const dir = directory();
+  const state = join(dir, '.setup', 'setup-state.json');
+  const ending = (change: () => void) => {
+    const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, {
+      startAgent: async (launch) => {
+        made.seen.launched = launch;
+        made.seen.outAtLaunch = made.seen.out.length;
+        change();
+        return 0;
+      },
+    });
+    return made;
+  };
+  const gone = ending(() => rmSync(state));
+  expect(await runSetup(dir, ['discord'], gone)).toBe(0);
+  expect(gone.seen.out.slice(gone.seen.outAtLaunch!)).toEqual([resumeLine(dir),
+    `Whether setup finished isn't known: ${state}, where setup keeps its answers, is gone.`]);
+  const broken = ending(() => writeFileSync(state, 'not json'));
+  expect(await runSetup(dir, ['discord'], broken)).toBe(0);
+  expect(broken.seen.out.slice(broken.seen.outAtLaunch!)).toEqual([resumeLine(dir),
+    `Whether setup finished isn't known: ${state}, where setup keeps its answers, can't be read (it isn't JSON).`]);
+});
+
 test('a finished setup whose install root is gone says what went with it and asks before it makes a new install, and on no stops with nothing written', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { recursive: true });
