@@ -1,5 +1,12 @@
 import { expect, test } from 'bun:test';
 import { handleCommand } from '../src/commands.js';
+import { validateRecipe } from '../src/recipe.js';
+
+test('a recipe\'s modules.setup is true or false, and anything else is refused as the recipe loads', () => {
+  const recipe = (setup: unknown) => ({ name: 'setup', agent: { systemPrompt: 'sys' }, modules: { setup } });
+  expect(() => validateRecipe(recipe('true'))).toThrow('modules.setup must be true or false');
+  expect(validateRecipe(recipe(false)).modules?.setup).toBe(false);
+});
 
 type App = Parameters<typeof handleCommand>[1];
 
