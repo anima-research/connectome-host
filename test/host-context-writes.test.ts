@@ -161,17 +161,18 @@ describe('/newtopic', () => {
     }
   });
 
-  // /newtopic <text> stores its text as given, line breaks included, as the
-  // TUI and the Web UI send a multi-line one: the summary a bare /newtopic
-  // gives back there is to be passed as it (#485 bot review 2, finding 17).
-  test('given its text, stores it as given, its line breaks and spacing included', async () => {
+  // /newtopic <text> stores its text as given, but for the white space at
+  // its two ends, line breaks included, as the TUI and the Web UI send a
+  // multi-line one: the summary a bare /newtopic gives back there is to be
+  // passed as it (#485 bot review 2, finding 17; review 5, finding 10).
+  test('given its text, stores it as given but for the white space at its two ends, its line breaks and spacing included', async () => {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     const h = await bootPresentedHost({ agents: ['clerk'], agentConfig: () => ({ strategy }), prefix: 'newtopic-lines-' });
     try {
       await h.turn('clerk');
       const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
       const given = 'Done:\n- the ledger\n\n  Next:  the release.';
-      const outcome = await handleCommand(`/newtopic ${given}`, app).asyncWork!;
+      const outcome = await handleCommand(`/newtopic   ${given}\n\n`, app).asyncWork!;
       expect(outcome.lines[0]!.text).toBe('Topic reset. Transition summary:');
       expect(textOf(h.rowWith('clerk', '[Topic Transition]')!)).toBe(`[Topic Transition]\n\n${given}`);
     } finally {

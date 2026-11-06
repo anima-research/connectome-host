@@ -1559,9 +1559,9 @@ function handleNewTopic(app: AppContext, text: string, input: CommandInput): Com
     };
   }
 
-  // The text as given, its line breaks included, as the TUI and the Web UI
-  // send a multi-line one: the summary a bare /newtopic gives back there is
-  // to be passed as it.
+  // The text as given, but for the white space at its two ends, its line
+  // breaks included, as the TUI and the Web UI send a multi-line one: the
+  // summary a bare /newtopic gives back there is to be passed as it.
   const userContext = text.trim() || undefined;
   const metadata = asOwnRow(undefined, agent.name);
   const reset = userContext !== undefined
