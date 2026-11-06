@@ -54,7 +54,7 @@ Three structural facts matter:
 | `text` | Yes | identity |
 | `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, whose thinking binds, a block is bound to the system text and tools it was minted under. On the first four the host sends the drop control on agent turns through the Anthropic API, and the provider sets such a block aside once the resident's differ from Claude Code's; an account that enforces the binding refuses the request without the control. An account the host's start-up check finds still showing such a block gets no drop control, and its thinking, the transcript's included, is sent as stored (`DEPLOYMENTS.md`'s "Refusals and signed thinking"). Without the drop control, on the Mythos models or another provider, context-manager leaves the transcript's thinking out |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
-| `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
+| `tool_result` | **Yes, if stored in the context manager's live shape**, which stage 1's script converts it to. Stage 3 tells what the raw shape did: the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
 | `tool_reference` blocks (left by the CLI's deferred-tool loader inside a `tool_result`) | **No** | the API validates each reference against the request's `tools` and returns 400 `Tool reference '…' not found in available tools` for the **whole** request — every turn, not just the first. Replace them with a short `text` block at build time (step 2b below); they sit in `user` turns, so no signed block changes shape |
 
@@ -71,11 +71,18 @@ Three structural facts matter:
 
 ### Stage 1 — Build the seed
 
-Here `<agent>-cm` is the resident's directory, `<dir>` in the setup guide. If the setup
-agent sent you here, setup has run there. Otherwise run
-`bunx @animalabs/connectome-host setup discord` first, in a new, empty `<agent>-cm`:
-setup installs only into an empty directory or one it set up. Then make a `scripts/`
-directory in it for this stage's and the next stage's scripts.
+Here `<agent>-cm` is the resident's directory, `<dir>` in the setup guide, and
+`<agent>-cm/data` is its data directory, unless the install's record,
+`<agent>-cm/connectome-host/install.json`, names another as `dataDir`: then use that
+wherever this document writes `<agent>-cm/data` or `data`. If the setup agent sent you
+here, setup has run there, and the setup agent goes live only after the import.
+Otherwise run `bunx @animalabs/connectome-host setup discord` first, in a new, empty
+`<agent>-cm`: setup installs only into an empty directory or one it set up. Tell its
+agent that you'll bring in a Claude Code history yourself, and leave it with `/quit`
+before its "Going live", which starts the resident: the seed has to be in the data
+directory before any host starts there (stage 2). Running setup again once the seed is
+in picks up where it stopped. Then make a `scripts/` directory in `<agent>-cm` for this
+stage's and the next stage's scripts.
 
 Save as `<agent>-cm/scripts/build-seed.mjs`, edit the four constants, run with `node`.
 
@@ -187,14 +194,26 @@ stage 1 wrote `seed.json`. Node resolves its `@animalabs/context-manager` from t
 script's own directory up, which finds the copy setup installed in
 `<agent>-cm/node_modules`; the install's first release is a copy of that install, so
 before any update it's the version the host will run. Point `DATA_DIR` at the install's
-legacy store path; the host migrates `data/store` → `data/sessions/<id>/` on first
-launch.
+legacy store path, `store` in its data directory: the script takes it from
+`SEED_DATA_DIR` when that's set. The host migrates `data/store` →
+`data/sessions/<id>/` on first launch.
+
+The migration needs a data directory no host has started on. A host's first start
+writes `sessions.json` there, and no later start migrates `data/store`. So a seed
+written after it sits in `data/store` with nothing opening it. The script below refuses
+when `sessions.json` is there, the dry run included. If it does, stop and decide with
+the person. When that start held nothing worth keeping, such as only a hello, run
+`connectome service stop`, move the data directory aside, make an empty one in its
+place (`mkdir -m 700`), seed that, and run `connectome service start`. Otherwise don't
+seed: the resident already has a history of its own, and this method seeds only a first
+start.
 
 ```js
 // One-shot: seed.json → chronicle.  Wipe <agent>-cm/data before re-running.
 //   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 const DATA_DIR = process.env.SEED_DATA_DIR ?? '/home/<agent>/<agent>-cm/data/store';
 const AGENT = '<Agent>';
@@ -203,6 +222,11 @@ const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
+const INDEX = join(dirname(DATA_DIR), 'sessions.json');
+if (existsSync(INDEX)) {
+  console.error(`${INDEX} exists: a host has started on this data directory and won't migrate a seed written now (stage 2).`);
+  process.exit(1);
+}
 const bundle = JSON.parse(readFileSync(src, 'utf8'));
 const messages = bundle.messages;
 
@@ -345,7 +369,8 @@ reading them, with its `setup--ask_secret`. Claude-Code-specific choices:
   recipe. The resident will notice it no longer has them; that's part of the
   continuation, not an error.
 
-First boot migrates `data/store` into `data/sessions/<id>/` and, with
+The first start on a data directory with no `sessions.json` migrates `data/store` into
+`data/sessions/<id>/` and, with
 `autoTickOnNewMessage` on, starts minting L1 summaries of the seed immediately.
 Watch `/healthz` (the person, if you're the setup agent) for `compressionQuarantine`,
 and the per-call log (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. The first
@@ -411,7 +436,10 @@ a typo fails at boot rather than silently disabling the rung.
    the API expects from that model. Stripping them and leaving the text is worse. On a
    model whose thinking binds, those blocks are left out and their text stays: by the
    provider once the resident's system text or tools differ from Claude Code's, or by
-   context-manager where there's no drop control (the table above).
+   context-manager where there's no drop control (the table above). The one exception is
+   where the host sends the drop control: an account its start-up check finds still
+   showing such a block gets no drop control, and the transcript's thinking is sent as
+   stored.
 
 2. **Declared tools on every request.** Compression requests with no `tools` param
    are a deterministic input-block on some model families regardless of content.
