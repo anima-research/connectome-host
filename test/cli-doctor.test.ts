@@ -569,7 +569,7 @@ describe('connectome doctor', () => {
     expect(own).not.toContain('`PASSWORD`');
   });
 
-  test('a server given the host\'s whole environment (inheritEnv) sees every stored secret without a mapping', async () => {
+  test('a server given the host\'s whole environment (inheritEnv) sees every stored secret its entry doesn\'t replace, without a mapping', async () => {
     const at = install({
       recipe: {
         name: 'Ember',
