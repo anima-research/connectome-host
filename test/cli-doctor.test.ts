@@ -1389,12 +1389,13 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.status).toBe(1);
   });
 
-  test('the manager the service record names is asked, and no other: none without a record', async () => {
+  test('the manager the service record names is asked, and no other: without a record, the one a service here would run under', async () => {
     const none = install();
     rmSync(join(none.root, 'service.json'));
-    const unasked = fakeManager(none.work);
-    await run(none, { systemctl: unasked.path, launchctl: unasked.path });
-    expect(unasked.calls()).toEqual([]);
+    const platform = fakeManager(none.work);
+    await run(none, { systemctl: platform.path, launchctl: platform.path });
+    if (process.platform === 'darwin') expect(platform.calls().every((call) => call.startsWith('getenv '))).toBe(true);
+    else expect(platform.calls()).toEqual(['--user show-environment']);
     const launchd = install({ manager: 'launchd' });
     const asked = fakeManager(launchd.work);
     await run(launchd, { systemctl: asked.path, launchctl: asked.path });
@@ -1505,4 +1506,43 @@ describe('connectome doctor: its waits, its remedies and its last line', () => {
       'this is the check the host makes at load, by estimate.');
     expect(r.out).not.toContain('to spare');
   });
+});
+
+describe('connectome doctor, where what it found can mislead or it can\'t look', () => {
+  const refusing = (said: string) => ({
+    ...HEALTHY_HOST,
+    'shell-check': { shells: [], notConnected: [{ id: 'shell', refused: said, retrying: false }], closedTabs: [] },
+  });
+
+  const onLaunchd = process.platform === 'darwin';
+
+  test('with no service record, doctor asks the manager a service here would run under, and withholds what only it gives', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MANAGED_SECRET'] });
+    rmSync(join(at.root, 'service.json'));
+    const manager = fakeManager(at.work, {
+      env: ['MANAGED_SECRET=managed-secret-value'], launchd: { MANAGED_SECRET: 'managed-secret-value' },
+    });
+    const r = await withHost(at, refusing('the token managed-secret-value was refused'),
+      () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    if (onLaunchd) expect(manager.calls()).toContain('getenv MANAGED_SECRET');
+    else expect(manager.calls()).toEqual(['--user show-environment']);
+    expect(r.out).toContain('the token <MANAGED_SECRET> was refused');
+    expect(r.out).not.toContain('managed-secret-value');
+  });
+
+  test('with no service record and a manager that can\'t be read, doctor goes on, naming the step that failed', async () => {
+    const at = install();
+    rmSync(join(at.root, 'service.json'));
+    const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+    const asked = onLaunchd ? 'launchd' : 'systemd\'s user manager';
+    const step = onLaunchd ? '`launchctl getenv \\w+`' : '`systemctl --user show-environment`';
+    expect(r.out).toMatch(new RegExp(`With no service record to name its manager, doctor asked ${asked}, which a service installed ` +
+      `here would run under, and couldn't read it \\(${step} failed: Failed to connect to bus: No medium found\\), so a value ` +
+      'only that manager gives isn\'t known to doctor or hidden in what it prints\\.'));
+    expect(r.out).not.toContain('Then run doctor again');
+    expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).toContain('pid 4242');
+  });
+
 });

@@ -131,6 +131,9 @@ export async function doctor(
   };
   let env: Record<string, string | undefined>;
   let storedNames: string[] | null;
+  const manager = service?.manager
+    ?? (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd-user' : null);
+  let managerUnread: string | null = null;
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -138,9 +141,16 @@ export async function doctor(
     const known = (from: Record<string, string | undefined>): Secret[] => storedSecrets(work, from);
     secrets = [...secrets, ...known(process.env)];
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
-    env = serviceEnv(work, root, managerEnv(service, [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID',
-      'DISCORD_FILTERS_FILE', 'NODE_ENV', ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))], parts),
-      parts.envLimitMs);
+    const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
+      ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
+    let managed: Record<string, string> = {};
+    try {
+      managed = managerEnv(manager, names, parts);
+    } catch (error) {
+      if (service !== null) throw error;
+      managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
+    }
+    env = serviceEnv(work, root, managed, parts.envLimitMs);
     secrets = [...secrets, ...known(env)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
   } catch (error) {
@@ -151,6 +161,12 @@ export async function doctor(
   }
   const report = new Report(ctx.out, redact);
   ctx.out(report.redact(banner));
+  if (managerUnread !== null) {
+    const asked = manager === 'launchd' ? 'launchd' : 'systemd\'s user manager';
+    report.line(`With no service record to name its manager, doctor asked ${asked}, which a service installed here would ` +
+      `run under, and couldn't read it (${managerUnread.replace(/\.$/, '')}), so a value only that manager gives isn't ` +
+      'known to doctor or hidden in what it prints.');
+  }
 
   let host: HostClient | NoHost = { reason: 'it wasn\'t asked', down: false };
   let stopped = false;
@@ -694,9 +710,15 @@ function failure(ran: SpawnSyncReturns<string>, limitMs: number): string | null 
   return (ran.stderr ?? '').trim() || (ran.status === null ? `it was ended by ${ran.signal}` : `exit ${ran.status}`);
 }
 
-function managerEnv(service: ServiceRecord | null, names: string[], parts: DoctorParts): Record<string, string> {
+class ManagerUnread extends Error {
+  constructor(message: string, readonly step: string) {
+    super(message);
+  }
+}
+
+function managerEnv(manager: ServiceRecord['manager'] | null, names: string[], parts: DoctorParts): Record<string, string> {
   const out: Record<string, string> = {};
-  if (service?.manager === 'systemd-user') {
+  if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
       encoding: 'utf-8',
       timeout: parts.envLimitMs,
@@ -704,8 +726,8 @@ function managerEnv(service: ServiceRecord | null, names: string[], parts: Docto
     });
     const failed = failure(ran, parts.envLimitMs);
     if (failed !== null) {
-      throw new Error('systemctl --user show-environment failed, so what the user manager gives the service can\'t be ' +
-        `read: ${failed}`);
+      throw new ManagerUnread('systemctl --user show-environment failed, so what the user manager gives the service ' +
+        `can't be read: ${failed}`, `\`systemctl --user show-environment\` failed: ${failed}`);
     }
     for (const line of ran.stdout.split('\n')) {
       const at = line.indexOf('=');
@@ -714,12 +736,13 @@ function managerEnv(service: ServiceRecord | null, names: string[], parts: Docto
       out[line.slice(0, at)] = value.startsWith('$\'') && value.endsWith('\'') && value.length >= 3
         ? unquoted(value.slice(2, -1)) : value;
     }
-  } else if (service?.manager === 'launchd') {
+  } else if (manager === 'launchd') {
     for (const name of new Set(names)) {
       const ran = spawnSync(parts.launchctl, ['getenv', name], { encoding: 'utf-8', timeout: parts.envLimitMs });
       const failed = failure(ran, parts.envLimitMs);
       if (failed !== null) {
-        throw new Error(`launchctl getenv ${name} failed, so what launchd gives the service can't be read: ${failed}`);
+        throw new ManagerUnread(`launchctl getenv ${name} failed, so what launchd gives the service can't be read: ${failed}`,
+          `\`launchctl getenv ${name}\` failed: ${failed}`);
       }
       const value = ran.stdout.endsWith('\n') ? ran.stdout.slice(0, -1) : ran.stdout;
       if (value !== '') out[name] = value;
