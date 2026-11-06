@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -406,13 +407,20 @@ llm_unsure = False
 newer_unread = False
 llm_unread = None
 LLM_WINDOW = 30_000_000
-if not os.path.isdir(data_dir):
-    warn(f"there's no data directory at {data_dir}, so the discord, mcpl, chronicle and inference stages read nothing"
+try:
+    data_dir_why = (None if stat.S_ISDIR(os.stat(data_dir).st_mode)
+                    else f"{data_dir}, the data directory, isn't a directory")
+except (FileNotFoundError, NotADirectoryError):
+    data_dir_why = f"there's no data directory at {data_dir}"
+except OSError as e:
+    data_dir_why = f"the data directory at {data_dir} can't be looked at ({e.strerror or e})"
+if data_dir_why is not None:
+    warn(f"{data_dir_why}, so the discord, mcpl, chronicle and inference stages read nothing"
          + ("" if findings_json else "; if the host keeps it elsewhere, run this script with --data-dir DIR"),
          counts=False)
 try:
     llm_files = sorted(
-        (f for f in (os.listdir(data_dir) if os.path.isdir(data_dir) else []) if f.startswith("llm-calls.")),
+        (f for f in (os.listdir(data_dir) if data_dir_why is None else []) if f.startswith("llm-calls.")),
         key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
     )
     if llm_files:
@@ -494,7 +502,7 @@ if llm_files:
         llm_detail += f"  {C_YEL}{unreadable} row(s){' since the last turn' if turn_ts else ''} unreadable{C_OFF}"
     if incomplete:
         llm_detail += f"  {C_YEL}last row incomplete (being written, or cut off){C_OFF}"
-elif llm_unread is None and os.path.isdir(data_dir):
+elif llm_unread is None and data_dir_why is None:
     llm_detail = f"no call log in {data_dir}"
 INFERENCE = "inference (llm call)"
 stages.append((INFERENCE, llm_ts, llm_detail))
@@ -504,9 +512,9 @@ if llm_unread is not None:
     unknown.add(INFERENCE)
 if discord_unknown:
     unknown |= {DISCORD_SEEN, DISCORD_FORWARD}
-if not os.path.isdir(data_dir):
-    unknown |= {INGEST, INFERENCE}
-    stages = [(name, ts, f"there's no data directory at {data_dir}" if name in (INGEST, INFERENCE) else detail)
+if data_dir_why is not None:
+    unknown |= {DISCORD_SEEN, DISCORD_FORWARD, INGEST, INFERENCE}
+    stages = [(name, ts, data_dir_why if name in (DISCORD_SEEN, DISCORD_FORWARD, INGEST, INFERENCE) else detail)
               for name, ts, detail in stages]
 unsure = set()
 failed = set()
@@ -612,7 +620,7 @@ for index, (_, found, _, _) in enumerate(sources):
         elif "inference-failed" in ln and not (journal_log and index == 0):
             untimed = True
 unseen_why = "the call log can't be read here"
-if (times or untimed) and not llm_files and llm_unread is None and os.path.isdir(data_dir):
+if (times or untimed) and not llm_files and llm_unread is None and data_dir_why is None:
     unknown.add(INFERENCE)
     unseen_why = f"there's no call log in {data_dir}"
 

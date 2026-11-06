@@ -761,6 +761,29 @@ describe('the ladder\'s data directory', () => {
     expect(status).toBe(1);
   });
 
+  test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be looked at, or that\'s a file, is said to be so, not to be missing', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const locked = join(at.work, 'locked');
+    const data = join(locked, 'data');
+    mkdirSync(data, { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const { out } = ladder(at, ['--data-dir', data]);
+      expect(out).toContain(`· inference (llm call)       can't be seen here: the data directory at ${data} can't be looked at (Permission denied)`);
+      expect(out).toContain(`· discord event seen         can't be seen here: the data directory at ${data} can't be looked at (Permission denied)`);
+      expect(out).not.toContain('debug log isn\'t at');
+      expect(out).toContain(`the data directory at ${data} can't be looked at (Permission denied), so the discord, mcpl, chronicle and inference stages read nothing`);
+      expect(out).not.toContain('there\'s no data directory');
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+    const file = join(at.work, 'data-file');
+    writeFileSync(file, '');
+    const { out } = ladder(at, ['--data-dir', file]);
+    expect(out).toContain(`· chronicle ingest (+gate)   can't be seen here: ${file}, the data directory, isn't a directory`);
+    expect(out).not.toContain('there\'s no data directory');
+  });
+
   test('the ingest stage reads the active session\'s records, as sessions.json names it, not another session\'s', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const record = (room: string, at_s: number) => {
