@@ -286,11 +286,14 @@ export class SetupModule implements Module {
           `Run one command with bash -c in the install's directory, and get its exit status and output back: of an ` +
           `output longer than 8 KiB, its first and last 4 KiB, each widened to take in whole a secret a cut falls ` +
           `in, or the whole output where the two then meet. Its environment is the host's, less the stored secrets, the provider credentials and the ` +
-          `providers' base URLs, and no shell startup file is read. Nothing is kept between calls but what the command ` +
+          `providers' base URLs, and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
+          `install's directory itself unless it's run with --no-env-file. Nothing is kept between calls but what the command ` +
           `leaves behind: a process it leaves running when it ends, before the host shuts down, keeps running, after ` +
           `the host ends too, so a ` +
           `resident's host started from a command and one its service starts later would be two hosts on one data ` +
-          `directory. A command still running at its time limit, or when the host shuts down (as at /quit), is stopped: its process group gets ` +
+          `directory. Such a process needs output of its own, such as > file 2>&1: the output it shares with the ` +
+          `command closes at most about a second after the command ends, and a write ` +
+          `there after that ends it by SIGPIPE unless it ignores that signal. A command still running at its time limit, or when the host shuts down (as at /quit), is stopped: its process group gets ` +
           `SIGTERM, and SIGKILL 5 s later if any of it is left. The value of a stored secret, a provider credential or ` +
           `a provider's base URL that appears in the output as it was stored comes back as <NAME>; an encoded or split ` +
           `one isn't recognized.`,
