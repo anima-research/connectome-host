@@ -143,7 +143,7 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
     // and only there does a file's NODE_ENV come through.
     const ran = spawnSync(process.execPath, ['--config=/dev/null', '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
       cwd: dir, env: mode === 'development' ? development : { ...given, NODE_ENV: mode }, timeout: READ_LIMIT_MS,
-      encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024,
+      encoding: 'utf-8', maxBuffer: Infinity,
     });
     if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
       throw new Error(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);

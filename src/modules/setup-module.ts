@@ -36,9 +36,11 @@ export interface SetupModuleConfig {
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream's head and tail, so both streams' together, with what the answer adds, stay under agent-framework
-// 0.32.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), past which it
-// cuts the answer, and stderr's tail with it, for ordinary output: one dense in what JSON escapes, or in short
-// secrets under long names, can still pass it.
+// 0.32.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its
+// src/tool-result-history.ts:253, which the package doesn't export), past which it cuts the answer, and stderr's tail
+// with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
+// for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
+// of ordinary output. Output dense in what JSON escapes, or in short secrets under long names, can still pass it.
 const KEPT_BYTES = 4 * 1024;
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
 const KILL_GRACE_MS = 5_000;
@@ -443,6 +445,8 @@ export class SetupModule implements Module {
     }
     this.config.show('Setup\'s agent runs:');
     for (const line of shownCommand(input.command, atLaunch.values)) this.config.show(`  ${line}`);
+    // 4 bytes more: UTF-8's longest character (RFC 3629, section 3), so a cut can be moved back to fall between
+    // characters.
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);

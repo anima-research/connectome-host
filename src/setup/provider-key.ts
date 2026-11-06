@@ -33,6 +33,7 @@ function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
   return { url: under(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1', '/models'), headers: bearer(key) };
 }
 
+// Anthropic's List Models takes `limit` from 1 to 1000 (https://docs.anthropic.com/en/api/models-list).
 function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request {
   return {
     url: under(env.get('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com', '/v1/models?limit=1000'),
