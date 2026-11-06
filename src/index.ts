@@ -110,7 +110,10 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
+import {
+  buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption,
+  speculativeChannelChunksSetupWarning, speculativeChannelChunksSupportWarning,
+} from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
@@ -552,6 +555,9 @@ agents: [agentConfig],
 
   const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
   if (autoContinueWarning) console.warn(autoContinueWarning);
+  const speculativeWarning = speculativeChannelChunksSupportWarning(recipe, framework.getAgent(agentName) ?? undefined)
+    ?? speculativeChannelChunksSetupWarning(recipe);
+  if (speculativeWarning) console.warn(speculativeWarning);
 
   {
     const alarmCapable = strategy as unknown as {

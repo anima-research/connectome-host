@@ -923,6 +923,7 @@ describe('each agent setting is read from its own field', () => {
       [{ refusalHandling: { mode: 'rewind' } }, 'refusal handling', 'set'],
       [{ toolResultGuard: { enabled: true } }, 'tool-result guard', 'on'],
       [{ toolWrapperProseGuard: true }, 'tool-wrapper prose guard', 'on'],
+      [{ speculativeChannelChunks: true }, 'speculative channel chunks', 'on'],
       [{ clock: { intervalSeconds: 600, precision: 'minutes' } }, 'clock rows', 'every 10 minutes'],
       [{ clock: { intervalSeconds: 600, precision: 'seconds' } }, 'clock rows', 'every 10 minutes, read to the second'],
       [{ clock: { intervalSeconds: 60, precision: 'minutes' } }, 'clock rows', 'every 1 minute'],

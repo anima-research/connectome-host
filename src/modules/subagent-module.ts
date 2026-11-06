@@ -501,6 +501,7 @@ export function agentSettingsOf(agent: {
   refusalHandling?: unknown;
   toolResultGuard?: { enabled?: boolean };
   toolWrapperProseGuard?: boolean;
+  speculativeChannelChunks?: boolean;
   clock?: { intervalSeconds: number; precision?: string } | undefined;
   autoContinue?: { maxConsecutive: number } | undefined;
   getRuntimeSettings?(): { sameRoundThinkTextPolicy?: string };
@@ -519,6 +520,7 @@ export function agentSettingsOf(agent: {
     'refusal handling': agent.refusalHandling ? 'set' : 'none',
     'tool-result guard': onOff(agent.toolResultGuard?.enabled),
     'tool-wrapper prose guard': onOff(agent.toolWrapperProseGuard),
+    'speculative channel chunks': onOff(agent.speculativeChannelChunks),
     'clock rows': agent.clock ? clockRows(agent.clock) : 'off',
     'auto-continue': agent.autoContinue ? `on (up to ${agent.autoContinue.maxConsecutive} in a row)` : 'off',
   };

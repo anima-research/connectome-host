@@ -374,6 +374,14 @@ export interface RecipeAgent {
   /** Default-off containment of whole-response prose wrappers for known tools. */
   toolWrapperProseGuard?: boolean;
   /**
+   * Speculative channel chunks (agent-framework `AgentConfig.speculativeChannelChunks`,
+   * its docs/speculative-channel-chunks.md; off when omitted): the text of a
+   * `channel_publish` call streams to a channel that declares
+   * `streaming: { speculative: true }` while the model writes it, before the
+   * publish, for a voice server to speak at once.
+   */
+  speculativeChannelChunks?: boolean;
+  /**
    * Continue until skip_reply (agent-framework `AgentConfig.autoContinue`,
    * agent-framework's docs/auto-continue.md; off when omitted): a turn the
    * model ends itself, with prose or with nothing, is followed by another
@@ -1973,7 +1981,7 @@ const RECIPE_AGENT_KEYS = [
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
   'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
-  'toolWrapperProseGuard', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'toolWrapperProseGuard', 'speculativeChannelChunks', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
 export const DEFAULT_RECIPE_CLOCK: ClockConfig = Object.freeze({ intervalMinutes: 10 }) as ClockConfig;
@@ -2322,6 +2330,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
     throw new Error(`Recipe agent.toolWrapperProseGuard must be a boolean, got ${JSON.stringify(agent.toolWrapperProseGuard)}.`);
+  }
+
+  if (agent.speculativeChannelChunks !== undefined && typeof agent.speculativeChannelChunks !== 'boolean') {
+    throw new Error(`Recipe agent.speculativeChannelChunks must be a boolean, got ${JSON.stringify(agent.speculativeChannelChunks)}.`);
   }
 
   if (agent.autoContinue !== undefined && typeof agent.autoContinue !== 'boolean') {

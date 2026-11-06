@@ -20,10 +20,53 @@ export function autoContinueSupportWarning(recipe: Recipe, agent: object | undef
     '(agent-framework#744): turns end as before, without continuing, until it is upgraded.';
 }
 
+/**
+ * An agent-framework that predates `agent.speculativeChannelChunks`
+ * (agent-framework#965) passes the key through and builds the agent without
+ * it, so nothing streams ahead of a publish, with no other sign. One that has
+ * it gives the built agent (framework.getAgent) `speculativeChannelChunks`.
+ */
+export function speculativeChannelChunksSupportWarning(recipe: Recipe, agent: object | undefined): string | undefined {
+  if (!recipe.agent.speculativeChannelChunks || !agent) return undefined;
+  if ((agent as { speculativeChannelChunks?: unknown }).speculativeChannelChunks !== undefined) return undefined;
+  return '[agent-settings] agent.speculativeChannelChunks is set, but the installed agent-framework predates it ' +
+    '(agent-framework#965): nothing streams ahead of a publish until it is upgraded.';
+}
+
+/** The Anthropic beta without which the API sends a tool call's arguments only at its end. */
+export const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14';
+
+/**
+ * `agent.speculativeChannelChunks` set where it can gain nothing: a provider
+ * other than Anthropic (membrane streams tool arguments from Anthropic only),
+ * the XML tool formatter (it reads native tool calls), or no
+ * fine-grained-tool-streaming beta (the API buffers a call's arguments, so
+ * the text reaches the channel no earlier than the publish).
+ */
+export function speculativeChannelChunksSetupWarning(recipe: Recipe): string | undefined {
+  if (!recipe.agent.speculativeChannelChunks) return undefined;
+  const prefix = '[agent-settings] agent.speculativeChannelChunks is set, but';
+  const provider = resolveProvider(recipe);
+  if (provider !== 'anthropic') {
+    return `${prefix} provider "${provider}" doesn't stream tool arguments, so nothing streams ahead of a publish. ` +
+      'It works with provider "anthropic" only.';
+  }
+  if (recipe.agent.formatter === 'anthropic-xml') {
+    return `${prefix} formatter "anthropic-xml" writes tool calls as text, so nothing streams ahead of a publish. ` +
+      'It needs native tool calls (formatter "native", the default).';
+  }
+  if (!(recipe.agent.anthropicBetas ?? []).includes(FINE_GRAINED_TOOL_STREAMING_BETA)) {
+    return `${prefix} agent.anthropicBetas doesn't have "${FINE_GRAINED_TOOL_STREAMING_BETA}": without it the API sends ` +
+      "a tool call's arguments at its end, so the text reaches the channel no earlier than the publish.";
+  }
+  return undefined;
+}
+
 export type FrameworkAgentConfig = AgentConfig & {
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
   autoContinue?: Recipe['agent']['autoContinue'];
+  speculativeChannelChunks?: boolean;
   thinkingBinding?: { binds?: boolean; dropBlock?: boolean };
 };
 
@@ -168,6 +211,9 @@ export function buildFrameworkAgentConfig(
       : {}),
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
+      : {}),
+    ...(recipe.agent.speculativeChannelChunks !== undefined
+      ? { speculativeChannelChunks: recipe.agent.speculativeChannelChunks }
       : {}),
     ...(recipe.agent.autoContinue !== undefined
       ? { autoContinue: recipe.agent.autoContinue }
