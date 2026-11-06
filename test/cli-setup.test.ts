@@ -2243,7 +2243,7 @@ const besideIt = (dir: string, name: string): string => {
   return path;
 };
 
-test('an install moved here whose places were all under its old directory is bound with no question, its own setup given the data directory here', async () => {
+test('an install moved here whose places were all under its old directory asks nothing, and hands its own setup the data directory here, which binds it', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const moved = besideIt(dir, 'moved');
@@ -2255,7 +2255,7 @@ test('an install moved here whose places were all under its old directory is bou
   expect(text(again.seen.out)).toContain(`This install's record is bound to ${dir}, and the install is in ${moved}, so it was moved or copied here. Setup binds it here: each place under ${dir} becomes the same place under ${moved}.`);
 });
 
-test('a copy with a place outside its old directory asks where that place is in this install, naming it, and gives its own setup the answer', async () => {
+test('a copy with a place outside its old directory asks where that place is in this install, naming it, and hands the answer to its own setup, which binds it', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const outside = join(directory(), 'state.json');
@@ -2349,7 +2349,7 @@ test('a fleet child\'s data directory outside every place is asked about after t
   });
 });
 
-test('a binding a setup run cut off goes to the install\'s own setup to finish, with no --place and asking nothing, and setup says so', async () => {
+test('a binding a setup run cut off is handed to the install\'s own setup, which finishes it, with no --place and asking nothing, and setup says that one finishes it or says what stops it', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
