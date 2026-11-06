@@ -176,9 +176,9 @@ describe('the wait for a line\'s turn', () => {
       expect(out.some((line) => line.includes('no answer after'))).toBe(false);
       emit('inference:completed');
       expect(await settledNow(opening)).toBe(true);
-      await advance(100);
+      await advance(299);
       expect(await settledNow(typed)).toBe(false);
-      await advance(400);
+      await advance(1);
       expect(await settledNow(typed)).toBe(true);
       expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on without it)');
     });
@@ -258,9 +258,9 @@ describe('the wait for a line\'s turn', () => {
       await advance(400);
       expect(await settledNow(typed)).toBe(false);
       release();
-      await advance(100);
+      await advance(199);
       expect(await settledNow(typed)).toBe(false);
-      await advance(250);
+      await advance(1);
       expect(await settledNow(typed)).toBe(true);
       expect(out.at(-1)).toBe('err:(no answer after 0.2 s: going on without it)');
     });
