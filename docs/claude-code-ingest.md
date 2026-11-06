@@ -372,9 +372,10 @@ nothing it does reaches the original:
    `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. Give any other
    variable the copy names as `${…}` too, since the host fills each from its environment
    and won't load a recipe naming one it can't, with a mock value where it's a
-   credential, and `http://127.0.0.1:9` where it's a provider's base URL. So every request
-   the host makes is refused, and a turn it starts on its own, such as for a heartbeat
-   that fell due while the resident was down, gets no reply and calls no tool. The `mock`
+   credential, and, where it's a provider's base URL, `http://127.0.0.1:9`, once
+   `curl http://127.0.0.1:9/` fails to connect. So every request the host makes is
+   refused, and a turn it starts on its own, such as for a heartbeat that fell due while
+   the resident was down, gets no reply and calls no tool. The `mock`
    provider is the exception: it needs no key, and a turn on it gets the reply the
    recipe's `agent.mock` gives, by default an echo of the turn.
    On a gateway, the check can leave out a binding model's changed thinking that the
