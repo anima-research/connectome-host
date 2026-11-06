@@ -61,7 +61,6 @@ function packageJson(): PackageJson {
   return JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf-8')) as PackageJson;
 }
 
-/** The command that runs this release of the package where no install's own command does. */
 export function packageCommand(): string {
   return `bunx ${PACKAGE}@${packageJson().version}`;
 }
@@ -86,10 +85,8 @@ export interface Ran {
   status: number | null;
   stdout: string;
   stderr: string;
-  /** What the system said when the program couldn't be started. */
   startError?: { code?: string; message: string };
   timedOut?: boolean;
-  /** The signal that ended it, other than setup's own at its limit. */
   signal?: NodeJS.Signals;
 }
 
@@ -97,7 +94,6 @@ export interface RunOptions {
   cwd: string;
   env: Record<string, string>;
   timeoutMs?: number;
-  /** Let the person see its output as it comes, rather than keep it. */
   show?: boolean;
 }
 
@@ -108,25 +104,19 @@ export interface AgentLaunch {
 }
 
 export interface SetupWorld {
-  /** Whether a person is at a terminal on stdin and stdout. */
   terminal: boolean;
   platform: NodeJS.Platform;
   user: string;
   env: Record<string, string | undefined>;
-  /** The directory setup was started in, whose dotenv files Bun read into `env`. */
   cwd: string;
   bun: { path: string; version: string };
   hasSudo: boolean;
-  /** Whether `user`'s linger is on, or null where there's no systemd. */
   lingerOf(user: string): boolean | null;
   userExists(user: string): boolean | null;
-  /** The line typed, or null once the terminal is gone (Ctrl-C, Ctrl-D). */
   ask(question: string): Promise<string | null>;
-  /** Asks with nothing echoed: the line typed, or null once the terminal is gone. */
   askHidden(label: string): Promise<string | null>;
   run(argv: string[], options: RunOptions): Promise<Ran>;
   checkKey(options: KeyCheckOptions): Promise<KeyCheck>;
-  /** Runs the setup agent's host in this terminal, to its end, and gives its exit status. */
   startAgent(launch: AgentLaunch): Promise<number>;
 }
 
@@ -844,17 +834,14 @@ function takeSetupLock(file: string): { release(): void } | null {
   return { release: () => held.close() };
 }
 
-// What Bun read from the directory's dotenv files, which are the resident's, stays out of the agent's environment and
-// its commands': each name any of them gives, in any mode, since NODE_ENV can itself be one a file gave. By name, as
-// Bun puts in $NAME as it reads, so a value read there needn't match the file's text. A name the person also
-// exported goes too, with its exported value.
+// By name, since Bun puts in $NAME as it reads a dotenv file, so a value it read there needn't match the file's text.
 function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Record<string, string | undefined> {
   const names = new Set(dotenvNames(cwd));
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
 
-// What the shell setup was started from exported, for what setup says of it: the rest of what Bun gave setup, and
-// each name a dotenv file gives whose value isn't one the files give it, since an exported value wins over theirs.
+// Bun keeps an exported value over a dotenv file's, so a name the files give, holding a value none of them gives, was
+// exported.
 function exportedOf(given: Record<string, string | undefined>, rest: Record<string, string | undefined>, cwd: string):
   Record<string, string> {
   const fromFiles = dotenvValues(cwd, rest);

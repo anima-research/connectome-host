@@ -40,9 +40,7 @@ function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request
   };
 }
 
-/** The provider keys setup checks, by the name each is stored as in the install's .env. Bedrock's keys aren't among
- *  them, since a request with them needs AWS's signing; nor Codex's, a ChatGPT login rather than a key; nor
- *  OPENAI_COMPATIBLE_API_KEY, whose base URL is the recipe's. */
+// Not Bedrock's keys, since a request with them needs AWS's signing, nor Codex's, a ChatGPT login rather than a key.
 export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
   OPENAI_API_KEY: { provider: 'OpenAI', check: openaiModels, accepts: listed, models: openaiModels },
   ANTHROPIC_API_KEY: { provider: 'Anthropic', check: anthropicModels, accepts: listed, models: anthropicModels },
@@ -61,7 +59,6 @@ interface Options {
   fetch?: typeof fetch;
   limitMs?: number;
   env?: ReadonlyMap<string, string>;
-  /** Values that an answer quoting them shows by their names, as `<NAME>`, beside the key's own. */
   hide?: readonly { name: string; value: string }[];
 }
 

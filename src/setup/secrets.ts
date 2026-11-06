@@ -4,12 +4,6 @@ import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
 
-/** The provider credentials the host reads from its environment (src/index.ts, membrane's Bedrock provider and
- *  src/codex-subscription-adapter.ts), and the providers' base URLs it reads there, which can carry one, kept out
- *  of the setup agent's commands whether or not setup stored them. ANTHROPIC_OAUTH_CREDENTIALS_FILE names a file,
- *  and is here since a host started from such a command would sign in with it in place of the checked key; other
- *  places that hold a credential, such as CODEX_HOME and IDENTITY_KEY_FILE, stay, since stripping one changes which
- *  file a command reads and hides nothing a command can't read. */
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
   'OPENROUTER_API_KEY', 'OPENAI_COMPATIBLE_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -116,9 +110,6 @@ function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
-/** A dotenv file's assignments in its order: .env in setup's form, throwing as envAssignments does, and the others
- *  in any form, as node:util's parseEnv reads them, which is as Bun 1.4.4 does but that it keeps \$ and puts in no
- *  $NAME. None when the file isn't there; one that can't be read throws, naming it. */
 function dotenvAssignments(dir: string, file: string): Assignment[] {
   const path = join(dir, file);
   if (file === '.env') return envAssignments(path);

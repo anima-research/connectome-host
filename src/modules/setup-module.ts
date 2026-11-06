@@ -139,7 +139,6 @@ function groupOf(pid: number | undefined): Group {
       try {
         if (pid !== undefined) process.kill(-pid, signal);
       } catch {
-        // The group has gone.
       }
     },
     alive() {

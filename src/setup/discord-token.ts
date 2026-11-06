@@ -4,7 +4,6 @@ import { hostVersionOf } from '../update/update.js';
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
 
-/** What Discord said of a bot token: whose it is, that it refused it, something else, or nothing at all. */
 export type TokenCheck =
   | { kind: 'accepted'; name: string; id: string }
   | { kind: 'refused' }
@@ -20,9 +19,6 @@ export function discordUserAgent(): string {
   return `DiscordBot (https://github.com/anima-research/connectome-host, ${hostVersionOf(HOST_PACKAGE_JSON)})`;
 }
 
-/** Asks Discord whose bot token this is (GET /users/@me), calling `asking` just before it asks; a token a request
- *  header can't carry is never sent. No answer holds the token: where an error's words quote it, they show
- *  <DISCORD_TOKEN> in its place. */
 export async function checkDiscordToken(
   token: string,
   options: { fetch?: typeof fetch; limitMs?: number; asking?: () => void } = {},

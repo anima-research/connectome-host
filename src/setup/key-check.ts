@@ -6,7 +6,6 @@ export type KeyCheck = { ok: true } | { ok: false; cause: string; anotherKeyMayH
 export interface KeyCheckOptions {
   key: string;
   model: string;
-  /** ANTHROPIC_BASE_URL where it's set, or undefined for Anthropic's own API. */
   baseUrl?: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
@@ -14,7 +13,6 @@ export interface KeyCheckOptions {
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
 
-/** Where a base URL leads, without any user, password, path or query it carries. */
 export function originOf(baseUrl: string): string | null {
   try {
     const url = new URL(baseUrl);
