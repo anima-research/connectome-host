@@ -102,7 +102,7 @@ def run(cmd, timeout=15, no_match=None, cut_is_end=False):
         r = subprocess.run(cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        return ("", None) if cut_is_end else (None, str(e))
+        return (None, None) if cut_is_end else (None, str(e))
     except Exception as e:
         return None, str(e)
     if r.returncode == no_match and not r.stderr.strip():
@@ -723,6 +723,8 @@ if pid not in ("0", "", None) and active in ("active", "running"):
         signalled = int(time.time())
         _, refused = run(f"kill -USR2 {pid}")
         dump = why = None
+        finished = False
+        where = f"{unit}'s journal" if journal_log else agent_log
         if refused is None:
             deadline = time.monotonic() + DUMP_WAIT
             while dump is None and why is None:
@@ -732,10 +734,9 @@ if pid not in ("0", "", None) and active in ("active", "running"):
                 if journal_log:
                     said, why = run(f"journalctl --user -u {unit_q} -o cat --no-pager --since @{signalled}", timeout=left,
                                     cut_is_end=True)
-                    where = f"{unit}'s journal"
                 else:
                     said, why = read_text(agent_log, start=before)
-                    where = agent_log
+                finished = finished or said is not None
                 # Split at newlines only: the dump is JSON, which can hold U+2028.
                 for ln in (said or "").split("\n"):
                     if "[diagnostics]" in ln:
@@ -749,6 +750,11 @@ if pid not in ("0", "", None) and active in ("active", "running"):
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but {where} can't be read ({why}), so whether a "
                   f"[diagnostics] line came isn't known{C_OFF}")
             warn(f"SIGUSR2 was sent, but {where} can't be read ({why}), so the gate dump isn't known", counts=False)
+        elif not finished:
+            print(f"live gate dump: {C_RED}SIGUSR2 sent, but no read of {where} finished within {DUMP_WAIT} s, so whether "
+                  f"a [diagnostics] line came isn't known{C_OFF}")
+            warn(f"SIGUSR2 was sent, but no read of {where} finished within {DUMP_WAIT} s, so the gate dump isn't known",
+                 counts=False)
         elif dump:
             print(f"live gate dump (SIGUSR2): {dump.split('[diagnostics] ',1)[-1]}")
             try:
