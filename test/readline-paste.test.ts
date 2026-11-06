@@ -91,6 +91,20 @@ test('end() turns bracketed paste off once, and a paste after it goes on line by
   rl.close();
 });
 
+test('end() says how many lines a paste was holding, which the next Enter would have sent, and none once they\'re sent', async () => {
+  const held = terminal();
+  held.input.write(`${START}one\rtwo\r${END}`);
+  await held.settle();
+  expect(held.paste.end()).toBe(2);
+  held.rl.close();
+  const sent = terminal();
+  sent.input.write(`${START}one\rtwo\r${END}\r`);
+  await sent.settle();
+  expect(sent.messages).toEqual(['one\ntwo\n']);
+  expect(sent.paste.end()).toBe(0);
+  sent.rl.close();
+});
+
 test('the process exiting turns bracketed paste off', async () => {
   const { signals, rl, settle, shown } = terminal();
   signals.emit('exit', 1);

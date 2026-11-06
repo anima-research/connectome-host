@@ -11,7 +11,7 @@ export interface BracketedPaste {
   take(line: string): string | null;
   pasting(): boolean;
   drop(secrets: readonly string[]): { taken: number; left: number };
-  end(): void;
+  end(): number;
 }
 
 /**
@@ -70,6 +70,7 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
       input.off('keypress', onKey);
       signals.off('exit', off);
       for (const each of ENDING_SIGNALS) signals.off(each, onEach[each]);
+      return lines.splice(0).length;
     },
   };
 }

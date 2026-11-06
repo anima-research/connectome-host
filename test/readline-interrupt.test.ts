@@ -551,6 +551,23 @@ linux('a line still waiting to go in when the person ends the conversation isn\'
   120_000,
 );
 
+linux('a paste still held when the person ends the conversation isn\'t sent, and the host says how many lines it held (Linux only)',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'readline-quit-pasted-'));
+    dirs.push(dir);
+    const host = startHost(dir, {}, said('Hello.'));
+    await until(() => host.seen.output.includes('(readline mode)'), 60_000, `the prompt (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('\x1b[200~one\rtwo\r\x1b[201~');
+    await until(() => host.seen.output.includes('2 lines pasted: Enter sends them.'), 30_000,
+      `the paste's note (output: ${host.seen.output.slice(-1500)})`);
+    hosts.at(-1)!.stdin!.write('\x04');
+    expect(await host.exit).toBe(0);
+    expect(host.seen.output).toContain('The 2 lines you pasted weren\'t sent.');
+    expect(host.bodies).toHaveLength(0);
+  },
+  120_000,
+);
+
 linux('a line typed while a turn runs that holds what the person then enters hidden isn\'t sent, and the host says so without quoting it (Linux only)',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'readline-hidden-queued-'));

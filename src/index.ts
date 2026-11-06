@@ -923,11 +923,12 @@ async function runPiped(app: AppContext) {
       turns.endAll();
       conversationEnded = true;
       atPrompt = false;
-      paste?.end();
+      const pasted = paste?.end() ?? 0;
       if (linesWaiting > 0) {
         const lines = linesWaiting === 1 ? 'A line you typed' : `${linesWaiting} lines you typed`;
         say(`${lines} hadn't gone in to the agent yet, and won't now.`);
       }
+      if (pasted > 0) say(pasted === 1 ? 'The line you pasted wasn\'t sent.' : `The ${pasted} lines you pasted weren't sent.`);
     });
     const ended = new Promise<void>((done) => rl.once('close', () => done()));
     let unanswered = 0;
