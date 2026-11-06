@@ -1,0 +1,1 @@
+- A recipe with `"tuneOut": { "enabled": true }` is refused at load, naming agent-framework 0.33.0's removal of tune-out without a reader and its migration (remove the key; configure a `subconscious` to keep `tune_out`); it used to load and the host exited at `create`. `enabled: false`, which the framework still accepts and ignores, still loads.

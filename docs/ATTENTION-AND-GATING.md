@@ -330,12 +330,15 @@ wake?" decision. Heavy logic belongs in your turn once you're up, not here.
   hears of as only a "maybe". On a host that still runs the heartbeat-mcpl
   server instead, the tools are the same (named `mcpl--heartbeat--…`), and the
   judge doesn't know its schedule.
-- **`tune_out`** (when you have a subconscious, or the recipe sets
-  `tuneOut.enabled`) — holds a channel: its traffic stops entering your
-  context and waking you. With a subconscious, it reads the held traffic,
-  reports to you on a cadence and judges whether a mention merits
-  interrupting you; without one the hold is silent. Cancelling, or the
-  duration ending, delivers the backlog either way.
+- **`tune_out`** (when you have a subconscious) — holds a channel: its
+  traffic stops entering your context and waking you. Your subconscious
+  reads the held traffic, reports to you on a cadence and judges whether a
+  mention merits interrupting you. Cancelling, or the duration ending,
+  delivers the backlog. Without a subconscious you are not offered
+  `tune_out` or `focus`, and no hold is silent: agent-framework 0.33.0
+  removed the recipe's `tuneOut.enabled`, which offered them without a
+  reader. They stay listed without one only while a hold whose release
+  failed is still on record, for you to check or cancel.
 
 ## Debugging
 

@@ -1488,10 +1488,12 @@ export type RecipeForkReader = Omit<ForkReaderConfig, 'strategyFactory' | 'frami
 export type RecipeSpeech = NonNullable<FrameworkConfig['speech']>;
 
 /**
- * Tune-out without a reader (agent-framework FrameworkConfig.tuneOut): offer
- * `tune_out` / `focus` to the resident when no `subconscious` is configured.
- * A hold is then silent — nothing summarizes or wakes the resident; the
- * backlog is released on cancel or when the duration ends.
+ * Tune-out settings (agent-framework FrameworkConfig.tuneOut): `announce`
+ * only. The resident is offered `tune_out` / `focus` only with a reader
+ * (`subconscious`); there is no silent hold. `enabled`, which offered them
+ * without a reader, was removed in agent-framework 0.33.0: validateRecipe
+ * refuses `enabled: true`, as the framework's `create` does, and lets
+ * `enabled: false` load, which the framework accepts and ignores.
  */
 export type RecipeTuneOut = NonNullable<FrameworkConfig['tuneOut']>;
 
@@ -1591,7 +1593,7 @@ export interface Recipe {
   subconscious?: RecipeSubconscious;
   /** Where plain prose lands when nothing names a destination (agent-framework `speech`). */
   speech?: RecipeSpeech;
-  /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
+  /** Tune-out settings (agent-framework `tuneOut`): `announce`. `tune_out` itself comes with `subconscious`. */
   tuneOut?: RecipeTuneOut;
   /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
    *  `derivationNotice`, so an agent isn't told of a derivation and
@@ -3453,15 +3455,26 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe tuneOut must be an object.');
     }
     const tuneOut = obj.tuneOut as Record<string, unknown>;
+    // `enabled` is still read, only to refuse true: agent-framework 0.33.0
+    // removed it (agent-framework#959) and refuses `enabled: true` at
+    // create, so a recipe stating it fails here instead of loading and
+    // exiting at create. `false` the framework still accepts and ignores,
+    // so it loads here too.
     for (const key of Object.keys(tuneOut)) {
       if (key !== 'enabled' && key !== 'announce') {
-        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: enabled, announce).`);
+        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: announce).`);
       }
     }
     for (const key of ['enabled', 'announce'] as const) {
       if (tuneOut[key] !== undefined && typeof tuneOut[key] !== 'boolean') {
         throw new Error(`Recipe tuneOut.${key} must be a boolean.`);
       }
+    }
+    if (tuneOut.enabled === true) {
+      throw new Error(
+        'Recipe tuneOut.enabled was removed in agent-framework 0.33.0 (tune-out without a reader): ' +
+          'remove tuneOut.enabled; to keep tune_out, configure a subconscious as well.',
+      );
     }
   }
 
