@@ -195,7 +195,8 @@ with `ln -sfn ../connectome-host/current/node_modules '/home/<agent>/<agent>-cm/
 and run it from `<agent>-cm`, where stage 1 wrote `seed.json`. Node resolves its
 `@animalabs/context-manager` from the script's own directory up, so the link gives it
 the release `current` names, the version the host runs, rather than the copy setup
-installed in `<agent>-cm/node_modules`, which an update leaves behind. Point `DATA_DIR` at the install's
+installed in `<agent>-cm/node_modules`, which an update leaves behind. Where `scripts/node_modules` is
+already there and isn't a link, move it aside first: `ln` would put the link inside it. Point `DATA_DIR` at the install's
 legacy store path, `store` in its data directory: the script takes it from
 `SEED_DATA_DIR` when that's set, and refuses a link there. The host migrates `data/store` →
 `data/sessions/<id>/` on first launch.
@@ -212,8 +213,10 @@ moving it aside moves the import too. Where a host's start wrote it and that sta
 keeping, such as only a hello, stop the service with the install's command by its full
 path,
 `'/home/<agent>/<agent>-cm/connectome-host/connectome' service stop`, move `sessions.json`
-and `sessions/` out of the data directory, seed it, and start the service again with
-`'/home/<agent>/<agent>-cm/connectome-host/connectome' service start`. The rest of the data directory stays as it is: discord-mcpl's state
+and `sessions/` out of the data directory, seed it, and leave the service stopped: its
+next start, in stage 4, is the seed's first boot, after this stage's copy of the store
+and stage 3's check (it stays installed, so a restart of the machine, or on macOS a new
+login, before then starts it). The rest of the data directory stays as it is: discord-mcpl's state
 files, its filters among them, and the Web UI's `observers.json`. Otherwise don't seed:
 the resident already has a history of its own, and this method seeds only a first start.
 
@@ -346,13 +349,18 @@ nothing it does reaches the original:
    on its own data directory under `<agent>-cm`, a heartbeat state path resolves from
    there too, a TTS relay connects to the relay the recipe names and signs in as the
    resident's bot, and an extension's code runs in the host's process. So a recipe whose
-   strategy comes from an extension gets no pre-boot check this way. For an
-   `openai-compatible` recipe, whose own endpoint may answer with no key at all, set
-   `agent.baseUrl` to `http://127.0.0.1:9/v1`, where nothing answers, as `curl
-   http://127.0.0.1:9/` failing to connect shows. Where `agent.systemPrompt` is a URL,
-   or a `${…}` whose value is one, put the text it gives in its place, since the host
-   fetches it as it loads the recipe. In place of any Web UI the recipe has, give the
-   copy one of its own under `modules`, with a password you make up for the check:
+   strategy comes from an extension gets no pre-boot check this way. Where
+   `agent.systemPrompt` is a URL, or a `${…}` whose value is one, put the text it gives
+   in its place, since the host fetches it as it loads the recipe. Then point every URL
+   the copy still gives the host to connect to at `http://127.0.0.1:9`, where nothing
+   answers, as `curl http://127.0.0.1:9/` failing to connect shows: an
+   `openai-compatible` recipe's `agent.baseUrl`, as `http://127.0.0.1:9/v1`, since its
+   own endpoint may answer with no key at all, and the `url` of
+   `modules.history.semantic`, whose sync sends the history's text, with the recipe's
+   token, to the index it names. Pointing that one away, rather than leaving the module
+   out, keeps its tool in what the check compiles. In place of any Web UI the recipe
+   has, give the copy one of its own under `modules`, with a password you make up for
+   the check:
    `"webui": { "port": <port>, "host": "127.0.0.1", "basicAuth": { "username": "check", "password": "<password>" } }`.
    Without `basicAuth`, every account on the machine could read the copy's
    `/debug/context`, the resident's whole history, since loopback is open to all of
@@ -373,7 +381,8 @@ nothing it does reaches the original:
    `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. Give any other
    variable the copy names as `${…}` too, since the host fills each from its environment
    and won't load a recipe naming one it can't, with a mock value where it's a
-   credential, and, where it's a provider's base URL, `http://127.0.0.1:9`, once
+   credential, and, where it's a URL the host connects to, such as a provider's base URL
+   or the semantic index's, `http://127.0.0.1:9`, once
    `curl http://127.0.0.1:9/` fails to connect. So every request the host makes is
    refused, and a turn it starts on its own, such as for a heartbeat that fell due while
    the resident was down, gets no reply and calls no tool. The `mock`
