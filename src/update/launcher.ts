@@ -153,7 +153,6 @@ function unwritableDirectory(dirs: string[]): string | null {
 
 export class LockHeld extends ContractError {}
 
-/** Whether a lock's holder still runs: its pid is alive on this boot, or on a boot neither side can name. */
 export function lockLive(holder: LockRecord, ops: LauncherOps): boolean {
   const bootId = ops.bootId();
   return ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId);

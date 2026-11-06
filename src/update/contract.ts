@@ -186,10 +186,11 @@ export interface InstallRecord {
   dataDir: string;
   /** State kept outside the data directory, which each update copies with it. */
   extraState: string[];
-  /** The real path of the directory that holds the install's root, which setup bound the record's places to
-   *  (rebind.ts). The entry point and the install's command refuse a record bound to another directory, so a
-   *  moved or copied install runs only once setup has bound it where it is. A record without it was written by a
-   *  release before the field, and setup's next run binds it. */
+  /** The directory that holds the install's root, which setup bound the record's places to (rebind.ts): its
+   *  real path as setup bound it, kept as written by later setup runs while it still names this directory. The
+   *  entry point and the install's command compare it with the directory they're in by device and inode, and
+   *  refuse a record bound to another, so a moved or copied install runs only once setup has bound it where it is.
+   *  A record without it says nothing of where the install was set up, and setup's next run binds it. */
   workingDir?: string;
 }
 

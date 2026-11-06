@@ -21,10 +21,7 @@
  * Run again, it finishes whatever a run cut off left undone, and changes
  * nothing an earlier run finished: the release `current` names stays. With
  * --extra-state, it records the paths given in place of those recorded;
- * without, those recorded stay. Run in an install whose record is bound to
- * another directory, or to none, it binds the install where it is
- * (rebind.ts), with --place giving each place it can't map by itself its
- * place here.
+ * without, those recorded stay.
  */
 import {
   existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync,
@@ -246,8 +243,6 @@ export interface SetupOptions {
   hostRoot: string;
   say(line: string): void;
   units(cwd: string): ServiceUnits;
-  /** Where each place a binding asks about is in this install (--place): the path the record or a label or list
-   *  names, and its place here. */
   places?: Array<{ from: string; to: string }>;
 }
 
