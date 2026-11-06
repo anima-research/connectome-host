@@ -62,7 +62,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
     }
   });
 
-  it('runs only connectome commands the install\'s command has, each word one its usage takes', () => {
+  it('runs only connectome commands the install\'s command has, each word one its usage takes or, where the usage takes a value, a word that holds a <placeholder> and isn\'t an option', () => {
     const usages = [...COMMANDS.map((command) => command.usage), 'connectome help'];
     const runs = SPANS.filter((span) => span.startsWith('connectome '));
     expect(runs.length).toBeGreaterThan(0);
@@ -71,7 +71,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       const usage = usages.find((candidate) => candidate.split(' ')[1] === name) ?? '';
       const words = new Set(usage.replace(/[[\]()|]/g, ' ').split(/\s+/));
       const takesValue = /<[^>]+>/.test(usage);
-      const fits = usage !== '' && rest.every((word) => words.has(word) || (takesValue && /<[^>]+>/.test(word)));
+      const fits = usage !== '' && rest.every((word) => words.has(word) || (takesValue && /<[^>]+>/.test(word) && !word.startsWith('-')));
       expect({ run, fits }).toEqual({ run, fits: true });
     }
   });
