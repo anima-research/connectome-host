@@ -628,7 +628,7 @@ describe('a binding cut off', () => {
     }
   });
 
-  test('a Go back\'s list that can\'t be read once a binding has begun is refused as a binding under way, naming its plan, not as nothing changed', () => {
+  test('a Go back\'s list that can\'t be read once a binding has begun is refused as a binding under way, naming its plan, not as nothing changed, and says to put that list right', () => {
     const { places } = chained();
     const root = rootOf(install);
     const second = join(root, 'set-aside', 'm2', 'places.json');
@@ -638,7 +638,7 @@ describe('a binding cut off', () => {
     writeFileSync(second, 'not a list');
     const why = refusal(() => setup(options(install)));
     expect(why).toContain(second);
-    expect(why).toContain(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}`);
+    expect(why).toContain(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}: put ${second} right, and setup finishes the binding.`);
     expect(why).not.toContain('changed nothing');
     expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
   });

@@ -64,9 +64,9 @@ function pathsIn(value: CopyLabel | GoBackList, kind: BoundFile['kind']): string
 }
 
 export function boundFiles(root: string, underWay: string | null = null): BoundFile[] {
-  const unbindable = (why: string) => new ContractError(`${why}, so setup can't bind the places it names to this ` +
-    (underWay === null ? 'directory, and has changed nothing.'
-      : `directory. A binding of this install is under way, with its plan at ${underWay}: put that file right, and ` +
+  const unbindable = (why: string, path: string) => new ContractError(`${why}, so setup can't bind the places it ` +
+    'names to this ' + (underWay === null ? 'directory, and has changed nothing.'
+      : `directory. A binding of this install is under way, with its plan at ${underWay}: put ${path} right, and ` +
         'setup finishes the binding.'));
   const { copy, copyPrev, setAside } = installPaths(root);
   const found: Array<{ path: string; kind: BoundFile['kind'] }> = [
@@ -87,11 +87,11 @@ export function boundFiles(root: string, underWay: string | null = null): BoundF
       value = readRecord<CopyLabel | GoBackList>(path, kind === 'label' ? "copy's label" : "Go back's list of places");
     } catch (error) {
       if (!(error instanceof ContractError)) throw error;
-      throw unbindable(error.message.replace(/\.+$/, ''));
+      throw unbindable(error.message.replace(/\.+$/, ''), path);
     }
     if (value === null) continue;
     const paths = pathsIn(value, kind);
-    if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`);
+    if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`, path);
     files.push({ path, kind, value, paths });
   }
   return files;

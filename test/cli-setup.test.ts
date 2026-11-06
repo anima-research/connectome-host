@@ -1992,7 +1992,7 @@ test('a record from before workingDir takes each place under this directory as t
   });
 });
 
-test('a binding a setup run cut off is finished with the places that run was given, asking nothing', async () => {
+test('a binding a setup run cut off goes to the install\'s own setup to finish, with no --place and asking nothing, and setup says so', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
@@ -2007,7 +2007,7 @@ test('a binding a setup run cut off is finished with the places that run was giv
   expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root], dataDir: join(dir, 'data') });
 });
 
-test('an install whose recorded data directory has gone is refused by its own setup, not given a new one', async () => {
+test('an install whose recorded data directory has gone gets that directory from setup, not a new one, and setup stops where its own setup refuses it', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   rmSync(join(dir, 'data'), { recursive: true });

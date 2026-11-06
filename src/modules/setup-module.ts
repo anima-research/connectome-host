@@ -367,8 +367,8 @@ export class SetupModule implements Module {
     try {
       writeJsonAtomic(path, { ...read.state, finished: when }, 0o600);
     } catch (error) {
-      return failed(`${path} couldn't be written (${(error as Error).message}), so nothing was recorded and the ` +
-        'conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished ' +
+      return failed(`${path} couldn't be written (${(error as Error).message}), so it may not have been recorded, and ` +
+        'the conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished ' +
         'again once they have.');
     }
     this.finishRequested = true;

@@ -18,10 +18,10 @@
  * service needs. Nothing it does touches a running host: the
  * service starts through the entry point once its unit runs it.
  *
- * Run again, it finishes whatever a run cut off left undone, and changes
- * nothing an earlier run finished: the release `current` names stays. With
- * --extra-state, it records the paths given in place of those recorded;
- * without, those recorded stay.
+ * Run again, it finishes whatever a run cut off left undone, or says what
+ * stops it, and changes nothing an earlier run finished: the release
+ * `current` names stays. With --extra-state, it records the paths given in
+ * place of those recorded; without, those recorded stay.
  */
 import {
   existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync,

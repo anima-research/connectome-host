@@ -161,7 +161,7 @@ describe('setup--finished', () => {
       const result = await call(module);
       expect(result.success).toBe(false);
       expect(String(result.error)).toStartWith(`${join(dir, '.setup', 'setup-state.json')} couldn't be written (`);
-      expect(String(result.error)).toEndWith('), so nothing was recorded and the conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished again once they have.');
+      expect(String(result.error)).toEndWith('), so it may not have been recorded, and the conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished again once they have.');
       expect(module.finishRequested).toBe(false);
       expect(module.finishedAt()).toBeNull();
     } finally {
