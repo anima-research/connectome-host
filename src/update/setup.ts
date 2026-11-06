@@ -156,15 +156,17 @@ export function passwdHome(name: string, file = '/etc/passwd'): string | null {
  *  the user manager, and as nothing for the system's, whose default is /.
  *  One that sets ~ runs in its user's home: this user's for the user
  *  manager, and for the system's, its User='s, root's when it names none.
- *  Only units systemd has loaded are seen. */
+ *  A unit runs from `cwd` when its directory's real path is cwd's, or, given
+ *  `isHere`, when `isHere` says it does. Only units systemd has loaded are seen. */
 export function systemdUnits(cwd: string, run = (args: string[]) =>
   Bun.spawnSync(['systemctl', ...args], { stdout: 'pipe', stderr: 'pipe' }), home = homedir(),
-homeOf = passwdHome): ServiceUnits {
+homeOf = passwdHome, isHere?: (directory: string) => boolean): ServiceUnits {
   const found: ServiceUnit[] = [];
   const unasked: string[] = [];
   const unresolved: ServiceUnits['unresolved'] = [];
   const defaulted: string[] = [];
   const here = realOrResolved(cwd);
+  const runsHere = isHere ?? ((directory: string) => directory === here);
   const realOrNull = (path: string) => {
     try {
       return realOrResolved(path);
@@ -202,7 +204,7 @@ homeOf = passwdHome): ServiceUnits {
         } catch {
           continue;
         }
-        if (runsIn === here) defaulted.push(id);
+        if (runsHere(runsIn)) defaulted.push(id);
         continue;
       }
       const tilde = set === '~' && !user ? homeOf(fields.get('User') || 'root') : home;
@@ -217,7 +219,7 @@ homeOf = passwdHome): ServiceUnits {
         unresolved.push({ id, scope: user ? 'user' : 'system' });
         continue;
       }
-      if (real !== here) continue;
+      if (!runsHere(real)) continue;
       found.push({ id, scope: user ? 'user' : 'system', file: fields.get('FragmentPath') ?? '', ...restartPolicy(fields) });
     }
   }

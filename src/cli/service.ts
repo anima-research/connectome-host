@@ -469,8 +469,12 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       'Repeat this service install command with the same recipe so it uses that file as it is now.');
   }
   for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
-  if (manager === 'systemd-user') noOtherHost(ctx, work, names, sys, env, cmd);
-  else noOtherAgent(ctx, work, names, sys, env);
+  const renamed = old !== null && sameDirectory(old.workingDirectory, work)
+    ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
+      unit.name !== names.host.name && unit.name !== names.shell.name)
+    : [];
+  if (manager === 'systemd-user') noOtherHost(ctx, work, names, renamed, sys, env, cmd);
+  else noOtherAgent(ctx, work, names, renamed, sys, env);
   if (!wantsShell) {
     try {
       new StoredSecrets(join(work, '.setup')).names();
@@ -493,10 +497,6 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       host: plist(names.host.name, work, hostArgv, [...hostVars, [SUPERVISED_ENV, '1']], logPath),
       unchecked: null,
     };
-  const renamed = old !== null && sameDirectory(old.workingDirectory, work)
-    ? [old.units.host, ...(old.units.shell ? [old.units.shell] : [])].filter((unit) =>
-      unit.name !== names.host.name && unit.name !== names.shell.name)
-    : [];
   const dropped = [...(shell === null ? [names.shell] : []), ...renamed];
 
   const record: ServiceRecord = {
@@ -1171,19 +1171,19 @@ function configConflict(unit: ServiceUnit, from: string, runsIn: string | null, 
     `${work}. Its running process may still be this install's. If so, stop it with ${stop}.`;
 }
 
-function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit }, sys: ServiceSystem,
-  env: Record<string, string>, cmd: string): void {
+function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
+  recorded: ServiceUnit[], sys: ServiceSystem, env: Record<string, string>, cmd: string): void {
   const run = (args: string[]) => {
     const ran = sys.run('systemctl', args, env);
     return { exitCode: ran.status, stdout: Buffer.from(ran.stdout) };
   };
-  const listed = systemdUnits(work, run as never, sys.home);
+  const listed = systemdUnits(work, run as never, sys.home, undefined, (directory) => sameDirectory(directory, work));
   for (const scope of listed.unasked) {
     ctx.out(`systemd's ${scope} manager couldn't be asked which of its units run from ${work}, so one that runs a ` +
       'host there isn\'t ruled out.');
   }
   const others = listed.found.filter((unit) => unit.scope === 'system' ||
-    (unit.id !== names.host.name && unit.id !== names.shell.name));
+    (unit.id !== names.host.name && unit.id !== names.shell.name && !recorded.some((own) => own.name === unit.id)));
   if (others.length > 0) {
     const steps = (['user', 'system'] as const).flatMap((scope) => {
       const these = others.filter((unit) => unit.scope === scope);
@@ -1220,7 +1220,7 @@ function noOtherHost(ctx: CliContext, work: string, names: { host: ServiceUnit; 
 }
 
 function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
-  sys: ServiceSystem, env: Record<string, string>): void {
+  recorded: ServiceUnit[], sys: ServiceSystem, env: Record<string, string>): void {
   const dir = join(sys.home, 'Library', 'LaunchAgents');
   const warn = (file: string, why: string) => ctx.out(`${file} couldn't be checked: ${why}. ` +
     `Another agent running a host from ${work} isn't ruled out.`);
@@ -1233,7 +1233,7 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
   }
   for (const file of files.filter((file) => file.endsWith('.plist'))) {
     const path = join(dir, file);
-    if (path === names.host.file || path === names.shell.file) continue;
+    if (path === names.host.file || path === names.shell.file || recorded.some((own) => own.file === path)) continue;
     let label: string | null;
     try {
       const directory = plistField(sys, env, path, 'WorkingDirectory');
