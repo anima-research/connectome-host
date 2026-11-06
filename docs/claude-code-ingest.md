@@ -228,7 +228,7 @@ const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
 const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
 if (existsSync(INDEX)) {
-  console.error(`${INDEX} exists: a host's first start or a claude.ai import wrote it, and no start migrates a seed written now (stage 2).`);
+  console.error(`${INDEX} exists: a host's first start or an import wrote it, and no start migrates a seed written now (stage 2).`);
   process.exit(1);
 }
 const bundle = JSON.parse(readFileSync(src, 'utf8'));
