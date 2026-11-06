@@ -266,7 +266,7 @@ describe("the key's one real call", () => {
     expect(odd).toMatchObject({ anotherKeyMayHelp: true });
   });
 
-  test('another status of Anthropic\'s own API below 500 says it may be the key\'s account, and that another key can help; a 408, a server that stopped waiting, says to try again; and a 3xx is followed nowhere, with neither its words nor its Location quoted, since they\'re the server\'s own text, which can carry a credential', async () => {
+  test('another status of Anthropic\'s own API below 500 says it may be the key\'s account, and that another key can help; a 408, a server that stopped waiting, says to try again; and a 3xx is followed nowhere, with neither its words nor its Location quoted, since they\'re the server\'s own text, which can carry a credential, but the origin its Location names, with the key hidden', async () => {
     const own = await checkKey({
       key: 'k', model: 'm',
       fetch: (async () => Response.json({ type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low' } }, { status: 400 })) as unknown as typeof fetch,
@@ -281,9 +281,9 @@ describe("the key's one real call", () => {
     const sending = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 307, headers: { Location: `http://localhost:${elsewhere.port}/v1/messages` } }) });
     try {
       const through = await checkKey({ key: 'sk-redirected-key', model: 'm', baseUrl: `http://127.0.0.1:${sending.port}` });
-      expect(through).toEqual({ ok: false, cause: expect.stringContaining('answered 307.'), anotherKeyMayHelp: false });
-      expect(cause(through)).toContain(`answered 307. So the key isn't known to work. Anthropic's Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right there is read at the next try), or something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine's network and any proxy it goes through (HTTPS_PROXY), and ANTHROPIC_BASE_URL, which leads to http://127.0.0.1:${sending.port} now.`);
-      expect(cause(through)).not.toContain('localhost');
+      expect(through).toEqual({ ok: false, cause: expect.stringContaining(`answered 307, a redirect to http://localhost:${elsewhere.port}.`), anotherKeyMayHelp: false });
+      expect(cause(through)).toContain(`answered 307, a redirect to http://localhost:${elsewhere.port}. So the key isn't known to work. Anthropic's Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right there is read at the next try), or something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine's network and any proxy it goes through (HTTPS_PROXY), and ANTHROPIC_BASE_URL, which leads to http://127.0.0.1:${sending.port} now.`);
+      expect(cause(through)).not.toContain('/v1/messages');
       expect(seen).toEqual([]);
     } finally {
       sending.stop(true);
@@ -293,8 +293,8 @@ describe("the key's one real call", () => {
       key: 'Sk-Mixed-Case-Key', model: 'm',
       fetch: (async () => Response.json({ error: { message: 'moved to https://sk-mixed-case-key.portal.example/login' } }, { status: 302, headers: { Location: 'https://Sk-Mixed-Case-Key.portal.example/login' } })) as unknown as typeof fetch,
     });
-    expect(redirected).toEqual({ ok: false, cause: expect.stringContaining('answered 302.'), anotherKeyMayHelp: false });
-    expect(cause(redirected)).toContain('answered 302. So the key isn\'t known to work. Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. Something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine\'s network and any proxy it goes through (HTTPS_PROXY).');
+    expect(redirected).toEqual({ ok: false, cause: expect.stringContaining('answered 302, a redirect to https://<ANTHROPIC_API_KEY>.portal.example.'), anotherKeyMayHelp: false });
+    expect(cause(redirected)).toContain('answered 302, a redirect to https://<ANTHROPIC_API_KEY>.portal.example. So the key isn\'t known to work. Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. Something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine\'s network and any proxy it goes through (HTTPS_PROXY).');
     expect(cause(redirected).toLowerCase()).not.toContain('sk-mixed-case-key');
     expect(cause(redirected)).not.toContain('Location');
     expect(cause(redirected)).not.toContain('moved to');
@@ -302,8 +302,16 @@ describe("the key's one real call", () => {
       key: 'sk-ant-key', model: 'm',
       fetch: (async () => new Response(null, { status: 302, headers: { Location: 'https://portal.example/?k=sk%2Dant%2Dkey&u=https://user:gateway-secret@other.example/' } })) as unknown as typeof fetch,
     });
-    expect(cause(encoded)).not.toContain('portal.example');
+    expect(cause(encoded)).toContain('answered 302, a redirect to https://portal.example. So the key');
     expect(cause(encoded)).not.toContain('gateway-secret');
+    expect(cause(encoded)).not.toContain('sk%2Dant');
+    const relative = await checkKey({
+      key: 'k', model: 'm', baseUrl: 'https://gateway.example/anthropic',
+      fetch: (async () => new Response(null, { status: 302, headers: { Location: '/login' } })) as unknown as typeof fetch,
+    });
+    expect(cause(relative)).toContain('answered 302, a redirect to https://gateway.example. So the key');
+    const elsewhereScheme = await checkKey({ key: 'k', model: 'm', fetch: (async () => new Response(null, { status: 302, headers: { Location: 'ftp://files.example/' } })) as unknown as typeof fetch });
+    expect(cause(elsewhereScheme)).toContain('answered 302. So the key');
     const unmoved = await checkKey({ key: 'k', model: 'm', fetch: (async () => new Response(null, { status: 304 })) as unknown as typeof fetch });
     expect(cause(unmoved)).toContain("answered 304. So the key isn't known to work. Anthropic's Messages API answers with no 3xx, and setup follows no redirect");
     expect(cause(unmoved)).not.toContain('Location');

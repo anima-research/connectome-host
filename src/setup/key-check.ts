@@ -1,5 +1,6 @@
 import { Stream } from '@anthropic-ai/sdk/streaming';
 import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
+import { redirectTarget } from './provider-key.js';
 
 export type KeyCheck = { ok: true } | { ok: false; cause: string; anotherKeyMayHelp: boolean };
 
@@ -238,7 +239,10 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
                 'console.anthropic.com, can help.';
       const streamed = set && refused ? ` ${STREAMS}, as this check did, so a gateway that answers only unstreamed calls ` +
         'can\'t serve it.' : '';
-      return failed(`${host} answered ${response.status}.${quoted} So the key isn't known to work.${next}${streamed}`, refused);
+      const location = response.status < 400 ? response.headers.get('location') : null;
+      const to = location === null ? null : originOf(redirectTarget(location, url));
+      return failed(`${host} answered ${response.status}${to === null ? '' : `, a redirect to ${quote(to)}`}.${quoted} So the ` +
+        `key isn't known to work.${next}${streamed}`, refused);
     }
   }
 }
