@@ -6,7 +6,7 @@ import {
   symlinkSync, truncateSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { AgentFramework, resolveTimeZone, storeOwnRow, subconsciousContextOptions } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
 import { AutobiographicalStrategy, ContextManager, type StoredMessage } from '@animalabs/context-manager';
@@ -697,6 +697,40 @@ describe('the store audit', () => {
     expect(failed).toEqual([expect.stringMatching(new RegExp(
       `^Couldn't audit ${dir}: its saved recipe, ${join(dir, '.recipe.json')}, can't be loaded: Recipe tuneOut.enabled was removed`,
     ))]);
+  });
+
+  // Host #485 bot review wave 4, finding 25: the refusal was taken as naming
+  // the file when the path was anywhere in its words, so `--recipe agent`
+  // went unnamed in "agent-framework".
+  test("a recipe file the audit refuses is named, though its path is a part of another word in the refusal", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    writeFileSync(join(root, 'agent'), JSON.stringify({ ...DEFAULT_RECIPE, tuneOut: { enabled: true } }));
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      const { status, failed } = await audit([dir], { recipe: 'agent' });
+      expect(status).toBe(1);
+      expect(failed).toEqual([expect.stringMatching(new RegExp(
+        `^Couldn't audit ${dir}: its recipe, agent, can't be loaded: Recipe tuneOut.enabled was removed in agent-framework`,
+      ))]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  test("a recipe file whose refusal names it, by the path given or the one it resolves to, isn't named again", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      writeFileSync(join(root, 'broken.json'), '{');
+      for (const recipe of ['broken.json', join(root, 'broken.json')]) {
+        const { failed } = await audit([dir], { recipe });
+        expect(failed, recipe).toEqual([`Couldn't audit ${dir}: ${resolve(recipe)} isn't valid JSON`]);
+      }
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
   test("an agent name the recipe takes from a variable is the one the audit's environment gives", async () => {
