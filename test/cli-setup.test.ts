@@ -505,6 +505,7 @@ test('setup never runs sudo, whatever is chosen', async () => {
     const made = world(dir, { answers, secrets: [KEY] });
     await runSetup(dir, ['discord'], made);
     expect(made.seen.ran.flat().some((word) => word.includes('sudo'))).toBe(false);
+    if (answers[1] === '1') expect(text(made.seen.out)).toContain('id -u resident >/dev/null 2>&1 || sudo useradd');
     if (answers[1] === '2') expect(made.seen.launched).not.toBeNull();
   }
 });
