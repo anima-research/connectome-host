@@ -566,6 +566,8 @@ export interface PinsListMessage {
    *  less a row out of the agent's window as undone and a row whose audience
    *  stamp leaves the agent out (another resident's on a shared store). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 /** Credential state of one process. Every field but `type`, `scope` and
