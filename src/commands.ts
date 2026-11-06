@@ -1449,11 +1449,15 @@ function rollbackKeptLines(
 }
 
 /**
- * /branchto: the framework's rollback to a message (rollbackToMessage): the
- * message becomes the tail of a new branch, which the store moves to with
- * every agent sharing it idle; the old branch keeps everything after it.
- * On a presented window some rows after the message can stay, and the
- * answer says which (rollbackKeptLines). Logged as an operator's rollback.
+ * /branchto: the framework's rollback to a message (rollbackToMessage): a
+ * new branch cut where the agent was shown the message, which on a
+ * presented window is the write that presented it, and the store moved to
+ * it with every agent sharing it idle; the old branch keeps everything.
+ * Rows after the message that the cut keeps stay on the new branch: rows
+ * that write showed with it, rows stored before it and shown after it,
+ * and another resident's rows stored before it. The answer says which of
+ * the agent's (rollbackKeptLines), and counts the rows the cut took. Logged
+ * as an operator's rollback.
  */
 function handleBranchTo(app: AppContext, messageId: string | undefined): CommandResult {
   const agent = commandAgent(app);
