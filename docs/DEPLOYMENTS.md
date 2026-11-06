@@ -125,8 +125,9 @@ the working directory):
   `mcpl-stderr/<server>.log` (each MCPL server's stderr plus connect/close/error
   lines; rolls to `.1` at 10 MB).
 - Readline mode (`--no-tui` with stdin on a terminal):
-  `data/readline-error.log`. From readline mode's banner until the host has
-  stopped, it takes what the process writes through `process.stderr.write`,
+  `data/readline-error.log`. From readline mode's banner, or for setup's host
+  from before its extensions load, until the host has stopped, it takes what
+  the process writes through `process.stderr.write`,
   `console.error` and `console.warn`: library diagnostics, `[routeSpeech]`,
   `[routing]` and `[inference-failed]` among them. It is created readable by
   its owner alone, and each line is written to it as it comes. What the person
@@ -327,8 +328,9 @@ place setup names, as below, and `--extra-state 'PATH'`, as when setting it
 up, only to give the places of state kept outside the data directory anew.
 After a Go back to a release from before this one, the release the install
 runs is that older one, whose setup doesn't bind the install: run with the
-old `DATA_DIR`, it leaves the copy's record, label and Go back lists naming
-the original's places, so the copy runs on the original's data. Run instead
+old `DATA_DIR`, it leaves the copy's record, label, Go back lists and the
+fleet's children file naming the original's places, so the copy runs on the
+original's data. Run instead
 the setup of the release whose setup wrote its `start.js`,
 `'<root>/releases/<that release>/node_modules/@animalabs/connectome-host/src/update/setup.ts'`,
 which the refusal names while the install's releases hold it. An update
@@ -336,7 +338,13 @@ installs each release in the install root and leaves the package in the
 directory as it was, so after one, that package's setup is an older
 release's, which may not bind the install. Setup binds the install there:
 each place under the old directory becomes the same place under the new
-one, in the record, in the copy labels and in each Go back's list. Each place outside the
+one, in the record, in the copy labels, in each Go back's list and in the
+fleet's children file (`fleet-children.json`, in the data directory). It
+doesn't bind `.env` or the service's environment, so an absolute
+`MCPL_AGENT_OVERLAY_FILE` set in either still names the original's overlay:
+change it to the new place before the copy's next start. A binding that
+changes any path takes the install's lock, so it needs the host stopped, and
+refuses while it runs, saying so. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
 `PLACE` the same path after a move, or the copy's own after a copy; a
@@ -347,7 +355,8 @@ directory that holds the install root as this install's, unless another
 install's root lies between, and asks the same of every other place it
 names. A run given `--extra-state` binds the places it gives, in place of
 the record's. A binding that changes
-the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
+the paths of a copy label, of a Go back or of the fleet's children file writes
+its plan, `rebind.json`, in the
 root first; if it's cut off, nothing starts until setup, run again, finishes
 it from the plan, or says what stops it. A Go back to a release from before
 this one keeps that refusal only until that release's own setup runs there,
