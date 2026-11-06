@@ -207,13 +207,32 @@ wakes for it keep arriving, so a burst (a caption and its attachments, a
 reply split into several messages) starts one turn instead of one per part.
 `quietMs` is how long after the burst's newest message the turn starts, and
 `maxWaitMs` (default 30000) caps the wait from its oldest; each channel's
-burst is held on its own clock, so chatter in one channel neither delays
-another's turn nor takes its reply. `{"quietMs": 1500}` waits 1.5 s of
-quiet. Left out, no turn waits. A key it doesn't know, a missing `quietMs`,
-or a value that isn't a finite number of ms (0 or more) stops the load,
-naming it, and so does setting it beside `speech.locus: "latest-inbound"`,
-which agent-framework refuses too. An agent-framework without the option
-ignores the key.
+burst is held on its own clock, so chatter in one channel doesn't delay
+another's turn, and, for locus-routed prose (`agent.proseRouting` `locus` or
+`hybrid`) under the default `speech.locus: "delivery"`, each channel's turn
+speaks in its own channel. `{"quietMs": 1500}` waits 1.5 s of quiet;
+`{"quietMs": 0}` holds nothing. Left out, no turn waits. Four things to know
+before setting it:
+
+- An ambient message in a second channel that the first channel's turn has
+  already read starts no turn of its own; what the agent says about it goes
+  in the first channel. An addressed message keeps its turn.
+- It doesn't compound with the gate's own burst tools. A `debounce` or
+  `judge` rule, or `channelMode: "debounced"` (see
+  `docs/ATTENTION-AND-GATING.md`), delivers its batch as a `gate:debounce`
+  wake, which the quiet period never holds: that wake starts a turn at once.
+  The option shapes only the wakes the gate passes straight through.
+- Held wakes are queued wakes. A stop or redeploy during the hold drops
+  them, and the messages wait in context for the next wake: a window that
+  was milliseconds grows to up to `maxWaitMs`.
+- It can't be set beside `speech.locus: "latest-inbound"`; the load refuses
+  the pair, as agent-framework's start does.
+
+A key it doesn't know, a missing `quietMs`, or a value that isn't a finite
+number of ms (0 or more) stops the load, naming it. The option's full rules
+are in the JSDoc of `FrameworkConfig.messageQuietPeriod` in the
+agent-framework package's types. The host passes the key only once its
+agent-framework reads it (see the dependency note in the changelog).
 
 ### Prose routing
 
