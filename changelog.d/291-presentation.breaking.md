@@ -73,7 +73,9 @@
     local pin picker lists the host's candidates, the record's last 200
     rows, as a fleet child's does, where it listed the rows the transcript
     had loaded; it leaves out undone rows and rows stamped for other
-    residents only.
+    residents only. A message stored in parts is one candidate, by its first
+    part with the parts' text joined, as it is one row in the transcript,
+    where a fleet child's picker listed each part.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,
