@@ -50,7 +50,7 @@ test('a `connectome` a shell can\'t run, or a directory of that name, earlier on
   expect(typedCommand(root, pathOf(unrunnable, plainFile, root))).toBe('connectome');
 });
 
-function withCommands(recipe: boolean) {
+function withCommands(recipe: boolean, packageRecipe = true) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
   dirs.push(dir);
   const root = join(dir, 'connectome-host');
@@ -63,6 +63,10 @@ function withCommands(recipe: boolean) {
   const release = join(root, 'releases', '1.0.0');
   cli(release, 'current');
   cli(dir, 'package');
+  if (packageRecipe) {
+    mkdirSync(dirname(join(dir, SETUP_RECIPE)), { recursive: true });
+    writeFileSync(join(dir, SETUP_RECIPE), '{}');
+  }
   if (recipe) {
     mkdirSync(dirname(join(release, SETUP_RECIPE)), { recursive: true });
     writeFileSync(join(release, SETUP_RECIPE), '{}');
@@ -89,6 +93,15 @@ test('the command sends setup to current\'s CLI when its release has the setup a
   const lacks = withCommands(false);
   expect(lacks.run('setup', 'discord').ran).toEqual({ who: 'package', root: lacks.root, argv: ['setup', 'discord'] });
   expect(lacks.run('update').ran).toEqual({ who: 'current', root: lacks.root, argv: ['update'] });
+});
+
+test('setup refuses, before any CLI loads, where neither current\'s release nor the working directory\'s package has the setup agent\'s recipe', () => {
+  const { dir, run } = withCommands(false, false);
+  const refused = run('setup', 'discord');
+  expect(refused.exitCode).toBe(1);
+  expect(refused.ran).toBeNull();
+  expect(refused.stderr).toContain(`connectome: the release this install runs has no setup, so setup runs the connectome-host installed in ${dir}, which has none it can run (${join(dir, ...CLI_IN_RELEASE)}): it has no recipes/setup.json.`);
+  expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host setup discord\` runs setup from the registry.`);
 });
 
 test('a record bound to another directory refuses the bare command, update and send, and a binding\'s plan standing refuses update, each before any CLI loads, while setup runs in both', () => {
