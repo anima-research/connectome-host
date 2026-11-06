@@ -1233,7 +1233,13 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
       warn(path, 'no launch-agent Label');
       continue;
     }
-    if (label === names.host.name || label === names.shell.name) continue;
+    if (label === names.host.name || label === names.shell.name) {
+      const own = label === names.host.name ? names.host.file : names.shell.file;
+      throw new Refusal(`${path} has the label ${label} and runs from ${work}, as this install's agent, ${own}, is to: ` +
+        'with two plists of one label, launchd loads either at login. If it\'s an old copy of this install\'s agent, ' +
+        `retire it with launchctl bootout gui/${sys.uid} ${shellWord(path)}, then remove that plist. Then repeat this ` +
+        'service install command with the same recipe. Nothing was written.');
+    }
     throw new Refusal(`${label} (${path}) is already set up to run from ${work}, and two hosts there would both ` +
       `serve its data. Inspect it with launchctl print gui/${sys.uid}/${shellWord(label)}. If it's an obsolete host, ` +
       `retire it with launchctl bootout gui/${sys.uid} ${shellWord(path)}, then remove that plist. ` +

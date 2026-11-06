@@ -5011,3 +5011,18 @@ test('a failed state query after the units are written points to service start, 
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('service start to start what isn\'t running');
 });
+
+test('macOS refuses another plist with this install\'s host label and working directory', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  const other = join(at.home, 'Library', 'LaunchAgents', 'renamed-copy.plist');
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, 'bplist00fixture');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? plistFields(args, { Label: 'com.animalabs.connectome.my-resident', WorkingDirectory: at.work })
+    : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(existsSync(agentPlist(at))).toBe(false);
+  expect(f.err.join('\n')).toContain(`${other} has the label com.animalabs.connectome.my-resident`);
+});
