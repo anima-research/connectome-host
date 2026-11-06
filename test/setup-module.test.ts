@@ -364,14 +364,24 @@ describe('setup--run', () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'escaped.pid');
     const endedAt = join(dir, 'ended-at');
+    const stamp = (name: string) => Number(existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf-8') : NaN);
     let holder = 0;
     try {
+      const dateBefore = Number(Bun.spawnSync(['date', '+%s%3N']).stdout.toString());
+      const nowBefore = Date.now();
+      const monoBefore = performance.now();
       // kill -0 succeeds for a zombie, so the holder writes once the module has reaped the command's bash.
-      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; echo late; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; sleep 1.2; date +%s%3N > ${endedAt}`);
+      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}`);
       const took = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
+      const answeredAfter = Math.round(performance.now() - monoBefore);
       holder = Number(readFileSync(pidFile, 'utf-8'));
       expect(alive(holder)).toBe(true);
-      const said = JSON.stringify({ outputHeldOpen: answer.outputHeldOpen, note: answer.note, stdout: answer.stdout.text });
+      const said = JSON.stringify({
+        outputHeldOpen: answer.outputHeldOpen, note: answer.note, stdout: answer.stdout.text, exitCode: answer.exitCode,
+        signal: answer.signal, answeredAfter,
+        dateAheadOfNow: dateBefore - nowBefore, begunAfter: stamp('begun-at') - nowBefore,
+        endedAfterBegun: stamp('ended-at') - stamp('begun-at'), reapedAfterEnded: stamp('reaped-at') - stamp('ended-at'),
+      });
       expect(took, said).toBeGreaterThanOrEqual(900);
       expect(took, said).toBeLessThan(6_000);
       expect(answer.exitCode).toBe(0);
