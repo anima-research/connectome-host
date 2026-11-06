@@ -926,17 +926,22 @@ async function play(): Promise<void> {
         content: [{ type: 'text', text: `round ${i}` }, { type: 'tool_use', id: `t${i}`, name: 'tally', input: {} }],
       });
       first.send('inference:stream_resumed');
+      // The first rounds are drawn before the scrollback takes them down
+      // (#485 bot review 5, finding 23).
+      if (i === 5) await step('a few rounds in');
     }
     first.send('inference:tokens', { content: 'all rounds counted', blockType: 'text' });
     history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'all rounds counted' }] });
     first.send('inference:completed');
     await until(async () => (await frame()).includes('all rounds counted'), 'the reply');
-    // An undo of the first round, whose lines the scrollback took down, with
-    // a row stored since that the TUI drew no line for.
+    // An undo of the whole turn, as a real one takes it: every round,
+    // the first ones' lines taken down by the scrollback, and the reply,
+    // with a row stored since that the TUI drew no line for.
     history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a twelfth ledger' }] });
-    undoneRows.add('r0');
+    for (let i = 0; i <= 1000; i++) undoneRows.add(`r${i}`);
+    undoneRows.add('a2');
     undoneRows.add('a3');
-    first.send('window:undone', { retracted: 2 });
+    first.send('window:undone', { retracted: 1003 });
     await until(async () => (await frame()).includes('(undone) a twelfth ledger'), 'the mark');
     await step('undone');
   } else if (scenario === 'undone') {

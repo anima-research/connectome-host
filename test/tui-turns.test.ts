@@ -526,11 +526,26 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
   // A turn that keeps more lines than the scrollback holds before its end
   // links them: the first rounds' rows, whose lines the scrollback took
   // down, aren't drawn again (#485 bot review 4, finding 5).
-  test("a turn of more rounds than the scrollback holds: an undo of its first round draws nothing again, and an undone row with no line is drawn", async () => {
-    const undone = await frameOf('undone-long-turn', 'undone');
+  test("a turn of more rounds than the scrollback holds: an undo of the whole turn marks its last rounds in place, draws the first ones the scrollback took down nothing again, and draws an undone row with no line", async () => {
+    const steps = await play('undone-long-turn');
+    // Round 0 was drawn, so its absence below is the scrollback's doing.
+    const early = steps.get('a few rounds in')!.frame;
+    expect(early).toContain('round 0');
+    expect(early).toContain('round 5');
+    const undone = steps.get('undone')!.frame;
     expect(undone).toContain('(undone) a twelfth ledger');
-    expect(undone).not.toContain('round 0');
-    expect(undone).not.toContain('(undone) [tools]');
+    expect(undone).not.toMatch(/round 0\b/);
+    // The rounds still drawn are marked where they are, each once, and
+    // nothing is drawn between the turn's reply and the row with no line.
+    expect(times(undone, 'round 1000')).toBe(1);
+    expect(undone).toContain('(undone) round 1000');
+    expect(undone).toContain('(undone) all rounds counted');
+    const rounds = undone.split('\n').filter((line) => /round \d+/.test(line));
+    expect(rounds.length).toBeGreaterThan(10);
+    for (const line of rounds) expect(line).toContain('(undone)');
+    for (const line of undone.split('\n').filter((l) => l.includes('[tools] tally'))) expect(line).toContain('(undone)');
+    const between = undone.slice(undone.indexOf('(undone) all rounds counted'), undone.indexOf('(undone) a twelfth ledger'));
+    expect(between).not.toMatch(/round \d+|\[tools\]/);
   }, 90000);
 });
 
