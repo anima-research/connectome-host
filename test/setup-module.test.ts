@@ -2372,6 +2372,21 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(neither.error).toEndWith('Anthropic answered 429: rate limited. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
   });
 
+  test('a refusal whose type isn\'t JSON is said not to say it\'s JSON, and a 2xx typed JSON whose body isn\'t is said not to be JSON', async () => {
+    const page = (async () => new Response('<html>Sign in</html>', { status: 401, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+    const key = install({ asker: typed('sk-ant-page'), fetch: page });
+    expect(String((await askSecret(key.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data))
+      .toContain('but it couldn\'t be checked: its answer didn\'t say it was JSON, as Anthropic\'s do: a network\'s sign-in page is one such answer.');
+    expect(key.shown).toContain('It couldn\'t be checked: its answer didn\'t say it was JSON, as Anthropic\'s do: a network\'s sign-in page is one such answer.');
+    const token = install({ asker: typed('a-page-token'), fetch: page });
+    expect(String((await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).data))
+      .toContain('but it couldn\'t be checked: its answer didn\'t say it was JSON, as Discord\'s do: a network\'s sign-in page is one such answer.');
+    const typedJson = (async () => new Response('<html>', { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    const mislabelled = install({ asker: typed('sk-ant-mislabelled'), fetch: typedJson });
+    expect(String((await askSecret(mislabelled.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data))
+      .toContain('but it couldn\'t be checked: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer.');
+  });
+
   test('a 2xx that isn\'t JSON, such as a sign-in page, is said to be no check, of a key, a token and a model, with what to tell the person', async () => {
     const portal = (async () => new Response('<html>Sign in to this network</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const key = install({ asker: typed('sk-ant-portal'), fetch: portal });

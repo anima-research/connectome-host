@@ -769,7 +769,7 @@ function tokenLine(token: TokenCheck): string {
       return `Discord didn't say whether it works: it answered ${token.status}` +
         `${token.said === null ? '' : ` (${shown(token.said)})`}.`;
     case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
-    case 'unrecognized': return `It couldn't be checked: ${unrecognized('Discord')}.`;
+    case 'unrecognized': return `It couldn't be checked: ${unrecognized('Discord', token.status)}.`;
     case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
   }
 }
@@ -786,7 +786,7 @@ function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted:
       return `${provider} didn't say whether it works: it answered ${answer.status}` +
         `${answer.said === null ? '' : ` (${shown(answer.said)})`}.`;
     case 'redirected': return `It isn't known to work: ${shown(redirect(provider, answer))}.`;
-    case 'unrecognized': return `It couldn't be checked: ${unrecognized(provider)}.`;
+    case 'unrecognized': return `It couldn't be checked: ${unrecognized(provider, answer.status)}.`;
     case 'unanswered': return `${provider} couldn't be asked whether it works (${shown(answer.why)}).`;
   }
 }
@@ -802,7 +802,7 @@ function keyNote(name: string, answer: ProviderAnswer<unknown>): string {
       return `, but it isn't known to work: ${provider} answered ${answer.status}${answer.said === null ? '' : `: ${answer.said}`}.`;
     case 'unanswered': return `, but it isn't known to work: ${provider} couldn't be asked (${answer.why}).`;
     case 'redirected': return `, but it isn't known to work: ${redirect(provider, answer)}${redirectRemedy(provider, name)}.`;
-    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized(provider)}. ${CONNECTION}`;
+    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized(provider, answer.status)}. ${CONNECTION}`;
     case 'unsendable': return ', but it can\'t be a key: it holds a character a request header can\'t carry.';
     default: return '';
   }
@@ -815,7 +815,7 @@ function tokenNote(token: TokenCheck): string {
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}.`;
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}).`;
     case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
-    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord')}. ${CONNECTION}`;
+    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${CONNECTION}`;
     default: return '';
   }
 }
@@ -836,6 +836,8 @@ function redirectRemedy(service: string, name?: string): string {
       `if it wasn't ${service}, their connection is theirs to check`;
 }
 
-function unrecognized(service: string): string {
-  return `its answer wasn't JSON, as ${service}'s are: a network's sign-in page is one such answer`;
+function unrecognized(service: string, status: number): string {
+  return status >= 200 && status < 300
+    ? `its answer wasn't JSON, as ${service}'s are: a network's sign-in page is one such answer`
+    : `its answer didn't say it was JSON, as ${service}'s do: a network's sign-in page is one such answer`;
 }
