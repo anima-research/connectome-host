@@ -410,13 +410,14 @@ async function installAndStart(
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {
     err(`connectome-host ${version} needs Bun ${pkg.engines.bun.replace('>=', '')} or later, and this is Bun ` +
-      `${world.bun.version}. \`bun upgrade\` upgrades it; then run setup again.`);
+      `${world.bun.version}. \`bun upgrade\` upgrades it, or the package manager that installed it does; then run setup ` +
+      'again.');
     return 1;
   }
   if (bunBelowFloor(SETUP_BUN_FLOOR, world.bun.version) === true) {
     err(`Setup needs Bun ${SETUP_BUN_FLOOR.replace('>=', '')} or later, whose \`bun add --no-env-file\` keeps .env's ` +
-      `values from the packages' install scripts, and this is Bun ${world.bun.version}. \`bun upgrade\` upgrades it; ` +
-      'then run setup again.');
+      `values from the packages' install scripts, and this is Bun ${world.bun.version}. \`bun upgrade\` upgrades it, or ` +
+      'the package manager that installed it does; then run setup again.');
     return 1;
   }
   const programEnv = withoutKeys(env, []);

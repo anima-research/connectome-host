@@ -1375,10 +1375,10 @@ test('a signal that ends the agent\'s host is named, and setup answers its statu
 
 test('the preflight stops setup before anything is installed, saying what\'s wrong and how to put it right', async () => {
   const cases: Array<{ script: Script; over?: Partial<SetupWorld>; shell: 'yes' | 'no'; says: string[] }> = [
-    { script: {}, over: { bun: { path: process.execPath, version: '1.4.2' } }, shell: 'no', says: ['Bun 1.4.2', 'bun upgrade'] },
+    { script: {}, over: { bun: { path: process.execPath, version: '1.4.2' } }, shell: 'no', says: ['Bun 1.4.2', '`bun upgrade` upgrades it, or the package manager that installed it does; then run setup again.'] },
     {
       script: {}, over: { bun: { path: process.execPath, version: '1.4.3' } }, shell: 'no',
-      says: ['Setup needs Bun 1.4.4 or later', 'this is Bun 1.4.3', 'bun upgrade'],
+      says: ['Setup needs Bun 1.4.4 or later', 'this is Bun 1.4.3', '`bun upgrade` upgrades it, or the package manager that installed it does; then run setup again.'],
     },
     { script: { node: null }, shell: 'no', says: ['didn\'t answer here (there\'s no node on this PATH)', 'nodejs.org'] },
     {
