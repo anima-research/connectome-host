@@ -160,7 +160,7 @@ describe('setup--finished', () => {
     expect(module.finishRequested).toBe(false);
   });
 
-  test('where its answers can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
+  test('where its directory can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
     writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
