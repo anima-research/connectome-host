@@ -25,3 +25,8 @@
   must not surface prose. `fleet--relay` handed that text to another
   child as the child's latest reply; the child's latest reply now stays
   its last one that wasn't silent, until this host connects to it again.
+- A child a fleet parent adopted from an earlier release, still running,
+  keeps sending that release's frame until it's restarted: thinking
+  included, a silent heartbeat's text included, and none for a round that
+  streamed nothing. So what `fleet--relay` hands on from such a child is as
+  before.
