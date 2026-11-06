@@ -597,7 +597,14 @@ if journal_log:
 else:
     sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
 failures_log = os.path.join(logs_dir, "failures.log")
-if os.path.exists(failures_log):
+try:
+    os.lstat(failures_log)
+    failures_there = True
+except (FileNotFoundError, NotADirectoryError):
+    failures_there = False
+except OSError:
+    failures_there = True
+if failures_there:
     sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
 times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
 untimed = False

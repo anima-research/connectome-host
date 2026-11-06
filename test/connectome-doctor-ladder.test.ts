@@ -571,12 +571,17 @@ describe('the ladder\'s recent failures', () => {
     expect(out).not.toContain('record 0');
   });
 
-  test('a failures.log that can\'t be read is said, not taken as one with no failures', async () => {
+  test('a failures.log that can\'t be read, or a link to nothing, is said, not taken as one with no failures or as none there', async () => {
     const at = await install({ listens: true });
     mkdirSync(join(at.work, 'logs', 'failures.log'));
     const { out } = ladder(at, ['--no-signal']);
     expect(out).toMatch(/failures\.log: not known: it can't be read/);
     expect(out).not.toMatch(/failures\.log: none found/);
+    rmSync(join(at.work, 'logs', 'failures.log'), { recursive: true });
+    symlinkSync('moved-away.log', join(at.work, 'logs', 'failures.log'));
+    const dangling = ladder(at, ['--no-signal']).out;
+    expect(dangling).toMatch(/failures\.log: not known: it can't be read \(No such file or directory\)/);
+    expect(dangling).not.toMatch(/failures\.log: none found/);
   });
 });
 
