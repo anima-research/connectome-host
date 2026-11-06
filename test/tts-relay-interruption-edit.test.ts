@@ -555,12 +555,19 @@ describe('the texts kept to match an interruption', () => {
     expect(notes).toEqual([{ text: '[voice] Your reply was interrupted by user speech after: "Yes, the ferry" (the posted message could not be trimmed)', forAgent: 'clerk' }]);
   });
 
-  test("of a channel published in again are kept: its publish is still edited, with 31 other channels published in since", async () => {
-    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
-    speak(trace, 'clerk', '42', 'Yes, the ferry leaves at noon.', 'm-clerk');
+  // Host #485 bot review wave 5, finding 7: this test published in 42 once,
+  // then in 31 other channels, so 42 was the oldest of 32 and kept whether
+  // or not a publish moves its channel to the end.
+  test("of a channel published in again are kept: its later publish is still edited once 32 others are published in, and the one published in longest ago is let go", async () => {
+    const { trace, interrupt, edited, notes, kept } = relayOnTraces(['clerk', 'mira']);
+    speak(trace, 'clerk', '42', 'Over the hills.', 'm-clerk-1');
     for (let i = 0; i < 31; i++) speak(trace, 'mira', String(100 + i), `Elsewhere ${i}.`, `m-${i}`);
+    speak(trace, 'clerk', '42', 'Yes, the ferry leaves at noon.', 'm-clerk-2');
+    speak(trace, 'mira', '200', 'One channel more.', 'm-200');
+    expect(kept.published()).toContain('42');
+    expect(kept.published()).not.toContain('100');
     await interrupt('Yes, the ferry');
-    expect(edited()).toEqual(['m-clerk']);
+    expect(edited()).toEqual(['m-clerk-2']);
     expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
 
