@@ -231,6 +231,7 @@ export async function doctor(
   let uncredentialed = false;
   let unanswered = false;
   let closedTabs = false;
+  let shellUnchecked = false;
   const startCommand = `${typedCommand(root)} service start`;
   let dataDir: string | null = null;
   try {
@@ -425,6 +426,7 @@ export async function doctor(
         if (answer !== null) {
           shellLines(report, answer.data);
           closedTabs = answer.data.closedTabs.length > 0;
+          shellUnchecked = (answer.data.unchecked ?? []).length > 0;
         }
       });
     }
@@ -552,6 +554,7 @@ export async function doctor(
     ...(unanswered ? ['a count_tokens count got no answer it could read'] : []),
     ...(closedTabs ? ['a closed tab\'s connection wasn\'t checked'] : []),
     ...(pidUntold ? ['whether the host that answers is the service\'s couldn\'t be told'] : []),
+    ...(shellUnchecked ? ['a shell server the host\'s session switch left unchecked'] : []),
   ];
   ctx.out('');
   ctx.out(report.redact(report.problems > 0
@@ -625,6 +628,7 @@ interface CountCheck {
 
 interface ShellCheck {
   shells: Array<{ server: string; answered: true; sessions: number | null } | { server: string; answered: false; error: string }>;
+  unchecked?: string[];
   notConnected: Array<{ id: string; retrying: boolean; refused: string | null }>;
   closedTabs: string[];
 }
@@ -698,7 +702,10 @@ function shellLines(report: Report, shell: ShellCheck): void {
   for (const id of shell.closedTabs) {
     report.line(`The server ${id} is a closed tab: the host connects it when an agent opens it, so its connection isn't checked.`);
   }
-  if (shell.shells.length === 0) {
+  for (const id of shell.unchecked ?? []) {
+    report.line(`The server ${id} wasn't checked: the host switched sessions during the check.`);
+  }
+  if (shell.shells.length === 0 && (shell.unchecked ?? []).length === 0) {
     const unchecked = [
       ...(shell.notConnected.length > 0 ? ['a server that isn\'t connected'] : []),
       ...(shell.closedTabs.length > 0 ? ['a closed tab'] : []),

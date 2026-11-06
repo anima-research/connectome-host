@@ -288,6 +288,28 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(0);
   });
 
+  test('a shell server the host\'s session switch left unchecked is said in a plain line and named in the closing line, not as a problem', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      ...HEALTHY_HOST,
+      'shell-check': { ...HEALTHY_HOST['shell-check'], unchecked: ['other'] },
+    }, () => run(at));
+    expect(r.out).toContain('The server other wasn\'t checked: the host switched sessions during the check.');
+    expect(r.out).not.toMatch(/✗.*other/);
+    expect(r.out).toMatch(/Doctor found no problem, though .*a shell server the host's session switch left unchecked, as said above\.$/);
+    expect(r.status).toBe(0);
+  });
+
+  test('with every shell server unchecked for a session switch, doctor doesn\'t say no server offers listSessions', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      ...HEALTHY_HOST,
+      'shell-check': { ...HEALTHY_HOST['shell-check'], shells: [], unchecked: ['shell'] },
+    }, () => run(at));
+    expect(r.out).toContain('The server shell wasn\'t checked: the host switched sessions during the check.');
+    expect(r.out).not.toContain('offers listSessions');
+  });
+
   test('with no connected server offering listSessions, a closed tab is named as one that may be the shell, beside a server that isn\'t connected when there is one', async () => {
     const at = install();
     const r = await withHost(at, {

@@ -1176,6 +1176,7 @@ export type ShellCheckRow =
 
 export interface ShellCheck {
   shells: ShellCheckRow[];
+  unchecked: string[];
   notConnected: Array<{ id: string; retrying: boolean; refused: string | null }>;
   closedTabs: string[];
 }
@@ -1185,15 +1186,25 @@ export async function buildShellCheck(app: PanelAppRef): Promise<ShellCheck> {
   const agentName = resolveAgent(app);
   const servers = framework.listMcplServers();
   const shells: ShellCheckRow[] = [];
+  const unchecked: string[] = [];
+  const switched = (): boolean => app.switching === true || app.framework !== framework;
   for (const server of servers) {
     const tool = server.toolClasses.find((t) => t.serverTool === 'listSessions');
     if (!tool) continue;
+    if (switched()) {
+      unchecked.push(server.id);
+      continue;
+    }
     const result = await framework.executeToolCall({
       id: `shell-check-${randomUUID()}`,
       name: tool.tool,
       input: {},
       callerAgentName: agentName,
     });
+    if (!result.success && switched()) {
+      unchecked.push(server.id);
+      continue;
+    }
     shells.push(result.success
       ? { server: server.id, answered: true, sessions: sessionCount(result.data) }
       : { server: server.id, answered: false, error: result.error ?? '' });
@@ -1201,6 +1212,7 @@ export async function buildShellCheck(app: PanelAppRef): Promise<ShellCheck> {
   const unopenedTab = (s: (typeof servers)[number]): boolean => s.closedTab && s.refused === null;
   return {
     shells,
+    unchecked,
     notConnected: servers.filter((s) => !s.connected && !unopenedTab(s))
       .map((s) => ({ id: s.id, retrying: s.retrying, refused: s.refused })),
     closedTabs: servers.filter((s) => !s.connected && unopenedTab(s)).map((s) => s.id),

@@ -748,11 +748,34 @@ describe('count-check and shell-check, in the round on the review of e9bb852cc',
     }
   });
 
-  test('shell-check makes each call on the session it began on, though the session switches between its calls', async () => {
+  test('shell-check makes no call once the session has switched, keeps the answer it had, and names each server after the switch as unchecked', async () => {
     const calls: string[] = [];
     const next = frameworkFor(calls, 'next');
     const app = appFor(frameworkFor(calls, 'first', () => { app.framework = next; }));
-    await buildShellCheck(app);
-    expect(calls).toEqual(['first:one--listSessions', 'first:two--listSessions']);
+    const check = await buildShellCheck(app);
+    expect(calls).toEqual(['first:one--listSessions']);
+    expect({ shells: check.shells.map((row) => row.server), unchecked: check.unchecked }).toEqual({ shells: ['one'], unchecked: ['two'] });
+  });
+
+  test('shell-check makes no call while a session switch is under way, and names every server as unchecked', async () => {
+    const calls: string[] = [];
+    const app = appFor(frameworkFor(calls, 'first'));
+    app.switching = true;
+    const check = await buildShellCheck(app);
+    expect(calls).toEqual([]);
+    expect({ shells: check.shells, unchecked: check.unchecked }).toEqual({ shells: [], unchecked: ['one', 'two'] });
+  });
+
+  test('a call that fails as the host switches sessions names its server as unchecked, not as a server whose call failed', async () => {
+    const calls: string[] = [];
+    const app = appFor(frameworkFor(calls, 'first'));
+    (app.framework as unknown as { executeToolCall: (call: { name: string }) => Promise<unknown> }).executeToolCall = async (call) => {
+      calls.push(`first:${call.name}`);
+      app.switching = true;
+      return { success: false, error: 'Connection closed' };
+    };
+    const check = await buildShellCheck(app);
+    expect(calls).toEqual(['first:one--listSessions']);
+    expect({ shells: check.shells, unchecked: check.unchecked }).toEqual({ shells: [], unchecked: ['one', 'two'] });
   });
 });
