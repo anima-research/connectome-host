@@ -29,13 +29,14 @@ for (const version of ['0.14.1', '0.15.0']) {
 moveCurrent(root, '0.14.1');
 
 const agent = { name: 'fixture', state: { status: 'idle' as string } };
-// Each state the fixture holds is let go only once the host has been seen to meet it while armed: a turn or a held
-// token once the idle poll has read it SEEN times, and work that starts in the quiesce once a try has stayed armed over it.
-const SEEN = 4;
+const POLLS_PAST_A_QUIET_WINDOW = 7;
+const A_POLL_APART_MS = 90;
 let armedNow = false;
 let turnSeen = 0;
+let turnSeenAt = 0;
 let tokenHeld = false;
 let tokenSeen = 0;
+let tokenSeenAt = 0;
 let scriptRunning = false;
 let scriptStarted = false;
 let credentialRunning = false;
@@ -52,7 +53,10 @@ let quiesced: { quiesced: boolean; reason?: string } = { quiesced: false };
 const held = () => tokenHeld;
 const scripting = () => scriptRunning;
 const status = () => {
-  if (tokenHeld) tokenSeen += 1;
+  if (tokenHeld && Date.now() - tokenSeenAt >= A_POLL_APART_MS) {
+    tokenSeen += 1;
+    tokenSeenAt = Date.now();
+  }
   return statusNow();
 };
 const statusNow = () => ({
@@ -61,12 +65,16 @@ const statusNow = () => ({
 });
 const framework = {
   getAllAgents: () => {
-    if (armedNow && agent.state.status !== 'idle') turnSeen += 1;
+    if (armedNow && agent.state.status !== 'idle' && Date.now() - turnSeenAt >= A_POLL_APART_MS) {
+      turnSeen += 1;
+      turnSeenAt = Date.now();
+    }
     return [agent];
   },
   onTrace: () => () => {},
   getHostModeStatus: status,
   quiesce: async (opts: { reason?: string } = {}) => {
+    if (agent.state.status !== 'idle' || held()) writeFileSync(join(dataDir, 'quiesced-while-busy'), agent.state.status);
     quiesced = { quiesced: true, reason: opts.reason };
     if (mode === 'script-starts-in-quiesce' && !scriptStarted) {
       scriptStarted = true;
@@ -132,12 +140,12 @@ function startWork(end: () => void): void {
 }
 
 const letting = setInterval(() => {
-  if (armedNow && agent.state.status !== 'idle' && turnSeen >= SEEN) {
+  if (armedNow && agent.state.status !== 'idle' && turnSeen >= POLLS_PAST_A_QUIET_WINDOW) {
     writeFileSync(join(dataDir, 'seen-turn'), String(turnSeen));
     agent.state.status = 'idle';
     if (mode === 'token-held-after-turn') tokenHeld = true;
   }
-  if (tokenHeld && tokenSeen >= SEEN) {
+  if (tokenHeld && tokenSeen >= POLLS_PAST_A_QUIET_WINDOW) {
     writeFileSync(join(dataDir, 'seen-token'), String(tokenSeen));
     tokenHeld = false;
   }

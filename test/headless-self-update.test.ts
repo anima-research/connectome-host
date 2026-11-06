@@ -46,6 +46,7 @@ for (const [mode, what] of [
     expect(readMark(join(dir, 'install'))).toMatchObject({ to: '0.15.0', why: 'update' });
     expect(existsSync(join(dir, 'install', 'armed-dropped.json'))).toBe(false);
     expect(existsSync(join(dir, 'seen-turn'))).toBe(true);
+    expect(existsSync(join(dir, 'quiesced-while-busy'))).toBe(false);
     expect(existsSync(join(dir, 'seen-token'))).toBe(mode === 'token-held-after-turn');
     if (mode.endsWith('-starts-in-quiesce')) {
       expect(readFileSync(join(dir, 'blocked'), 'utf-8')).toContain('so the switch\'s quiesce ended');
