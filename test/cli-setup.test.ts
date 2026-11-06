@@ -250,7 +250,7 @@ test('the package\'s bin, without a terminal, says setup needs a person at one a
   });
 
 test('where no user of its own is possible, a directory holding other files and no install is refused before any question, naming the line that makes one', async () => {
-  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }]) {
+  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }]) {
     const dir = directory();
     writeFileSync(join(dir, '.bashrc'), '# mine\n');
     const made = world(dir, {}, over);
@@ -259,6 +259,62 @@ test('where no user of its own is possible, a directory holding other files and 
     expect(text(made.seen.err)).toContain(`bunx @animalabs/connectome-host@${VERSION} setup discord`);
     expect(made.seen.asked).toEqual([]);
     expect(readdirSync(dir)).toEqual(['.bashrc']);
+  }
+});
+
+test('a .setup directory that isn\'t setup\'s, holding neither its lock nor its answers, doesn\'t make a directory setup\'s', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'config.yml'), 'mine: true\n');
+  writeFileSync(join(dir, 'package.json'), '{"name":"mine"}\n');
+  const made = world(dir, {}, { hasSudo: false, env: { PATH: '/usr/bin:/bin', HOME: directory() } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(made.seen.asked).toEqual([]);
+  expect(readdirSync(dir).sort()).toEqual(['.setup', 'package.json']);
+  expect(readdirSync(join(dir, '.setup'))).toEqual(['config.yml']);
+});
+
+test('the check for a user by that name runs getent with no variable but PATH, so nothing a dotenv file gave setup reaches it', () => {
+  const bin = directory();
+  const seen = join(bin, 'seen-env');
+  writeFileSync(join(bin, 'getent'), `#!/bin/sh\nenv > ${JSON.stringify(seen)}\nexit 2\n`, { mode: 0o755 });
+  const before = { PATH: process.env.PATH, FROM_A_DOTENV_FILE: process.env.FROM_A_DOTENV_FILE };
+  process.env.PATH = `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`;
+  process.env.FROM_A_DOTENV_FILE = 'a-value';
+  try {
+    expect(realWorld().userExists('anyone')).toBe(false);
+  } finally {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const names = readFileSync(seen, 'utf-8').split('\n').filter((line) => line !== '').map((line) => line.slice(0, line.indexOf('=')));
+  expect(names.filter((name) => name !== 'PWD' && name !== 'SHLVL' && name !== '_')).toEqual(['PATH']);
+});
+
+test('the pty check opens node-pty where term-sessions-mcp\'s own resolution finds it, under a hoisted layout and under an isolated one', async () => {
+  const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken] });
+  await runSetup(dir, ['discord'], made);
+  const check = made.seen.ran.find((argv) => argv[0] === 'node' && argv[1] === '-e')![2]!;
+  const pty = 'module.exports = { spawn: () => ({ onData: (f) => setTimeout(() => f(\'pty-ok\\r\\n\'), 0), onExit: (f) => setTimeout(f, 5) }) };\n';
+  const layouts = {
+    hoisted: ['node_modules/term-sessions-mcp', 'node_modules/node-pty'],
+    isolated: ['node_modules/.bun/term-sessions-mcp@1/node_modules/term-sessions-mcp', 'node_modules/.bun/term-sessions-mcp@1/node_modules/node-pty'],
+  };
+  for (const [layout, [server, nodePty]] of Object.entries(layouts)) {
+    const at = directory();
+    mkdirSync(join(at, server!), { recursive: true });
+    writeFileSync(join(at, server!, 'package.json'), '{"name":"term-sessions-mcp"}\n');
+    mkdirSync(join(at, nodePty!), { recursive: true });
+    writeFileSync(join(at, nodePty!, 'package.json'), '{"name":"node-pty","main":"index.js"}\n');
+    writeFileSync(join(at, nodePty!, 'index.js'), pty);
+    if (layout === 'isolated') symlinkSync(join(at, server!), join(at, 'node_modules', 'term-sessions-mcp'));
+    const ran = Bun.spawnSync(['node', '-e', check], { cwd: at, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
+    expect({ layout, status: ran.exitCode, stderr: ran.stderr.toString() }).toEqual({ layout, status: 0, stderr: '' });
   }
 });
 
@@ -421,10 +477,13 @@ test('without a shell, a user of its own chosen is told it needs Node at the flo
 });
 
 test('where setup can\'t offer a user of its own, it offers this user alone and says what that gives up', async () => {
-  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }]) {
+  const whys = ['There\'s no sudo on this machine', 'On macOS, setup has no root lines for a user of its own',
+    'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running'];
+  for (const [at, over] of [{ hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }].entries()) {
     const dir = directory();
     const made = world(dir, { answers: ['yes', 'no'] }, over);
     const status = await runSetup(dir, ['discord'], made);
+    expect(text(made.seen.out)).toContain(`${whys[at]}, so the resident runs as this user, alice.`);
     expect(made.seen.asked[1]).toContain('Go on as alice?');
     expect(status).toBe(0);
     expect(text(made.seen.out)).toContain('With a shell, the resident can read and change whatever alice can (alice\'s files, keys and other programs), and whoever talks to it on Discord can ask it to.');
@@ -531,6 +590,7 @@ test('the cost line gives the model\'s list prices and, for the model the test s
 test('a key typed while .env became unreadable isn\'t checked, and setup says .env can\'t be read', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
   const made = world(dir, { answers: ['no', ''] }, {
     askHidden: async () => { chmodSync(join(dir, '.env'), 0o000); return KEY; },
@@ -547,6 +607,7 @@ test('a key typed while .env became unreadable isn\'t checked, and setup says .e
 test('a first run with a gateway in .env says the gateway may charge otherwise than the list prices', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -590,6 +651,7 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   const dir = directory();
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ trustedDependencies: ['their-own-server', 'node-pty'] }));
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const made = world(dir, { answers: ['yes', '2'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const listed = made.seen.ran.findIndex((argv) => args(argv).join(' ') === 'pm default-trusted');
@@ -619,6 +681,7 @@ test('a package a bun add that failed partway left in node_modules, never declar
   const dir = directory();
   const failed = world(dir, { answers: ['yes', '2'], secrets: [KEY], added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } });
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   mkdirSync(join(dir, 'node_modules', 'term-sessions-mcp'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', 'term-sessions-mcp', 'package.json'), JSON.stringify({ name: 'term-sessions-mcp', version: '1.7.3' }));
   expect(await runSetup(dir, ['discord'], failed)).toBe(1);
@@ -1321,6 +1384,7 @@ test('nothing Bun gave setup from .env reaches the programs it runs or its agent
   async () => {
     const dir = directory();
     mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
     const envFile = join(dir, '.env');
     writeFileSync(envFile, 'DISCORD_TOKEN="from-dot-env"\n');
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, {
@@ -1399,6 +1463,7 @@ test('a name the shell exports that a plain object inherits, such as toString, r
 test('a .env.tmp a write cut off left beside .env is taken away once setup holds its lock, before it asks anything', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const tmp = join(dir, '.env.tmp');
   writeFileSync(tmp, 'ANTHROPIC_API_KEY="cut-off-value"\n', { mode: 0o600 });
   const answers = ['no', ''];
@@ -1542,6 +1607,7 @@ test('the launch setup gives its agent starts the installed host, run here on a 
 test('a directory holding only setup\'s own .setup/ is setup\'s, so setup goes on there', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(made.seen.launched).not.toBeNull();
@@ -1649,6 +1715,7 @@ test('setup ends with its agent\'s exit status', async () => {
 test('a .env that can\'t be read stops setup before it asks or runs anything, naming it and what to do, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   mkdirSync(join(dir, '.env'), { mode: 0o755 });
   const mode = statSync(join(dir, '.env')).mode & 0o777;
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -1662,6 +1729,7 @@ test('a .env that can\'t be read stops setup before it asks or runs anything, na
 test('the key setup checks, keeps and gives its agent is the one .env holds when setup gets to the key, though .env changed during the boot check, and .env is readable by its owner alone after', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_API_KEY="sk-ant-before-the-install"\n', { mode: 0o600 });
   const made = world(dir, {
     answers: ['no', ''],
@@ -1684,6 +1752,7 @@ test('a .env that is a link, to a file or to nothing, stops setup before it asks
   for (const to of [target, join(directory(), 'not-there.env')]) {
     const dir = directory();
     mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
     symlinkSync(to, join(dir, '.env'));
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
     expect(await runSetup(dir, ['discord'], made), to).toBe(1);
@@ -1700,6 +1769,7 @@ test('a .env that is a link, to a file or to nothing, stops setup before it asks
 test('setup writes the key it checked to .env, though .env changed while the key was checked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
   let checks = 0;
   const made = world(dir, { answers: ['no', ''] }, {
@@ -1736,6 +1806,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
     const dir = directory();
     const envFile = join(dir, '.env');
     mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
     writeFileSync(envFile, `${names.map((name) => `${name}=held-credential-${name}\n`).join('')}ANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
     const fromEnv = Object.fromEntries([...names.map((name) => [name, `held-credential-${name}`]), ['ANTHROPIC_API_KEY', KEY]]);
     const made = world(dir, { answers: ['no', ''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ...fromEnv } });
@@ -1752,6 +1823,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
 test('a key that works but can\'t be kept in .env stops setup with no agent, saying so', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { mode: 0o700 });
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, {
     checkKey: async () => { chmodSync(dir, 0o500); return { ok: true }; },
   });
@@ -1813,6 +1885,7 @@ test('an empty ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE, in .env
     for (const where of ['.env', 'exported']) {
       const dir = directory();
       mkdirSync(join(dir, '.setup'));
+      writeFileSync(join(dir, '.setup', 'setup.lock'), '');
       writeFileSync(join(dir, '.env'), `${where === '.env' ? `${name}=\n` : ''}ANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
       const made = world(dir, { answers: ['no', ''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ...(where === 'exported' ? { [name]: '' } : {}) } });
       expect(await runSetup(dir, ['discord'], made), `${name} ${where}`).toBe(0);
@@ -1825,6 +1898,7 @@ test('an empty ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE, in .env
 test('a .env with a line outside setup\'s form stops setup before it asks or runs anything, naming the line and nothing of it, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const before = 'PEM_KEY="-----BEGIN-----\nbody-of-the-key\n-----END-----"\nPORT=8080\n';
   writeFileSync(join(dir, '.env'), before, { mode: 0o600 });
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -1839,6 +1913,7 @@ test('a .env with a line outside setup\'s form stops setup before it asks or run
 test('a .env no one can read stops setup before it asks or runs anything, naming it, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY="${KEY}"\n`);
   chmodSync(join(dir, '.env'), 0o000);
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -1852,6 +1927,7 @@ test('a .env no one can read stops setup before it asks or runs anything, naming
 test('a .env its owner can\'t read but others can is made readable by its owner alone, and setup goes on', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY="${KEY}"\n`);
   chmodSync(join(dir, '.env'), 0o040);
   const made = world(dir, { answers: ['no', ''] });
@@ -1980,6 +2056,7 @@ test('an install whose recorded data directory has gone is refused by its own se
 test('run again where package.json declares the host and node_modules holds it, setup adds only the packages missing', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { '@animalabs/connectome-host': VERSION } }));
   mkdirSync(join(dir, 'node_modules', '@animalabs', 'connectome-host'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', '@animalabs', 'connectome-host', 'package.json'),
@@ -1994,6 +2071,7 @@ test('run again where package.json declares the host and node_modules holds it, 
 test('run again beside another version of the host, setup adds its own version', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   mkdirSync(join(dir, 'node_modules', '@animalabs', 'connectome-host'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', '@animalabs', 'connectome-host', 'package.json'),
     JSON.stringify({ name: '@animalabs/connectome-host', version: '0.0.1-older' }));
@@ -2085,6 +2163,7 @@ test('a key .env can\'t hold as typed is refused before it is checked or kept, t
 
   const dir4 = directory();
   mkdirSync(join(dir4, '.setup'));
+  writeFileSync(join(dir4, '.setup', 'setup.lock'), '');
   const stored = 'sk-ant-"stored';
   writeFileSync(join(dir4, '.env'), `ANTHROPIC_API_KEY='${stored}'\n`, { mode: 0o600 });
   const fromEnv = world(dir4, { answers: ['no', ''], secrets: [''] });
@@ -2123,6 +2202,7 @@ test('a key a request header can\'t carry, typed or read from .env, is refused b
 
   const dir2 = directory();
   mkdirSync(join(dir2, '.setup'));
+  writeFileSync(join(dir2, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir2, '.env'), `ANTHROPIC_API_KEY=${bad}\n`, { mode: 0o600 });
   const stored = world(dir2, { answers: ['no', ''], secrets: [''] }, { checkKey: real });
   expect(await runSetup(dir2, ['discord'], stored)).toBe(1);
@@ -2138,6 +2218,7 @@ test('a key a request header can\'t carry, typed or read from .env, is refused b
 test('an empty ANTHROPIC_BASE_URL in .env means Anthropic\'s own API, as it does for the host: setup checks the key there and gives its agent none', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
   const made = world(dir, { answers: ['no', ''] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2175,6 +2256,7 @@ test('an ANTHROPIC_API_KEY exported in this shell, empty too, that differs from 
   const dir = directory();
   const envFile = join(dir, '.env');
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(envFile, `ANTHROPIC_API_KEY="${KEY}"\n`);
   const made = world(dir, { answers: ['no', ''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_API_KEY: 'sk-ant-exported-other' } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2220,6 +2302,7 @@ test('an ANTHROPIC_BASE_URL put in .env during a question is checked as a URL be
   const dir = directory();
   const envFile = join(dir, '.env');
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(envFile, 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
   const labels: string[] = [];
   const made = world(dir, { answers: ['no', ''] }, {
@@ -2239,6 +2322,7 @@ test('an ANTHROPIC_BASE_URL put in .env during a question is checked as a URL be
 test('setup shows where ANTHROPIC_BASE_URL leads, never a user, password, path or query it carries', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://someone:pass-in-url@gateway.example/path?token=in-query\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2442,6 +2526,7 @@ test('an install record that can\'t be read is named, one that isn\'t JSON or na
 test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is asked for', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=localhost:8080\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
@@ -2453,6 +2538,7 @@ test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is
 test('a .setup this user can\'t write in is named, with what to do, and nothing is asked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false }));
   chmodSync(join(dir, '.setup'), 0o555);
   try {
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -2469,6 +2555,7 @@ test('a .setup this user can\'t write in is named, with what to do, and nothing 
 test('a setup.lock that isn\'t setup\'s lock is named, with what to do, and nothing is asked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.setup', 'setup.lock'), '12345\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
@@ -2553,6 +2640,7 @@ test('a program setup runs that a signal ends is named by that signal', async ()
 test('an empty ANTHROPIC_API_KEY line in .env counts as no key, so an exported one is offered', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_API_KEY=\n');
   const made = world(dir, { answers: ['no', '', 'yes'] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_API_KEY: KEY } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);

@@ -208,7 +208,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const setupDir = join(dir, '.setup');
   const statePath = join(setupDir, 'setup-state.json');
   const entries = readdirSync(dir);
-  const ours = entries.includes('.setup') || existsSync(join(root, 'install.json'));
+  const ours = existsSync(join(setupDir, 'setup.lock')) || existsSync(statePath) || existsSync(join(root, 'install.json'));
   let kept = false;
   const stopped = () => {
     out(kept ? 'Setup stopped. Run it again in this directory to go on.'
@@ -327,7 +327,8 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
     'files, keys and other programs), and whoever talks to it on Discord can ask it to.';
   if (!ownUserPossible(world)) {
     const why = world.platform === 'darwin' ? 'On macOS, setup has no root lines for a user of its own'
-      : 'There\'s no sudo on this machine';
+      : !world.hasSudo ? 'There\'s no sudo on this machine'
+        : 'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running';
     out(`${why}, so the resident runs as this user, ${world.user}.${shell ? ` ${isolation}` : ''}`);
     const go = await yesNo(world, `Go on as ${world.user}? (yes/no) `);
     if (go === null) return -1;
@@ -454,7 +455,8 @@ async function installAndStart(
     : trusted.reason;
   if (untrusted !== null) {
     out(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} ` +
-      `(${untrusted}), so Bun runs no install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
+      `(${untrusted}), so unless it already names ${SERVERS.shell} among its trustedDependencies, Bun runs no install ` +
+      `script of ${SERVERS.shell}'s, and through a mirror or a company ` +
       'registry it may run none of the others\'.');
   }
 
@@ -932,7 +934,7 @@ async function yesNo(world: SetupWorld, question: string): Promise<boolean | nul
 }
 
 function ownUserPossible(world: SetupWorld): boolean {
-  return world.platform === 'linux' && world.hasSudo;
+  return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null;
 }
 
 async function pick(world: SetupWorld, question: string, fallback: '1' | '2' | null): Promise<'1' | '2' | null> {
@@ -1002,7 +1004,8 @@ function declaredDependencies(dir: string): Set<string> | null {
   }
 }
 
-const PTY_CHECK = "let p;try{p=require('node-pty').spawn('/bin/echo',['pty-ok'],{})}catch(e){console.error(String(e.message)" +
+const PTY_CHECK = "let p;try{p=require('module').createRequire(require('fs').realpathSync('node_modules/term-sessions-mcp')+'/package.json')('node-pty')" +
+  ".spawn('/bin/echo',['pty-ok'],{})}catch(e){console.error(String(e.message)" +
   ".split('\\n')[0]);process.exit(1)}let o='';p.onData(d=>{o+=d});p.onExit(()=>{if(o.includes('pty-ok'))process.exit(0);" +
   "console.error('a pty it opened gave back nothing');process.exit(1)})";
 
@@ -1107,7 +1110,7 @@ export function realWorld(): SetupWorld {
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),
     userExists: (user) => {
-      const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore' });
+      const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       return found.status === 0 ? true : found.status === 2 ? false : null;
     },
     ask: (text) => question((rl) => new Promise((done) => rl.question(text, done))),
