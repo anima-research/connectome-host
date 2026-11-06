@@ -700,6 +700,14 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(listed).toBeLessThan(added);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['their-own-server', 'node-pty', 'puppeteer', 'term-sessions-mcp']);
+  expect(text(made.seen.out)).toContain(`Setup added 1 name from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
+  const named = directory();
+  writeFileSync(join(named, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer', 'term-sessions-mcp'] }));
+  mkdirSync(join(named, '.setup'));
+  writeFileSync(join(named, '.setup', 'setup.lock'), '');
+  const unchanged = world(named, { answers: ['yes', '2'], secrets: [KEY] });
+  expect(await runSetup(named, ['discord'], unchanged)).toBe(0);
+  expect(text(unchanged.seen.out)).not.toContain('to trustedDependencies in');
 });
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
@@ -817,6 +825,7 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(atAdd).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
+  expect(text(made.seen.out)).toContain(`Setup added 2 names from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'pm' && args(argv)[1] === 'untrusted')).toBe(false);
   expect(text(made.seen.out)).not.toContain('Blocked');
 });

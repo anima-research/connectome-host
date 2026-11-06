@@ -480,14 +480,20 @@ async function installAndStart(
     const ran = await world.run([world.bun.path, '--no-env-file', ...args], { cwd, env: programEnv });
     return { status: ran.status, output: `${ran.stdout}${ran.stderr}` };
   }, dir);
-  const untrusted = Array.isArray(trusted)
+  const listed = Array.isArray(trusted)
     ? addTrusted(join(dir, 'package.json'), [...trusted, ...HOST_TRUSTED])
-    : trusted.reason;
-  if (untrusted !== null) {
+    : { reason: trusted.reason };
+  if ('reason' in listed) {
     out(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} ` +
-      `(${untrusted}), so unless it already names ${SERVERS.shell} among its trustedDependencies, Bun runs no install ` +
-      `script of ${SERVERS.shell}'s, and through a mirror or a company ` +
+      `(${listed.reason}), so unless it already names ${SERVERS.shell} among its trustedDependencies, Bun runs no ` +
+      `install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
       'registry it may run none of the others\'.');
+  } else if (listed.added.length > 0) {
+    const fromBun = listed.added.filter((name) => !HOST_TRUSTED.includes(name)).length;
+    const what = [fromBun > 0 ? `${fromBun} name${fromBun === 1 ? '' : 's'} from Bun's default trusted list` : null,
+      ...listed.added.filter((name) => HOST_TRUSTED.includes(name))].filter((part) => part !== null).join(' and ');
+    out(`Setup added ${what} to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package's install ` +
+      'scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.');
   }
 
   // A package counts as installed once package.json declares it: a bun add that fails partway leaves packages in
@@ -533,9 +539,9 @@ async function installAndStart(
     if (pty !== null) {
       const noShell = `Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where ` +
         'setup keeps its answers, and run setup again to answer no.';
-      const untrustedNote = untrusted === null ? '' : 'Setup couldn\'t add the packages whose install scripts Bun runs ' +
-        `by default to ${join(dir, 'package.json')} (${untrusted}), so through a mirror or a company registry Bun may ` +
-        'not have run node-pty\'s install script at all. ';
+      const untrustedNote = !('reason' in listed) ? '' : 'Setup couldn\'t add the packages whose install scripts Bun ' +
+        `runs by default to ${join(dir, 'package.json')} (${listed.reason}), so through a mirror or a company registry ` +
+        'Bun may not have run node-pty\'s install script at all. ';
       const linux = world.platform !== 'linux' ? '' : 'On Linux, its native part is built as it\'s ' +
         'installed, with python3, make and a C++ compiler; on Debian and Ubuntu, ' +
         `\`${world.hasSudo ? 'sudo ' : ''}apt install build-essential python3\` installs them, run ` +
@@ -1010,27 +1016,31 @@ async function userName(world: SetupWorld, out: (line: string) => void): Promise
   }
 }
 
-function addTrusted(file: string, names: string[]): string | null {
+function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {
   let manifest: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf-8'));
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return `${file} holds no JSON object`;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { reason: `${file} holds no JSON object` };
+    }
     manifest = parsed as Record<string, unknown>;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return `${file} can't be read (${(error as Error).message})`;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { reason: `${file} can't be read (${(error as Error).message})` };
+    }
   }
   const held = Array.isArray(manifest.trustedDependencies)
     ? manifest.trustedDependencies.filter((name): name is string => typeof name === 'string') : [];
   const added = names.filter((name) => !held.includes(name));
-  if (added.length === 0 && Array.isArray(manifest.trustedDependencies)) return null;
+  if (added.length === 0 && Array.isArray(manifest.trustedDependencies)) return { added };
   manifest.trustedDependencies = [...held, ...added];
   try {
     const was = lstatSync(file, { throwIfNoEntry: false });
     writeTextAtomic(file, `${JSON.stringify(manifest, null, 2)}\n`, was?.isFile() ? was.mode & 0o777 : 0o644);
   } catch (error) {
-    return `${file} can't be written (${(error as Error).message})`;
+    return { reason: `${file} can't be written (${(error as Error).message})` };
   }
-  return null;
+  return { added };
 }
 
 function declaredDependencies(dir: string): Set<string> | null {
