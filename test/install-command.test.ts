@@ -58,6 +58,7 @@ function withCommands(recipe: boolean, packageRecipe = true) {
   const cli = (at: string, who: string) => {
     mkdirSync(join(at, ...CLI_IN_RELEASE.slice(0, -1)), { recursive: true });
     writeFileSync(join(at, ...CLI_IN_RELEASE), "import { writeFileSync } from 'node:fs';\n" +
+      `writeFileSync(process.env.MARKER, JSON.stringify({ who: '${who}', loaded: true }));\n` +
       `export async function main(root, argv) { writeFileSync(process.env.MARKER, JSON.stringify({ who: '${who}', root, argv })); return 0; }\n`);
   };
   const release = join(root, 'releases', '1.0.0');
@@ -151,13 +152,13 @@ test('a record bound to another directory refuses the bare command, update and s
   const refused = run('update');
   expect(refused.ran).toBeNull();
   expect(refused.stderr).toContain(`connectome: nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, 'rebind.json')} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
-  expect(run('setup', 'discord').ran?.who).toBe('current');
+  expect(run('setup', 'discord').ran).toEqual({ who: 'current', root, argv: ['setup', 'discord'] });
 });
 
 test('a record from before workingDir runs update as it did', () => {
   const { dir, root, run } = withCommands(true);
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  expect(run('update').ran?.who).toBe('current');
+  expect(run('update').ran).toEqual({ who: 'current', root, argv: ['update'] });
 });
 
 test('setup\'s line that puts the install\'s directory on PATH is shown exactly where plain `connectome` wouldn\'t run it', () => {
