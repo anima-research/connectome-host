@@ -327,9 +327,10 @@ Every `subscribe` the parent sends passes through `sendToChild`, which (unless
 the list already contains `*`) adds any event the tree reducer needs that no
 existing pattern covers. That set, `REDUCER_REQUIRED_EVENTS`, is derived from
 the reducer's handlers in `src/state/agent-tree-reducer.ts` — adding a handler
-extends it with no recipe edits — plus `usage:updated`, which the host forces.
-A recipe's `subscription` therefore means "events I want *in addition to* what
-rendering needs".
+extends it with no recipe edits — plus the events the host forces:
+`usage:updated`, and `window:undone` and `presentation:retracted`, at which
+the Web UI reads the child's panels again. A recipe's `subscription`
+therefore means "events I want *in addition to* what rendering needs".
 
 **Not forced:** `lifecycle` (needed by `fleet--await`), `inference:speech`
 (needed by `fleet--relay`) and `ops:alert`. A narrowed recipe must list the
