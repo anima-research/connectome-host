@@ -387,24 +387,37 @@ describe('heard words that start more than one published message', () => {
 describe('heard words that start no published message', () => {
   const published = { type: 'inference:published', agentName: 'clerk', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-clerk' };
 
-  test('edit nothing, and the note is for the agent voicing in the channel, not the one that last published there', async () => {
+  // Since #317 a message is voiced on the channel it was published to,
+  // whatever channel its turn is on, so its author is voiced there.
+  test('edit nothing, and no note is written, when the agent whose activation is live in the channel and one that published there were both voiced there', async () => {
     const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
     trace(published);
     trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
     const logged = await logOf(() => interrupt('Over the hills and far away'));
     expect(edited()).toEqual([]);
-    expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+    expect(notes).toEqual([]);
     expect(logged).toContain('no published message matched the interruption');
+    expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and clerk, mira were each voiced in that channel');
   });
 
-  test('the agent voicing in the channel is told though the one that last published there is no longer registered', async () => {
-    const { trace, interrupt, edited, notes } = relayOnTraces(['mira']);
+  test('edit nothing, and the note is for the agent that published there from a turn on another channel, when no other agent was voiced there', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    trace({ type: 'inference:started', agentName: 'clerk', channelId: 'g:43' });
     trace(published);
-    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:44' });
     const logged = await logOf(() => interrupt('Over the hills and far away'));
     expect(edited()).toEqual([]);
     expect(logged).toContain('no published message matched the interruption');
-    expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+    expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+  });
+
+  test('none, and no note is written, when the one agent voiced there published from a turn on another channel and is no longer registered', async () => {
+    const { trace, interrupt, notes } = relayOnTraces(['mira']);
+    trace({ type: 'inference:started', agentName: 'clerk', channelId: 'g:43' });
+    trace(published);
+    const logged = await logOf(() => interrupt('Over the hills and far away'));
+    expect(notes).toEqual([]);
+    expect(logged).toContain('the interruption in 42 is told to no agent: clerk, voiced in that channel, is no longer registered');
   });
 
   test('none, and no note is written, when the agent live in the channel and one whose activation there ended were both voiced there', async () => {
@@ -415,7 +428,7 @@ describe('heard words that start no published message', () => {
     trace({ type: 'inference:completed', agentName: 'clerk' });
     const logged = await logOf(() => interrupt('Over the hills and far away'));
     expect(notes).toEqual([]);
-    expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and mira, clerk were each voiced in that channel');
+    expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and clerk, mira were each voiced in that channel');
   });
 
   test('heard words that start the publish still edit it and tell its author, when what another agent published there since doesn\'t start with them', async () => {

@@ -7,9 +7,9 @@
   matched messages are by more than one agent, no note that the reply was
   interrupted is written, and the log names them. With no message matched,
   the agent voicing in the channel is the one whose activation there is
-  live or was announced there since the channel's previous interruption;
-  when that is more than one agent, no note is written, and the log names
-  them. The agents voiced are kept for every channel the relay voices in,
+  live or was announced there, or that published there, since the
+  channel's previous interruption; when that is more than one agent, no
+  note is written, and the log names them. The agents voiced are kept for every channel the relay voices in,
   however many.
 - tts-relay matches an interruption's heard words only to messages published
   in its channel since the channel's previous interruption, which ended its

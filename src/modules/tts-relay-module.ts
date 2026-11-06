@@ -169,9 +169,9 @@ const TEXT_CHANNELS_MAX = 32;
 /** How many of the heard words' characters a published message must start with. */
 const HEARD_PROBE_CHARS = 80;
 
-/** The agents whose activations were announced in a channel since its last
- *  interruption, in the order they were first announced, and whether the
- *  channel has had one. */
+/** The agents voiced in a channel since its last interruption, those whose
+ *  activations were announced there and those that published there, in the
+ *  order they were first voiced there, and whether the channel has had one. */
 interface VoicedInChannel {
   agents: Set<string>;
   interrupted: boolean;
@@ -203,12 +203,15 @@ export class TtsRelayModule implements Module {
   private offTrace: (() => void) | null = null;
 
   private activations = new Map<string, ActivationState>();
-  /** The agents whose activations were announced in each raw channel since
-   *  its last interruption: the relay voices a turn's messages after the turn
-   *  has ended, so an interruption can come once its activation is gone, and
-   *  while another agent's has started. Every channel voiced in keeps its
-   *  voiced agents' names: one let go would name only an agent voiced there
-   *  after it, though an earlier one's audio can still be queued. */
+  /** The agents voiced in each raw channel since its last interruption:
+   *  those whose activations were announced there, and those that published
+   *  there, as a message is voiced on the channel it was published to,
+   *  whatever channel its turn is on. The relay voices a turn's messages
+   *  after the turn has ended, so an interruption can come once its
+   *  activation is gone, and while another agent's has started. Every
+   *  channel voiced in keeps its voiced agents' names: one let go would name
+   *  only an agent voiced there after it, though an earlier one's audio can
+   *  still be queued. */
   private voicedIn = new Map<string, VoicedInChannel>();
   /** Each raw channel's latest PUBLISHED_PER_CHANNEL_MAX publishes since its
    *  last interruption, oldest first, while it is among the
@@ -290,14 +293,18 @@ export class TtsRelayModule implements Module {
     if (!st.announced && st.rawChannelId) {
       st.announced = true;
       st.order = ++this.order;
-      const voiced = this.voicedIn.get(st.rawChannelId) ?? { agents: new Set<string>(), interrupted: false };
-      voiced.agents.add(agentName);
-      this.voicedIn.set(st.rawChannelId, voiced);
+      this.voicedThere(st.rawChannelId, agentName);
       this.client?.emit('activation_start', {
         channelId: st.rawChannelId,
         ...this.identity(agentName),
       });
     }
+  }
+
+  private voicedThere(channel: string, agentName: string): void {
+    const voiced = this.voicedIn.get(channel) ?? { agents: new Set<string>(), interrupted: false };
+    voiced.agents.add(agentName);
+    this.voicedIn.set(channel, voiced);
   }
 
   /** `channel` was published in, which is what the relay voices. Past
@@ -354,6 +361,7 @@ export class TtsRelayModule implements Module {
         if (channel.length > PUBLISHED_PER_CHANNEL_MAX) channel.shift();
         this.published.set(raw, channel);
         this.spokeIn(raw);
+        this.voicedThere(raw, event.agentName);
         // Only published prose is voiced: agent-framework's contract for a
         // relay that voices the agent's prose. Each message is a whole text
         // block, so the client voices its last sentence when it's posted.
@@ -479,9 +487,9 @@ export class TtsRelayModule implements Module {
   /** The agent an interruption cut off, or why none can be named. It is the
    *  author of the published messages the heard words start (`matched`);
    *  with none matched, the one voiced in the interruption's channel: the
-   *  agent whose activation there is live or was announced there since the
-   *  channel's last interruption (the relay voices a turn's messages after
-   *  it ends).
+   *  agent whose activation there is live or was announced there, or that
+   *  published there, since the channel's last interruption (the relay
+   *  voices a turn's messages after it ends).
    *  Matched messages by more than one agent name none, as do two or more
    *  agents voiced in the channel, and so does an agent that is no longer
    *  registered. */
