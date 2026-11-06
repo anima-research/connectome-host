@@ -15,6 +15,11 @@
   in its channel since the channel's previous interruption, which ended its
   voicing. A message published before that was matched again, so a later
   reply that opened with the same words had it edited again.
+- tts-relay counts an agent whose activation was live at a channel's
+  interruption as voiced there since, as the relay goes on voicing it. Once
+  that activation ended and another agent's started, a later interruption
+  that matched no message was told to the other agent alone; no note is
+  written now, and the log names both.
 - tts-relay keeps each channel's latest 32 publishes to match an
   interruption there, and what each agent last voiced there, for the 32
   channels it last published in or ended an activation in. It kept the

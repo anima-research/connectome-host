@@ -153,6 +153,21 @@ describe('whom the interruption note is for', () => {
       expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and no agent was voiced in that channel since its previous interruption');
     });
 
+    // Host #485 bot review wave 4, finding 3: the interruption's reset left
+    // out clerk's activation, live then, so once it ended and mira started,
+    // mira was told, though the relay voices clerk's chunks after the
+    // interruption too.
+    test("none, and no note is written, when the agent live at the channel's previous interruption has ended there and another started since", async () => {
+      const { notes, started, ended, interrupt } = relayOnActivations(['clerk', 'mira']);
+      started('clerk', 'g:42');
+      await interrupt();
+      ended('clerk');
+      started('mira', 'g:42');
+      const logged = await logOf(() => interrupt());
+      expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+      expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and clerk, mira were each voiced in that channel since its previous interruption');
+    });
+
     // Each channel's voiced agents are kept however many channels the relay
     // voices in: one let go would leave only those voiced there after it.
     test('none, and no note is written, when the agent whose activation ended and the one started after it were voiced in its channel, with 32 other channels voiced in between', async () => {

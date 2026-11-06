@@ -452,8 +452,14 @@ export class TtsRelayModule implements Module {
       ? { why: `the heard words start a message published by ${best!.agentName} and what ${voicedAfter.join(', ')} voiced in that channel after it` }
       : this.speakerOf(ev, matched);
     // An interruption ends its channel's voicing: what was published there
-    // before it isn't heard in a later one.
-    this.voicedIn.set(ev.channelId, { agents: new Set(), said: new Map(), interrupted: true });
+    // before it isn't heard in a later one. An activation still live there
+    // goes on being voiced, so it is voiced there since, in the order the
+    // activations were announced.
+    const live = [...this.activations]
+      .filter(([, st]) => st.announced && st.rawChannelId === ev.channelId)
+      .sort(([, a], [, b]) => a.order - b.order)
+      .map(([agent]) => agent);
+    this.voicedIn.set(ev.channelId, { agents: new Set(live), said: new Map(), interrupted: true });
     this.published.delete(ev.channelId);
     this.textsKeptFor.delete(ev.channelId);
     let edited = false;
