@@ -12,6 +12,9 @@
   previous branch's and that `/checkout <branch>` writes them. A turn
   of the root agent's that started on the new branch before the move's
   answer came streams on, and the branch is drawn once the turn ends, the
-  answer again below it: the redraw cut the turn's line off, its later
-  words were lost, and the status read idle while it ran. No command's
-  late answer sets the status idle while a root turn runs.
+  answer again below it with every command's answer drawn since: the
+  redraw cut the turn's line off, its later words were lost, and the
+  status read idle while it ran. An async command started or answered
+  while a root turn runs, backgrounded or held after a failed attempt
+  too, leaves the turn's status as it is, where its start set it to
+  thinking and its answer to idle.

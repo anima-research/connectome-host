@@ -393,9 +393,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  in the buffer continue: one row holds both. */
   let backgroundPartial: StreamedLine | undefined;
   let attemptStart = 0;
-  /** A branch move's answer that came while a root turn ran: the branch is
-   *  drawn once the turn ends, with this answer below it. */
-  let redrawAfterTurn: Array<{ text: string }> | undefined;
+  /** The command answers drawn since a branch move's answer came while a
+   *  root turn ran, the move's first: the branch is drawn once the turn
+   *  ends, with these below it. */
+  let redrawAfterTurn: Array<{ text: string; color: string }> | undefined;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -1857,6 +1858,13 @@ export async function runTui(app: AppContext): Promise<void> {
     });
   }
 
+  /** Draw a line of a command's answer, kept to be drawn again below the
+   *  branch when its redraw waits for a root turn's end (redrawAfterTurn). */
+  function addAnswerLine(text: string, color: string): void {
+    addLine(text, color);
+    redrawAfterTurn?.push({ text, color });
+  }
+
   function showRootTurnEnd(end: RootTurnEnd): void {
     state.status = end.status;
     state.tool = null;
@@ -1884,11 +1892,12 @@ export async function runTui(app: AppContext): Promise<void> {
     if (!backgrounded) evictedLines = evictedLines.filter((l) => l.kind === 'you');
     if (redrawAfterTurn && end.status !== 'attempt-failed') {
       // A branch move's follow-up came while this turn ran on the branch:
-      // the branch is drawn now, and the move's answer again below it.
+      // the branch is drawn now, and the move's answer again below it, with
+      // each command answer drawn since.
       const answered = redrawAfterTurn;
       refreshFromStore({ mount: false });
       state.status = end.status;
-      for (const l of answered) addLine(l.text, GRAY);
+      for (const l of answered) addLine(l.text, l.color);
     }
     if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
     updateStatus();
@@ -2692,10 +2701,9 @@ export async function runTui(app: AppContext): Promise<void> {
           scrollBox.remove(child.id);
           child.destroy();
         }
+        if (redrawAfterTurn) redrawAfterTurn = [];
       } else {
-        for (const l of result.lines) {
-          addLine(l.text, GRAY);
-        }
+        for (const l of result.lines) addAnswerLine(l.text, GRAY);
       }
 
       if (result.branchChanged) {
@@ -2703,7 +2711,9 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       if (result.asyncWork) {
-        state.status = 'thinking';
+        // A root turn's status is the turn's: the command's answer leaves it
+        // as it is too.
+        if (!(rootTurnShowing || streaming)) state.status = 'thinking';
         updateStatus();
         result.asyncWork.then(asyncResult => {
           // An answer that comes once the TUI has stopped, a bare
@@ -2721,11 +2731,9 @@ export async function runTui(app: AppContext): Promise<void> {
           // changed is what has the TUI draw the branch the store is on, once
           // a turn that started on it since has ended (showRootTurnEnd).
           // The framework writes the `_config` mount for the move.
-          if (asyncResult.branchChanged && turnRunning) redrawAfterTurn = asyncResult.lines;
+          if (asyncResult.branchChanged && turnRunning) redrawAfterTurn ??= [];
           else if (asyncResult.branchChanged) refreshFromStore({ mount: false });
-          for (const l of asyncResult.lines) {
-            addLine(l.text, GRAY);
-          }
+          for (const l of asyncResult.lines) addAnswerLine(l.text, GRAY);
           if (!turnRunning) state.status = 'idle';
           updateStatus();
         }).catch(err => {
@@ -2733,8 +2741,8 @@ export async function runTui(app: AppContext): Promise<void> {
             console.log(`Async command failed: ${err}`);
             return;
           }
-          addLine(`Async command failed: ${err}`, RED);
-          state.status = 'error';
+          addAnswerLine(`Async command failed: ${err}`, RED);
+          if (!(rootTurnShowing || streaming)) state.status = 'error';
           updateStatus();
         });
       }

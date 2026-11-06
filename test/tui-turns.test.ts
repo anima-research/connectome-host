@@ -513,6 +513,25 @@ describe("the TUI's branch moves, through runTui", () => {
     expect(steps.get('turn ended')!.mountRefreshes).toEqual([]);
   }, 40000);
 
+  // Another command's answer that came while the turn ran is drawn again
+  // below the branch (#485 bot review 4, finding 9).
+  test("a command's answer that came while the turn ran is drawn again below the branch with the move's", async () => {
+    const ended = (await play('async-branch-turn-answers')).get('turn ended')!.frame;
+    expect(ended).toContain('the side branch reply');
+    expect(ended).toContain('Switched to branch side.');
+    expect(ended).toContain('puppet agent: tally → ok (tu-1)');
+    expect(ended).toContain('result: tally done');
+    expect(ended.indexOf('the side branch reply')).toBeLessThan(ended.indexOf('puppet agent: tally'));
+  }, 40000);
+
+  // An async command leaves the status of a root turn alone, from its
+  // start to its answer (#485 bot review 4, finding 8).
+  test("an async command started during a backgrounded or held root turn leaves its status as it is", async () => {
+    const steps = await play('async-turn-status');
+    expect(steps.get('backgrounded')!.frame).toContain('[↓ background');
+    expect(steps.get('held')!.frame).toContain('[… attempt-failed');
+  }, 40000);
+
   // agent-framework's switchBranch and rollbackToMessage trace nothing: the
   // command's follow-up saying the branch changed is what tells the TUI.
   test("a command whose follow-up says the branch changed draws the history of the branch the store is on", async () => {

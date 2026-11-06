@@ -100,7 +100,11 @@ function fakeFramework(name: string) {
     async switchBranch(branch: string) {
       storeBranch = branch;
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
-      if (scenario === 'async-branch-turn') await new Promise<void>((resolve) => { releaseMove = resolve; });
+      if (scenario.startsWith('async-branch-turn')) await new Promise<void>((resolve) => { releaseMove = resolve; });
+    },
+    // /puppet's call: an async command that moves no branch.
+    async puppetToolCall(_agentName: string, toolName: string) {
+      return { toolUseId: 'tu-1', result: { isError: false, data: `${toolName} done` } };
     },
   };
 }
@@ -702,6 +706,42 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('Done.'), 'the reply');
     await step('same words, pushed out');
+  } else if (scenario === 'async-branch-turn-answers') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // The move's answer comes while a turn runs, and another command's
+    // answer comes after it, before the turn ends (#485 bot review 4,
+    // finding 9).
+    await command('/checkout side');
+    await until(() => releaseMove !== undefined, 'the move');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'on the side ', blockType: 'text' });
+    releaseMove!();
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    await command('/puppet tally {}');
+    await until(async () => (await frame()).includes('tally done'), "the other command's answer");
+    first.send('inference:tokens', { content: 'branch now', blockType: 'text' });
+    history.push({ id: 's2', participant: 'agent', content: [{ type: 'text', text: 'on the side branch now' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the side branch reply'), 'the branch drawn');
+    await step('turn ended');
+  } else if (scenario === 'async-turn-status') {
+    // An async command started while a root turn is backgrounded, and one
+    // started while its attempt failed and the framework holds it: neither
+    // sets the status (#485 bot review 4, finding 8).
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'Counting', blockType: 'text' });
+    await until(async () => (await frame()).includes('Counting'), 'the stream');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    await until(async () => (await frame()).includes('[↓ background'), 'the background status');
+    await command('/puppet tally {}');
+    await until(async () => (await frame()).includes('tally done'), 'the answer');
+    await step('backgrounded');
+    first.send('inference:failed', { error: 'the provider is overloaded' });
+    await until(async () => (await frame()).includes('[… attempt-failed'), 'the held status');
+    await command('/puppet weigh {}');
+    await until(async () => (await frame()).includes('weigh done'), 'the answer');
+    await step('held');
   } else if (scenario === 'undone-background-shed') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // The operator's message, stored as its turn starts, and the turn's
