@@ -290,8 +290,6 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('token <constructor>\n');
   });
 
-  // A second question asked from a handler on the first one's chain, which runs as the wait for the first ends: the
-  // tool's start line is shown before that question is asked, or after it's answered, never between.
   async function startedWhileOpen(call: ToolCall, startLine: string, firstName: string, extra: { fetch?: typeof fetch } = {}) {
     let releaseFirst: (value: string | null) => void = () => {};
     let releaseSecond: (value: string | null) => void = () => {};
