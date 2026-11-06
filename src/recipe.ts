@@ -954,9 +954,12 @@ export interface RecipeModules {
      * What a forked or spawned stream is told at its start. `'full'`
      * (default) describes the launch and the stream's place in it, and
      * gives a fork the "two parallel streams of you" framing; `'none'` hands
-     * a spawn its task alone, and a fork its task after one line saying it
-     * is the forked stream. What a stream is told is the deployment's to
-     * decide, not the host's.
+     * a spawn its task alone; a fork with a parent agent its task after
+     * saying it is the forked stream and, where its prose routing isn't its
+     * parent's (a locked parent's fork runs disabled), what that routing is;
+     * and a fork with no parent agent its task after saying to return its
+     * findings with subagent--return. What a stream is told is the
+     * deployment's to decide, not the host's.
      */
     orientation?: 'full' | 'none';
     /**
