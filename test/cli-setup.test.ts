@@ -679,18 +679,45 @@ test('with a shell, a node-pty that opens no pty is installed again, and setup g
   });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(leftAtInstall).toBe(false);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one has installed, and putting it back if it doesn't:`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(true);
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
   expect(made.seen.launched).not.toBeNull();
 });
 
 test('with a shell, an install again of node-pty that fails stops setup before its agent, naming the install', async () => {
   const dir = directory();
   const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' } });
+  const made = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy setup found');
+    },
+    atInstall: (cwd) => { writeFileSync(join(cwd, 'node_modules', 'node-pty'), 'what an install that fails left'); },
+  });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(made.seen.launched).toBeNull();
   expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: `bun --no-env-file install` didn\'t finish (');
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+});
+
+test('with a shell, a repair that finds a copy a stopped repair set aside keeps that copy, and puts it back when its own install fails', async () => {
+  const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const made = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, '.setup', 'node-pty-aside'), { recursive: true });
+      writeFileSync(join(cwd, '.setup', 'node-pty-aside', 'pty.node'), 'the copy setup found');
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that was stopped, and never built');
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
 });
 
 test('without sudo, the pty stop\'s build-tools line is one for root to run', async () => {
@@ -792,7 +819,7 @@ test('on macOS, node-pty\'s prebuilt spawn-helper is made executable after every
   }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one has installed, and putting it back if it doesn't:`);
 });
 
 test('on macOS, a spawn-helper already executable by its owner is left as it is', async () => {
