@@ -44,6 +44,7 @@ import {
   trackOperatorWork,
 } from '../session-switch.js';
 import { parseCommand } from '../command-name.js';
+import { AgentPhases } from '../state/agent-phases.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
 import { TurnInterrupts, interruptAgents, interruptSubagents } from '../state/turn-interrupt.js';
@@ -381,6 +382,7 @@ interface SharedServerState {
   childUsage: Map<string, TokenUsage>;
   latestPerAgentCost: import('../web/protocol.js').PerAgentCost[];
   latestCallLedger?: CallLedgerSnapshot;
+  agentPhases: AgentPhases;
   callLedgerDetacher: (() => void) | null;
   app: WebUiAppRef | null;
   treeAggregator: FleetTreeAggregator | null;
@@ -477,6 +479,7 @@ export class WebUiModule implements Module {
       childUsage: new Map(),
       latestPerAgentCost: [],
       latestCallLedger: this.config.callLedger?.snapshot(),
+      agentPhases: new AgentPhases(),
       callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
       childRecipeCache: new Map(),
@@ -574,6 +577,7 @@ export class WebUiModule implements Module {
     ss.treeAggregator = null;
     ss.autoStartRecords = null;
     ss.bindGeneration++;
+    ss.agentPhases = new AgentPhases(app.framework.getAllAgents().map((agent) => agent.name));
 
     // agent-framework traces `message:added` only for messages added from
     // outside a turn, never for an agent's turns or its tool results, so the
@@ -832,6 +836,7 @@ export class WebUiModule implements Module {
 
   private fanOutTrace(event: TraceEvent): void {
     sharedServer!.interrupts?.onTrace(event as unknown as { type: string; agentName?: unknown });
+    const phaseChanges = sharedServer!.agentPhases.apply(event);
     if (event.type === 'usage:updated') {
       const totalsObj = (event as unknown as { totals?: unknown }).totals;
       const parsed = parseUsageTotals(totalsObj);
@@ -850,6 +855,7 @@ export class WebUiModule implements Module {
       type: 'trace',
       event: event as unknown as { type: string; [k: string]: unknown },
     }, streamEndedFor(event as unknown as { type: string; agentName?: unknown }), frameWithoutImageData);
+    for (const change of phaseChanges) this.broadcast({ type: 'agent-phase', ...change });
     if (event.type === 'usage:updated') {
       this.broadcast({
         type: 'usage',
@@ -1103,7 +1109,7 @@ export class WebUiModule implements Module {
       const app = this.panelApp();
       if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
       try {
-        const snapshot = buildHealthSnapshot(app);
+        const snapshot = { ...buildHealthSnapshot(app), agentPhases: sharedServer!.agentPhases.snapshot() };
         return Response.json(keptStrings ? keepNamedStrings(snapshot, keptStrings) : snapshot);
       } catch (err) {
         const status = err instanceof PanelError ? err.status : 500;
@@ -3075,6 +3081,7 @@ export class WebUiModule implements Module {
       features: this.hostFeatures(),
       ...(takesUserImages(sharedServer?.app?.recipe.agent.strategy) ? { userImageLimits: this.imageLimits() } : {}),
       ...(hostMode ? { hostMode } : {}),
+      agentPhases: sharedServer!.agentPhases.snapshot(),
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
         ? { perAgentCost: sharedServer!.latestPerAgentCost }
