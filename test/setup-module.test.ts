@@ -1086,6 +1086,14 @@ describe('checkDiscordToken', () => {
     expect(result).toEqual({ kind: 'refused' });
   });
 
+  test('a 401 whose answer says it isn\'t JSON isn\'t read as Discord\'s refusal, and one that says JSON is a refusal before its body comes', async () => {
+    const answering = (type: string) => (async () => new Response('<html>Unauthorized</html>', { status: 401, headers: { 'content-type': type } })) as unknown as typeof fetch;
+    expect(await checkDiscordToken('a-token', { fetch: answering('text/html; charset=utf-8') })).toEqual({ kind: 'unrecognized', status: 401 });
+    expect(await checkDiscordToken('a-token', { fetch: answering('application/json') })).toEqual({ kind: 'refused' });
+    expect(await checkDiscordToken('a-token', { fetch: (async () => new Response(new ReadableStream({ start() {} }), { status: 401, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch })).toEqual({ kind: 'refused' });
+    expect(await checkDiscordToken('a-token', { fetch: (async () => new Response('<html>', { status: 403 })) as unknown as typeof fetch })).toEqual({ kind: 'unrecognized', status: 403 });
+  });
+
   test('no answer within its limit is unanswered, saying so', async () => {
     const result = await checkDiscordToken('a-token', {
       limitMs: 50,

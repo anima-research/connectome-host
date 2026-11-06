@@ -48,7 +48,8 @@ export async function checkDiscordToken(
   } catch (error) {
     return unanswered(error);
   }
-  if (response.status === 401) return { kind: 'refused' };
+  const type = response.headers.get('content-type');
+  if (response.status === 401 && (type === null || /^application\/json\b/i.test(type.trim()))) return { kind: 'refused' };
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
     return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, token) };
@@ -68,7 +69,7 @@ export async function checkDiscordToken(
   if (response.ok && typeof body?.id === 'string' && typeof body.username === 'string' && (!('bot' in body) || body.bot === true)) {
     return { kind: 'accepted', name: hidden(body.username, token), id: hidden(body.id, token) };
   }
-  if (response.ok && body === undefined) return { kind: 'unrecognized', status: response.status };
+  if (body === undefined) return { kind: 'unrecognized', status: response.status };
   const said = typeof body?.message === 'string' ? hidden(body.message, token) : null;
   const wait = body?.retry_after;
   return response.status === 429 && typeof wait === 'number' && Number.isFinite(wait)

@@ -147,12 +147,29 @@ describe('doctor: Discord', () => {
     expect(later.problems).toEqual([expect.stringContaining('Discord answered 403 to GET /applications/@me: Missing Access (code 50001)')]);
     expect(json.problems[0]).toMatch(/weren't made/);
     expect(json.problems[0]).not.toMatch(/again|its message says/);
-    const raw = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => new Response(`error code: 1010 ${TOKEN.slice(0, 9)}`, { status: 403 }) }));
-    expect(raw.problems.length).toBe(1);
-    expect(raw.problems[0]).toContain('403');
-    expect(raw.problems[0]).toContain('with no message');
-    expect(raw.problems[0]).not.toContain('error code');
-    expect(raw.problems[0]).not.toMatch(/its message says/);
+    const silent = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => Response.json({ code: 0 }, { status: 403 }) }));
+    expect(silent.problems.length).toBe(1);
+    expect(silent.problems[0]).toContain('403');
+    expect(silent.problems[0]).toContain('with no message');
+    expect(silent.problems[0]).not.toMatch(/its message says/);
+  });
+
+  test('an error answer that isn\'t JSON isn\'t read as Discord\'s error, whatever its status, and no raw body shows', async () => {
+    const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    const raw = (status: number) => () => new Response(`error code: 1010 ${TOKEN.slice(0, 9)}`, { status, headers: { 'content-type': 'text/html' } });
+    for (const status of [401, 403, 404]) {
+      const own = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: raw(status) }));
+      expect(own.problems).toEqual([`Discord answered ${status} to GET /users/@me with something other than JSON, so the Discord checks after it weren't made.${between}`]);
+      expect(own.text).not.toContain('error code');
+      const later = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': raw(status) } }));
+      expect(later.problems).toEqual([`Discord answered ${status} to GET /applications/@me with something other than JSON, so the Discord checks after it weren't made.${between}`]);
+    }
+    const server = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': raw(404) } }));
+    expect(server.problems).toEqual([`Discord answered 404 to GET /guilds/100/roles with something other than JSON, so the Discord checks after it weren't made.${between}`]);
+    const busy = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: raw(503) }));
+    expect(busy.problems).toEqual([`Discord answered 503 to GET /users/@me with something other than JSON, so the Discord checks after it weren't made: run connectome doctor again.${between}`]);
+    const refused = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 }) }));
+    expect(refused.problems[0]).toStartWith('Discord refused the bot token the server is given as DISCORD_TOKEN (401)');
   });
 
   test('a 403 or 404 to the bot\'s own user or application says what may be answering in Discord\'s place, and one to a server\'s read says what that read says', async () => {

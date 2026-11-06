@@ -101,11 +101,17 @@ export async function checkDiscord(
     } catch {
       body = undefined;
     }
-    if (res.status === 401) throw new DiscordAnswer(refused);
     if (res.status >= 300 && res.status < 400) {
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}, a redirect, which doctor doesn't follow with ` +
         `the token, ${unchecked}. ${between}`);
     }
+    if (body === undefined) {
+      throw new DiscordAnswer(res.ok
+        ? `Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`
+        : `Discord answered ${res.status} to GET ${path} with something other than JSON, ` +
+          `${res.status === 429 || res.status >= 500 ? again : unchecked}. ${between}`);
+    }
+    if (res.status === 401) throw new DiscordAnswer(refused);
     const said = body as { message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
     if (!res.ok) {
       const wait = res.status === 429 && typeof said?.retry_after === 'number' && Number.isFinite(said.retry_after)
@@ -116,9 +122,6 @@ export async function checkDiscord(
         (res.status === 403 || res.status === 404
           ? path.startsWith('/guilds/') ? ` ${LISTED}` : path === '/applications/@me' ? ` ${between}` : ''
           : ''));
-    }
-    if (body === undefined) {
-      throw new DiscordAnswer(`Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`);
     }
     return body as T;
   };
@@ -186,6 +189,10 @@ async function whoseToken(
         `with the token, ${words.unchecked}. ${words.between}`);
     case 'unrecognized':
     case 'answered':
+      if (check.kind === 'unrecognized' && (check.status < 200 || check.status >= 300)) {
+        throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path} with something other than JSON, ` +
+          `${check.status === 429 || check.status >= 500 ? words.again : words.unchecked}. ${words.between}`);
+      }
       if (check.kind === 'unrecognized' || (check.status >= 200 && check.status < 300)) {
         throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +
           words.between);
