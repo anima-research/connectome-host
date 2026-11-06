@@ -76,12 +76,14 @@ function childQuiet(name: string, answer: { ok: boolean; data?: unknown; error?:
     !isCount(data.backgroundScripts)) {
     return { host: name, answered: false, why: "its answer doesn't say whether it drained, who holds a turn and what scripts it runs" };
   }
+  const work = data.inFlight === undefined ? [] : Array.isArray(data.inFlight) && data.inFlight.every((w) => typeof w === 'string')
+    ? data.inFlight as string[] : ['work outside any turn that its answer doesn\'t name plainly'];
   const hold = data.operatorHold as { reason?: unknown } | undefined;
   const operatorHold = hold !== null && typeof hold === 'object' && !Array.isArray(hold)
     ? { operatorHold: typeof hold.reason === 'string' ? { reason: hold.reason } : {} } : {};
   return {
     host: name, answered: true, drained: data.drained, activeTurnAgents: holders as string[], backgroundScripts: data.backgroundScripts,
-    ...operatorHold,
+    ...operatorHold, ...(work.length > 0 ? { inFlight: work } : {}),
   };
 }
 

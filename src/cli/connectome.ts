@@ -220,8 +220,10 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
   } else {
     ctx.out(`Its update state, as the running host gives it` +
       `${update.check === null ? '' : `, from its last read of the registry at ${update.check.at}`}:`);
-    const ways = host.ready.turnWork === undefined ? COMMAND_WAYS : cliWays(typedCommand(root));
-    for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
+    const shell = host.ready.turnWork !== undefined;
+    const typed = typedCommand(root);
+    const ways = shell ? cliWays(typed) : COMMAND_WAYS;
+    for (const line of statusLines(update, ways)) ctx.out(`  ${shell ? inShellWords(line, typed) : line}`);
   }
   return Math.max(status, service(ctx));
 }

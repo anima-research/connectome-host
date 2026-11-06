@@ -433,7 +433,8 @@ reasons unless the grant holds `ops` too.
 - **Going back** after a commit: `/update back` says how old the copy is,
   and offers keeping the newer data (`/update back keep`), which loses
   residents nothing and brings the host back as it is now, answering new
-  turns or holding them if it's quiesced, or restoring the copy
+  turns or holding them if its operator quiesced it (a switch's quiesce left
+  behind ends at that start), or restoring the copy
   (`/update back restore`), which sets everything since aside, not deleted,
   and brings the host back answering new turns, unless it had been quiesced
   from the Web UI before the Restart that took the copy: then it comes back

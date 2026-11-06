@@ -559,7 +559,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         const answering = import('./update/quiesce.js').then(({ answerSwitchRequest }) => answerSwitchRequest(app.framework, cmd.request));
         try {
           const data = await (asked === 'quiesce' ? trackOperatorWork(app, "the release switch's quiesce", answering) : answering);
-          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
+          const inFlight = asked === 'quiesce' ? workBesideTurns() : [];
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data: inFlight.length > 0 ? { ...data, inFlight } : data });
         } catch (error) {
           reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -607,11 +608,17 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     return textsProcessing.size > 0 || host.activeTurnAgents.some(own) || host.parkedAdmissions > 0 ||
       host.gatedRequests > 0 || app.framework.getQueueDepth() > 0;
   };
-  const quietButScripts = (): boolean => {
-    if (app.switching || turnWorkInFlight() || operatorWorkRunning(app) || app.credentials?.actionInFlight() === true) return false;
+  const workBesideTurns = (): string[] => {
     const subagents = subagentModule()?.getConcurrencyStatus();
-    return app.framework.getHostModeStatus().drained && (!subagents || (subagents.active === 0 && subagents.queued === 0));
+    return [
+      ...(app.switching ? ['a session switch'] : []),
+      ...(operatorWorkRunning(app) ? ['an operator\'s work'] : []),
+      ...(app.credentials?.actionInFlight() === true ? ['a credential action'] : []),
+      ...(subagents && (subagents.active > 0 || subagents.queued > 0) ? ['subagent runs'] : []),
+    ];
   };
+  const quietButScripts = (): boolean =>
+    !turnWorkInFlight() && workBesideTurns().length === 0 && app.framework.getHostModeStatus().drained;
   const nothingInFlight = (): boolean =>
     quietButScripts() && app.framework.getHostModeStatus().backgroundScripts === 0;
 

@@ -7,6 +7,7 @@ import {
   WebUiModule,
   __getSharedServerPortForTests,
   stopWebUiServer,
+  switchQuiesceRefusalFor,
 } from '../src/modules/web-ui-module.js';
 import { switchQuiesceReason } from '../src/update/contract.js';
 
@@ -436,4 +437,15 @@ describe('what the page chooses a change from says whose session it is', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { sessionId?: string }).sessionId).toBe('s1');
   }, TEST_MS);
+});
+
+test("a host-quiesce over a switch's quiesce that no switch is still running is refused, saying the quiesce was left behind and that Resume ends it", () => {
+  const app = { framework: { getHostModeStatus: () => ({ quiesced: true, reason: switchQuiesceReason('0.15.0') }) } };
+  const answer = switchQuiesceRefusalFor(app, { type: 'host-quiesce', corrId: 'quiesce', reason: 'maintenance' } as never, false);
+  expect(answer).toMatchObject({ type: 'error', corrId: 'quiesce' });
+  const message = String((answer as { message?: unknown }).message);
+  expect(message).toStartWith('host-quiesce refused: ');
+  expect(message).toContain('a switch that isn\'t going ahead');
+  expect(message).toContain('Resume ends the switch\'s quiesce');
+  expect(message).not.toContain('once the switch has gone ahead or ended');
 });

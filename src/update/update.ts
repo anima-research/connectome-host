@@ -18,7 +18,7 @@ import { readTrialLog } from './trial-log.js';
 import {
   ARMED_RETRY, BUN_UPGRADE, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, NOT_AN_INSTALL, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, busyLines, cliWays,
   deprecatedLine,
-  noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
+  inAgentWords, noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
   type SwitchOutcome, type UpdateStatus, type UpdateWays,
 } from '../web/update-text.js';
@@ -26,6 +26,10 @@ import {
 const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 const RESTART_QUIESCE_MS = 120_000;
 const WAIT_LONGER_MS = 600_000;
+// Each try quiesces every fleet child, and agent-framework 0.32.0 waits up to
+// a second for a busy host to drain before it answers (QUIESCE_TIMEOUT_MIN_MS),
+// holding that child's new turns until the try ends its quiesce. One try a
+// minute bounds that hold on a busy child to about a second a minute.
 const ARMED_RETRY_MS = 60_000;
 
 export type SwitchFramework = QuiesceFramework & {
@@ -84,7 +88,14 @@ function notesSections(text: string): Array<{ version: string; text: string }> {
   return sections.map(({ version, lines }) => ({ version, text: lines.join('\n').trimEnd() }));
 }
 
-function notesAnswer(path: string, running: string, installed: string): UpdateAnswer {
+// agent-framework 0.32.0 keeps a tool's answer whole in the agent's context
+// only up to 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), and
+// keeps no more than that where no workspace mount is writable.
+const NOTES_BUDGET = 24_000;
+
+const characters = (count: number): string => `${count.toLocaleString('en-US')} characters`;
+
+function notesAnswer(path: string, running: string, installed: string, version?: string): UpdateAnswer {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
@@ -93,13 +104,38 @@ function notesAnswer(path: string, running: string, installed: string): UpdateAn
       `${notesUrl(installed)} has them.`);
   }
   const sections = notesSections(text)
-    .filter(({ version }) => Bun.semver.order(version, running) > 0 && Bun.semver.order(version, installed) <= 0);
+    .filter(({ version: v }) => Bun.semver.order(v, running) > 0 && Bun.semver.order(v, installed) <= 0);
   if (sections.length === 0) {
     return refused(`No notes were given: ${path} has no notes for the releases after ${running} up to ${installed}: ` +
       `${notesUrl(installed)} has ${installed}'s.`);
   }
-  return done(`The notes of ${list(sections.map(({ version }) => version))}, from ${path}:`,
-    sections.map(({ text: body }) => body).join('\n\n'));
+  const fits = (answer: UpdateAnswer): boolean => inAgentWords(answer.lines.join('\n')).length <= NOTES_BUDGET;
+  if (version === undefined) {
+    const whole = done(`The notes of ${list(sections.map(({ version: v }) => v))}, from ${path}:`,
+      sections.map(({ text: body }) => body).join('\n\n'));
+    if (fits(whole)) return whole;
+    if (sections.length > 1) {
+      return done(`The notes of the releases after ${running} up to ${installed} come to more than one answer carries ` +
+        `(${characters(NOTES_BUDGET)}), so here is each release's size, from ${path}. Ask for one release's notes with ` +
+        'lifecycle--update notes with its `version`:',
+        ...sections.map(({ version: v, text: body }) => `- ${v}: ${characters(body.length)}`));
+    }
+  }
+  const one = version === undefined ? sections[0]! : sections.find(({ version: v }) => v === version);
+  if (one === undefined) {
+    return refused(`No notes were given: ${path} has no notes for ${version} among the releases after ${running} up to ` +
+      `${installed}. Those it has notes for: ${list(sections.map(({ version: v }) => v))}.`);
+  }
+  const whole = done(`The notes of ${one.version}, from ${path}:`, one.text);
+  if (fits(whole)) return whole;
+  let shown = NOTES_BUDGET;
+  for (;;) {
+    const cut = done(`The notes of ${one.version}, from ${path}, cut: the first ${shown.toLocaleString('en-US')} of its ` +
+      `${characters(one.text.length)}. The rest is in that file, and at ${notesUrl(one.version)}:`, one.text.slice(0, shown));
+    const over = inAgentWords(cut.lines.join('\n')).length - NOTES_BUDGET;
+    if (over <= 0) return cut;
+    shown -= over;
+  }
 }
 
 export class HostUpdate {
@@ -183,15 +219,16 @@ export class HostUpdate {
     }
     const candidate = this.check.candidate;
     if (candidate !== null && !this.logged.has(candidate)) {
-      this.logged.add(candidate);
       let installed: string | null = null;
+      let read = true;
       if (setup.here !== null) {
         try {
           installed = this.installedTarget();
         } catch {
-          installed = null;
+          read = false;
         }
       }
+      if (read) this.logged.add(candidate);
       const ways = setup.here !== null && setup.headless === true
         ? cliWays(installCommandAt(setup.here.root))
         : COMMAND_WAYS;
@@ -350,6 +387,13 @@ export class HostUpdate {
       : leftQuiesced(ended, false)));
   }
 
+  /** Whether this host is running a switch now: null where it can't tell, on a host with no install of its own,
+   *  such as a fleet child, whose switch's quiesce comes from its parent. */
+  switchUnderWay(): boolean | null {
+    if (!this.setup?.here) return null;
+    return this.restart !== null;
+  }
+
   armedSwitch(): ArmedSwitch | null {
     if (this.armed === null) return null;
     const last = this.armed.lastTry;
@@ -390,7 +434,7 @@ export class HostUpdate {
       const fleet = setup.host.fleet();
       if ((fleet?.runningChildren().length ?? 0) > 0) {
         const children = await lookAtChildren(fleet, armed.to);
-        if (setup.host.framework() !== framework) return await this.callOff(SESSION_CHANGED);
+        if (setup.host.framework() !== framework) return await this.callOff(SESSION_CHANGED_AT_LOOK);
         const childHeld = childHold(children);
         if (childHeld !== null) return await this.endAndStayArmed(children, childHeld);
         if (!children.every(settled)) {
@@ -410,9 +454,9 @@ export class HostUpdate {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
-      `however long that takes, so it cuts no turn and asks nobody. ${ARMED_RETRY} The host then stops, and its service ` +
-      'starts it again on ' +
-      `${request.to}. If the host stops for another reason first, nothing stays armed. ` +
+      'however long that takes, so it goes only once every host has said no turn is running there, and asks ' +
+      `nobody. ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
+      'stops for another reason first, nothing stays armed. ' +
       `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${TOOL_WAYS.check} shows whether it committed or ` +
       'went back, and why' + (request.why === 'go-back'
         ? `, if ${request.to} has lifecycle--update; the person's /update check shows it either way.`
@@ -448,6 +492,7 @@ export class HostUpdate {
       ...(holding.some((h) => !h.answered) ? ['a host couldn\'t be counted'] : []),
       ...(holding.some((h) => h.answered && !h.drained) ? ['turns were still going'] : []),
       ...(holding.some((h) => h.answered && h.drained && h.backgroundScripts > 0) ? ['scripts were running outside any turn'] : []),
+      ...(holding.some((h) => h.answered && h.inFlight !== undefined) ? ['a fleet child had work going outside any turn'] : []),
     ];
     const what = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held.at(-1)}` : held[0] ?? 'this host had work in flight again';
     const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true);
@@ -588,7 +633,7 @@ export class HostUpdate {
       `them from ${notesPath(setup.here.root, installed)}.`];
   }
 
-  installedNotes(): UpdateAnswer {
+  installedNotes(version?: string): UpdateAnswer {
     const setup = this.need();
     if (setup.here === null) return refused(`No notes were given: ${NOT_AN_INSTALL}`);
     let installed: string | null;
@@ -601,7 +646,7 @@ export class HostUpdate {
       return refused(`No notes were given: no release newer than ${setup.running} is installed. ${TOOL_WAYS.check} ` +
         'says what\'s out, with its notes link.');
     }
-    return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed);
+    return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version);
   }
 
   private installedTarget(): string | null {
@@ -730,11 +775,14 @@ export class HostUpdate {
 
 const SESSION_CHANGED = 'the session changed while turns were ending, so this host now serves one the restart didn\'t ' +
   'quiesce. Ask again.';
+const SESSION_CHANGED_AT_LOOK = 'the session changed while the fleet\'s children were asked whether they were busy, ' +
+  'before this host was quiesced, so the try ended there. Ask again.';
 const RESUME_AGAIN = 'For a host still quiesced, /update restart resume tries again, as does the host\'s next start.';
 const ENDING_SWITCH_QUIESCE = 'A switch\'s quiesce is being ended. Ask again once that has answered.';
 const ASK_AGAIN = 'Asking again won\'t change that: whoever runs this host can.';
 const NO_INSTALL_OF_ITS_OWN = 'Nothing was armed: this host has no install of its own to restart onto a release. A fleet ' +
-  'child is updated with its parent\'s install, and any other host by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
+  'child is updated with its parent\'s install where its parent has one, and any other host, or a child whose parent has ' +
+  'none, by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
   ASK_AGAIN;
 const IN_A_TERMINAL = 'Nothing was armed: this host runs in a terminal, not headless under a service, so a restart would ' +
   'stop it until someone started it again. A host that `connectome service install` sets up runs headless under a ' +
@@ -748,7 +796,8 @@ const NO_STOP = 'Nothing was armed: this host has no stop a restart can use, as 
 const STOPPING_FIRST = 'the host began stopping for another reason first.';
 const STOPPING_NOW = 'Nothing was armed: this host is stopping, so nothing armed now could begin. Ask again once ' +
   'it has started again.';
-const settled = (host: HostQuiet): boolean => host.answered && host.drained && host.backgroundScripts === 0;
+const settled = (host: HostQuiet): boolean =>
+  host.answered && host.drained && host.backgroundScripts === 0 && host.inFlight === undefined;
 const childHold = (hosts: HostQuiet[]): string | null => {
   const held = hosts.flatMap((h) => h.answered && h.operatorHold !== undefined
     ? [`fleet child ${h.host} is quiesced by its operator${h.operatorHold.reason ? ` (${h.operatorHold.reason})` : ''}`] : []);

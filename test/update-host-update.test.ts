@@ -804,8 +804,9 @@ describe('Go back', () => {
     expect(goBackLines(update.status())).toEqual([
       'Going back to 0.12.1, whose data the copy holds as it was at 2026-10-20T10:00:00.000Z. Two ways:',
       '- /update back keep: 0.12.1 runs on the data as it is now, so residents lose nothing. It comes back as the ' +
-        'host is now: answering new turns, or holding them if it\'s quiesced. If 0.12.1 can\'t read the data, its ' +
-        'start goes back to 0.13.0 by itself, and /update back restore is the way then.',
+        'host is now: answering new turns, or holding them if its operator quiesced it, though a switch\'s quiesce ' +
+        'left behind ends at that start. If 0.12.1 can\'t read the data, its start goes back to 0.13.0 by itself, and ' +
+        '/update back restore is the way then.',
       '- /update back restore: the copy is restored, and everything since 2026-10-20T10:00:00.000Z is set aside, ' +
         'not deleted. For residents, that is everything they have lived since then. The host comes back answering ' +
         'new turns, unless it had been quiesced from the Web UI before the Restart that took the copy: then it ' +
@@ -928,7 +929,8 @@ test("/update's text names an install and a restart under way, and what's instal
   };
   expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet: /update reads it."]);
   expect(statusLines({ ...base, installing: '0.13.0', installed: '0.12.2' }).slice(2))
-    .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.']);
+    .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.',
+      'Notes: https://github.com/anima-research/connectome-host/blob/v0.12.2/CHANGELOG.md']);
   const fellBack = { outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-24T03:00:00.000Z', reason: '0.12.2 ended before its commit', trialLog: null } as const;
   expect(statusLines({ ...base, installed: '0.12.2', lastSwitch: fellBack })).toContain(
     '0.12.2 is installed, and ended before its commit at its last try: /update restart tries it again.');

@@ -179,7 +179,7 @@ describe("the update section, with health and without ops", () => {
     });
   });
 
-  test("an agent's armed restart keeps its versions, times and names, and empties what its try waited on and why one was dropped", () => {
+  test("an agent's armed restart keeps its versions, times, names and the work a fleet child said it had going, and empties what its try waited on and why one was dropped", () => {
     const armed: UpdateStatus = {
       ...update,
       armed: {
@@ -188,7 +188,10 @@ describe("the update section, with health and without ops", () => {
           at: '2026-10-22T11:30:00.000Z', waited: 'a host didn\'t answer: ECONNRESET at /srv/root/sock.',
           hosts: [
             { host: 'kid', answered: false, why: 'the socket said ECONNRESET' },
-            { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2, operatorHold: { reason: 'moving /srv/root' } },
+            {
+              host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2,
+              operatorHold: { reason: 'moving /srv/root' }, inFlight: ['a credential action'],
+            },
           ],
         },
       },
@@ -202,7 +205,10 @@ describe("the update section, with health and without ops", () => {
       ...armed.armed!, lastTry: {
         at: '2026-10-22T11:30:00.000Z', waited: '', hosts: [
           { host: 'kid', answered: false, why: '' },
-          { host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2, operatorHold: { reason: '' } },
+          {
+            host: 'kid2', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 2,
+            operatorHold: { reason: '' }, inFlight: ['a credential action'],
+          },
         ],
       },
     });
