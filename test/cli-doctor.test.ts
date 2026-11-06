@@ -465,7 +465,7 @@ describe('connectome doctor', () => {
     writeFileSync(join(at.work, 'pre.ts'), 'throw new Error(`refused ${process.env.DISCORD_TOKEN}`);\n');
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toMatch(/^connectome doctor: the install at .*<LONELY_SECRET>/);
-    expect(r.out).toMatch(/✗ Bun exited 1 in .*<LONELY_SECRET>.* as it read the service's environment, and its error isn't shown, since it can hold \.env's values: run `bun -e 0` there to see it\./);
+    expect(r.out).toMatch(/✗ Bun exited 1 in .*<LONELY_SECRET>.* as it read the service's environment, and its error isn't shown, since it can hold \.env's values: run `bun -e 0` there to see it, though it runs with your shell's environment, not the service's\./);
     expect(r.out + r.err).not.toContain('refused');
     expect(r.out).toContain('Doctor stops here');
     expect(r.out.slice(r.out.indexOf('Doctor stops here')).split('\n').length).toBe(1);
@@ -1709,7 +1709,8 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     writeFileSync(join(preloaded.work, 'preload.ts'), 'process.stdout.write("hello from a preload\\n");\n');
     writeFileSync(join(preloaded.work, 'bunfig.toml'), 'preload = ["./preload.ts"]\n');
     const noisy = await run(preloaded);
-    expect(noisy.out).toContain('`bun -e 0`, run there, shows what writes; once nothing does, run doctor again.');
+    expect(noisy.out).toContain('`bun -e 0`, run there, shows what writes, though with your shell\'s environment, not the ' +
+      'service\'s; once nothing does, run doctor again.');
   });
 });
 
