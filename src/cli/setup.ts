@@ -405,7 +405,8 @@ async function installAndStart(
     }
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      'when an ssh session ends.');
+      `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +
+      'one logged in to the Mac, it can\'t start until they are.');
   }
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {

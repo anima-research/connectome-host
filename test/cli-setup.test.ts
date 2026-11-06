@@ -909,11 +909,11 @@ test('on Linux, setup leaves node-pty\'s macOS prebuilds as they are', async () 
   expect(helpers.map((helper) => statSync(helper).mode & 0o777)).toEqual([0o644, 0o644]);
 });
 
-test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends', async () => {
+test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts only while they\'re logged in there', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', 'yes'], secrets: [KEY] }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends.');
+  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are.');
 });
 
 test('on macOS, a pty stop names macOS, says setup makes spawn-helper executable, and gives no Linux build lines', async () => {
