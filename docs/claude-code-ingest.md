@@ -195,7 +195,7 @@ script's own directory up, which finds the copy setup installed in
 `<agent>-cm/node_modules`; the install's first release is a copy of that install, so
 before any update it's the version the host will run. Point `DATA_DIR` at the install's
 legacy store path, `store` in its data directory: the script takes it from
-`SEED_DATA_DIR` when that's set. The host migrates `data/store` →
+`SEED_DATA_DIR` when that's set, and refuses a link there. The host migrates `data/store` →
 `data/sessions/<id>/` on first launch.
 
 The migration needs a data directory with no `sessions.json`. A host's first start
@@ -219,7 +219,7 @@ the resident already has a history of its own, and this method seeds only a firs
 // One-shot: seed.json → chronicle.  Remove the data/store an earlier run made before re-running.
 //   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const DATA_DIR = process.env.SEED_DATA_DIR ?? '/home/<agent>/<agent>-cm/data/store';
@@ -229,6 +229,10 @@ const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
+if (lstatSync(resolve(DATA_DIR), { throwIfNoEntry: false })?.isSymbolicLink()) {
+  console.error(`${DATA_DIR} is a link: set the data directory's own store path (stage 2).`);
+  process.exit(1);
+}
 const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
 const SESSIONS = join(dirname(resolve(DATA_DIR)), 'sessions');
 if (existsSync(INDEX)) {
