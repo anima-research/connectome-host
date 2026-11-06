@@ -193,7 +193,7 @@ FAILURE = r"\[inference-(failed|hard-down|dropped)\]|\[push-event-rejected\]|Err
 def journal_entries(text):
     entries = []
     for ln in (text or "").split("\n"):
-        m = re.match(r"^(\d+)\.\d+ \S+ [^:]*: (.*)$", ln)
+        m = re.match(r"^(\d+(?:\.\d+)?) \S+ [^:]*: (.*)$", ln)
         if m:
             entries.append((float(m.group(1)), m.group(2)))
     return entries

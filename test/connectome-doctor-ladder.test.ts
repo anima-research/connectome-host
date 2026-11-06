@@ -281,6 +281,17 @@ describe('the ladder, for a unit that logs to the journal', () => {
     expect(out).not.toContain('none found');
     expect(out).toContain('live gate dump (SIGUSR2): {"activeStreams":[]');
   });
+
+  test('a journal time keeps its fraction of a second, so a call earlier in a failure\'s second isn\'t taken as after it', async () => {
+    const at = await install({ listens: true });
+    writeFileSync(join(at.work, 'journal.txt'),
+      `${at.now - 20}.900000 host bun[1]: [inference-failed] the model call failed: 529 overloaded\n`);
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
+      timestamp: new Date((at.now - 20) * 1000 + 100).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
+    const { out } = ladder(at, ['--no-signal']);
+    expect(out).toMatch(/\* inference failures, the last \S+ ago, with no successful turn found since/);
+    expect(out).not.toContain('a later call');
+  });
 });
 
 describe('where the ladder reads a unit\'s output', () => {
