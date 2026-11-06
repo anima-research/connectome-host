@@ -470,6 +470,8 @@ export class ContractError extends Error {
   }
 }
 
+export class VersionError extends ContractError {}
+
 function pathSegment(value: unknown): value is string {
   return typeof value === 'string' && value !== '' && value !== '.' && value !== '..' &&
     !value.includes('/') && !value.includes('\0') && Buffer.byteLength(value) <= NAME_MAX;
@@ -560,7 +562,7 @@ function checkVersion<T>(value: unknown, named: string): T {
   }
   const v = (value as { v?: unknown }).v;
   if (v !== 1) {
-    throw new ContractError(`${named} has version ${JSON.stringify(v)}, and this release reads only version 1.`);
+    throw new VersionError(`${named} has version ${JSON.stringify(v)}, and this release reads only version 1.`);
   }
   return value as T;
 }

@@ -5,7 +5,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   WRITE_RECORD_AGAIN, installPaths, readRecord, writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList,
   type InstallRecord, type LockRecord,
@@ -614,7 +614,8 @@ describe('binding an install to the directory it is in', () => {
     expect(said.map((why) => why.split(' (EACCES')[0])).toEqual([
       `The copy's label at ${unreadable[0]} can't be read`, `${unreadable[1]} can't be listed`,
     ]);
-    for (const why of said) expect(why).toEndWith('so setup can\'t bind the places it names to this directory, and has changed nothing.');
+    said.forEach((why, at) => expect(why).toEndWith('so setup can\'t bind the places it names to this directory, and has ' +
+      `changed nothing. Put ${unreadable[at]} right, and run setup again.`));
     expect(record(moved)!.workingDir).toBe(install);
     expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
   });
@@ -848,9 +849,12 @@ describe('a binding cut off', () => {
     writeFileSync(second, 'not a list');
     const why = refusal(() => setup(options(install)));
     expect(why).toContain(second);
-    expect(why).toContain(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}: put ${second} right and run setup again, which finishes the binding or names what else stops it.`);
+    expect(why).toEndWith(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}: put ${second} right and run setup again, which finishes the binding or names what else stops it.`);
     expect(why).not.toContain('changed nothing');
     expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
+    writeFileSync(second, JSON.stringify({ v: 2 }));
+    expect(refusal(() => setup(options(install)))).toEndWith(`put ${second} right and run setup again, which finishes the ` +
+      'binding or names what else stops it. If a later release wrote it, run that release\'s setup instead.');
   });
 
   test('a run finishing a plan from a record before workingDir, with a running lock holder, is refused with both readings, and changes nothing', () => {
@@ -1303,8 +1307,25 @@ describe('the fleet\'s children file', () => {
     const kept = tree(rootOf(copy));
     const why = refusal(() => setup(options(copy)));
     expect(why).toContain(`The fleet's children file at ${join(copy, 'data', 'fleet-children.json')} isn't JSON`);
-    expect(why).toContain('so setup can\'t bind the places it names to this directory, and has changed nothing.');
+    expect(why).toEndWith('so setup can\'t bind the places it names to this directory, and has changed nothing. Put ' +
+      `${join(copy, 'data', 'fleet-children.json')} right, and run setup again.`);
     expect(tree(rootOf(copy))).toEqual(kept);
+  });
+
+  test('a file a later release may have written, of a later version or naming its places in a form this release can\'t read, is refused saying to put it right or run that release\'s setup', () => {
+    setup(options(install));
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const label = join(rootOf(copy), 'copy', 'copy.json');
+    mkdirSync(dirname(label), { recursive: true });
+    writeFileSync(label, JSON.stringify({ v: 2 }));
+    const later = (path: string) => `and has changed nothing. Put ${path} right, and run setup again. If a later ` +
+      'release wrote it, run that release\'s setup instead.';
+    expect(refusal(() => setup(options(copy)))).toEndWith(later(label));
+    rmSync(dirname(label), { recursive: true });
+    const children = join(copy, 'data', 'fleet-children.json');
+    writeFileSync(children, JSON.stringify({ v: 1, children: {} }));
+    expect(refusal(() => setup(options(copy)))).toEndWith(later(children));
   });
 
   test('cut after the files, before the record: the children file is bound once, and the next run leaves it as the plan bound it', () => {

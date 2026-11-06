@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  ContractError, REBIND_PLAN, childrenFilePath, copyLabelPath, installPaths, isChildEntry, itemSetAsideDir, readRecord,
-  syncDir, writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
+  ContractError, REBIND_PLAN, VersionError, childrenFilePath, copyLabelPath, installPaths, isChildEntry, itemSetAsideDir,
+  readRecord, syncDir, writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord,
+  type LockRecord,
 } from './contract.js';
 import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
 
@@ -72,10 +73,12 @@ function pathsIn(value: BoundFile['value'], kind: BoundFile['kind']): string[] |
 }
 
 export function boundFiles(root: string, dataDir: string | null, underWay: string | null = null): BoundFile[] {
-  const unbindable = (why: string, path: string) => new ContractError(`${why}, so setup can't bind the places it ` +
-    'names to this ' + (underWay === null ? 'directory, and has changed nothing.'
+  const unbindable = (why: string, path: string, later = false) => new ContractError(`${why}, so setup can't bind the ` +
+    'places it names to this ' + (underWay === null
+      ? `directory, and has changed nothing. Put ${path} right, and run setup again.`
       : `directory. A binding of this install is under way, with its plan at ${underWay}: put ${path} right and run ` +
-        'setup again, which finishes the binding or names what else stops it.'));
+        'setup again, which finishes the binding or names what else stops it.') +
+    (later ? ' If a later release wrote it, run that release\'s setup instead.' : ''));
   const { copy, copyPrev, setAside } = installPaths(root);
   const found: Array<{ path: string; kind: BoundFile['kind'] }> = [
     { path: copyLabelPath(copy), kind: 'label' },
@@ -98,11 +101,12 @@ export function boundFiles(root: string, dataDir: string | null, underWay: strin
       value = readRecord<BoundFile['value']>(path, FILE_NAMES[kind]);
     } catch (error) {
       throw unbindable(error instanceof ContractError ? error.message.replace(/\.+$/, '')
-        : `The ${FILE_NAMES[kind]} at ${path} can't be read (${(error as Error).message})`, path);
+        : `The ${FILE_NAMES[kind]} at ${path} can't be read (${(error as Error).message})`, path,
+        error instanceof VersionError);
     }
     if (value === null) return;
     const paths = pathsIn(value, kind);
-    if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`, path);
+    if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`, path, true);
     files.push({ path, kind, value, paths });
   };
   const directory = (path: string): boolean => {
