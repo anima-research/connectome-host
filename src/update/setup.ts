@@ -251,6 +251,16 @@ export interface SetupOptions {
   places?: Array<{ from: string; to: string }>;
 }
 
+function nestedWithRoot(rootReal: string, puts: Array<[string, string | null]>):
+  { was: string; place: string; real: string } | null {
+  for (const [was, place] of puts) {
+    if (place === null) continue;
+    const real = realOrResolved(place);
+    if (isUnder(rootReal, real) || isUnder(real, rootReal)) return { was, place, real };
+  }
+  return null;
+}
+
 function placeLine(place: Place): string {
   const what = [
     ...place.data ? ['its data directory'] : [],
@@ -410,6 +420,20 @@ export function setup(options: SetupOptions): void {
     lockForBinding(root, plan.from, ops);
     try {
       if (JSON.stringify(readPlan(root)) !== JSON.stringify(plan)) throw new ContractError(CHANGED_MEANWHILE);
+      const nested = nestedWithRoot(realOrResolved(root), [
+        [plan.record.dataDir, plan.record.dataDir],
+        ...plan.record.extraState.map((place): [string, string] => [place, place]),
+        ...boundFiles(root, rebindPath(root)).flatMap((file) => file.paths.map((was): [string, string | null] =>
+          [was, file.value.rebound === plan.id ? was : mapPath(was, plan)])),
+      ]);
+      if (nested !== null) {
+        const { place, real } = nested;
+        throw new ContractError(`A setup run cut off while binding this install planned ${place} as a place of its ` +
+          `state, and ${real === place ? 'that' : `that, which is ${real} once its links are followed,`} and the ` +
+          `install root ${realOrResolved(root)} are now one inside the other, so a copy of the data would hold the ` +
+          `copy itself. Setup has changed nothing more. Make ${place} a place apart from the root again, and run ` +
+          'setup again, which finishes the binding.');
+      }
       writeEntries();
       rewriteFiles(root, plan);
       writeJsonAtomic(paths.install, plan.record);
@@ -625,20 +649,17 @@ export function setup(options: SetupOptions): void {
   }
   const extraState = given ?? recorded?.map(placeHere) ?? [];
   if (binding !== null && bindShape !== null) {
-    const puts: Array<[string, string | null]> = [
-      ...given === null ? (recorded ?? []).map((was, at): [string, string | null] => [was, extraState[at]]) : [],
+    const nested = nestedWithRoot(rootReal, [
+      ...given === null ? (recorded ?? []).map((was, at): [string, string] => [was, extraState[at]!]) : [],
       ...boundFiles(root).flatMap((file) => file.paths.map((was): [string, string | null] => [was, mapPath(was, bindShape)])),
-    ];
-    for (const [was, place] of puts) {
-      if (place === null) continue;
-      const real = realOrResolved(place);
-      if (isUnder(rootReal, real) || isUnder(real, rootReal)) {
-        const outer = binding.places.find((one) => isUnder(was, one.path))?.path ?? was;
-        throw new ContractError(`The binding puts ${was} at ${place}, and ${real === place ? 'that'
-          : `that, which is ${real} once its links are followed,`} and the install root ${rootReal} are one inside the ` +
-          `other, so a copy of the data would hold the copy itself. Give ${outer} a place apart from the root with ` +
-          '--place. Setup has changed nothing.');
-      }
+    ]);
+    if (nested !== null) {
+      const { was, place, real } = nested;
+      const outer = binding.places.find((one) => isUnder(was, one.path))?.path ?? was;
+      throw new ContractError(`The binding puts ${was} at ${place}, and ${real === place ? 'that'
+        : `that, which is ${real} once its links are followed,`} and the install root ${rootReal} are one inside the ` +
+        `other, so a copy of the data would hold the copy itself. Give ${outer} a place apart from the root with ` +
+        '--place. Setup has changed nothing.');
     }
   }
 

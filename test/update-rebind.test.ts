@@ -586,6 +586,61 @@ describe('binding an install to the directory it is in', () => {
 });
 
 describe('a binding cut off', () => {
+  test('a resume refuses a planned place that a link made since the plan leads into the install root, changing nothing more', () => {
+    const state = join(dir, 'state.json');
+    writeFileSync(state, 'state');
+    setup(options(install, { extraState: [state] }));
+    updated(install, [state]);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const target = join(dir, 'new');
+    mkdirSync(target);
+    writeFileSync(join(target, 'state.json'), 'state');
+    const root = rootOf(moved);
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(moved, { places: [{ from: state, to: join(target, 'state.json') }] }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
+    const inside = join(root, 'inside');
+    mkdirSync(inside);
+    writeFileSync(join(inside, 'state.json'), 'state');
+    rmSync(target, { recursive: true });
+    symlinkSync(inside, target);
+    const kept = tree(root);
+    const why = refusal(() => setup(options(moved)));
+    expect(why).toBe(`A setup run cut off while binding this install planned ${join(target, 'state.json')} as a place of ` +
+      `its state, and that, which is ${join(inside, 'state.json')} once its links are followed, and the install root ` +
+      `${root} are now one inside the other, so a copy of the data would hold the copy itself. Setup has changed ` +
+      `nothing more. Make ${join(target, 'state.json')} a place apart from the root again, and run setup again, which ` +
+      'finishes the binding.');
+    expect(tree(root)).toEqual(kept);
+  });
+
+  test('a resume refuses a planned data directory that a link made since the plan leads into the install root, though no label or list names it, changing nothing more', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const elsewhere = join(dir, 'elsewhere');
+    renameSync(join(moved, 'data'), elsewhere);
+    symlinkSync(elsewhere, join(moved, 'data'));
+    const root = rootOf(moved);
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(moved))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
+    const inside = join(root, 'inside');
+    renameSync(elsewhere, inside);
+    symlinkSync(inside, elsewhere);
+    rmSync(join(moved, 'data'));
+    mkdirSync(join(moved, 'data'));
+    const kept = tree(root);
+    const why = refusal(() => setup(options(moved)));
+    expect(why).toBe(`A setup run cut off while binding this install planned ${elsewhere} as a place of its state, ` +
+      `and that, which is ${inside} once its links are followed, and the install root ${root} are now one inside the ` +
+      'other, so a copy of the data would hold the copy itself. Setup has changed nothing more. Make ' +
+      `${elsewhere} a place apart from the root again, and run setup again, which finishes the binding.`);
+    expect(tree(root)).toEqual(kept);
+  });
+
   test('cut as the copy\'s label is rewritten: the plan stands, no file is bound yet, both entries refuse, and the next run finishes from the plan, asking nothing again', () => {
     const { a, b, c, places } = chained();
     const root = rootOf(install);
