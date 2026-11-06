@@ -60,7 +60,10 @@
     and the Surgery panel's log summarizes a rollback's and a checkout's.
     `/branchto` says everything after the message was dropped only when the
     cut took every row stored after it, and otherwise how many it took: a
-    co-resident's row stored before the message was shown stays too.
+    co-resident's row stored before the message was shown stays too. The
+    Web UI's rollback dialog and its roll-back buttons say the fork is at
+    that write on a presented window, and that such a row stays on the
+    fork, in neither count, where they said the fork was at the message.
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,

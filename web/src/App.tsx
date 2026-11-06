@@ -1976,7 +1976,7 @@ function MessageRow(props: {
             <button
               type="button"
               class="px-1.5 py-0.5 rounded border bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] font-mono leading-tight shadow"
-              title="roll back: fork the chronicle here and make this message the tail of the live branch (the current branch keeps everything after it; rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many)"
+              title="roll back: fork the chronicle at this message, or, on a presented window, at the write that showed it to the agent, and make the fork the live branch (the current branch keeps everything after it; rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many; a row another resident stored before that write stays on the fork too, in neither count)"
               onClick={props.onRollback}
             >⏪ roll back</button>
           </Show>

@@ -158,7 +158,7 @@ export function SurgeryDialog(props: {
         <Show when={!props.result}>
           <p class="text-neutral-300 text-sm mb-2 leading-snug">
             {isRollback()
-              ? <>The chronicle forks at this message and the fork becomes the live branch — the {props.request.affected ?? '?'} message{props.request.affected === 1 ? '' : 's'} after it stay on the current branch. Rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many; the others leave it. Nothing is deleted; checkout the parent branch to restore.</>
+              ? <>The chronicle forks at this message, or, on a presented window, at the write that showed it to the agent, and the fork becomes the live branch — the {props.request.affected ?? '?'} message{props.request.affected === 1 ? '' : 's'} after it stay on the current branch. Rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many; a row another resident stored before that write stays on the fork too, in neither count; the others leave it. Nothing is deleted; checkout the parent branch to restore.</>
               : <>The chronicle forks at the current head, these messages are redacted on the fork, and the fork becomes the live branch. The current branch keeps them. Summaries that folded them are dropped and rebuilt from the rows that stay (on a legacy store, they are not rewritten).</>}
           </p>
           <ul class="text-xs font-mono text-neutral-400 mb-3 space-y-0.5 max-h-40 overflow-y-auto border border-neutral-800 rounded p-2">

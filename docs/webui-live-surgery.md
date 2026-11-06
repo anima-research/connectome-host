@@ -33,7 +33,10 @@ hide them by Discord message id), and rows stored before the message was
 shown and shown after it stay in the record, out of the context until the
 agent's next turn starts, or the host restarts before then
 (`returnedToArrivals`). Neither is counted in
-`messagesRemoved` or marked.
+`messagesRemoved` or marked. A row another resident stored after the
+message and before that write stays on the new branch too, and is in
+neither count, since it isn't the agent's: the record holds every
+resident's rows, and the cut is by sequence.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
 queued. The dialog then offers **Quiesce, then retry**.
