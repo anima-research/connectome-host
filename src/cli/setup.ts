@@ -705,7 +705,7 @@ async function installAndStart(
     out(`Checking ${fromDotEnv ? `the ANTHROPIC_API_KEY in ${envFile}` : 'the key'}: one call at ` +
       `${baseUrl === undefined ? ANTHROPIC_API : originOf(baseUrl)} to ${model}, the model setup's agent runs on, which ` +
       'the key\'s account has to be able to use.');
-    const checked = await world.checkKey({ key, model, ...(baseUrl === undefined ? {} : { baseUrl }) });
+    const checked = await world.checkKey({ key, model, envFile, ...(baseUrl === undefined ? {} : { baseUrl }) });
     if (checked.ok) break;
     err(checked.cause);
     if (checked.anotherKeyMayHelp) {

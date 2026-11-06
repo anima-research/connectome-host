@@ -9,6 +9,7 @@ export interface KeyCheckOptions {
   baseUrl?: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
+  envFile?: string;
 }
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
@@ -73,6 +74,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
   const { key, model } = options;
   const failed = (cause: string, anotherKeyMayHelp: boolean): KeyCheck => ({ ok: false, cause, anotherKeyMayHelp });
   const set = options.baseUrl !== undefined;
+  const dotenv = options.envFile ?? '.env';
   const base = options.baseUrl ?? ANTHROPIC_API;
   const origin = originOf(base);
   if (origin === null) {
@@ -100,7 +102,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       'key from an account that can.';
   const where = set
     ? `and ANTHROPIC_BASE_URL, which leads to ${origin} now`
-    : `ANTHROPIC_BASE_URL is empty or absent in .env, so the call went to Anthropic's own ${origin}`;
+    : `ANTHROPIC_BASE_URL is empty or absent in ${dotenv}, so the call went to Anthropic's own ${origin}`;
   const check = set
     ? `Check this machine's network and any proxy it goes through (HTTPS_PROXY), ${where}.`
     : `Check this machine's network and any proxy it goes through (HTTPS_PROXY). ${where}.`;
@@ -116,7 +118,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     if (code && /CERT|SSL|TLS|SIGNATURE|^EPROTO$/i.test(code)) {
       const at = new URL(base);
       const plain = set && code === 'EPROTO' && at.protocol === 'https:'
-        ? ` If the server at ${origin} speaks plain HTTP, change ANTHROPIC_BASE_URL in .env to begin http:// in place ` +
+        ? ` If the server at ${origin} speaks plain HTTP, change ANTHROPIC_BASE_URL in ${dotenv} to begin http:// in place ` +
           'of https://, adding :443 after its host if it names no port, though the key and everything the agent ' +
           'sends and receives then cross the network unencrypted.' : '';
       return `The TLS connection to ${host} failed${why}. ${check}${plain}`;
@@ -176,7 +178,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     if (/^application\/json\b/i.test(type ?? '')) {
       return failed(`${host} answered ${response.status} with ${kind} where the check asked for an event stream, so the ` +
         `key isn't known to work. ${STREAMS}, so a ${set ? 'gateway' : 'server'} that answers only unstreamed calls ` +
-        `can't serve it.${set ? ' Point ANTHROPIC_BASE_URL in .env at one that streams (a URL put right there is read ' +
+        `can't serve it.${set ? ` Point ANTHROPIC_BASE_URL in ${dotenv} at one that streams (a URL put right there is read ` +
           'at the next try), or take it out for Anthropic\'s own API.' : ` Something on the way to Anthropic's API, ` +
           `such as a proxy, may have answered in its place. ${check}`}`, false);
     }
@@ -209,7 +211,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       return failed(set
         ? `${host} found nothing for ${model} (404).${quoted} Either this key can't use ` +
           `${model}, or ANTHROPIC_BASE_URL doesn't lead to Anthropic's Messages API. If it's the URL, put it right in ` +
-          '.env and type the key again: each try reads it there.'
+          `${dotenv} and type the key again: each try reads it there.`
         : `${host} has no model ${model} for this key (404).${quoted}`, true);
     case 429: {
       const after = quote(response.headers.get('retry-after') ?? '') || null;
@@ -225,12 +227,12 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       const next = response.status >= 500 ? ' Its side had a problem: try again shortly.'
         : response.status === 408 ? ' It stopped waiting for the call: try again shortly.'
           : response.status < 400 ? ' Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so ' +
-            `the key went no further. ${set ? 'ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right ' +
+            `the key went no further. ${set ? `ANTHROPIC_BASE_URL in ${dotenv} may not lead to that API (a URL put right ` +
               'there is read at the next try), or something '
               : 'Something '}on the way to it, such as a proxy or a captive portal, may have answered in its place. ` +
             check
             : set ? ' It may be about this key or its account there, or ANTHROPIC_BASE_URL may not lead to ' +
-              'Anthropic\'s Messages API: a URL put right in .env is read at the next try.'
+              `Anthropic's Messages API: a URL put right in ${dotenv} is read at the next try.`
               : ' It may be about this key or its account: another key, or the account put right at ' +
                 'console.anthropic.com, can help.';
       const streamed = set && refused ? ` ${STREAMS}, as this check did, so a gateway that answers only unstreamed calls ` +

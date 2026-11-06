@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { AnthropicAdapter } from '@animalabs/membrane';
-import { checkKey, type KeyCheck } from '../src/setup/key-check.js';
+import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 
 const seen: Array<{ key: string | null; body: { model?: unknown; max_tokens?: unknown; messages?: unknown; stream?: unknown } }> = [];
 const started = (message: Record<string, unknown>) => ({ type: 'message_start', message });
@@ -481,6 +481,23 @@ describe("the key's one real call", () => {
     const result = await checkKey({ key: 'sk-ant-test-key', model: 'm', baseUrl });
     expect(result).toEqual({ ok: false, cause: expect.stringContaining(`The TLS connection to 127.0.0.1:${plain.port} failed (${words.replace(/[\s.]+$/, '')}).`), anotherKeyMayHelp: false });
     expect(cause(result)).toContain(`If the server at https://127.0.0.1:${plain.port} speaks plain HTTP, change ANTHROPIC_BASE_URL in .env to begin http:// in place of https://, adding :443 after its host if it names no port, though the key and everything the agent sends and receives then cross the network unencrypted.`);
+  });
+
+  test('advice to change ANTHROPIC_BASE_URL names the file it was read from, where the caller gives it', async () => {
+    const envFile = '/srv/resident/.env';
+    const named = async (options: Partial<KeyCheckOptions>) => cause(await checkKey({ key: 'k', model: 'm', envFile, ...options }));
+    const causes = [
+      await named({ baseUrl: at(404) }),
+      await named({ baseUrl: at(302) }),
+      await named({ baseUrl: at(418) }),
+      await named({ baseUrl: at('whole') }),
+      await named({ baseUrl: `https://127.0.0.1:${plain.port}` }),
+      await named({ fetch: (async () => { throw Object.assign(new TypeError('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch }),
+    ];
+    for (const said of causes) {
+      expect(said).toContain(envFile);
+      expect(said).not.toMatch(/ \.env\b/);
+    }
   });
 
   test('the plain-HTTP remedy says the same words whether the https URL names its port 443, no port, or a user and password', async () => {
