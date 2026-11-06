@@ -297,6 +297,9 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
       ctx.err(`connectome: ${errorText(error)}`);
       return 1;
     }
+    if (!(lstatSync(join(root, 'service.json'), { throwIfNoEntry: false })?.isFile() ?? true)) {
+      throw new Refusal(`${errorText(error)} Nothing was written.`);
+    }
     const elsewhere = recordedDirectory(join(root, 'service.json'));
     if (elsewhere !== null && !sameDirectory(elsewhere, workingDirOf(root))) {
       throw new Refusal(`${errorText(error).replace(/\.+$/, '')}. It names another working directory, ${elsewhere}, ` +
@@ -1670,6 +1673,11 @@ function readServiceRecordFile(root: string, cmd: string, repair = true): Servic
   } catch (error) {
     const why = error instanceof ContractError ? errorText(error)
       : `The service record at ${path} can't be read: ${errorText(error).replace(/\.+$/, '')}.`;
+    const kind = lstatSync(path, { throwIfNoEntry: false });
+    if (kind !== undefined && !kind.isFile()) {
+      throw new ContractError(`${why} It isn't a file, so no install can write the record there: move it aside or ` +
+        `take it away${repair ? `, then ${recordAgain(cmd).replace(/^N/, 'n').replace(/\.$/, '')}` : ''}.`);
+    }
     throw new ContractError(`${why}${repair ? ' ' + recordAgain(cmd) : ''}`);
   }
 }

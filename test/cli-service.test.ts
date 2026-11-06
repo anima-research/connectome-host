@@ -989,7 +989,8 @@ test('a service record path that is a directory names the path before its repair
   expect(checked.passed).toBe(false);
   const line = checked.lines.join('\n');
   expect(line).toContain("The service record at " + path + " can't be read: ");
-  expect(line).toContain('. Name the recipe');
+  expect(line).toContain(" It isn't a file, so no install can write the record there: move it aside or take it " +
+    'away, then name the recipe');
   expect(line).toEndWith(' service install <recipe>.');
 });
 
@@ -5025,4 +5026,16 @@ test('macOS refuses another plist with this install\'s host label and working di
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(existsSync(agentPlist(at))).toBe(false);
   expect(f.err.join('\n')).toContain(`${other} has the label com.animalabs.connectome.my-resident`);
+});
+
+test('a directory at service.json is named, and an explicit install refuses before writing any unit', async () => {
+  const at = install();
+  mkdirSync(join(at.root, 'service.json'));
+  const f = fake(at);
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain("It isn't a file, so no install can write the record there: move it aside or take it away");
+  const g = fake(at);
+  expect(await installService(g.ctx(['install', at.recipe]), g.system)).toBe(1);
+  expect(existsSync(hostUnit(at))).toBe(false);
+  expect(g.err.join('\n')).toContain('Nothing was written.');
 });
