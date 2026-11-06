@@ -10,7 +10,7 @@ import { createTestRenderer } from '@opentui/core/testing';
 const [scenario] = process.argv.slice(2);
 // Kitty's key encoding, so a lone Escape is read at once rather than held to
 // tell it from the start of a sequence.
-const { renderer, mockInput, renderOnce, captureCharFrame } = await createTestRenderer({
+const { renderer, mockInput, renderOnce, captureCharFrame, captureSpans } = await createTestRenderer({
   width: 120, height: 60, exitOnCtrlC: false, kittyKeyboard: true,
 });
 mock.module('@opentui/core', () => ({ ...core, createCliRenderer: async () => renderer }));
@@ -163,7 +163,31 @@ async function until(done: () => boolean | Promise<boolean>, what: string): Prom
 }
 
 async function step(name: string): Promise<void> {
-  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts], mountRefreshes: [...mountRefreshes] })}\n`);
+  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts], mountRefreshes: [...mountRefreshes], colours: colours() })}\n`);
+}
+
+/** The words whose colour a step reports, each where it is first drawn. */
+const COLOURED = ['three ledgers', 'tally them first', 'a fifth ledger', 'You: and the fifth?'];
+
+/** The foreground, as `#rrggbb`, of the span each of COLOURED is drawn in, on the last frame rendered. */
+function colours(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of captureSpans().lines) {
+    const text = line.spans.map((span) => span.text).join('');
+    for (const words of COLOURED) {
+      const at = text.indexOf(words);
+      if (at === -1 || words in out) continue;
+      let from = 0;
+      for (const span of line.spans) {
+        if (at < from + span.text.length) {
+          out[words] = `#${span.fg.toInts().slice(0, 3).map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+          break;
+        }
+        from += span.text.length;
+      }
+    }
+  }
+  return out;
 }
 
 /** A reply of the root agent's, streamed in `parts` and completed. */
@@ -569,6 +593,10 @@ async function play(): Promise<void> {
       { id: 'u2', participant: 'user', content: [{ type: 'text', text: 'and the fifth?' }] },
       { id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] },
     );
+    // A line after the reply that is no row's, so marking in place can be
+    // told from drawing the marked rows again at the bottom.
+    first.send('tool:failed', { callId: 'c9', toolName: 'abacus', error: 'the beads stuck' });
+    await until(async () => (await frame()).includes('the beads stuck'), 'the failed tool line');
     // A row stored after the history was drawn that the TUI drew no line for.
     history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a sixth ledger' }] });
     // An undo on the agent's window: the history marks its rows.
