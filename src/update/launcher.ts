@@ -184,8 +184,9 @@ export function takeLock(root: string, ops: LauncherOps): void {
         throw new LockHeld(
           `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
           `An install runs one host at a time, and \`ps -o args= -p ${holder.pid}\` shows what that process runs. ` +
-          `If it runs this install's start.js, ${join(root, ENTRY_POINT)}, or a release in this install's ` +
-          `${join(root, 'releases')}, it's this install's host: stop it first. ` +
+          `If it runs the start.js, or a release in the releases directory, of an install root that is this one, ` +
+          `${root}, by any name, it's this install's host: stop it first. \`test ROOT -ef ${shellWord(root)}\`, with ` +
+          'ROOT the directory that holds that start.js or releases directory, succeeds when the two are one directory. ' +
           'If it runs setup, it\'s binding an install: start this one again once that setup has ended. ' +
           'If it runs another install\'s start.js or a release in another install\'s releases, this install is a copy ' +
           'made while that host ran, and the lock came ' +
