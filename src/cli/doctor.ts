@@ -934,11 +934,12 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   const base = { ...systemVariables(), ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
-    Object.assign(base, { [SUPERVISED_ENV]: '1', [INSTALL_ROOT_ENV]: root });
+    base[SUPERVISED_ENV] = '1';
     try {
       base.DATA_DIR = dataDirOf(root);
     } catch {}
   }
+  base[INSTALL_ROOT_ENV] = root;
   const ran = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
     cwd: work,
     env: base,

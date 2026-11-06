@@ -188,7 +188,7 @@ function fakeManager(dir: string, opts: {
 }
 
 const unitEnvironment = (at: Install): Record<string, string> => ({
-  PATH: process.env.PATH ?? '/usr/bin:/bin', DATA_DIR: at.data, CONNECTOME_SUPERVISED: '1', CONNECTOME_INSTALL_ROOT: at.root,
+  PATH: process.env.PATH ?? '/usr/bin:/bin', DATA_DIR: at.data, CONNECTOME_SUPERVISED: '1',
 });
 
 let plists = 0;
