@@ -441,7 +441,9 @@ export function storedSecretRedactor(
   };
 }
 
-export function storedSecrets(workingDir: string, env: Record<string, string | undefined>): Secret[] {
+export function storedSecrets(workingDir: string, env: Record<string, string | undefined>,
+  probes: Record<string, string | undefined> = env): Secret[] {
   const envFile = join(workingDir, '.env');
-  return secretValues(secretNames(join(workingDir, '.setup'), envFile).names, envFile, env);
+  const names = secretNames(join(workingDir, '.setup'), envFile).names;
+  return secretValues(names, envFile, env, withoutSecrets(probes, names));
 }

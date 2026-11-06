@@ -8,7 +8,7 @@ export type TokenCheck =
   | { kind: 'accepted'; name: string; id: string }
   | { kind: 'refused' }
   | { kind: 'unsendable' }
-  | { kind: 'answered'; status: number; said: string | null }
+  | { kind: 'answered'; status: number; said: string | null; retryAfter?: number }
   | { kind: 'redirected'; status: number; to: string | null }
   | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
@@ -59,7 +59,7 @@ export async function checkDiscordToken(
   } catch (error) {
     return unanswered(error);
   }
-  let body: { id?: unknown; username?: unknown; message?: unknown } | undefined;
+  let body: { id?: unknown; username?: unknown; message?: unknown; retry_after?: unknown } | undefined;
   try {
     body = JSON.parse(text) as typeof body;
   } catch {
@@ -70,7 +70,10 @@ export async function checkDiscordToken(
   }
   if (response.ok && body === undefined) return { kind: 'unrecognized', status: response.status };
   const said = typeof body?.message === 'string' ? hidden(body.message, token) : null;
-  return { kind: 'answered', status: response.status, said };
+  const wait = body?.retry_after;
+  return response.status === 429 && typeof wait === 'number' && Number.isFinite(wait)
+    ? { kind: 'answered', status: response.status, said, retryAfter: wait }
+    : { kind: 'answered', status: response.status, said };
 }
 
 function hidden(words: string, token: string): string {

@@ -231,7 +231,7 @@ describe('doctor: Discord', () => {
     }
   });
 
-  test('a token with whitespace around it, as a quoted .env value keeps it, is sent as given, never trimmed by doctor', async () => {
+  test('a token with whitespace around it, as a quoted .env value keeps it, keeps its leading whitespace in the header and is never trimmed by doctor, though the header drops what trails it', async () => {
     const discord = fakeDiscord({ token: ` ${TOKEN}`, flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] });
     const r = await run({ DISCORD_TOKEN: ` ${TOKEN} \t` }, discord);
     expect(discord.requests[0]!.headers.get('authorization')).toBe(`Bot  ${TOKEN}`);

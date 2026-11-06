@@ -1637,6 +1637,17 @@ function pidOf(listed: string): string | undefined {
   return /"PID"\s*=\s*(\d+);/.exec(listed)?.[1];
 }
 
+export function servicePid(record: ServiceRecord, sys: ServiceSystem = machine(), env: Record<string, string> = childEnv(sys)):
+  { pid: string } | { why: string } {
+  if (record.manager === 'systemd-user') {
+    const shown = showUnit(sys, env, record.units.host.name, ['MainPID']);
+    return typeof shown === 'string' ? { why: shown } : { pid: shown.get('MainPID') ?? '0' };
+  }
+  const state = agentState(sys, env, record.units.host);
+  if (state.kind === 'unknown') return { why: state.why };
+  return { pid: state.kind === 'running' ? state.pid : '0' };
+}
+
 async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSystem,
   env: Record<string, string>): Promise<HostReady | string> {
   const until = sys.now() + READY_WAIT_MS;
@@ -1653,18 +1664,12 @@ async function awaitReady(root: string, record: ServiceRecord, sys: ServiceSyste
     if (!('reason' in host)) {
       const ready = host.ready;
       host.close();
-      let pid: string;
-      if (record.manager === 'systemd-user') {
-        const shown = showUnit(sys, env, name, ['MainPID']);
-        if (typeof shown === 'string') return shown;
-        pid = shown.get('MainPID') ?? '0';
-      } else {
-        const state = agentState(sys, env, record.units.host);
-        if (state.kind === 'unknown') return `Whether ${name} runs the answering host can't be told: ${state.why}.`;
-        pid = state.kind === 'running' ? state.pid : '0';
+      const own = servicePid(record, sys, env);
+      if ('why' in own) {
+        return record.manager === 'systemd-user' ? own.why : `Whether ${name} runs the answering host can't be told: ${own.why}.`;
       }
-      return pid === String(ready.pid) ? ready
-        : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${pid}. ` +
+      return own.pid === String(ready.pid) ? ready
+        : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${own.pid}. ` +
           "That answer doesn't establish that this service's host is ready.";
     }
     last = host.reason;

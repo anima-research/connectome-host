@@ -1,7 +1,7 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -19,7 +19,7 @@ import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
-import { SUPERVISED_ENV, checkService, readServiceRecord, serviceLines, type ServiceRecord } from './service.js';
+import { SUPERVISED_ENV, checkService, readServiceRecord, serviceLines, servicePid, type ServiceRecord } from './service.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
 const LADDER_LIMIT_MS = 60_000;
@@ -43,6 +43,8 @@ export interface DoctorParts {
   launchctl: string;
   envLimitMs: number;
   recipeLimitMs: number;
+  plutil: string;
+  servicePid: (record: ServiceRecord) => Promise<{ pid: string } | { why: string }> | { pid: string } | { why: string };
 }
 
 type Server = {
@@ -89,6 +91,8 @@ export async function doctor(
     launchctl: 'launchctl',
     envLimitMs: ENV_LIMIT_MS,
     recipeLimitMs: RECIPE_LIMIT_MS,
+    plutil: 'plutil',
+    servicePid: (record) => servicePid(record),
   },
 ): Promise<number> {
   if (ctx.argv.length > 0) {
@@ -105,10 +109,12 @@ export async function doctor(
     serviceError = errorText(error);
   }
   const work = service?.workingDirectory ?? join(root, '..');
+  const recipePath = service === null ? null
+    : /^https?:\/\//.test(service.hostArgs[0]!) ? service.hostArgs[0]! : resolve(work, service.hostArgs[0]!);
   let recipeRead: { document: RecipeDocument } | { error: unknown } | null = null;
-  if (service !== null) {
+  if (recipePath !== null) {
     try {
-      recipeRead = { document: await within(parts.recipeLimitMs, readRecipeDocument(service.hostArgs[0]!),
+      recipeRead = { document: await within(parts.recipeLimitMs, readRecipeDocument(recipePath),
         'the fetch of it didn\'t answer in time') };
     } catch (error) {
       recipeRead = { error };
@@ -134,12 +140,14 @@ export async function doctor(
   const manager = service?.manager
     ?? (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd-user' : null);
   let managerUnread: string | null = null;
+  let unitUnread: string | null = null;
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
     guessed = named.guessed;
-    const known = (from: Record<string, string | undefined>): Secret[] => storedSecrets(work, from);
-    secrets = [...secrets, ...known(process.env)];
+    const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
+      storedSecrets(work, from, probes);
+    secrets = [...secrets, ...known(process.env, systemVariables())];
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
       ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
@@ -150,8 +158,11 @@ export async function doctor(
       if (service !== null) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
-    env = serviceEnv(work, root, managed, parts.envLimitMs);
-    secrets = [...secrets, ...known(env)].flatMap(withSentForms)
+    const unit = service === null ? null : unitEnv(service, parts);
+    if (unit !== null && 'why' in unit) unitUnread = unit.why;
+    const built = serviceEnv(work, root, managed, unit === null || 'why' in unit ? null : unit, parts.envLimitMs);
+    env = built.env;
+    secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
   } catch (error) {
     ctx.out(redact(banner));
@@ -159,8 +170,43 @@ export async function doctor(
     ctx.out(redact('Doctor stops here: it can\'t tell which values are secret, so it prints no check\'s output.'));
     return 1;
   }
+  ctx.out(redact(banner));
+  const recipeWarnings: string[] = [];
+  let recipeLoad: { recipe: Recipe; persistable: Record<string, unknown> } | { error: unknown } | null = null;
+  if (recipePath !== null) {
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { recipeWarnings.push(args.map(String).join(' ')); };
+    try {
+      if (recipeRead === null || 'error' in recipeRead) throw recipeRead?.error;
+      recipeLoad = await within(parts.recipeLimitMs, loadRecipeDocument(recipeRead.document, recipePath, { env }),
+        'the fetch of its system prompt didn\'t answer in time');
+    } catch (error) {
+      recipeLoad = { error };
+    } finally {
+      console.warn = warn;
+    }
+  }
+  let servers: Server[] | null = null;
+  let serversError: unknown = null;
+  if (recipeLoad !== null && !('error' in recipeLoad)) {
+    try {
+      servers = serversForRecipe(recipeLoad.recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
+        .loaded as Server[];
+      secrets = [...secrets, ...servers.flatMap((server) => {
+        const token = childEnv(server, env).DISCORD_TOKEN;
+        return token && !namesEnvReference(token) ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
+      })];
+    } catch (error) {
+      serversError = error;
+    }
+  }
+
   const report = new Report(ctx.out, redact);
-  ctx.out(report.redact(banner));
+  if (unitUnread !== null) {
+    report.line(`The environment ${service!.units.host.name}'s ${service!.manager === 'launchd' ? 'plist' : 'unit'} sets ` +
+      `couldn't be read (${unitUnread.replace(/\.$/, '')}), so doctor takes PATH from its own environment or the ` +
+      'manager\'s, and DATA_DIR from the install record, in its place.');
+  }
   if (managerUnread !== null) {
     const asked = manager === 'launchd' ? 'launchd' : 'systemd\'s user manager';
     report.line(`With no service record to name its manager, doctor asked ${asked}, which a service installed here would ` +
@@ -171,6 +217,9 @@ export async function doctor(
   let host: HostClient | NoHost = { reason: 'it wasn\'t asked', down: false };
   let stopped = false;
   let fitUnchecked = false;
+  let pidUntold = false;
+  let uncredentialed = false;
+  let closedTabs = false;
   const startCommand = `${typedCommand(root)} service start`;
   let dataDir: string | null = null;
   try {
@@ -217,7 +266,27 @@ export async function doctor(
         'one that holds it.');
       host.subscribe([]);
     } else {
-      report.ok(`The host answers: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
+      let own: { pid: string } | { why: string } | null = null;
+      if (service !== null) {
+        try {
+          own = await parts.servicePid(service);
+        } catch (error) {
+          own = { why: errorText(error) };
+        }
+      }
+      if (own !== null && 'pid' in own && own.pid !== String(host.ready.pid)) {
+        report.problem(`A host answers, pid ${host.ready.pid}, recipe ${host.ready.recipe}, but ` +
+          `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
+          'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of it. ' +
+          'Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
+          `service's own host can't be reached while it does: \`kill ${host.ready.pid}\` stops it.`);
+      } else if (own !== null && 'why' in own) {
+        report.line(`The host answers: pid ${host.ready.pid}, recipe ${host.ready.recipe}. Whether it's the service's host can't ` +
+          `be told: ${own.why.replace(/\.$/, '')}.`);
+        pidUntold = true;
+      } else {
+        report.ok(`The host answers: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
+      }
       host.subscribe([]);
     }
     if (dataDir !== null && !existsSync(dataDir)) {
@@ -253,25 +322,16 @@ export async function doctor(
     let uses: Map<string, string[]> | null = null;
     if (service === null) {
       report.line('Which recipe the service runs is in its record, so it isn\'t checked without one.');
+    } else if (recipeLoad !== null && !('error' in recipeLoad)) {
+      recipe = recipeLoad.recipe;
+      uses = namedOutsideServers(recipeLoad.persistable);
+      report.ok(`${recipePath} loads.`);
+      for (const line of recipeWarnings) report.line(line);
     } else {
-      const path = service.hostArgs[0]!;
-      const warned: string[] = [];
-      const warn = console.warn;
-      console.warn = (...args: unknown[]) => { warned.push(args.map(String).join(' ')); };
-      try {
-        if (recipeRead === null || 'error' in recipeRead) throw recipeRead?.error;
-        const detailed = await within(parts.recipeLimitMs, loadRecipeDocument(recipeRead.document, path, { env }),
-          'the fetch of its system prompt didn\'t answer in time');
-        recipe = detailed.recipe;
-        uses = namedOutsideServers(detailed.persistable);
-        report.ok(`${path} loads.`);
-      } catch (error) {
-        report.problem(error instanceof Late ? `${path} didn't load within ${parts.recipeLimitMs / 1000} s: ${error.message}.`
-          : `${path} doesn't load: ${errorText(error)}`);
-      } finally {
-        console.warn = warn;
-      }
-      for (const line of warned) report.line(line);
+      const error = recipeLoad?.error;
+      report.problem(error instanceof Late ? `${recipePath} didn't load within ${parts.recipeLimitMs / 1000} s: ${error.message}.`
+        : `${recipePath} doesn't load: ${errorText(error)}`);
+      for (const line of recipeWarnings) report.line(line);
     }
     const loaded = recipe;
     let emptyCompressionSaid = false;
@@ -311,7 +371,10 @@ export async function doctor(
     else {
       await checked(report, 'The token counts', async () => {
         const answer = await read<CountCheck>('count-check', counting);
-        if (answer !== null) countLines(report, answer.data, work, emptyCompressionSaid);
+        if (answer !== null) {
+          countLines(report, answer.data, work, emptyCompressionSaid);
+          uncredentialed = [answer.data.agent.source, answer.data.compression?.source].includes('count_tokens_no_credential');
+        }
       });
     }
 
@@ -320,26 +383,19 @@ export async function doctor(
     else {
       await checked(report, 'The shell\'s call', async () => {
         const answer = await read<ShellCheck>('shell-check', asked('shell-check'));
-        if (answer !== null) shellLines(report, answer.data);
+        if (answer !== null) {
+          shellLines(report, answer.data);
+          closedTabs = answer.data.closedTabs.length > 0;
+        }
       });
     }
-    let servers: Server[] | null = null;
     let unknown = serviceError !== null
       ? 'which servers run is in the recipe the service record names, and the service\'s record can\'t be read'
       : service === null ? 'which servers run is in the recipe the service record names, and there\'s no record'
         : 'which servers run is in the recipe, which didn\'t load';
-    if (recipe !== null) {
-      try {
-        servers = serversForRecipe(recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
-          .loaded as Server[];
-        secrets = [...secrets, ...servers.flatMap((server) => {
-          const token = childEnv(server, env).DISCORD_TOKEN;
-          return token && !namesEnvReference(token) ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
-        })];
-      } catch (error) {
-        report.problem(`The recipe's server list doesn't resolve: ${errorText(error)}`);
-        unknown = 'the recipe\'s server list doesn\'t resolve';
-      }
+    if (serversError !== null) {
+      report.problem(`The recipe's server list doesn't resolve: ${errorText(serversError)}`);
+      unknown = 'the recipe\'s server list doesn\'t resolve';
     }
     await checked(report, 'The stored secrets\' check',
       () => storedSecretLines(report, work, env, servers, uses, unknown, storedNames));
@@ -351,6 +407,7 @@ export async function doctor(
         .some((part) => typeof part === 'string' && part.includes('discord-mcpl')));
       if (discord.length === 0) report.line('No server the recipe runs is Discord\'s.');
       for (const server of discord) {
+        if (discord.length > 1) report.line(`The entry ${server.id}:`);
         try {
           const checked = await checkDiscord(childEnv(server, env), { fetch: parts.fetch, workingDir: work });
           for (const line of checked.lines) report.line(line);
@@ -448,6 +505,9 @@ export async function doctor(
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
     ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
     ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
+    ...(uncredentialed ? ['count_tokens had no credential to count with'] : []),
+    ...(closedTabs ? ['a closed tab\'s connection wasn\'t checked'] : []),
+    ...(pidUntold ? ['whether the host that answers is the service\'s couldn\'t be told'] : []),
   ];
   ctx.out('');
   ctx.out(report.redact(report.problems > 0
@@ -538,7 +598,7 @@ function countFailure(source: string): string {
   if (status !== undefined) return `count_tokens answered ${status}`;
   if (source === 'count_tokens_timeout') return 'the count_tokens request didn\'t answer within 30 s';
   if (source === 'count_tokens_error') {
-    return 'the count_tokens request failed, or answered with what couldn\'t be read';
+    return 'the count_tokens request failed, or answered with what couldn\'t be read or with no count';
   }
   return source;
 }
@@ -789,8 +849,8 @@ function managerEnv(manager: ServiceRecord['manager'] | null, names: string[], p
 // systemctl show-environment prints a value holding a space, or a character the shell gives a meaning, as $'…', with a
 // backslash before \ and ', and a control character, or a byte that isn't UTF-8, as C escapes it, \ooo where C has no
 // letter for it (systemd v257, shell_maybe_quote and cescape_char in src/basic/escape.c).
-function unquoted(text: string): string {
-  const named: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '\\': 92, '"': 34, '\'': 39 };
+function unquoted(text: string, also: Record<string, number> = {}): string {
+  const named: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '\\': 92, '"': 34, '\'': 39, ...also };
   const chars = Array.from(text);
   const bytes: number[] = [];
   for (let i = 0; i < chars.length; i++) {
@@ -808,16 +868,77 @@ function unquoted(text: string): string {
   return Buffer.from(bytes).toString('utf-8');
 }
 
-/** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
- *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
-function serviceEnv(work: string, root: string, manager: Record<string, string>, limitMs: number):
-  Record<string, string | undefined> {
+// systemctl show prints an Environment= entry holding a space, or a character the shell gives a meaning, in double
+// quotes, with a backslash before \, ", $ and `, and a control character C-escaped (systemd 257, probed).
+function shownWords(text: string): string[] {
+  const words: string[] = [];
+  for (let i = 0; i < text.length;) {
+    if (text[i] === ' ') {
+      i += 1;
+    } else if (text[i] === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      words.push(unquoted(text.slice(i + 1, j), { $: 36, '`': 96 }));
+      i = j + 1;
+    } else {
+      const end = text.indexOf(' ', i);
+      words.push(text.slice(i, end < 0 ? text.length : end));
+      i = end < 0 ? text.length : end;
+    }
+  }
+  return words;
+}
+
+function unitEnv(service: ServiceRecord, parts: DoctorParts): Record<string, string> | { why: string } {
+  const name = service.units.host.name;
+  let ran: SpawnSyncReturns<string>;
+  try {
+    ran = service.manager === 'systemd-user'
+      ? spawnSync(parts.systemctl, ['--user', 'show', '--property=Environment', '--value', '--', name], {
+        encoding: 'utf-8',
+        timeout: parts.envLimitMs,
+        env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
+      })
+      : spawnSync(parts.plutil, ['-extract', 'EnvironmentVariables', 'json', '-o', '-', service.units.host.file],
+        { encoding: 'utf-8', timeout: parts.envLimitMs });
+  } catch (error) {
+    return { why: errorText(error) };
+  }
+  const failed = failure(ran, parts.envLimitMs);
+  if (failed !== null) return { why: failed };
+  if (service.manager === 'systemd-user') {
+    const out: Record<string, string> = {};
+    for (const word of shownWords(ran.stdout.trim())) {
+      const at = word.indexOf('=');
+      if (at > 0) out[word.slice(0, at)] = word.slice(at + 1);
+    }
+    return out;
+  }
+  try {
+    return stringValues(JSON.parse(ran.stdout));
+  } catch {
+    return { why: 'plutil\'s answer wasn\'t JSON' };
+  }
+}
+
+function systemVariables(): Record<string, string> {
   const base: Record<string, string> = {};
   for (const name of SYSTEM_VARIABLES) if (process.env[name] !== undefined) base[name] = process.env[name]!;
-  Object.assign(base, manager, { [SUPERVISED_ENV]: '1', [INSTALL_ROOT_ENV]: root });
-  try {
-    base.DATA_DIR = dataDirOf(root);
-  } catch {}
+  return base;
+}
+
+/** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
+ *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
+function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
+  limitMs: number): { env: Record<string, string | undefined>; base: Record<string, string> } {
+  const base = { ...systemVariables(), ...manager };
+  if (unit !== null) Object.assign(base, unit);
+  else {
+    Object.assign(base, { [SUPERVISED_ENV]: '1', [INSTALL_ROOT_ENV]: root });
+    try {
+      base.DATA_DIR = dataDirOf(root);
+    } catch {}
+  }
   const ran = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
     cwd: work,
     env: base,
@@ -837,7 +958,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       'see it.');
   }
   try {
-    return JSON.parse(ran.stdout) as Record<string, string>;
+    return { env: JSON.parse(ran.stdout) as Record<string, string>, base };
   } catch {
     throw new Error(`Bun's answer in ${work} wasn't an environment doctor could read: something else wrote to its ` +
       'output, as a bunfig.toml preload can. `bun -e 0`, run there, shows what writes; once nothing does, run doctor ' +
@@ -870,10 +991,13 @@ async function besideOf(
     return { why: `asking the host failed: ${errorText(error)}` };
   }
   if (answer === null) return { why: 'the host didn\'t answer its token counts' };
-  if (answer.ok !== true) return { why: 'the host refused its token counts' };
-  const data = answer.data as Partial<CountCheck> | undefined;
-  const beside = data?.beside;
-  if (beside === undefined) return { why: 'the running host doesn\'t count them: it\'s an older release than this command' };
+  if (answer.ok !== true) {
+    return { why: String(answer.error ?? '').startsWith('unknown panel op')
+      ? 'the running host is an older release than this command, so it doesn\'t count them'
+      : 'the host refused its token counts' };
+  }
+  const data = answer.data as CountCheck;
+  const beside = data.beside!;
   if (beside.source === 'count_tokens' && typeof beside.tokens === 'number') {
     if (typeof data?.agent?.model === 'string' && data.agent.model !== model) {
       return { why: `the running host runs ${data.agent.model}, not ${model}, so its count isn't of this recipe as it runs` };
@@ -883,7 +1007,8 @@ async function besideOf(
         'settings or a change since its start can leave it' };
     }
     if (data?.recipeDigest !== digest) {
-      return { why: 'the recipe doesn\'t load now as it did for the running host, as an edit since its start can leave it' };
+      return { why: 'the recipe doesn\'t load for doctor as it did for the running host: an edit since its start, a system ' +
+        'prompt its URL now serves differently, or a value doctor\'s rebuilt environment gives otherwise can each leave it so' };
     }
     return { tokens: beside.tokens };
   }
@@ -892,7 +1017,9 @@ async function besideOf(
   }
   if (beside.source === 'count_tokens_no_credential') return { why: 'count_tokens had no Anthropic credential to send' };
   if (beside.source === 'count_tokens_unsupported_model') return { why: 'count_tokens doesn\'t count with the agent\'s model' };
-  if (beside.source === 'count_tokens') return { why: 'count_tokens answered with no count' };
+  if (beside.source === 'session_switched') {
+    return { why: 'the host\'s session switched while it counted, so its count isn\'t of the session running now' };
+  }
   return { why: countFailure(beside.source) };
 }
 

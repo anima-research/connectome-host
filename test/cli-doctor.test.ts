@@ -63,6 +63,7 @@ interface FakeHost { stop: () => void; received: string[] }
 
 function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOnRequest?: boolean } = {}): FakeHost {
   const received: string[] = [];
+  const tails = new Map<unknown, string>();
   const server = Bun.listen({
     unix: join(at.data, 'ipc.sock'),
     socket: {
@@ -70,7 +71,9 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
         socket.write(JSON.stringify({ type: 'lifecycle', phase: 'ready', pid: 4242, dataDir: at.data, recipe: 'Ember' }) + '\n');
       },
       data(socket, chunk) {
-        for (const line of chunk.toString().split('\n').filter(Boolean)) {
+        const frames = ((tails.get(socket) ?? '') + chunk.toString()).split('\n');
+        tails.set(socket, frames.pop()!);
+        for (const line of frames.filter(Boolean)) {
           const msg = JSON.parse(line) as { type: string; op?: string; corrId?: string };
           if (msg.type !== 'panel-request') continue;
           received.push(msg.op!);
@@ -92,9 +95,11 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
 
 const SILENT: Record<string, unknown> = {};
 
+const STANDIN_BESIDE = { tokens: null, source: 'preview_failed', error: 'the stand-in host builds no request' };
 const COUNTED = {
   agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens' },
   compression: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens' },
+  beside: STANDIN_BESIDE,
 };
 const HEALTHY_HOST = {
   'shell-check': { shells: [{ server: 'shell', answered: true, sessions: 2 }], notConnected: [], closedTabs: [] },
@@ -130,7 +135,7 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
     '#!/bin/sh',
     'shift',
     'echo "ladder args: $*"',
-    `case "$CONNECTOME_DOCTOR_WITHHOLD" in *'${JSON.stringify(['DISCORD_TOKEN', SECRETS.DISCORD_TOKEN])}'*) echo "ladder withholds DISCORD_TOKEN's value" ;; esac`,
+    `printf '%s' "$CONNECTOME_DOCTOR_WITHHOLD" > '${join(dir, 'withheld.json')}'`,
     'echo "ladder XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"',
     `echo "recent failure: Error token=${SECRETS.DISCORD_TOKEN}"`,
     ...(opts.sleep ? [`sleep ${opts.sleep}`] : []),
@@ -156,10 +161,13 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
 
 let managers = 0;
 
-function fakeManager(dir: string, opts: { env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true } = {}) {
+function fakeManager(dir: string, opts: {
+  env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string;
+} = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
   writeFileSync(join(at, 'environment'), (opts.env ?? []).map((line) => `${line}\n`).join(''));
+  if (opts.unit !== undefined) writeFileSync(join(at, 'unit-environment'), `${opts.unit}\n`);
   for (const [name, value] of Object.entries(opts.launchd ?? {})) writeFileSync(join(at, 'values', name), `${value}\n`);
   const path = join(at, 'manager');
   writeFileSync(path, [
@@ -168,6 +176,7 @@ function fakeManager(dir: string, opts: { env?: string[]; launchd?: Record<strin
     ...(opts.hangs ? ['exec sleep 30'] : []),
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
     `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
+    `if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ] && [ -f ${join(at, 'unit-environment')} ]; then cat ${join(at, 'unit-environment')}; exit 0; fi`,
     `if [ "$1" = getenv ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'values')}/$2" ]; then cat "${join(at, 'values')}/$2"; fi; exit 0; fi`,
     'echo "unexpected: $*" >&2',
     'exit 2',
@@ -178,10 +187,31 @@ function fakeManager(dir: string, opts: { env?: string[]; launchd?: Record<strin
   return { path, calls };
 }
 
-async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[] = []) {
-  const out: string[] = [];
+const unitEnvironment = (at: Install): Record<string, string> => ({
+  PATH: process.env.PATH ?? '/usr/bin:/bin', DATA_DIR: at.data, CONNECTOME_SUPERVISED: '1', CONNECTOME_INSTALL_ROOT: at.root,
+});
+
+let plists = 0;
+
+function fakePlutil(dir: string, variables: Record<string, string> | null): string {
+  const path = join(dir, `plutil-${++plists}`);
+  const json = join(dir, `plist-environment-${plists}.json`);
+  if (variables !== null) writeFileSync(json, JSON.stringify(variables));
+  writeFileSync(path, [
+    '#!/bin/sh',
+    `if [ "$1 $2 $3 $4 $5" = "-extract EnvironmentVariables json -o -" ] && [ -f '${json}' ]; then cat '${json}'; exit 0; fi`,
+    'echo "Could not extract value, error: No value at that key path or invalid key path: EnvironmentVariables" >&2',
+    'exit 1',
+  ].join('\n') + '\n');
+  chmodSync(path, 0o755);
+  return path;
+}
+
+async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[] = [], out: string[] = []) {
   const err: string[] = [];
-  const manager = fakeManager(at.work).path;
+  const manager = fakeManager(at.work, {
+    unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+  }).path;
   const status = await doctor({ root: at.root, argv, out: (l) => out.push(l), err: (l) => err.push(l) }, {
     fetch: discordFetch,
     checkService: async () => ({ passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] }),
@@ -192,6 +222,8 @@ async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[]
     launchctl: manager,
     envLimitMs: 60_000,
     recipeLimitMs: 60_000,
+    plutil: fakePlutil(at.work, unitEnvironment(at)),
+    servicePid: async () => ({ pid: '4242' }),
     ...parts,
   });
   return { status, out: out.join('\n'), err: err.join('\n') };
@@ -231,7 +263,10 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('shell reached its daemon: 2 sessions.');
     expect(r.out).toContain('ember (900)');
     expect(r.out).toContain(`ladder args: --findings-json --data-dir ${at.data} ${at.work} connectome-test.service`);
-    expect(r.out).toContain('ladder withholds DISCORD_TOKEN\'s value');
+    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
+    for (const name of ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'ANTHROPIC_API_KEY'] as const) {
+      expect(withheld).toContainEqual([name, SECRETS[name]]);
+    }
     expect(r.out).toContain('<DISCORD_TOKEN>');
     expect(r.out).toContain('[fit] Not checked: whether agent.contextBudgetTokens and agent.maxTokens fit claude-test-model\'s window.');
     expectNoSecret(r.out + r.err);
@@ -271,7 +306,7 @@ describe('connectome doctor', () => {
     const at = install();
     const r = await withHost(at, {
       ...HEALTHY_HOST,
-      'count-check': {
+      'count-check': { beside: STANDIN_BESIDE,
         agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' },
         compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_401' },
       },
@@ -316,7 +351,7 @@ describe('connectome doctor', () => {
     const at = install();
     const r = await withHost(at, {
       ...HEALTHY_HOST,
-      'count-check': {
+      'count-check': { beside: STANDIN_BESIDE,
         agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_no_credential' },
         compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_no_credential' },
       },
@@ -479,7 +514,8 @@ describe('connectome doctor', () => {
   test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too, from doctor\'s lines and the ladder\'s reads', async () => {
     const at = install({ stored: ['SESSION_SERVER_TOKEN'] });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toContain('ladder withholds DISCORD_TOKEN\'s value');
+    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
+    expect(withheld).toContainEqual(['DISCORD_TOKEN', SECRETS.DISCORD_TOKEN]);
     expect(r.out).toContain('<DISCORD_TOKEN>');
     expectNoSecret(r.out + r.err);
   });
@@ -807,7 +843,7 @@ describe('connectome doctor', () => {
         ],
         closedTabs: [],
       },
-      'count-check': {
+      'count-check': { beside: STANDIN_BESIDE,
         agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_404' },
         compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_404' },
       },
@@ -836,7 +872,7 @@ describe('connectome doctor', () => {
       const at = install();
       const r = await withHost(at, {
         ...HEALTHY_HOST,
-        'count-check': { agent, compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_404' } },
+        'count-check': { beside: STANDIN_BESIDE, agent, compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_404' } },
       }, () => run(at));
       expect(r.out).toMatch(/✗ count_tokens couldn't count with the compression model, claude-old: .*: change the recipe's agent\.strategy\.compressionModel to a current model.* and restart the service\./);
       got.push([what, r.out.includes('or leave it out to compress with the agent\'s model,')]);
@@ -848,7 +884,7 @@ describe('connectome doctor', () => {
     const at = install();
     const r = await withHost(at, {
       ...HEALTHY_HOST,
-      'count-check': {
+      'count-check': { beside: STANDIN_BESIDE,
         agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' },
         compression: { model: '', countModel: null, source: 'count_tokens_unsupported_model' },
       },
@@ -862,14 +898,14 @@ describe('connectome doctor', () => {
     const at = install();
     const r = await withHost(at, {
       ...HEALTHY_HOST,
-      'count-check': { agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_error' }, compression: null },
+      'count-check': { beside: STANDIN_BESIDE, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_error' }, compression: null },
     }, () => run(at));
-    expect(r.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: the count_tokens request failed, or answered with what couldn't be read\./);
+    expect(r.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: the count_tokens request failed, or answered with what couldn't be read or with no count\./);
 
     const none = install();
     const r2 = await withHost(none, {
       ...HEALTHY_HOST,
-      'count-check': { agent: { model: null, countModel: null, source: 'count_tokens_unsupported_model' }, compression: null },
+      'count-check': { beside: STANDIN_BESIDE, agent: { model: null, countModel: null, source: 'count_tokens_unsupported_model' }, compression: null },
     }, () => run(none));
     expect(r2.out).toContain('count_tokens isn\'t asked: the agent names no model.');
     expect(r2.out).not.toContain('null');
@@ -986,7 +1022,11 @@ describe('connectome doctor', () => {
       expect([why, r.out]).toEqual([why, expect.stringContaining('✓ It fits claude-haiku-4-5\'s window.\n  The system prompt and ' +
         `tools the host sends weren't counted (${why}), so this is the check the host makes at load, by estimate.`)]);
     };
-    await uncounted(COUNTED, 'the running host doesn\'t count them: it\'s an older release than this command');
+    const older = await withHost(at, { 'shell-check': HEALTHY_HOST['shell-check'] }, () => run(at));
+    expect(older.out).toContain('The system prompt and tools the host sends weren\'t counted (the running host is an older ' +
+      'release than this command, so it doesn\'t count them), so this is the check the host makes at load, by estimate.');
+    await uncounted({ ...COUNTED, beside: { tokens: null, source: 'session_switched' } },
+      'the host\'s session switched while it counted, so its count isn\'t of the session running now');
     await uncounted({ ...COUNTED, beside: { tokens: null, source: 'count_tokens_no_credential' } },
       'count_tokens had no Anthropic credential to send');
     await uncounted({ ...COUNTED, beside: { tokens: null, source: 'preview_failed', error: 'the agent is mid-switch' } },
@@ -1263,7 +1303,7 @@ describe('connectome doctor: the environment the service gets from its manager',
     const r = await withHost(at, HEALTHY_HOST, () => run(at, {
       systemctl: manager.path, ...reports('| the journal says manager-secret-value'),
     }));
-    expect(manager.calls()).toEqual(['--user show-environment']);
+    expect(manager.calls()).toEqual(['--user show-environment', '--user show --property=Environment --value -- connectome-test.service']);
     expect(r.out).toContain('| the journal says <MANAGER_SECRET>');
     expect(r.out).not.toContain('manager-secret-value');
     expect(r.out).not.toMatch(/MANAGER_SECRET is in setup's list of stored secrets \(.*\), and no file Bun reads/);
@@ -1395,8 +1435,10 @@ describe('connectome doctor: the environment the service gets from its manager',
     rmSync(join(none.root, 'service.json'));
     const platform = fakeManager(none.work);
     await run(none, { systemctl: platform.path, launchctl: platform.path });
-    if (process.platform === 'darwin') expect(platform.calls().every((call) => call.startsWith('getenv '))).toBe(true);
-    else expect(platform.calls()).toEqual(['--user show-environment']);
+    if (process.platform === 'darwin') {
+      expect(platform.calls().length).toBeGreaterThan(0);
+      expect(platform.calls().every((call) => call.startsWith('getenv '))).toBe(true);
+    } else expect(platform.calls()).toEqual(['--user show-environment']);
     const launchd = install({ manager: 'launchd' });
     const asked = fakeManager(launchd.work);
     await run(launchd, { systemctl: asked.path, launchctl: asked.path });
@@ -1405,7 +1447,7 @@ describe('connectome doctor: the environment the service gets from its manager',
     const systemd = install();
     const user = fakeManager(systemd.work);
     await run(systemd, { systemctl: user.path, launchctl: user.path });
-    expect(user.calls()).toEqual(['--user show-environment']);
+    expect(user.calls()).toEqual(['--user show-environment', '--user show --property=Environment --value -- connectome-test.service']);
   });
 });
 
@@ -1503,8 +1545,9 @@ describe('connectome doctor: its waits, its remedies and its last line', () => {
       budget: 168_000, recipeDigest,
     } }, () => run(at));
     expect(r.out).toContain('✓ It fits claude-haiku-4-5\'s window.\n  The system prompt and tools the host sends weren\'t ' +
-      'counted (the recipe doesn\'t load now as it did for the running host, as an edit since its start can leave it), so ' +
-      'this is the check the host makes at load, by estimate.');
+      'counted (the recipe doesn\'t load for doctor as it did for the running host: an edit since its start, a system ' +
+      'prompt its URL now serves differently, or a value doctor\'s rebuilt environment gives otherwise can each leave it ' +
+      'so), so this is the check the host makes at load, by estimate.');
     expect(r.out).not.toContain('to spare');
   });
 });
@@ -1674,5 +1717,234 @@ describe('connectome doctor\'s Discord check, where Discord or the way to it ans
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain('If a running discord-mcpl had read it, and it was removed since, the last filters it read stay in ' +
       'force until the file is back.');
+  });
+});
+
+describe('connectome doctor, its round on the review of 4a79597ff', () => {
+  const onLaunchd = process.platform === 'darwin';
+
+  test('a host answering while the service runs, with a pid other than the service\'s main process, is a problem naming it', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
+    expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, but connectome-test.service\'s main process is 5151, so ' +
+      'it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of it.');
+    expect(r.out).toContain('Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
+      'service\'s own host can\'t be reached while it does: `kill 4242` stops it.');
+    expect(r.out).not.toContain('✓ The host answers');
+    expect(r.status).toBe(1);
+  });
+
+  test('a host answering while the service has no main process is a problem saying so', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '0' }) }));
+    expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, but connectome-test.service has no main process, so it ' +
+      'isn\'t the service\'s');
+  });
+
+  test('a host answering while the manager can\'t say the service\'s pid is said, and the closing line names it unmade', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      servicePid: async () => ({ why: 'systemd couldn\'t be asked about connectome-test.service: Failed to connect to bus' }),
+      python: fakePython(at.work, { end: 'clean' }),
+    }));
+    expect(r.out).toContain('The host answers: pid 4242, recipe Ember. Whether it\'s the service\'s host can\'t be told: systemd ' +
+      'couldn\'t be asked about connectome-test.service: Failed to connect to bus.');
+    expect(r.out).not.toContain('✓ The host answers');
+    expect(r.out).toMatch(/Doctor found no problem, though .*whether the host that answers is the service's couldn't be told, as said above\.$/);
+    const thrown = await withHost(at, HEALTHY_HOST, () => run(at, {
+      servicePid: () => { throw new TypeError('The argument \'args[5]\' must be a string without null bytes'); },
+    }));
+    expect(thrown.out).toContain('Whether it\'s the service\'s host can\'t be told: The argument \'args[5]\' must be a string ' +
+      'without null bytes.');
+  });
+
+  test('a literal DISCORD_TOKEN in a server\'s entry is withheld from the lines that print before the servers are checked', async () => {
+    const literal = 'literal-early-token';
+    const at = install({ recipe: { ...RECIPE(''), name: `named ${literal}`, bogus: true, mcpServers: { discord: {
+      command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: '${DISCORD_TOKEN}', DISCORD_GUILD_ID: '100' } } } } });
+    writeFileSync(join(at.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: {
+      discord: { command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: literal, DISCORD_GUILD_ID: '100' } },
+    } }));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { ...reports(`the unit logged ${literal}`) }));
+    expect(r.out).toContain('the unit logged <DISCORD_TOKEN>');
+    expect(r.out).toContain('Recipe "named <DISCORD_TOKEN>" has keys the host does not read');
+    expect(r.out).not.toContain(literal);
+  });
+
+  test('each mode\'s dotenv files fill their own references, whatever doctor\'s own environment and the service\'s loaded mode give', async () => {
+    const at = install();
+    writeFileSync(join(at.work, '.env.development'), 'PREFIX=dev\n');
+    writeFileSync(join(at.work, '.env.production'), 'PREFIX=prod\nDISCORD_TOKEN=${PREFIX}token\n');
+    const before = process.env.PREFIX;
+    process.env.PREFIX = 'dev';
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { ...reports('a production run logged prodtoken') }));
+      expect(r.out).toContain('a production run logged <DISCORD_TOKEN>');
+      expect(r.out).not.toContain('prodtoken');
+    } finally {
+      if (before === undefined) delete process.env.PREFIX;
+      else process.env.PREFIX = before;
+    }
+  });
+
+  test('when it stops at its start, each mode\'s files fill their own references, whatever doctor\'s own environment gives', async () => {
+    const at = install();
+    writeFileSync(join(at.work, '.env.production'), 'PREFIX=prod\nDISCORD_TOKEN=${PREFIX}token\n');
+    const failing = fakeManager(at.work, { fails: 'the bus said prodtoken' });
+    const before = process.env.PREFIX;
+    process.env.PREFIX = 'dev';
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path }));
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.out).toContain('the bus said <DISCORD_TOKEN>');
+      expect(r.out).not.toContain('prodtoken');
+    } finally {
+      if (before === undefined) delete process.env.PREFIX;
+      else process.env.PREFIX = before;
+    }
+  });
+
+  test('a mode\'s file filled from the service\'s manager is read with the service\'s own environment, not another mode\'s', async () => {
+    const at = install();
+    writeFileSync(join(at.work, '.env.development'), 'SUFFIX=devpart\n');
+    writeFileSync(join(at.work, '.env.production'), 'DISCORD_TOKEN=${MANAGED}${SUFFIX}\n');
+    const manager = fakeManager(at.work, {
+      env: ['MANAGED=mgrpart'],
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, ...reports('a production run logged mgrpart.') }));
+    expect(r.out).toContain('a production run logged <DISCORD_TOKEN>.');
+  });
+
+  const SHOWN = 'PATH=/unit/bin "B=has space" "C=dollar\\$\\$sign" "D=semi;colon" "E=back\\\\slash" "F=tab\\there" "G=quo\\"te" ' +
+    'H=café "I=single\'q" J= DATA_DIR=/unit/data CONNECTOME_SUPERVISED=1';
+  const DECODED = '/unit/bin|has space|dollar$$sign|semi;colon|back\\slash|tab\there|quo"te|café|single\'q||/unit/data';
+  const echoing = { ...RECIPE(''), name: '${PATH}|${B}|${C}|${D}|${E}|${F}|${G}|${H}|${I}|${J}|${DATA_DIR}', bogus: true };
+
+  test('the service\'s environment takes what its unit sets over the manager\'s, as systemd 257 prints it', async () => {
+    const at = install({ recipe: echoing });
+    const manager = fakeManager(at.work, { env: ['PATH=/manager/bin', 'DATA_DIR=/manager/data', 'B=manager'], unit: SHOWN });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain(`Recipe "${DECODED}" has keys the host does not read`);
+  });
+
+  test('on launchd the service\'s environment takes what its plist sets, read through plutil', async () => {
+    const at = install({ recipe: echoing, manager: 'launchd' });
+    const manager = fakeManager(at.work, { launchd: { PATH: '/manager/bin', DATA_DIR: '/manager/data', B: 'manager' } });
+    const plutil = fakePlutil(at.work, { PATH: '/unit/bin', B: 'has space', C: 'dollar$$sign', D: 'semi;colon', E: 'back\\slash',
+      F: 'tab\there', G: 'quo"te', H: 'café', I: 'single\'q', J: '', DATA_DIR: '/unit/data', CONNECTOME_SUPERVISED: '1' });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path, plutil }));
+    expect(r.out).toContain(`Recipe "${DECODED}" has keys the host does not read`);
+  });
+
+  test('a unit whose environment can\'t be read is said, and doctor goes on with its own PATH and the record\'s DATA_DIR', async () => {
+    const at = install();
+    const manager = fakeManager(at.work);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('The environment connectome-test.service\'s unit sets couldn\'t be read (');
+    expect(r.out).toContain('so doctor takes PATH from its own environment or the manager\'s, and DATA_DIR from the install ' +
+      'record, in its place.');
+    expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).toContain('pid 4242');
+  });
+
+  test('a plist whose environment plutil gives as something other than JSON is said, and doctor goes on', async () => {
+    const at = install({ manager: 'launchd' });
+    const plutil = join(at.work, 'plutil-garbled');
+    writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
+    chmodSync(plutil, 0o755);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
+    expect(r.out).toContain('The environment connectome-test.service\'s plist sets couldn\'t be read (plutil\'s answer wasn\'t ' +
+      'JSON), so doctor takes PATH');
+    expect(r.out).not.toContain('Doctor stops here');
+  });
+
+  test('the banner is out before doctor fetches the recipe\'s system prompt, so a fetch that hangs follows a line saying doctor started', async () => {
+    const out: string[] = [];
+    let printed: string[] | null = null;
+    const prompt = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => {
+      printed ??= [...out];
+      return new Response('You are Ember.');
+    } });
+    try {
+      const at = install({ recipe: { ...RECIPE(''), agent: { name: 'ember', systemPrompt: `http://127.0.0.1:${prompt.port}/prompt` } } });
+      await withHost(at, HEALTHY_HOST, () => run(at, {}, [], out));
+      expect(printed).toEqual([`connectome doctor: the install at ${at.root}`]);
+    } finally {
+      prompt.stop(true);
+    }
+  });
+
+  test('a recipe the record names by a relative path is read from the service\'s working directory, as the host reads it', async () => {
+    const at = install();
+    const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8')) as { hostArgs: string[] };
+    record.hostArgs = ['recipe.json', '--headless'];
+    writeFileSync(join(at.root, 'service.json'), JSON.stringify(record));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`✓ ${join(at.work, 'recipe.json')} loads.`);
+  });
+
+  test('the closing line names the counts no credential let the host make, and a closed tab, among what wasn\'t checked', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      'shell-check': { ...HEALTHY_HOST['shell-check'], closedTabs: ['games'] },
+      'count-check': { beside: STANDIN_BESIDE,
+        agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_no_credential' },
+        compression: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_no_credential' },
+      },
+    }, () => run(at, { python: fakePython(at.work, { end: 'clean' }) }));
+    expect(r.out).toMatch(/Doctor found no problem, though .*count_tokens had no credential to count with.* and a closed tab's connection wasn't checked, as said above\.$/);
+  });
+
+  test('a non-Claude compression model isn\'t named among what wasn\'t checked, since count_tokens doesn\'t apply to it', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      ...HEALTHY_HOST,
+      'count-check': { ...COUNTED, compression: { model: 'gpt-x', countModel: null, source: 'count_tokens_unsupported_model' } },
+    }, () => run(at, { python: fakePython(at.work, { end: 'clean' }) }));
+    expect(r.out).toMatch(/Doctor found no problem, though the fit wasn't checked, as said above\.$/);
+  });
+});
+
+describe('connectome doctor\'s Discord check, in its round on the review of 4a79597ff', () => {
+  const answering = (on: string, answer: () => Response | Promise<Response>) => (async (input: string | URL | Request, init?: RequestInit) =>
+    new URL(String(input)).pathname.endsWith(on) ? answer() : discordFetch(input, init)) as typeof fetch;
+
+  test('a 429 to the token\'s own request names the wait Discord asked for', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      fetch: answering('/users/@me', () => Response.json({ message: 'You are being rate limited.', retry_after: 119.2, global: false }, { status: 429 })),
+    }));
+    expect(r.out).toContain('Discord answered 429 to GET /users/@me: You are being rate limited., so the Discord checks after it ' +
+      'weren\'t made: Discord asked for 120 s before the next request, so run connectome doctor again after that.');
+  });
+
+  test('a 403 or 404 to a server\'s own reads says Discord listed that server a moment before, and what to do', async () => {
+    const at = install();
+    const after = 'Discord listed that server for the bot a moment before, so if the bot has been removed from it since, ' +
+      'invite it again, and otherwise run connectome doctor again.';
+    for (const [on, status] of [['/guilds/100/roles', 403], ['/guilds/100/members/900', 404], ['/guilds/100/channels', 403]] as const) {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+        fetch: answering(on, () => Response.json({ message: 'Missing Access', code: 50001 }, { status })),
+      }));
+      expect([on, r.out]).toEqual([on, expect.stringContaining(`Discord answered ${status} to GET ${on}: Missing Access (code 50001), ` +
+        `so the Discord checks after it weren't made. ${after}`)]);
+    }
+  });
+
+  test('with more than one Discord server, each entry\'s lines come after a line naming it', async () => {
+    const at = install({ recipe: { ...RECIPE(''), mcpServers: {
+      discord: { command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: '${DISCORD_TOKEN}', DISCORD_GUILD_ID: '100' } },
+      second: { command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: 'bad-second-token', DISCORD_GUILD_ID: '100' } },
+    } } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    const discord = r.out.slice(r.out.indexOf('\nDiscord\n'));
+    expect(discord).toMatch(/\n {2}The entry discord:\n(.*\n)*? {2}The entry second:\n {2}✗ Discord refused/);
+  });
+
+  test('with one Discord server, no line names its entry', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).not.toContain('The entry discord:');
   });
 });

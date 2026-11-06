@@ -25,6 +25,12 @@ class DiscordAnswer extends Error {}
 export const BEFORE_ENV_FILE = 'another of the files Bun reads there, such as .env.local or .env.development, or the ' +
   'service\'s own environment, comes before .env where it sets the name';
 
+const LISTED = 'Discord listed that server for the bot a moment before, so if the bot has been removed from it since, ' +
+  'invite it again, and otherwise run connectome doctor again.';
+
+const waited = (unchecked: string, seconds: number): string =>
+  `${unchecked}: Discord asked for ${Math.ceil(seconds)} s before the next request, so run connectome doctor again after that`;
+
 export function sentToken(given: string): string {
   return given.replace(/^(Bot|Bearer)\s*/i, '');
 }
@@ -101,12 +107,11 @@ export async function checkDiscord(
     const said = body as { message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
     if (!res.ok) {
       const wait = res.status === 429 && typeof said?.retry_after === 'number' && Number.isFinite(said.retry_after)
-        ? `${unchecked}: Discord asked for ${Math.ceil(said.retry_after)} s before the next request, so run connectome ` +
-          'doctor again after that'
-        : undefined;
+        ? waited(unchecked, said.retry_after) : undefined;
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}` +
         (typeof said?.message === 'string' ? `: ${said.message}${said.code !== undefined ? ` (code ${String(said.code)})` : ''}` : ', with no message') +
-        `, ${wait ?? (res.status === 429 || res.status >= 500 ? again : unchecked)}.`);
+        `, ${wait ?? (res.status === 429 || res.status >= 500 ? again : unchecked)}.` +
+        ((res.status === 403 || res.status === 404) && path.startsWith('/guilds/') ? ` ${LISTED}` : ''));
     }
     if (body === undefined) {
       throw new DiscordAnswer(`Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`);
@@ -184,7 +189,8 @@ async function whoseToken(
       }
       throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
         (check.said === null ? ', with no message' : `: ${check.said}`) +
-        `, ${check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.`);
+        `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter)
+          : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.`);
   }
 }
 
