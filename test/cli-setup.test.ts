@@ -1163,12 +1163,14 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   });
   expect(await runSetup(dir, ['discord'], listless)).toBe(0);
   expect(said(listless)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, holds no list of places under "extraState".`]);
+  writeFileSync(record, printed);
   const mixed = changing(() => {
     const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: unknown[] };
     writeFileSync(record, JSON.stringify({ ...kept, extraState: [...kept.extraState.slice(0, -1), 5] }));
   });
   expect(await runSetup(dir, ['discord'], mixed)).toBe(0);
   expect(said(mixed)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, holds no list of places under "extraState".`]);
+  writeFileSync(record, printed);
   const gone = changing(() => rmSync(record));
   expect(await runSetup(dir, ['discord'], gone)).toBe(0);
   expect(said(gone)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, is gone.`]);
