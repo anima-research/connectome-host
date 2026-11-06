@@ -333,27 +333,35 @@ strategy config chunks its frontier under *that* config):
 The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage 4) give
 you 1–2 on a running instance. For a pre-boot check, run the host on copies, so that
 nothing it does reaches the original:
-1. Copy the data directory the install's record names (stage 1), wherever it is.
-2. Copy the recipe, keep its Web UI on loopback, and leave out `mcpServers`,
-   `modules.fleet.children`, `modules.heartbeat.statePath` and `extensions`: the
-   servers' `env` names files in the original data directory, discord-mcpl would put
-   the resident on Discord, a fleet child starts on its own data directory under
-   `<agent>-cm`, a heartbeat state path resolves from there too, and an extension's
-   code runs in the host's process. So a recipe whose strategy comes from an extension
-   gets no pre-boot check this way.
-3. From `<agent>-cm`, start the release `current` names, not the install's entry: the
-   entry refuses a `DATA_DIR` other than the one the install's record names, and a host
-   it starts writes the install's own files. Started directly, the host writes none:
-   `CONNECTOME_INSTALL_ROOT= OBSERVERS_FILE= IDENTITY_KEY_FILE= CONTEXT_MANAGER_COMPRESSION_LOG= ANTHROPIC_AUTH_TOKEN= ANTHROPIC_OAUTH_CREDENTIALS_FILE= ANTHROPIC_API_KEY=<a mock or real key> MCPL_AGENT_OVERLAY_FILE=<the data copy>/no-overlay.json DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`.
-   A variable set empty there stays empty, though `<agent>-cm/.env` sets it, so the host
-   doesn't take the install as its own, use the original's observers or identity key,
-   append to a compression log, or sign in with the resident's subscription. The
-   overlay variable names a file that doesn't exist, so the servers the resident
-   deployed for itself (`mcpl-servers.agent.json`) stay out too. With a mock key, the
-   API's count fails and the rest still compiles. The host sends a real key to the
-   address `ANTHROPIC_BASE_URL` names, where your shell or an env file Bun reads in
-   `<agent>-cm`, `.env` among them, sets one, such as a gateway's, and to
-   `https://api.anthropic.com` otherwise. Then hit the endpoints, and stop it.
+1. Copy the data directory the install's record names (stage 1), wherever it is,
+   following links (`cp -RL`), so a link in it doesn't lead the copy back to the
+   original.
+2. Copy the recipe, keep its Web UI on loopback without `basicAuth`, and leave out
+   `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath` and
+   `extensions`: the servers' `env` names files in the original data directory,
+   discord-mcpl would put the resident on Discord, a fleet child starts on its own data
+   directory under `<agent>-cm`, a heartbeat state path resolves from there too, and an
+   extension's code runs in the host's process. So a recipe whose strategy comes from an
+   extension gets no pre-boot check this way. For an `openai-compatible` recipe, set
+   `agent.baseUrl` to `http://127.0.0.1:9/v1`, where nothing answers, since its own
+   endpoint may answer with no key at all.
+3. From a new, empty directory, start the release `current` names, not the install's
+   entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
+   and a host it starts writes the install's own files. Start it in an environment of
+   its own:
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE='<the data copy>/no-overlay.json' DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
+   The host gets only the variables the command names, and from that directory Bun
+   loads none of `<agent>-cm`'s env files, so no credential of the resident's reaches
+   it: the key is a mock, and with `HOME` the new directory, Codex has no login. Where
+   the recipe's provider needs a key of its own to start, give its name a mock value
+   the same way: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and
+   `AWS_SECRET_ACCESS_KEY` for Bedrock. Where the resident's environment sets `MODEL` or
+   `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. So every
+   request the host makes is refused, and a turn it starts on its own, such as for a
+   heartbeat that fell due while the resident was down, gets no reply and calls no
+   tool. The overlay variable names a file that doesn't exist, so the servers the
+   resident deployed for itself (`mcpl-servers.agent.json`) stay out too. The API's
+   count fails and the rest still compiles. Then hit the endpoints, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
@@ -365,7 +373,8 @@ That pre-boot check is an operator's: a setup agent never starts a host
 that request yourself: `buildContextMakeup` (`src/web/panel-data.ts`) builds it by
 formatting the same `request` that `/debug/context` returns, and posts it, with the
 `countModel` the route reports, to `/v1/messages/count_tokens` at
-`ANTHROPIC_BASE_URL` (or `https://api.anthropic.com`), with the host's credentials.
+`ANTHROPIC_BASE_URL` (or `https://api.anthropic.com`), with the host's credentials, or,
+for the pre-boot check, a key of your own.
 
 ### Stage 4 — Recipe, first boot, seam
 
