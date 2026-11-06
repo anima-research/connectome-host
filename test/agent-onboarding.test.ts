@@ -78,7 +78,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
 
   const serversSection = () => PIECES.find((piece) => piece.heading === 'The recipe\'s servers')!.text;
   const entries = () => [...serversSection().matchAll(/```json\n([\s\S]*?)```/g)]
-    .flatMap((match, fragment) => Object.entries(JSON.parse(`{${match[1]}}`) as Record<string, { env: Record<string, string> }>)
+    .flatMap((match, fragment) => Object.entries(parseHandWrittenJson(`{${match[1]}}`) as Record<string, { env: Record<string, string> }>)
       .map(([server, entry]) => ({ fragment, server, env: entry.env })));
 
   it('maps DISCORD_TOKEN and the shell\'s two values into their own servers\' env as ${NAME}, and gives every other value with a <placeholder> in it', () => {
