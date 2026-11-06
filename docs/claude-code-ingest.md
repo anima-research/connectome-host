@@ -338,13 +338,16 @@ nothing it does reaches the original:
 3. From `<agent>-cm`, start the release `current` names, not the install's entry: the
    entry refuses a `DATA_DIR` other than the one the install's record names, and a host
    it starts writes the install's own files. Started directly, the host writes none:
-   `CONNECTOME_INSTALL_ROOT= OBSERVERS_FILE= IDENTITY_KEY_FILE= ANTHROPIC_AUTH_TOKEN= ANTHROPIC_OAUTH_CREDENTIALS_FILE= ANTHROPIC_API_KEY=<a mock or real key> MCPL_AGENT_OVERLAY_FILE=<the data copy>/no-overlay.json DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`.
+   `CONNECTOME_INSTALL_ROOT= OBSERVERS_FILE= IDENTITY_KEY_FILE= CONTEXT_MANAGER_COMPRESSION_LOG= ANTHROPIC_AUTH_TOKEN= ANTHROPIC_OAUTH_CREDENTIALS_FILE= ANTHROPIC_API_KEY=<a mock or real key> MCPL_AGENT_OVERLAY_FILE=<the data copy>/no-overlay.json DATA_DIR=<the data copy> bun connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts <the recipe copy> --headless`.
    A variable set empty there stays empty, though `<agent>-cm/.env` sets it, so the host
    doesn't take the install as its own, use the original's observers or identity key,
-   or sign in with the resident's subscription. The overlay variable names a
-   file that doesn't exist, so the servers the resident deployed for itself
-   (`mcpl-servers.agent.json`) stay out too. With a mock key, the API's count fails
-   and the rest still compiles. Then hit the endpoints, and stop it.
+   append to a compression log, or sign in with the resident's subscription. The
+   overlay variable names a file that doesn't exist, so the servers the resident
+   deployed for itself (`mcpl-servers.agent.json`) stay out too. With a mock key, the
+   API's count fails and the rest still compiles. The host sends a real key to the
+   address `ANTHROPIC_BASE_URL` names, where your shell or an env file Bun reads in
+   `<agent>-cm`, `.env` among them, sets one, such as a gateway's, and to
+   `https://api.anthropic.com` otherwise. Then hit the endpoints, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
