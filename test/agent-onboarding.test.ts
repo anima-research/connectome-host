@@ -20,7 +20,8 @@ function pieces(text: string): Array<{ heading: string | null; text: string }> {
 const PIECES = pieces(GUIDE);
 const OPENING = PIECES[0]!.text;
 const HEADINGS = PIECES.slice(1).map((piece) => piece.heading!);
-const SPANS = [...GUIDE.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]!);
+const SPAN = /`([^`\n]+)`/g;
+const SPANS = [...GUIDE.matchAll(SPAN)].map((match) => match[1]!);
 
 describe('the setup agent reads the guide through setup--run', () => {
   it('gets the opening and each section back whole, with the next heading a sed range to it takes', () => {
@@ -181,7 +182,7 @@ describe('what the guide names ships, or is the install\'s own', () => {
       const scripts = [...piece.text.replace(/\\\n\s*/g, ' ').matchAll(/bun (?:--no-env-file )?'?<host>\/(scripts\/[\w.-]+)/g)].map((match) => match[1]!);
       if (scripts.length === 0) continue;
       const sources = scripts.map((script) => readFileSync(join(ROOT, script), 'utf-8'));
-      for (const [, span] of piece.text.matchAll(/`([^`]*)`/g)) {
+      for (const [, span] of piece.text.matchAll(SPAN)) {
         for (const option of span!.match(/(?<![\w-])--\w[\w-]*(?:=\S*)?/g) ?? []) {
           if (BUN_OPTIONS.has(option)) continue;
           named++;
