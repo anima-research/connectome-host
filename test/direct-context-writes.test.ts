@@ -344,6 +344,16 @@ describe('direct context writes', () => {
     ].join('\n'));
     const calls = [...code.matchAll(CALL)].map((match) => targetOf(argumentsAt(code, match.index! + match[0].length)));
     expect(calls).toEqual(['none', 'named', 'conditional', 'conditional', 'none', 'none', 'named', 'conditional', 'none', 'named', 'conditional', 'conditional']);
+    // And scanCode counts them so (host #485 bot review wave 4, finding 18):
+    // no write under src/ names its agent on a condition, so the inventory
+    // can't show a scan that doesn't count one.
+    const found = new Map<string, number>();
+    scanCode('f.ts', code, found);
+    expect(Object.fromEntries(found)).toEqual({
+      'f.ts this.ctx.addMessage (untargeted)': 1,
+      'f.ts ctx.addMessage (untargeted)': 3,
+      'f.ts ctx.addMessage (target in a conditional)': 5,
+    });
   });
 
   test('the scan finds a direct write and a branch move by their receivers, and passes a module context and the framework', () => {
