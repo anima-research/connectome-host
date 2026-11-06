@@ -14,8 +14,10 @@
     off the current branch, and another
     resident's newer row is left alone, where `/undo` used to branch the store
     before the record's newest reply, whoever's it was. `/redo` puts the turn
-    back. Both are refused while the agent's own turn is alive, and for an
-    agent whose window couldn't be written down when it started. Another
+    back until the agent's next turn, a branch move or a restart, as `/undo`'s
+    answer says (agent-framework keeps the redo in memory only). Both are
+    refused while the agent's own turn is alive, and for an agent whose
+    window couldn't be written down when it started. Another
     agent's turn no longer refuses them: the 0.16.0 entry for #264 had them
     refused, as a branch move is, while any agent sharing the store was
     mid-turn.
