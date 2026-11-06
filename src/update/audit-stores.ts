@@ -597,7 +597,8 @@ type RecipeRead = { recipe: Recipe | null } | { error: unknown };
 /** The recipe the directory's start would load: `source`, or the one saved
  *  in it. A refusal names the file, which for a saved recipe is a hidden
  *  one (.recipe.json), unless its own words name it already, as given or
- *  resolved. */
+ *  resolved. A path given with no directory and no extension counts only
+ *  resolved: as given it can be one of the refusal's words ("Recipe"). */
 async function readRecipe(dataDir: string, source: string | undefined): Promise<RecipeRead> {
   try {
     return source !== undefined
@@ -606,7 +607,7 @@ async function readRecipe(dataDir: string, source: string | undefined): Promise<
   } catch (error) {
     const path = source ?? savedRecipePath(dataDir);
     const said = oneLine(error);
-    if (names(said, path) || names(said, resolve(path))) return { error };
+    if ((/[\\/.]/.test(path) && names(said, path)) || names(said, resolve(path))) return { error };
     const file = source !== undefined ? `its recipe, ${path},` : `its saved recipe, ${path},`;
     return { error: new Error(`${file} can't be loaded: ${said}`, { cause: error }) };
   }
