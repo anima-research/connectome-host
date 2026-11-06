@@ -78,7 +78,7 @@ const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
 
 async function waitForFile(path: string): Promise<string> {
-  for (const until = Date.now() + 10_000; Date.now() < until; await Bun.sleep(10)) {
+  for (const until = performance.now() + 10_000; performance.now() < until; await Bun.sleep(10)) {
     if (existsSync(path) && readFileSync(path, 'utf-8').trim() !== '') return readFileSync(path, 'utf-8').trim();
   }
   throw new Error(`${path} never came`);
@@ -239,7 +239,7 @@ describe('setup--run', () => {
     let answer: ((value: string) => void) | undefined;
     const { dir, module, shown } = install({ asker: { ask: () => new Promise<string>((done) => { answer = done; }) } });
     const asking = askSecret(module, { name: 'API_TOKEN', purpose: 'a token' });
-    for (const started = Date.now(); answer === undefined && Date.now() - started < 5_000; await new Promise((done) => setTimeout(done, 10)));
+    for (const started = performance.now(); answer === undefined && performance.now() - started < 5_000; await new Promise((done) => setTimeout(done, 10)));
     expect(answer).toBeDefined();
     const running = run(module, 'touch ran');
     await new Promise((done) => setTimeout(done, 300));
@@ -369,10 +369,10 @@ describe('setup--run', () => {
   linuxTest('stops a command at its limit with every process in its group, says so, and answers', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'child.pid');
-    const started = Date.now();
+    const started = performance.now();
     const answer = await run(module, `sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(450);
-    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(450);
+    expect(performance.now() - started).toBeLessThan(15_000);
     expect(answer.stoppedAtLimit).toBe(true);
     expect(answer.note).toContain('500 ms limit');
     expect(answer.stdout.text).toBe('begun\n');
@@ -726,7 +726,7 @@ describe('setup--run', () => {
     const { dir, module } = install({ asker: { ask: async () => 'stored-mid-run-value' } });
     const flag = join(dir, 'stored');
     const pending = run(module, `touch started; while [ ! -e ${flag} ]; do sleep 0.02; done; cat .env`);
-    for (const begun = Date.now(); !existsSync(join(dir, 'started')) && Date.now() - begun < 10_000; await Bun.sleep(10));
+    for (const begun = performance.now(); !existsSync(join(dir, 'started')) && performance.now() - begun < 10_000; await Bun.sleep(10));
     expect(existsSync(join(dir, 'started'))).toBe(true);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).success).toBe(true);
     writeFileSync(flag, '');
@@ -774,7 +774,7 @@ describe('setup--run', () => {
     const pending = run(module, `while [ ! -e ${one} ]; do sleep 0.02; done; cat .env > snapshot; touch ${done}; while [ ! -e ${two} ]; do sleep 0.02; done; cat snapshot`);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
     writeFileSync(one, '');
-    for (const until = Date.now() + 10_000; !existsSync(done) && Date.now() < until;) await Bun.sleep(10);
+    for (const until = performance.now() + 10_000; !existsSync(done) && performance.now() < until;) await Bun.sleep(10);
     expect(existsSync(done)).toBe(true);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
     writeFileSync(two, '');
@@ -787,11 +787,11 @@ describe('setup--run', () => {
     const { dir, module } = install({ asker: { ask: async () => values.shift() ?? null } });
     const [started, one, done, two] = ['started', 'one', 'done', 'two'].map((name) => join(dir, name));
     const pending = run(module, `touch ${started}; while [ ! -e ${one} ]; do sleep 0.02; done; cat .env > snapshot; touch ${done}; while [ ! -e ${two} ]; do sleep 0.02; done; cat snapshot`);
-    for (const until = Date.now() + 10_000; !existsSync(started) && Date.now() < until;) await Bun.sleep(10);
+    for (const until = performance.now() + 10_000; !existsSync(started) && performance.now() < until;) await Bun.sleep(10);
     expect(existsSync(started)).toBe(true);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
     writeFileSync(one, '');
-    for (const until = Date.now() + 10_000; !existsSync(done) && Date.now() < until;) await Bun.sleep(10);
+    for (const until = performance.now() + 10_000; !existsSync(done) && performance.now() < until;) await Bun.sleep(10);
     expect(existsSync(done)).toBe(true);
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
     writeFileSync(two, '');
@@ -958,7 +958,7 @@ setInterval(() => {}, 1000);
 `);
     const found = (pattern: string) => Bun.spawnSync(['pgrep', '-f', pattern]).stdout.toString().trim();
     const until = async (check: () => boolean, ms: number) => {
-      for (const started = Date.now(); !check() && Date.now() - started < ms; await new Promise((done) => setTimeout(done, 25)));
+      for (const started = performance.now(); !check() && performance.now() - started < ms; await new Promise((done) => setTimeout(done, 25)));
       return check();
     };
     const left: string[] = [];
@@ -1524,7 +1524,7 @@ describe('setup--ask_secret', () => {
     });
     const first = askSecret(module, { name: 'FIRST_TOKEN', purpose: 'x' });
     const second = askSecret(module, { name: 'SECOND_TOKEN', purpose: 'y' });
-    for (const until = Date.now() + 5_000; asked.length === 0 && Date.now() < until;) await Bun.sleep(5);
+    for (const until = performance.now() + 5_000; asked.length === 0 && performance.now() < until;) await Bun.sleep(5);
     await module.stop();
     release();
     expect((await first).success).toBe(true);
@@ -2100,7 +2100,7 @@ describe("the terminal's hidden question", () => {
     const { input, output, rl, lines, nextLine, shown } = terminal();
     input.write('half-typed\x1b[D\x1b[D');
     const pending = rl as unknown as { line: string; cursor: number };
-    for (const until = Date.now() + 5_000; pending.cursor !== 8 && Date.now() < until;) await Bun.sleep(5);
+    for (const until = performance.now() + 5_000; pending.cursor !== 8 && performance.now() < until;) await Bun.sleep(5);
     expect([pending.line, pending.cursor]).toEqual(['half-typed', 8]);
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
     input.write('s3cret-value\r');
@@ -2581,5 +2581,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const refused = await checkModel(made.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(refused.error).toBe('Anthropic refused the key stored as ANTHROPIC_API_KEY (401) when setup asked it for its list of models, so whether it offers claude-opus-5-5 isn\'t known. The key may be wrong or revoked, or it may not be allowed to list models, or to be used from where this machine is. Ask the person to check what the key is allowed, or for a new key with setup--ask_secret.');
     expect(called).toBe(1);
+  });
+});
+
+describe('the waits in these tests', () => {
+  test('measure elapsed time, so a step of the wall clock doesn\'t end one early', async () => {
+    const later = join(scratch(), 'later');
+    setTimeout(() => writeFileSync(later, 'came\n'), 100);
+    const real = Date.now.bind(Date);
+    let steps = 0;
+    const stepped = spyOn(Date, 'now').mockImplementation(() => real() + 60_000 * ++steps);
+    try {
+      expect(await waitForFile(later)).toBe('came');
+    } finally {
+      stepped.mockRestore();
+    }
   });
 });
