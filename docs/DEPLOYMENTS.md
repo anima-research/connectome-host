@@ -319,8 +319,10 @@ old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
 `PLACE` the same path after a move, or the copy's own after a copy. An
 install set up before setup recorded its directory is checked for a move or
-a copy only after setup next runs there, and that run asks the same of
-every place it names, its data directory included. A binding that changes
+a copy only after setup next runs there. That run takes each place under the
+directory that holds the install root as this install's, unless another
+install's root lies between, and asks the same of every other place it
+names. A binding that changes
 the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
 root first; if it's cut off, nothing starts until setup, run again, finishes
 it from the plan.

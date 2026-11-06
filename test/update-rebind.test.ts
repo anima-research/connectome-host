@@ -7,9 +7,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  installPaths, readRecord, writeJsonAtomic, type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
+  WRITE_RECORD_AGAIN, installPaths, readRecord, writeJsonAtomic, type CopyLabel, type GoBackList, type InstallRecord,
+  type LockRecord,
 } from '../src/update/contract.js';
-import { machineOps } from '../src/update/launcher.js';
+import { decide, machineOps, releaseLock } from '../src/update/launcher.js';
 import { ENTRY_POINT, parseArgs, setup, type ServiceUnits, type SetupOptions } from '../src/update/setup.js';
 
 let dir: string;
@@ -108,6 +109,71 @@ function startOf(at: string): { exitCode: number; stderr: string } {
   return { exitCode: run.exitCode ?? -1, stderr: run.stderr.toString() };
 }
 
+function commandOf(at: string, ...argv: string[]): { exitCode: number; stderr: string } {
+  const run = Bun.spawnSync([process.execPath, join(rootOf(at), 'connectome'), ...argv], { cwd: at, stderr: 'pipe' });
+  return { exitCode: run.exitCode ?? -1, stderr: run.stderr.toString() };
+}
+
+function beforeTheLock(at: string, meanwhile: () => void): () => void {
+  const lock = installPaths(rootOf(at)).lock;
+  const realLink = fs.linkSync;
+  let done = false;
+  const links = spyOn(fs, 'linkSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+    if (String(to) === lock && !done) {
+      done = true;
+      const taking = readFileSync(from);
+      meanwhile();
+      writeFileSync(from, taking);
+    }
+    realLink(from, to);
+  }) as typeof fs.linkSync);
+  return () => links.mockRestore();
+}
+
+const SETUP_MODULE = join(import.meta.dir, '..', 'src', 'update', 'setup.ts');
+const mountsAllowed = (() => {
+  if (process.platform !== 'linux' || Bun.which('unshare') === null) return false;
+  const probe = mkdtempSync(join(tmpdir(), 'update-rebind-mount-'));
+  try {
+    mkdirSync(join(probe, 'a'));
+    mkdirSync(join(probe, 'b'));
+    return Bun.spawnSync(['unshare', '-rm', 'mount', '--bind', join(probe, 'a'), join(probe, 'b')]).exitCode === 0;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+const bindMounted = test.skipIf(!mountsAllowed);
+
+function setupThroughMounts(mounts: Array<[string, string]>, at: string, over: Partial<SetupOptions> = {}): string {
+  const code = `import { setup } from ${JSON.stringify(SETUP_MODULE)};\n` +
+    'const given = JSON.parse(process.env.SETUP_OPTIONS);\n' +
+    'try {\n' +
+    '  setup({ ...given, say: () => {}, units: () => ({ found: [], unasked: [], unresolved: [], defaulted: [] }) });\n' +
+    '  console.log("set up");\n' +
+    '} catch (error) {\n' +
+    '  console.log(error.message);\n' +
+    '}\n';
+  const { cwd, dataDir, root, extraState, hostRoot, places } = options(at, over);
+  const given = { cwd, dataDir, root, extraState, hostRoot, places };
+  const mount = mounts.map(([from, to]) => `mount --bind '${from}' '${to}'`).join(' && ');
+  const run = Bun.spawnSync(['unshare', '-rm', 'sh', '-c', `${mount} && exec "$0" -e "$SETUP_CODE"`, process.execPath], {
+    env: { ...process.env, SETUP_CODE: code, SETUP_OPTIONS: JSON.stringify(given) }, stdout: 'pipe', stderr: 'pipe',
+  });
+  return run.stdout.toString() + run.stderr.toString();
+}
+
+function chained(): { a: string; b: string; c: string; places: Array<{ from: string; to: string }> } {
+  const [a, b, c] = ['a.json', 'b.json', 'c.json'].map((name) => join(dir, name));
+  for (const path of [a, b, c]) writeFileSync(path, path);
+  setup(options(install, { extraState: [a, b] }));
+  updated(install, [a, b]);
+  writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [a, b] });
+  const keep = [join(install, 'data'), join(install, 'mcpl-servers.json'), join(install, 'mcpl-servers.agent.json')];
+  return { a, b, c, places: [...keep.map((path) => ({ from: path, to: path })), { from: a, to: b }, { from: b, to: c }] };
+}
+const named = (at: string) => label(at)!.items.slice(2).map((item) => item.path);
+const listed = (at: string) => list(at)!.places.slice(2).map((place) => place.path);
+
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'update-rebind-')));
   install = join(dir, 'service');
@@ -181,17 +247,38 @@ describe('binding an install to the directory it is in', () => {
     expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [outside], workingDir: install });
   });
 
-  test('a record from before workingDir has no place bound by where it lies: each, its data directory too, needs an answer', () => {
-    setup(options(install));
-    updated(install);
-    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [] });
-    const kept = tree(rootOf(install));
+  test('a record from before workingDir takes each place under the directory that holds the install as its own, asking nothing about them, and asks about each place outside it', () => {
+    const outside = join(dir, 'state.json');
+    writeFileSync(outside, 'state');
+    setup(options(install, { extraState: [outside] }));
+    updated(install, [outside]);
+    const root = rootOf(install);
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: join(install, 'data'), extraState: [outside] });
+    const kept = tree(root);
     const why = refusal(() => setup(options(install)));
-    expect(why).toContain('This install\'s record is from a release that didn\'t record which directory an install is in');
-    const listed = why.split('\n').filter((line) => line.startsWith('  ')).map((line) => line.trim().split(' (')[0]);
-    expect(listed[0]).toBe(join(install, 'data'));
-    expect(listed.slice(1).sort()).toEqual([join(install, 'mcpl-servers.agent.json'), join(install, 'mcpl-servers.json')]);
-    expect(tree(rootOf(install))).toEqual(kept);
+    expect(why).toContain(`This install's record is from a release that didn't record which directory an install is in. Setup takes each place under ${install} as this install's`);
+    expect(why.split('\n').filter((line) => line.startsWith('  ')).map((line) => line.trim().split(' (')[0])).toEqual([outside]);
+    expect(tree(root)).toEqual(kept);
+    const labelled = readFileSync(join(root, 'copy', 'copy.json'), 'utf-8');
+    setup(options(install, { places: [{ from: outside, to: outside }] }));
+    expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [outside], workingDir: install });
+    expect(readFileSync(join(root, 'copy', 'copy.json'), 'utf-8')).toBe(labelled);
+  });
+
+  test('a record from before workingDir in a copy made above the original asks about the original\'s places, which lie below another install\'s root', () => {
+    const above = join(dir, 'above');
+    const original = join(above, 'service');
+    mkdirSync(above);
+    renameSync(install, original);
+    setup(options(original));
+    updated(original);
+    writeJsonAtomic(installPaths(rootOf(original)).install, { v: 1, dataDir: join(original, 'data'), extraState: [] });
+    for (const name of readdirSync(original)) copyOf(join(original, name), join(above, name));
+    const kept = tree(rootOf(above));
+    const why = refusal(() => setup(options(above)));
+    const asked = why.split('\n').filter((line) => line.startsWith('  ')).map((line) => line.trim().split(' (')[0]);
+    expect(asked).toEqual([join(original, 'data'), join(original, 'mcpl-servers.agent.json'), join(original, 'mcpl-servers.json')]);
+    expect(tree(rootOf(above))).toEqual(kept);
   });
 
   test('binding a record from before workingDir with every place kept rewrites nothing and leaves the lock alone; the guarded entries go in before the record', () => {
@@ -249,6 +336,9 @@ describe('binding an install to the directory it is in', () => {
   });
 
   test('--place is refused where there is nothing to bind, and where it names no place the install names', () => {
+    expect(refusal(() => setup(options(install, { places: [{ from: join(install, 'data'), to: join(install, 'data') }] }))))
+      .toContain('this install has no record yet, so there\'s nothing to bind');
+    expect(existsSync(installPaths(rootOf(install)).install)).toBe(false);
     setup(options(install));
     expect(refusal(() => setup(options(install, { places: [{ from: join(install, 'data'), to: join(install, 'data') }] }))))
       .toContain(`this install's record is bound to ${install}, where it is, so there's nothing to bind`);
@@ -264,6 +354,98 @@ describe('binding an install to the directory it is in', () => {
     expect(() => parseArgs(['--place', 'a'])).toThrow('--place takes a path and its place, and only the path followed it');
   });
 
+  test('a moved install whose record is written again as setup advises is bound, each place asked about, not taken as bound where it is', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const advised = WRITE_RECORD_AGAIN.split('\n')[1]!.trim()
+      .replace('<data directory>', join(moved, 'data')).replace('[<places>]', '[]').replace('<working directory>', moved);
+    writeFileSync(installPaths(rootOf(moved)).install, advised);
+    const kept = tree(rootOf(moved));
+    const why = refusal(() => setup(options(moved)));
+    expect(why).toContain('So it needs to be told where each of these is in this install');
+    expect(why).toContain(join(install, 'data'));
+    expect(tree(rootOf(moved))).toEqual(kept);
+  });
+
+  test('a binding refuses while the record or a label names a place in a form other than its plain one, naming it and its plain form, and changes nothing', () => {
+    setup(options(install));
+    updated(install);
+    const root = rootOf(install);
+    const outside = join(dir, 'state.json');
+    writeFileSync(outside, 'the original\'s state');
+    const roundabout = `${install}/../state.json`;
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: join(install, 'data'), extraState: [roundabout], workingDir: install });
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const kept = tree(rootOf(copy));
+    const why = refusal(() => setup(options(copy)));
+    expect(why).toContain(`names ${roundabout}, which isn't in the plain form setup compares places in. Write it as ${outside}`);
+    expect(why).toContain('Setup has changed nothing.');
+    expect(tree(rootOf(copy))).toEqual(kept);
+
+    const slashed = `${join(install, 'data')}/`;
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: slashed, extraState: [] });
+    expect(refusal(() => setup(options(install, { places: parseArgs(['--place', slashed, slashed]).places }))))
+      .toContain(`names ${slashed}, which isn't in the plain form setup compares places in. Write it as ${join(install, 'data')}`);
+
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: install });
+    const copyLabel = label(install)!;
+    writeJsonAtomic(join(root, 'copy', 'copy.json'),
+      { ...copyLabel, items: copyLabel.items.map((item, i) => i === 1 ? { ...item, path: `${install}/./mcpl-servers.json` } : item) });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    expect(refusal(() => setup(options(moved))))
+      .toContain(`${join(rootOf(moved), 'copy', 'copy.json')} names ${install}/./mcpl-servers.json, which isn't in the plain form`);
+  });
+
+  test('a place inside another is asked about with it, and the places of state outside the data directory are asked about in the record\'s order', () => {
+    const [z, state, a] = ['z.json', 'state', 'a.json'].map((name) => join(dir, name));
+    writeFileSync(z, z);
+    mkdirSync(state);
+    writeFileSync(a, a);
+    setup(options(install, { extraState: [z, state, a] }));
+    updated(install, [z, state, a]);
+    const root = rootOf(install);
+    const goBack = list(install)!;
+    const sessions = join(state, 'sessions');
+    writeJsonAtomic(join(root, 'set-aside', 'm2', 'places.json'),
+      { ...goBack, places: [...goBack.places, { path: sessions, name: `${goBack.places.length}-sessions`, before: 'dir', target: 'dir' }] });
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: join(install, 'data'), extraState: [z, state, a] });
+    const why = refusal(() => setup(options(install)));
+    const asked = why.split('\n').filter((line) => line.startsWith('  ')).map((line) => line.trim().split(' (')[0]);
+    expect(asked).toEqual([z, state, a]);
+    expect(why).toContain(`  ${state} (state kept outside its data directory; named by ${join(root, 'copy', 'copy.json')} and ${join(root, 'set-aside', 'm2', 'places.json')})`);
+  });
+
+  test('an install moved twice is bound each time: the second binding maps the places the first gave', () => {
+    setup(options(install));
+    updated(install);
+    const first = join(dir, 'first');
+    renameSync(install, first);
+    setup(options(first));
+    const second = join(dir, 'second');
+    renameSync(first, second);
+    setup(options(second));
+    expect(label(second)!.items.map((item) => item.path)).toEqual([join(second, 'data'), join(second, 'mcpl-servers.json')]);
+    expect(list(second)!.places.map((place) => place.path)).toEqual([join(second, 'data'), join(second, 'mcpl-servers.json')]);
+  });
+
+  test('a label with no list of absent places is bound without gaining one', () => {
+    setup(options(install));
+    updated(install);
+    const bare: CopyLabel = { ...label(install)! };
+    delete bare.absent;
+    writeJsonAtomic(join(rootOf(install), 'copy', 'copy.json'), bare);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    setup(options(moved));
+    const bound = label(moved)!;
+    expect(bound.items.map((item) => item.path)).toEqual([join(moved, 'data'), join(moved, 'mcpl-servers.json')]);
+    expect('absent' in bound).toBe(false);
+  });
+
   test('a DATA_DIR other than where the binding puts the recorded data directory is refused, naming that place', () => {
     setup(options(install));
     const moved = join(dir, 'moved');
@@ -276,29 +458,22 @@ describe('binding an install to the directory it is in', () => {
 });
 
 describe('a binding cut off', () => {
-  function chained(): { a: string; b: string; c: string; places: Array<{ from: string; to: string }> } {
-    const [a, b, c] = ['a.json', 'b.json', 'c.json'].map((name) => join(dir, name));
-    for (const path of [a, b, c]) writeFileSync(path, path);
-    setup(options(install, { extraState: [a, b] }));
-    updated(install, [a, b]);
-    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [a, b] });
-    const keep = [join(install, 'data'), join(install, 'mcpl-servers.json'), join(install, 'mcpl-servers.agent.json')];
-    return { a, b, c, places: [...keep.map((path) => ({ from: path, to: path })), { from: a, to: b }, { from: b, to: c }] };
-  }
-  const named = (at: string) => label(at)!.items.slice(2).map((item) => item.path);
-  const listed = (at: string) => list(at)!.places.slice(2).map((place) => place.path);
-
-  test('cut while the guarded entries are written: the plan stands, the entries refuse, and the next run finishes from the plan, asking nothing again', () => {
-    const { b, c, places } = chained();
+  test('cut while the guarded entries are written: the plan stands, no file is bound yet, both entries refuse, and the next run finishes from the plan, asking nothing again', () => {
+    const { a, b, c, places } = chained();
     const root = rootOf(install);
     mkdirSync(join(root, 'connectome.tmp'));
     expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
     expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
     expect(record(install)!.workingDir).toBeUndefined();
+    expect(named(install)).toEqual([a, b]);
+    expect(listed(install)).toEqual([a, b]);
     const refused = startOf(install);
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain(`a setup binding this install to ${install} was cut off before it finished`);
     expect(refused.stderr).toContain('Setup finishes it, without asking about its places again');
+    const command = commandOf(install, 'update');
+    expect(command.exitCode).toBe(1);
+    expect(command.stderr).toContain(`a setup binding this install to ${install} was cut off before it finished`);
     rmSync(join(root, 'connectome.tmp'), { recursive: true });
     setup(options(install));
     expect(said).toContain(`Finished binding the install at ${root} to ${install}, which a setup run cut off had begun, with the places that run was given.`);
@@ -354,7 +529,75 @@ describe('a binding cut off', () => {
     setup(options(install));
     expect(existsSync(plan)).toBe(false);
     expect(named(install)).toEqual([b, c]);
+    expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [b, c], workingDir: install });
     expect(startOf(install).exitCode).toBe(0);
+  });
+
+  test('cut after the files, before the record: each file is bound, the record is as it was, the plan stands, and the next run finishes it', () => {
+    const { b, c, places } = chained();
+    const root = rootOf(install);
+    mkdirSync(`${installPaths(root).install}.tmp`);
+    expect(() => setup(options(install, { places }))).toThrow(/install\.json\.tmp/);
+    expect(named(install)).toEqual([b, c]);
+    expect(listed(install)).toEqual([b, c]);
+    expect(record(install)!.workingDir).toBeUndefined();
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
+    rmSync(`${installPaths(root).install}.tmp`, { recursive: true });
+    setup(options(install));
+    expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [b, c], workingDir: install });
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+  });
+
+  test('a plan that isn\'t whole is refused as one this release can\'t finish, naming each file to put right, and nothing changes', () => {
+    const { places } = chained();
+    const root = rootOf(install);
+    mkdirSync(join(root, 'connectome.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
+    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    const plan = join(root, REBIND_PLAN);
+    const whole = JSON.parse(readFileSync(plan, 'utf-8')) as Record<string, unknown> & { record: Record<string, unknown> };
+    const damaged = [
+      { ...whole, id: undefined }, { ...whole, from: 5 }, { ...whole, to: null }, { ...whole, places: {} },
+      { ...whole, places: [{ from: join(dir, 'a.json') }] }, { ...whole, record: { ...whole.record, dataDir: 5 } },
+      { ...whole, record: { ...whole.record, extraState: 'x' } }, { ...whole, record: { ...whole.record, v: undefined } },
+      { ...whole, record: { ...whole.record, workingDir: undefined } },
+    ];
+    for (const value of damaged) {
+      writeFileSync(plan, JSON.stringify(value));
+      const kept = tree(root);
+      const why = refusal(() => setup(options(install)));
+      expect(why, JSON.stringify(value)).toContain('isn\'t one this release reads');
+      expect(why).toContain('put this install\'s record, copy/copy.json, copy.prev/copy.json and each set-aside/*/places.json right');
+      expect(tree(root)).toEqual(kept);
+    }
+  });
+
+  test('a Go back\'s list that can\'t be read once a binding has begun is refused as a binding under way, naming its plan, not as nothing changed', () => {
+    const { places } = chained();
+    const root = rootOf(install);
+    const second = join(root, 'set-aside', 'm2', 'places.json');
+    mkdirSync(`${second}.tmp`);
+    expect(() => setup(options(install, { places }))).toThrow(/places\.json\.tmp/);
+    rmSync(`${second}.tmp`, { recursive: true });
+    writeFileSync(second, 'not a list');
+    const why = refusal(() => setup(options(install)));
+    expect(why).toContain(second);
+    expect(why).toContain(`A binding of this install is under way, with its plan at ${join(root, REBIND_PLAN)}`);
+    expect(why).not.toContain('changed nothing');
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
+  });
+
+  test('a run finishing a plan from a record before workingDir, with a running lock holder, is refused with both readings, and changes nothing', () => {
+    const { places } = chained();
+    const root = rootOf(install);
+    mkdirSync(join(root, 'connectome.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
+    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    lockHeldBy(install, live());
+    const kept = tree(root);
+    const why = refusal(() => setup(options(install)));
+    expect(why).toContain('which is running, and this install\'s record is from a release that didn\'t record where the install was');
+    expect(tree(root)).toEqual(kept);
   });
 
   test('a run finishing a plan takes no --place, and one in another directory than the plan binds to is refused', () => {
@@ -370,6 +613,88 @@ describe('a binding cut off', () => {
     expect(refusal(() => setup(options(moved)))).toContain(`A setup run binding this install to ${install} was cut off before it finished, and the install is in ${moved} now`);
     expect(tree(rootOf(moved))).toEqual(kept);
   });
+
+  bindMounted('a plan cut off is finished through another name of the directory it binds to, a bind mount (where this user may bind-mount, as in a user namespace)', () => {
+    const { b, c, places } = chained();
+    const root = rootOf(install);
+    mkdirSync(join(root, 'connectome.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
+    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    const alias = join(dir, 'alias');
+    mkdirSync(alias);
+    expect(setupThroughMounts([[install, alias]], alias, { dataDir: join(install, 'data') })).toContain('set up');
+    expect(named(install)).toEqual([b, c]);
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+  });
+});
+
+describe('what setup read before it held the lock', () => {
+  test('a binding whose install another setup bound meanwhile refuses, changing nothing more, and the install starts', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const restore = beforeTheLock(moved, () => setup(options(moved)));
+    const why = (() => {
+      try {
+        return refusal(() => setup(options(moved)));
+      } finally {
+        restore();
+      }
+    })();
+    expect(why).toContain('isn\'t what setup read before it held the lock, so setup has changed none of them.');
+    expect(existsSync(join(rootOf(moved), REBIND_PLAN))).toBe(false);
+    expect(label(moved)!.items.map((item) => item.path)).toEqual([join(moved, 'data'), join(moved, 'mcpl-servers.json')]);
+    expect(startOf(moved).exitCode).toBe(0);
+  });
+
+  test('a run finishing a plan that another setup finished meanwhile refuses, changing nothing more', () => {
+    const { b, c, places } = chained();
+    const root = rootOf(install);
+    mkdirSync(join(root, 'connectome.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
+    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    const restore = beforeTheLock(install, () => setup(options(install)));
+    const why = (() => {
+      try {
+        return refusal(() => setup(options(install)));
+      } finally {
+        restore();
+      }
+    })();
+    expect(why).toContain('isn\'t what setup read before it held the lock, so setup has changed none of them.');
+    expect(named(install)).toEqual([b, c]);
+    expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [b, c], workingDir: install });
+  });
+
+  test('a record from before workingDir, with an answer that moves a place no file names, takes the lock: a running holder is refused with both readings, and nothing changes', () => {
+    setup(options(install));
+    const theirs = join(dir, 'state.json');
+    const own = join(dir, 'own.json');
+    writeFileSync(theirs, 'the original\'s state');
+    writeFileSync(own, 'this install\'s state');
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [theirs] });
+    lockHeldBy(install, live());
+    const kept = tree(rootOf(install));
+    const places = [{ from: join(install, 'data'), to: join(install, 'data') }, { from: theirs, to: own }];
+    const why = refusal(() => setup(options(install, { places })));
+    expect(why).toContain('which is running, and this install\'s record is from a release that didn\'t record where the install was');
+    expect(why).toContain('If that process is this install\'s host, stop it and run setup again; if the lock came with a copy');
+    expect(tree(rootOf(install))).toEqual(kept);
+  });
+});
+
+describe('a start', () => {
+  test('a start that finds a binding\'s plan once it holds the lock refuses, though the plan came after start.js looked', async () => {
+    setup(options(install));
+    const root = rootOf(install);
+    writeFileSync(join(root, REBIND_PLAN), '{}');
+    try {
+      await expect(decide(root, machineOps())).rejects.toThrow(`was cut off before it finished (${join(root, REBIND_PLAN)} is its plan)`);
+    } finally {
+      releaseLock(root);
+    }
+  });
 });
 
 describe('the lock across a move or a copy', () => {
@@ -379,10 +704,36 @@ describe('the lock across a move or a copy', () => {
     const lock = lockHeldBy(install, live());
     const copy = join(dir, 'copy');
     copyOf(install, copy);
-    setup(options(copy));
+    const copyLock = installPaths(rootOf(copy)).lock;
+    const bound = [join(rootOf(copy), 'copy', 'copy.json'), join(rootOf(copy), 'set-aside', 'm2', 'places.json')];
+    const holders: Array<number | undefined> = [];
+    const realRename = fs.renameSync;
+    const renames = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (bound.includes(String(to))) holders.push(readRecord<LockRecord>(copyLock, 'lock')?.pid);
+      realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      setup(options(copy));
+    } finally {
+      renames.mockRestore();
+    }
+    expect(holders).toEqual([process.pid, process.pid]);
     expect(record(copy)!.workingDir).toBe(copy);
-    expect(existsSync(installPaths(rootOf(copy)).lock)).toBe(false);
+    expect(existsSync(copyLock)).toBe(false);
     expect(readRecord<LockRecord>(installPaths(rootOf(install)).lock, 'lock')).toEqual(lock);
+  });
+
+  bindMounted('where the root where the install was is this root through a bind mount, the lock there is this lock, and shows no copy (where this user may bind-mount, as in a user namespace)', () => {
+    setup(options(install));
+    lockHeldBy(install, live());
+    const other = join(dir, 'other');
+    mkdirSync(rootOf(other), { recursive: true });
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: other });
+    const places = [{ from: join(install, 'data'), to: join(install, 'data') }];
+    expect(setupThroughMounts([[rootOf(install), rootOf(other)]], install, { places }))
+      .toContain(`and ${rootOf(other)}, where the install was, leads to this same directory.`);
+    expect(record(install)!.workingDir).toBe(other);
+    expect(existsSync(installPaths(rootOf(install)).lock)).toBe(true);
   });
 
   test('a move with its host still running is refused, saying what is known and both ways out', () => {

@@ -193,6 +193,8 @@ export interface InstallRecord {
   workingDir?: string;
 }
 
+export const REBIND_PLAN = 'rebind.json';
+
 /** How the block setup prints each run with the state kept outside the data directory opens, which the remedy
  *  below names. */
 export const EXTRA_STATE_LINE = 'State kept outside the data directory';
@@ -223,7 +225,7 @@ export function copyShows(those: string): string {
 /** How to put an install record right, which setup's refusals of a lost record, or of one that isn't JSON, has no
  *  version or names no data directory, end with. It holds only words true wherever it's printed. */
 export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n' +
-  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>], "workingDir": "<working directory>"}\n' +
+  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>]}\n' +
   'where <data directory> is the absolute path of the data directory its host was started with: the DATA_DIR its ' +
   'service gives it, or else the one Bun reads from the .env files in the service\'s working directory, or else ' +
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
@@ -237,12 +239,12 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   `${copyShows('which stay out of the list')} An update copies only the places the ` +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
-  'And <working directory> is the real path of the directory that holds the record\'s directory, as `realpath .` ' +
-  'prints it in that directory: the record is bound to it, and start.js and connectome refuse a record bound to ' +
-  'another.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
-  'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
-  'as a current that names no release. Its service can keep running ' +
+  'records only those. A record written this way doesn\'t say which directory the install was set up in, so setup ' +
+  'takes each place under the directory that holds the record\'s directory as this install\'s, and asks where each ' +
+  'other place is in this install: `connectome setup discord` asks about each in turn, and a setup run by hand ' +
+  'lists them, each to be given with --place PATH PLACE. Then it writes the record, start.js and connectome again, ' +
+  'or says what else stops it first, such as a current that names no release. Its service can keep running ' +
   'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
   'again: its next start runs start.js, whose launcher reads the record.';
 

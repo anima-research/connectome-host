@@ -14,16 +14,13 @@
  * finishes a binding cut off from its plan, without asking again.
  */
 import { randomUUID } from 'node:crypto';
-import { linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
-import { basename, dirname, join, relative } from 'node:path';
+import { existsSync, linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
-  ContractError, copyLabelPath, installPaths, readRecord, realOrResolved, syncDir, writeJsonAtomic,
+  ContractError, REBIND_PLAN, copyLabelPath, installPaths, readRecord, syncDir, writeJsonAtomic,
   type CopyLabel, type GoBackList, type InstallRecord, type LockRecord,
 } from './contract.js';
 import { isUnder, lockLive, takeLock, type LauncherOps } from './launcher.js';
-
-/** The plan of a binding under way, in the install's root (RebindPlan). */
-export const REBIND_PLAN = 'rebind.json';
 
 export interface RebindPlan {
   v: 1;
@@ -93,7 +90,11 @@ function pathsIn(value: CopyLabel | GoBackList, kind: BoundFile['kind']): string
 /** The copy's labels a start can still read (the copy's, and the one before it, which a start puts back when the
  *  copy is gone) and each Go back's list. An unfinished copy's label isn't among them: a start removes that copy
  *  before it reads anything of it. */
-export function boundFiles(root: string): BoundFile[] {
+export function boundFiles(root: string, underWay: string | null = null): BoundFile[] {
+  const unbindable = (why: string) => new ContractError(`${why}, so setup can't bind the places it names to this ` +
+    (underWay === null ? 'directory, and has changed nothing.'
+      : `directory. A binding of this install is under way, with its plan at ${underWay}: put that file right, and ` +
+        'setup finishes the binding.'));
   const { copy, copyPrev, setAside } = installPaths(root);
   const found: Array<{ path: string; kind: BoundFile['kind'] }> = [
     { path: copyLabelPath(copy), kind: 'label' },
@@ -113,15 +114,11 @@ export function boundFiles(root: string): BoundFile[] {
       value = readRecord<CopyLabel | GoBackList>(path, kind === 'label' ? "copy's label" : "Go back's list of places");
     } catch (error) {
       if (!(error instanceof ContractError)) throw error;
-      throw new ContractError(`${error.message.replace(/\.+$/, '')}, so setup can't bind the places it names to this ` +
-        'directory, and has changed nothing.');
+      throw unbindable(error.message.replace(/\.+$/, ''));
     }
     if (value === null) continue;
     const paths = pathsIn(value, kind);
-    if (paths === null) {
-      throw new ContractError(`${path} names its places in a form this release can't read, so setup can't bind them to ` +
-        'this directory, and has changed nothing.');
-    }
+    if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`);
     files.push({ path, kind, value, paths });
   }
   return files;
@@ -181,7 +178,14 @@ export function mapPath(path: string, plan: Pick<RebindPlan, 'from' | 'to' | 'pl
 export type Binding =
   | { kind: 'bound'; to: string }
   | { kind: 'resume'; plan: RebindPlan }
-  | { kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[] };
+  | { kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: RebindPlan['places'] };
+
+function keptHere(path: string, to: string, rootName: string): boolean {
+  for (let at = path; ; at = dirname(at)) {
+    if (sameDirectory(at, to)) return true;
+    if (existsSync(join(at, rootName, 'install.json')) || dirname(at) === at) return false;
+  }
+}
 
 export function bindingOf(root: string, record: InstallRecord): Binding {
   const plan = readPlan(root);
@@ -189,8 +193,26 @@ export function bindingOf(root: string, record: InstallRecord): Binding {
   const to = workingDirOf(root);
   if (boundHere(record, root)) return { kind: 'bound', to };
   const from = typeof record.workingDir === 'string' ? record.workingDir : null;
-  const places = placesOf(record, boundFiles(root));
-  return { kind: 'bind', from, to, places, ask: places.filter((place) => from === null || !isUnder(place.path, from)) };
+  const files = boundFiles(root);
+  const extraState = Array.isArray(record.extraState) ? record.extraState.filter((path) => typeof path === 'string') : [];
+  const named = [
+    ...[record.dataDir, ...extraState].map((path) => ({ path, by: `This install's record (${installPaths(root).install})` })),
+    ...files.flatMap((file) => file.paths.map((path) => ({ path, by: file.path }))),
+  ];
+  const roundabout = named.find(({ path }) => resolve(path) !== path);
+  if (roundabout !== undefined) {
+    throw new ContractError(`${roundabout.by} names ${roundabout.path}, ` + (isAbsolute(roundabout.path)
+      ? `which isn't in the plain form setup compares places in. Write it as ${resolve(roundabout.path)}`
+      : 'which isn\'t an absolute path. Write the absolute path it means') +
+      ', and run setup again. Setup has changed nothing.');
+  }
+  const places = placesOf(record, files);
+  const kept = from === null ? places.filter((place) => keptHere(place.path, to, basename(root))) : [];
+  return {
+    kind: 'bind', from, to, places,
+    ask: places.filter((place) => from === null ? !kept.includes(place) : !isUnder(place.path, from)),
+    kept: kept.map((place) => ({ from: place.path, to: place.path })),
+  };
 }
 
 /** The plan a binding cut off left, or null when there is none. */
@@ -198,8 +220,8 @@ export function readPlan(root: string): RebindPlan | null {
   const path = rebindPath(root);
   const damaged = (why: string) => new ContractError(`The plan of a binding of this install that was cut off, at ${path}, ` +
     `${why}, so setup can't tell which place it gave each place this install names, and can't finish it. Setup has ` +
-    'changed nothing. If you know the place each should name, put this install\'s record, copy/copy.json and each ' +
-    'set-aside/*/places.json right, and remove the plan.');
+    'changed nothing. If you know the place each should name, put this install\'s record, copy/copy.json, ' +
+    'copy.prev/copy.json and each set-aside/*/places.json right, and remove the plan.');
   let plan: RebindPlan | null;
   try {
     plan = readRecord<RebindPlan>(path, 'plan of a binding');
@@ -211,8 +233,8 @@ export function readPlan(root: string): RebindPlan | null {
   const readable = typeof plan.id === 'string' && plan.id !== '' && (plan.from === null || typeof plan.from === 'string') &&
     typeof plan.to === 'string' && Array.isArray(plan.places) &&
     plan.places.every((place) => typeof place?.from === 'string' && typeof place.to === 'string') &&
-    typeof record?.dataDir === 'string' && Array.isArray(record.extraState) &&
-    record.extraState.every((place) => typeof place === 'string');
+    record?.v === 1 && typeof record.dataDir === 'string' && Array.isArray(record.extraState) &&
+    record.extraState.every((place) => typeof place === 'string') && typeof record.workingDir === 'string';
   if (!readable) throw damaged('isn\'t one this release reads');
   return plan;
 }
@@ -232,7 +254,7 @@ export function writePlan(root: string, plan: RebindPlan): void {
 
 /** Rewrite each label and list the plan hasn't yet, each stamped with its id in the same write. */
 export function rewriteFiles(root: string, plan: RebindPlan): void {
-  for (const file of boundFiles(root)) {
+  for (const file of boundFiles(root, rebindPath(root))) {
     if (file.value.rebound === plan.id) continue;
     const map = <T extends { path: string }>(place: T): T => {
       const path = mapPath(place.path, plan);
@@ -292,13 +314,7 @@ function copiedFrom(root: string, from: string, holder: LockRecord): string | nu
   const here = realpathSync(root);
   const was = join(from, basename(here));
   const wasLock = installPaths(was).lock;
-  let wasReal: string;
-  try {
-    wasReal = realOrResolved(was);
-  } catch (error) {
-    return `${was}, where the install was, can't be followed (${(error as Error).message})`;
-  }
-  if (wasReal === here) return `${was}, where the install was, leads to this same directory`;
+  if (sameDirectory(was, here)) return `${was}, where the install was, leads to this same directory`;
   let there: LockRecord | null;
   try {
     there = readRecord<LockRecord>(wasLock, 'lock');

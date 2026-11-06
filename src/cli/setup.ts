@@ -815,13 +815,15 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       'with the places that run was given.');
     return { dataDir: binding.plan.record.dataDir, placeArgs: [] };
   }
-  const { from, to, ask } = binding;
+  const { from, to, ask, kept } = binding;
   const answer = ask.length === 0 ? '' : ' Press Enter where a place is this install\'s, or type the path of this ' +
     'install\'s own, as after a copy.';
   out(from === null
-    ? 'This install\'s record is from a release that didn\'t record which directory an install is in, so setup can\'t ' +
-      'tell whether it was moved or copied here, or whose each place it names is. Setup asks about each, once, and ' +
-      `then records this directory.${answer}`
+    ? 'This install\'s record is from a release that didn\'t record which directory an install is in. Setup binds it ' +
+      `here: each place under ${to} stays as it is.` +
+      (ask.length === 0 ? '' : ' It asks about each place outside it, or inside another install\'s directory ' +
+        'within it, since it can\'t tell whether that came with the install, as after a move, or is still another ' +
+        `install's, as after a copy.${answer}`)
     : `This install's record is bound to ${from}, and the install is in ${to}, so it was moved or copied here. Setup ` +
       `binds it here: each place under ${from} becomes the same place under ${to}.` +
       (ask.length === 0 ? '' : ` It asks about each place outside ${from}, since it can't tell whether that came ` +
@@ -850,7 +852,7 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
     }
   }
   return {
-    dataDir: mapPath(record.dataDir, { from, to, places })!,
+    dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...kept] })!,
     placeArgs: places.flatMap((place) => ['--place', place.from, place.to]),
   };
 }
