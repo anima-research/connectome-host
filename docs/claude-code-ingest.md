@@ -338,7 +338,8 @@ nothing it does reaches the original:
    following links (`cp -RL`), so a link in it doesn't lead the copy back to the
    original.
 2. Make stage 4's Claude-Code-specific choices in the recipe first, all but its Web UI,
-   so the check compiles what the resident will run. Then copy it, and in the copy leave
+   so the check compiles what the resident will run. Then copy it, readable by you alone
+   (`chmod 600` on the copy before the password goes in), and in the copy leave
    out `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath` and
    `extensions`: the servers' `env` names files in the original data directory,
    discord-mcpl would put the resident on Discord, a fleet child starts on its own data
@@ -360,7 +361,7 @@ nothing it does reaches the original:
    entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
    and a host it starts writes the install's own files. Start it in an environment of
    its own:
-   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE='<the data copy>/no-overlay.json' DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE="$PWD/no-overlay.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
    The host gets only the variables the command names, and from that directory Bun loads
    none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
    key is a mock, and with `HOME` the new directory, Codex has no login. Where the
@@ -378,11 +379,13 @@ nothing it does reaches the original:
    resident sends, since what the host found of the account is kept per base URL and the
    check names none. The recipe's absolute workspace mounts are the resident's own
    files, so run no tool in the check, as `/puppet` would. The overlay variable names a
-   file that doesn't exist, so the servers the resident deployed for itself
-   (`mcpl-servers.agent.json`) stay out too. Where the host asks the API for a count,
-   the count fails, and where it asks for none, there's none live either. The rest still
-   compiles. Then hit the endpoints with the check's username and password, such as
-   `curl -u 'check:<password>' http://127.0.0.1:<port>/debug/context`, and stop it.
+   file in the new, empty directory, which doesn't exist, so the servers the resident
+   deployed for itself (`mcpl-servers.agent.json`) stay out too. Where the host asks the
+   API for a count, the count fails, and where it asks for none, there's none live
+   either. The rest still compiles. Then hit the endpoints with the check's username and
+   password, such as `curl -u check http://127.0.0.1:<port>/debug/context`, which asks
+   for the password itself, so it stays out of the command line and the shell's
+   history, and stop it.
 
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
