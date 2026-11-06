@@ -110,16 +110,10 @@ function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
-function dotenvAssignments(dir: string, file: string): Assignment[] {
-  const path = join(dir, file);
-  if (file === '.env') return envAssignments(path);
-  return Object.entries(parseEnv(envText(path))).map(([name, value]) => ({ name, value: value ?? '' }));
-}
-
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
-    for (const { name } of dotenvAssignments(dir, file)) names.add(name);
+    for (const name of Object.keys(parseEnv(envText(join(dir, file))))) names.add(name);
   }
   return [...names];
 }

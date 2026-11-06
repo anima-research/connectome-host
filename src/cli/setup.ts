@@ -848,15 +848,28 @@ function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Re
 }
 
 // Bun keeps an exported value over a dotenv file's, so a name the files give, holding a value none of them gives, was
-// exported.
+// exported. A file's value can be built from such a name, so each name judged so is judged again with the others put
+// back as exported, until none changes: a name the environment holds isn't read from the files, so each is judged
+// without itself.
 function exportedOf(given: Record<string, string | undefined>, rest: Record<string, string | undefined>, cwd: string):
   Record<string, string> {
   const fromFiles = dotenvValues(cwd, rest);
   const exported: Record<string, string> = {};
+  let fileNamed: string[] = [];
   for (const [name, value] of Object.entries(given)) {
     if (value === undefined) continue;
-    if (Object.hasOwn(rest, name) || !fromFiles.get(name)?.has(value)) exported[name] = value;
+    if (Object.hasOwn(rest, name)) exported[name] = value;
+    else if (!fromFiles.get(name)?.has(value)) fileNamed.push(name);
   }
+  for (let pass = 0, passes = fileNamed.length; pass < passes; pass++) {
+    const kept = fileNamed.filter((name) => {
+      const others = Object.fromEntries(fileNamed.filter((other) => other !== name).map((other) => [other, given[other]]));
+      return !dotenvValues(cwd, { ...rest, ...others }).get(name)?.has(given[name]!);
+    });
+    if (kept.length === fileNamed.length) break;
+    fileNamed = kept;
+  }
+  for (const name of fileNamed) exported[name] = given[name]!;
   return exported;
 }
 

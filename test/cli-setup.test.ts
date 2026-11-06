@@ -1476,6 +1476,38 @@ test('a value Bun expanded from a $NAME in a dotenv file stays away from setup\'
   }
 });
 
+test('a .env in the directory setup was started in is read for its names as Bun reads it, whatever its form, since that .env isn\'t setup\'s', async () => {
+  const started = directory();
+  writeFileSync(join(started, '.env'), 'OTHER=x\nTOKEN=$OTHER\n');
+  const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+    cwd: started, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+  });
+  const given = JSON.parse(ran.stdout.toString()) as Record<string, string>;
+  expect([given.OTHER, given.TOKEN]).toEqual(['x', 'x']);
+  const dir = directory();
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { cwd: started, env: { ...given, KEEP_ME: 'kept' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  for (const env of [...made.seen.options.map((options) => options.env), made.seen.launched!.env]) {
+    for (const name of ['OTHER', 'TOKEN']) expect(env[name], name).toBeUndefined();
+    expect(env.KEEP_ME).toBe('kept');
+  }
+});
+
+test('a dotenv value Bun built from a name the shell exports, which a file there also names, is the file\'s, not taken for exported', async () => {
+  const started = directory();
+  writeFileSync(join(started, '.env.local'), 'NODE_ENV=development\nANTHROPIC_API_KEY=sk-ant-${NODE_ENV}\n');
+  const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+    cwd: started, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', NODE_ENV: 'staging' },
+  });
+  const given = JSON.parse(ran.stdout.toString()) as Record<string, string>;
+  expect([given.NODE_ENV, given.ANTHROPIC_API_KEY]).toEqual(['staging', 'sk-ant-staging']);
+  const dir = directory();
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { cwd: started, env: given });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.asked.some((question) => question.includes('exported'))).toBe(false);
+  expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
+});
+
 test('a name the shell exports that a plain object inherits, such as toString, reaches setup\'s agent like any other', async () => {
   const dir = directory();
   const env = { PATH: '/usr/bin:/bin', HOME: dir, toString: 'exported-to-string', constructor: 'exported-constructor' };
