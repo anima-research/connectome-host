@@ -176,6 +176,9 @@ export const LAST_SWITCH = 'the last switch';
 
 export const QUOTED = '  ';
 
+const WROTE_LAST = ', as it kept it (the service\'s log, or the terminal it was started in, also has what this leaves ' +
+  'out, such as an error Bun reported itself):';
+
 export const BUN_UPGRADE = 'Upgrade Bun (`bun upgrade`, or the package manager that installed it), start the host ' +
   'again, then Update.';
 
@@ -213,9 +216,25 @@ const AGENT_WORDS: ReadonlyArray<readonly [string, string]> = [
     'with setup or by updating it by hand.'],
 ];
 
+const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
+  'is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ask is ' +
+  'done falls back the same way.';
+
 export function inAgentWords(text: string): string {
-  return text.split('\n').map((line) => line.startsWith(QUOTED) ? line
-    : AGENT_WORDS.reduce((said, [person, agent]) => said.split(person).join(agent), line)).join('\n');
+  const said: string[] = [];
+  let kept: 'none' | 'heading' | 'quoted' = 'none';
+  for (const line of text.split('\n')) {
+    if (line.startsWith(QUOTED)) {
+      said.push(line);
+      if (kept === 'heading') kept = 'quoted';
+      continue;
+    }
+    if (kept === 'quoted') said.push(HOST_LINES);
+    kept = line.endsWith(WROTE_LAST) ? 'heading' : 'none';
+    said.push(AGENT_WORDS.reduce((words, [person, agent]) => words.split(person).join(agent), line));
+  }
+  if (kept === 'quoted') said.push(HOST_LINES);
+  return said.join('\n');
 }
 
 export const GO_BACK_UNREAD = 'whether a Go back is offered';
@@ -390,8 +409,7 @@ export function lastSwitchLines(last: SwitchOutcome): string[] {
     (last.reason ? `: ${last.reason}.` : '.');
   const kept = keptLines(last);
   if (kept.length === 0) return [`${head} ${MORE_IN_LOG}`];
-  return [`${head} What ${last.to} wrote last, as it kept it (the service's log, or the terminal it was started ` +
-    'in, also has what this leaves out, such as an error Bun reported itself):', ...kept.map((line) => `${QUOTED}${line}`)];
+  return [`${head} What ${last.to} wrote last${WROTE_LAST}`, ...kept.map((line) => `${QUOTED}${line}`)];
 }
 
 function failedInstall(install: { version: string; error?: string }): string {

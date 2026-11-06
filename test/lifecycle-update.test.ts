@@ -857,6 +857,27 @@ test('check on a headless host quotes what a failed release wrote as it wrote it
   expect(check).toContain('\n  [update] For a host still quiesced, /update restart resume tries again.');
 });
 
+test('check after a fallback says the quoted lines are the host\'s to the person who runs it, theirs to do, for the agent to pass on, where /update says nothing of it', async () => {
+  const { root, dataDir } = installRunning0141(['0.15.0']);
+  appendJournal(root, { at: '2026-10-26T20:00:00.000Z', step: 'fallback', from: '0.15.0', to: '0.14.1', outcome: 'ok',
+    reason: '0.15.0 ended before its commit', mark: 'm1' });
+  const refusal = [
+    '[update] Couldn\'t open the store at /data/alice: its topology is from a newer release',
+    'This release couldn\'t open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.14.1:',
+    'Couldn\'t open the store at /data/alice: its topology is from a newer release',
+    'To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line names, and update again; or stay on 0.14.1 until a release opens them.',
+  ];
+  writeFileSync(installPaths(root).trialLog, JSON.stringify({ v: 1, release: '0.15.0', mark: 'm1', lines: refusal }));
+  const host = residentHost({ root, dataDir });
+  const lines = text(await host.call({ action: 'check' })).split('\n');
+  const last = lines.lastIndexOf(`  ${refusal.at(-1)}`);
+  expect(last).toBeGreaterThan(0);
+  expect(lines[last + 1]).toBe('Those quoted lines are your host\'s, written to the person who runs it: what they ask of that ' +
+    'person is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ' +
+    'ask is done falls back the same way.');
+  expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).not.toContain('Those quoted lines');
+});
+
 test('back needs the data kept or restored, and goes back the way it was asked', async () => {
   for (const data of ['keep', 'restore'] as const) {
     const { root, dataDir } = installRunning0141();
