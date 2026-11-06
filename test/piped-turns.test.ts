@@ -48,6 +48,7 @@ describe('the wait for a line\'s turn', () => {
     test(`${end} from the primary agent ends it`, async () => {
       const { turns, emit } = setUp();
       const wait = turns.waitForTurn(60_000);
+      turns.takenIn();
       emit('inference:started');
       expect(await settled(wait)).toBe(false);
       emit(end, { error: 'x' });
@@ -72,6 +73,37 @@ describe('the wait for a line\'s turn', () => {
       emit(settledTrace);
       expect({ running: turns.running(), owed: turns.owed() }).toEqual({ running: false, owed: false });
     });
+  });
+
+  test('a line\'s wait isn\'t ended by the turn of an earlier line taken in after that line\'s wait ran out', async () => {
+    await onFakeTimers(async (advance, settledNow) => {
+      const { turns, emit } = setUp();
+      const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+      void turns.waitForTurn(400);
+      await advance(400);
+      const second = turns.waitForTurn(400);
+      turns.takenIn();
+      emit('inference:started');
+      emit(settledTrace);
+      expect(await settledNow(second)).toBe(false);
+      turns.takenIn();
+      emit('inference:started');
+      emit(settledTrace);
+      expect(await settledNow(second)).toBe(true);
+    });
+  });
+
+  test('a turn that starts and settles before the line is taken in, such as an unrelated wake\'s, leaves its wait', async () => {
+    const { turns, emit } = setUp();
+    const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+    const wait = turns.waitForTurn(60_000);
+    emit('inference:started');
+    emit(settledTrace);
+    expect(await settled(wait)).toBe(false);
+    turns.takenIn();
+    emit('inference:started');
+    emit(settledTrace);
+    expect(await settled(wait)).toBe(true);
   });
 
   test('endAll ends every wait at once, and no cap fires after it', async () => {
@@ -111,6 +143,7 @@ describe('the wait for a line\'s turn', () => {
   test('a failure keeps it waiting, and the retry\'s end ends it', async () => {
     const { turns, emit, out } = setUp();
     const wait = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:failed', { error: 'overloaded' });
     expect(await settled(wait)).toBe(false);
@@ -124,6 +157,7 @@ describe('the wait for a line\'s turn', () => {
   test("an end whose error is empty or missing prints 'Unknown error'", async () => {
     const { turns, emit, out } = setUp();
     const wait = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:failed', { error: '' });
     expect(out).toContain('err:Error: Unknown error');
@@ -136,6 +170,7 @@ describe('the wait for a line\'s turn', () => {
   test('a failure the framework gives up on ends it at exhausted, printing the error once', async () => {
     const { turns, emit, out } = setUp();
     const wait = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:failed', { error: 'bad request' });
     emit('inference:exhausted', { error: 'bad request' });
@@ -146,6 +181,7 @@ describe('the wait for a line\'s turn', () => {
   test('another agent\'s end leaves it waiting', async () => {
     const { turns, emit } = setUp();
     const wait = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     for (const end of STREAM_END_TRACES) {
       turns.onTrace({ type: 'inference:started', agentName: 'spawn-research-1' });
@@ -159,11 +195,13 @@ describe('the wait for a line\'s turn', () => {
   test('a second end of a settled turn prints nothing and leaves the next line\'s wait alone', async () => {
     const { turns, emit, out } = setUp();
     const first = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:completed');
     emit('inference:turn_ended');
     expect(await settled(first)).toBe(true);
     const second = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:turn_ended');
     expect(await settled(second)).toBe(false);
     expect(out).toEqual(['out:\n', 'out:\n']);
@@ -172,8 +210,10 @@ describe('the wait for a line\'s turn', () => {
   test('a wait asked for while a turn runs isn\'t ended by that turn\'s end, but by the end of the turn after it', async () => {
     const { turns, emit } = setUp();
     const opening = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     const typed = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:failed', { error: 'held' });
     emit('inference:started');
     emit('inference:completed');
@@ -188,8 +228,10 @@ describe('the wait for a line\'s turn', () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();
       const opening = turns.waitForTurn(null);
+      turns.takenIn();
       emit('inference:started');
       const typed = turns.waitForTurn(300);
+      turns.takenIn();
       await advance(500);
       expect(await settledNow(typed)).toBe(false);
       expect(out.some((line) => line.includes('no answer after'))).toBe(false);
@@ -226,6 +268,7 @@ describe('the wait for a line\'s turn', () => {
     }, undefined, undefined, () => told.push('settled'));
     const emit = (type: string) => turns.onTrace({ type, agentName: 'clerk' });
     const wait = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:completed');
     expect(await settled(wait)).toBe(true);
@@ -288,7 +331,9 @@ describe('the wait for a line\'s turn', () => {
   test('waits asked for before a turn starts all end at its end', async () => {
     const { turns, emit } = setUp();
     const first = turns.waitForTurn(60_000);
+    turns.takenIn();
     const second = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:completed');
     expect(await settled(first)).toBe(true);
@@ -308,6 +353,7 @@ describe('the wait for a line\'s turn', () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();
       const wait = turns.waitForTurn(null);
+      turns.takenIn();
       emit('inference:started');
       emit('inference:failed', { error: 'held' });
       await advance(PIPED_TURN_CAP_MS * 10);
@@ -338,6 +384,7 @@ describe('the wait for a line\'s turn', () => {
   test('a turn that settles before the cap says nothing of it', async () => {
     const { out, turns, emit } = setUp();
     const wait = turns.waitForTurn(50);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:completed');
     await wait;
@@ -350,14 +397,17 @@ describe('a session switch', () => {
   test('ends every wait still pending, capped or not, and no cap fires for them after it', async () => {
     const { out, turns, emit } = setUp();
     const typed = turns.waitForTurn(100);
+    turns.takenIn();
     emit('inference:started');
     const behind = turns.waitForTurn(null);
+    turns.takenIn();
     turns.switched();
     expect(await settled(typed)).toBe(true);
     expect(await settled(behind)).toBe(true);
     await Bun.sleep(200);
     expect(out.some((line) => line.includes('no answer after'))).toBe(false);
     const next = turns.waitForTurn(60_000);
+    turns.takenIn();
     emit('inference:started');
     emit('inference:completed');
     expect(await settled(next)).toBe(true);

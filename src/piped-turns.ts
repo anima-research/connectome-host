@@ -42,10 +42,12 @@ export function createPipedTurns(
   let turnsStarted = 0;
   let lastTakenIn: number | null = null;
   let turnRunning = false;
-  const waits: Array<{ after: number; arm: () => void; hold: () => void; done: () => void }> = [];
+  const waits: Array<{ after: number; taken: boolean; arm: () => void; hold: () => void; done: () => void }> = [];
   let held = 0;
-  const end = (wait: (typeof waits)[number]): void => {
+  let lateTakeIns = 0;
+  const end = (wait: (typeof waits)[number], takeInComing = !wait.taken): void => {
     waits.splice(waits.indexOf(wait), 1);
+    if (takeInComing) lateTakeIns++;
     wait.done();
   };
 
@@ -106,7 +108,7 @@ export function createPipedTurns(
     streams.delete(agent);
     if (primary) {
       turnRunning = false;
-      const ending = waits.filter((wait) => wait.after < turnsStarted);
+      const ending = waits.filter((wait) => wait.taken && wait.after < turnsStarted);
       for (const wait of ending) end(wait);
       waits[0]?.arm();
       if (ending.length === 0 && waits.length === 0) settledUnwaited();
@@ -123,6 +125,7 @@ export function createPipedTurns(
       let since = 0;
       const wait = {
         after: turnsStarted,
+        taken: false,
         arm: (): void => {
           if (capMs === null || left === null || timer !== undefined || held > 0) return;
           since = performance.now();
@@ -150,7 +153,7 @@ export function createPipedTurns(
       cancel: (): void => {
         if (!waits.includes(wait)) return;
         const first = waits[0] === wait;
-        end(wait);
+        end(wait, false);
         if (first) waits[0]?.arm();
       },
     });
@@ -158,6 +161,7 @@ export function createPipedTurns(
 
   function switched(): void {
     lastTakenIn = null;
+    lateTakeIns = 0;
     streams.clear();
     failures = createTurnFailures();
     turnRunning = false;
@@ -182,8 +186,14 @@ export function createPipedTurns(
 
   function takenIn(): void {
     lastTakenIn = turnsStarted;
-    const wait = waits.at(-1);
-    if (wait !== undefined) wait.after = turnsStarted;
+    if (lateTakeIns > 0) {
+      lateTakeIns--;
+      return;
+    }
+    const wait = waits.find((each) => !each.taken);
+    if (wait === undefined) return;
+    wait.taken = true;
+    wait.after = turnsStarted;
   }
 
   return {
