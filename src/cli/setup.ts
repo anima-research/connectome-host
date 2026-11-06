@@ -937,7 +937,8 @@ function addTrusted(file: string, names: string[]): string | null {
   if (added.length === 0 && Array.isArray(manifest.trustedDependencies)) return null;
   manifest.trustedDependencies = [...held, ...added];
   try {
-    writeTextAtomic(file, `${JSON.stringify(manifest, null, 2)}\n`, 0o644);
+    const was = lstatSync(file, { throwIfNoEntry: false });
+    writeTextAtomic(file, `${JSON.stringify(manifest, null, 2)}\n`, was?.isFile() ? was.mode & 0o777 : 0o644);
   } catch (error) {
     return `${file} can't be written (${(error as Error).message})`;
   }

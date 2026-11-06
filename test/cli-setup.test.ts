@@ -613,6 +613,18 @@ test('a later run of an install says its answers, the install and its version, t
   expect(text(later.seen.out)).not.toContain(`This install's own command is ${join(root, 'connectome')}`);
 });
 
+test('the install\'s package.json keeps its own mode when setup adds to its trustedDependencies', async () => {
+  const dir = directory();
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'theirs' }));
+  chmodSync(join(dir, 'package.json'), 0o600);
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect((JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] }).trustedDependencies).toContain('term-sessions-mcp');
+  expect(statSync(join(dir, 'package.json')).mode & 0o777).toBe(0o600);
+});
+
 test('before its bun add, setup adds the packages whose install scripts the running Bun runs by default to the install\'s package.json, keeping the names already there', async () => {
   const dir = directory();
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ trustedDependencies: ['their-own-server', 'node-pty'] }));
