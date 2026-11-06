@@ -5132,3 +5132,18 @@ test('a directory at service.json is named, and an explicit install refuses befo
   expect(existsSync(hostUnit(at))).toBe(false);
   expect(g.err.join('\n')).toContain('Nothing was written.');
 });
+
+test('a reinstall keeps a recorded shell setting this release doesn\'t know, for the release that wrote it to retire', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const file = join(at.root, 'service.json');
+  const record = JSON.parse(readFileSync(file, 'utf-8'));
+  record.shellSettings = { ...record.shellSettings, SESSION_SERVER_HOST: 'localhost' };
+  writeFileSync(file, JSON.stringify(record));
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(JSON.parse(readFileSync(file, 'utf-8')).shellSettings.SESSION_SERVER_HOST).toBe('localhost');
+  writeFileSync(at.recipe, '{}');
+  expect(await installService(f.ctx(['install']), f.system)).toBe(0);
+  expect(JSON.parse(readFileSync(file, 'utf-8')).shellSettings).toEqual({ SESSION_SERVER_HOST: 'localhost' });
+});

@@ -427,7 +427,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const envBefore = readOr(envFile);
   const knownSettings = readEnvFile(envFile);
   const externalToken = knownSettings.get('SESSION_SERVER_TOKEN');
-  const ownedSettings: ShellSettings = {};
+  // Recorded names this release doesn't know stay recorded, so the release that wrote them can still retire them.
+  const unknownSettings: ShellSettings = old !== null && sameDirectory(old.workingDirectory, work) ? Object.fromEntries(
+    Object.entries(old.shellSettings ?? {}).filter(([name]) => !SHELL_SETTING_NAMES.includes(name as keyof ShellSettings)))
+    : {};
+  const ownedSettings: ShellSettings = { ...unknownSettings };
   for (const name of SHELL_SETTING_NAMES) {
     const value = old?.shellSettings?.[name];
     if (value !== undefined && value === knownSettings.get(name)) ownedSettings[name] = value;
@@ -641,8 +645,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       }
       if (!wantsShell) {
         dropShellSettings(ctx, work, ownedSettings, sys.env, old?.shellSettings ?? {});
-        const withoutSettings = { ...record };
-        delete withoutSettings.shellSettings;
+        const withoutSettings: ServiceRecord = { ...record, shellSettings: unknownSettings };
+        if (Object.keys(unknownSettings).length === 0) delete withoutSettings.shellSettings;
         writeJsonAtomic(join(root, 'service.json'), withoutSettings, 0o600);
       }
     }
