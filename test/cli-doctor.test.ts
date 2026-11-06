@@ -956,9 +956,16 @@ describe('connectome doctor', () => {
       recipeDigest,
     } });
     const fits = await withHost(at, counted(20_000), () => run(at));
-    expect(fits.out).toContain('✓ It fits claude-haiku-4-5\'s window with about 28,384 tokens to spare, by context-manager\'s ' +
-      'estimate of the conversation, before what modules add at each turn: the system prompt and tools the host sends count 20,000.');
+    expect(fits.out).toContain('✓ It fits claude-haiku-4-5\'s window, with about 28,384 tokens left for the reply and for what ' +
+      'modules add at each turn, by context-manager\'s estimate of the conversation: the system prompt and tools the host sends ' +
+      'count 20,000.');
+    expect(fits.out).not.toContain('a reply that long');
     expect(fits.status).toBe(0);
+    const tight = await withHost(at, counted(40_000), () => run(at));
+    expect(tight.out).toContain('with about 8,384 tokens left for the reply');
+    expect(tight.out).toContain('That\'s less than the 16,384 tokens agent.maxTokens lets a reply take, so a reply that long ' +
+      'wouldn\'t fit in what\'s left, by this estimate.');
+    expect(tight.status).toBe(0);
     const over = await withHost(at, counted(48_385), () => run(at));
     expect(over.out).toContain('✗ The budget the host gives this recipe, 168,000, lets a turn\'s prompt reach 200,001 tokens');
     expect(over.out).toContain('the system prompt and tools the host sends, counted at 48,385, come on top.');

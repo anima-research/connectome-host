@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
-import { effectiveContextBudgetTokens } from '../recipe-fit.js';
+import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
   ENV_REFERENCE, loadRecipeDocument, readRecipeDocument, recipeDigest, recipeModel, runningFit, unknownRecipeKeys,
@@ -260,9 +260,13 @@ export async function doctor(
         if (!fit.checked) report.line(fit.line);
         else if (!fit.fits) report.problem(fit.refusal);
         else if ('tokens' in counted && fit.spare !== undefined) {
-          report.ok(`It fits ${model}'s window with about ${n(fit.spare)} tokens to spare, by context-manager's estimate of ` +
-            `the conversation, before what modules add at each turn: the system prompt and tools the host sends count ` +
-            `${n(counted.tokens)}.`);
+          report.ok(`It fits ${model}'s window, with about ${n(fit.spare)} tokens left for the reply and for what modules add ` +
+            `at each turn, by context-manager's estimate of the conversation: the system prompt and tools the host sends ` +
+            `count ${n(counted.tokens)}.`);
+          if (fit.spare < effectiveMaxTokens(loaded)) {
+            report.line(`That's less than the ${n(effectiveMaxTokens(loaded))} tokens agent.maxTokens lets a reply take, so a ` +
+              'reply that long wouldn\'t fit in what\'s left, by this estimate.');
+          }
         } else {
           report.ok(`It fits ${model}'s window.`);
           if ('why' in counted) {
