@@ -86,12 +86,14 @@ function blankLiterals(code: string): string {
   const blank = (from: number, to: number) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '; };
   // A `/` opens a regular expression where an expression can start: after an
   // operator or punctuation, or a keyword such as `return`; after a name, a
-  // number, `)`, `]` or a postfix `++` or `--` it divides.
+  // number, `)`, `]`, a postfix `++` or `--`, or a literal's closing quote
+  // or backtick (a `/` inside one is the literal's, so one before it closes
+  // it) it divides.
   const opensRegExp = (at: number): boolean => {
     let k = at - 1;
     while (k >= 0 && /\s/.test(code[k]!)) k--;
     if (k < 0) return true;
-    if (code[k] === ')' || code[k] === ']') return false;
+    if (')]`\'"'.includes(code[k]!)) return false;
     if (k > 0 && (code.slice(k - 1, k + 1) === '++' || code.slice(k - 1, k + 1) === '--')) return false;
     if (!/[\w$]/.test(code[k]!)) return true;
     let from = k;
@@ -421,11 +423,14 @@ describe('direct context writes', () => {
       // Host #485 bot review wave 4, finding 17: a division after a postfix
       // `++` or `--`, which Bun keeps on the line of what follows it.
       "const up = a++ / 2 + cm.addMessage('user', []); const down = b-- / 2 + cm.fork(id);",
+      // Review wave 5, finding 27: a division right after a template's or a
+      // string's closing quote.
+      "const t = `${a}` / 2 + cm.addMessage('user', []); const s = '4' / b + cm.fork(id); const d = \"6\" / a + cm.branchAt(id);",
       "return `${cm.addMessage('user', [])} and ${half / 2}` + 'x' + re.source + cm.fork(id);",
       '}',
     ].join('\n'));
     expect([...code.matchAll(CALL)].map(([, receiver, method]) => `${receiver}.${method}`))
-      .toEqual(['cm.addMessage', 'cm.fork', 'cm.addMessage', 'cm.fork']);
+      .toEqual(['cm.addMessage', 'cm.fork', 'cm.addMessage', 'cm.fork', 'cm.branchAt', 'cm.addMessage', 'cm.fork']);
     expect(code).not.toContain('"\\/');
   });
 });
