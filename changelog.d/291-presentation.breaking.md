@@ -66,8 +66,8 @@
     the history that it has no line for, until a redo puts it back, but
     not one whose lines `/clear` took down), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again at each undo, redo or shed. A figure that
-    comes back after a newer read of it started is dropped, and the
+    pins) read the window again, once, at each undo, redo or shed. A figure
+    that comes back after a newer read of it started is dropped, and the
     coverage panel's five-second poll starts no read while one is pending,
     where a read slower than the poll had another started at each tick. The
     local pin picker lists the host's candidates, the record's last 200

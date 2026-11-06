@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   applyStreamEnded, applyTrace, conversationAgentOf, pickStreamSource, streamEventFor, toolCallState, treesShownFor,
-  type TraceViewHooks,
+  UndoneMarksRefresh, type TraceViewHooks,
 } from '../src/web/agent-streams.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 
@@ -147,6 +147,44 @@ describe('the other traces the page reads', () => {
     applyTrace({ type: 'window:undone', agentName: 'clerk', retracted: 2 }, hooks, 'clerk');
     applyTrace({ type: 'window:undone', agentName: 'mira', retracted: 0, represented: 1 }, hooks, 'clerk');
     expect(calls).toEqual(['window-undone:clerk', 'window-undone:mira']);
+  });
+});
+
+// Host #485 bot review wave 2, finding 20: the host sends an undone-marks
+// frame right after the conversation agent's window:undone trace, and both
+// read the window's panels again, so an undo read each twice.
+describe("an undone-marks frame reads the window's panels again", () => {
+  const undone = (agentName: string) => ({ type: 'trace', event: { type: 'window:undone', agentName, retracted: 1 } });
+  const marks = (agent: string) => ({ type: 'undone-marks', agent, fromIndex: 0, undone: [] });
+
+  test("not right after its agent's window:undone trace, which read them already", () => {
+    const refresh = new UndoneMarksRefresh();
+    expect(refresh.take(undone('clerk'))).toBe(false);
+    expect(refresh.take(marks('clerk'))).toBe(false);
+  });
+
+  test("for a shed, which has no trace, and for a later one after an undo's", () => {
+    const refresh = new UndoneMarksRefresh();
+    expect(refresh.take(marks('clerk'))).toBe(true);
+    refresh.take(undone('clerk'));
+    refresh.take(marks('clerk'));
+    expect(refresh.take(marks('clerk'))).toBe(true);
+  });
+
+  test("after another agent's trace, or with another frame between its agent's trace and it", () => {
+    const refresh = new UndoneMarksRefresh();
+    refresh.take(undone('mira'));
+    expect(refresh.take(marks('clerk'))).toBe(true);
+    refresh.take(undone('clerk'));
+    refresh.take({ type: 'usage' });
+    expect(refresh.take(marks('clerk'))).toBe(true);
+  });
+
+  test('and no other frame does', () => {
+    const refresh = new UndoneMarksRefresh();
+    expect(refresh.take(undone('clerk'))).toBe(false);
+    expect(refresh.take({ type: 'trace', event: { type: 'inference:started', agentName: 'clerk' } })).toBe(false);
+    expect(refresh.take({ type: 'welcome' })).toBe(false);
   });
 });
 
