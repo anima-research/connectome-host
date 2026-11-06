@@ -166,9 +166,9 @@ describe('doctor: Discord', () => {
     const rejected = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'reject' }));
     expect(rejected.problems.length).toBe(1);
     expect(rejected.problems[0]).toContain('ENOTFOUND');
-    expect(rejected.problems[0]).toMatch(/weren't made: run connectome doctor again/);
+    expect(rejected.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
     const notJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => new Response('<html>', { status: 200 }) }));
-    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made.']);
+    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
     const laterNotJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => new Response('<html>', { status: 200 }) } }));
     expect(laterNotJson.problems).toEqual([expect.stringMatching(/GET \/applications\/@me with something other than JSON/)]);
   });
@@ -185,13 +185,13 @@ describe('doctor: Discord', () => {
     const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'hang' }), workdir(), 200);
     expect(r.problems.length).toBe(1);
     expect(r.problems[0]).toMatch(/^Discord couldn't be asked GET \/users\/@me: no answer within 0\.2 s, /);
-    expect(r.problems[0]).toMatch(/weren't made: run connectome doctor again/);
+    expect(r.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
   });
 
   test('a 200 that isn\'t the bot\'s user stops the checks, rather than naming a bot it can\'t name', async () => {
     const discord = fakeDiscord({ answers: { '/users/@me': () => Response.json({ message: 'ok' }) }, guilds: [HOME] });
     const r = await run({ DISCORD_TOKEN: TOKEN }, discord);
-    expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made.']);
+    expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
     expect(r.text).not.toContain('undefined');
     expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
   });
@@ -204,7 +204,7 @@ describe('doctor: Discord', () => {
       const r = await run({ DISCORD_TOKEN: TOKEN }, { ...discord, fetch: (async (input: string, init: RequestInit) => { asked.push(init.redirect); return discord.fetch(input, init); }) as typeof fetch });
       expect([path, asked]).toEqual([path, discord.requests.map(() => 'manual')]);
       expect(discord.requests.at(-1)!.path).toBe(path);
-      expect(r.problems).toEqual([`Discord answered 307 to GET ${path}, a redirect, which doctor doesn't follow with the token, so the Discord checks after it weren't made.`]);
+      expect(r.problems).toEqual([`Discord answered 307 to GET ${path}, a redirect, which doctor doesn't follow with the token, so the Discord checks after it weren't made. Something between this machine and Discord, such as a proxy, may be answering in its place.`]);
     }
   });
 

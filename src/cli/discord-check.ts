@@ -62,6 +62,8 @@ export async function checkDiscord(
   const limitMs = options.requestLimitMs ?? REQUEST_LIMIT_MS;
   const unchecked = 'so the Discord checks after it weren\'t made';
   const again = `${unchecked}: run connectome doctor again`;
+  const reach = `${unchecked}: check that this machine can resolve and reach discord.com, then run connectome doctor again`;
+  const between = 'Something between this machine and Discord, such as a proxy, may be answering in its place.';
   const source = 'Where the recipe alone defines the server and maps "${DISCORD_TOKEN}" in its env, or the server is handed ' +
     'the host\'s whole environment ("inheritEnv": true, in the recipe or mcpl-servers.json) with no DISCORD_TOKEN ' +
     'of its own, the token is the service\'s DISCORD_TOKEN. `connectome setup discord` stores it in ' +
@@ -83,7 +85,7 @@ export async function checkDiscord(
       text = await res.text();
     } catch (error) {
       const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      throw new DiscordAnswer(`Discord ${timedOut ? `didn't answer GET ${path} within ${limitMs / 1000} s` : `couldn't be asked GET ${path}: ${errorText(error)}`}, ${again}.`);
+      throw new DiscordAnswer(`Discord ${timedOut ? `didn't answer GET ${path} within ${limitMs / 1000} s` : `couldn't be asked GET ${path}: ${errorText(error)}`}, ${reach}.`);
     }
     let body: unknown;
     try {
@@ -94,20 +96,26 @@ export async function checkDiscord(
     if (res.status === 401) throw new DiscordAnswer(refused);
     if (res.status >= 300 && res.status < 400) {
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}, a redirect, which doctor doesn't follow with ` +
-        `the token, ${unchecked}.`);
+        `the token, ${unchecked}. ${between}`);
     }
-    const said = body as { message?: unknown; code?: unknown } | undefined;
+    const said = body as { message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
     if (!res.ok) {
+      const wait = res.status === 429 && typeof said?.retry_after === 'number' && Number.isFinite(said.retry_after)
+        ? `${unchecked}: Discord asked for ${Math.ceil(said.retry_after)} s before the next request, so run connectome ` +
+          'doctor again after that'
+        : undefined;
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}` +
         (typeof said?.message === 'string' ? `: ${said.message}${said.code !== undefined ? ` (code ${String(said.code)})` : ''}` : ', with no message') +
-        `, ${res.status === 429 || res.status >= 500 ? again : unchecked}.`);
+        `, ${wait ?? (res.status === 429 || res.status >= 500 ? again : unchecked)}.`);
     }
-    if (body === undefined) throw new DiscordAnswer(`Discord answered GET ${path} with something other than JSON, ${unchecked}.`);
+    if (body === undefined) {
+      throw new DiscordAnswer(`Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`);
+    }
     return body as T;
   };
 
   try {
-    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, refused, source });
+    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source });
     lines.push(`✓ The token in DISCORD_TOKEN works: the bot is ${bot.name} (${bot.id}).`);
 
     const app = await get<{ flags?: number }>('/applications/@me');
@@ -154,7 +162,7 @@ export async function checkDiscord(
 async function whoseToken(
   token: string,
   options: { fetch: typeof fetch; limitMs: number },
-  words: { unchecked: string; again: string; refused: string; source: string },
+  words: { unchecked: string; again: string; reach: string; between: string; refused: string; source: string },
 ): Promise<{ name: string; id: string }> {
   const path = '/users/@me';
   const check = await checkDiscordToken(token, options);
@@ -164,14 +172,15 @@ async function whoseToken(
     case 'unsendable':
       throw new DiscordAnswer('The bot token the server is given as DISCORD_TOKEN holds a character a request header ' +
         `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source}`);
-    case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.again}.`);
+    case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.reach}.`);
     case 'answered':
       if (check.status >= 300 && check.status < 400) {
         throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
-          `with the token, ${words.unchecked}.`);
+          `with the token, ${words.unchecked}. ${words.between}`);
       }
       if (check.status >= 200 && check.status < 300) {
-        throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}.`);
+        throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +
+          words.between);
       }
       throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
         (check.said === null ? ', with no message' : `: ${check.said}`) +
@@ -233,7 +242,8 @@ function scopeLines(
     const path = resolve(workingDir, env.DISCORD_FILTERS_FILE);
     if (!existsSync(path)) {
       lines.push(`${path} (DISCORD_FILTERS_FILE) isn't there. discord-mcpl writes it from DISCORD_GUILD_ID when it ` +
-        'starts, so that is the scope it starts with.');
+        'starts, so that is the scope it starts with. If a running discord-mcpl had read it, and it was removed since, ' +
+        'the last filters it read stay in force until the file is back.');
       atStart = true;
     } else {
       const read = filtersFromFile(path);

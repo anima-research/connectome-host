@@ -1632,3 +1632,47 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(noisy.out).toContain('`bun -e 0`, run there, shows what writes; once nothing does, run doctor again.');
   });
 });
+
+describe('connectome doctor\'s Discord check, where Discord or the way to it answers oddly', () => {
+  const answering = (on: string, answer: () => Response | Promise<Response>) => (async (input: string | URL | Request, init?: RequestInit) =>
+    new URL(String(input)).pathname.endsWith(on) ? answer() : discordFetch(input, init)) as typeof fetch;
+
+  test('a 429 names the wait Discord asked for', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      fetch: answering('/guilds/100/roles', () => Response.json({ message: 'You are being rate limited.', retry_after: 2.5, global: false }, { status: 429 })),
+    }));
+    expect(r.out).toContain('Discord answered 429 to GET /guilds/100/roles: You are being rate limited., so the Discord checks after it ' +
+      'weren\'t made: Discord asked for 3 s before the next request, so run connectome doctor again after that.');
+  });
+
+  test('a request that can\'t reach Discord says to check this machine can reach discord.com', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      fetch: answering('/applications/@me', () => { throw new TypeError('getaddrinfo ENOTFOUND discord.com'); }),
+    }));
+    expect(r.out).toContain('Discord couldn\'t be asked GET /applications/@me: getaddrinfo ENOTFOUND discord.com, so the Discord checks ' +
+      'after it weren\'t made: check that this machine can resolve and reach discord.com, then run connectome doctor again.');
+  });
+
+  test('a redirect or an answer that isn\'t JSON says something between this machine and Discord may be answering', async () => {
+    const at = install();
+    const between = 'Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    const redirected = await withHost(at, HEALTHY_HOST, () => run(at, {
+      fetch: answering('/applications/@me', () => new Response(null, { status: 307, headers: { location: 'http://proxy.example/' } })),
+    }));
+    expect(redirected.out).toContain(`a redirect, which doctor doesn't follow with the token, so the Discord checks after it weren't made. ${between}`);
+    const html = await withHost(at, HEALTHY_HOST, () => run(at, {
+      fetch: answering('/applications/@me', () => new Response('<html>sign in</html>', { status: 200, headers: { 'content-type': 'text/html' } })),
+    }));
+    expect(html.out).toContain(`with something other than JSON, so the Discord checks after it weren't made. ${between}`);
+  });
+
+  test('a filters file that isn\'t there says a running discord-mcpl that had read it keeps the last filters it read', async () => {
+    const at = install({ recipe: { ...RECIPE(''), mcpServers: { discord: { command: '/x/node_modules/.bin/discord-mcpl', env: {
+      DISCORD_TOKEN: '${DISCORD_TOKEN}', DISCORD_GUILD_ID: '100', DISCORD_FILTERS_FILE: 'filters.json' } } } } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('If a running discord-mcpl had read it, and it was removed since, the last filters it read stay in ' +
+      'force until the file is back.');
+  });
+});
