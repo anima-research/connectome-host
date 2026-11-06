@@ -266,6 +266,22 @@ describe("the key's one real call", () => {
     expect(odd).toMatchObject({ anotherKeyMayHelp: true });
   });
 
+  test('a 401, 403 or 404 typed other than JSON isn\'t taken as Anthropic\'s: something on the way may have answered in its place, and another key won\'t help unless a gateway answered', async () => {
+    for (const status of [401, 403, 404]) {
+      const page = (async () => new Response('<html>Sign in</html>', { status, headers: { 'content-type': 'text/html; charset=utf-8' } })) as unknown as typeof fetch;
+      const own = await checkKey({ key: 'k', model: 'claude-test', fetch: page });
+      expect(own, String(status)).toEqual({ ok: false, cause: expect.stringContaining(`api.anthropic.com answered ${status} with text/html; charset=utf-8, where Anthropic's Messages API refuses in JSON, so it isn't known whose answer it is, or whether the key works.`), anotherKeyMayHelp: false });
+      expect(cause(own), String(status)).toContain('Something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine\'s network');
+      const gateway = await checkKey({ key: 'k', model: 'claude-test', baseUrl: 'https://gateway.example', fetch: page });
+      expect(gateway, String(status)).toMatchObject({ anotherKeyMayHelp: true });
+      expect(cause(gateway), String(status)).toContain('ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right there is read at the next try), or something on the way to it, such as a proxy or a captive portal, may have answered in its place.');
+    }
+    const problem = await checkKey({ key: 'k', model: 'claude-test', fetch: (async () => new Response(JSON.stringify({ error: { type: 'authentication_error', message: 'bad key' } }), { status: 401, headers: { 'content-type': 'application/problem+json' } })) as unknown as typeof fetch });
+    expect(problem).toEqual({ ok: false, cause: expect.stringContaining('refused the key (401)'), anotherKeyMayHelp: true });
+    const untyped = await checkKey({ key: 'k', model: 'claude-test', fetch: (async () => new Response(null, { status: 404 })) as unknown as typeof fetch });
+    expect(untyped).toEqual({ ok: false, cause: expect.stringContaining('has no model claude-test for this key (404)'), anotherKeyMayHelp: true });
+  });
+
   test('another status of Anthropic\'s own API below 500 says it may be the key\'s account, and that another key can help; a 408, a server that stopped waiting, says to try again; and a 3xx is followed nowhere, with neither its words nor its Location quoted, since they\'re the server\'s own text, which can carry a credential, but the origin its Location names, with the key hidden', async () => {
     const own = await checkKey({
       key: 'k', model: 'm',

@@ -1,6 +1,6 @@
 import { Stream } from '@anthropic-ai/sdk/streaming';
 import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
-import { redirectTarget } from './provider-key.js';
+import { JSON_TYPE, redirectTarget } from './provider-key.js';
 
 export type KeyCheck = { ok: true } | { ok: false; cause: string; anotherKeyMayHelp: boolean };
 
@@ -189,6 +189,14 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       `${set ? ' Check that ANTHROPIC_BASE_URL leads to that API.' : ` Something on the way to it, such as a proxy or ` +
         `a captive portal, may have answered in its place. ${check}`}`, false);
   }
+  const elsewhere = `${set ? `ANTHROPIC_BASE_URL in ${dotenv} may not lead to that API (a URL put right there is read at ` +
+    'the next try), or something ' : 'Something '}on the way to it, such as a proxy or a captive portal, may have answered ` +
+    `in its place. ${check}`;
+  const type = response.headers.get('content-type');
+  if ([401, 403, 404].includes(response.status) && type !== null && !JSON_TYPE.test(type.trim())) {
+    return failed(`${host} answered ${response.status} with ${quote(type)}, where Anthropic's Messages API refuses in ` +
+      `JSON, so it isn't known whose answer it is, or whether the key works. ${elsewhere}`, set);
+  }
   let body = '';
   try {
     body = await response.text();
@@ -229,10 +237,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       const next = response.status >= 500 ? ' Its side had a problem: try again shortly.'
         : response.status === 408 ? ' It stopped waiting for the call: try again shortly.'
           : response.status < 400 ? ' Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so ' +
-            `the key went no further. ${set ? `ANTHROPIC_BASE_URL in ${dotenv} may not lead to that API (a URL put right ` +
-              'there is read at the next try), or something '
-              : 'Something '}on the way to it, such as a proxy or a captive portal, may have answered in its place. ` +
-            check
+            `the key went no further. ${elsewhere}`
             : set ? ' It may be about this key or its account there, or ANTHROPIC_BASE_URL may not lead to ' +
               `Anthropic's Messages API: a URL put right in ${dotenv} is read at the next try.`
               : ' It may be about this key or its account: another key, or the account put right at ' +
