@@ -31,10 +31,12 @@
     it`), an undo and its redo (`rows left <agent>'s window and entered it
     again`), a session switch or the host's stop meanwhile
     stores nothing either, and the answer gives the written summary back
-    as a one-line `/newtopic <text>` to run, its line breaks folded to
-    spaces: the readline and piped modes read each line as its own input,
-    so a summary given back on several lines stored its first line alone
-    there, and sent the rest to the agent. One given back as the TUI stops
+    to run as `/newtopic <text>`: as written in the TUI, the Web UI and the
+    headless mode, which send a multi-line command whole, and in the
+    readline and piped modes as a one-line `/newtopic <text>`, its line
+    breaks folded to spaces, since they read each line as its own input: a
+    summary given back on several lines stored its first line alone there,
+    and sent the rest to the agent. One given back as the TUI stops
     is printed to the terminal the TUI leaves, if it comes before the host
     exits, as any command's answer that comes then now is: the TUI dropped
     it, its scrollback gone. `/newtopic <text>` stores the

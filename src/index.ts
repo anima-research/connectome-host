@@ -729,7 +729,7 @@ async function runPiped(app: AppContext) {
     const trimmed = line.trim();
     if (!trimmed) return false;
     if (trimmed.startsWith('/')) {
-      const result = handleCommand(trimmed, app);
+      const result = handleCommand(trimmed, app, { lineByLine: true });
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
       if (result.asyncWork) {

@@ -161,8 +161,9 @@ describe('/newtopic', () => {
     }
   });
 
-  // The summary a bare /newtopic gives back is to be passed as its text,
-  // line breaks and all (#485 bot review 2, finding 17).
+  // /newtopic <text> stores its text as given, line breaks included, as the
+  // TUI and the Web UI send a multi-line one: the summary a bare /newtopic
+  // gives back there is to be passed as it (#485 bot review 2, finding 17).
   test('given its text, stores it as given, its line breaks and spacing included', async () => {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     const h = await bootPresentedHost({ agents: ['clerk'], agentConfig: () => ({ strategy }), prefix: 'newtopic-lines-' });
@@ -249,9 +250,9 @@ describe('a bare /newtopic', () => {
     return { h, app, strategy, summarized, releaseSummary };
   }
   const texts = (result: { lines: Array<{ text: string }> }) => result.lines.map((l) => l.text);
-  const refusedWith = (why: string, oneLine = SUMMARY) => [
+  const refusedWith = (why: string, summary = SUMMARY) => [
     `Topic reset failed: ${why} while the transition summary was written; nothing was stored. ` +
-      `To store it, run this one-line command:\n/newtopic ${oneLine}`,
+      `To store it, run /newtopic with it as the text:\n${summary}`,
   ];
 
   test("with the agent idle throughout, stores the summary of the agent's context as its own row, where the head window starts", async () => {
@@ -344,22 +345,47 @@ describe('a bare /newtopic', () => {
     });
   }
 
-  // The readline and piped modes dispatch each line alone, so the summary
-  // is given back on one line, its line breaks folded to spaces, which
-  // every input mode takes as one command (#485 bot review 3, finding 1).
-  test('whose summary has line breaks gives it back as one /newtopic line, which stores it whole', async () => {
+  // The TUI and the Web UI send a pasted text whole, so the summary is given
+  // back as written there, its headings, lists and indentation kept (#485
+  // bot review 4, finding 10).
+  test('whose summary has line breaks gives it back as written, which /newtopic stores as written', async () => {
     const summary = 'Done:\n- the ledger\n\n  Next: the release.';
-    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-lines-', summary);
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-written-', summary);
     try {
       const result = handleCommand('/newtopic', app);
       expect(summarized).toHaveLength(1);
       await h.turn('clerk');
       releaseSummary();
       const answer = texts(await result.asyncWork!);
-      expect(answer).toEqual(refusedWith("rows entered clerk's window", 'Done: - the ledger Next: the release.'));
+      expect(answer).toEqual(refusedWith("rows entered clerk's window", summary));
+      const given = answer[0]!.slice(answer[0]!.indexOf('\n') + 1);
+      expect(given).toBe(summary);
+      expect((await handleCommand(`/newtopic ${given}`, app).asyncWork!).lines[0]!.text).toBe('Topic reset. Transition summary:');
+      expect(textOf(h.rowWith('clerk', '[Topic Transition]')!)).toBe(`[Topic Transition]\n\n${summary}`);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  // The readline and piped modes dispatch each line alone, so the summary
+  // is given back there on one line, its line breaks folded to spaces,
+  // which they take as one command (#485 bot review 3, finding 1).
+  test('whose summary has line breaks gives it back, in the readline and piped modes, as one /newtopic line, which stores it whole', async () => {
+    const summary = 'Done:\n- the ledger\n\n  Next: the release.';
+    const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-lines-', summary);
+    try {
+      const result = handleCommand('/newtopic', app, { lineByLine: true });
+      expect(summarized).toHaveLength(1);
+      await h.turn('clerk');
+      releaseSummary();
+      const answer = texts(await result.asyncWork!);
+      expect(answer).toEqual([
+        "Topic reset failed: rows entered clerk's window while the transition summary was written; nothing was stored. " +
+          'To store it, run this one-line command:\n/newtopic Done: - the ledger Next: the release.',
+      ]);
       const command = answer[0]!.split('\n').at(-1)!;
       expect(command).toBe('/newtopic Done: - the ledger Next: the release.');
-      expect((await handleCommand(command, app).asyncWork!).lines[0]!.text).toBe('Topic reset. Transition summary:');
+      expect((await handleCommand(command, app, { lineByLine: true }).asyncWork!).lines[0]!.text).toBe('Topic reset. Transition summary:');
       expect(textOf(h.rowWith('clerk', '[Topic Transition]')!)).toBe('[Topic Transition]\n\nDone: - the ledger Next: the release.');
     } finally {
       await h.cleanup();

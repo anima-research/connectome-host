@@ -278,15 +278,22 @@ function stillRunning(app: AppContext): CommandResult | null {
   };
 }
 
-export function handleCommand(command: string, app: AppContext): CommandResult {
+/** How the command was given. `lineByLine`: by a mode that reads each line
+ *  as its own input (the readline and piped modes), so an answer that
+ *  gives a command back gives it on one line. */
+export interface CommandInput {
+  lineByLine?: boolean;
+}
+
+export function handleCommand(command: string, app: AppContext, input: CommandInput = {}): CommandResult {
   const cmd = parseCommand(command).name;
   const change = sessionChangeNamed(cmd, command.slice(1).trim().split(/\s+/).slice(1));
-  const result = dispatchCommand(command, cmd, change, app);
+  const result = dispatchCommand(command, cmd, change, app, input);
   if (result.asyncWork) result.asyncWork = trackOperatorWork(app, change, result.asyncWork);
   return result;
 }
 
-function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext): CommandResult {
+function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext, input: CommandInput): CommandResult {
   const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
   const refused = change ? refusedWhileSwitching(app, change) : null;
@@ -418,7 +425,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleRecipe(app);
 
     case 'newtopic':
-      return inFlightGuard(app, cmd) ?? handleNewTopic(app, parseCommand(command).rest);
+      return inFlightGuard(app, cmd) ?? handleNewTopic(app, parseCommand(command).rest, input);
 
     case 'bug':
       return handleBug(command, app);
@@ -1540,7 +1547,7 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
  * /newtopic writes the strategy's summary of the head window first
  * (bareTransition).
  */
-function handleNewTopic(app: AppContext, text: string): CommandResult {
+function handleNewTopic(app: AppContext, text: string, input: CommandInput): CommandResult {
   const agent = commandAgent(app);
   const cm = agent?.getContextManager();
   if (!agent || !cm) return { lines: [{ text: 'No context manager.', style: 'system' }] };
@@ -1553,13 +1560,14 @@ function handleNewTopic(app: AppContext, text: string): CommandResult {
     };
   }
 
-  // The text as given, its line breaks included: the summary a bare
-  // /newtopic gives back is to be passed as it.
+  // The text as given, its line breaks included, as the TUI and the Web UI
+  // send a multi-line one: the summary a bare /newtopic gives back there is
+  // to be passed as it.
   const userContext = text.trim() || undefined;
   const metadata = asOwnRow(undefined, agent.name);
   const reset = userContext !== undefined
     ? storeTransition(cm, userContext, metadata)
-    : bareTransition(app, agent.name, cm, metadata);
+    : bareTransition(app, agent.name, cm, metadata, input);
   const asyncWork = reset.then(summary => ({
     lines: [
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
@@ -1615,15 +1623,16 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
  * them out), the session wasn't switched, the
  * host isn't stopping and the agent is still registered with this context;
  * otherwise nothing is stored, and the answer gives the summary back as a
- * one-line /newtopic <text> to store it with (oneLine). The check of the branch and the strategy here
- * is a backstop for a move after context-manager's own check, and gives the
- * summary back too.
+ * /newtopic <text> to store it with, as written, or on one line where each
+ * line is read as its own input (oneLine). The check of the branch and the
+ * strategy here is a backstop for a move after context-manager's own check,
+ * and gives the summary back too.
  *
  * The summary is the one resetHeadWindow writes for itself: context-manager's
  * generateTransitionSummary() (0.25.0), which writes it from the manager's own
  * strategy context and stores nothing.
  */
-async function bareTransition(app: AppContext, agentName: string, cm: ContextManager, metadata: MessageMetadata): Promise<string> {
+async function bareTransition(app: AppContext, agentName: string, cm: ContextManager, metadata: MessageMetadata, input: CommandInput): Promise<string> {
   const framework = app.framework;
   const strategy = cm.getStrategy();
   const branch = cm.currentBranch().id;
@@ -1645,16 +1654,18 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   if (moved !== undefined) {
     throw new Error(
       `${moved} while the transition summary was written; nothing was stored. ` +
-        `To store it, run this one-line command:\n/newtopic ${oneLine(summary)}`,
+        (input.lineByLine
+          ? `To store it, run this one-line command:\n/newtopic ${oneLine(summary)}`
+          : `To store it, run /newtopic with it as the text:\n${summary}`),
     );
   }
   return storeTransition(cm, summary, metadata);
 }
 
-/** The summary on one line, its line breaks folded to spaces: the readline
- *  and piped modes dispatch each line they read as its own input, so a
- *  `/newtopic` given back with its line breaks would store its first line
- *  alone there, and send the rest as messages or commands. */
+/** The summary on one line, its line breaks folded to spaces, for the
+ *  readline and piped modes: they dispatch each line they read as its own
+ *  input, so a `/newtopic` given back with its line breaks would store its
+ *  first line alone there, and send the rest as messages or commands. */
 function oneLine(summary: string): string {
   return summary.split(/\r\n|\r|\n/).map((line) => line.trim()).filter(Boolean).join(' ');
 }
