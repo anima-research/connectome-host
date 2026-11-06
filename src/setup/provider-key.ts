@@ -71,15 +71,14 @@ export function checkProviderKey(name: string, key: string, options: Options = {
 
 export function listModels(
   name: string, key: string, options: Options = {},
-): Promise<ProviderAnswer<{ ids: string[]; more: boolean }>> | null {
+): Promise<ProviderAnswer<{ ids: string[]; shownIds: string[]; more: boolean }>> | null {
   const provider = PROVIDER_KEYS[name];
   if (provider === undefined) return null;
   return ask(provider.models(key, options.env ?? new Map()), name, key, options, (body) => {
     const data = (body as { data?: unknown } | null)?.data;
     if (!Array.isArray(data)) return undefined;
-    const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string')
-      .map((id) => hidden(id, key, name, options.hide));
-    return { ids, more: (body as { has_more?: unknown }).has_more === true };
+    const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+    return { ids, shownIds: ids.map((id) => hidden(id, key, name, options.hide)), more: (body as { has_more?: unknown }).has_more === true };
   });
 }
 

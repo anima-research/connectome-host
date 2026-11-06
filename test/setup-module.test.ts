@@ -2038,6 +2038,17 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(said(echo, result)).not.toContain('discord-echo-token');
   });
 
+  test('check_model finds a listed model whose id holds a secret\'s value, as a guessed one-digit value can be', async () => {
+    const listed = install({
+      envFile: 'ANTHROPIC_API_KEY=sk-ant\nDEBUG=7\n',
+      fetch: (async () => models('claude-opus-4-7')) as unknown as typeof fetch,
+    });
+    const result = await checkModel(listed.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-4-7' });
+    expect({ success: result.success, data: result.data }).toEqual({
+      success: true, data: 'Anthropic lists claude-opus-4-7 among the 1 models it offers the key stored as ANTHROPIC_API_KEY.',
+    });
+  });
+
   test('a secret that is no provider key setup knows is stored without being checked', async () => {
     let called = 0;
     const made = install({ asker: typed('a-value'), fetch: (async () => { called += 1; return models(); }) as unknown as typeof fetch });

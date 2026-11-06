@@ -714,7 +714,7 @@ export class SetupModule implements Module {
         (listed.kind === 'answered' || listed.kind === 'unanswered'
           ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : ''));
     }
-    const { ids, more } = listed.value;
+    const { ids, shownIds, more } = listed.value;
     if (ids.includes(model)) {
       this.config.show(`${provider} lists ${shown(model)} for this key.`);
       return {
@@ -730,7 +730,8 @@ export class SetupModule implements Module {
     }
     this.config.show(`${provider} doesn't list ${shown(model)} for this key.`);
     const family = familyOf(model);
-    const kin = ids.filter((id) => id === family || id.startsWith(`${family}-`) || id.startsWith(`${family}.`)).sort();
+    const kin = shownIds.filter((_shown, at) => ids[at] === family || ids[at]!.startsWith(`${family}-`) || ids[at]!.startsWith(`${family}.`))
+      .sort();
     return failed(`${provider} doesn't list ${model} among the ${ids.length} models it offers the key stored as ${name}` +
       (kin.length > 0 ? `. Of its family, ${family}, it lists: ${kin.join(', ')}.` : `, and none of its family, ${family}.`) +
       ' Ask the person which they meant before the recipe names it.');
