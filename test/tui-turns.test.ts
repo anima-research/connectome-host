@@ -604,8 +604,8 @@ describe("the TUI's branch moves, through runTui", () => {
   // start to its answer (#485 bot review 4, finding 8).
   test("an async command started during a backgrounded or held root turn leaves its status as it is", async () => {
     const steps = await play('async-turn-status');
-    expect(steps.get('backgrounded')!.frame).toContain('[↓ background');
-    expect(steps.get('held')!.frame).toContain('[… attempt-failed');
+    for (const at of ['backgrounded, waiting', 'backgrounded']) expect(steps.get(at)!.frame, at).toContain('[↓ background');
+    for (const at of ['held, waiting', 'held']) expect(steps.get(at)!.frame, at).toContain('[… attempt-failed');
   }, 40000);
 
   // agent-framework's switchBranch and rollbackToMessage trace nothing: the

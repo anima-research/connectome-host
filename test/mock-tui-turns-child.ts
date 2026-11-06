@@ -106,13 +106,28 @@ function fakeFramework(name: string) {
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
       if (scenario.startsWith('async-branch-turn')) await new Promise<void>((resolve) => { releaseMove = resolve; });
     },
-    // /puppet's call: an async command that moves no branch.
+    // /puppet's call: an async command that moves no branch, held while a
+    // scenario has set puppetGate.
     async puppetToolCall(_agentName: string, toolName: string) {
+      puppetCalls++;
+      await puppetGate;
       return { toolUseId: 'tu-1', result: { isError: false, data: `${toolName} done` } };
     },
   };
 }
 
+/** /puppet's calls so far, and while set, what each awaits before it answers. */
+let puppetCalls = 0;
+let puppetGate: Promise<void> | undefined;
+/** Start a /puppet whose answer waits until the returned function is called, once its call has started. */
+async function heldPuppet(text: string): Promise<() => void> {
+  let open!: () => void;
+  puppetGate = new Promise<void>((resolve) => { open = resolve; });
+  const before = puppetCalls;
+  await command(text);
+  await until(() => puppetCalls > before, 'the command to start');
+  return () => { puppetGate = undefined; open(); };
+}
 /** While set, the framework refuses a send, as its closed queue does. */
 let refusePush = false;
 /** In `async-branch-turn`, lets the moved store's answer go. */
@@ -768,12 +783,18 @@ async function play(): Promise<void> {
     await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await until(async () => (await frame()).includes('[↓ background'), 'the background status');
-    await command('/puppet tally {}');
+    // Each command's answer waits, so the status is read between its start
+    // and its answer too (#485 bot review 5, finding 24).
+    let answer = await heldPuppet('/puppet tally {}');
+    await step('backgrounded, waiting');
+    answer();
     await until(async () => (await frame()).includes('tally done'), 'the answer');
     await step('backgrounded');
     first.send('inference:failed', { error: 'the provider is overloaded' });
     await until(async () => (await frame()).includes('[… attempt-failed'), 'the held status');
-    await command('/puppet weigh {}');
+    answer = await heldPuppet('/puppet weigh {}');
+    await step('held, waiting');
+    answer();
     await until(async () => (await frame()).includes('weigh done'), 'the answer');
     await step('held');
   } else if (scenario === 'undone-background-shed') {
