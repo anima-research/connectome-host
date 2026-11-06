@@ -407,6 +407,33 @@ describe('the ladder\'s recent failures', () => {
     }
   });
 
+  test('a later successful call with newer rows of the call log that can\'t be read says that whether a call after it failed isn\'t known, whenever those rows were written', async () => {
+    const at = await install({ listens: true });
+    const call = (s: number) => JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind: 'stream',
+      rawResponse: { stop_reason: 'end_turn' } });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    const unsure = /a later call, at \S+ \S+, succeeded; the call log doesn't say whose, so whether the agent that failed has recovered isn't known; newer rows of the call log can't be read, so whether a call after it failed isn't known/;
+    writeFileSync(calls, `${call(at.now - 5)}\n{"timestamp":"${new Date((at.now - 4) * 1000).toISOString()}","kind":"str`);
+    expect(ladder(at, ['--no-signal']).out).toMatch(unsure);
+    writeFileSync(calls, `${call(at.now - 5)}\n{ not a row }\n`);
+    expect(ladder(at, ['--no-signal']).out).toMatch(unsure);
+    writeFileSync(calls, `${call(at.now - 5)}\n`);
+    const whole = ladder(at, ['--no-signal']).out;
+    expect(whole).toMatch(/a later call, at \S+ \S+, succeeded; the call log doesn't say whose/);
+    expect(whole).not.toContain('newer rows of the call log');
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 1000) * 1000).toISOString(),
+      agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
+    writeFileSync(calls, `${call(at.now - 900)}\n{"timestamp":"${new Date((at.now - 890) * 1000).toISOString()}","kind":"str`);
+    utimesSync(calls, at.now - 890, at.now - 890);
+    mkdirSync(join(at.work, 'data', 'sessions', 's-1'), { recursive: true });
+    writeFileSync(join(at.work, 'data', 'sessions.json'), JSON.stringify({ activeSessionId: 's-1', sessions: {} }));
+    const payload = [...Buffer.from(JSON.stringify({ triggered: false }))].join(',');
+    writeFileSync(join(at.work, 'data', 'sessions', 's-1', 'records.log'),
+      `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${(at.now - 100) * 1_000_000}}\n`);
+    expect(ladder(at, ['--no-signal']).out).toMatch(unsure);
+  });
+
   test('an exhausted inference that only failures.log still holds is a finding, with its time from the record', async () => {
     const at = await install({ listens: true });
     writeFileSync(join(at.work, 'journal.txt'), '');
