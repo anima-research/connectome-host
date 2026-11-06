@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  COMMAND_WAYS, PAGE_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, keptDismissal, noticeLines, openWays,
-  restartLines, shownBanner, statusLines,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, inAgentWords, keptDismissal,
+  noticeLines, openWays, restartLines, shownBanner, statusLines,
   type ReadCheck, type RestartState, type SwitchOutcome, type UpdateStatus,
 } from '../src/web/update-text.js';
 
@@ -226,6 +226,28 @@ describe('each way named as its caller names it', () => {
       '/update restart wait waits up to 10 min more, /update restart now cuts those off and stops, and /update ' +
         'restart resume calls the restart off, to try later.',
     ]);
+  });
+
+  test('the agent is told whose a fallback\'s quoted lines are right after them, and after no other status', () => {
+    const said = (status: UpdateStatus) => inAgentWords(statusLines(status, TOOL_WAYS).join('\n')).split('\n');
+    const told = (line: string) => line.startsWith('Those quoted lines are your host\'s');
+    const fell = said({ ...base, lastSwitch: fellBack });
+    expect(fell.slice(-4))
+      .toEqual(['  loading the recipe', '  ', '  Error: no such recipe', expect.stringMatching(/^Those quoted lines/)]);
+    const withProblem = said({ ...base, lastSwitch: fellBack, problems: ['the journal couldn\'t be read'] });
+    expect(withProblem.findIndex(told)).toBe(withProblem.indexOf('  Error: no such recipe') + 1);
+    expect(withProblem.at(-1)).toBe('the journal couldn\'t be read');
+    const others: SwitchOutcome[] = [
+      { ...fellBack, trialLog: null },
+      { ...fellBack, trialLog: [] },
+      { outcome: 'committed', from: '0.12.1', to: '0.13.0', at: '2026-10-24T04:00:00.000Z' },
+      {
+        outcome: 'refused', step: 'children-check', from: '0.12.1', to: '0.13.0', at: '2026-10-24T04:00:00.000Z',
+        reason: 'fleet children are still running: kid',
+      },
+    ];
+    for (const lastSwitch of [null, ...others]) expect(said({ ...base, lastSwitch }).some(told)).toBe(false);
+    expect(inAgentWords('Notes:\n  - an indented line\n  - another')).toBe('Notes:\n  - an indented line\n  - another');
   });
 
   test('a trial log keeps its blank lines', () => {
