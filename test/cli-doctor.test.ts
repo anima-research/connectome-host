@@ -1581,4 +1581,18 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).not.toMatch(/LOCAL_TOKEN is in setup's list of stored secrets \(.*\), and no file Bun reads/);
   });
 
+  test('lines naming a channel\'s auto-close that can\'t be read as one are counted and said', async () => {
+    const at = install();
+    mkdirSync(join(at.work, 'logs'));
+    writeFileSync(join(at.work, 'logs', 'failures.log'), [
+      '{"kind":"subscription-gc-close","channelId":"discord:111/2',
+      JSON.stringify({ kind: 'subscription-gc-close', channelId: 'discord:111/333', at: '2026-11-01T04:20:00.000Z', restore: 'channel_open discord:111/333' }),
+      '',
+    ].join('\n'));
+    const r = await run(at, { checkService: async () => ({ passed: true, lines: [] }), python: null });
+    expect(r.out).toContain('Channels the subscription GC closed (logs/failures.log):');
+    expect(r.out).toContain('2 lines there name a subscription-gc-close but can\'t be read as one, cut short or missing a field, so a ' +
+      'channel they would name may have been closed too.');
+  });
+
 });

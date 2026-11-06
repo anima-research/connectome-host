@@ -362,17 +362,22 @@ export async function doctor(
   }
 
   const closed = await channelsClosed(join(work, 'logs', 'failures.log'));
-  if (typeof closed === 'string' || closed.length > 0) {
+  if (typeof closed === 'string' || closed.closes.length > 0 || closed.undecoded > 0) {
     report.section('Channels the subscription GC closed (logs/failures.log):');
     if (typeof closed === 'string') {
       report.line(`${join(work, 'logs', 'failures.log')} can't be read (${closed}), so which channels the subscription GC ` +
         'closed isn\'t shown.');
     }
-    for (const close of typeof closed === 'string' ? [] : closed) {
+    for (const close of typeof closed === 'string' ? [] : closed.closes) {
       report.line(`Channel ${close.channelId} was auto-closed at ${close.at}, over ${close.limitChars} characters of messages ` +
         'that didn\'t mention the resident since it last ran. If it\'s still closed, ask the resident to run its ' +
         `${close.restore} to reopen it; to stop it closing again, ask the resident to raise or turn off that channel's ` +
         'limit with its agent_settings tool (channel_idle_limits).');
+    }
+    if (typeof closed !== 'string' && closed.undecoded > 0) {
+      report.line(`${closed.undecoded === 1 ? 'A line' : `${closed.undecoded} lines`} there name${closed.undecoded === 1 ? 's' : ''} ` +
+        'a subscription-gc-close but can\'t be read as one, cut short or missing a field, so a channel ' +
+        `${closed.undecoded === 1 ? 'it' : 'they'} would name may have been closed too.`);
     }
   }
 
@@ -443,13 +448,14 @@ export async function doctor(
 
 interface GcClose { channelId: string; at: string; limitChars: number; restore: string }
 
-async function channelsClosed(file: string): Promise<GcClose[] | string> {
+async function channelsClosed(file: string): Promise<{ closes: GcClose[]; undecoded: number } | string> {
   const latest = new Map<string, GcClose>();
+  let undecoded = 0;
   let handle;
   try {
     handle = await open(file, 'r');
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : errorText(error);
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? { closes: [], undecoded } : errorText(error);
   }
   try {
     for await (const line of handle.readLines()) {
@@ -458,11 +464,14 @@ async function channelsClosed(file: string): Promise<GcClose[] | string> {
       try {
         record = JSON.parse(line);
       } catch {
+        undecoded += 1;
         continue;
       }
       if (record?.kind === 'subscription-gc-close' && typeof record.channelId === 'string' && record.channelId !== '' &&
         typeof record.at === 'string' && typeof record.restore === 'string' && typeof record.limitChars === 'number') {
         latest.set(record.channelId, record as GcClose);
+      } else if (record?.kind === 'subscription-gc-close') {
+        undecoded += 1;
       }
     }
   } catch (error) {
@@ -470,7 +479,7 @@ async function channelsClosed(file: string): Promise<GcClose[] | string> {
   } finally {
     await handle.close().catch(() => {});
   }
-  return [...latest.values()];
+  return { closes: [...latest.values()], undecoded };
 }
 
 function ladderFindings(line: string | null): { text: string; counts: boolean }[] {
