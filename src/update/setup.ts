@@ -729,12 +729,13 @@ export function setup(options: SetupOptions): void {
       if (locked) {
         const now = boundFiles(root);
         if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
-          !sameFiles(now, files) || now.some((file) => file.paths.some((path) => mapPath(path, plan) === null))) {
+          !sameFiles(now, files) || now.some((file) => file.paths.some((path) => mapPath(path, plan) === null)) ||
+          readPlan(root) !== null) {
           throw new ContractError(CHANGED_MEANWHILE);
         }
       }
-      if (rewrite) writePlan(root, plan);
       command = writeEntries();
+      if (rewrite) writePlan(root, plan);
       if (rewrite) rewriteFiles(root, plan);
       writeJsonAtomic(paths.install, written);
       if (rewrite) removePlan(root);

@@ -474,11 +474,11 @@ describe('binding an install to the directory it is in', () => {
 });
 
 describe('a binding cut off', () => {
-  test('cut while the guarded entries are written: the plan stands, no file is bound yet, both entries refuse, and the next run finishes from the plan, asking nothing again', () => {
+  test('cut as the copy\'s label is rewritten: the plan stands, no file is bound yet, both entries refuse, and the next run finishes from the plan, asking nothing again', () => {
     const { a, b, c, places } = chained();
     const root = rootOf(install);
-    mkdirSync(join(root, 'connectome.tmp'));
-    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
     expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
     expect(record(install)!.workingDir).toBeUndefined();
     expect(named(install)).toEqual([a, b]);
@@ -490,7 +490,7 @@ describe('a binding cut off', () => {
     const command = commandOf(install, 'update');
     expect(command.exitCode).toBe(1);
     expect(command.stderr).toContain('a setup binding this install was cut off before it finished');
-    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
     setup(options(install));
     expect(said).toContain(`Finished binding the install at ${root} to ${install}, which a setup run cut off had begun, with the places that run was given.`);
     expect(named(install)).toEqual([b, c]);
@@ -499,14 +499,16 @@ describe('a binding cut off', () => {
     expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
   });
 
-  test('cut after the plan, before the entries: the next run finishes it', () => {
-    const { b, c, places } = chained();
+  test('cut as the entries are written, before the plan: no plan stands and nothing is bound, so the next run binds with the places it\'s given', () => {
+    const { a, b, c, places } = chained();
     const root = rootOf(install);
     mkdirSync(join(root, `${ENTRY_POINT}.tmp`));
     expect(() => setup(options(install, { places }))).toThrow(/start\.js\.tmp/);
-    expect(existsSync(join(root, REBIND_PLAN))).toBe(true);
+    expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
+    expect(named(install)).toEqual([a, b]);
+    expect(record(install)!.workingDir).toBeUndefined();
     rmSync(join(root, `${ENTRY_POINT}.tmp`), { recursive: true });
-    setup(options(install));
+    setup(options(install, { places }));
     expect(named(install)).toEqual([b, c]);
     expect(record(install)!.extraState).toEqual([b, c]);
   });
@@ -564,12 +566,37 @@ describe('a binding cut off', () => {
     expect(existsSync(join(root, REBIND_PLAN))).toBe(false);
   });
 
+  test('cut just as its plan is on disk, a binding of an install whose entries an older release wrote has already put in the entries that refuse while the plan stands', () => {
+    const { places } = chained();
+    const root = rootOf(install);
+    writeFileSync(join(root, ENTRY_POINT), '// an older release\'s entry\n');
+    writeFileSync(join(root, 'connectome'), '// an older release\'s command\n');
+    const plan = join(root, REBIND_PLAN);
+    const realRename = fs.renameSync;
+    const renames = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      realRename(from, to);
+      if (String(to) === plan) throw new Error('cut just after the plan');
+    }) as typeof fs.renameSync);
+    try {
+      expect(() => setup(options(install, { places }))).toThrow('cut just after the plan');
+    } finally {
+      renames.mockRestore();
+    }
+    expect(existsSync(plan)).toBe(true);
+    const start = startOf(install);
+    expect(start.exitCode).toBe(1);
+    expect(start.stderr).toContain('a setup binding this install was cut off before it finished');
+    const command = commandOf(install, 'update');
+    expect(command.exitCode).toBe(1);
+    expect(command.stderr).toContain('a setup binding this install was cut off before it finished');
+  });
+
   test('a plan that isn\'t whole is refused as one this release can\'t finish, naming each file to put right, and nothing changes', () => {
     const { places } = chained();
     const root = rootOf(install);
-    mkdirSync(join(root, 'connectome.tmp'));
-    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
-    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
     const plan = join(root, REBIND_PLAN);
     const whole = JSON.parse(readFileSync(plan, 'utf-8')) as Record<string, unknown> & { record: Record<string, unknown> };
     const damaged = [
@@ -606,9 +633,9 @@ describe('a binding cut off', () => {
   test('a run finishing a plan from a record before workingDir, with a running lock holder, is refused with both readings, and changes nothing', () => {
     const { places } = chained();
     const root = rootOf(install);
-    mkdirSync(join(root, 'connectome.tmp'));
-    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
-    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
     lockHeldBy(install, live());
     const kept = tree(root);
     const why = refusal(() => setup(options(install)));
@@ -619,9 +646,9 @@ describe('a binding cut off', () => {
   test('a run finishing a plan takes no --place, and one in another directory than the plan binds to is refused', () => {
     const { places } = chained();
     const root = rootOf(install);
-    mkdirSync(join(root, 'connectome.tmp'));
-    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
-    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
     expect(refusal(() => setup(options(install, { places })))).toContain(`A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup, run again, finishes it from its plan with the places that run was given, or says what stops it, so it takes no --place: run it again without.`);
     const moved = join(dir, 'moved');
     renameSync(install, moved);
@@ -633,9 +660,9 @@ describe('a binding cut off', () => {
   bindMounted('a plan cut off is finished through another name of the directory it binds to, a bind mount (where this user may bind-mount, as in a user namespace)', () => {
     const { b, c, places } = chained();
     const root = rootOf(install);
-    mkdirSync(join(root, 'connectome.tmp'));
-    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
-    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
     const alias = join(dir, 'alias');
     mkdirSync(alias);
     expect(setupThroughMounts([[install, alias]], alias, { dataDir: join(install, 'data') })).toContain('set up');
@@ -645,6 +672,25 @@ describe('a binding cut off', () => {
 });
 
 describe('what setup read before it held the lock', () => {
+  test('a binding that finds a plan another setup wrote meanwhile refuses, and leaves that plan as it was', () => {
+    const { places } = chained();
+    const root = rootOf(install);
+    const other = {
+      v: 1, id: 'another-setup', from: null, to: install, places: [],
+      record: { v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: install },
+    };
+    const restore = beforeTheLock(install, () => writeJsonAtomic(join(root, REBIND_PLAN), other));
+    const why = (() => {
+      try {
+        return refusal(() => setup(options(install, { places })));
+      } finally {
+        restore();
+      }
+    })();
+    expect(why).toContain('isn\'t what setup read before it held the lock, so setup has changed none of them.');
+    expect(JSON.parse(readFileSync(join(root, REBIND_PLAN), 'utf-8'))).toEqual(other);
+  });
+
   test('a binding whose install another setup bound meanwhile refuses, changing nothing more, and the install starts', () => {
     setup(options(install));
     updated(install);
@@ -667,9 +713,9 @@ describe('what setup read before it held the lock', () => {
   test('a run finishing a plan that another setup finished meanwhile refuses, changing nothing more', () => {
     const { b, c, places } = chained();
     const root = rootOf(install);
-    mkdirSync(join(root, 'connectome.tmp'));
-    expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
-    rmSync(join(root, 'connectome.tmp'), { recursive: true });
+    mkdirSync(join(root, 'copy', 'copy.json.tmp'));
+    expect(() => setup(options(install, { places }))).toThrow(/copy\.json\.tmp/);
+    rmSync(join(root, 'copy', 'copy.json.tmp'), { recursive: true });
     const restore = beforeTheLock(install, () => setup(options(install)));
     const why = (() => {
       try {

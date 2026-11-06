@@ -220,7 +220,10 @@ export function writePlan(root: string, plan: RebindPlan): void {
 
 export function rewriteFiles(root: string, plan: RebindPlan): void {
   for (const file of boundFiles(root, rebindPath(root))) {
-    if (file.value.rebound === plan.id) continue;
+    if (file.value.rebound === plan.id) {
+      syncDir(dirname(file.path));
+      continue;
+    }
     const map = <T extends { path: string }>(place: T): T => {
       const path = mapPath(place.path, plan);
       if (path === null) {
