@@ -764,8 +764,8 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
   }
   if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
   if (binding.kind === 'resume') {
-    out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished, so setup finishes it, ` +
-      'with the places that run was given.');
+    out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished. Setup finishes it from ` +
+      'its plan, with the places that run was given, or says what stops it.');
     return { dataDir: binding.plan.record.dataDir, placeArgs: [] };
   }
   const { from, to, ask, kept } = binding;

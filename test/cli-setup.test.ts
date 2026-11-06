@@ -2003,7 +2003,7 @@ test('a binding a setup run cut off is finished with the places that run was giv
   const again = world(dir);
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
   expect(again.seen.asked).toEqual([]);
-  expect(text(again.seen.out)).toContain(`A setup run binding this install to ${dir} was cut off before it finished, so setup finishes it, with the places that run was given.`);
+  expect(text(again.seen.out)).toContain(`A setup run binding this install to ${dir} was cut off before it finished. Setup finishes it from its plan, with the places that run was given, or says what stops it.`);
   expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root], dataDir: join(dir, 'data') });
 });
 

@@ -378,8 +378,9 @@ export function setup(options: SetupOptions): void {
   const bindingFound = existing === null ? null : bindingOf(root, given === null ? existing : { ...existing, extraState: [] });
   if (placed.length > 0 && bindingFound?.kind !== 'bind') {
     throw new ContractError(bindingFound?.kind === 'resume'
-      ? `A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup ` +
-        'finishes it with the places that run was given, so it takes no --place: run it again without.'
+      ? `A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup, ` +
+        'run again, finishes it from its plan with the places that run was given, or says what stops it, so it takes ' +
+        'no --place: run it again without.'
       : `--place gives a place to a binding of a moved or copied install, and ${bindingFound === null
         ? 'this install has no record yet' : `this install's record is bound to ${bindingFound.to}, where it is`}, so ` +
         'there\'s nothing to bind. Run it again without.');

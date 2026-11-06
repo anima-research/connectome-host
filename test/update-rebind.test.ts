@@ -606,7 +606,7 @@ describe('a binding cut off', () => {
     mkdirSync(join(root, 'connectome.tmp'));
     expect(() => setup(options(install, { places }))).toThrow(/connectome\.tmp/);
     rmSync(join(root, 'connectome.tmp'), { recursive: true });
-    expect(refusal(() => setup(options(install, { places })))).toContain('so it takes no --place: run it again without.');
+    expect(refusal(() => setup(options(install, { places })))).toContain(`A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup, run again, finishes it from its plan with the places that run was given, or says what stops it, so it takes no --place: run it again without.`);
     const moved = join(dir, 'moved');
     renameSync(install, moved);
     const kept = tree(rootOf(moved));
