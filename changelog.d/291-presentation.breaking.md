@@ -140,7 +140,7 @@
   stored once at this release's first start, and an earlier release then
   finds it empty. The first window written down with rows, or a presentation
   of more than one row, moves the store's MANIFEST to version 2, which
-  chronicle 0.5.0 and earlier refuse, and so every earlier release of this
+  chronicle 0.5.1 and earlier refuse, and so every earlier release of this
   host (context-manager's notes): going back after that needs the copy the
   update took. `/update back restore` puts it
   back. `/update back keep` stops at the older release's store audit, and the
