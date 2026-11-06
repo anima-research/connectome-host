@@ -234,13 +234,20 @@ function switchStore(
  * diagnosis. When putting the store back failed too, the store is still on
  * the new branch (`from` is the branch it was on before the rollback): the
  * answer then says the branch changed, so the TUI and the Web UI show the
- * branch the store is on.
+ * branch the store is on, and that the gate's files may still be the
+ * previous branch's, since agent-framework writes the `_config` mount only
+ * for a rollback that landed (and the TUI's redraw after a move writes it
+ * for none).
  */
 function rollbackFailed(app: AppContext, from: string, failed: string, err: unknown): CommandResult {
   const lines: Line[] = [{ text: `${failed}: ${messageOf(err)}`, style: 'system' }];
   // A refusal comes before anything moves, whatever branch the store is on by then.
   const refused = err instanceof OperatorActionError && err.code !== 'failed';
-  if (!refused && app.framework.getStore().currentBranch().name !== from) return { lines, branchChanged: true };
+  const on = app.framework.getStore().currentBranch().name;
+  if (!refused && on !== from) {
+    lines.push({ text: `  The _config mount wasn't written from ${on}: the gate's files may still be the previous branch's. /checkout ${on} writes them.`, style: 'system' });
+    return { lines, branchChanged: true };
+  }
   if (!(err instanceof OperatorActionError && err.code === 'failed')) lines.push(movedNothing(err));
   return { lines };
 }

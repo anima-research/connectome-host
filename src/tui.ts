@@ -993,9 +993,13 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   /** Draw the store's branch again. `mount: false` leaves the `_config`
-   *  mount alone, for a branch move agent-framework has refreshed it for
-   *  inside its reservation of the store (switchBranch and rollbackToMessage),
-   *  whose answer says if that failed. */
+   *  mount alone, for a branch move agent-framework writes it for:
+   *  switchBranch (/checkout, and /restore to a branch head) inside its
+   *  reservation of the store, the move's answer saying if that failed, and
+   *  rollbackToMessage (/restore to a message, /branchto) as it lets the
+   *  store go, without awaiting the write, a failure only in agent-
+   *  framework's log. A rollback that failed and left the store on the new
+   *  branch has it written by neither, and its answer says so. */
   function refreshFromStore(opts: { mount?: boolean } = {}) {
     redrawAfterTurn = undefined;
     // Reset streaming state BEFORE destroying renderables so nothing can

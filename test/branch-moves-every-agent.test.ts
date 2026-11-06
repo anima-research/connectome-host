@@ -348,6 +348,11 @@ describe('the framework\'s answer to a move decides what the session records', (
       expect(outcome.said).toContain(`failed: Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on ${w.branch()}`);
       expect(outcome.said).not.toContain('moved nothing');
       expect(outcome.branchChanged).toBe(true);
+      // agent-framework writes the `_config` mount only for a rollback that
+      // landed: the answer says the gate's files may be the previous
+      // branch's, as a switch's whose mount write failed does (#485 second
+      // reading of the wave-2 answer, finding 25).
+      expect(outcome.said).toContain(`The _config mount wasn't written from ${w.branch()}: the gate's files may still be the previous branch's. /checkout ${w.branch()} writes them.`);
       // The checkpoint names the branch the store is on, as for a restore
       // that landed (#485 bot review 2, finding 13): the store is at it, and
       // a later /restore that falls back to a branch head takes this one's.
