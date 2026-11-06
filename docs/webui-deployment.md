@@ -139,7 +139,13 @@ The module accepts three credentials:
   does a pending device-code login. The host's mode and its quiesce traces
   still carry the reason an operator gave for quiescing, an operator's own
   words. Observers are read-only; `/files/…` and `/debug/retrieval*` stay
-  password-only.
+  password-only. An observer page's context panels (makeup and coverage,
+  the compiled context, the pins), which `debug` opens, read the window
+  again at the frames its other scopes get: a local undo or redo at
+  `window:undone` and `undone-marks`, which need `messages`, and a fleet
+  child's shed at its `presentation:retracted`, which needs `ops`. With
+  `debug` and without those, a panel reads again when it is opened or
+  refreshed, and the coverage panel at its five-second poll.
 
 ## Caddy
 
