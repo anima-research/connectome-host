@@ -5,7 +5,9 @@
  *
  * Bulk-imported sessions (from claude.ai exports, etc.) land in Chronicle with
  * thousands of raw messages and no L1/L2/L3 summaries. This script
- * pre-computes all summaries so the session is openable.
+ * pre-computes summaries offline. It gives the strategy no tool definitions,
+ * so a chunk holding tool calls stays uncompressed, and with a Fable or
+ * Mythos compression model every chunk does.
  *
  * Resumable: if interrupted, re-running this script picks up where it left
  * off.

@@ -22,6 +22,7 @@ import {
 } from '@animalabs/context-manager';
 import type { Membrane } from '@animalabs/membrane';
 import { resolveAgentName } from '../agent-name.js';
+import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../web/load-repair-alert.js';
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
@@ -32,6 +33,7 @@ import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
 } from './contract.js';
 import { StartRefusal } from './host.js';
+import { hostVersionOf } from './update.js';
 
 /** The flag that runs the audit in place of a host: `<entry> --audit-stores
  *  [--recipe <recipe>] <data directory>…`, by hand after a copy. */
@@ -215,8 +217,8 @@ export async function auditBeforeCommit(
   throw new StartRefusal(
     `This release couldn't open every store it would open only after its commit, so it starts none of its ` +
     `agents, and the next start goes back to ${committed}:\n${failures.join('\n')}\n` +
-    `To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line ` +
-    `names, and update again; or stay on ${committed} until a release opens them.`,
+    `To take this release, do what each line says, or, where a line names only what failed, ` +
+    `correct that, and update again; or stay on ${committed} until a release opens every store.`,
   );
 }
 
@@ -963,13 +965,16 @@ function topologyRefused(error: unknown): boolean {
 /** context-manager's StoreTopologyError, from any copy of the library, ends
  *  "Repair the store or set topologyPolicy: 'report' to open it for
  *  inspection.", an option the host's built-in strategies take from no
- *  recipe, so the line names §11.8 in its place. */
+ *  recipe, so the line names the host's own repair section in its place. */
 function refusal(error: unknown): string {
   const line = oneLine(error);
   if (!topologyRefused(error)) return line;
   const remedy = line.lastIndexOf(' Repair the store');
-  return `${remedy >= 0 ? line.slice(0, remedy) : line} AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.`;
+  return `${remedy >= 0 ? line.slice(0, remedy) : line} ${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 }
+
+const REPAIR_SECTION = `docs/DEPLOYMENTS.md's "Crossed summaries: auditing and repairing a store" in connectome-host ` +
+  hostVersionOf(HOST_PACKAGE_JSON);
 
 function oneLine(error: unknown): string {
   return flat(error instanceof Error ? error.message : String(error));

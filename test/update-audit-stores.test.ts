@@ -39,7 +39,10 @@ const CONTEXT_MANAGER = ((): string => {
   while (!existsSync(join(dir, 'package.json')) && dirname(dir) !== dir) dir = dirname(dir);
   return join(dir, (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { main: string }).main);
 })();
-const REMEDY = 'AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.';
+const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+const REPAIR_HEADING = 'Crossed summaries: auditing and repairing a store';
+const REPAIR_SECTION = `docs/DEPLOYMENTS.md's "${REPAIR_HEADING}" in connectome-host ${VERSION}`;
+const REMEDY = `${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 const MODEL_CALLED = 'its strategy called a model while opening it, and the audit gives a strategy none: only a start of this release can answer for this store';
 
 let root: string;
@@ -289,7 +292,7 @@ function holdPastParent(release?: string): string[] {
 }
 
 describe('the store audit', () => {
-  test("a store this release would refuse is said, with §11.8 in place of the library's remedy, and the audit exits 1", async () => {
+  test("a store this release would refuse is said, with the host's repair section in place of the library's remedy, and the audit exits 1", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
     const { status, lines, failed } = await audit([dir]);
     expect(status).toBe(1);
@@ -887,7 +890,7 @@ describe('the store audit', () => {
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
     expect(failed).toEqual([expect.stringMatching(new RegExp(`^${stores[0]} \\(agents/agent\\): refused: store topology rejected: `))]);
-    expect(failed[0]).toEndWith('AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.');
+    expect(failed[0]).toEndWith(REMEDY);
     expect(failed[0]).not.toContain('topologyPolicy');
   });
 
@@ -2425,7 +2428,7 @@ describe('a host on trial, before its commit', () => {
     expect(message).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${child.stores[0]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${farLine}\n`);
-    expect(message).toEndWith('To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line names, and update again; or stay on 0.10.2 until a release opens them.');
+    expect(message).toEndWith('To take this release, do what each line says, or, where a line names only what failed, correct that, and update again; or stay on 0.10.2 until a release opens every store.');
   }, 90_000);
 
   test("opens no store when it can't tell which places its fallback undoes, or when no trial is under way, and says why", async () => {
@@ -2800,4 +2803,8 @@ describe('a host on trial, before its commit', () => {
     expect(counts.started).toBe(2);
     expect(counts.stopped).toBe(2);
   }, 60_000);
+});
+
+test('the repair section a refusal names is a heading of this release\'s docs/DEPLOYMENTS.md', () => {
+  expect(readFileSync(new URL('../docs/DEPLOYMENTS.md', import.meta.url), 'utf-8').split('\n')).toContain(`### ${REPAIR_HEADING}`);
 });

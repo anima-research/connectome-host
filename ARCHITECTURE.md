@@ -216,7 +216,8 @@ Raising the budget applies at once; lowering it converges gradually. Operators
 can also **pin** ranges (keep raw, cap the fold level, or fix a level) from the
 WebUI. How this feels from the inside is in
 [`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md); sizing for
-long-lived agents is in [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md).
+long-lived agents is in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)'s "A
+resident's memory: sizing, folding and repair".
 
 ## Modules
 
