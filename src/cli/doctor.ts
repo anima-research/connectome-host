@@ -140,6 +140,7 @@ export async function doctor(
   const manager = service?.manager
     ?? (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd-user' : null);
   let managerUnread: string | null = null;
+  let envFiles: string[] = [];
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -169,6 +170,7 @@ export async function doctor(
         : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
           '`connectome service install` writes the unit anew.');
     }
+    envFiles = unit === null ? [] : unit.files;
     const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs);
     env = built.env;
     secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
@@ -222,6 +224,7 @@ export async function doctor(
   let host: HostClient | NoHost = { reason: 'it wasn\'t asked', down: false };
   let stopped = false;
   let fitUnchecked = false;
+  let filesUnread = false;
   let pidUntold = false;
   let uncredentialed = false;
   let closedTabs = false;
@@ -406,8 +409,9 @@ export async function doctor(
       report.problem(`The recipe's server list doesn't resolve: ${errorText(serversError)}`);
       unknown = 'the recipe\'s server list doesn\'t resolve';
     }
-    await checked(report, 'The stored secrets\' check',
-      () => storedSecretLines(report, work, env, servers, uses, unknown, storedNames));
+    await checked(report, 'The stored secrets\' check', () => {
+      filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles);
+    });
 
     report.section('Discord');
     if (servers === null) report.line(`Discord isn't checked: ${unknown}.`);
@@ -512,6 +516,7 @@ export async function doctor(
     ...('reason' in host ? ['the host\'s checks weren\'t made'] : []),
     ...(ladderRan ? [] : ['the ladder didn\'t run']),
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
+    ...(filesUnread ? ['the files its unit reads its environment from weren\'t read'] : []),
     ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
     ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
     ...(uncredentialed ? ['count_tokens had no credential to count with'] : []),
@@ -693,7 +698,8 @@ function storedSecretLines(
   uses: Map<string, string[]> | null,
   unknown: string,
   names: string[] | null,
-): void {
+  envFiles: string[],
+): boolean {
   if (names === null) {
     const { guessed } = secretNames(join(work, '.setup'), join(work, '.env'));
     report.line(`There's no ${new StoredSecrets(join(work, '.setup')).file}, so which secrets setup stored isn't known and ` +
@@ -706,8 +712,14 @@ function storedSecretLines(
   const inDotenv = new Set(dotenvNames(work));
   const provider: readonly string[] = PROVIDER_SECRETS;
   const mapped: string[] = [];
+  let filesUnread = false;
   for (const name of names ?? []) {
-    if (!env[name] && !inDotenv.has(name)) {
+    if (!env[name] && envFiles.length > 0) {
+      report.line(`${name} is in setup's list of stored secrets and has no value in what doctor reads of the service's ` +
+        `environment, but its unit also reads ${envFiles.join(' and ')}, whose values doctor can't see, so whether the ` +
+        'service has one isn\'t known.');
+      filesUnread = true;
+    } else if (!env[name] && !inDotenv.has(name)) {
       report.problem(`${name} is in setup's list of stored secrets (${join(work, '.setup', 'stored-secrets.json')}), and ` +
         `no file Bun reads for the service gives it a value, ${join(work, '.env')} included: put it in ` +
         `${join(work, '.env')} and restart the service, or, if it isn't a secret, take it out of that list. ${BEFORE_ENV}: ` +
@@ -739,6 +751,7 @@ function storedSecretLines(
     }
   }
   if (unchecked.length > 0) report.line(`Which servers see ${unchecked.join(', ')} isn't checked: ${unknown}.`);
+  return filesUnread;
 }
 
 function namedOutsideServers(raw: Record<string, unknown>): Map<string, string[]> {
@@ -910,7 +923,8 @@ function shownWords(text: string): string[] {
   return words;
 }
 
-function unitEnv(service: ServiceRecord, parts: DoctorParts): { env: Record<string, string> } | { why: string } {
+function unitEnv(service: ServiceRecord, parts: DoctorParts):
+  { env: Record<string, string>; files: string[] } | { why: string } {
   const name = service.units.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
@@ -933,10 +947,25 @@ function unitEnv(service: ServiceRecord, parts: DoctorParts): { env: Record<stri
       const at = word.indexOf('=');
       if (at > 0) out[word.slice(0, at)] = word.slice(at + 1);
     }
-    return { env: out };
+    let listed: SpawnSyncReturns<string>;
+    try {
+      listed = spawnSync(parts.systemctl, ['--user', 'show', '--property=EnvironmentFiles', '--value', '--', name], {
+        encoding: 'utf-8',
+        timeout: parts.envLimitMs,
+        env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
+      });
+    } catch (error) {
+      return { why: errorText(error) };
+    }
+    const unlisted = failure(listed, parts.envLimitMs);
+    if (unlisted !== null) return { why: unlisted };
+    // systemd 257 prints each file on a line of its own, as `<path> (ignore_errors=no)`.
+    const files = listed.stdout.split('\n').map((line) => line.replace(/ \(ignore_errors=(?:yes|no)\)$/, ''))
+      .filter((line) => line !== '');
+    return { env: out, files };
   }
   try {
-    return { env: stringValues(JSON.parse(ran.stdout)) };
+    return { env: stringValues(JSON.parse(ran.stdout)), files: [] };
   } catch {
     return { why: 'plutil\'s answer wasn\'t JSON' };
   }

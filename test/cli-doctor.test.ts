@@ -181,6 +181,7 @@ function fakeManager(dir: string, opts: {
     `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
     `if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ] && [ -f ${join(at, 'unit-environment')} ]; then cat ${join(at, 'unit-environment')}; exit 0; fi`,
     `if [ "$1" = getenv ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'values')}/$2" ]; then cat "${join(at, 'values')}/$2"; fi; exit 0; fi`,
+    `if [ "$*" = "--user show --property=EnvironmentFiles --value -- connectome-test.service" ]; then if [ -f ${join(at, 'environment-files')} ]; then cat ${join(at, 'environment-files')}; fi; exit 0; fi`,
     'echo "unexpected: $*" >&2',
     'exit 2',
   ].join('\n') + '\n');
@@ -1336,7 +1337,8 @@ describe('connectome doctor: the environment the service gets from its manager',
     const r = await withHost(at, HEALTHY_HOST, () => run(at, {
       systemctl: manager.path, ...reports('| the journal says manager-secret-value'),
     }));
-    expect(manager.calls()).toEqual(['--user show-environment', '--user show --property=Environment --value -- connectome-test.service']);
+    expect(manager.calls()).toEqual(['--user show-environment', '--user show --property=Environment --value -- connectome-test.service',
+      '--user show --property=EnvironmentFiles --value -- connectome-test.service']);
     expect(r.out).toContain('| the journal says <MANAGER_SECRET>');
     expect(r.out).not.toContain('manager-secret-value');
     expect(r.out).not.toMatch(/MANAGER_SECRET is in setup's list of stored secrets \(.*\), and no file Bun reads/);
@@ -1482,7 +1484,8 @@ describe('connectome doctor: the environment the service gets from its manager',
     const systemd = install();
     const user = fakeManager(systemd.work);
     await run(systemd, { systemctl: user.path, launchctl: user.path });
-    expect(user.calls()).toEqual(['--user show-environment', '--user show --property=Environment --value -- connectome-test.service']);
+    expect(user.calls()).toEqual(['--user show-environment', '--user show --property=Environment --value -- connectome-test.service',
+      '--user show --property=EnvironmentFiles --value -- connectome-test.service']);
   });
 });
 
@@ -2080,5 +2083,23 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     } finally {
       chmodSync(locked, 0o755);
     }
+  });
+
+  test('a stored secret no file doctor reads gives, where the unit reads an EnvironmentFile, is said not known, naming the file, not missing', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], drop: ['LONELY_SECRET'] });
+    const manager = fakeManager(at.work, {
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+    });
+    const listed = join(at.work, 'secrets.env');
+    writeFileSync(join(manager.path, '..', 'environment-files'), `${listed} (ignore_errors=no)\n`);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain(`LONELY_SECRET is in setup's list of stored secrets and has no value in what doctor reads of the ` +
+      `service's environment, but its unit also reads ${listed}, whose values doctor can't see, so whether the service has ` +
+      'one isn\'t known.');
+    expect(r.out).not.toContain('✗ LONELY_SECRET is in setup\'s list');
+    expect(r.out).toMatch(/Doctor found no problem, though .*the files its unit reads its environment from weren't read/);
+    const plain = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], drop: ['LONELY_SECRET'] });
+    const missing = await withHost(plain, HEALTHY_HOST, () => run(plain));
+    expect(missing.out).toContain('✗ LONELY_SECRET is in setup\'s list of stored secrets');
   });
 });
