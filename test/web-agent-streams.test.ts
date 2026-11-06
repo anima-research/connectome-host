@@ -156,11 +156,14 @@ describe("the frames that move a window, and the panels' reads", () => {
   function frames() {
     const calls: string[] = [];
     const taker = new WindowFrames();
-    const take = (msg: { type: string; [k: string]: unknown }, shown: ShownPanels = local) => taker.take(msg, shown, {
-      applyUndoneMarks: (m) => { calls.push(`marks:${m.agent}:${m.undone.join(',')}`); },
+    const hooks = {
+      applyUndoneMarks: (m: { agent: string; undone: string[] }) => { calls.push(`marks:${m.agent}:${m.undone.join(',')}`); },
       readPanels: () => { calls.push('read'); },
-    });
-    return { calls, take };
+      askPanelsAgent: () => { calls.push('ask'); },
+    };
+    const take = (msg: { type: string; [k: string]: unknown }, shown: ShownPanels = local) => taker.take(msg, shown, hooks);
+    const named = (before: ShownPanels, after: ShownPanels) => taker.named(before, after, hooks);
+    return { calls, take, named };
   }
 
   // Host #485 bot review wave 2, finding 20: the host sends an undone-marks
@@ -209,11 +212,36 @@ describe("the frames that move a window, and the panels' reads", () => {
     take(child('miner', { type: 'window:undone', agentName: 'digger', retracted: 1 }), miner);
     take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r1'], reason: 'shed' }), miner);
     expect(calls).toEqual(['read', 'read']);
-    take(child('miner', { type: 'window:undone', agentName: 'sifter', retracted: 1 }), miner);
     take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r2'], reason: 'hide' }), miner);
     take(child('smelter', { type: 'window:undone', agentName: 'digger', retracted: 1 }), miner);
     take(child('miner', { type: 'inference:started', agentName: 'digger' }), miner);
     expect(calls).toEqual(['read', 'read']);
+  });
+
+  // Host #485 bot review wave 4, finding 15: the child's panels named the
+  // agent of their last pins or settings answer, so once the child restarted
+  // under the same scope with another agent, that agent's undo or shed read
+  // nothing until the panels were fetched again.
+  test("a fleet child's undo or shed for another agent than its panels named asks which agent they answer for, and reads them only once an answer names another", () => {
+    const { calls, take, named } = frames();
+    const miner: ShownPanels = { scope: 'miner', agent: 'digger' };
+    take(child('miner', { type: 'window:undone', agentName: 'sifter', retracted: 1 }), miner);
+    take(child('miner', { type: 'presentation:retracted', agentName: 'sifter', messageIds: ['r1'], reason: 'shed' }), miner);
+    expect(calls).toEqual(['ask', 'ask']);
+    // The child still answers for digger (sifter is another of its agents):
+    named(miner, miner);
+    expect(calls).toEqual(['ask', 'ask']);
+    // It restarted with sifter:
+    named(miner, { scope: 'miner', agent: 'sifter' });
+    expect(calls).toEqual(['ask', 'ask', 'read']);
+  });
+
+  test("an answer that names the panels' first agent, or another scope's, reads nothing", () => {
+    const { calls, named } = frames();
+    named({ scope: 'miner', agent: undefined }, { scope: 'miner', agent: 'digger' });
+    named({ scope: 'miner', agent: 'digger' }, { scope: 'smelter', agent: 'sifter' });
+    named({ scope: 'miner', agent: 'digger' }, { scope: 'miner', agent: undefined });
+    expect(calls).toEqual([]);
   });
 
   test("before a fleet child's panels name their agent, any of its agents' undo reads them", () => {

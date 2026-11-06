@@ -582,7 +582,9 @@ export function App() {
   };
   /** The panels' scope and the agent they answer for: they ask by scope
    *  alone, so locally the conversation agent, and for a fleet child the
-   *  agent its pins or settings answer named. */
+   *  agent its pins or settings answer named. Another of the child's agents
+   *  moving its window asks again (WindowFrames), and an answer naming
+   *  another agent reads the panels again. */
   const shownPanels = () => ({
     scope: panelScope(),
     agent: isChildScope(panelScope())
@@ -1148,13 +1150,17 @@ export function App() {
         },
         setSettings: (state) => {
           if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
+          const before = shownPanels();
           setSettingsLoaded(true);
           setSettingsState(state);
+          windowFrames.named(before, shownPanels(), { readPanels: readWindowPanels });
         },
         setPins: (state) => {
           if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
+          const before = shownPanels();
           setPinsLoaded(true);
           setPinsState(state);
+          windowFrames.named(before, shownPanels(), { readPanels: readWindowPanels });
         },
         setMounts: (loaded, moduleLoaded, list) => {
           setMountsLoaded(loaded);
@@ -1195,6 +1201,7 @@ export function App() {
         onCommandAnswer: refreshLocalUpdate,
         shownPanels,
         readPanels: readWindowPanels,
+        askPanelsAgent: () => { refreshPins(); refreshSettings(); },
         applyUndoneMarks,
       });
     });
@@ -1717,6 +1724,8 @@ interface HandlerHooks {
   shownPanels: () => ShownPanels;
   /** An undo, a redo or a shed on the shown agent's window: the panels built from it read again. */
   readPanels: () => void;
+  /** A fleet child's other agent moved its window: ask which agent its panels answer for. */
+  askPanelsAgent: () => void;
   /** Apply an undone-marks frame to the transcript. */
   applyUndoneMarks: (marks: UndoneMarksMessage) => void;
 }

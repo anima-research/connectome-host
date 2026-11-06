@@ -1209,9 +1209,11 @@ export interface RecipeModules {
    * Discord message the heard words match is edited down to them, and a
    * note lands in the context of the agent voiced, when one agent can be
    * named (`notifyOnInterruption`, default on). Nothing is edited when no
-   * message matches, or when the words also start what another agent voiced
-   * after it. `token` should be `${VAR}`-substituted from .env, never
-   * literal.
+   * message matches, or when the words also start another agent's live
+   * activation there, or its latest since the channel's last interruption,
+   * voiced after it. Messages are matched in the 32 channels published in
+   * or voiced in last. `token` should be `${VAR}`-substituted from .env,
+   * never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 

@@ -4,7 +4,10 @@ import { createTestRenderer } from '@opentui/core/testing';
 import { switchSessionSteps } from '../src/session-switch.js';
 
 const [mode, control] = process.argv.slice(2);
-const { renderer, mockInput } = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false });
+// The TUI's createCliRenderer captures console output while the renderer
+// lives ('console-overlay', its default), so a console.log made before the
+// destroy never reaches stdout, as in the CLI (#485 bot review 4, finding 19).
+const { renderer, mockInput } = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false, consoleMode: 'console-overlay' });
 mock.module('@opentui/core', () => ({ ...core, createCliRenderer: async () => renderer }));
 const { runTui } = await import('../src/tui.js');
 
@@ -182,11 +185,18 @@ if (control === 'ctrl-c') {
   await switchUnderWay;
   stopSignalled = true;
   process.kill(process.pid, 'SIGTERM');
-} else if (control === 'late-command') {
+} else if (control === 'late-command' || control === 'late-command-quit') {
   await mockInput.typeText('/puppet late_tool');
   mockInput.pressEnter();
   await commandUnderWay;
-  process.kill(process.pid, 'SIGTERM');
+  // A stop signal has OpenTUI destroy the renderer before the TUI's stop
+  // runs; /quit runs the TUI's stop, which destroys it in its own order.
+  if (control === 'late-command') {
+    process.kill(process.pid, 'SIGTERM');
+  } else {
+    await mockInput.typeText('/quit');
+    mockInput.pressEnter();
+  }
 } else if (control === 'error-during-stop') {
   process.kill(process.pid, 'SIGTERM');
   await stopUnderWay;

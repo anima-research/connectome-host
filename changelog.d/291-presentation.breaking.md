@@ -90,7 +90,11 @@
     window of the agent they show, which they ask for by scope alone: the
     conversation agent's, or a fleet child's agent that its pins or
     settings answer named (any of the child's agents before one has), and
-    not another resident's or a subagent's. A figure
+    not another resident's or a subagent's. Another of the child's agents
+    moving its window has the page ask for the child's pins and settings
+    again, and an answer naming another agent than before (the child
+    restarted with it) reads the panels again, where they stayed on the
+    old agent until fetched again. A figure
     that comes back after a newer read of it started is dropped, and the
     coverage panel's five-second poll starts no read while one is pending,
     where a read slower than the poll had another started at each tick; a
@@ -98,7 +102,11 @@
     tick starts one. The local pin picker lists the host's candidates, the
     record's last 200 rows, as a fleet child's does, where it listed the
     rows the transcript had loaded; it leaves out undone rows and rows
-    stamped for other residents only. A message stored in parts is one
+    stamped for other residents only, and on a legacy window, which reads
+    no stamp, the rows the resident's view leaves out (held traffic,
+    suppressed rows, another agent's stored injections), where it left out
+    a co-resident's rows there too, though they are in that window. A
+    message stored in parts is one
     candidate, by its first part with the parts' text joined, as it is one
     row in the transcript, where a fleet child's picker listed each part,
     and the 200 rows reach back to its first part when they start inside

@@ -596,7 +596,8 @@ type RecipeRead = { recipe: Recipe | null } | { error: unknown };
 
 /** The recipe the directory's start would load: `source`, or the one saved
  *  in it. A refusal names the file, which for a saved recipe is a hidden
- *  one (.recipe.json), unless its own words name it already. */
+ *  one (.recipe.json), unless its own words name it already, as given or
+ *  resolved. */
 async function readRecipe(dataDir: string, source: string | undefined): Promise<RecipeRead> {
   try {
     return source !== undefined
@@ -605,10 +606,17 @@ async function readRecipe(dataDir: string, source: string | undefined): Promise<
   } catch (error) {
     const path = source ?? savedRecipePath(dataDir);
     const said = oneLine(error);
-    if (said.includes(path)) return { error };
+    if (names(said, path) || names(said, resolve(path))) return { error };
     const file = source !== undefined ? `its recipe, ${path},` : `its saved recipe, ${path},`;
     return { error: new Error(`${file} can't be loaded: ${said}`, { cause: error }) };
   }
+}
+
+/** Whether `said` names `path` whole: not as a part of a longer path or
+ *  word, as `agent` is of "agent-framework". */
+function names(said: string, path: string): boolean {
+  const text = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w./\\\\-])${text}(?![\\w/\\\\-]|\\.\\w)`).test(said);
 }
 
 function recipeOf(read: RecipeRead): Recipe | null {

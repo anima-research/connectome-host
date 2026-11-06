@@ -2,8 +2,9 @@
  * The Context panel's reads (web/src/Context.tsx): the makeup and the
  * coverage each through a LatestRead, the coverage also polled every five
  * seconds. No bun test mounts the panel, so this drives its reads' schedule,
- * and reads the panel's source for the two calls that wire it: the tick's
- * read is a poll, and the coverage read has a timeout.
+ * and reads the panel's source for the calls that wire it: the tick's read
+ * is a poll, and the coverage read has a timeout, begins as a poll when
+ * polled, and settles in its finally.
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
@@ -100,5 +101,14 @@ describe("the panel's wiring", () => {
 
   test('the coverage read has the timeout', () => {
     expect(panel).toMatch(/readFigure<Coverage>\([^;]*, READ_TIMEOUT_MS\)/);
+  });
+
+  // Host #485 bot review wave 4, finding 21: a poll that began its read as
+  // asked for would supersede a slow one at each tick, and a read never
+  // settled would stop the poll; both checks above passed either way.
+  test("the coverage read is a poll when polled, else asked for, and settles in its finally", () => {
+    const loadCoverage = /const loadCoverage = async \(polled = false\) => \{([\s\S]*?)\n  \};/.exec(panel)?.[1] ?? '';
+    expect(loadCoverage).toMatch(/const thisLoad = polled \? coverageReads\.poll\(\) : coverageReads\.begin\(\);/);
+    expect(loadCoverage).toMatch(/\} finally \{\s*coverageReads\.settled\(thisLoad\);/);
   });
 });
