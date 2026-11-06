@@ -482,6 +482,35 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(undone).not.toContain('(undone) the second answer');
   }, 40000);
 
+  // agent-framework traces no branch move, so the TUI reads the store's
+  // branch before it links or marks lines: another client's move is drawn
+  // then, or once a root turn running on it ends (#485 bot review 5,
+  // finding 6).
+  test("another client's branch move is drawn before the next link or mark, and a turn stored on the new branch is marked there", async () => {
+    const steps = await play('undone-moved-elsewhere');
+    const ended = steps.get('turn ended')!.frame;
+    expect(ended).toContain('Branch moved (by another client): side');
+    expect(ended).not.toContain('three ledgers');
+    expect(ended).toContain('── session history (3 messages) ──');
+    expect(times(ended, 'a fifth ledger')).toBe(1);
+    expect(times(ended, 'and the fifth?')).toBe(1);
+    const undone = steps.get('undone')!.frame;
+    expect(times(undone, 'a fifth ledger')).toBe(1);
+    expect(undone).toContain('(undone) a fifth ledger');
+    expect(times(undone, 'and the fifth?')).toBe(1);
+    expect(undone).toMatch(/\(undone\) .*and the fifth\?/);
+    expect(undone).not.toContain('(undone) user: count the ledgers');
+    // During a turn the branch waits for its end: the turn's stream goes on.
+    const during = steps.get('moved during a turn')!.frame;
+    expect(during).toContain('still counting');
+    expect(during).not.toContain('the other reply');
+    const after = steps.get('moved, turn ended')!.frame;
+    expect(after).toContain('Branch moved (by another client): other');
+    expect(after).toContain('(undone) the other reply');
+    expect(times(after, 'still counting')).toBe(1);
+    expect(after).not.toContain('a fifth ledger');
+  }, 40000);
+
   // A send that is never stored, one the framework refused or one during a
   // session switch that failed, is no row's: a later message in the same
   // words takes its own echo (#485 bot review 5, finding 11).

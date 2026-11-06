@@ -805,10 +805,15 @@ export async function runTui(app: AppContext): Promise<void> {
    *  takes it, and the oldest past SCROLLBACK_CAP of them, each by then
    *  more than twice that many lines old. */
   let evictedLines: StreamedLine[] = [];
-  /** The operator's messages sent while a session switch runs: one that
-   *  fails leaves them unstored, and the old session's history isn't drawn
-   *  again, so their entries go then. */
+  /** The operator's messages sent while a session switch runs, undefined
+   *  while none runs: one that fails leaves them unstored, and the old
+   *  session's history isn't drawn again, so their entries go then. */
   let sentDuringSwitch: StreamedLine[] | undefined;
+  /** The store's branch whose history loadSessionHistory drew. */
+  let drawnBranch: string | undefined;
+  /** Async commands whose answer hasn't come: one of them can have moved
+   *  the store already, and its answer draws the branch. */
+  let commandsAnswering = 0;
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
@@ -901,6 +906,7 @@ export async function runTui(app: AppContext): Promise<void> {
     streamedLines = [];
     evictedLines = [];
     clearedRows = new Set();
+    drawnBranch = storeBranchName();
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -922,6 +928,36 @@ export async function runTui(app: AppContext): Promise<void> {
     for (const msg of messages) drawRow(msg, undone(msg.id), false);
 
     addLine(`── end history ──`, DIM_GRAY);
+  }
+
+  function storeBranchName(): string | undefined {
+    try {
+      return app.framework.getStore().currentBranch().name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Whether the store is on another branch than the one drawn, moved by
+   *  another client (a Web UI /checkout, /restore or /branchto), which
+   *  agent-framework traces nothing of: the history's cursors are the drawn
+   *  branch's, so the branch is drawn now, or once a root turn running on
+   *  it ends (redrawAfterTurn), and the caller leaves the drawn lines
+   *  alone. A move of this TUI's own is drawn by its command's answer, and
+   *  a session switch's by its end. */
+  function branchMovedElsewhere(): boolean {
+    const branch = storeBranchName();
+    if (branch === undefined || drawnBranch === undefined || branch === drawnBranch) return false;
+    if (redrawAfterTurn) return true;
+    if (commandsAnswering > 0 || sentDuringSwitch) return false;
+    const line = { text: `${hhmm()} Branch moved (by another client): ${branch}`, color: CYAN };
+    if (rootTurnShowing || streaming) {
+      redrawAfterTurn = [line];
+      return true;
+    }
+    refreshFromStore({ mount: false });
+    addLine(line.text, line.color);
+    return true;
   }
 
   /** The streamed lines of a row stored after the history was drawn, each
@@ -985,6 +1021,7 @@ export async function runTui(app: AppContext): Promise<void> {
    *  the residents share) is no line's: the TUI streams the root agent's
    *  turns. */
   function linkStreamedLines(): void {
+    if (branchMovedElsewhere()) return;
     const cm = app.framework.getAgent(rootAgentName)?.getContextManager();
     if (!cm) return;
     const total = cm.getMessageCount();
@@ -1032,6 +1069,7 @@ export async function runTui(app: AppContext): Promise<void> {
    *  linked yet waits for the turn's return to draw its lines, and is
    *  marked then (remarkAfterBackground). */
   function remarkHistory() {
+    if (branchMovedElsewhere()) return;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -2757,7 +2795,8 @@ export async function runTui(app: AppContext): Promise<void> {
         // as it is too.
         if (!(rootTurnShowing || streaming)) state.status = 'thinking';
         updateStatus();
-        result.asyncWork.then(asyncResult => {
+        commandsAnswering++;
+        result.asyncWork.finally(() => { commandsAnswering--; }).then(asyncResult => {
           // An answer that comes once the TUI has stopped, a bare
           // /newtopic's summary given back say, goes to the terminal: the
           // renderer is gone, and with it the scrollback.

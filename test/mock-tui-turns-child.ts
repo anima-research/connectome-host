@@ -879,6 +879,39 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('(undone)'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-moved-elsewhere') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Another client moves the store to a shorter branch, which
+    // agent-framework traces nothing of (#485 bot review 5, finding 6).
+    storeBranch = 'side';
+    history.splice(1, history.length);
+    // A turn of this session's on it: the operator's message and the
+    // reply, stored by the turn's end.
+    await command('and the fifth?');
+    await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'and the fifth?' }] });
+    await replied('a2', 'a fifth ledger');
+    await step('turn ended');
+    undoneRows.add('u2');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a fifth ledger'), 'the mark');
+    await step('undone');
+    // Another move while a root turn runs, and an undo then: the branch is
+    // drawn once the turn ends.
+    undoneRows.clear();
+    storeBranch = 'other';
+    history.splice(1, history.length, { id: 'o1', participant: 'agent', content: [{ type: 'text', text: 'the other reply' }] });
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'still counting', blockType: 'text' });
+    await until(async () => (await frame()).includes('still counting'), 'the stream');
+    undoneRows.add('o1');
+    first.send('window:undone', { retracted: 1 });
+    await step('moved during a turn');
+    history.push({ id: 'o2', participant: 'agent', content: [{ type: 'text', text: 'still counting' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the other reply'), 'the branch drawn');
+    await step('moved, turn ended');
   } else if (scenario === 'undone-long-turn') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // One turn of more rounds than the scrollback holds lines: each round's

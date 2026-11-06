@@ -16,7 +16,14 @@
   redraw cut the turn's line off, its later words were lost, and the
   status read idle while it ran. A `/clear` while that redraw waits
   leaves the scrollback clear: the turn's end takes up the branch and
-  draws nothing, where it drew the branch's history again. An async command started or answered
+  draws nothing, where it drew the branch's history again. Another
+  client's move (a Web UI `/checkout`, `/restore` or `/branchto`), of
+  which the TUI hears nothing either, is drawn before the TUI next links
+  or marks its lines, at a turn's end or an undo, redo or shed, or once a
+  root turn running on the new branch ends, with a line naming the
+  branch: the TUI kept showing the earlier branch until a command of its
+  own drew one, and rows stored on a shorter branch were never linked to
+  their lines, so an undo of them marked nothing. An async command started or answered
   while a root turn runs, backgrounded or held after a failed attempt
   too, leaves the turn's status as it is, where its start set it to
   thinking and its answer to idle.
