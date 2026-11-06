@@ -33,21 +33,27 @@ export async function askHidden(
   // Bun 1.4.4's readline tells a bracketed paste's start and end apart only as keypresses named paste-start and
   // paste-end (readline-paste.ts).
   const input = (rl as unknown as { input?: NodeJS.EventEmitter }).input;
+  let gone = false;
+  let closed = () => {};
+  const onClose = () => {
+    gone = true;
+    closed();
+  };
+  rl.once('close', onClose);
   if (input !== undefined && paste?.pasting()) {
-    const ended = await new Promise<boolean>((resolve) => {
+    await new Promise<void>((resolve) => {
       const onKey = (_text: unknown, key: { name?: string } | undefined) => {
-        if (key?.name === 'paste-end') done(true);
+        if (key?.name === 'paste-end') done();
       };
-      const onClose = () => done(false);
-      const done = (value: boolean) => {
+      const done = () => {
         input.off('keypress', onKey);
-        rl.off('close', onClose);
-        resolve(value);
+        closed = () => {};
+        resolve();
       };
+      closed = done;
       input.on('keypress', onKey);
-      rl.once('close', onClose);
     });
-    if (!ended) return '';
+    if (gone) return '';
   }
   const draft = rl.line;
   if (draft !== '') {
@@ -63,8 +69,6 @@ export async function askHidden(
   const lines: string[] = [];
   let quiet: ReturnType<typeof setTimeout> | undefined;
   let whole = () => {};
-  let closed = () => {};
-  let gone = false;
   let pasting = false;
   let answer = '';
   let tookInPaste = false;
@@ -98,16 +102,12 @@ export async function askHidden(
         answer = lines.join('\n');
         resolve(answer);
       };
-      closed = () => {
-        gone = true;
-        resolve('');
-      };
-      rl.once('close', closed);
+      closed = () => resolve('');
     });
   } finally {
     clearTimeout(quiet);
     input?.off('keypress', pasted);
-    rl.off('close', closed);
+    rl.off('close', onClose);
     rl.off('line', take);
     for (const listener of others) rl.on('line', listener);
     history.splice(0, history.length, ...before);

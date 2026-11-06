@@ -1686,6 +1686,37 @@ describe("the terminal's hidden question", () => {
     expect(shown()).not.toContain('DISCORD_TOKEN');
   });
 
+  test('a conversation closed in the same tick as the paste\'s end, from a listener after the question\'s own, answers nothing, and the question never opens', async () => {
+    const { input, output, rl, shown } = terminal();
+    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
+    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
+    rl.on('line', (line) => { paste.take(line); });
+    input.write('\x1b[200~chat one\r');
+    await Bun.sleep(30);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
+    input.on('keypress', (_text: unknown, key: { name?: string } | undefined) => {
+      if (key?.name === 'paste-end') rl.close();
+    });
+    input.write('\x1b[201~');
+    expect(await answer).toBe('');
+    expect(shown()).not.toContain('DISCORD_TOKEN');
+    paste.end();
+  });
+
+  test('a paste\'s end and Ctrl-D in one chunk, while a hidden question waits out the paste, answer nothing, and the question never opens', async () => {
+    const { input, output, rl, shown } = terminal();
+    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
+    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
+    rl.on('line', (line) => { paste.take(line); });
+    input.write('\x1b[200~chat one\r');
+    await Bun.sleep(30);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
+    input.write('\x1b[201~\x04');
+    expect(await answer).toBe('');
+    expect(shown()).not.toContain('DISCORD_TOKEN');
+    paste.end();
+  });
+
   test('a line on the prompt that holds the answer just given hidden isn\'t given back, so the secret isn\'t one Enter from the conversation', async () => {
     const { input, output, rl, lines, nextLine, shown } = terminal();
     input.write('tok-123456');
