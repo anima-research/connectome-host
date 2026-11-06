@@ -767,10 +767,12 @@ export async function runTui(app: AppContext): Promise<void> {
   /** How many of the record's rows the session history read: a row past them was stored after it was drawn. */
   let historyRead = 0;
   /** A line drawn as it was streamed or sent, before its row was stored: a
-   *  block of a root turn's reply (its text or its thinking), or the
-   *  operator's message. `said` is what the row holds for it, `shown` and
-   *  `color` how the line draws it. linkStreamedLines links it to its row. */
-  interface StreamedLine { line: TextRenderable; kind: 'text' | 'thinking' | 'you'; said: string; shown: string; color: string }
+   *  block of a root turn's reply (its text or its thinking), the tools a
+   *  round of it called, or the operator's message. `said` is what the row
+   *  holds for it (for `tools`, the calls' names joined by `, `), `shown`
+   *  and `color` how the line draws it. linkStreamedLines links it to its
+   *  row. */
+  interface StreamedLine { line: TextRenderable; kind: 'text' | 'thinking' | 'tools' | 'you'; said: string; shown: string; color: string }
   /** The lines streamed or sent that no row has taken yet. */
   let streamedLines: StreamedLine[] = [];
   /** Rows stored after the history was drawn whose lines /clear or the
@@ -859,15 +861,17 @@ export async function runTui(app: AppContext): Promise<void> {
 
   /** The streamed lines of a row stored after the history was drawn, each
    *  the newest one not linked yet whose kind and words are a run of the
-   *  row's blocks (its text or its thinking, or the operator's message),
-   *  taken out of streamedLines. A run is the blocks of one kind with no
+   *  row's blocks (its text or its thinking, or the operator's message), or
+   *  the tools it called, taken out of streamedLines. A run is the blocks of one kind with no
    *  block of the other kind between them, which streaming draws as one
    *  line: it starts a line only where text and thinking meet
    *  (switchStreamBlock), not at a tool call or another block. */
   function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
     const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
+    const tools: string[] = [];
     let previous: StreamedLine['kind'] | undefined;
     for (const block of msg.content) {
+      if (block.type === 'tool_use') tools.push((block as { name: string }).name);
       const said = block.type === 'text' ? (block as { text?: string }).text ?? ''
         : block.type === 'thinking' ? (block as { thinking?: string }).thinking ?? ''
         : undefined;
@@ -877,6 +881,7 @@ export async function runTui(app: AppContext): Promise<void> {
       else runs.push({ kind, said });
       previous = kind;
     }
+    if (tools.length > 0) runs.push({ kind: 'tools', said: tools.join(', ') });
     const taken: StreamedLine[] = [];
     for (const { kind, said } of runs) {
       if (!said.trim()) continue;
@@ -1926,7 +1931,12 @@ export async function runTui(app: AppContext): Promise<void> {
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
-          if (!backgrounded) addEvent(`[tools] ${names}`, YELLOW);
+          if (!backgrounded) {
+            // Kept, as the round's text is, for the row that holds its calls.
+            const shown = `${hhmm()} [tools] ${names}`;
+            const line = addLine(shown, YELLOW);
+            if (line && names) keepLine(line, 'tools', names, shown, YELLOW);
+          }
         } else {
           const short = shortAgentName(agent ?? '');
           addLine(`  [${short}] ${names}`, DIM_GRAY);

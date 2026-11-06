@@ -560,6 +560,17 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('(undone) Checking the ledgers, then counting.'), 'the mark');
     await step('text around a tool call');
+    // A round that only calls a tool (#485 bot review 3, finding 5).
+    undoneRows.clear();
+    first.send('window:undone', { retracted: 0, represented: 1 });
+    first.send('inference:started');
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'tool_use', id: 't2', name: 'tally', input: {} }] });
+    first.send('inference:completed');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => /\(undone\).*\[tools\] tally/.test(await frame()), 'the mark');
+    await step('tools only');
   } else if (scenario === 'undone-evicted') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     /** More streamed lines than the scrollback holds, none of them a row's. */

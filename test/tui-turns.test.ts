@@ -356,6 +356,20 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(undone).toContain('(undone) Checking the ledgers, then counting.');
   }, 40000);
 
+  // The session's `[tools]` line is its row's, as a history row's is
+  // (#485 bot review 3, finding 5).
+  test("a streamed round's [tools] line is marked in place with its row, a round that only calls a tool's too", async () => {
+    const steps = await play('undone-tools');
+    const withText = steps.get('text around a tool call')!.frame;
+    expect(times(withText, '[tools] search')).toBe(1);
+    expect(withText).toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
+    const toolsOnly = steps.get('tools only')!.frame;
+    expect(toolsOnly).not.toContain('(undone) Checking the ledgers');
+    expect(toolsOnly).not.toMatch(/\(undone\) \d\d:\d\d \[tools\] search/);
+    expect(times(toolsOnly, '[tools] tally')).toBe(1);
+    expect(toolsOnly).toMatch(/\(undone\) \d\d:\d\d \[tools\] tally/);
+  }, 40000);
+
   test("past the scrollback cap: a streamed line it pushed out isn't drawn again below, after a /clear or without one, an undone row with no line is, and a reply keeps its line from an earlier one in the same words", async () => {
     const steps = await play('undone-evicted');
     const cleared = steps.get('cleared, then pushed out')!.frame;
