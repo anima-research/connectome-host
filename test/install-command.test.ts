@@ -101,7 +101,7 @@ test('setup refuses, before any CLI loads, where neither current\'s release nor 
   expect(refused.exitCode).toBe(1);
   expect(refused.ran).toBeNull();
   expect(refused.stderr).toContain(`connectome: the release this install runs has no setup, so setup runs the connectome-host installed in ${dir}, which has none it can run (${join(dir, ...CLI_IN_RELEASE)}): it has no recipes/setup.json.`);
-  expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host setup discord\` runs setup from the registry.`);
+  expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host@latest setup discord\` runs setup from the registry.`);
 });
 
 test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone', () => {
@@ -125,7 +125,7 @@ test('where its release has no setup and the directory\'s package has none it ca
   };
   const named = refusal('connectome-host', true);
   expect(named.exitCode).toBe(1);
-  expect(named.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host setup discord\` runs setup from the registry.`);
+  expect(named.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host@latest setup discord\` runs setup from the registry.`);
   const other = refusal('custom-root', true);
   expect(other.exitCode).toBe(1);
   expect(other.stderr).toContain(`The registry's setup takes ${join(dir, 'connectome-host')} for the install root, and this ` +

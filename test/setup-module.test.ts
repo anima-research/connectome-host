@@ -181,7 +181,8 @@ describe('setup--finished', () => {
     expect(openingMessage(true, 'start', '2026-11-01T01:00:00.000Z')).toBe('From setup, not the person: they\'ve started setup again after it finished, at 2026-11-01T01:00:00.000Z, and this conversation picks up where it stopped.');
     expect(openingMessage(false, 'start', '2026-11-01T01:00:00.000Z')).toBe('From setup, not the person: they\'ve started setup again after it finished, at 2026-11-01T01:00:00.000Z. What setup has done stays on disk, and this conversation doesn\'t hold it.');
     expect(openingMessage(false, 'switch', '2026-11-01T01:00:00.000Z')).toContain(' Setup had finished, at 2026-11-01T01:00:00.000Z.');
-    expect(openingMessage(false, 'start')).toBe('From setup, not the person: they\'ve just started setup and are at this terminal.');
+    expect(openingMessage(false, 'start')).toBe('From setup, not the person: they\'ve started setup, and this conversation ' +
+      'holds nothing yet: what setup did before, if it ran here, stays on disk.');
   });
 });
 

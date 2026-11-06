@@ -40,7 +40,7 @@ export function installCommandText(release: string | null = null): string {
     '  console.error(fromPackage',
     "    ? `connectome: the release this install runs has no setup, so setup runs the connectome-host installed in ` +",
     "      `${dirname(root)}, which has none it can run (${cli}): ${why}. ` + (basename(root) === 'connectome-host'",
-    "        ? `In ${dirname(root)}, \\`bunx @animalabs/connectome-host setup discord\\` runs setup from the registry.`",
+    "        ? `In ${dirname(root)}, \\`bunx @animalabs/connectome-host@latest setup discord\\` runs setup from the registry.`",
     "        : `The registry's setup takes ${join(dirname(root), 'connectome-host')} for the install root, and this one is ` +",
     "          `${root}, so run ${byHand}.`)",
     "    : `connectome: the release this install runs has no connectome command that loads (${cli}): ${why}. If its ` +",

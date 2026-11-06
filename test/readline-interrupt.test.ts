@@ -330,7 +330,7 @@ linux('setup\'s host speaks first, on a message that says it\'s setup\'s, shows 
     await until(() => first.seen.output.includes('Hello from setup.'), 60_000,
       `setup's first words (requests: ${first.bodies.length}; output: ${first.seen.output.slice(-1500)})`);
     const opening = lastFromPerson(first.bodies[0]!);
-    expect(carries(opening, 'From setup, not the person: they\'ve just started setup and are at this terminal.'), opening).toBe(true);
+    expect(carries(opening, 'From setup, not the person: they\'ve started setup, and this conversation holds nothing yet: what setup did before, if it ran here, stays on disk.'), opening).toBe(true);
     expect(JSON.stringify(first.bodies[0]!.messages)).not.toContain('started setup again');
     expect(first.seen.output).toContain('Setup\'s agent runs:\r\n  echo shown-command');
     expect(first.seen.output).not.toContain('[tool');
@@ -341,7 +341,7 @@ linux('setup\'s host speaks first, on a message that says it\'s setup\'s, shows 
     await until(() => again.seen.output.includes('Welcome back.'), 60_000,
       `setup's words on its second start (requests: ${again.bodies.length}; output: ${again.seen.output.slice(-1500)})`);
     const resumed = again.bodies[0]!;
-    expect(JSON.stringify(resumed.messages)).toContain('they\'ve just started setup and are at this terminal.');
+    expect(JSON.stringify(resumed.messages)).toContain('they\'ve started setup, and this conversation holds nothing yet: what setup did before, if it ran here, stays on disk.');
     expect(JSON.stringify(resumed.messages)).toContain('Hello from setup.');
     const reopening = lastFromPerson(resumed);
     expect(carries(reopening, 'From setup, not the person: they\'ve started setup again, and this conversation picks up where it stopped.'), reopening).toBe(true);
@@ -436,7 +436,7 @@ linux('a Ctrl-C while setup\'s opening turn waits on its model ends the host, wi
     await until(() => again.seen.output.includes('Welcome back.'), 60_000,
       `setup's words on its second start (requests: ${again.bodies.length}; output: ${again.seen.output.slice(-1500)})`);
     const request = JSON.stringify(again.bodies[0]!.messages);
-    expect(request.split('they\'ve just started setup and are at this terminal.')).toHaveLength(2);
+    expect(request.split('they\'ve started setup, and this conversation holds nothing yet: what setup did before, if it ran here, stays on disk.')).toHaveLength(2);
     const reopening = lastFromPerson(again.bodies[0]!);
     expect(carries(reopening, 'From setup, not the person: they\'ve started setup again, and this conversation picks up where it stopped.'), reopening).toBe(true);
     hosts.at(-1)!.stdin!.write('/quit\r');

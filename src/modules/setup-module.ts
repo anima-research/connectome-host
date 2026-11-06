@@ -188,7 +188,8 @@ export function openingMessage(held: boolean, after: 'start' | 'switch', finishe
   }
   return held
     ? 'From setup, not the person: they\'ve started setup again, and this conversation picks up where it stopped.'
-    : 'From setup, not the person: they\'ve just started setup and are at this terminal.';
+    : 'From setup, not the person: they\'ve started setup, and this conversation holds nothing yet: what setup did ' +
+      'before, if it ran here, stays on disk.';
 }
 
 export const REFUSED_TURN = 'The model refused that turn. This can come from anything in the conversation, not only what ' +
