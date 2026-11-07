@@ -531,6 +531,21 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(failed).toContain('[✗ error]');
   }, 40000);
 
+  // While an async command's answer is pending the TUI neither links nor
+  // marks from the drawn branch's cursors, since the answer may be its own
+  // move's; the answer looks again, and another client's move is drawn then,
+  // its marks with it (#485 bot review 6, finding 11).
+  test("another client's move while a command's answer is pending is drawn at the answer, with a turn stored and undone meanwhile marked", async () => {
+    const answered = (await play('undone-moved-answering')).get('answered')!.frame;
+    expect(answered).toContain('Branch moved (by another client): side');
+    expect(answered).not.toContain('three ledgers');
+    expect(times(answered, 'a fifth ledger')).toBe(1);
+    expect(answered).toContain('(undone) a fifth ledger');
+    expect(times(answered, 'and the fifth?')).toBe(1);
+    expect(answered).toMatch(/\(undone\) .*and the fifth\?/);
+    expect(answered.indexOf('Branch moved (by another client): side')).toBeLessThan(answered.indexOf('tally done'));
+  }, 40000);
+
   // A send that is never stored, one the framework refused or one during a
   // session switch that failed, is no row's: a later message in the same
   // words takes its own echo (#485 bot review 5, finding 11).

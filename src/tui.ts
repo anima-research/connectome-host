@@ -817,6 +817,9 @@ export async function runTui(app: AppContext): Promise<void> {
   /** Async commands whose answer hasn't come: one of them can have moved
    *  the store already, and its answer draws the branch. */
   let commandsAnswering = 0;
+  /** A link or a mark was skipped while an answer was pending, the store on
+   *  another branch than the one drawn: the last answer looks again. */
+  let branchCheckAtAnswer = false;
   /** Rows stored after the history was drawn whose lines /clear or the
    *  scrollback cap took down: an undo doesn't draw them again. */
   let clearedRows = new Set<string>();
@@ -911,6 +914,7 @@ export async function runTui(app: AppContext): Promise<void> {
     evictedLines = [];
     clearedRows = new Set();
     drawnBranch = storeBranchName();
+    branchCheckAtAnswer = false;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
@@ -950,7 +954,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  alone. A move of this TUI's own is drawn by its command's answer, and
    *  a session switch's by its end. A redraw waiting for a root turn's end
    *  with none running, the turn set aside by a session switch that then
-   *  failed, is drawn now too. */
+   *  failed, is drawn now too. While an async command's answer is pending
+   *  (it may be this TUI's own move), nothing is linked or marked from the
+   *  drawn branch's cursors, and the last answer looks again
+   *  (lookAgainAtAnswer). */
   function branchMovedElsewhere(): boolean {
     const branch = storeBranchName();
     if (branch === undefined || drawnBranch === undefined || branch === drawnBranch) return false;
@@ -961,7 +968,11 @@ export async function runTui(app: AppContext): Promise<void> {
       for (const l of answered) addLine(l.text, l.color);
       return true;
     }
-    if (commandsAnswering > 0 || sentDuringSwitch) return false;
+    if (sentDuringSwitch) return false;
+    if (commandsAnswering > 0) {
+      branchCheckAtAnswer = true;
+      return true;
+    }
     const line = { text: `${hhmm()} Branch moved (by another client): ${branch}`, color: CYAN };
     if (rootTurnShowing || streaming) {
       redrawAfterTurn = [line];
@@ -970,6 +981,15 @@ export async function runTui(app: AppContext): Promise<void> {
     refreshFromStore({ mount: false });
     addLine(line.text, line.color);
     return true;
+  }
+
+  /** Once no async command's answer is pending, the links and marks skipped
+   *  while one was: another client's move is drawn, or with none they are
+   *  made now. */
+  function lookAgainAtAnswer(): void {
+    if (!branchCheckAtAnswer || commandsAnswering > 0) return;
+    branchCheckAtAnswer = false;
+    remarkHistory();
   }
 
   /** The streamed lines of a row stored after the history was drawn, each
@@ -2844,6 +2864,8 @@ export async function runTui(app: AppContext): Promise<void> {
             redrawAfterTurn ??= [];
           } else if (asyncResult.branchChanged) {
             refreshFromStore({ mount: false });
+          } else {
+            lookAgainAtAnswer();
           }
           for (const l of asyncResult.lines) addAnswerLine(l.text, GRAY);
           if (!turnRunning) state.status = 'idle';
@@ -2853,6 +2875,7 @@ export async function runTui(app: AppContext): Promise<void> {
             console.log(`Async command failed: ${err}`);
             return;
           }
+          lookAgainAtAnswer();
           addAnswerLine(`Async command failed: ${err}`, RED);
           if (!(rootTurnShowing || streaming)) state.status = 'error';
           updateStatus();

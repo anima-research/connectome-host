@@ -995,6 +995,24 @@ async function play(): Promise<void> {
     first.send('inference:exhausted', { error: 'gave up' });
     await until(async () => (await frame()).includes('the third reply'), 'the branch drawn');
     await step('moved, turn failed');
+  } else if (scenario === 'undone-moved-answering') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A command whose answer waits; meanwhile another client moves the
+    // store to a shorter branch, and a turn on it is stored and undone
+    // (#485 bot review 6, finding 11).
+    const answer = await heldPuppet('/puppet tally {}');
+    storeBranch = 'side';
+    history.splice(1, history.length);
+    await command('and the fifth?');
+    await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'and the fifth?' }] });
+    await replied('a2', 'a fifth ledger');
+    undoneRows.add('u2');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 2 });
+    answer();
+    await until(async () => (await frame()).includes('tally done'), 'the answer');
+    await step('answered');
   } else if (scenario === 'undone-long-turn') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // One turn of more rounds than the scrollback holds lines: each round's
