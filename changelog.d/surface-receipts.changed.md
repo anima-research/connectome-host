@@ -26,3 +26,8 @@
   connected client. On a host with no channel server, an agent answering a
   client not subscribed to it is no longer told that its reply won't reach
   that client.
+- Operators: `connectome-doctor` reads the routing lines the
+  agent-framework release with `Module.onSpeechRouted` adds. For a turn with
+  no channel whose speech a host surface showed, its routeSpeech stage says
+  where it was shown, and for a reply its agent's replacement kept from being
+  routed, it says so, where it showed the line's last 60 characters.
