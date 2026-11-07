@@ -13,7 +13,7 @@
     marked `window: "undone"`, where it left out a turn the undo had moved
     off the current branch, and another
     resident's newer row is left alone, where `/undo` used to branch the store
-    before the record's newest reply, whoever's it was. `/redo` puts the turn
+    before the record's newest reply, whoever's it was. `/redo` can put the turn
     back until the agent's next turn, a branch move or a restart, as `/undo`'s
     answer says (agent-framework keeps the redo in memory only). Both are
     refused while the agent's own turn is alive, and for an agent whose
