@@ -1,6 +1,6 @@
-- Residents: on a host with an MCPL channel server, under prose routing by
-  locus or hybrid, a reply a host surface showed the person who sent the
-  turn is no longer reported undeliverable. Each surface's text now records
+- Residents: on a host with an MCPL channel server, a reply a host surface
+  showed the person who sent the turn is no longer reported undeliverable.
+  Each surface's text now records
   which surface sent it, and for headless and the Web UI which connection.
   When the agent-framework release with `Module.onSpeechRouted` asks where a
   turn's plain speech went, each surface whose text opened the turn answers
