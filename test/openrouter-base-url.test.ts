@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +35,17 @@ function gateway() {
   return { url: `http://127.0.0.1:${server.port}`, seen, stop: () => server.stop(true) };
 }
 
-function runOnce(env: Record<string, string>) {
+async function proxy() {
+  const seen: string[] = [];
+  const server = createServer((socket) => {
+    socket.once('data', (d) => { seen.push(String(d).split('\r\n')[0]); socket.destroy(); });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as { port: number };
+  return { url: `http://127.0.0.1:${port}`, seen, stop: () => server.close() };
+}
+
+function runOnce(proxyUrl: string, env: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), 'chost-openrouter-'));
   dirs.push(dir);
   const recipe = {
@@ -46,8 +57,8 @@ function runOnce(env: Record<string, string>) {
   writeFileSync(recipePath, JSON.stringify(recipe));
   const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
     cwd: dir,
-    // Keep both proxies at a closed port, so a call bound for any host but the gateway fails instead of reaching openrouter.ai.
-    env: { ...process.env, DATA_DIR: join(dir, 'data'), HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9', NO_PROXY: '127.0.0.1,localhost', ...env },
+    // Keep both proxies at the test's own, which records each call's first line and answers none, so no call reaches openrouter.ai.
+    env: { ...process.env, DATA_DIR: join(dir, 'data'), HTTPS_PROXY: proxyUrl, HTTP_PROXY: proxyUrl, NO_PROXY: '127.0.0.1,localhost', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let output = '';
@@ -66,14 +77,30 @@ function runOnce(env: Record<string, string>) {
 describe('OPENROUTER_BASE_URL', () => {
   test('an openrouter recipe sends its calls to OPENROUTER_BASE_URL when it is set', async () => {
     const gate = gateway();
-    const run = runOnce({ OPENROUTER_API_KEY: 'sk-or-fixture', OPENROUTER_BASE_URL: `${gate.url}/api/v1` });
+    const outbound = await proxy();
+    const run = runOnce(outbound.url, { OPENROUTER_API_KEY: 'sk-or-fixture', OPENROUTER_BASE_URL: `${gate.url}/api/v1` });
     try {
       const { ended, output } = await run.done;
       if (gate.seen.length === 0) throw new Error(`no call reached the gateway; the host ${ended}, after this output:\n${output.slice(-4000)}`);
       for (const r of gate.seen) expect(r).toEqual({ method: 'POST', path: '/api/v1/chat/completions', authorization: 'Bearer sk-or-fixture' });
+      expect(outbound.seen).toEqual([]);
     } finally {
       run.child.kill();
       gate.stop();
+      outbound.stop();
+    }
+  }, HOST_MS + 15_000);
+
+  test('an empty OPENROUTER_BASE_URL leaves the calls on openrouter.ai', async () => {
+    const outbound = await proxy();
+    const run = runOnce(outbound.url, { OPENROUTER_API_KEY: 'sk-or-fixture', OPENROUTER_BASE_URL: '' });
+    try {
+      const { ended, output } = await run.done;
+      if (outbound.seen.length === 0) throw new Error(`no call went out; the host ${ended}, after this output:\n${output.slice(-4000)}`);
+      for (const line of outbound.seen) expect(line).toBe('CONNECT openrouter.ai:443 HTTP/1.1');
+    } finally {
+      run.child.kill();
+      outbound.stop();
     }
   }, HOST_MS + 15_000);
 });
