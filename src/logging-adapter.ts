@@ -413,17 +413,33 @@ export interface OffPathRefusal {
   inputTokens: number;
 }
 
+/**
+ * The shared adapter has no caller identity, so this alert names the process.
+ * Model, message count and input tokens help operators identify the call size.
+ */
 export function offPathRefusalAlert(info: OffPathRefusal): {
   kind: 'refusal-offpath';
+  agent: 'host';
   message: string;
   data: Record<string, unknown>;
 } {
   const category = info.category ?? 'unknown';
   const size = `~${Math.round(info.inputTokens / 1000)}k tok`;
-  const message = `off-path refusal (category=${category}) on a ${info.messages}-message complete() call ` +
+  const message = `off-path refusal (category=${category}) on a ${info.messages}-message ${info.model} complete() call ` +
     `(${size}) — likely compression/summarizer`;
   const { kind: call, ...rest } = info;
-  return { kind: 'refusal-offpath', message, data: { call, ...rest } };
+  return { kind: 'refusal-offpath', agent: 'host', message, data: { call, ...rest } };
+}
+
+/** Resolve the current framework after session replacement; retain its receiver. */
+export function createOffPathRefusalCallback(getFramework: () => {
+  notifyOpsAlert?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+}): (info: OffPathRefusal) => void {
+  return (info) => {
+    const framework = getFramework();
+    const alert = offPathRefusalAlert(info);
+    framework.notifyOpsAlert?.(alert.kind, alert.agent, alert.message, alert.data);
+  };
 }
 
 export class LoggingAnthropicAdapter extends AnthropicAdapter {
