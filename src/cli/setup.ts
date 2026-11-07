@@ -471,7 +471,7 @@ async function installAndStart(
     try {
       recorded = { record, binding: bindingOf(root, record) };
     } catch (error) {
-      err(`connectome setup: ${(error as Error).message}`);
+      bindingStopped(root, (error as Error).message, err);
       return 1;
     }
   }
@@ -826,6 +826,11 @@ async function installAndStart(
   return agentStatus;
 }
 
+function bindingStopped(root: string, why: string, err: Io['err']): void {
+  err(`Binding the install at ${root} stopped, with nothing in it changed:`);
+  for (const line of why.split('\n')) err(`  ${line}`);
+}
+
 async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, binding: Binding,
   { out, err }: Io): Promise<{ dataDir: string; placeArgs: string[] } | number> {
   if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
@@ -877,7 +882,7 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       try {
         again = bindingOf(root, record, places);
       } catch (error) {
-        err(`connectome setup: ${(error as Error).message}`);
+        bindingStopped(root, (error as Error).message, err);
         return 1;
       }
       if (again.kind === 'bind') {

@@ -2336,22 +2336,39 @@ test('a fleet child\'s data directory that holds the data directory, found once 
   expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(dir, 'connectome-host'), '--place', outer, outer], dataDir: data });
 });
 
-test('a binding setup refuses, here a copy\'s label it can\'t read, stops it before it changes package.json or installs anything', async () => {
+test('a binding setup refuses, here a children file it can\'t read, stops it before it changes package.json or installs anything, under a line saying it changed nothing in the install', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  mkdirSync(join(root, 'copy'), { recursive: true });
-  writeFileSync(join(root, 'copy', 'copy.json'), '{ not json');
+  writeFileSync(join(dir, 'data', 'fleet-children.json'), '{ not json');
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as Record<string, unknown>;
   delete manifest.trustedDependencies;
   writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
   const before = readFileSync(join(dir, 'package.json'), 'utf-8');
   const again = world(dir);
   expect(await runSetup(dir, ['discord'], again)).toBe(1);
-  expect(text(again.seen.err)).toContain('so setup can\'t bind the places it names to this directory, and has changed nothing.');
+  const lead = again.seen.err.indexOf(`Binding the install at ${root} stopped, with nothing in it changed:`);
+  expect(lead).toBeGreaterThanOrEqual(0);
+  expect(again.seen.err[lead + 1]).toStartWith(`  The fleet's children file at ${join(dir, 'data', 'fleet-children.json')} isn't JSON`);
   expect(readFileSync(join(dir, 'package.json'), 'utf-8')).toBe(before);
   expect(again.seen.ran.filter((argv) => args(argv)[0] === 'add' || args(argv)[0] === 'install')).toEqual([]);
+});
+
+test('a binding refused once its data directory is answered, after setup has changed package.json, comes under the same line, which says only the install is unchanged', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = join(dir, 'connectome-host');
+  const elsewhere = join(directory(), 'data');
+  mkdirSync(elsewhere);
+  writeFileSync(join(elsewhere, 'fleet-children.json'), '{ not json');
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
+  const again = world(dir, { answers: [''] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(1);
+  const lead = again.seen.err.indexOf(`Binding the install at ${root} stopped, with nothing in it changed:`);
+  expect(lead).toBeGreaterThanOrEqual(0);
+  expect(again.seen.err[lead + 1]).toStartWith(`  The fleet's children file at ${join(elsewhere, 'fleet-children.json')} isn't JSON`);
+  expect(text(again.seen.err)).not.toContain('connectome setup: ');
 });
 
 test('a fleet child\'s data directory outside every place is asked about after the data directory, from the children file in the data directory answered, and its own setup is given both', async () => {
