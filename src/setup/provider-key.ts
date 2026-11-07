@@ -35,7 +35,7 @@ const listed = (body: unknown): boolean => idsOf(body) !== undefined;
 // ending in / takes the path without its first /.
 const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
 
-export const JSON_TYPE = /^application\/([\w.+-]+\+)?json\b/i;
+export const JSON_TYPE = /^application\/([\w.+-]+\+)?json\s*(;|$)/i;
 
 // A relative Location is resolved against the origin of the URL asked, not the whole URL as RFC 9110 (10.2.2) has
 // it, so a credential in the URL's user part stays out of the target.

@@ -1282,7 +1282,7 @@ describe('checkProviderKey', () => {
     expect(result).toEqual({ kind: 'answered', status: 400, said: 'no route for <MY_TOKEN>' });
   });
 
-  test('a 401 or 403 typed other than JSON is no answer of the provider\'s, decided before the body, and one typed JSON, or untyped, is its refusal', async () => {
+  test('a 401 or 403 typed other than JSON, json-seq included, is no answer of the provider\'s, decided before the body, and one typed JSON, or untyped, is its refusal', async () => {
     const answering = (status: number, type: string | null, body: BodyInit | null) => (async () =>
       new Response(body, { status, headers: type === null ? {} : { 'content-type': type } })) as unknown as typeof fetch;
     const never = () => new ReadableStream({ start() {} });
@@ -1292,10 +1292,11 @@ describe('checkProviderKey', () => {
         json: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, 'application/json; charset=utf-8', never()) }),
         problem: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, 'application/problem+json', never()) }),
         untyped: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, null, never()) }),
+        seq: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering(status, 'application/json-seq', never()) }),
       };
       expect({ status, ...results }).toEqual({
         status, html: { kind: 'unrecognized', status }, json: { kind: 'refused', status },
-        problem: { kind: 'refused', status }, untyped: { kind: 'refused', status },
+        problem: { kind: 'refused', status }, untyped: { kind: 'refused', status }, seq: { kind: 'unrecognized', status },
       });
     }
   });
