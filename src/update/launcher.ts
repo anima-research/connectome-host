@@ -191,8 +191,8 @@ export function takeLock(root: string, ops: LauncherOps): void {
           'If it runs another install\'s start.js or a release in another install\'s releases, this install is a copy ' +
           'made while that host ran, and the lock came ' +
           'with the copy: run setup here first, which binds the copy to its own places and removes a lock it can show ' +
-          'came with it, and then remove the lock file if it\'s still there. If it\'s something else that reused the ' +
-          'number, remove the lock file.',
+          `came with it, and then, if the lock file still names process ${holder.pid} since ${holder.at}, remove it. ` +
+          'If it\'s something else that reused the number, remove the lock file.',
         );
       }
       if (attempt > 0) {
