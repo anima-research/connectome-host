@@ -55,6 +55,6 @@
   },
   "connectomeRelease": {
     "breaking": true,
-    "cacheWrite": true
+    "cacheWrite": false
   }
 }
