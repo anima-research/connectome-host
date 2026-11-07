@@ -123,7 +123,6 @@ async function ask<T>(
   } catch (error) {
     return unanswered(error);
   }
-  // A refusal in a body that isn't JSON, such as a network's sign-in page, isn't the provider's.
   const type = response.headers.get('content-type');
   if (response.status === 401 || response.status === 403) {
     return type === null || JSON_TYPE.test(type.trim())

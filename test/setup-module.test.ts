@@ -1282,7 +1282,7 @@ describe('checkProviderKey', () => {
     expect(result).toEqual({ kind: 'answered', status: 400, said: 'no route for <MY_TOKEN>' });
   });
 
-  test('a 401 or 403 in a body that isn\'t JSON is no answer of the provider\'s, decided before the body, and one in JSON is its refusal', async () => {
+  test('a 401 or 403 typed other than JSON is no answer of the provider\'s, decided before the body, and one typed JSON, or untyped, is its refusal', async () => {
     const answering = (status: number, type: string | null, body: BodyInit | null) => (async () =>
       new Response(body, { status, headers: type === null ? {} : { 'content-type': type } })) as unknown as typeof fetch;
     const never = () => new ReadableStream({ start() {} });
@@ -1339,7 +1339,7 @@ describe('checkDiscordToken', () => {
     expect(result).toEqual({ kind: 'refused' });
   });
 
-  test('a 401 in a body that isn\'t JSON is no answer of Discord\'s, decided before the body, and one in JSON, or a +json type, is its refusal', async () => {
+  test('a 401 typed other than JSON is no answer of Discord\'s, decided before the body, and one typed JSON, or a +json type, is its refusal', async () => {
     const answering = (type: string) => (async () => new Response(new ReadableStream({ start() {} }), {
       status: 401, headers: { 'content-type': type },
     })) as unknown as typeof fetch;
