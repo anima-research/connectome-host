@@ -343,7 +343,12 @@ fleet's children file (`fleet-children.json`, in the data directory, and in
 each copy of the data directory that an update or a Go back keeps). It
 doesn't bind `.env` or the service's environment, so an absolute
 `MCPL_AGENT_OVERLAY_FILE` set in either still names the original's overlay:
-change it to the new place before the copy's next start. A binding that
+change it to the new place before the copy's next start. Nor does it change
+a recipe: a fleet child that a recipe starts with an absolute `dataDir` has
+that directory, the original's, in a copy too, so the copy's autostart can
+start that child there. Give such a child a `dataDir` relative to the
+directory the host runs in, or change the copy's recipe to name its own,
+before the copy's first start. A binding that
 changes any path takes the install's lock, so it needs the host stopped, and
 refuses while it runs, saying so. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
