@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { constants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
@@ -208,6 +209,9 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
 
 export const SEND_QUIET_LIMIT_MS = 15 * 60_000;
 
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+type StopSignal = typeof STOP_SIGNALS[number];
+
 const SENT = 'connectome: wrote the line to the host\'s socket; what the agent says in reply prints here.';
 
 const UNREAD = ` The host also closes it when output for it backs up and stays backed up for ${STOPPED_READING_MS / 60_000} ` +
@@ -247,13 +251,18 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   const replies: string[] = [];
   const printReplies = (): void => { for (const reply of replies.splice(0)) ctx.out(reply); };
   if (!sent) ctx.err('connectome: the agent is in a turn. This waits for it to end, then sends.');
-  const quiet = new Promise<'idle' | 'closed' | 'unheard'>((resolve) => {
+  const quiet = new Promise<'idle' | 'closed' | 'unheard' | StopSignal>((resolve) => {
     let limit = setTimeout(() => done('unheard'), quietLimitMs);
-    const done = (how: 'idle' | 'closed' | 'unheard') => {
+    const done = (how: 'idle' | 'closed' | 'unheard' | StopSignal) => {
       finished = true;
       clearTimeout(limit);
+      for (const signal of STOP_SIGNALS) process.off(signal, stop);
       resolve(how);
     };
+    const stop = (signal: NodeJS.Signals): void => {
+      if (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') done(signal);
+    };
+    for (const signal of STOP_SIGNALS) process.on(signal, stop);
     host.onEvent((event) => {
       if (finished) return;
       clearTimeout(limit);
@@ -295,6 +304,13 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   const how = await quiet;
   host.close();
   printReplies();
+  if (how !== 'idle' && how !== 'closed' && how !== 'unheard') {
+    ctx.err(sent
+      ? `connectome: stopped by ${how} before the agent's turn work ended, so what it says after this isn't seen ` +
+        'here. The message was sent, and the agent may still be working on it.'
+      : `connectome: stopped by ${how} while the agent was in a turn, so nothing was sent.`);
+    return 128 + constants.signals[how];
+  }
   if (!sent) {
     ctx.err(how === 'closed'
       ? 'connectome: the connection closed before the agent\'s turn ended, so nothing was sent. The host stopping ' +

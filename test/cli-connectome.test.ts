@@ -350,6 +350,27 @@ test("send prints the agent's notes as they come and holds its reply until the t
   expect(ran.out).toBe('A note.\nA note asked about after the reply.\nThe reply.\n');
 });
 
+for (const [signal, status] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) {
+  test(`send stopped by ${signal} while it holds a reply prints the reply, says it stopped before the turn's work ended, and exits ${status}`, async () => {
+    const { root, data } = install();
+    const { path } = writeInstallCommand(root, '');
+    let child: ChildProcess | undefined;
+    await fakeHost(data, async (message, reply) => {
+      if (message.type !== 'text') return;
+      reply({ type: 'inference:started', agentName: 'resident' });
+      reply({ type: 'inference:completed', agentName: 'resident', durationMs: 5 });
+      reply({ type: 'inference:speech', agentName: 'resident', content: 'The reply.' });
+      reply({ type: 'inference:prose', agentName: 'resident', content: 'A later note.' });
+      await printed(child!, 'A later note.');
+      child!.kill(signal);
+    });
+    const ran = await run(path, ['send', 'hello'], root, (spawned) => { child = spawned; });
+    expect({ status: ran.status, out: ran.out }).toEqual({ status, out: 'A later note.\nThe reply.\n' });
+    expect(ran.err).toContain(`connectome: stopped by ${signal} before the agent's turn work ended, so what it says after ` +
+      'this isn\'t seen here. The message was sent, and the agent may still be working on it.');
+  });
+}
+
 test('send whose turn printed notes and no reply, and ended without giving up, exits 0 and says nothing more', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
