@@ -805,11 +805,13 @@ export async function runTui(app: AppContext): Promise<void> {
    *  the scrollback has taken down by then, each the same entry with no
    *  line (`parts` emptied), so what holds it (a failed switch's messages,
    *  a backgrounded reply's line before Ctrl+B) still finds it: a row that
-   *  takes one isn't drawn again. A reply's go at its turn's end,
-   *  by when its rows are stored; an operator's message's once its row
-   *  takes it, and the oldest past SCROLLBACK_CAP of them, each by then
-   *  more than twice that many lines old. */
-  let evictedLines: StreamedLine[] = [];
+   *  takes one isn't drawn again. The operator's messages' (evictedSent)
+   *  go once their rows take them, and the replies' (evictedReplies) at
+   *  their turn's end, by when its rows are stored. Each list keeps at most
+   *  SCROLLBACK_CAP, the oldest let go first, each by then more than twice
+   *  that many lines old: its row, if it comes, is drawn again at an undo. */
+  let evictedSent: StreamedLine[] = [];
+  let evictedReplies: StreamedLine[] = [];
   /** The reply entries kept since the root agent's current attempt began
    *  (its inference:started, or its last tool round's end): an attempt
    *  that fails stores nothing, so at its end they are let go. */
@@ -846,13 +848,9 @@ export async function runTui(app: AppContext): Promise<void> {
     if (streamedLines.length > SCROLLBACK_CAP) {
       for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) {
         gone.parts = [];
-        evictedLines.push(gone);
-      }
-      // A reply's entries go at its turn's end; an operator's message's
-      // wait for its row, so they are bounded here.
-      if (evictedLines.length > SCROLLBACK_CAP) {
-        let over = evictedLines.filter((l) => l.kind === 'you').length - SCROLLBACK_CAP;
-        if (over > 0) evictedLines = evictedLines.filter((l) => l.kind !== 'you' || over-- <= 0);
+        const list = gone.kind === 'you' ? evictedSent : evictedReplies;
+        list.push(gone);
+        if (list.length > SCROLLBACK_CAP) list.splice(0, list.length - SCROLLBACK_CAP);
       }
     }
     return kept;
@@ -864,7 +862,8 @@ export async function runTui(app: AppContext): Promise<void> {
     if (gone.length === 0) return;
     const dropped = new Set(gone);
     streamedLines = streamedLines.filter((l) => !dropped.has(l));
-    evictedLines = evictedLines.filter((l) => !dropped.has(l));
+    evictedSent = evictedSent.filter((l) => !dropped.has(l));
+    evictedReplies = evictedReplies.filter((l) => !dropped.has(l));
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -922,7 +921,8 @@ export async function runTui(app: AppContext): Promise<void> {
     sentLinkedThrough = 0;
     remarkAfterBackground = false;
     streamedLines = [];
-    evictedLines = [];
+    evictedSent = [];
+    evictedReplies = [];
     clearedRows = new Set();
     drawnBranch = storeBranchName();
     branchCheckAtAnswer = false;
@@ -1007,12 +1007,12 @@ export async function runTui(app: AppContext): Promise<void> {
    *  the one not linked yet whose kind and words are a run of the row's
    *  blocks (its text or its thinking, or the operator's message), or the
    *  tools it called, taken out of streamedLines, or with no line out of
-   *  evictedLines: the oldest for the operator's message, each echoed and
-   *  then stored in the order it was sent, and the newest for a reply's
-   *  runs. A run is the blocks of one kind with no block of the other kind
-   *  between them, which streaming draws as one line: it starts a line only
-   *  where text and thinking meet (switchStreamBlock), not at a tool call
-   *  or another block. */
+   *  evictedSent or evictedReplies: the oldest for the operator's message,
+   *  each echoed and then stored in the order it was sent, and the newest
+   *  for a reply's runs. A run is the blocks of one kind with no block of
+   *  the other kind between them, which streaming draws as one line: it
+   *  starts a line only where text and thinking meet (switchStreamBlock),
+   *  not at a tool call or another block. */
   function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
     const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
     const tools: string[] = [];
@@ -1034,7 +1034,7 @@ export async function runTui(app: AppContext): Promise<void> {
       if (!said.trim()) continue;
       const matches = (l: StreamedLine) => l.kind === kind && l.said.trim() === said.trim();
       // The evicted entries are older than every kept one.
-      for (const list of kind === 'you' ? [evictedLines, streamedLines] : [streamedLines, evictedLines]) {
+      for (const list of kind === 'you' ? [evictedSent, streamedLines] : [streamedLines, evictedReplies]) {
         let at = -1;
         if (kind === 'you') at = list.findIndex(matches);
         else for (let i = list.length - 1; i >= 0 && at < 0; i--) if (matches(list[i]!)) at = i;
@@ -1073,7 +1073,7 @@ export async function runTui(app: AppContext): Promise<void> {
     sentLinkedThrough = total;
     if (!backgrounded) linkedThrough = total;
     const from = Math.min(sentFrom, repliesFrom);
-    if (from === total || streamedLines.length + evictedLines.length === 0) return;
+    if (from === total || streamedLines.length + evictedSent.length + evictedReplies.length === 0) return;
     const stored = cm.getMessageWindow(from, total - from, { resolveBlobs: false }).messages;
     const link = (msg: StoredMessage): void => {
       const stamp = audienceOf(msg.metadata);
@@ -1965,7 +1965,7 @@ export async function runTui(app: AppContext): Promise<void> {
       const line = addLine(said, WHITE);
       if (!line) return;
       const partial = i === 0 ? backgroundPartial : undefined;
-      const list = partial === undefined ? undefined : [streamedLines, evictedLines].find((l) => l.includes(partial));
+      const list = partial === undefined ? undefined : [streamedLines, evictedReplies].find((l) => l.includes(partial));
       if (!list) {
         keepLine(line, 'text', said, said, WHITE);
         return;
@@ -2011,7 +2011,7 @@ export async function runTui(app: AppContext): Promise<void> {
     // then is no row's.
     if (remarkAfterBackground && !backgrounded) remarkHistory();
     else linkStreamedLines();
-    if (!backgrounded) evictedLines = evictedLines.filter((l) => l.kind === 'you');
+    if (!backgrounded) evictedReplies = [];
     if (redrawAfterTurn && end.status !== 'attempt-failed') {
       // A branch move's follow-up came while this turn ran on the branch:
       // the branch is drawn now, and the move's answer again below it, with
