@@ -900,6 +900,27 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('(undone)'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-cleared-stream') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // /clear cuts a reply off mid-stream: the rest of its block isn't
+    // drawn, and its row holds the whole of it (#485 bot review 6,
+    // finding 14).
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'a fifth ', blockType: 'text' });
+    await until(async () => (await frame()).includes('a fifth'), 'the words before the /clear');
+    await command('/clear');
+    await until(async () => !(await frame()).includes('a fifth'), 'the display to clear');
+    first.send('inference:tokens', { content: 'ledger', blockType: 'text' });
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('[✓ idle]'), 'the turn to end');
+    // An undo of it, and of a row stored since that the TUI drew no line for.
+    history.push({ id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'a sixth ledger' }] });
+    undoneRows.add('a2');
+    undoneRows.add('a3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) a sixth ledger'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone-moved-elsewhere') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // Another client moves the store to a shorter branch, which

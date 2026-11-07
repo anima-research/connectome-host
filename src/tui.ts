@@ -673,6 +673,12 @@ export async function runTui(app: AppContext): Promise<void> {
   let currentStreamKind: 'text' | 'thinking' = 'text';
   let currentStreamSaid = '';
   let currentStreamShown = '';
+  /** The entry of a line /clear took down mid-stream. Its row holds the
+   *  block's words after the /clear too, which aren't drawn, so they go on
+   *  into the entry, with no line, until the block ends (the stream's next
+   *  line, the round's end or the turn's): the row takes it then as a
+   *  cleared line's, and an undo doesn't draw it again. */
+  let clearedStream: StreamedLine | undefined;
 
   let thinkingCollapsed = false;
   let thinkingCollapsedChars = 0;
@@ -692,6 +698,7 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   function beginStream() {
+    clearedStream = undefined;
     currentStreamBuffer = '';
     currentStreamBlockType = 'text';
     currentStreamKind = 'text';
@@ -1123,6 +1130,7 @@ export async function runTui(app: AppContext): Promise<void> {
     currentStreamBuffer = '';
     currentStreamSaid = '';
     currentStreamShown = '';
+    clearedStream = undefined;
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
 
@@ -1956,6 +1964,7 @@ export async function runTui(app: AppContext): Promise<void> {
       leaveBackground();
     }
     if (streaming) endStream();
+    clearedStream = undefined;
     // The turn's rows are stored by its end, its last reply's before the
     // trace: each takes its lines now, marked if a shed took it out while
     // the turn was backgrounded. An evicted entry of a reply's no row took
@@ -2047,6 +2056,9 @@ export async function runTui(app: AppContext): Promise<void> {
             streamOutputTokens += Math.ceil(content.length / 4);
             spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
             updateStatus();
+          } else if (agent === rootAgentName && clearedStream) {
+            if (blockType && (blockType === 'text' || blockType === 'thinking') && blockType !== clearedStream.kind) clearedStream = undefined;
+            else clearedStream.said += content;
           }
           if (agent) {
             appendTranscript(agent, content);
@@ -2139,6 +2151,7 @@ export async function runTui(app: AppContext): Promise<void> {
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
+          clearedStream = undefined;
           if (!backgrounded) {
             // Kept, as the round's text is, for the row that holds its calls.
             const shown = `${hhmm()} [tools] ${names}`;
@@ -2769,8 +2782,9 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       if (text === '/clear' || text.startsWith('/clear ')) {
         // End any live stream first — its renderable is about to be
-        // destroyed, and streamToken must not write to a freed buffer.
-        if (streaming) endStream();
+        // destroyed, and streamToken must not write to a freed buffer. The
+        // rest of its block goes into its entry (clearedStream).
+        if (streaming) clearedStream = endStream();
         const children = [...scrollBox.getChildren()];
         for (const child of children) {
           scrollBox.remove(child.id);

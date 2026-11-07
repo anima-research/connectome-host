@@ -489,6 +489,16 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(times(undone, 'the second answer')).toBe(1);
   }, 40000);
 
+  // /clear cuts a reply off mid-stream: its row holds the words before the
+  // /clear and the rest of the block, which isn't drawn, so the line's
+  // entry takes those too, and the row is a cleared line's (#485 bot
+  // review 6, finding 14).
+  test("a reply /clear cuts off mid-stream isn't drawn again at its undo", async () => {
+    const undone = await frameOf('undone-cleared-stream', 'undone');
+    expect(undone).toContain('(undone) a sixth ledger');
+    expect(undone).not.toContain('a fifth');
+  }, 40000);
+
   // agent-framework traces no branch move, so the TUI reads the store's
   // branch before it links or marks lines: another client's move is drawn
   // then, or once a root turn running on it ends (#485 bot review 5,
