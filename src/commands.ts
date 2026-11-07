@@ -1487,8 +1487,15 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
       // Everything after the target went when its tail is the new branch's
       // last row: on a presented window the cut keeps the rows stored before
       // the write that presented the target, a co-resident's among them,
-      // which the command agent's counts (rollbackKeptLines) leave out.
-      const last = cm.queryMessages({}).messages.at(-1);
+      // which the command agent's counts (rollbackKeptLines) leave out. The
+      // rollback has landed by now, so a read that fails leaves the counted
+      // words, not a failure.
+      let last: { id: unknown } | undefined;
+      try {
+        last = cm.queryMessages({}).messages.at(-1);
+      } catch {
+        last = undefined;
+      }
       const everything = kept.length === 0 && last !== undefined && String(last.id) === String(rolled.tailMessageId);
       const after = everything
         ? `Everything after [${rolled.tailMessageId}] is dropped on this branch`
@@ -1500,8 +1507,7 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
         ],
         branchChanged: true,
       };
-    })
-    .catch((err: unknown) => rollbackFailed(app, from, 'branchto failed', err));
+    }, (err: unknown) => rollbackFailed(app, from, 'branchto failed', err));
   return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 

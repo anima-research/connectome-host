@@ -423,6 +423,47 @@ describe('/branchto on a presented window', () => {
     }
   });
 
+  // The answer reads the new branch once the rollback has landed. A throw
+  // from that read was caught as the rollback's own failure: "branchto
+  // failed", and a _config mount said to be unwritten that agent-framework
+  // wrote (#485 bot review 6, finding 10).
+  test('answers a rollback that landed as one though reading the new branch afterwards fails', async () => {
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], prefix: 'cmd-branchto-read-fails-' });
+    try {
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const t = arrival(h, 'T');
+      cm.presentRows([t]);
+      cm.addMessage('someone', [{ type: 'text', text: 'M' } as ContentBlock], withAudience(undefined, ['mira']));
+      cm.presentRows([arrival(h, 'Z')]);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      const fw = h.framework as unknown as { rollbackToMessage: (...args: unknown[]) => Promise<unknown> };
+      const roll = fw.rollbackToMessage.bind(h.framework);
+      let landed = false;
+      fw.rollbackToMessage = async (...args: unknown[]) => {
+        const rolled = await roll(...args);
+        landed = true;
+        return rolled;
+      };
+      const reads = cm as unknown as { queryMessages: (...args: unknown[]) => unknown };
+      const read = reads.queryMessages.bind(cm);
+      reads.queryMessages = (...args: unknown[]) => {
+        if (landed) throw new Error('the record could not be read');
+        return read(...args);
+      };
+
+      const { follow } = await run(`/branchto ${t}`, app);
+      const said = follow!.lines.map((l) => l.text);
+      const branch = h.framework.getStore().currentBranch().name;
+      expect(branch).toStartWith(`rollback-at-${t}-`);
+      expect(said[0]).toStartWith(`Branched at [${t}] -> "${branch}" and switched. `);
+      expect(said.join('\n')).not.toContain('branchto failed');
+      expect(said.join('\n')).not.toContain("_config mount wasn't written");
+      expect(follow!.branchChanged).toBe(true);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   for (const command of ['/branchto', '/restore']) {
     test(`${command} says a row stored before the target was shown, and shown after it, stays in the record and enters the window at the next turn`, async () => {
       const h = await bootPresentedHost({ agents: ['clerk'], prefix: `cmd-${command.slice(1)}-returned-` });
