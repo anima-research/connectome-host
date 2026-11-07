@@ -69,9 +69,12 @@
     primary. It wakes nobody, as before. One whose launcher is listed was
     already written for it, and a run with a route of its own (a subagent
     agent-framework registered) still goes where agent-framework routes it:
-    held as mail for its launcher if that launcher has since ended
-    (delivered on adoption), or, for a launch that waited for a slot past
-    its launcher's end, to the launcher's nearest live ancestor.
+    held as mail for its launcher if that launcher ends after the attempt
+    began (delivered on adoption). An attempt begun after its launcher
+    ended (a launch that waited for a slot, or a later attempt of a retried
+    run) goes to the launcher's nearest live ancestor, else to the
+    subagent module's parent agent if it's live, and otherwise has no route
+    of its own, as above.
   - A subagent's first rows (its orientation and task, a fork's copy of its
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.
