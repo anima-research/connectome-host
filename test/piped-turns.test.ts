@@ -384,7 +384,7 @@ describe('the wait for a line\'s turn', () => {
     expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on; it prints here when it comes)');
   });
 
-  test('with no cap, only the turn\'s end ends it, and nothing is said of a cap', async () => {
+  test('with no cap, only the turn\'s end, or the conversation closing, ends it, and nothing is said of a cap', async () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();
       const wait = turns.waitForTurn(null);
