@@ -95,7 +95,7 @@ const LIVE_MODULE_NAMES = new Set([
 ]);
 
 const FORMATTERS = new Set(['native', 'anthropic-xml']);
-const PROSE_ROUTING = new Set(['locus', 'explicit', 'hybrid', 'disabled']);
+const PROSE_ROUTING = new Set(['locus', 'explicit', 'hybrid', 'disabled', 'locked']);
 const CACHE_TTLS = new Set(['5m', '1h']);
 
 const MEMBRANE_ERROR_TYPES = new Set([

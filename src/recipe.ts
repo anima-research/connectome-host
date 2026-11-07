@@ -368,9 +368,23 @@ export interface RecipeAgent {
    * prose bounces to a clipboard instead of auto-routing.
    * 'hybrid' = unprefixed prose keeps the current locus while an exact leading
    * `>>>destination` envelope routes through the authorized channel registry.
+   * 'locked' = plain text goes to one destination the agent chose, on every
+   * turn; only its `prose_locus` tool moves it, to a channel or to drafts
+   * (agent-framework docs/locked-prose-routing.md). An `allowedTools` list
+   * must name `prose_locus` for the agent to move it, and `drafts` for it to
+   * resend drafts; without a `proseLock`, a list that doesn't name
+   * `prose_locus` is refused. Refused beside `conversations`, whose forks
+   * speak in their home channel.
    * Default 'locus'.
    */
-  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+  /**
+   * Locked routing's destination until the agent chooses one with
+   * `prose_locus`: "#channel", "@person", a channel id or "drafts". Left out,
+   * plain text is held as drafts until the agent chooses. Refused under any
+   * other mode, which would ignore it.
+   */
+  proseLock?: string;
   /** Default-off containment of whole-response prose wrappers for known tools. */
   toolWrapperProseGuard?: boolean;
   /**
@@ -940,9 +954,12 @@ export interface RecipeModules {
      * What a forked or spawned stream is told at its start. `'full'`
      * (default) describes the launch and the stream's place in it, and
      * gives a fork the "two parallel streams of you" framing; `'none'` hands
-     * a spawn its task alone, and a fork its task after one line saying it
-     * is the forked stream. What a stream is told is the deployment's to
-     * decide, not the host's.
+     * a spawn its task alone; a fork with a parent agent its task after
+     * saying it is the forked stream and, where its prose routing isn't its
+     * parent's (a locked parent's fork runs disabled), what that routing is;
+     * and a fork with no parent agent its task after saying to return its
+     * findings with subagent--return. What a stream is told is the
+     * deployment's to decide, not the host's.
      */
     orientation?: 'full' | 'none';
     /**
@@ -1991,7 +2008,7 @@ const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
   'toolWrapperProseGuard', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
@@ -2334,9 +2351,36 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.proseRouting !== 'locus' &&
     agent.proseRouting !== 'explicit' &&
     agent.proseRouting !== 'hybrid' &&
-    agent.proseRouting !== 'disabled'
+    agent.proseRouting !== 'disabled' &&
+    agent.proseRouting !== 'locked'
   ) {
-    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
+    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got ${JSON.stringify(agent.proseRouting)}.`);
+  }
+
+  if (agent.proseLock !== undefined && (typeof agent.proseLock !== 'string' || !agent.proseLock.trim())) {
+    throw new Error(
+      `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${JSON.stringify(agent.proseLock)}.`,
+    );
+  }
+  // Only locked routing reads it: under any other mode the lock would never
+  // apply, and nothing would say so.
+  if (agent.proseLock !== undefined && agent.proseRouting !== 'locked') {
+    throw new Error(
+      `Recipe agent.proseLock requires agent.proseRouting "locked", got ${agent.proseRouting === undefined ? 'no proseRouting (locus)' : JSON.stringify(agent.proseRouting)}.`,
+    );
+  }
+  if (
+    agent.proseRouting === 'locked' &&
+    agent.proseLock === undefined &&
+    Array.isArray(agent.allowedTools) &&
+    !agent.allowedTools.includes('prose_locus')
+  ) {
+    throw new Error(
+      'Recipe agent.proseRouting "locked" without agent.proseLock needs agent.allowedTools to name "prose_locus": ' +
+        "otherwise the agent can't move its prose lock, so its plain text stays held as drafts, or where it chose before, on every turn. " +
+        'Add "prose_locus" to allowedTools (and "drafts", to resend drafts), or, for an agent that hasn\'t chosen yet, set agent.proseLock ' +
+        '("drafts" to hold plain text on purpose); a choice it has made stays until prose_locus moves it.',
+    );
   }
 
   if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
@@ -3569,6 +3613,13 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error(
         'Recipe conversations.agentPrefix must be a non-empty string of [A-Za-z0-9_-] ' +
         '(it names fork agents and their Chronicle namespaces).',
+      );
+    }
+    if (agent.proseRouting === 'locked') {
+      throw new Error(
+        'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
+          'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
+          'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.',
       );
     }
   }

@@ -513,6 +513,95 @@ describe('fork orientation', () => {
       }
     }
   });
+
+  test("a locked parent's fork runs disabled, said as its own mode rather than inherited, and listed as a difference", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' } });
+    try {
+      const input = { name: 'speaker-locked', task: 'say something' };
+      seedForkCall(h.framework, 'toolu_locked', input);
+      const res = await h.subagent.handleToolCall(call('fork', 'toolu_locked', input));
+      await h.asyncPromise(input.name);
+      const block = launchBlock(res.data as string);
+      expect(line(block, '- Prose routing:')).toBe(
+        `- Prose routing: disabled, since the parent's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
+      );
+      const against = line(block, '- Against the parent at the call')!;
+      expect(against).toMatch(/Differs in [^.]*prose routing\./);
+      expect(against).not.toMatch(/Same: [^.]*prose routing/);
+      const run = h.runs[0]!;
+      expect(run.proseRouting).toBe('disabled');
+      // The subagent reads the same words, and is told it lacks the parent's prose_locus.
+      expect(run.launchAsStored).toContain(block);
+      expect(run.surface).not.toContain('prose_locus');
+      expect(line(startSection(run.launchAsStored), '- Tools:')).toContain('prose_locus');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("a locked caller's spawn runs disabled too", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' } });
+    try {
+      const input = { name: 'probe-locked', systemPrompt: 'you are a probe', task: 'probe' };
+      const res = await h.subagent.handleToolCall(call('spawn', 'toolu_spawn_locked', input));
+      expect(res.success).toBe(true);
+      await h.asyncPromise(input.name);
+      const block = launchBlock(res.data as string);
+      expect(line(block, '- Prose routing:')).toBe(
+        `- Prose routing: disabled, since the caller's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
+      );
+      expect(h.runs[0]!.proseRouting).toBe('disabled');
+      expect(h.runs[0]!.launchAsStored).toContain(block);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("under orientation none, a locked parent's fork is still told its prose routing, the one thing its parent's context says otherwise, at the call and at the context's end", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' }, module: { orientation: 'none' } });
+    try {
+      const said = `- Prose routing: disabled, since the parent's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`;
+      const atCall = { name: 'none-at-call', task: 'say something' };
+      seedForkCall(h.framework, 'toolu_none_locked', atCall);
+      await h.subagent.handleToolCall(call('fork', 'toolu_none_locked', atCall));
+      await h.asyncPromise(atCall.name);
+      const atEnd = { name: 'none-at-end', task: 'say something else' };
+      await h.subagent.handleToolCall(call('fork', 'toolu_none_unseeded', atEnd));
+      await h.asyncPromise(atEnd.name);
+      expect(h.runs.map((r) => r.proseRouting)).toEqual(['disabled', 'disabled']);
+      for (const [run, task] of [[h.runs[0]!, atCall.task], [h.runs[1]!, atEnd.task]] as const) {
+        expect(run.launchAsStored).toContain(said);
+        expect(run.launchAsStored).toContain(task);
+        expect(run.launchAsStored).not.toContain('- Tools:');
+      }
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('under orientation none, a fork that runs as its parent does and a locked caller\'s spawn are told no prose routing', async () => {
+    const same = await makeHarness({ parent: { proseRouting: 'locus' }, module: { orientation: 'none' } });
+    try {
+      const input = { name: 'none-same', task: 'say something' };
+      seedForkCall(same.framework, 'toolu_none_same', input);
+      await same.subagent.handleToolCall(call('fork', 'toolu_none_same', input));
+      await same.asyncPromise(input.name);
+      expect(same.runs[0]!.proseRouting).toBe('locus');
+      expect(same.runs[0]!.allText).not.toContain('- Prose routing:');
+    } finally {
+      await same.cleanup();
+    }
+    const locked = await makeHarness({ parent: { proseRouting: 'locked' }, module: { orientation: 'none' } });
+    try {
+      const input = { name: 'none-spawn', systemPrompt: 'you are a probe', task: 'probe' };
+      await locked.subagent.handleToolCall(call('spawn', 'toolu_none_spawn', input));
+      await locked.asyncPromise(input.name);
+      expect(locked.runs[0]!.proseRouting).toBe('disabled');
+      expect(locked.runs[0]!.allText).not.toContain('- Prose routing:');
+    } finally {
+      await locked.cleanup();
+    }
+  });
 });
 
 describe('spawn orientation', () => {
