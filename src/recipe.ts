@@ -23,6 +23,7 @@ import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-modu
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
 import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from './server-presentation.js';
+import { validateCompressionProvider } from './compression-provider-config.js';
 
 export interface RecipeStrategy {
   /** Built-in strategy name, or a custom type registered by a
@@ -35,6 +36,15 @@ export interface RecipeStrategy {
    *  grace. */
   recentWindowTokens?: number;
   compressionModel?: string;
+  /**
+   * Send memory writes (compression, merges, transition summaries) to another
+   * provider or credential than the agent's own turns, e.g. turns on a
+   * subscription token and compression on an API key or a gateway. The
+   * credential is named by its environment variable (apiKeyEnv), never held
+   * here. On another provider than agent.provider, compressionModel must name
+   * the model as that provider does. See compression-provider.ts.
+   */
+  compressionProvider?: import('./compression-provider-config.js').RecipeCompressionProvider;
   /** Cap compression `max_tokens` at the compression model's OUTPUT ceiling.
    *  Required for pre-4.x models (Claude 3 Opus caps at 4096) — without it the
    *  summarizer's 16k floor is rejected and the agent never folds. */
@@ -2693,6 +2703,9 @@ export function validateRecipe(raw: unknown): Recipe {
       );
     }
     validateKvUnifiedConfig(strategy);
+    if (strategy.compressionProvider !== undefined) {
+      validateCompressionProvider(strategy.compressionProvider, agent as { provider?: unknown; strategy?: Record<string, unknown> });
+    }
     const strategyType = strategy.type ?? 'autobiographical';
     if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
       for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
