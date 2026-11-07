@@ -161,6 +161,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   const superseded = new WeakSet<Socket>();
   const connectionIds = new WeakMap<Socket, string>();
   const consoleClients = new WeakSet<Socket>();
+  const explicitSubscribers = new WeakSet<Socket>();
   let speechWritten: { text: string; client: Socket } | null = null;
   let stopAnswering = (): void => {};
   const stoppedReadingMs = testing.stoppedReadingMs ?? STOPPED_READING_MS;
@@ -381,6 +382,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
           return;
         }
         subscription = new Set(cmd.events);
+        explicitSubscribers.add(requester);
         log(`subscription set: ${[...subscription].join(', ') || '(none)'}`);
         return;
       }
@@ -814,11 +816,12 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         : speechWritten && bare(speechWritten.text).includes(bare(text)) ? speechWritten.client : undefined;
       if (!shown) return undefined;
       const id = connectionIds.get(shown);
-      const what = consoleClients.has(shown) ? 'the terminal' : 'the client';
-      const how = consoleClients.has(shown) ? ' (`connectome send`)' : " on this host's socket";
-      return id !== undefined && connections.includes(id)
-        ? `${what} that sent this turn${how}`
-        : `${what} now connected${how}, not the one that sent this turn`;
+      if (id !== undefined && connections.includes(id)) {
+        return consoleClients.has(shown)
+          ? 'the terminal that sent this turn (`connectome send`)'
+          : "the client that sent this turn on this host's socket";
+      }
+      return explicitSubscribers.has(shown) ? "another client on this host's socket, not the one that sent this turn" : undefined;
     });
 
     const idlePoll = setInterval(() => {

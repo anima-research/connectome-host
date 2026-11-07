@@ -29,7 +29,7 @@ async function until(check: () => boolean, label: string, ms = 5_000): Promise<v
 
 describe('headless', () => {
   type Send = ((command: object) => void) & { socket: { destroy(): void }; frames: Array<Record<string, unknown>> };
-  async function withChild(body: (dir: string, connect: (subscribe: string[]) => Promise<Send>) => Promise<void>) {
+  async function withChild(body: (dir: string, connect: (subscribe: string[] | null) => Promise<Send>) => Promise<void>) {
     const dir = mkdtempSync(join(tmpdir(), 'surface-receipts-'));
     const child = spawn(process.execPath, [new URL('./mock-headless-answer-child.ts', import.meta.url).pathname], {
       env: { ...process.env, DATA_DIR: dir }, stdio: 'ignore',
@@ -49,7 +49,7 @@ describe('headless', () => {
           for (const line of lines) if (line.trim()) frames.push(JSON.parse(line));
         });
         const send = Object.assign((command: object) => { socket.write(`${JSON.stringify(command)}\n`); }, { socket, frames });
-        send({ type: 'subscribe', events: subscribe });
+        if (subscribe) send({ type: 'subscribe', events: subscribe });
         return send;
       });
     } finally {
@@ -76,7 +76,7 @@ describe('headless', () => {
       expect(answer.round).toBeNull();
       expect(answer.notWritten).toBeNull();
       expect(answer.anotherAgent).toBeNull();
-      expect(answer.anotherBoot).toBe('the terminal now connected (`connectome send`), not the one that sent this turn');
+      expect(answer.anotherBoot).toBe("another client on this host's socket, not the one that sent this turn");
     });
   });
 
@@ -236,7 +236,17 @@ describe('headless', () => {
       send({ type: 'text', content: 'hello' });
       await until(() => answers(dir).length === 1, 'the answers');
       expect(answers(dir)[0].final).toBe("the client that sent this turn on this host's socket");
-      expect(answers(dir)[0].anotherBoot).toBe("the client now connected on this host's socket, not the one that sent this turn");
+      expect(answers(dir)[0].anotherBoot).toBe("another client on this host's socket, not the one that sent this turn");
+    });
+  });
+
+  test("a client that didn't send the turn is named only once it has subscribed itself, so a second connectome send during a turn isn't", async () => {
+    await withChild(async (dir, connect) => {
+      const send = await connect(null);
+      send({ type: 'text', content: 'hello', from: 'console' });
+      await until(() => answers(dir).length === 1, 'the answers');
+      expect(answers(dir)[0].final).toBe('the terminal that sent this turn (`connectome send`)');
+      expect(answers(dir)[0].anotherBoot).toBeNull();
     });
   });
 });
