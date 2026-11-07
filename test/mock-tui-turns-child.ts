@@ -35,7 +35,10 @@ const subagents = {
 };
 
 /** The agent's record in the `undone` scenarios, and which of its rows an undo took out of its window. */
-const history: Array<{ id: string; participant: string; content: Array<Record<string, unknown>>; metadata?: Record<string, unknown> }> = [
+const history: Array<{
+  id: string; participant: string; content: Array<Record<string, unknown>>; metadata?: Record<string, unknown>;
+  bodyGroupId?: string; shardIndex?: number;
+}> = [
   { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
   { id: 'a1', participant: 'agent', content: [{ type: 'thinking', thinking: 'tally them first' }, { type: 'text', text: 'three ledgers' }] },
 ];
@@ -1012,6 +1015,32 @@ async function play(): Promise<void> {
     history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'once more' }] });
     undoneRows.add('u2');
     first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-sharded') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // The operator's message and the reply, each stored as two shards of one
+    // body split mid-word, as context-manager's ingress chunking stores a
+    // long message (#485 bot review 6, finding 2).
+    await command('count the fifth ledger');
+    await until(async () => (await frame()).includes('You: count the fifth ledger'), 'the message to show');
+    history.push(
+      { id: 'u2', participant: 'user', content: [{ type: 'text', text: 'count the fif' }], bodyGroupId: 'g-u', shardIndex: 0 },
+      { id: 'u3', participant: 'user', content: [{ type: 'text', text: 'th ledger' }], bodyGroupId: 'g-u', shardIndex: 1 },
+    );
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'the fifth is counted', blockType: 'text' });
+    history.push(
+      { id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'the fifth is co' }], bodyGroupId: 'g-a', shardIndex: 0 },
+      { id: 'a3', participant: 'agent', content: [{ type: 'text', text: 'unted' }], bodyGroupId: 'g-a', shardIndex: 1 },
+    );
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('the fifth is counted'), 'the reply');
+    // A line after them that is no row's.
+    first.send('tool:failed', { callId: 'c9', toolName: 'abacus', error: 'the beads stuck' });
+    await until(async () => (await frame()).includes('the beads stuck'), 'the failed tool line');
+    for (const id of ['u2', 'u3', 'a2', 'a3']) undoneRows.add(id);
+    first.send('window:undone', { retracted: 4 });
     await until(async () => (await frame()).includes('(undone)'), 'the mark');
     await step('undone');
   } else if (scenario === 'undone-moved-elsewhere') {

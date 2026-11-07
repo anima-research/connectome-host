@@ -518,6 +518,23 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(echoes[0]).toMatch(/\(undone\) \d\d:\d\d You: once more/);
   }, 90000);
 
+  // context-manager stores a long message in shards, one row each, under
+  // the host's default adaptive resolution: the one line holds the whole
+  // message, so the shards are linked to it as one (#485 bot review 6,
+  // finding 2).
+  test("a message and a reply each stored in shards: an undo marks each one's line in place, and draws no shard below", async () => {
+    const undone = await frameOf('undone-sharded', 'undone');
+    expect(times(undone, 'count the fif')).toBe(1);
+    expect(times(undone, 'th ledger')).toBe(1);
+    expect(undone).toMatch(/\(undone\) \d\d:\d\d You: count the fifth ledger/);
+    expect(times(undone, 'the fifth is co')).toBe(1);
+    expect(times(undone, 'unted')).toBe(1);
+    expect(undone).toContain('(undone) the fifth is counted');
+    const after = undone.indexOf('the beads stuck');
+    expect(undone.indexOf('(undone) the fifth is counted')).toBeLessThan(after);
+    expect(undone.search(/\(undone\) \d\d:\d\d You: count the fifth ledger/)).toBeLessThan(after);
+  }, 40000);
+
   // /clear cuts a reply off mid-stream: its row holds the words before the
   // /clear and the rest of the block, which isn't drawn, so the line's
   // entry takes those too, and the row is a cleared line's (#485 bot

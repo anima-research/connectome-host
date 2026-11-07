@@ -15,7 +15,7 @@ import {
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { sessionMarker } from './session-marker.js';
 import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
-import type { AutobiographicalStrategy, StoredMessage } from '@animalabs/context-manager';
+import { continuesBody, type AutobiographicalStrategy, type StoredMessage } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
@@ -1046,6 +1046,35 @@ export async function runTui(app: AppContext): Promise<void> {
     return taken;
   }
 
+  /** One message as the record holds it: a row, or the rows of a body
+   *  context-manager stored in shards (a long message, under adaptive
+   *  resolution), joined as its compile joins them, every part's other
+   *  blocks ahead of the text. `at` is its first row's place in the rows
+   *  read, `ids` every row's id. */
+  interface StoredBody { msg: StoredMessage; ids: string[]; at: number }
+  function storedBodies(rows: StoredMessage[]): StoredBody[] {
+    const bodies: StoredBody[] = [];
+    for (let at = 0; at < rows.length; at++) {
+      const first = rows[at]!;
+      let end = at;
+      while (end + 1 < rows.length && continuesBody(rows[end], rows[end + 1])) end++;
+      if (end === at) {
+        bodies.push({ msg: first, ids: [first.id], at });
+        continue;
+      }
+      const parts = rows.slice(at, end + 1);
+      const blocks = parts.flatMap((row) => row.content);
+      const text = blocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('');
+      bodies.push({
+        msg: { ...first, content: [...blocks.filter((b) => b.type !== 'text'), { type: 'text', text }] } as StoredMessage,
+        ids: parts.map((row) => row.id),
+        at,
+      });
+      at = end;
+    }
+    return bodies;
+  }
+
   /** Link the lines streamed or sent to the rows stored since the last
    *  call, each row once: at each root turn's end, once its last line is
    *  kept, and before each remark. A line is linked while it is fresh, so a
@@ -1062,7 +1091,9 @@ export async function runTui(app: AppContext): Promise<void> {
    *  backgrounded its replies wait: their lines are drawn when it returns.
    *  A row stamped for other residents only (a co-resident's, in the store
    *  the residents share) is no line's: the TUI streams the root agent's
-   *  turns. */
+   *  turns. A message context-manager stored in shards is linked as one
+   *  (storedBodies): its line holds it whole, and is the line of each
+   *  shard's row, which an undo takes out together. */
   function linkStreamedLines(): void {
     if (branchMovedElsewhere()) return;
     const cm = app.framework.getAgent(rootAgentName)?.getContextManager();
@@ -1075,20 +1106,24 @@ export async function runTui(app: AppContext): Promise<void> {
     const from = Math.min(sentFrom, repliesFrom);
     if (from === total || streamedLines.length + evictedSent.length + evictedReplies.length === 0) return;
     const stored = cm.getMessageWindow(from, total - from, { resolveBlobs: false }).messages;
-    const link = (msg: StoredMessage): void => {
+    const bodies = storedBodies(stored);
+    const link = ({ msg, ids }: StoredBody): void => {
       const stamp = audienceOf(msg.metadata);
       if (stamp && !stamp.audience.includes(rootAgentName)) return;
       const taken = takeStreamedLines(msg);
-      if (taken.some((l) => l.parts.length === 0 || l.parts.some((part) => part.line.isDestroyed))) clearedRows.add(msg.id);
-      for (const part of taken.flatMap((l) => l.parts)) {
-        if (!part.line.isDestroyed) recordLines.push({ line: part.line, id: msg.id, text: part.shown, color: part.color, appended: false });
+      const cleared = taken.some((l) => l.parts.length === 0 || l.parts.some((part) => part.line.isDestroyed));
+      for (const id of ids) {
+        if (cleared) clearedRows.add(id);
+        for (const part of taken.flatMap((l) => l.parts)) {
+          if (!part.line.isDestroyed) recordLines.push({ line: part.line, id, text: part.shown, color: part.color, appended: false });
+        }
       }
     };
-    for (let i = sentFrom - from; i < stored.length; i++) {
-      if (stored[i]!.participant === 'user') link(stored[i]!);
+    for (const body of bodies) {
+      if (body.at >= sentFrom - from && body.msg.participant === 'user') link(body);
     }
-    for (let i = stored.length - 1; i >= repliesFrom - from; i--) {
-      if (stored[i]!.participant !== 'user') link(stored[i]!);
+    for (const body of [...bodies].reverse()) {
+      if (body.at >= repliesFrom - from && body.msg.participant !== 'user') link(body);
     }
     // The scrollback takes old lines down: a linked line it took down leaves
     // the list, its row in clearedRows, so an undo doesn't draw it again.
