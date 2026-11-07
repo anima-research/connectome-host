@@ -51,12 +51,14 @@
     agent that spoke: the author of the published message the heard words
     start, else the agent voicing in its channel. It was written for no
     agent, so every resident sharing the slot was shown it. An interruption
-    whose speaker can't be named (no published message matched it, and no
-    one registered agent was voicing in its channel, or the heard words start
-    messages by more than one agent) writes no note, and the log says why.
-    Heard words that start no published message in the channel edit
-    nothing: the relay used to edit the channel's latest published message
-    to them, and tell that message's author.
+    whose speaker can't be named (no published message matched it, and not
+    exactly one agent, still registered, was voiced in its channel; or the
+    heard words start messages by more than one agent, by an agent no longer
+    registered, or messages there by another agent are no longer kept)
+    writes no note, and, while `notifyOnInterruption` isn't `false`, the log
+    says why. Heard words that start no published message in the channel
+    edit nothing: the relay used to edit the channel's latest published
+    message to them.
   - A subagent's result or failure told straight to the agent that started
     it, when the run has no route of its own through agent-framework, and
     its launcher, or the attempt that launched it, has ended (its line says
