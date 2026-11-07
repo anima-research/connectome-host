@@ -111,17 +111,16 @@
     rows the transcript had loaded; it leaves out undone rows and rows
     stamped for other residents only, and on a legacy window, which reads
     no stamp, the rows the resident's view leaves out (held traffic,
-    suppressed rows, another agent's stored injections), where it left out
-    a co-resident's rows there too, though they are in that window. A
+    suppressed rows, another agent's stored injections). A
     message stored in parts is one
     candidate, by its first part with the parts' text joined, as it is one
     row in the transcript, where a fleet child's picker listed each part,
     and the 200 rows reach back to its first part when they start inside
     it. A picker whose candidates couldn't be read says so and why, where it
-    said the record's last 200 rows held no pinnable message. The Web UI's
+    said no pinnable messages were loaded, as for an empty list. The Web UI's
     transcript shows one text ingested twice, each time stored in parts, as
     two rows, each marked by its own first part, where it joined both into
-    one row, marked as the first ingestion was.
+    one row.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,

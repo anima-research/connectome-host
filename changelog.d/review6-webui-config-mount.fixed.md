@@ -6,8 +6,8 @@
   the gate's files could still be the previous branch's. The failure is
   logged as `[webui] _config refresh failed: …`.
 - In the Web UI, a command's answer that says the `_config` mount wasn't
-  written (a `/checkout` or `/restore` whose write of it failed, a failed
-  rollback that left the store on its new branch) is followed by what the
+  written (a `/checkout`, or a `/restore` to a branch's head, whose write
+  of it failed, a failed rollback that left the store on its new branch) is followed by what the
   Web UI's own write of the mount, which follows every move there, then
   did: "The Web UI has since written the _config mount from <branch>." or
   "The Web UI's refresh of the _config mount failed too: …". The other

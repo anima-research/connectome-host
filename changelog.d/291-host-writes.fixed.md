@@ -58,7 +58,7 @@
     writes no note, and, while `notifyOnInterruption` isn't `false`, the log
     says why. Heard words that start no published message in the channel
     edit nothing: the relay used to edit the channel's latest published
-    message to them.
+    message still kept, if any, to them.
   - A subagent's result or failure told straight to the agent that started
     it, when the run has no route of its own through agent-framework, and
     its launcher, or the attempt that launched it, has ended (its line says

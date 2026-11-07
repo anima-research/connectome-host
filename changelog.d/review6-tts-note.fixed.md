@@ -20,13 +20,14 @@
 - tts-relay counts an agent whose activation was live at a channel's
   interruption as voiced there since, as the relay goes on voicing what it
   publishes there. Once that activation has ended and another agent's has
-  started, a later interruption that matches no message writes no note,
+  started there, a later interruption that matches no message writes no note,
   and, while `notifyOnInterruption` isn't `false`, the log names both.
 - tts-relay keeps each channel's latest 32 publishes to match an
   interruption there, for the 32 channels it last published in. It kept the
   latest 32 of every channel together, so another channel's traffic could
-  push out the message the heard words started, and the channel's latest
-  message still kept, if any, was edited to them instead. A
+  push out the message the heard words started, and the newest message
+  still kept there that they start, else the channel's latest message
+  still kept, if any, was edited to them instead. A
   channel keeps the names of the agents voiced there since its previous
   interruption, and of those whose messages it let go, past those 32
   channels or past its latest 32 publishes. Until its next one, heard
