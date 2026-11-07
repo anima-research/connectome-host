@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   INSTALL_ROOT_ENV, appendJournal, installPaths, moveCurrent, readJournal, readRecord, releaseDir, writeJsonAtomic, type Mark,
 } from '../src/update/contract.js';
@@ -158,5 +158,125 @@ describe('a start, end to end', () => {
     expect(run.exitCode).toBe(1);
     expect(run.stderr).toContain(`[update] Nothing started: This install has no record at ${installPaths(root).install}`);
     expect(() => readFileSync(marker)).toThrow();
+  });
+});
+
+describe('the binding check, before any release loads', () => {
+  const copyTo = (to: string) => expect(Bun.spawnSync(['cp', '-a', install, to]).exitCode).toBe(0);
+  const startIn = (at: string, ...args: string[]) => {
+    const run = Bun.spawnSync([process.execPath, join(at, 'connectome-host', ENTRY_POINT), ...args], {
+      cwd: at, env: { ...process.env, DATA_DIR: join(at, 'data'), MARKER: marker }, stderr: 'pipe',
+    });
+    return { exitCode: run.exitCode ?? -1, stderr: run.stderr.toString() };
+  };
+
+  const RESTARTS = 'A service that restarts the host will keep meeting this until setup has run: stop it first, and ' +
+    'start it again after.';
+  const byHandLine = (copy: string, release: string, served = join(copy, 'data')) => {
+    const copyRoot = join(copy, 'connectome-host');
+    return `run \`${join(copyRoot, 'connectome')} setup discord\`, or, for an install set up by hand, the setup of ${release}, ` +
+      `the release whose setup wrote this file: \`cd ${copy} && DATA_DIR=${served} bun --no-env-file ` +
+      `${join(releaseDir(copyRoot, release), RELEASE_HOST, 'src', 'update', 'setup.ts')} --root ${copyRoot}\`. ${RESTARTS}`;
+  };
+  const setupFrom = (copy: string, hostRoot: string) => setup({
+    cwd: copy, dataDir: join(copy, 'data'), root: join(copy, 'connectome-host'), extraState: null, hostRoot,
+    say: () => {}, units: () => ({ found: [], unasked: [], unresolved: [], defaulted: [] }),
+  });
+
+  test('a copy\'s start, and its --go-back, are refused before its launcher runs, naming both directories and the setup of the release whose setup wrote it; once that setup binds it, it starts on its own data', () => {
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const copyRoot = join(copy, 'connectome-host');
+    for (const args of [[], ['--go-back']]) {
+      const run = startIn(copy, ...args);
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain(`connectome-host: nothing runs in this install, since its record is bound to ${install}, and it's in ${copy}, so it was moved or copied here`);
+      expect(run.stderr).toContain(byHandLine(copy, '0.10.2'));
+    }
+    expect(existsSync(marker)).toBe(false);
+    expect(readJournal(copyRoot)).toEqual([]);
+    expect(existsSync(installPaths(copyRoot).lock)).toBe(false);
+    setupFrom(copy, join(releaseDir(copyRoot, '0.10.2'), RELEASE_HOST));
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.10.2', root: copyRoot, cwd: copy });
+  });
+
+  test('a copy of an install serving a data directory other than ./data is sent to a setup command that, run as printed, binds it to its own data directory', () => {
+    const state = join(install, 'state');
+    mkdirSync(join(state, 'sessions'), { recursive: true });
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: state, extraState: [], workingDir: install });
+    const host = join(releaseDir(root, '0.10.2'), RELEASE_HOST);
+    mkdirSync(join(host, 'src', 'cli'));
+    cpSync(join(import.meta.dir, '..', 'src', 'cli', 'install-command.ts'), join(host, 'src', 'cli', 'install-command.ts'));
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const copyRoot = join(copy, 'connectome-host');
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(byHandLine(copy, '0.10.2', join(copy, 'state')));
+    const command = /the release whose setup wrote this file: `([^`]+)`/.exec(run.stderr)![1]!;
+    const ran = Bun.spawnSync(['sh', '-c', command], {
+      env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH}` }, stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(ran.stderr.toString()).toBe('');
+    expect(ran.exitCode).toBe(0);
+    expect(readRecord<{ workingDir?: string; dataDir: string }>(installPaths(copyRoot).install, 'record'))
+      .toMatchObject({ workingDir: copy, dataDir: join(copy, 'state') });
+  });
+
+  test('a record of a version this release can\'t read is not taken as moved: the start goes on to the launcher, which names that version', () => {
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 2, dataDir: data, extraState: [], workingDir: join(dir, 'elsewhere') }));
+    const run = start();
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).not.toContain('moved or copied');
+    expect(run.stderr).toContain('has version 2, and this release reads only version 1');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test('a copy whose current names an older release than the one whose setup wrote its entries is sent to that setup, not current\'s, and once it binds, current starts on the copy\'s data', () => {
+    hostPackage(join(releaseDir(root, '0.9.0'), RELEASE_HOST), '0.9.0');
+    moveCurrent(root, '0.9.0');
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const copyRoot = join(copy, 'connectome-host');
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(byHandLine(copy, '0.10.2'));
+    setupFrom(copy, join(releaseDir(copyRoot, '0.10.2'), RELEASE_HOST));
+    expect(readRecord<{ workingDir?: string; dataDir: string }>(installPaths(copyRoot).install, 'record'))
+      .toMatchObject({ workingDir: copy, dataDir: join(copy, 'data') });
+    expect(startIn(copy).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.9.0', root: copyRoot, cwd: copy });
+  });
+
+  test('a copy whose entries\' release holds no setup in its releases now is sent to its setup by hand, as docs/DEPLOYMENTS.md shows', () => {
+    rmSync(join(releaseDir(root, '0.10.2'), RELEASE_HOST, 'src', 'update', 'setup.ts'));
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. ${RESTARTS}`);
+  });
+
+  test('a record from before workingDir starts as it did', () => {
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] });
+    expect(start().exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8')).version).toBe('0.10.2');
+  });
+
+  test('a copy from before workingDir, made while the original\'s host ran, meets the lock that came with it, which names that case and setup', () => {
+    const host = Bun.spawn(['sleep', '120']);
+    try {
+      writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] });
+      writeFileSync(installPaths(root).lock, JSON.stringify({ v: 1, pid: host.pid, bootId: null, at: '2026-11-04T00:00:00.000Z' }));
+      const copy = join(dir, 'copy');
+      copyTo(copy);
+      const run = startIn(copy);
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain(`process ${host.pid}, since 2026-11-04T00:00:00.000Z. An install runs one host at a time, and \`ps -o args= -p ${host.pid}\` shows what that process runs. If it runs the start.js, or a release in the releases directory, of an install root that is this one, ${join(copy, 'connectome-host')}, by any name, it's this install's host: stop it first. \`test ROOT -ef ${join(copy, 'connectome-host')}\`, with ROOT the directory that holds that start.js or releases directory, succeeds when the two are one directory. If it runs setup, it's binding an install: start this one again once that setup has ended. If it runs another install's start.js or a release in another install's releases, this install is a copy made while that host ran, and the lock came with the copy: run setup here first, which binds the copy to its own places and removes a lock it can show came with it, and then remove the lock file if it's still there.`);
+    } finally {
+      host.kill();
+    }
   });
 });
