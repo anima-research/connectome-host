@@ -1261,8 +1261,10 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. `serverId` names the MCPL server that owns subscriptions
-   * (default `discord`); `toolPrefix` is deprecated and read by nothing.
+   * `false` disables. Server ownership is resolved per channel from the registry,
+   * then a connected server matching its id prefix. `serverId` is an explicit
+   * fallback for otherwise unresolved ids; `toolPrefix` is deprecated and read
+   * by nothing. Unknown or ambiguous ownership refuses before any step.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).
    */

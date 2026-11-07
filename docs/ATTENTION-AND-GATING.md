@@ -196,8 +196,27 @@ action.
   `"mentions"` (closed; only addressed messages reach you) and `"debounced"`
   (opens the channel, prepends a rule debouncing its `chat:ambient` traffic —
   default 180000 ms — and pins the channel so it isn't auto-closed for being
-  chatty). Pass the id as events carry it (`discord:<guildId>:<channelId>`), or
-  the rule never matches. Each channel gets its own rule, so its own timer.
+  chatty). Pass the exact id as events carry it (for example `zulip:backend`,
+  `slack:<teamId>:<channelId>`, or `discord:<guildId>:<channelId>`), not a raw
+  platform id. Open, gate source, and close use the owning MCPL server from the
+  channel registry. If the id is not registered, a prefix before the first `:`
+  is used when it names a known server, even if disconnected;
+  `modules.channelMode.serverId` is the legacy fallback (default `discord`) only
+  for unregistered bare ids with no `:`, or ids whose prefix is that fallback
+  server itself. An unknown namespace such as `teams:x` is refused, never routed
+  to a different fallback server. Registry ownership still overrides any prefix.
+  Debounced mode refuses unknown, disconnected, or ambiguous ownership before
+  changing anything; a disconnected-owner error names the server to reconnect.
+  Mentions mode always attempts to remove the debounce rule and pin, even when
+  ownership cannot be resolved; it reports a skipped or failed close separately.
+  Previously saved rules with the wrong source are replaced on the next debounced
+  call or removed on the next mentions call; reapply the mode on affected channels.
+  Each channel gets its own rule, so its own timer. This does not change the
+  framework's open/close semantics.
+
+  Subscription GC remains scoped to `modules.subscriptionGc.serverId` (default
+  `discord`): it ignores other servers' incoming and push events rather than
+  closing them on the wrong server. Configure it separately when needed.
 - **Your shell** — edit the file on disk. The gate notices a changed file (by
   mtime) when it evaluates the next event, checking at most once a second. A
   file that fails to parse or validate is ignored: the previous rules stay in
