@@ -13,5 +13,7 @@
   ended, not at all, and then the agent gets the framework's notice for it.
   A note never counts as a reply: a wait in which a turn gave up and no
   reply came, only notes, still says the turn ended without a reply and
-  exits 1. The agent's receipt, when the turn writes one, names the
-  terminal for a note it printed.
+  exits 1. A turn that printed a note and whose last round was empty exits
+  0 and says nothing more: the line saying the turn ended without saying
+  anything here is for a turn that printed nothing. The agent's receipt,
+  when the turn writes one, names the terminal for a note it printed.
