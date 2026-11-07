@@ -6,6 +6,104 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.22.1 — 2026-11-06
+
+### Changed
+
+- An Anthropic error record in llm-calls keeps the full request only for the
+  first failure of each kind of error (its type, or for an untyped error its
+  name, with its HTTP status when it has one) in a run of failures on its
+  cache lineage (model, system and tools) that the budget below has room for
+  and the 16 MiB line bound leaves whole. A run begins at its first failure,
+  and a call's success on that lineage, or more than an hour with no failed
+  call on it, ends it; keepalive pokes, cancelled calls, and failed calls whose
+  request is missing or can't be serialized count for neither.
+  The run's later failures of that kind, such as each retry or each turn of
+  a rate-limit storm, record the request's size under `rawRequestOmitted`,
+  with the hash of the run's copy of that kind as `copySha256` once that
+  copy is written, and each complete or stream error record whose request
+  can be serialized carries `requestSha256`, unless the line bound cuts the
+  record to its head. A request at or over the line bound by itself records
+  its size so at every failure; one just under it whose record still passes
+  the bound is cut, carries `truncated` instead, and is tried whole again at
+  the run's next failure of that kind. The adapter remembers the runs of the 256 lineages
+  whose runs began latest, dropping runs that have ended first, and a log
+  writes at most 64 MiB of such copies at once, refilled at 64 MiB a day:
+  the first copy refused for it since the last one written prints one
+  `[llm-calls]` stderr line. An anomalous response's copy isn't charged to
+  it, and a cancelled call (membrane's `abort`) keeps none. One OAuth 429
+  storm had grown a single log to 687MB. A request membrane rejects before sending (such as an unsupported
+  prefill) is now kept too, from the error. `LLM_CALLS_FULL_PAYLOADS=1`
+  still keeps the full request of every call, failures included, within the
+  16 MiB line bound.
+
+## 0.22.0 — 2026-11-05
+
+### Changed
+
+- `agent.retry` now reaches framework-wide turn retries as well as other
+  provider calls (#470). Partial overrides preserve the framework's turn
+  defaults: at least 13 overloaded sends per policy cycle, or `maxRetries`
+  if that's more, unless `overloaded.maxRetries` is specified,
+  stated-wait ceilings of at least 10 minutes, and one fresh call after a
+  stream deadline cut. The ceilings apply to subagent runs; residents and
+  conversation forks hold the provider's full stated wait before the policy
+  runs. Omitted or empty retry settings and non-turn retry behavior are unchanged.
+
+- **The onboarding guide recommends code execution for every resident.** Its
+  recipe skeleton includes `"codeExecution": { "enabled": true }`, with a section
+  on what agent-framework's `code_execution` does (JavaScript that calls the
+  agent's own tools in a QuickJS isolate; calls and intermediate results stay out
+  of the context), its defaults, the cost of turning it on for a running resident
+  (one full cache write), and the security note's caveat (no operating-system
+  sandbox; containment is the engine's). The built-in default recipe still leaves
+  it off. `index.ts` now passes the setting to `AgentFramework.create` through
+  `codeExecutionOption(recipe)` in `framework-agent-config.ts`, with tests that
+  the tool is offered when it is on and not when it is off or absent.
+
+### Fixed
+
+- An agent whose model call failed and is being tried again, or is held
+  until a provider's limit lifts, no longer shows as failed in the Web UI
+  and the TUI. Its node in the agent trees, a subagent's row, and the TUI's
+  status line for the host's own agent show `attempt-failed` until its next
+  attempt starts or its turn ends, the tree's in a colour of its own, except
+  the TUI tree's row for the host's own agent. The
+  Web UI shows the failure's error when you hover over the phase, and the
+  TUI on a fleet child's agent detail. A turn the TUI had moved to the
+  background stays there through a failed attempt, and when it returns it
+  shows what its earlier rounds wrote and the retry's answer, without the
+  failed attempt's words. A turn that ends failed shows `failed` with its
+  last error, or an error in the TUI's status line; one a stop ends shows
+  `cancelled`, or idle. A fleet parent on an earlier release can show a
+  child's `attempt-failed` agent in a plain colour and leave it out of its
+  count of running agents. On a fleet child running agent-framework older
+  than 0.26.2, a held turn whose retry is dropped ends with no event, so it
+  shows `attempt-failed`, and counts as running, until that agent's next
+  attempt starts. On one older than 0.22.3, an agent stopped through
+  `Agent.cancelStream` shows `failed`.
+
+- **Dependencies:** `@opentui/core` moves to `^0.2.16` (from `^0.1.82`). From
+  0.2.1 it depends on `diff` 9.0.0 and no longer on `jimp`, so installing the
+  host no longer brings the versions of `diff`, `file-type` and `zod` 3 that
+  published advisories cover. The Web UI is built with `dompurify` 3.4.17 and
+  `solid-js` 1.9.18, whose `seroval` is 1.6.12, and the repository's lockfiles
+  take `undici` 6.29.1, each within its existing range.
+
+- **Web UI:** `/files/<mount>/<path>` serves a workspace file with
+  `X-Content-Type-Options: nosniff` and a sandboxing
+  `Content-Security-Policy` (`sandbox allow-same-origin`, without
+  `allow-scripts`). An HTML or SVG file an agent wrote no longer runs script
+  when the operator opens it, where before its script ran on the Web UI's
+  origin and could reach `/ws` with the operator's authority. Such a page
+  still shows its text and inline styles, stylesheets from the Web UI's
+  `/files/`, and images, fonts, audio and video from its `/files/` or
+  `data:` URLs. Its scripts, forms, frames that load a page, a link in it
+  that opens a new window, and a download it starts no longer work, and it
+  loads nothing from another host, nor from a Web UI route other than
+  `/files/` and the static app shell; a plain link in it still navigates the
+  tab. A download from a file's own `/files/` URL isn't affected.
+
 ## 0.21.0 — 2026-10-31
 
 ### Breaking

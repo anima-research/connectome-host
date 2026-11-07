@@ -242,7 +242,7 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 | `LifecycleModule` | `selfRestart` | off | `lifecycle--restart`: the agent restarts its own host once its turn ends; headless only, exit code 75 for the supervisor, cooldown between restarts (`src/self-restart.ts`). |
 | `IdentityModule` | `identity` | off | The agent's own archipelago identity key; exchanges key-proofs for access tokens so credentials never enter the agent's context. |
 | `WebUiModule` + `ObserversModule` | `webui` | off | Browser console (below); `observers--get/grant/revoke` let the agent manage who may watch. |
-| `TtsRelayModule` | `ttsRelay` | off | Streams live generation to a TTS relay; trims posted messages when a voice client is interrupted. |
+| `TtsRelayModule` | `ttsRelay` | off | Sends each message the agent's prose publishes on the server `editServerId` names (Discord by default) to a TTS relay as one block; trims posted messages when a voice client is interrupted. |
 
 Framework features configured by top-level recipe keys rather than modules:
 `conversations` (per-channel conversation forks from a dormant trunk agent),
@@ -293,7 +293,9 @@ All three surfaces share two layers, so they cannot drift apart:
 makeup/coverage/curve/preview, MCPL status, media — run in-process by the
 WebUI and inside a child on a fleet `panel-request`). The agent tree shown by
 both UIs is folded from trace events by `src/state/agent-tree-reducer.ts`,
-one reducer per process.
+one reducer per process. `src/state/agent-phases.ts` keeps each agent's phase on
+the server, in the tree's words, for observers holding `health`, who see it
+without the traces it comes from.
 
 - **TUI** — chat with streaming, thinking and tool lines (Ctrl+V for
   verbose); a fleet tree of local subagents, fleet children and their agents
@@ -341,9 +343,30 @@ surgery and still uses its own branch stacks.
 ## Failure handling and observability
 
 - **Wire logs** — `llm-calls.<iso>.jsonl` per process (request summaries,
-  usage, timing, errors; raw requests on errors and refusals, or always with
-  `LLM_CALLS_FULL_PAYLOADS=1`, which alone keeps a cache-keepalive poke's,
-  each within the 16 MiB a line may take).
+  usage, timing, errors; raw requests on refusals, on anomalous responses
+  (a client `tool_use` under a stop reason other than `tool_use`), and on
+  the first failure of each kind of error (its type, or for an untyped error
+  its name, with its HTTP status when it has one) whose copy the budget below
+  has room for and the line bound leaves whole, in a run of failures on a
+  cache lineage, which begins at its first failure and which a call's
+  success on that lineage, or more than an hour with no failed call on it, ends
+  (keepalive pokes, cancelled calls, and failed calls whose request is
+  missing or can't be serialized count for neither), for the latest 256
+  lineages, runs that have ended dropped first, and
+  within a budget per log of 64 MiB of such copies, refilled at 64 MiB a
+  day, that an anomalous response's copy isn't charged to; a cancelled
+  call's never; or always with `LLM_CALLS_FULL_PAYLOADS=1`, which alone
+  keeps a cache-keepalive poke's, each within the 16 MiB a line may take).
+  That rule is the Anthropic writer's: the run's other failures carry the
+  request's `requestSha256`, its size under `rawRequestOmitted`, and, once
+  the run's copy of that kind is written, its hash as
+  `rawRequestOmitted.copySha256`. A request at or over the 16 MiB line bound
+  by itself carries its size the same way at every failure. One just under
+  the bound whose record still passes it is cut to fit, carries `truncated`
+  instead of `rawRequestOmitted`, and is tried whole again at the run's next
+  failure of that kind. The first failing
+  request the budget has no room for, since the last one written, prints
+  one stderr line.
 - **Ops alerts** (agent-framework) — compression quarantine, refusal streaks,
   inference exhaustion, context refusals, GC closes: an `ops:alert` trace
   (shown as banners in both UIs), a record in `logs/failures.log`, and a
