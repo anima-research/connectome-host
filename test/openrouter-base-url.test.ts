@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
+const HOST_MS = 45_000;
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -53,7 +54,12 @@ function runOnce(env: Record<string, string>) {
   child.stdout!.on('data', (d) => { output += d; });
   child.stderr!.on('data', (d) => { output += d; });
   child.stdin!.end('hello\n');
-  const done = new Promise<{ code: number | null; output: string }>((r) => child.on('close', (code) => r({ code, output })));
+  let timedOut = false;
+  const killer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, HOST_MS);
+  const done = new Promise<{ ended: string; output: string }>((r) => child.on('close', (code, signal) => {
+    clearTimeout(killer);
+    r({ ended: timedOut ? `was killed (SIGKILL) after ${HOST_MS} ms` : code === null ? `was killed (${signal})` : `exited ${code}`, output });
+  }));
   return { child, done };
 }
 
@@ -62,12 +68,12 @@ describe('OPENROUTER_BASE_URL', () => {
     const gate = gateway();
     const run = runOnce({ OPENROUTER_API_KEY: 'sk-or-fixture', OPENROUTER_BASE_URL: `${gate.url}/api/v1` });
     try {
-      const { code, output } = await run.done;
-      if (gate.seen.length === 0) throw new Error(`no call reached the gateway; the host exited ${code}, after this output:\n${output.slice(-4000)}`);
+      const { ended, output } = await run.done;
+      if (gate.seen.length === 0) throw new Error(`no call reached the gateway; the host ${ended}, after this output:\n${output.slice(-4000)}`);
       for (const r of gate.seen) expect(r).toEqual({ method: 'POST', path: '/api/v1/chat/completions', authorization: 'Bearer sk-or-fixture' });
     } finally {
       run.child.kill();
       gate.stop();
     }
-  }, 60_000);
+  }, HOST_MS + 15_000);
 });
