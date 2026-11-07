@@ -567,6 +567,15 @@ describe('setup--run', () => {
     expect(lines).toContain(Object.keys(PROVIDER_CREDENTIALS).map((name) => `<${name}>`).join(' '));
   });
 
+  test('leaves out of its commands\' environment a variable of another name holding a stored value whole, and keeps one holding it within a longer value, whose value still comes back by its name', async () => {
+    const { module } = install({
+      envFile: 'ANTHROPIC_API_KEY="sk-ant-stored-key"\n',
+      env: { ANTHROPIC_API_KEY: 'sk-ant-stored-key', MY_COPY: 'sk-ant-stored-key', MY_HEADER: 'Bearer sk-ant-stored-key', KEEP_ME: 'kept' },
+    });
+    const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER KEEP_ME');
+    expect(answer.stdout.text).toBe('copy=1\nBearer <ANTHROPIC_API_KEY>\nkept\n');
+  });
+
   test('where the list of stored secrets is missing, every name .env or another dotenv file beside it gives that setup doesn\'t know counts as secret, whatever its value, and the answer says why', async () => {
     const { dir, module } = install({
       envFile: 'DISCORD_TOKEN="discord-token-value"\nMY_SERVER_TOKEN="custom-token-value"\nDEBUG=7\n',

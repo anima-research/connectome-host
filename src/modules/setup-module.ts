@@ -278,7 +278,8 @@ export class SetupModule implements Module {
           `Run one command with bash -c in the install's directory, and get its exit status and output back: of an ` +
           `output longer than 8 KiB, its first and last 4 KiB, each widened to take in whole a secret a cut falls ` +
           `in, or the whole output where the two then meet. Its environment is the host's, less the stored secrets, the provider credentials and the ` +
-          `providers' base URLs, and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
+          `providers' base URLs, under their own names or any other whose whole value is one of theirs (a variable holding ` +
+          `one within a longer value stays), and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
           `install's directory itself unless it's run with --no-env-file. Nothing is kept between calls but what the command ` +
           `leaves behind: a process it leaves running when it ends, before the host shuts down, keeps running, after ` +
           `the host ends too, so a ` +
@@ -408,9 +409,12 @@ export class SetupModule implements Module {
     return { names, values: [...this.seen.values], guessed };
   }
 
-  private commandEnv(secrets: string[]): Record<string, string> {
+  private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
     const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
-    return withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
+    const env = withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
+    // A stored value under another name goes too. Only a whole one: a guessed secret's value can be as short as 7.
+    for (const [name, value] of Object.entries(env)) if (values.some((secret) => secret.value === value)) delete env[name];
+    return env;
   }
 
   private damaged(error: unknown, what: string): ToolResult {
@@ -451,7 +455,7 @@ export class SetupModule implements Module {
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);
-    const env = this.commandEnv(atLaunch.names);
+    const env = this.commandEnv(atLaunch.names, atLaunch.values);
     const child = spawn('bash', ['--norc', '-c', command], {
       cwd: this.config.dir,
       env,
