@@ -361,7 +361,6 @@ function isLoopbackOrigin(origin: unknown): boolean {
 
 interface SharedServerState {
   server: ReturnType<typeof Bun.serve>;
-  stopAnswering?: () => void;
   interrupts?: TurnInterrupts;
   stopFollowing?: () => void;
   port: number;
@@ -510,7 +509,7 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
-    state.stopAnswering = surfaceAnswers.answerFor('web-ui', webUiPagesAnswer);
+    surfaceAnswers.answerFor('web-ui', webUiPagesAnswer);
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it's there. ` +
@@ -3458,7 +3457,6 @@ function webUiPagesAnswer(question: SurfaceQuestion): string | undefined {
 
 export async function stopWebUiServer(): Promise<void> {
   if (!sharedServer) return;
-  sharedServer.stopAnswering?.();
   try { sharedServer.server.stop(true); } catch { }
   sharedServer.observers?.stop();
   sharedServer.fleetEventDetacher?.();
