@@ -27,6 +27,7 @@ import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateW
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
 import { applyUndoneMarksTo } from './undone-marks';
+import { withLoadedText } from './pin-candidates';
 import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
@@ -565,6 +566,13 @@ export function App() {
 
   const [pinsState, setPinsState] = createSignal<PinsState | null>(null);
   const [pinsLoaded, setPinsLoaded] = createSignal(false);
+  /** The pin picker's candidates: the host's, each with its loaded row's
+   *  whole text locally, where the transcript is the same session's (a
+   *  local pins answer for another session is dropped). */
+  const pinCandidates = () => {
+    const listed = pinsState()?.candidates ?? [];
+    return panelScope() === 'local' ? withLoadedText(listed, messages) : listed;
+  };
   const refreshPins = (): void => {
     setPinsLoaded(false);
     wire.send({ type: 'request-pins', scope: panelScope() });
@@ -1634,7 +1642,9 @@ export function App() {
                   // rows the resident's view leaves out instead: held
                   // traffic, suppressed rows, another agent's stored
                   // injections), which the transcript doesn't tell apart.
-                  candidates={pinsState()?.candidates ?? []}
+                  // Locally, a row the transcript has loaded is filtered on
+                  // its whole text (withLoadedText).
+                  candidates={pinCandidates()}
                   onRefresh={refreshPins}
                   onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
                   onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}

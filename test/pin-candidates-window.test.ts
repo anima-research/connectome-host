@@ -171,6 +171,30 @@ describe("a pins snapshot's candidates", () => {
     }
   });
 
+  // Host #485 bot review wave 6, finding 20: the local picker took the
+  // host's candidates (de175ac), whose text is cut at 160 characters, where
+  // main's listed the transcript's loaded rows whole, so a phrase past
+  // character 160 of a loaded row found nothing.
+  test("the local picker filters on a loaded row's whole text, past the 160 characters the host sends, and on the host's text for a row not loaded", async () => {
+    const { withLoadedText } = await import('../web/src/pin-candidates.js');
+    const whole = `${'The ferry timetable, as posted at the north pier this morning. '.repeat(3)}Buses replace the boat on Sundays.`;
+    expect(whole.length).toBeGreaterThan(160);
+    const listed = [
+      { id: 'm1', index: 0, participant: 'user', text: whole.slice(0, 160) },
+      { id: 'm2', index: 1, participant: 'assistant', text: 'Noted.' },
+    ];
+    const rows = [
+      { id: 'w1', storeId: 'm1', text: whole },
+      { id: 'w2', text: 'a row only the page made' },
+    ];
+    const offered = withLoadedText(listed, rows);
+    expect(offered.map((c) => c.id)).toEqual(['m1', 'm2']);
+    expect(offered.filter((c) => c.text.toLowerCase().includes('buses replace')).map((c) => c.id)).toEqual(['m1']);
+    expect(offered[1]).toBe(listed[1]);
+    const page = readFileSync(new URL('../web/src/App.tsx', import.meta.url), 'utf8');
+    expect(page).toMatch(/panelScope\(\) === 'local' \? withLoadedText\(listed, messages\) : listed/);
+  });
+
   test("the picker says the record's rows couldn't be read, and why, rather than that none is pinnable", () => {
     const picker = readFileSync(new URL('../web/src/Pins.tsx', import.meta.url), 'utf8');
     expect(picker).toMatch(/props\.state\?\.candidatesError\s*\?\s*`The record's last 200 rows couldn't be read: \$\{props\.state\.candidatesError\}`/);
