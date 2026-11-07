@@ -1,0 +1,1 @@
+- `agent.cacheKeepalive.persist` (default `false`): saves the cache keepalive's state to `<dataDir>/cache-keepalive.json`, so after a restart membrane replays the last recorded request and the prompt cache stays warm instead of paying a cold write. Needs a membrane release with `cacheKeepalive.statePath`; an older membrane ignores the option.

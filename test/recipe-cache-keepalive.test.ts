@@ -45,6 +45,16 @@ describe('recipe agent.cacheKeepalive validation', () => {
     expect(() => validateRecipe(recipeWith({ maxIdleHours: 'lots' }))).toThrow(/positive number/);
   });
 
+  test('accepts persist as a boolean', () => {
+    expect(validateRecipe(recipeWith({ persist: true })).agent.cacheKeepalive?.persist).toBe(true);
+    expect(validateRecipe(recipeWith({ persist: false })).agent.cacheKeepalive?.persist).toBe(false);
+  });
+
+  test('rejects a non-boolean persist', () => {
+    expect(() => validateRecipe(recipeWith({ persist: 'yes' }))).toThrow(/persist must be a boolean/);
+    expect(() => validateRecipe(recipeWith({ persist: 1 }))).toThrow(/persist must be a boolean/);
+  });
+
   test('rejects a non-object', () => {
     expect(() => validateRecipe(recipeWith('yes'))).toThrow(/must be an object/);
   });
