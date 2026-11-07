@@ -4,7 +4,7 @@ export type ProviderAnswer<T> =
   | { kind: 'accepted'; value: T }
   | { kind: 'refused'; status: number }
   | { kind: 'unsendable' }
-  | { kind: 'answered'; status: number; said: string | null; retryAfter?: { shown: string; seconds: boolean } }
+  | { kind: 'answered'; status: number; said: string | null; retryAfter?: { shown: string | null; seconds: boolean } }
   | { kind: 'redirected'; status: number; to: string | null }
   | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
@@ -162,7 +162,7 @@ async function ask<T>(
   return {
     kind: 'answered', status: response.status, said: message === null ? null : hidden(message, key, name, options.hide),
     ...(seconds || !Number.isNaN(Date.parse(after))
-      ? { retryAfter: { shown: hidden(after, key, name, options.hide), seconds } } : {}),
+      ? { retryAfter: { shown: hidden(after, key, name, options.hide) === after ? after : null, seconds } } : {}),
   };
 }
 

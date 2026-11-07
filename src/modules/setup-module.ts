@@ -744,12 +744,13 @@ export class SetupModule implements Module {
       const why = keyNote(name, listed, false).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
       const after = listed.kind === 'answered' ? listed.retryAfter : undefined;
       return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ${why}` +
-        (after !== undefined
+        (after !== undefined && after.shown !== null
           ? ` It asks for ${waitAsked(after)}: ` +
             'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
             'what it says and how long it asks them to wait.'
-          : listed.kind === 'answered' || listed.kind === 'unanswered'
-            ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : ''));
+          : (after === undefined ? '' : ` It asks for ${waitAsked(after)}.`) +
+            (listed.kind === 'answered' || listed.kind === 'unanswered'
+              ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : '')));
     }
     const { ids, shownIds, more } = listed.value;
     if (ids.includes(model)) {
@@ -816,8 +817,9 @@ function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted:
   }
 }
 
-function waitAsked(after: { shown: string; seconds: boolean }): string {
-  return after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`;
+function waitAsked(after: { shown: string | null; seconds: boolean }): string {
+  return after.shown === null ? 'a wait setup can\'t show without what may be a secret'
+    : after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`;
 }
 
 function keyNote(name: string, answer: ProviderAnswer<unknown>, again = true): string {
@@ -831,10 +833,11 @@ function keyNote(name: string, answer: ProviderAnswer<unknown>, again = true): s
       const passing = answer.status === 429 || answer.status >= 500;
       const after = answer.retryAfter;
       const next = !again ? ''
-        : after !== undefined
+        : after !== undefined && after.shown !== null
           ? ` It asks for ${waitAsked(after)}` +
             `${passing ? ': call setup--check_model once that has passed, to check the key again' : ''}.`
-          : passing ? ' Call setup--check_model in a minute, to check the key again.' : '';
+          : (after === undefined ? '' : ` It asks for ${waitAsked(after)}.`) +
+            (passing ? ' Call setup--check_model in a minute, to check the key again.' : '');
       return `, but it isn't known to work: ${provider} answered ${answer.status}` +
         `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
     }

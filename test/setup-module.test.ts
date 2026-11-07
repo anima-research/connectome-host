@@ -2547,7 +2547,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       fetch: (async () => Response.json({ error: { message: 'rate limited' } }, { status: 429, headers: { 'retry-after': '60' } })) as unknown as typeof fetch,
     });
     const hiddenDigits = await checkModel(guessed.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(hiddenDigits.error).toContain('It asks for a wait of 6<NOT_SETUPS> s before the next call');
+    expect(hiddenDigits.error).not.toContain('<NOT_SETUPS>');
+    expect(hiddenDigits.error).toEndWith('Anthropic answered 429: rate limited. It asks for a wait setup can\'t show without what may be a secret. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
     const neither = await checkModel(limited('ask again later').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(neither.error).toEndWith('Anthropic answered 429: rate limited. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
   });
@@ -2563,6 +2564,11 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const down = install({ asker: typed('sk-ant-down'), fetch: answering(503) });
     expect(String((await askSecret(down.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
       'but it isn\'t known to work: Anthropic answered 503: busy. Call setup--check_model in a minute, to check the key again.');
+    const guessed = install({ asker: typed('sk-ant-guessed'), envFile: 'NOT_SETUPS=0\n', fetch: answering(429, '60') });
+    expect(String((await askSecret(guessed.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
+      'but it isn\'t known to work: Anthropic answered 429: busy. It asks for a wait setup can\'t show without what may be a ' +
+      'secret. Call setup--check_model in a minute, to check the key again.');
+    expect(guessed.shown).toContain('Anthropic didn\'t say whether it works: it answered 429 (busy). It asks for a wait setup can\'t show without what may be a secret.');
     const other = install({ asker: typed('sk-ant-other'), fetch: answering(400) });
     expect(String((await askSecret(other.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
       'but it isn\'t known to work: Anthropic answered 400: busy.');
