@@ -351,6 +351,11 @@ export class TtsRelayModule implements Module {
         }
         const content = event.text.replace(/^\n+/, '');
         if (!content.trim()) break;
+        // The client sends nothing while it isn't connected and
+        // authenticated, so a message published then is never voiced: it
+        // isn't kept to match an interruption, and its author isn't named
+        // as voiced in its channel.
+        if (this.client && !this.client.isConnected()) break;
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
         // edit targets come from inference:published.
         const raw = rawChannelId(event.channelId);

@@ -218,8 +218,10 @@ async function logOf(run: () => Promise<void>): Promise<string> {
 }
 
 /** The module on traces alone, with `agents` registered: what it edits, and
- *  the notes it writes, each with the agent it was written for. */
-function relayOnTraces(agents: string[] = ['fable']) {
+ *  the notes it writes, each with the agent it was written for. With `link`,
+ *  its relay client is one whose connection is up while `link.up` is true;
+ *  without, it has none, as before start(). */
+function relayOnTraces(agents: string[] = ['fable'], link?: { up: boolean }) {
   const calls: Array<{ name: string; input: unknown }> = [];
   const notes: Array<{ text: string; forAgent?: string }> = [];
   const ctx = {
@@ -236,8 +238,10 @@ function relayOnTraces(agents: string[] = ['fable']) {
     handleInterruption(ev: Interruption): Promise<void>;
     published: Map<string, unknown[]>;
     voicedIn: Map<string, { agents: Set<string> }>;
+    client: { isConnected(): boolean; emit(type: string, payload: Record<string, unknown>): void } | null;
   };
   inner.ctx = ctx;
+  if (link) inner.client = { isConnected: () => link.up, emit: () => {} };
   const trace = (event: Record<string, unknown>) => inner.onTraceEvent({ timestamp: 1, ...event });
   const interrupt = (spokenText: string, channelId = '42') => inner.handleInterruption({ channelId, spokenText, reason: 'user_speech', timestamp: 2 });
   const edited = () => calls.map((c) => (c.input as { messageId: string }).messageId);
@@ -380,6 +384,43 @@ describe('heard words that start more than one published message', () => {
     expect(edited()).toEqual(['m-older']);
     expect(notes).toEqual([]);
     expect(logged).toContain('the interruption in 42 is told to no agent: the heard words start messages published by clerk, mira');
+  });
+});
+
+// The relay client sends nothing while it isn't connected and
+// authenticated, so a message published then is never voiced (host #485 bot
+// review wave 6, finding 3). It was kept, counted and named as voiced all
+// the same: heard words that started it and a voiced message by another
+// agent named two authors, so no note was written, and on a tie the unvoiced
+// message, the newer, was the one edited.
+describe('a message published while the relay is disconnected', () => {
+  const shared = 'The ferry leaves at noon from the north pier, and the old bridge on the coast is';
+  const miraText = `${shared} closed until Friday for repairs to the deck and the railings.`;
+  const clerkText = `${shared}, since this morning, open again to cars and to the buses.`;
+  const publish = (agentName: string, messageId: string, text: string) =>
+    ({ type: 'inference:published', agentName, serverId: 'discord', channelId: 'g:42', inferenceId: `i-${messageId}`, index: 0, text, messageId });
+
+  test("isn't matched: heard words that start it and a message published once the relay is back edit that one and tell its author", async () => {
+    const link = { up: false };
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira'], link);
+    trace(publish('mira', 'm-mira', miraText));
+    link.up = true;
+    trace(publish('clerk', 'm-clerk', clerkText));
+    await interrupt(clerkText.slice(0, 100));
+    expect(edited()).toEqual(['m-clerk']);
+    expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
+  });
+
+  test("isn't taken on a tie with the voiced message before it: that one is edited, and its author told", async () => {
+    const link = { up: true };
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira'], link);
+    trace(publish('clerk', 'm-clerk', clerkText));
+    link.up = false;
+    trace(publish('mira', 'm-mira', miraText));
+    link.up = true;
+    await interrupt(shared);
+    expect(edited()).toEqual(['m-clerk']);
+    expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
 });
 

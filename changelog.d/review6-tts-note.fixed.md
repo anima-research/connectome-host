@@ -32,3 +32,8 @@
   it and tell its author only when no other agent's messages were let go
   there; otherwise nothing is edited, no note is written, and the log
   names them.
+- tts-relay doesn't keep a message published while the host isn't
+  connected to the relay to match an interruption, nor count its author as
+  voiced in its channel: the relay never voiced it. It was matched like a
+  voiced message, so heard words that started it and an earlier voiced
+  message in the same words had it edited, as the newer, instead.

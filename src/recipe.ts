@@ -1209,7 +1209,8 @@ export interface RecipeModules {
    * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
    * its thinking, tool calls and tool results, and messages sent by a tool
    * call aren't sent, and nothing is sent while the host isn't connected to
-   * the relay. Also handles the relay's `interruption` events: the host
+   * the relay, so a message published then isn't matched to an
+   * interruption. Also handles the relay's `interruption` events: the host
    * edits at most one message it recently published in the interruption's
    * channel, one the heard words match, to the text the client reports as
    * voiced, and, with `notifyOnInterruption` on (its default), puts a note
