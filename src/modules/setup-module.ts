@@ -13,7 +13,7 @@ import type {
 } from '@animalabs/agent-framework';
 import {
   DISCORD_TOKEN, StoredSecrets, isSecretName, readEnvFile, redactWindow, secretNames, secretValues,
-  unwritableValue, withoutSecrets, writeEnvValue, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
+  unwritableValue, withoutSecrets, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
 import { originOf } from '../setup/key-check.js';
@@ -422,6 +422,10 @@ export class SetupModule implements Module {
   }
 
   private damaged(error: unknown, what: string): ToolResult {
+    if (error instanceof DotenvTimeoutError) {
+      return failed(`${what}: ${error.message}. A slow disk can pass, so call again once; if it runs out of time again, ` +
+        'ask the person to look at the dotenv files there.');
+    }
     if (error instanceof EnvFormError) {
       return failed(`${what}: ${error.message}. While .env holds such a line, what Bun reads from it, and so what a ` +
         'command prints of a secret, isn\'t known, so ask the person to put that right; you can\'t, since setup--run ' +

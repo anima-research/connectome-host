@@ -120,6 +120,9 @@ export function dotenvNames(dir: string): string[] {
 
 const READ_LIMIT_MS = 10_000;
 
+/** Bun's read of the dotenv files ran past READ_LIMIT_MS: a slow disk passes, a file that never ends doesn't. */
+export class DotenvTimeoutError extends Error {}
+
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
   const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
@@ -130,7 +133,7 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
     if (naming !== undefined) {
       throw new Error(`${join(dir, naming)} expands BUN_OPTIONS, which the environment sets, and setup reads the ` +
         'dotenv files without it, since Bun would apply it to that read, so what a value built from it holds ' +
-        'can\'t be told');
+        'can\'t be told: take the expansion out of it, or start the host without BUN_OPTIONS');
     }
   }
   const given: Record<string, string> = {};
@@ -149,7 +152,7 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
       encoding: 'utf-8', maxBuffer: Infinity,
     });
     if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
-      throw new Error(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
+      throw new DotenvTimeoutError(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
     }
     if (ran.error || ran.status !== 0) {
       const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);

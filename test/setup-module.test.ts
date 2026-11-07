@@ -359,12 +359,42 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('<MY_PATH> <MY_TOKEN>\n');
   });
 
+  test('a read of the dotenv files that runs out of time is answered as one to try once more, not as a file to put right', () => {
+    const dir = scratch();
+    writeFileSync(join(dir, '.env'), 'MY_SERVER_TOKEN="custom-token-value"\n', { mode: 0o600 });
+    const child = join(dir, 'timeout-child.ts');
+    // spawnSync's answer when its timeout kills the child, for Bun's read of the dotenv files alone.
+    writeFileSync(child, `
+      import { mock } from 'bun:test';
+      import * as childProcess from 'node:child_process';
+      const real = childProcess.spawnSync;
+      mock.module('node:child_process', () => ({ ...childProcess, spawnSync: (command, args, options) =>
+        Array.isArray(args) && args.includes('--config=/dev/null')
+          ? { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: null, signal: 'SIGTERM',
+            error: Object.assign(new Error('spawnSync ' + command + ' ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+          : real(command, args, options) }));
+      const { SetupModule } = await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'modules', 'setup-module.ts'))});
+      const module = new SetupModule({ dir: ${JSON.stringify(dir)}, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: ${JSON.stringify(dir)} },
+        asker: () => null, show: () => {}, fetch: async () => new Response('{}') });
+      console.log(JSON.stringify(await module.handleToolCall({ id: 'c1', name: 'run', input: { command: 'echo ran' } })));
+      process.exit(0);
+    `);
+    const ran = Bun.spawnSync([process.execPath, child], { timeout: 20_000, killSignal: 'SIGKILL', stderr: 'pipe' });
+    expect({ exitCode: ran.exitCode, signal: ran.signalCode ?? null }, ran.stderr.toString()).toEqual({ exitCode: 0, signal: null });
+    const result = JSON.parse(ran.stdout.toString()) as ToolResult;
+    expect(result.success).toBe(false);
+    expect(result.error).toStartWith(`setup--run ran nothing: Bun didn't finish reading the dotenv files in ${dir} within 10 s`);
+    expect(result.error).toContain('call again once');
+    expect(result.error).not.toContain('put it right');
+  }, 30_000);
+
   test('where the environment sets BUN_OPTIONS and a dotenv file expands it, a command runs nothing, since setup reads the files without it', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
     writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=prefix${BUN_OPTIONS}suffix\n');
     const result = await runCall(module, `${process.execPath} -e 'console.log(process.env.MY_TOKEN)'`);
     expect(result.success).toBe(false);
     expect(result.error).toStartWith(`setup--run ran nothing: ${join(dir, '.env.local')} expands BUN_OPTIONS, which the environment sets`);
+    expect(result.error).toContain('take the expansion out of it, or start the host without BUN_OPTIONS');
     expect(JSON.stringify(result)).not.toContain('prefix--smolsuffix');
     const plain = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
     writeFileSync(join(plain.dir, '.env.local'), 'MY_TOKEN=plain-token-value\n');
