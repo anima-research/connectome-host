@@ -149,7 +149,7 @@ decorator, so every call lands in `llm-calls.<iso>.jsonl`.
 | `bedrock` | `LoggingBedrockAdapter` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (`AWS_REGION`), `BEDROCK_BASE_URL` for a gateway. Prompt caching gated per model. Used to keep models alive after they leave the first-party API. |
 | `openai-codex` | `CodexSubscriptionAdapter` | ChatGPT subscription via the Codex CLI's login (`CODEX_BINARY`, `CODEX_HOME`, `CODEX_BASE_URL`). `/fast` toggle; quota meter. |
 | `openai-responses` | membrane `OpenAIResponsesAPIAdapter` | `OPENAI_API_KEY`, `OPENAI_BASE_URL`. |
-| `openrouter` | membrane `OpenRouterAdapter` | `OPENROUTER_API_KEY`. |
+| `openrouter` | membrane `OpenRouterAdapter` | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` for a gateway. |
 | `openai-compatible` | membrane `OpenAICompatibleAdapter` | `agent.baseUrl` (required), `OPENAI_COMPATIBLE_API_KEY` (optional; deliberately no fallback to `OPENAI_API_KEY`). |
 | `mock` | membrane `MockAdapter` | none — echoes or returns a scripted reply; for zero-cost smoke runs. |
 
