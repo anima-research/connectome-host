@@ -750,6 +750,28 @@ describe('the store audit', () => {
     }
   });
 
+  // A bare file name with a dot can be one of the refusal's own words too,
+  // as `tuneOut.enabled` is of "Recipe tuneOut.enabled was removed"
+  // (#485 bot review 6, finding 21), and one inside a longer word, as `0.33`
+  // is of "agent-framework 0.33.0" (finding 24): neither names the file.
+  for (const recipe of ['tuneOut.enabled', '0.33']) {
+    test(`a recipe file the audit refuses is named, though its path given, ${recipe}, is a dotted word the refusal holds`, async () => {
+      const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+      writeFileSync(join(root, recipe), JSON.stringify({ ...DEFAULT_RECIPE, tuneOut: { enabled: true } }));
+      const cwd = process.cwd();
+      process.chdir(root);
+      try {
+        const { status, failed } = await audit([dir], { recipe });
+        expect(status).toBe(1);
+        expect(failed).toEqual([expect.stringMatching(new RegExp(
+          `^Couldn't audit ${literally(dir)}: its recipe, ${literally(recipe)}, can't be loaded: Recipe tuneOut\\.enabled was removed in agent-framework 0\\.33\\.0`,
+        ))]);
+      } finally {
+        process.chdir(cwd);
+      }
+    });
+  }
+
   test("a recipe file whose refusal names it, by the path given or the one it resolves to, isn't named again", async () => {
     const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
     const cwd = process.cwd();
