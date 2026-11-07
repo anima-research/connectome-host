@@ -97,6 +97,7 @@ const server = Bun.serve({
     if (choice === 'waitkey') return new Response('', { status: 429, headers: { 'retry-after': `${key}` } });
     if (choice === 'waitempty') return new Response('', { status: 429, headers: { 'retry-after': '' } });
     if (choice === 'waitdate') return new Response('', { status: 429, headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } });
+    if (choice === 'waitsoon') return new Response('', { status: 429, headers: { 'retry-after': 'soon' } });
     if (choice === 'echo') return Response.json({ type: 'error', error: { type: 'x', message: `no such key: ${key}` } }, { status: 401 });
     if (choice === 'wait') {
       return Response.json({ type: 'error', error: { type: 'x', message: 'slow down' } }, { status: 429, headers: { 'retry-after': '37' } });
@@ -355,11 +356,12 @@ describe("the key's one real call", () => {
       expect(cause(result), key).not.toContain('sk-ant-e');
       expect(cause(result), key).toContain('no such key: <ANTHROPIC_API_KEY>');
     }
-    for (const choice of ['typekey', 'waitkey']) {
-      const result = await checkKey({ key: 'sk-ant-in-a-header', model: 'm', baseUrl: at(choice) });
-      expect(cause(result), choice).not.toContain('sk-ant-in-a-header');
-      expect(cause(result), choice).toContain('<ANTHROPIC_API_KEY>');
-    }
+    const typed = await checkKey({ key: 'sk-ant-in-a-header', model: 'm', baseUrl: at('typekey') });
+    expect(cause(typed)).not.toContain('sk-ant-in-a-header');
+    expect(cause(typed)).toContain('<ANTHROPIC_API_KEY>');
+    const waited = await checkKey({ key: 'sk-ant-in-a-header', model: 'm', baseUrl: at('waitkey') });
+    expect(cause(waited)).not.toContain('sk-ant-in-a-header');
+    expect(cause(waited)).toContain('Try again shortly.');
   });
 
   test('a refusal of the call says what to ask for: of Anthropic\'s console with no ANTHROPIC_BASE_URL, of whoever runs its origin with one', async () => {
@@ -467,6 +469,9 @@ describe("the key's one real call", () => {
     expect(cause(empty)).toContain('Try again shortly.');
     const dated = await checkKey({ key: 'k', model: 'm', baseUrl: at('waitdate') });
     expect(cause(dated)).toContain('It asks for no call before Wed, 21 Oct 2026 07:28:00 GMT.');
+    const soon = await checkKey({ key: 'k', model: 'm', baseUrl: at('waitsoon') });
+    expect(cause(soon)).not.toContain('soon');
+    expect(cause(soon)).toContain('Try again shortly.');
     const hidden = await checkKey({ key: '3', model: 'm', baseUrl: at('wait') });
     expect(cause(hidden)).toContain('It asks for a wait of <ANTHROPIC_API_KEY>7 s before the next call.');
   });
