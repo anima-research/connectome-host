@@ -1135,7 +1135,7 @@ async function main() {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    console.log(`[compression] memory writes go to ${describeCompressionProvider(compressionSpec)}`);
+    console.log(`[compression-provider] memory writes go to ${describeCompressionProvider(compressionSpec)}`);
   }
 
   const storePath = sessionManager.getStorePath(activeSession.id);
