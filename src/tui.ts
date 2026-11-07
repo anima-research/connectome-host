@@ -802,8 +802,10 @@ export async function runTui(app: AppContext): Promise<void> {
   /** The lines streamed or sent that no row has taken yet. */
   let streamedLines: StreamedLine[] = [];
   /** The entries streamedLines let go past the scrollback cap, whose lines
-   *  the scrollback has taken down by then, with no line (`parts` empty): a
-   *  row that takes one isn't drawn again. A reply's go at its turn's end,
+   *  the scrollback has taken down by then, each the same entry with no
+   *  line (`parts` emptied), so what holds it (a failed switch's messages,
+   *  a backgrounded reply's line before Ctrl+B) still finds it: a row that
+   *  takes one isn't drawn again. A reply's go at its turn's end,
    *  by when its rows are stored; an operator's message's once its row
    *  takes it, and the oldest past SCROLLBACK_CAP of them, each by then
    *  more than twice that many lines old. */
@@ -842,7 +844,10 @@ export async function runTui(app: AppContext): Promise<void> {
     streamedLines.push(kept);
     if (kind !== 'you') attemptLines.push(kept);
     if (streamedLines.length > SCROLLBACK_CAP) {
-      for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) evictedLines.push({ kind: gone.kind, said: gone.said, parts: [] });
+      for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) {
+        gone.parts = [];
+        evictedLines.push(gone);
+      }
       // A reply's entries go at its turn's end; an operator's message's
       // wait for its row, so they are bounded here.
       if (evictedLines.length > SCROLLBACK_CAP) {
@@ -859,6 +864,7 @@ export async function runTui(app: AppContext): Promise<void> {
     if (gone.length === 0) return;
     const dropped = new Set(gone);
     streamedLines = streamedLines.filter((l) => !dropped.has(l));
+    evictedLines = evictedLines.filter((l) => !dropped.has(l));
   }
 
   /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
@@ -1947,7 +1953,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
   /** Draw what a backgrounded turn said, a line per round (and per text on
    *  each side of a thinking block), each kept for its row: the first one's
-   *  words with the line streamed before Ctrl+B. */
+   *  words with the line streamed before Ctrl+B, whose entry the scrollback
+   *  cap may have let go meanwhile, its line taken down. */
   function showBackgroundRounds(): void {
     const ends = [...backgroundBreaks, backgroundBuffer.length];
     let from = 0;
@@ -1958,12 +1965,12 @@ export async function runTui(app: AppContext): Promise<void> {
       const line = addLine(said, WHITE);
       if (!line) return;
       const partial = i === 0 ? backgroundPartial : undefined;
-      const at = partial ? streamedLines.indexOf(partial) : -1;
-      if (at < 0) {
+      const list = partial === undefined ? undefined : [streamedLines, evictedLines].find((l) => l.includes(partial));
+      if (!list) {
         keepLine(line, 'text', said, said, WHITE);
         return;
       }
-      streamedLines.splice(at, 1);
+      list.splice(list.indexOf(partial!), 1);
       streamedLines.push({ kind: 'text', said: partial!.said + said, parts: [...partial!.parts, { line, shown: said, color: WHITE }] });
     });
   }

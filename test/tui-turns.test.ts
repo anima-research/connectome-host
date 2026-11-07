@@ -501,6 +501,23 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(lines[1]).not.toContain('(undone)');
   }, 40000);
 
+  // The scrollback cap moved an entry it pushed out to evictedLines as a
+  // copy, which the drop of a failed switch's messages (finding 16) and a
+  // backgrounded reply's return (finding 17) look for by identity
+  // (#485 bot review 6).
+  test("past the scrollback cap: a backgrounded reply whose line before Ctrl+B was pushed out marks its returned line in place, drawing no copy", async () => {
+    const undone = await frameOf('undone-background-evicted', 'undone');
+    expect(undone).toContain('(undone) ledgers now.');
+    expect(undone).not.toContain('Counting the ledgers now.');
+  }, 90000);
+
+  test("past the scrollback cap: a message sent during a switch that failed, pushed out, takes no later row in its words", async () => {
+    const undone = await frameOf('undone-switch-evicted', 'undone');
+    const echoes = undone.split('\n').filter((line) => line.includes('once more'));
+    expect(echoes).toHaveLength(1);
+    expect(echoes[0]).toMatch(/\(undone\) \d\d:\d\d You: once more/);
+  }, 90000);
+
   // /clear cuts a reply off mid-stream: its row holds the words before the
   // /clear and the rest of the block, which isn't drawn, so the line's
   // entry takes those too, and the row is a cleared line's (#485 bot

@@ -975,6 +975,45 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 1 });
     await until(async () => (await frame()).includes('(undone) Tallied once.'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-background-evicted') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A reply backgrounded mid-text, and more messages sent while it runs
+    // than the scrollback holds lines: the line streamed before Ctrl+B is
+    // pushed out, and its entry with it (#485 bot review 6, finding 17).
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'Counting the ', blockType: 'text' });
+    await until(async () => (await frame()).includes('Counting the'), 'the words before the press');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'ledgers now.', blockType: 'text' });
+    for (let i = 0; i <= 2000; i++) await command(`note ${i}`);
+    await until(async () => (await frame()).includes('You: note 2000'), 'the last message to show');
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'Counting the ledgers now.' }] });
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('returned from background'), 'the return');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-switch-evicted') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A message sent while a session switch runs, then more than the
+    // scrollback holds, so its entry is pushed out; the switch fails, and
+    // the same words are sent again, stored and undone (#485 bot review 6,
+    // finding 16).
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    await command('once more');
+    for (let i = 0; i <= 2000; i++) await command(`note ${i}`);
+    await until(async () => (await frame()).includes('You: note 2000'), 'the last message to show');
+    endSwitch('failed');
+    await until(async () => (await frame()).includes('Session switch failed'), 'the switch to fail');
+    await command('once more');
+    await until(async () => times(await frame(), 'You: once more') === 1, 'the stored message to show');
+    history.push({ id: 'u2', participant: 'user', content: [{ type: 'text', text: 'once more' }] });
+    undoneRows.add('u2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone-moved-elsewhere') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // Another client moves the store to a shorter branch, which
