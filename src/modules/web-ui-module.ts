@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
-import type { BranchState } from '../commands.js';
+import type { BranchState, CommandResult } from '../commands.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import type { CredentialMonitor } from '../credential-state.js';
@@ -1570,31 +1570,36 @@ export class WebUiModule implements Module {
       // target: rows that wait out of the window until the agent's next turn
       // starts (or a restart before then), and rows one write showed with
       // the target. The frame says how
-      // many of each, so the panel doesn't call them gone.
+      // many of each, so the panel doesn't call them gone. It comes once the
+      // `_config` mount is written, and says when that failed.
       const kept = r as { returnedToArrivals?: number; keptInWindowAfterTarget?: number };
+      const mountError = await this.materializeConfigMount();
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,
         sourceBranch: r.sourceBranch, targetBranch: r.targetBranch,
         messagesRemoved: r.messagesRemoved, lastVisible: r.lastVisible ?? null,
         ...(kept.returnedToArrivals ? { returnedToArrivals: kept.returnedToArrivals } : {}),
         ...(kept.keptInWindowAfterTarget ? { keptInWindowAfterTarget: kept.keptInWindowAfterTarget } : {}),
+        ...(mountError !== null ? { mountError } : {}),
       });
-      await this.materializeConfigMount();
       this.broadcastBranchChanged();
       this.refreshAllWelcomes();
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
+      // A rollback or a suppression whose switch failed once chronicle had
+      // moved, and whose putting the store back failed too, leaves the store
+      // on the branch it made: the `_config` mount is written from it before
+      // the answer, which says when that failed, and the clients follow it
+      // there, as after one that landed.
+      const moved = from !== undefined && this.transcriptBranchId() !== from;
+      const mountError = moved ? await this.materializeConfigMount() : null;
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName,
         error: err instanceof Error ? err.message : String(err),
         ...(typeof code === 'string' ? { code } : {}),
+        ...(mountError !== null ? { mountError } : {}),
       });
-      // A rollback or a suppression whose switch failed once chronicle had
-      // moved, and whose putting the store back failed too, leaves the store
-      // on the branch it made: the clients follow it there, as after one
-      // that landed.
-      if (from !== undefined && this.transcriptBranchId() !== from) {
-        await this.materializeConfigMount();
+      if (moved) {
         this.broadcastBranchChanged();
         this.refreshAllWelcomes();
       }
@@ -2673,7 +2678,8 @@ export class WebUiModule implements Module {
 
     const commandName = `/${parseCommand(command).name}`;
     if (result.branchChanged) {
-      await trackOperatorWork(app, commandName, this.materializeConfigMount());
+      const mountError = await trackOperatorWork(app, commandName, this.materializeConfigMount());
+      this.sayMountWritten(client, corrId, result, mountError);
       this.broadcastBranchChanged();
       this.refreshAllWelcomes();
     }
@@ -2704,7 +2710,8 @@ export class WebUiModule implements Module {
           switchToSessionId: follow.switchToSessionId,
         });
         if (follow.branchChanged) {
-          await trackOperatorWork(app, commandName, this.materializeConfigMount());
+          const mountError = await trackOperatorWork(app, commandName, this.materializeConfigMount());
+          this.sayMountWritten(client, corrId, follow, mountError);
           this.broadcastBranchChanged();
           this.refreshAllWelcomes();
         }
@@ -2718,13 +2725,39 @@ export class WebUiModule implements Module {
     }
   }
 
-  private async materializeConfigMount(): Promise<void> {
-    if (!sharedServer?.app) return;
+  /** An answer said the `_config` mount wasn't written from a branch
+   *  (`mountNotWrittenFrom`), and the Web UI has since tried to write it:
+   *  one more line says what that did, so the answer's line isn't left
+   *  standing once the mount is written. */
+  private sayMountWritten(client: ClientState, corrId: string | undefined, answer: CommandResult, mountError: string | null): void {
+    const branch = answer.mountNotWrittenFrom;
+    if (branch === undefined) return;
+    this.send(client, {
+      type: 'command-result',
+      corrId,
+      lines: [{
+        text: mountError === null
+          ? `The Web UI has since written the _config mount from ${branch}.`
+          : `The Web UI's refresh of the _config mount failed too: ${mountError}`,
+        style: 'system',
+      }],
+    });
+  }
+
+  /** Write the `_config` mount from the branch the store is on: what went
+   *  wrong, logged, or null once it is written (or there is no workspace
+   *  to write it). */
+  private async materializeConfigMount(): Promise<string | null> {
+    if (!sharedServer?.app) return null;
     const ws = sharedServer?.app.framework.getModule('workspace');
-    if (!ws || !('materializeMount' in ws)) return;
+    if (!ws || !('materializeMount' in ws)) return null;
     try {
       await (ws as { materializeMount: (name: string) => Promise<unknown> }).materializeMount('_config');
-    } catch {
+      return null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[webui] _config refresh failed: ${message}`);
+      return message;
     }
   }
 

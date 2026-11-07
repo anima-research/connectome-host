@@ -799,6 +799,12 @@ export interface SurgeryResultMessage {
    *  (rollbackToMessage's `keptInWindowAfterTarget`). Absent when there are
    *  none. */
   keptInWindowAfterTarget?: number;
+  /** Why the Web UI's write of the `_config` mount, from the branch the
+   *  store is on, failed, so the gate's files may still be the previous
+   *  branch's. The answer comes once that write has run: after a surgery
+   *  that landed, and after one that failed and left the store on the
+   *  branch it made. Absent when it was written, or not tried. */
+  mountError?: string;
 }
 
 /** One durable operator-log record (mirrors the framework's OperatorLogEntry). */

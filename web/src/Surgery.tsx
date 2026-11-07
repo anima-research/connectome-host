@@ -191,9 +191,17 @@ export function SurgeryDialog(props: {
           {(r) => (
             <>
               <Show when={r().ok} fallback={
-                <div class="text-sm text-rose-300 mb-3 font-mono whitespace-pre-wrap">{r().error ?? 'failed'}</div>
+                <>
+                  <div class="text-sm text-rose-300 mb-3 font-mono whitespace-pre-wrap">{r().error ?? 'failed'}</div>
+                  <Show when={r().mountError}>
+                    <div class="text-xs text-amber-200/90 mb-3">The store is on the branch it made, and the Web UI couldn't write the _config mount from it: {r().mountError}. The gate's files may still be the previous branch's.</div>
+                  </Show>
+                </>
               }>
                 <div class="text-sm text-emerald-300 mb-1">Done — {r().messagesRemoved ?? 0} message{r().messagesRemoved === 1 ? '' : 's'} left the live context.</div>
+                <Show when={r().mountError}>
+                  <div class="text-xs text-amber-200/90 mb-1">Done, but the _config mount wasn't refreshed: {r().mountError}. The gate's files may still be the previous branch's.</div>
+                </Show>
                 {/* A rollback on a presented window (agent-framework #291) cuts at the
                     write that showed the target, so rows after it can stay. */}
                 <Show when={(r().returnedToArrivals ?? 0) > 0}>
