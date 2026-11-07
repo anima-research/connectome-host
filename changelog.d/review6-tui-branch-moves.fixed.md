@@ -15,8 +15,9 @@
   answer again below it with every command's answer drawn since: the
   redraw cut the turn's line off, its later words were lost, and the
   status read idle while it ran. A `/clear` while that redraw waits
-  leaves the scrollback clear: the turn's end takes up the branch and
-  draws nothing, where it drew the branch's history again. Another
+  takes up the branch there and leaves the scrollback clear, where the
+  turn's end drew the branch's history again; the lines drawn after it
+  are marked at an undo as any are. Another
   client's move (a Web UI `/checkout`, `/restore` or `/branchto`), of
   which the TUI hears nothing either, is drawn before the TUI next links
   or marks its lines, at a turn's end or an undo, redo or shed, or once a

@@ -620,6 +620,22 @@ describe("the TUI's branch moves, through runTui", () => {
     expect(undone).not.toContain('── session history');
   }, 40000);
 
+  // The /clear takes up the branch there, so the lines drawn after it, the
+  // rest of the turn's reply and a message sent meanwhile, are linked to
+  // their rows as any are, and an undo marks them in place (#485 bot review
+  // 6, finding 13: a quiet redraw at the turn's end dropped their links and
+  // read past their rows, so the undo marked none and drew the message's
+  // row again below).
+  test("after a /clear while a move's redraw waits, the lines drawn since are marked in place at their undo, and none drawn again", async () => {
+    const undone = (await play('async-branch-turn-clear')).get('undone')!.frame;
+    const lines = (words: string) => undone.split('\n').filter((line) => line.includes(words));
+    for (const words of ['[tools] weigh', 'the side tally holds', 'and the side?']) {
+      expect(lines(words), words).toHaveLength(1);
+      expect(lines(words)[0], words).toContain('(undone)');
+    }
+    for (const line of lines('on the side branch now')) expect(line).toContain('(undone)');
+  }, 40000);
+
   // An async command leaves the status of a root turn alone, from its
   // start to its answer (#485 bot review 4, finding 8).
   test("an async command started during a backgrounded or held root turn leaves its status as it is", async () => {

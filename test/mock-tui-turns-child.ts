@@ -761,16 +761,29 @@ async function play(): Promise<void> {
     await command('/puppet tally {}');
     await until(async () => (await frame()).includes('tally done'), "the command's answer");
     first.send('inference:tokens', { content: 'branch now', blockType: 'text' });
-    history.push({ id: 's2', participant: 'agent', content: [{ type: 'text', text: 'on the side branch now' }] });
+    // The round ends with a tool call, and the reply goes on in the next
+    // one, drawn after the /clear, while the operator sends a message
+    // (#485 bot review 6, finding 13).
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'weigh' }] });
+    history.push({
+      id: 's2', participant: 'agent',
+      content: [{ type: 'text', text: 'on the side branch now' }, { type: 'tool_use', id: 't1', name: 'weigh', input: {} }],
+    });
+    first.send('inference:stream_resumed');
+    first.send('inference:tokens', { content: 'the side tally holds', blockType: 'text' });
+    await command('and the side?');
+    await until(async () => (await frame()).includes('You: and the side?'), 'the message to show');
+    history.push({ id: 's4', participant: 'agent', content: [{ type: 'text', text: 'the side tally holds' }] });
     first.send('inference:completed');
     await until(async () => (await frame()).includes('[✓ idle]'), 'the turn to end');
     await step('turn ended');
-    // An undo of the turn's row, whose first words /clear took down, and of
-    // a row stored since that the TUI drew no line for.
+    // The message's row, stored as its turn starts. An undo of the turn's
+    // rows, the first one's first words taken down by /clear, of the
+    // message's, and of a row stored since that the TUI drew no line for.
+    history.push({ id: 'u3', participant: 'user', content: [{ type: 'text', text: 'and the side?' }] });
     history.push({ id: 's3', participant: 'agent', content: [{ type: 'text', text: 'a side ledger' }] });
-    undoneRows.add('s2');
-    undoneRows.add('s3');
-    first.send('window:undone', { retracted: 2 });
+    for (const id of ['s2', 's4', 'u3', 's3']) undoneRows.add(id);
+    first.send('window:undone', { retracted: 4 });
     await until(async () => (await frame()).includes('(undone) a side ledger'), 'the mark');
     await step('undone');
   } else if (scenario === 'async-turn-status') {
