@@ -256,13 +256,11 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
     const done = (how: 'idle' | 'closed' | 'unheard' | StopSignal) => {
       finished = true;
       clearTimeout(limit);
-      for (const signal of STOP_SIGNALS) process.off(signal, stop);
+      for (const [signal, stop] of stops) process.off(signal, stop);
       resolve(how);
     };
-    const stop = (signal: NodeJS.Signals): void => {
-      if (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') done(signal);
-    };
-    for (const signal of STOP_SIGNALS) process.on(signal, stop);
+    const stops = STOP_SIGNALS.map((signal) => [signal, () => done(signal)] as const);
+    for (const [signal, stop] of stops) process.on(signal, stop);
     host.onEvent((event) => {
       if (finished) return;
       clearTimeout(limit);
