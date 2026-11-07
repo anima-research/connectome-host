@@ -636,6 +636,17 @@ describe("the TUI's branch moves, through runTui", () => {
     for (const line of lines('on the side branch now')) expect(line).toContain('(undone)');
   }, 40000);
 
+  // A session switch sets a running root turn aside. One that failed left
+  // a move's redraw waiting for that turn's end, and every link and mark
+  // off until another root turn ended (#485 bot review 6, finding 12).
+  test("a move's redraw waiting for a turn a failed session switch set aside is drawn at the next mark", async () => {
+    const undone = (await play('async-branch-turn-switch-fails')).get('undone')!.frame;
+    expect(undone).toContain('── session history (2 messages) ──');
+    expect(undone).toContain('(undone) the side branch reply');
+    expect(undone).not.toContain('three ledgers');
+    expect(undone.indexOf('(undone) the side branch reply')).toBeLessThan(undone.indexOf('Switched to branch side.'));
+  }, 40000);
+
   // An async command leaves the status of a root turn alone, from its
   // start to its answer (#485 bot review 4, finding 8).
   test("an async command started during a backgrounded or held root turn leaves its status as it is", async () => {

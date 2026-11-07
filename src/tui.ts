@@ -948,11 +948,19 @@ export async function runTui(app: AppContext): Promise<void> {
    *  branch's, so the branch is drawn now, or once a root turn running on
    *  it ends (redrawAfterTurn), and the caller leaves the drawn lines
    *  alone. A move of this TUI's own is drawn by its command's answer, and
-   *  a session switch's by its end. */
+   *  a session switch's by its end. A redraw waiting for a root turn's end
+   *  with none running, the turn set aside by a session switch that then
+   *  failed, is drawn now too. */
   function branchMovedElsewhere(): boolean {
     const branch = storeBranchName();
     if (branch === undefined || drawnBranch === undefined || branch === drawnBranch) return false;
-    if (redrawAfterTurn) return true;
+    if (redrawAfterTurn) {
+      if (rootTurnShowing || streaming) return true;
+      const answered = redrawAfterTurn;
+      refreshFromStore({ mount: false });
+      for (const l of answered) addLine(l.text, l.color);
+      return true;
+    }
     if (commandsAnswering > 0 || sentDuringSwitch) return false;
     const line = { text: `${hhmm()} Branch moved (by another client): ${branch}`, color: CYAN };
     if (rootTurnShowing || streaming) {
@@ -1974,9 +1982,11 @@ export async function runTui(app: AppContext): Promise<void> {
       // each command answer drawn since.
       const answered = redrawAfterTurn;
       refreshFromStore({ mount: false });
-      state.status = end.status;
       for (const l of answered) addLine(l.text, l.color);
     }
+    // A redraw, here or at the link above once the turn has ended, leaves
+    // the status idle: it is the turn's end's.
+    state.status = end.status;
     if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
     updateStatus();
   }

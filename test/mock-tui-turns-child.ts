@@ -786,6 +786,25 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 4 });
     await until(async () => (await frame()).includes('(undone) a side ledger'), 'the mark');
     await step('undone');
+  } else if (scenario === 'async-branch-turn-switch-fails') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A move's answer comes while a root turn runs, and a session switch
+    // sets the turn aside and then fails (#485 bot review 6, finding 12).
+    await command('/checkout side');
+    await until(() => releaseMove !== undefined, 'the move');
+    first.send('inference:started');
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'weigh' }] });
+    releaseMove!();
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    endSwitch('failed');
+    await until(async () => (await frame()).includes('Session switch failed'), 'the switch to fail');
+    // An undo of a row on the branch the store moved to.
+    undoneRows.add('s1');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) the side branch reply'), 'the mark');
+    await step('undone');
   } else if (scenario === 'async-turn-status') {
     // An async command started while a root turn is backgrounded, and one
     // started while its attempt failed and the framework holds it: neither
