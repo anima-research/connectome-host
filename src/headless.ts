@@ -395,7 +395,9 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         let refused = false;
         try {
           const { handleCommand } = await import('./commands.js');
-          const result = handleCommand(cmd.command, app);
+          // A fleet parent's fleet--command says so; any other comes from a
+          // client of this socket. The operator log names which.
+          const result = handleCommand(cmd.command, app, { requester: { via: cmd.from === 'fleet' ? 'fleet' : 'headless' } });
           for (const line of result.lines) output(line.text, line.style);
           refused = result.refused === true;
           if (result.asyncWork) {

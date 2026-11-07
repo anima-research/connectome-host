@@ -47,7 +47,12 @@
     finished.` The operator log
     records `/restore` and `/branchto` as `rollback`, `/checkout` and a
     `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
-    `undo-turn` and `redo-turn`, each with the requester `host-console`.
+    `undo-turn` and `redo-turn`, each with who gave the command: `webui`
+    with the basic-auth user for the Web UI's command box, as for its
+    surgery; `headless` for a command on a headless host's socket; `fleet`
+    for a parent's `fleet--command`; and `host-console` for the TUI and the
+    readline and piped modes. A `/nudge`'s `nudge` entry carries the same
+    in its requester's name.
     `/branchto` at the branch's last message is refused, as there is nothing
     after it to roll back.
   - A rollback cuts at the write that showed the agent its message, so rows

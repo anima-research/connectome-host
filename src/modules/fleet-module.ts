@@ -1579,7 +1579,7 @@ export class FleetModule implements Module {
           `string; ${got(input.command)}.`,
       };
     }
-    this.sendToChild(ok.child, { type: 'command', command: input.command });
+    this.sendToChild(ok.child, { type: 'command', command: input.command, from: 'fleet' });
     return { success: true, data: { name: input.name, sent: 'command', command: input.command } };
   }
 

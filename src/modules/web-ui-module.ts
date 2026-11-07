@@ -2642,7 +2642,8 @@ export class WebUiModule implements Module {
     const app = sharedServer.app;
     let result;
     try {
-      result = handleCommand(command, app);
+      // The operator log names who typed it, as the surgery dialog's does.
+      result = handleCommand(command, app, { requester: this.requesterFor(client) });
     } catch (err) {
       this.send(client, {
         type: 'error',

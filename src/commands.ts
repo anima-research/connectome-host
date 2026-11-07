@@ -122,8 +122,14 @@ function commandAgent(app: AppContext): Agent | undefined {
   return (primary ? framework.getAgent(primary) : null) ?? framework.getAllAgents()[0];
 }
 
-/** Who asked, in the framework's operator log: an operator's command. */
+/** Who asked, in the framework's operator log, for a command given at the
+ *  host's own console (the TUI, and the readline and piped modes). */
 const HOST_COMMAND: OperatorRequester = { via: 'host-console' };
+
+/** The requester as /nudge's one string names it: agent-framework's
+ *  nudgeAgent logs it as who queued the nudge. */
+const nudgedBy = (requester: OperatorRequester): string =>
+  requester.name ? `${requester.name} (${requester.via})` : requester.via;
 
 /** A thrown error's message. */
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -201,11 +207,12 @@ function switchStore(
   target: string,
   note: string,
   words: { done: string; failed: string },
+  requester: OperatorRequester,
 ): Promise<CommandResult> {
   const framework = app.framework;
   const from = framework.getStore().currentBranch().name;
   return Promise.resolve()
-    .then(() => framework.switchBranch(target, { requester: HOST_COMMAND, note }))
+    .then(() => framework.switchBranch(target, { requester, note }))
     .then(
       (): CommandResult => ({ lines: [{ text: words.done, style: 'system' }], branchChanged: true }),
       (err: unknown): CommandResult => {
@@ -280,9 +287,13 @@ function stillRunning(app: AppContext): CommandResult | null {
 
 /** How the command was given. `lineByLine`: by a mode that reads each line
  *  as its own input (the readline and piped modes), so an answer that
- *  gives a command back gives it on one line. */
+ *  gives a command back gives it on one line. `requester`: who gave it, as
+ *  the framework's operator log records a branch move, a rollback, an undo,
+ *  a redo or a nudge the command makes: the Web UI's user, a headless
+ *  host's socket or a fleet parent; the host's console when not given. */
 export interface CommandInput {
   lineByLine?: boolean;
+  requester?: OperatorRequester;
 }
 
 export function handleCommand(command: string, app: AppContext, input: CommandInput = {}): CommandResult {
@@ -299,6 +310,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
   const refused = change ? refusedWhileSwitching(app, change) : null;
   if (refused) return { lines: [{ text: refused, style: 'system' }] };
   const framework = app.framework;
+  const requester = input.requester ?? HOST_COMMAND;
 
   switch (cmd) {
     case 'quit':
@@ -369,16 +381,16 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleExport(app);
 
     case 'undo':
-      return inFlightGuard(app, cmd) ?? handleUndo(app);
+      return inFlightGuard(app, cmd) ?? handleUndo(app, requester);
 
     case 'nudge':
-      return handleNudge(app, args[0]);
+      return handleNudge(app, args[0], requester);
 
     case 'puppet':
       return handlePuppet(app, args);
 
     case 'redo':
-      return inFlightGuard(app, cmd) ?? handleRedo(app);
+      return inFlightGuard(app, cmd) ?? handleRedo(app, requester);
 
     // Name-taking commands take the rest of the line, so a name may contain
     // spaces (/checkpoint my test point).
@@ -386,19 +398,19 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleCheckpoint(app, args.join(' ') || undefined);
 
     case 'restore':
-      return inFlightGuard(app, cmd) ?? handleRestore(app, args.join(' ') || undefined);
+      return inFlightGuard(app, cmd) ?? handleRestore(app, args.join(' ') || undefined, requester);
 
     case 'branches':
       return handleBranches(app);
 
     case 'checkout':
-      return inFlightGuard(app, cmd) ?? handleCheckout(app, args.join(' ') || undefined);
+      return inFlightGuard(app, cmd) ?? handleCheckout(app, args.join(' ') || undefined, requester);
 
     case 'history':
       return handleHistory(app, args[0]);
 
     case 'branchto':
-      return inFlightGuard(app, cmd) ?? handleBranchTo(app, args[0]);
+      return inFlightGuard(app, cmd) ?? handleBranchTo(app, args[0], requester);
 
     case 'find':
       return handleFind(app, args.join(' '));
@@ -1129,8 +1141,8 @@ function handlePuppet(app: AppContext, args: string[]): CommandResult {
  * without adding any message or event. After an /undo, the agent takes
  * another turn at exactly what it then sees.
  */
-function handleNudge(app: AppContext, agentName?: string): CommandResult {
-  const r = app.framework.nudgeAgent(agentName, 'host-console');
+function handleNudge(app: AppContext, agentName: string | undefined, requester: OperatorRequester): CommandResult {
+  const r = app.framework.nudgeAgent(agentName, nudgedBy(requester));
   if (!r.ok) {
     return { lines: [{ text: `Nudge failed: ${r.error}`, style: 'system' }] };
   }
@@ -1154,12 +1166,12 @@ function handleNudge(app: AppContext, agentName?: string): CommandResult {
  * stay as they are. Another agent's turn, newer or not, is left alone.
  * /branchto reverts the record.
  */
-function handleUndo(app: AppContext): CommandResult {
+function handleUndo(app: AppContext, requester: OperatorRequester): CommandResult {
   const agent = commandAgent(app);
   if (!agent) return { lines: [{ text: 'No agent.', style: 'system' }] };
   let undone: ReturnType<AgentFramework['undoLastTurn']>;
   try {
-    undone = app.framework.undoLastTurn(agent.name, HOST_COMMAND);
+    undone = app.framework.undoLastTurn(agent.name, requester);
   } catch (err) {
     return { lines: [{ text: `Undo failed: ${messageOf(err)}`, style: 'system' }] };
   }
@@ -1174,12 +1186,12 @@ function handleUndo(app: AppContext): CommandResult {
 }
 
 /** /redo: the framework's redo of the agent's last undo, on its window: the undone turn's rows enter it again. */
-function handleRedo(app: AppContext): CommandResult {
+function handleRedo(app: AppContext, requester: OperatorRequester): CommandResult {
   const agent = commandAgent(app);
   if (!agent) return { lines: [{ text: 'No agent.', style: 'system' }] };
   let redone: ReturnType<AgentFramework['redo']>;
   try {
-    redone = app.framework.redo(agent.name, HOST_COMMAND);
+    redone = app.framework.redo(agent.name, requester);
   } catch (err) {
     return { lines: [{ text: `Redo failed: ${messageOf(err)}`, style: 'system' }] };
   }
@@ -1242,7 +1254,7 @@ function redoPutsBack(agentName: string): string {
   return `/redo puts back what ${agentName}'s latest undo took out, this row if that undo took it`;
 }
 
-function handleRestore(app: AppContext, name?: string): CommandResult {
+function handleRestore(app: AppContext, name: string | undefined, requester: OperatorRequester): CommandResult {
   if (!name) {
     const names = [...app.branchState.checkpoints.keys()];
     if (names.length === 0) {
@@ -1288,7 +1300,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   const toHead = (note: boolean): Promise<CommandResult> => switchStore(app, point.branchName, `/restore ${name}`, {
     done: `Restored to checkpoint "${name}" (branch: ${point.branchName}).`,
     failed: 'Restore failed',
-  }).then((result) => (result.branchChanged && note
+  }, requester).then((result) => (result.branchChanged && note
     ? { ...result, lines: [...result.lines, { text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }] }
     : result));
   // The checkpoint moves to the branch the store is on once the rollback has
@@ -1305,7 +1317,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   const asyncWork = point.messageId
     ? app.framework.rollbackToMessage(agent.name, {
         messageId: point.messageId,
-        requester: HOST_COMMAND,
+        requester,
         branchName: `restore-${name}-${Date.now()}`,
         note: `/restore ${name}`,
       }).then((rolled): CommandResult => {
@@ -1364,7 +1376,7 @@ function handleBranches(app: AppContext): CommandResult {
   return { lines };
 }
 
-function handleCheckout(app: AppContext, name?: string): CommandResult {
+function handleCheckout(app: AppContext, name: string | undefined, requester: OperatorRequester): CommandResult {
   if (!name) {
     return { lines: [{ text: 'Usage: /checkout <branch-name>', style: 'system' }] };
   }
@@ -1383,7 +1395,7 @@ function handleCheckout(app: AppContext, name?: string): CommandResult {
   const asyncWork = switchStore(app, target.name, `/checkout ${name}`, {
     done: `Switched to branch ${target.name}.`,
     failed: 'Checkout failed',
-  });
+  }, requester);
 
   return {
     lines: [{ text: `Switching → branch ${target.name}...`, style: 'system' }],
@@ -1466,7 +1478,7 @@ function rollbackKeptLines(
  * the agent's (rollbackKeptLines), and counts the rows the cut took. Logged
  * as an operator's rollback.
  */
-function handleBranchTo(app: AppContext, messageId: string | undefined): CommandResult {
+function handleBranchTo(app: AppContext, messageId: string | undefined, requester: OperatorRequester): CommandResult {
   const agent = commandAgent(app);
   const cm = agent?.getContextManager();
   if (!agent || !cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
@@ -1478,7 +1490,7 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   const from = app.framework.getStore().currentBranch().name;
   const asyncWork = app.framework.rollbackToMessage(agent.name, {
     messageId: String(messageId),
-    requester: HOST_COMMAND,
+    requester,
     branchName: newBranchName,
     note: `/branchto ${messageId}`,
   })
