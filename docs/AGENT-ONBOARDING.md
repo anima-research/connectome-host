@@ -691,6 +691,12 @@ Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user 
 (detect "messages arriving but no reply for N min" → restart, with a cooldown so it can't
 restart-loop). These caught real incidents.
 
+Any restart (a watchdog restart, an upgrade, a backup that stops the service) drops the
+prompt-cache keepalive's state, so the next turn pays a full cache write on the whole context.
+Set `agent.cacheKeepalive.persist: true` in the recipe to save that state in
+`data/cache-keepalive.json`; the agent then re-warms its cache on startup, as long as it was
+down for less than the cache's hour.
+
 ---
 
 ## 10. Phase 7 — Launch & verification checks
