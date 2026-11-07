@@ -124,10 +124,11 @@ async function ask<T>(
     return unanswered(error);
   }
   const type = response.headers.get('content-type');
+  const typedJson = type === null || JSON_TYPE.test(type.trim());
   if (response.status === 401 || response.status === 403) {
-    return type === null || JSON_TYPE.test(type.trim())
-      ? { kind: 'refused', status: response.status } : { kind: 'unrecognized', status: response.status };
+    return typedJson ? { kind: 'refused', status: response.status } : { kind: 'unrecognized', status: response.status };
   }
+  if (response.status === 404 && !typedJson) return { kind: 'unrecognized', status: response.status };
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
     return {

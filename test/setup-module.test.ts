@@ -1300,6 +1300,15 @@ describe('checkProviderKey', () => {
       });
     }
   });
+
+  test('a 404 typed other than JSON is no answer of the provider\'s, decided before the body, and one typed JSON is its answer', async () => {
+    const answering = (type: string, body: BodyInit) => (async () =>
+      new Response(body, { status: 404, headers: { 'content-type': type } })) as unknown as typeof fetch;
+    expect({
+      html: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering('text/html', new ReadableStream({ start() {} })) }),
+      json: await checkProviderKey('OPENAI_API_KEY', 'sk-ABC', { fetch: answering('application/json', JSON.stringify({ error: { message: 'no such route' } })) }),
+    }).toEqual({ html: { kind: 'unrecognized', status: 404 }, json: { kind: 'answered', status: 404, said: 'no such route' } });
+  });
 });
 
 describe('checkDiscordToken', () => {
