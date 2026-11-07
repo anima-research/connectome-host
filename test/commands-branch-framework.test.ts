@@ -64,7 +64,7 @@ describe('/undo and /redo', () => {
       // agent-framework keeps the redo in memory only, until the agent's
       // next turn or a branch move (#485 second reading of the wave-2
       // answer, finding 11).
-      expect(undo.all).toContain("/redo puts it back until clerk's next turn, a branch move or a restart");
+      expect(undo.all).toContain("/redo can put it back until clerk's next turn, a branch move or a restart (agent-framework keeps the redo in memory only)");
       expect(h.framework.getStore().currentBranch().name).toBe(branch);
       expect(clerk.windowStatusOf(clerkReply.id)).toBe('undone');
       // The record keeps both, and mira's window is as it was.

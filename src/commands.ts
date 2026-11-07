@@ -1168,7 +1168,7 @@ function handleUndo(app: AppContext): CommandResult {
   return {
     lines: [
       { text: `Undone: ${agent.name}'s last turn left its window (${rows} row${rows === 1 ? '' : 's'} from its start: the turn's own, and any other, which its next turn shows again).`, style: 'system' },
-      { text: `  The record keeps it, and no branch moved: /redo puts it back until ${agent.name}'s next turn, a branch move or a restart, and /branchto <msgId> reverts the record.`, style: 'system' },
+      { text: `  The record keeps it, and no branch moved: /redo can put it back until ${agent.name}'s next turn, a branch move or a restart (agent-framework keeps the redo in memory only), and /branchto <msgId> reverts the record.`, style: 'system' },
     ],
   };
 }
