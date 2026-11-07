@@ -2292,12 +2292,12 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   const models = (...ids: string[]) => Response.json({ data: ids.map((id) => ({ id })) });
 
   test('an OPENAI_API_KEY is checked with OpenAI, at the OPENAI_BASE_URL .env names, before it is stored, and stored once accepted', async () => {
-    const requests: Array<{ url: string; headers: Headers }> = [];
+    const requests: Array<{ url: string; headers: Headers; storedThen: string | undefined }> = [];
     const made = install({
       envFile: 'OPENAI_BASE_URL=https://gateway.example/v1/\n',
       asker: typed('sk-openai-key'),
       fetch: (async (url: string, init: RequestInit) => {
-        requests.push({ url: String(url), headers: new Headers(init.headers) });
+        requests.push({ url: String(url), headers: new Headers(init.headers), storedThen: readEnvFile(join(made.dir, '.env')).get('OPENAI_API_KEY') });
         return models('gpt-6.1-terra');
       }) as unknown as typeof fetch,
     });
@@ -2305,6 +2305,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(result.success, result.error).toBe(true);
     expect(requests.map((r) => r.url)).toEqual(['https://gateway.example/v1/models']);
     expect(requests[0]!.headers.get('authorization')).toBe('Bearer sk-openai-key');
+    expect(requests[0]!.storedThen).toBeUndefined();
     expect(String(result.data)).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}. OpenAI accepted it: it listed the models the key can use, which shows the key is accepted, not that a call to one of them succeeds.`);
     expect(made.shown).toEqual(['Checking it with OpenAI.', 'OpenAI accepted it.']);
     expect(readEnvFile(join(made.dir, '.env')).get('OPENAI_API_KEY')).toBe('sk-openai-key');
