@@ -609,7 +609,7 @@ depend on what the endpoint reports.
 |---|---|---|
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (default `us-west-2`) | Claude on AWS — including models retired from the first-party API. `BEDROCK_BASE_URL` routes through an inference gateway. Prompt caching is enabled per model where Bedrock supports it; `agent.promptCaching` overrides. |
 | `openai-responses` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` optional) | OpenAI Platform, Responses API. |
-| `openrouter` | `OPENROUTER_API_KEY` | |
+| `openrouter` | `OPENROUTER_API_KEY` (`OPENROUTER_BASE_URL` optional) | |
 | `mock` | none | Echoes the last user message by default; scripted replies and timing are set under `agent.mock` ([below](#mock-provider)). Calls are still logged. |
 
 Every provider's calls are logged to `$DATA_DIR/llm-calls.<iso>.jsonl`.
@@ -828,6 +828,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `OPENROUTER_API_KEY` | — | `openrouter` recipes |
+| `OPENROUTER_BASE_URL` | OpenRouter API (`https://openrouter.ai/api/v1`) | Route OpenRouter calls through a gateway |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | region `us-west-2` | `bedrock` recipes |
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |

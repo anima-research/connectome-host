@@ -946,6 +946,7 @@ async function main() {
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;
