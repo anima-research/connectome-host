@@ -239,11 +239,10 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   let replied = false;
   let ended = false;
   let finished = false;
-  // A turn's reply waits for its turn's notes: a note the framework routes
-  // after a slow earlier delivery can come after the reply's frame. A turn
-  // that completes waits for its deliveries before it ends, so its notes come
-  // before the next turn starts and before its work ends; one that fails or
-  // is stopped, or under explicit routing one a tool ends, doesn't wait.
+  // A note the framework routes after a slow earlier delivery can come after
+  // the reply's frame, so a turn's reply is held until its turn's notes are
+  // in. A turn that fails or is stopped, or under explicit routing one a tool
+  // ends, doesn't wait for its deliveries.
   const replies: string[] = [];
   const printReplies = (): void => { for (const reply of replies.splice(0)) ctx.out(reply); };
   if (!sent) ctx.err('connectome: the agent is in a turn. This waits for it to end, then sends.');

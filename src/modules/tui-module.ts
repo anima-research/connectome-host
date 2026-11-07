@@ -110,10 +110,6 @@ export class TuiModule implements Module {
     return response;
   }
 
-  /**
-   * Names where a surface whose message opened the turn showed `text`, and
-   * otherwise answers `{}`. Only the turn's own surfaces are asked.
-   */
   async onSpeechRouted(agentName: string, text: string, context: SpeechRoutedContext): Promise<SpeechSent> {
     const connections = new Map<SurfaceName, string[]>();
     for (const id of context.openedBy?.messages ?? []) {

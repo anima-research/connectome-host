@@ -30,9 +30,6 @@ class TakesTexts extends TuiModule {
   }
 }
 
-// The first note's link on the speech chain is held until `release-note`
-// exists, so the notes after it are asked about only once the turn's reply
-// has been written.
 const holdsFirstNote = {
   name: 'holds-first-note',
   async start(): Promise<void> {},
@@ -49,8 +46,6 @@ const holdsFirstNote = {
 
 type Block = { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
 const look = (id: string): Block => ({ type: 'tool_use', id, name: 'holds-first-note--look', input: {} });
-// CHILD_MODE=notes: two rounds that end with a tool call, each with a note,
-// then the reply. CHILD_MODE=kept: a round whose words skip_reply keeps.
 const ROUNDS: Record<string, Block[][]> = {
   notes: [
     [{ type: 'text', text: 'First note.' }, look('look-1')],
@@ -77,7 +72,6 @@ class RoundsAdapter extends MockAdapter {
   }
 }
 
-// CHILD_MODE=wake: a turn no surface opens, woken once `wake` exists.
 const mode = process.env.CHILD_MODE;
 const wakeMode = mode === 'wake';
 const rounds = mode ? ROUNDS[mode] : undefined;

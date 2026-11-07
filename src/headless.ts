@@ -205,8 +205,6 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     'command-done',
   ]);
 
-  /** Writes `event` to the connected client, if its subscription takes it,
-   *  and says whether it did. */
   function emit(event: Record<string, unknown>): boolean {
     // A socket that has ended or errored takes no more writes. It stops being
     // current at its 'end' or 'close', but an error comes a tick before that.
@@ -802,13 +800,6 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     const IDLE_CONFIRM_MS = 500;
     let windowArmed = false;
 
-    // The reply after a turn's last tool call is answered from what the
-    // relay wrote at the stream's end. Words of a round that ended with tool
-    // calls are written here, when the framework asks about them, since it
-    // asks only about words it routes as speech: a round that skip_reply or a
-    // private think keeps is never asked about, so never written. They go
-    // only to the client that sent the turn, as `inference:prose`, which is
-    // never a reply.
     const writeProse = (agentName: string, text: string, connections: string[]): Socket | undefined => {
       const client = currentClient;
       const id = client ? connectionIds.get(client) : undefined;

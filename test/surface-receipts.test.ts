@@ -155,7 +155,6 @@ describe('headless', () => {
       const another = await connect(['inference:speech', 'inference:prose']);
       another({ type: 'text', content: JSON.stringify({ ask: { text: 'A note.', final: false, connections: [senderId] } }), from: 'console' });
       await until(() => answers(dir).length === 2, 'the ask for the turn of a client that has left');
-      // Frames on one socket arrive in order: a prose frame written for the ask comes before this reply's.
       another({ type: 'text', content: JSON.stringify({ stream: 'After the first ask.' }), from: 'console' });
       await until(() => another.frames.some((f) => f.type === 'inference:speech' && f.content === 'After the first ask.'), 'the first barrier');
       const speechOnly = await connect(['inference:speech']);
@@ -225,7 +224,6 @@ describe('headless', () => {
       send({ type: 'text', content: 'hello', from: 'console' });
       await until(() => answers(dir).length === 1, 'the answers');
       expect(answers(dir)[0].final).toBeNull();
-      // A reply on the same socket, after any speech frame the turn wrote.
       send({ type: 'request-lessons', corrId: 'after-the-turn' });
       await until(() => send.frames.some((f) => f.type === 'lessons-snapshot'), 'the reply after the turn');
       expect(send.frames.filter((f) => f.type === 'inference:speech')).toEqual([]);
@@ -319,7 +317,6 @@ describe('headless on a real framework, a turn whose rounds end with tool calls'
   }
   const receipts = (context: string[]) => context.filter((t) => t.startsWith('[delivered]') || t.startsWith('[send-undeliverable]'));
 
-  // The context the child last wrote, once it has written one after `since`.
   async function contextAfter(dir: string, since: number): Promise<string[]> {
     const path = join(dir, 'context.json');
     await until(() => existsSync(path) && statSync(path).mtimeMs > since, 'a context written after the turn ended', 20_000);
@@ -357,7 +354,6 @@ describe('headless on a real framework, a turn whose rounds end with tool calls'
       const out: string[] = [];
       const sent = send({ root, argv: ['please'], out: (line) => out.push(line), err: () => {} });
       await until(() => existsSync(join(dir, 'holding-first-note')), "the first note's delivery to be held", 20_000);
-      // The child marks the stream's end in the same trace that has headless write the reply.
       await until(() => existsSync(join(dir, 'completed')), 'the reply', 20_000);
       writeFileSync(join(dir, 'release-note'), '');
       expect(await sent).toBe(0);
@@ -522,7 +518,6 @@ describe('in a framework', () => {
     });
     frameworks.push(framework);
     await framework.start();
-    // The channel registry an MCPL channel server's start makes, as on a host with Discord configured.
     await (framework as unknown as { initializeMcpl(servers: []): Promise<void> }).initializeMcpl([]);
     return { framework, adapter };
   }
