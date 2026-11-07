@@ -634,7 +634,11 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     const rounds = undone.split('\n').filter((line) => /round \d+/.test(line));
     expect(rounds.length).toBeGreaterThan(10);
     for (const line of rounds) expect(line).toContain('(undone)');
-    for (const line of undone.split('\n').filter((l) => l.includes('[tools] tally'))) expect(line).toContain('(undone)');
+    // The rounds' [tools] lines too, which the loop below checks only if
+    // they are drawn (#485 bot review 6, finding 23).
+    const tools = undone.split('\n').filter((l) => l.includes('[tools] tally'));
+    expect(tools.length).toBeGreaterThan(10);
+    for (const line of tools) expect(line).toContain('(undone)');
     const between = undone.slice(undone.indexOf('(undone) all rounds counted'), undone.indexOf('(undone) a twelfth ledger'));
     expect(between).not.toMatch(/round \d+|\[tools\]/);
   }, 90000);
