@@ -14,7 +14,7 @@ import { lingerOf } from '../src/setup/linger.js';
 import { SetupModule } from '../src/modules/setup-module.js';
 import { readEnvFile } from '../src/setup/secrets.js';
 import { SETUP_RECIPE, writeInstallCommand } from '../src/cli/install-command.js';
-import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths, keptOutsideLines } from '../src/update/contract.js';
+import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths } from '../src/update/contract.js';
 import { entryPointText } from '../src/update/setup.js';
 import { machineOps, shellWord, takeLock } from '../src/update/launcher.js';
 import { HostUpdate } from '../src/update/update.js';
@@ -151,9 +151,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
           symlinkSync(script.host ?? REPO, join(scope, 'connectome-host'));
         }
         symlinkSync(join('releases', release), join(root, 'current'));
-        const extraState = keptOutsideLines(script.installSetupSays ?? '').filter((line) => line.startsWith('  ') && line !== '  none')
-          .map((line) => line.slice(2));
-        writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState, workingDir: dirname(realpathSync(root)) }));
+        writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState: [], workingDir: dirname(realpathSync(root)) }));
         writeFileSync(join(root, ENTRY_POINT), entryPointText());
       }
       writeInstallCommand(root, options.env.PATH);
@@ -1041,26 +1039,33 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
 const resumeLine = (dir: string) =>
   `To go on with setup where it stopped: \`${join(dir, 'connectome-host', 'connectome')} setup discord\`.`;
 
+const withMcplState = async (dir: string): Promise<void> => {
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const record = join(dir, 'connectome-host', 'install.json');
+  writeFileSync(record, JSON.stringify({ ...JSON.parse(readFileSync(record, 'utf-8')), extraState: ['/srv/mcpl-state'] }));
+};
+
 const keptOutsideBlock = (dir: string) => [
   `${EXTRA_STATE_LINE}: an update copies the data directory, ${join(dir, 'data')}, and outside it only the places listed here:`,
   '  /srv/mcpl-state',
   `${LIST_A_PLACE}, run setup again with every place: \`setup --extra-state /srv/mcpl-state --extra-state PATH\`.`,
 ];
 
-test('of the install\'s own setup\'s lines, setup shows its first at once, and once its agent has ended, the line that goes on with setup by the install\'s command\'s full path, then its list of the state an update copies from outside the data directory as its last words, not its service\'s, and its own command once', async () => {
+test('of the install\'s own setup\'s lines, run again, setup shows its first at once, and once its agent has ended, the line that goes on with setup by the install\'s command\'s full path, then its list of the state an update copies from outside the data directory as its last words, not the lines after that list', async () => {
   const dir = directory();
   const root = join(dir, 'connectome-host');
   const block = keptOutsideBlock(dir);
   const service = `The service starts the host with \`bun ${join(root, ENTRY_POINT)}\`, followed by the arguments it gives the host now; set that, and restart it.`;
   const command = `This install's own command is ${join(root, 'connectome')}.`;
-  const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, service, command, ''].join('\n') });
+  await withMcplState(dir);
+  const made = world(dir, { installSetupSays: [...block, service, command, ''].join('\n') });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const first = made.seen.out.findIndex((line) => line.startsWith(`Set up ${root} as the install of`));
+  const first = made.seen.out.findIndex((line) => line.startsWith(`The install at ${root} serves`));
   expect(first).toBeGreaterThanOrEqual(0);
   expect(first).toBeLessThan(made.seen.outAtLaunch!);
   expect(made.seen.out.slice(made.seen.outAtLaunch!)).toEqual([resumeLine(dir), ...block]);
   expect(text(made.seen.out)).not.toContain(service);
-  expect(made.seen.out.filter((line) => line === command)).toHaveLength(1);
+  expect(text(made.seen.out)).not.toContain(command);
 });
 
 test('once its agent has recorded setup finished in this run, setup says it\'s finished and how to change something, not where to go on; one recorded in an earlier run doesn\'t count', async () => {
@@ -1113,7 +1118,8 @@ test('the line that goes on with setup, and the list of the state kept outside t
   for (const status of [1, 130]) {
     const dir = directory();
     const block = keptOutsideBlock(dir);
-    const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, ''].join('\n') }, {
+    await withMcplState(dir);
+    const made = world(dir, { installSetupSays: [...block, ''].join('\n') }, {
       startAgent: async (launch) => {
         made.seen.launched = launch;
         made.seen.outAtLaunch = made.seen.out.length;
@@ -1130,8 +1136,9 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   const root = join(dir, 'connectome-host');
   const record = join(root, 'install.json');
   const block = keptOutsideBlock(dir);
+  await withMcplState(dir);
   const changing = (change: () => void) => {
-    const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, ''].join('\n') }, {
+    const made = world(dir, { installSetupSays: [...block, ''].join('\n') }, {
       startAgent: async (launch) => {
         made.seen.launched = launch;
         made.seen.outAtLaunch = made.seen.out.length;
@@ -1175,6 +1182,7 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   const gone = changing(() => rmSync(record));
   expect(await runSetup(dir, ['discord'], gone)).toBe(0);
   expect(said(gone)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, is gone.`]);
+  writeFileSync(record, printed);
   const broken = changing(() => writeFileSync(record, 'not json'));
   expect(await runSetup(dir, ['discord'], broken)).toBe(0);
   expect(said(broken)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, can't be read: The install record at ${record} isn't JSON, so this release can't read it.`]);
