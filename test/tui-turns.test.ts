@@ -485,9 +485,10 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     }
   }, 40000);
 
-  // Every message the operator sends is echoed, and stored, in order: the
-  // first row takes the first echo though a turn ends between the two rows'
-  // stores (#485 bot review 4, finding 4).
+  // Every message the framework takes is echoed and stored in the order
+  // sent (one never stored is let go: see the `undone-unsent` test below):
+  // the first row takes the first echo though a turn ends between the two
+  // rows' stores (#485 bot review 4, finding 4).
   test("the same message sent twice: an undo of the first one's turn marks the first echo", async () => {
     const undone = await frameOf('undone-queued', 'undone');
     const echoes = undone.split('\n').filter((line) => line.includes('You: once more'));
