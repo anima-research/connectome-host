@@ -602,9 +602,12 @@ describe('the Web UI', () => {
     webUi = new WebUiModule({ port: 0, host: '127.0.0.1', staticDir: dir });
     await webUi.start({} as ModuleContext);
     port = __getSharedServerPortForTests()!;
+    webUi.setApp(appShowing('main'));
+  });
+  function appShowing(agentName: string): never {
     const cm = { getAllMessages: () => [], currentBranch: () => ({ id: 'b1', name: 'main' }) };
-    const agent = { name: 'main', model: 'test-model', state: { status: 'idle' }, getContextManager: () => cm };
-    webUi.setApp({
+    const agent = { name: agentName, model: 'test-model', state: { status: 'idle' }, getContextManager: () => cm };
+    return {
       framework: {
         getAllAgents: () => [agent], getAgent: () => agent, getAllModules: () => [], getModule: () => undefined,
         getSessionUsage: () => { throw new Error('no usage here'); }, onTrace: () => () => {},
@@ -613,10 +616,10 @@ describe('the Web UI', () => {
       },
       sessionManager: { getActiveSession: () => ({ id: 's1', name: 'first' }), findSession: (id: string) => (id === 's1' ? { id: 's1', name: 'first' } : null) },
       frameworkSessionId: 's1',
-      recipe: { name: 'test', agent: { name: 'main' } },
+      recipe: { name: 'test', agent: { name: agentName } },
       branchState: { checkpoints: new Map(), undoStack: [], redoStack: [] },
-    } as never);
-  });
+    } as never;
+  }
   afterAll(async () => {
     await webUi.stop();
     await stopWebUiServer();
@@ -665,5 +668,23 @@ describe('the Web UI', () => {
     other.close();
     sender.close();
     await until(() => ask([tag.connection]) === undefined, 'the closed page named by nothing');
+  });
+
+  test("the answer follows the module's app and the server's life: none once the module stops, the new app's agent after setApp, and none once the server stops", async () => {
+    const sender = await page();
+    sender.send(JSON.stringify({ type: 'user-message', content: 'hi again' }));
+    const before = pushed.length;
+    await until(() => pushed.length === before + 1, 'the pushed text');
+    const tag = pushed[before]!.metadata?.[SURFACE_TAG_KEY] as { connection: string };
+    const ask = (agentName: string) => surfaceAnswers.answer('web-ui', { agentName, text: 'Hi.', final: false, connections: [tag.connection] });
+    expect(ask('main')).toBe('the Web UI page that sent this turn');
+    await webUi.stop();
+    expect(ask('main')).toBeUndefined();
+    webUi.setApp(appShowing('other'));
+    await until(() => ask('other') === 'the Web UI page that sent this turn', "the page welcomed again for the new app");
+    expect(ask('main')).toBeUndefined();
+    await stopWebUiServer();
+    expect(ask('other')).toBeUndefined();
+    sender.close();
   });
 });
