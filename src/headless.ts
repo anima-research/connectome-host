@@ -43,7 +43,7 @@ import {
 } from './session-switch.js';
 import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
 import { randomUUID } from 'node:crypto';
-import { SURFACE_TAG_KEY, surfaceAnswers } from './modules/tui-module.js';
+import { REPLY_UNHEARD_KEY, SURFACE_TAG_KEY, surfaceAnswers } from './modules/tui-module.js';
 
 interface HeadlessOptions {
   socketPath?: string;
@@ -399,11 +399,16 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         turnWorkDoneSince = 0;
         exitSince = 0;
         if (cmd.from === 'console') consoleClients.add(requester);
+        const unheard = cmd.from !== 'console' && !matchesSubscription('inference:speech', subscription) &&
+          !app.framework.channels;
         pushText({
           type: 'external-message',
           source: cmd.from === 'console' ? 'cli' : 'headless',
           content: cmd.content,
-          metadata: { [SURFACE_TAG_KEY]: { surface: 'headless', connection: connectionIds.get(requester) } },
+          metadata: {
+            [SURFACE_TAG_KEY]: { surface: 'headless', connection: connectionIds.get(requester) },
+            ...(unheard ? { [REPLY_UNHEARD_KEY]: true } : {}),
+          },
           triggerInference: true,
         });
         return;

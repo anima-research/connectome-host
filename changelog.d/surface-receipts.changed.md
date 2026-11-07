@@ -26,9 +26,11 @@
   "[host note: this message arrived over IPC …]" paragraph, which said a
   plain-prose reply would not reach the sender: a parent subscribed to
   `inference:speech` gets the primary's final reply while it is the host's
-  connected client. On a host with no channel server, an agent answering a
-  client not subscribed to it is no longer told that its reply won't reach
-  that client.
+  connected client. A text without `from` carries a note only where that's
+  so and nothing else would say it: when its sender's subscription doesn't
+  take `inference:speech`, on a host with no MCP or MCPL server, the note
+  says the client wasn't subscribed when the text arrived, so a plain-prose
+  reply won't reach it unless it subscribes.
 - Operators: `connectome-doctor` reads the routing lines the
   agent-framework release with `Module.onSpeechRouted` adds. For a turn with
   no channel whose speech a host surface showed, its routeSpeech stage says

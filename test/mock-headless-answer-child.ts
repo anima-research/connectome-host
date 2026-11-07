@@ -6,6 +6,7 @@ import { SURFACE_TAG_KEY, TuiModule, surfaceAnswers, type SurfaceQuestion } from
 
 const dir = process.env.DATA_DIR!;
 const tui = new TuiModule();
+let registry = false;
 const listeners: Array<(event: unknown) => void> = [];
 const trace = (event: Record<string, unknown>): void => { for (const listener of [...listeners]) listener(event); };
 const record = (line: unknown): void => appendFileSync(join(dir, 'answers.jsonl'), `${JSON.stringify(line)}\n`);
@@ -29,13 +30,20 @@ await runHeadless({
     getAllModules: () => [],
     getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
     getQueueDepth: () => 0,
+    get channels() { return registry ? {} : null; },
     pushEvent: async (event: unknown) => {
-      const added = (await tui.onProcess(event as never, {} as never)).addMessages?.[0] as { metadata?: Record<string, unknown> } | undefined;
+      const added = (await tui.onProcess(event as never, {} as never)).addMessages?.[0] as
+        { metadata?: Record<string, unknown>; content?: Array<{ text?: string }> } | undefined;
       const tag = added?.metadata?.[SURFACE_TAG_KEY] as { connection?: string } | undefined;
       const content = String((event as { content?: unknown }).content ?? '');
       const command = content.startsWith('{')
-        ? JSON.parse(content) as { stream?: string | string[]; blocks?: Array<{ content: string; blockType: string }>; ask?: { text: string; connections: string[]; final?: boolean } }
+        ? JSON.parse(content) as { stream?: string | string[]; blocks?: Array<{ content: string; blockType: string }>; ask?: { text: string; connections: string[]; final?: boolean }; registry?: boolean }
         : undefined;
+      if (command?.registry !== undefined) {
+        registry = command.registry;
+        record({ registry });
+        return;
+      }
       if (command?.ask) {
         record({ asked: surfaceAnswers.answer('headless', { agentName: 'fixture', final: true, ...command.ask }) ?? null });
         return;
@@ -58,6 +66,7 @@ await runHeadless({
         surfaceAnswers.answer('headless', { agentName: 'fixture', text: 'Hi there.', final: true, connections, ...question }) ?? null;
       record({
         tag: tag ?? null,
+        texts: added?.content?.map((block) => block.text) ?? null,
         final: ask({}),
         round: ask({ final: false }),
         notWritten: ask({ text: 'Looking around.' }),

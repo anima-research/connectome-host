@@ -240,6 +240,30 @@ describe('headless', () => {
     });
   });
 
+  test("a text without from carries a note that a plain reply won't reach its sender only while the sender doesn't take inference:speech and the framework has no channel registry", async () => {
+    const NOTE = "[host note: the client that sent this wasn't subscribed to inference:speech when it arrived, so a " +
+      "plain-prose reply won't reach it unless it subscribes.]";
+    await withChild(async (dir, connect) => {
+      const unsubscribed = await connect(['lifecycle']);
+      unsubscribed({ type: 'text', content: 'hello' });
+      await until(() => answers(dir).length === 1, 'the first turn');
+      expect(answers(dir)[0].texts).toEqual(['hello', NOTE]);
+      unsubscribed({ type: 'text', content: 'hello', from: 'console' });
+      await until(() => answers(dir).length === 2, 'the console line');
+      expect(answers(dir)[1].texts).toEqual(['hello']);
+      const subscribed = await connect(['inference:speech']);
+      subscribed({ type: 'text', content: 'hello' });
+      await until(() => answers(dir).length === 3, 'the subscribed client');
+      expect(answers(dir)[2].texts).toEqual(['hello']);
+      subscribed({ type: 'text', content: JSON.stringify({ registry: true }), from: 'console' });
+      await until(() => answers(dir).length === 4, 'the registry');
+      const withRegistry = await connect(['lifecycle']);
+      withRegistry({ type: 'text', content: 'hello' });
+      await until(() => answers(dir).length === 5, 'the turn with a registry');
+      expect(answers(dir)[4].texts).toEqual(['hello']);
+    });
+  });
+
   test("a client that didn't send the turn is named only once it has subscribed itself, so a second connectome send during a turn isn't", async () => {
     await withChild(async (dir, connect) => {
       const send = await connect(null);

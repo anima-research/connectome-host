@@ -20,6 +20,9 @@ export interface SurfaceTag {
 }
 
 export const SURFACE_TAG_KEY = 'connectomeSurface';
+export const REPLY_UNHEARD_KEY = 'connectomeReplyUnheard';
+const REPLY_UNHEARD_NOTE = '[host note: the client that sent this wasn\'t subscribed to inference:speech when it ' +
+  'arrived, so a plain-prose reply won\'t reach it unless it subscribes.]';
 
 export interface SurfaceQuestion {
   agentName: string;
@@ -91,13 +94,15 @@ export class TuiModule implements Module {
     const text = typeof content === 'string' ? content : JSON.stringify(content);
     const triggerInference = (event as { triggerInference?: boolean }).triggerInference;
     const targetAgents = (event as { targetAgents?: string[] }).targetAgents;
-    const tag = surfaceTagOf((event as { metadata?: unknown }).metadata);
+    const metadata = (event as { metadata?: Record<string, unknown> }).metadata;
+    const tag = surfaceTagOf(metadata);
+    const unheard = source === 'headless' && metadata?.[REPLY_UNHEARD_KEY] === true;
 
     const response: EventResponse = {
       addMessages: [
         {
           participant: 'user',
-          content: [{ type: 'text', text }],
+          content: [{ type: 'text', text }, ...(unheard ? [{ type: 'text' as const, text: REPLY_UNHEARD_NOTE }] : [])],
           ...(tag ? { metadata: { [SURFACE_TAG_KEY]: tag } } : {}),
         },
       ],

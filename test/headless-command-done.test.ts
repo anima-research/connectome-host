@@ -158,11 +158,12 @@ test('a command without a corrId gets exactly the lines it got before, and no co
   });
 });
 
-test('a text from a console or a fleet parent reaches the agent as it was written, with no note', async () => {
+test('a text from a console, or from a fleet parent that takes inference:speech, reaches the agent as it was written, with no note', async () => {
   await withChild(async (send, _events, dir) => {
     const pushed = () => linesWritten(join(dir, 'pushed.jsonl'));
     send({ type: 'text', content: 'from a console', from: 'console' });
     await until(() => pushed().length === 1, 'the console line');
+    send({ type: 'subscribe', events: ['inference:speech'] });
     send({ type: 'text', content: 'from a fleet parent' });
     await until(() => pushed().length === 2, 'the parent line');
     expect(pushed()).toEqual([
