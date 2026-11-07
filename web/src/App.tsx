@@ -1120,6 +1120,10 @@ export function App() {
     for (const r of roots) visit(r);
   };
 
+  // The frames a closed socket missed can have moved the window the panels
+  // show: the next socket's welcome reads them again (WindowFrames).
+  createEffect(() => { if (wire.status() === 'reconnecting') windowFrames.disconnected(); });
+
   onMount(() => {
     const detach = wire.onMessage((msg) => {
       if (treesShown()) treeStore.ingest(msg);

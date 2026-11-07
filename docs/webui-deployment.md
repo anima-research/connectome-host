@@ -145,7 +145,10 @@ The module accepts three credentials:
   `window:undone` and `undone-marks`, which need `messages`, and a fleet
   child's shed at its `presentation:retracted`, which needs `ops`. With
   `debug` and without those, a panel reads again when it is opened or
-  refreshed, and the coverage panel at its five-second poll.
+  refreshed, and the coverage panel at its five-second poll. A page that
+  reconnects, an operator's or an observer's, reads its open panels once at
+  the new connection's welcome, since it missed the frames sent while it
+  was away.
 
 ## Caddy
 
