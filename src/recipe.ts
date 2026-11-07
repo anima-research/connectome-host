@@ -1647,6 +1647,17 @@ export interface Recipe {
    * the "Inference bounds" section of the README its package ships gives them.
    */
   inferenceBounds?: FrameworkConfig['inferenceBounds'];
+  /**
+   * A message quiet period (agent-framework FrameworkConfig.messageQuietPeriod,
+   * agent-framework#856): an idle agent's turn waits while message wakes for
+   * it keep arriving, so a burst (a caption and its attachments, a reply
+   * split into several messages) starts one turn, not one per part. `quietMs`
+   * is how long after the burst's newest message the turn starts; `maxWaitMs`
+   * (default 30000) caps the wait from its oldest. Each channel's burst is
+   * held on its own clock. Passed to the framework as written; an
+   * agent-framework without the option ignores it. Left out, no wait.
+   */
+  messageQuietPeriod?: { quietMs: number; maxWaitMs?: number };
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -1989,7 +2000,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
-  'maintenanceIntervalMs', 'inferenceBounds',
+  'maintenanceIntervalMs', 'inferenceBounds', 'messageQuietPeriod',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -2038,6 +2049,29 @@ function validateInferenceBounds(value: unknown): void {
     for (const key of PROGRESS_BOUNDS_KEYS) aboveZero(`inferenceBounds.progressBounds.${key}`, (progressBounds as Record<string, unknown>)[key]);
   }
   aboveZero('inferenceBounds.flatMinimumMs', flatMinimumMs);
+}
+const MESSAGE_QUIET_PERIOD_KEYS = ['quietMs', 'maxWaitMs'] as const;
+/** Refuses at load what agent-framework's create would refuse (a quiet
+ *  period that isn't finite numbers of ms, 0 or more), and a key it would
+ *  ignore, such as a misspelt `maxWaitMs`, which would leave the 30 s default
+ *  in force unseen. */
+function validateMessageQuietPeriod(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Recipe messageQuietPeriod must be an object { quietMs, maxWaitMs? }, got ${JSON.stringify(value)}.`);
+  }
+  rejectUnknownKeys('messageQuietPeriod', value, MESSAGE_QUIET_PERIOD_KEYS);
+  const { quietMs, maxWaitMs } = value as Record<string, unknown>;
+  const ms = (path: string, v: unknown, required: boolean): void => {
+    if (v === undefined) {
+      if (required) throw new Error(`Recipe ${path} is required: a finite number of ms, 0 or more.`);
+      return;
+    }
+    if (!(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+      throw new Error(`Recipe ${path} must be a finite number of ms, 0 or more, got ${typeof v === 'number' ? String(v) : JSON.stringify(v)}.`);
+    }
+  };
+  ms('messageQuietPeriod.quietMs', quietMs, true);
+  ms('messageQuietPeriod.maxWaitMs', maxWaitMs, false);
 }
 const RECIPE_AGENT_CLOCK_KEYS = ['intervalMinutes', 'intervalSeconds', 'precision'] as const;
 const RECIPE_AGENT_MOCK_KEYS = [
@@ -3412,6 +3446,7 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   if (obj.inferenceBounds !== undefined) validateInferenceBounds(obj.inferenceBounds);
+  if (obj.messageQuietPeriod !== undefined) validateMessageQuietPeriod(obj.messageQuietPeriod);
 
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {
@@ -3498,6 +3533,12 @@ export function validateRecipe(raw: unknown): Recipe {
     }
     if (speech.locus !== undefined && speech.locus !== 'delivery' && speech.locus !== 'latest-inbound') {
       throw new Error('Recipe speech.locus must be "delivery" or "latest-inbound".');
+    }
+    // agent-framework refuses the pair at create (agent-framework#856): under
+    // latest-inbound a held message would become a turn's fallback locus.
+    // Refused here too, so the recipe never reaches that error.
+    if (speech.locus === 'latest-inbound' && obj.messageQuietPeriod !== undefined) {
+      throw new Error("Recipe messageQuietPeriod can't be used with speech.locus \"latest-inbound\": a held message would become a turn's fallback locus. Use the default \"delivery\" locus.");
     }
   }
 
