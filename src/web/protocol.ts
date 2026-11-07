@@ -181,10 +181,10 @@ export interface WelcomeMessageEntry {
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
   /** The row is out of the conversation agent's window as an undone
-   *  turn's (agent-framework #291): an undo (which /redo puts back until
+   *  turn's (agent-framework #291): an undo (which /redo can reverse until
    *  the agent's next turn, a branch move or a restart, as agent-framework
-   *  keeps its redo in memory only) or a shed after a refusal or failed
-   *  inference (which it doesn't). Its next request is built without it,
+   *  keeps the redo in memory only) or a shed after a refusal or failed
+   *  inference (which it can't). Its next request is built without it,
    *  and the record, which the transcript shows, keeps it. Absent
    *  otherwise. */
   undone?: true;
