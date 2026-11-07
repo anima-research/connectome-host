@@ -1,4 +1,4 @@
-- Residents: on a host with an MCPL channel server, a reply a host surface
+- Residents: on a host with an MCP or MCPL server, a reply a host surface
   showed the person who sent the turn is no longer reported undeliverable.
   Each surface's text now records
   which surface sent it, and for headless and the Web UI which connection.

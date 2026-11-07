@@ -38,7 +38,8 @@ export const COMMANDS: CliCommand[] = [
     usage: 'connectome send <text>',
     summary: 'Waits until the running agent is between turns, sends it one line, and prints what it says until ' +
       'that turn\'s work ends: the notes it routes as speech between tool calls in the turn this line opens, as ' +
-      'they come, and each turn\'s reply after its notes. If a channel message, or the end of a script or ' +
+      'they come, and each turn\'s reply after its notes. A host with no MCP or MCPL server routes no notes, so ' +
+      'there only replies print. If a channel message, or the end of a script or ' +
       'subagent the agent started, arrives just before the line, the agent may answer it in the same turn, and ' +
       'that reply prints too. A subagent or script the turn starts can bring a later turn: if what brings it ' +
       'arrives within half a second of the turn\'s work ending, it joins that work and its reply prints too, and ' +
