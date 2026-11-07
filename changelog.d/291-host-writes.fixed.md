@@ -37,8 +37,8 @@
     headless mode, which send a multi-line command whole, and in the
     readline and piped modes as a one-line `/newtopic <text>`, its line
     breaks folded to spaces, since they read each line as its own input: a
-    summary given back on several lines stored its first line alone there,
-    and sent the rest to the agent. One given back as the TUI stops
+    summary given back on several lines would store its first line alone
+    there, and send the rest to the agent. One given back as the TUI stops
     is printed to the terminal the TUI leaves, if it comes before the host
     exits, as any command's answer that comes then now is: the TUI dropped
     it, its scrollback gone. That answer names the stop once and says to
@@ -77,7 +77,7 @@
     given) are the subagent's own rows.
 - A subagent run that ends on a tool call, with no speech, answers with the
   newest text its window holds that isn't the user's or a stored
-  injection's (and `(no text output)` when there is none): a text row an
-  undo or a shed took out of
-  it, or one stored and never shown to it (another agent's mail held out of
-  it past the run's end), was the answer.
+  injection's (and `(no text output)` when there is none), not a text row
+  an undo or a shed took out of it, or one stored and never shown to it
+  (another agent's mail held out of it past the run's end), which
+  agent-framework 0.33.0's record keeps.

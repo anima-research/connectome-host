@@ -57,7 +57,8 @@
     after it to roll back.
   - A rollback cuts at the write that showed the agent its message, so rows
     after the message can stay, and `/branchto`, `/restore` and the Web UI's
-    rollback say so where they used to say everything after it was dropped:
+    rollback say so, where `/branchto` used to say everything after it was
+    dropped:
     rows one write showed together with the message stay in the window after
     it, for a suppression or a hide to take out, and rows stored before the
     message was shown and shown after it stay in the record, out of the
@@ -161,7 +162,9 @@
   surgery, `/checkout`, `/restore` and `/branchto`) are kept in memory and
   stored when it ends, as are an agent's writes while its context manager
   refuses its work after a failed re-initialization, until a branch move.
-  A crash before then loses them, where an earlier release kept a quiesced
+  Those for an agent that ends meanwhile go to the primary where it takes
+  them in that agent's place, and are otherwise dropped, logged. A crash
+  before then loses them, where an earlier release kept a quiesced
   host's queue on disk. agent-framework 0.33.0's entry on the deferral
   queue says what a stop keeps.
 - **Going back to an earlier release** after this one: a row this release
