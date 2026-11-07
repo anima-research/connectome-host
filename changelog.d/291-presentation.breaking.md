@@ -168,25 +168,28 @@
   host's queue on disk. agent-framework 0.33.0's entry on the deferral
   queue says what a stop keeps.
 - **Going back to an earlier release** after this one: the first window
-  written down with rows, or a presentation of more than one row, moves the
+  written down with rows, or any window write of two or more items, such
+  as a presentation or an undo of more than one row, moves the
   store's MANIFEST to version 2, which chronicle 0.5.1 and earlier refuse,
   and so every earlier release of this host (context-manager's notes): going
   back after that needs the copy the update took, which holds none of this
   release's rows. `/update back restore` puts it back. `/update back keep`
   stops at the older release's store audit, and the next start puts this
-  release back. A store still at version 1, whose window was written down
-  empty and then changed one row at a time, opens on an earlier release,
+  release back. A store still at version 1, whose windows were written
+  down empty and then changed one row at a time, opens on an earlier release,
   which compiles the record in record order: rows taken out of an agent's
   window come back into its context, an undone turn's among them, and so do
   rows it was never shown, such as another resident's own rows it doesn't
   observe and mail meant for another agent, and a row this release stored
   for an agent while its turn was alive is where the record put it. So the
   agent's next request misses the prompt cache from the first row it
-  compiles differently, and, on a model that binds a reply's thinking to
-  what came before it, leaves out the thinking of every reply after that
-  row. Nothing is lost. A queue of held writes that an earlier release left
-  is stored once at this release's first start, and an earlier release then
-  finds it empty.
+  compiles differently, and from the start where its tools or system text
+  differ between the two releases (such as the tools whose descriptions
+  this release changes, in the Changed entries on prompt caches), and, on
+  a model that binds a reply's thinking to what came before it, leaves out
+  the thinking of every reply from that point on. Nothing is lost. A queue
+  of held writes that an earlier release left is stored once at this
+  release's first start, and an earlier release then finds it empty.
 
   **Migration:** to revert the record, as `/undo` did, use
   `/branchto <msgId>` with the id of the last row to keep (`/history` and

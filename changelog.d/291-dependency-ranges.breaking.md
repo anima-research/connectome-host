@@ -28,6 +28,7 @@
   the stack's packages alike.
   **Migration:** none for a host that installs connectome-host whole. A
   deployment that pins any of the four itself takes the ranges above. The
-  first window written down with rows, or a presentation of more than one
-  row, moves the store's `MANIFEST` to version 2, which chronicle 0.5.1 and
+  first window written down with rows, or any window write of two or more
+  items, such as a presentation or an undo of more than one row, moves the
+  store's `MANIFEST` to version 2, which chronicle 0.5.1 and
   earlier refuse (see the 291-presentation entry's going-back note).
