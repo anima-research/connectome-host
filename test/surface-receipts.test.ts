@@ -274,10 +274,10 @@ describe('headless on a real framework', () => {
       expect(context().filter(turnLines)).toEqual([
         'first',
         'Reply one.',
-        '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · no channel posted it',
+        '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · this turn\'s routing posted it to no channel',
         'second',
         'Reply two.',
-        '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · no channel posted it',
+        '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · this turn\'s routing posted it to no channel',
       ]);
     } finally {
       for (const socket of sockets) socket.destroy();
@@ -288,7 +288,7 @@ describe('headless on a real framework', () => {
 });
 
 describe('headless on a real framework, a turn whose rounds end with tool calls', () => {
-  const TERMINAL = '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · no channel posted it';
+  const TERMINAL = '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · this turn\'s routing posted it to no channel';
   async function withRounds(mode: 'notes' | 'kept', body: (dir: string) => Promise<void>): Promise<void> {
     const dir = mkdtempSync(join(tmpdir(), 'surface-receipts-rounds-'));
     const child = spawn(process.execPath, [new URL('./mock-headless-framework-child.ts', import.meta.url).pathname], {
@@ -541,7 +541,7 @@ describe('in a framework', () => {
     const all = texts(framework);
     expect(all.filter((t) => t.startsWith('hello'))).toEqual(['hello']);
     expect(all.filter((t) => t.includes('[send-undeliverable]'))).toEqual([]);
-    expect(all.filter((t) => t.startsWith('[delivered]')).at(-1)).toBe('[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · no channel posted it');
+    expect(all.filter((t) => t.startsWith('[delivered]')).at(-1)).toBe('[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · this turn\'s routing posted it to no channel');
     const requests = adapter.getRequestLog().map((r) => JSON.stringify(r.request));
     expect(requests.length).toBeGreaterThan(0);
     for (const request of requests) expect(request).not.toContain(SURFACE_TAG_KEY);
