@@ -358,6 +358,9 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     const shed = await frameOf('undone-shed', 'shed');
     expect(times(shed, 'a fifth ledger')).toBe(1);
     expect(shed).toContain('(undone) a fifth ledger');
+    // Above the line drawn after it, which is no row's: marked where it is
+    // (#485 bot review 6, finding 22).
+    expect(shed.indexOf('(undone) a fifth ledger')).toBeLessThan(shed.indexOf('the beads stuck'));
   }, 40000);
 
   test("a co-resident's row with the same words doesn't take the root agent's streamed line", async () => {
@@ -371,6 +374,7 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(times(undone, 'the first half')).toBe(1);
     expect(times(undone, 'the second half')).toBe(1);
     expect(undone).toContain('(undone) the first half, the second half');
+    expect(undone.indexOf('(undone) the first half, the second half')).toBeLessThan(undone.indexOf('the beads stuck'));
   }, 40000);
 
   // The stream draws text on both sides of a tool call as one line, so
@@ -408,9 +412,13 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(returned).toMatch(/\nThere are three\. *\n/);
     expect(returned).not.toContain('weigh the count');
     const undone = steps.get('undone')!.frame;
+    // The line the return draws after its rounds is no row's: each is
+    // marked above it, where it is (#485 bot review 6, finding 22).
+    const back = undone.indexOf('returned from background');
     for (const words of ['Counting the', 'ledgers now.', 'There are three.']) {
       expect(times(undone, words)).toBe(1);
       expect(undone).toContain(`(undone) ${words}`);
+      expect(undone.indexOf(`(undone) ${words}`), words).toBeLessThan(back);
     }
     expect(undone).not.toContain('weigh the count');
     expect(undone).not.toContain('[tools] tally');
@@ -469,9 +477,11 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(returned).toMatch(/\nThere are three\. *\n/);
     expect(returned).not.toContain('weigh the count');
     const undone = steps.get('undone')!.frame;
+    const back = undone.indexOf('returned from background');
     for (const words of ['Counting the', 'ledgers now.', 'There are three.']) {
       expect(times(undone, words)).toBe(1);
       expect(undone).toContain(`(undone) ${words}`);
+      expect(undone.indexOf(`(undone) ${words}`), words).toBeLessThan(back);
     }
   }, 40000);
 

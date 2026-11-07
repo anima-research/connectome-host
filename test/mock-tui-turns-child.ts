@@ -568,6 +568,11 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     await streamed('a fifth ledger');
     history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] });
+    // A line after the reply that is no row's, so marking in place can be
+    // told from drawing the line again at the bottom (#485 bot review 6,
+    // finding 22).
+    first.send('tool:failed', { callId: 'c9', toolName: 'abacus', error: 'the beads stuck' });
+    await until(async () => (await frame()).includes('the beads stuck'), 'the failed tool line');
     // A failed inference's shed takes the reply out of the window as undone,
     // with no window:undone (agent-framework's shedFailedExchange).
     undoneRows.add('a2');
@@ -604,6 +609,9 @@ async function play(): Promise<void> {
     first.send('inference:tokens', { content: 'the second half', blockType: 'text' });
     first.send('inference:completed');
     await until(async () => (await frame()).includes('the first half, the second half'), 'the reply');
+    // A line after the reply that is no row's (finding 22).
+    first.send('tool:failed', { callId: 'c9', toolName: 'abacus', error: 'the beads stuck' });
+    await until(async () => (await frame()).includes('the beads stuck'), 'the failed tool line');
     history.push({
       id: 'a2', participant: 'agent',
       content: [{ type: 'thinking', thinking: 'weigh them' }, { type: 'text', text: 'the first half, ' }, { type: 'text', text: 'the second half' }],
