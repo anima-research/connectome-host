@@ -640,7 +640,7 @@ export function childEventScopes(event: { type?: unknown }): FrameScopes {
   if (type === 'lifecycle') return HEALTH;
   if (type === 'snapshot') return TREES;
   if (type === 'inference:speech') return ['messages', 'thinking', 'tools'];
-  if (type === 'stream-ended') return MESSAGES;
+  if (type === 'stream-ended' || type === 'inference:prose') return MESSAGES;
   return traceScopes({ ...(event as Record<string, unknown>), type });
 }
 

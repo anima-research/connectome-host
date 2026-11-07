@@ -675,7 +675,7 @@ describe('scope filters', () => {
     expect(types.filter((type) => !Object.hasOwn(TRACE_SCOPES, type))).toEqual([]);
   });
 
-  test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {
+  test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in and its notes messages, and any other kind a full client", () => {
     expect(childEventScopes({ type: 'message:added' })).toEqual(['messages']);
     expect(childEventScopes({ type: 'inference:tokens', blockType: 'thinking' } as never)).toEqual(['messages', 'thinking']);
     expect(childEventScopes({ type: 'tool:started' })).toEqual(['messages', 'tools']);
@@ -683,6 +683,7 @@ describe('scope filters', () => {
     expect(childEventScopes({ type: 'ops:alert' })).toEqual(['ops']);
     expect(childEventScopes({ type: 'inference:speech' })).toEqual(['messages', 'thinking', 'tools']);
     expect(childEventScopes({ type: 'stream-ended', agentName: 'kid' } as never)).toEqual(['messages']);
+    expect(childEventScopes({ type: 'inference:prose', agentName: 'kid' } as never)).toEqual(['messages']);
     expect(childEventScopes({ type: 'lifecycle', phase: 'ready' } as never)).toEqual(['health']);
     expect(childEventScopes({ type: 'snapshot' })).toEqual(['messages', 'thinking', 'tools', 'health', 'ops']);
     for (const type of ['command-output', 'a-kind-added-later', 'private:new-kind', '', undefined, 7]) {
