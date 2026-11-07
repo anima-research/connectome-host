@@ -27,6 +27,7 @@ import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateW
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
 import { applyUndoneMarksTo } from './undone-marks';
+import { withLoadedText } from './pin-candidates';
 import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
@@ -86,9 +87,10 @@ interface Message {
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   streaming?: boolean;
   /** The row is out of the conversation agent's window as an undone turn's
-   *  (agent-framework #291): an undo (which /redo puts back until the
-   *  agent's next turn, a branch move or a restart) or a shed after a
-   *  refusal or failed inference (which it doesn't). The record keeps it,
+   *  (agent-framework #291): an undo (which /redo can reverse until the
+   *  agent's next turn, a branch move or a restart, as agent-framework keeps
+   *  the redo in memory only) or a shed after a refusal or failed inference
+   *  (which it can't). The record keeps it,
    *  its next request is built without it. From the welcome, a history page
    *  or an undone-marks frame. */
   undone?: boolean;
@@ -565,6 +567,13 @@ export function App() {
 
   const [pinsState, setPinsState] = createSignal<PinsState | null>(null);
   const [pinsLoaded, setPinsLoaded] = createSignal(false);
+  /** The pin picker's candidates: the host's, each with its loaded row's
+   *  whole text locally, where the transcript is the same session's (a
+   *  local pins answer for another session is dropped). */
+  const pinCandidates = () => {
+    const listed = pinsState()?.candidates ?? [];
+    return panelScope() === 'local' ? withLoadedText(listed, messages) : listed;
+  };
   const refreshPins = (): void => {
     setPinsLoaded(false);
     wire.send({ type: 'request-pins', scope: panelScope() });
@@ -1112,6 +1121,10 @@ export function App() {
     for (const r of roots) visit(r);
   };
 
+  // The frames a closed socket missed can have moved the window the panels
+  // show: the next socket's welcome reads them again (WindowFrames).
+  createEffect(() => { if (wire.status() === 'reconnecting') windowFrames.disconnected(); });
+
   onMount(() => {
     const detach = wire.onMessage((msg) => {
       if (treesShown()) treeStore.ingest(msg);
@@ -1634,7 +1647,9 @@ export function App() {
                   // rows the resident's view leaves out instead: held
                   // traffic, suppressed rows, another agent's stored
                   // injections), which the transcript doesn't tell apart.
-                  candidates={pinsState()?.candidates ?? []}
+                  // Locally, a row the transcript has loaded is filtered on
+                  // its whole text (withLoadedText).
+                  candidates={pinCandidates()}
                   onRefresh={refreshPins}
                   onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
                   onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}
@@ -1979,7 +1994,7 @@ function MessageRow(props: {
       <Show when={props.undone}>
         <div
           class="text-[10px] font-mono text-amber-300/80 mb-0.5"
-          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back until the agent's next turn, a branch move or a restart) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
+          title="Out of the agent's context as an undone turn's: an undo (which /redo can reverse until the agent's next turn, a branch move or a restart, as agent-framework keeps the redo in memory only) or a shed after a refusal or failed inference (which it can't). Its next request is built without it; the record keeps it."
         >undone · not in the agent's context</div>
       </Show>
       <Show when={actionable()}>

@@ -161,7 +161,8 @@ interface PublishedMessage {
   at: number;
 }
 
-/** How many of a channel's latest publishes are kept to match its next interruption. */
+/** How many of a channel's latest publishes are kept to match its next
+ *  interruption. The author of one let go past them is kept (letGo). */
 const PUBLISHED_PER_CHANNEL_MAX = 32;
 /** How many channels' texts (their publishes, which are what the relay
  *  voices there) are kept: those of the channels published in last. */
@@ -172,7 +173,7 @@ const HEARD_PROBE_CHARS = 80;
 /** The agents voiced in a channel since its last interruption, those whose
  *  activations were announced there and those that published there, in the
  *  order they were first voiced there, whether the channel has had one, and
- *  the authors of its publishes since that were let go (spokeIn). */
+ *  the authors of its publishes since that were let go (letGo). */
 interface VoicedInChannel {
   agents: Set<string>;
   interrupted: boolean;
@@ -311,22 +312,29 @@ export class TtsRelayModule implements Module {
 
   /** `channel` was published in, which is what the relay voices. Past
    *  TEXT_CHANNELS_MAX channels, the publishes of the one published in
-   *  longest ago are let go, and their authors are kept with the names of
-   *  the agents voiced there. Until that channel's next interruption, a
-   *  match among the publishes it is given since edits nothing and is told
-   *  to no one while another of those authors' messages was let go
-   *  (lostWith); with no match, the note goes by the names (speakerOf). */
+   *  longest ago are let go (letGo). */
   private spokeIn(channel: string): void {
     this.textsKeptFor.delete(channel);
     this.textsKeptFor.add(channel);
     if (this.textsKeptFor.size <= TEXT_CHANNELS_MAX) return;
     const [oldest] = this.textsKeptFor;
     this.textsKeptFor.delete(oldest!);
-    const voiced = this.voicedIn.get(oldest!) ?? { agents: new Set<string>(), interrupted: false };
-    voiced.lostAuthors ??= new Set<string>();
-    for (const r of this.published.get(oldest!) ?? []) voiced.lostAuthors.add(r.agentName);
-    this.voicedIn.set(oldest!, voiced);
+    this.letGo(oldest!, this.published.get(oldest!) ?? []);
     this.published.delete(oldest!);
+  }
+
+  /** `dropped`, publishes in `channel` since its last interruption, are no
+   *  longer kept: a channel's past TEXT_CHANNELS_MAX channels (spokeIn), or
+   *  its oldest past PUBLISHED_PER_CHANNEL_MAX. Their authors are kept with
+   *  the names of the agents voiced there. Until the channel's next
+   *  interruption, a match among the publishes kept there edits nothing and
+   *  is told to no one while another of those authors' messages was let go
+   *  (lostWith); with no match, the note goes by the names (speakerOf). */
+  private letGo(channel: string, dropped: PublishedMessage[]): void {
+    const voiced = this.voicedIn.get(channel) ?? { agents: new Set<string>(), interrupted: false };
+    voiced.lostAuthors ??= new Set<string>();
+    for (const r of dropped) voiced.lostAuthors.add(r.agentName);
+    this.voicedIn.set(channel, voiced);
   }
 
   private endActivation(agentName: string, reason: 'complete' | 'abort' | 'error'): void {
@@ -351,6 +359,11 @@ export class TtsRelayModule implements Module {
         }
         const content = event.text.replace(/^\n+/, '');
         if (!content.trim()) break;
+        // The client sends nothing while it isn't connected and
+        // authenticated, so a message published then is never voiced: it
+        // isn't kept to match an interruption, and its author isn't named
+        // as voiced in its channel.
+        if (this.client && !this.client.isConnected()) break;
         // mcpl:speech-routed also reports publishes that aren't this prose, so the
         // edit targets come from inference:published.
         const raw = rawChannelId(event.channelId);
@@ -366,7 +379,7 @@ export class TtsRelayModule implements Module {
           text: event.text,
           at: event.timestamp,
         });
-        if (channel.length > PUBLISHED_PER_CHANNEL_MAX) channel.shift();
+        if (channel.length > PUBLISHED_PER_CHANNEL_MAX) this.letGo(raw, [channel.shift()!]);
         this.published.set(raw, channel);
         this.spokeIn(raw);
         this.voicedThere(raw, event.agentName);
@@ -552,7 +565,7 @@ export class TtsRelayModule implements Module {
 
   /** The authors, other than those of `matched`, of the publishes in the
    *  interruption's channel since its last interruption that were let go
-   *  (spokeIn). Any of them may have been voiced in a message no longer kept
+   *  (letGo). Any of them may have been voiced in a message no longer kept
    *  that the heard words start, so the match can't be taken as `matched`'s
    *  alone. An agent whose activation alone was announced there voiced
    *  nothing there (#317). None when nothing matched: speakerOf reads the

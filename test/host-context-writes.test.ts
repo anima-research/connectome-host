@@ -20,8 +20,10 @@
  *   run takes it on;
  * - a subagent's result or failure told straight to the agent that started
  *   it is written for that agent, so no other resident is shown it; one
- *   whose launcher has ended is written for the nearest listed agent above
- *   the launcher, else for the primary, and wakes nobody.
+ *   whose launcher has ended is written for its run's current attempt, and
+ *   wakes it, when an earlier attempt of a run that goes on launched it;
+ *   else for the nearest listed agent above the launcher, else for the
+ *   primary, and wakes nobody.
  *
  * Each runs a real AgentFramework (test/presented-host.ts). Most read the
  * agents' windows and the requests the provider receives; the refusal cases
@@ -609,9 +611,11 @@ describe("a subagent's result or failure told directly", () => {
 
 describe("a subagent's result or failure whose launcher has ended", () => {
   // Written for no agent, it was stamped for every resident sharing the slot,
-  // and shown to each of them at rest. It is written for the nearest agent
-  // above the launcher that agent-framework lists, else for the primary, and
-  // wakes nobody (#291).
+  // and shown to each of them at rest. It is written for its run's current
+  // attempt, and wakes it, when an earlier attempt of a run that goes on
+  // launched it (test/fleet-status-injection.test.ts); else for the nearest
+  // agent above the launcher that agent-framework lists, else for the
+  // primary, and wakes nobody (#291).
   test("is in the window of the nearest listed agent above the launcher, else the primary's, no other resident's, and wakes nobody", async () => {
     const subagent = new SubagentModule({ provider: 'mock', parentAgentName: 'clerk', defaultModel: 'model-kid', maxRetries: 0 });
     const h = await bootPresentedHost({ agents: ['clerk', 'mira'], modules: [subagent as unknown as Module], prefix: 'subagent-ended-' });

@@ -99,6 +99,11 @@ export interface CommandResult {
   refused?: boolean;
   switchToFleetPeek?: string;
   switchToFleetView?: boolean;
+  /** The branch the answer says the `_config` mount wasn't written from:
+   *  a move whose mount write failed (switchStore), a failed rollback that
+   *  left the store on its new branch (rollbackFailed). A client that
+   *  writes the mount after a move, the Web UI, says what that write did. */
+  mountNotWrittenFrom?: string;
 }
 
 function getAgentCM(framework: AgentFramework, agentName?: string): ContextManager | null {
@@ -224,6 +229,7 @@ function switchStore(
               { text: `  The gate's files may still be the previous branch's. /checkout ${target} runs the refresh again.`, style: 'system' },
             ],
             branchChanged: true,
+            mountNotWrittenFrom: target,
           };
         }
         return { lines: [{ text: `${words.failed}: ${message}`, style: 'system' }, movedNothing(err)] };
@@ -253,7 +259,7 @@ function rollbackFailed(app: AppContext, from: string, failed: string, err: unkn
   const on = app.framework.getStore().currentBranch().name;
   if (!refused && on !== from) {
     lines.push({ text: `  The _config mount wasn't written from ${on}: the gate's files may still be the previous branch's. /checkout ${on} writes them.`, style: 'system' });
-    return { lines, branchChanged: true };
+    return { lines, branchChanged: true, mountNotWrittenFrom: on };
   }
   if (!(err instanceof OperatorActionError && err.code === 'failed')) lines.push(movedNothing(err));
   return { lines };

@@ -120,6 +120,11 @@ export interface WindowFrameHooks {
  *   posts the window to count_tokens). Nor does the one the host sends right
  *   after each welcome, which marks the rows the page kept and moved no
  *   window;
+ * - in any scope, at the welcome of a socket that follows one that closed
+ *   (disconnected): the frames sent while the page was away are missed, so
+ *   a window moved then (another client's undo, say) is read again once.
+ *   The page's first welcome reads nothing, as no panel has read yet, and
+ *   nor does one sent again on the same socket;
  * - for a fleet child, at a `child-event` of its `window:undone` or its
  *   shed (`presentation:retracted`, reason `shed`): for the agent the child's
  *   panels named, or for any of its agents before they have named one. For
@@ -133,6 +138,12 @@ export interface WindowFrameHooks {
 export class WindowFrames {
   private tracedJustBefore: string | undefined;
   private welcomedJustBefore = false;
+  private reconnecting = false;
+
+  /** The page's socket closed, and the page will connect again. */
+  disconnected(): void {
+    this.reconnecting = true;
+  }
 
   take(
     msg: { type: string; [k: string]: unknown },
@@ -144,6 +155,11 @@ export class WindowFrames {
     this.tracedJustBefore = undefined;
     this.welcomedJustBefore = msg.type === 'welcome';
     const local = !isChildScope(shown.scope);
+    if (msg.type === 'welcome') {
+      if (this.reconnecting) hooks.readPanels();
+      this.reconnecting = false;
+      return;
+    }
     if (msg.type === 'trace') {
       const event = msg.event as { type?: unknown; agentName?: unknown } | undefined;
       if (event?.type !== 'window:undone' || typeof event.agentName !== 'string') return;

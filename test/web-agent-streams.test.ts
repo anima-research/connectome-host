@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   applyStreamEnded, applyTrace, conversationAgentOf, pickStreamSource, streamEventFor, toolCallState, treesShownFor,
   WindowFrames, type ShownPanels, type TraceViewHooks,
@@ -163,7 +164,8 @@ describe("the frames that move a window, and the panels' reads", () => {
     };
     const take = (msg: { type: string; [k: string]: unknown }, shown: ShownPanels = local) => taker.take(msg, shown, hooks);
     const named = (before: ShownPanels, after: ShownPanels) => taker.named(before, after, hooks);
-    return { calls, take, named };
+    const disconnected = () => taker.disconnected();
+    return { calls, take, named, disconnected };
   }
 
   // Host #485 bot review wave 2, finding 20: the host sends an undone-marks
@@ -195,6 +197,30 @@ describe("the frames that move a window, and the panels' reads", () => {
     expect(calls).toEqual(['marks:clerk:a1']);
     take(marks('clerk', ['x3']));
     expect(calls).toEqual(['marks:clerk:a1', 'marks:clerk:x3', 'read']);
+  });
+
+  // Host #485 bot review wave 6, finding 26: neither the welcome nor the
+  // marks frame after it read the panels, so a window moved while the page
+  // was disconnected (another client's undo) left them stale once it
+  // reconnected: the frames that would have read them were missed.
+  test("a reconnect's welcome reads them once, in any scope, and the marks frame right after it doesn't; the page's first welcome and another on the same socket read nothing", () => {
+    const { calls, take, disconnected } = frames();
+    take({ type: 'welcome' });
+    take(marks('clerk'));
+    expect(calls).toEqual(['marks:clerk:']);
+    disconnected();
+    disconnected();
+    take({ type: 'welcome' });
+    take(marks('clerk', ['a1']));
+    expect(calls).toEqual(['marks:clerk:', 'read', 'marks:clerk:a1']);
+    take({ type: 'welcome' });
+    take(marks('clerk', ['a1']));
+    expect(calls).toEqual(['marks:clerk:', 'read', 'marks:clerk:a1', 'marks:clerk:a1']);
+    disconnected();
+    take({ type: 'welcome' }, { scope: 'miner', agent: 'digger' });
+    expect(calls.at(-1)).toBe('read');
+    const page = readFileSync(new URL('../web/src/App.tsx', import.meta.url), 'utf8');
+    expect(page).toMatch(/if \(wire\.status\(\) === 'reconnecting'\) windowFrames\.disconnected\(\)/);
   });
 
   test("a marks frame with another frame between its agent's trace and it reads them", () => {

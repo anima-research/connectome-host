@@ -44,9 +44,9 @@
     it, its scrollback gone. That answer names the stop once and says to
     store the summary after the restart. `/newtopic <text>` stores its
     text as given, but for the white space at its two ends, its line breaks
-    included (a multi-line one needs the TUI
-    or the Web UI, which send a pasted text whole), where it joined its
-    words with single spaces.
+    included (a multi-line one needs the TUI, the Web UI or the headless
+    mode, which send it whole), where it joined its words with single
+    spaces.
   - tts-relay's note that a voiced reply was interrupted is written for the
     agent that spoke: the author of the published message the heard words
     start, else the agent voicing in its channel. It was written for no

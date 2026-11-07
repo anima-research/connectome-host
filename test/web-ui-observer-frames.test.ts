@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { OperatorActionError } from '@animalabs/agent-framework';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
@@ -687,6 +687,134 @@ describe('what each client is sent', () => {
     }
     rollback = async () => { throw new Error('no rollback in this test'); };
     branch = { id: 'b1', name: 'main' };
+  });
+
+  // Host #485 bot review wave 6, finding 7: the Web UI refreshed the
+  // _config mount after it had sent a surgery's answer, and dropped the
+  // refresh's failure, so the dialog said Done with the gate's files stale,
+  // and a failed rollback that left the store on its new branch never said
+  // whether the refresh wrote them.
+  test("a surgery's answer comes once the Web UI has refreshed the _config mount, and says when that failed", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const conn = await host.operator();
+    open.push(conn);
+    const fw = (host.module as unknown as { panelApp(): { framework: Record<string, unknown> } }).panelApp().framework;
+    const ownModule = fw.getModule;
+    let refreshes = 0;
+    fw.getModule = (name: string) => (name === 'workspace'
+      ? { materializeMount: async () => { refreshes++; throw new Error('EACCES: _config/gate.json'); } }
+      : undefined);
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      rollback = async () => {
+        branch = { id: 'b2', name: 'rollback/main/1' };
+        return { sourceBranch: 'main', targetBranch: 'rollback/main/1', messagesRemoved: 1, lastVisible: null };
+      };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-landed', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      expect(await conn.until('surgery-result', (f) => f.corrId === 'r-landed')).toMatchObject({ ok: true, mountError: 'EACCES: _config/gate.json' });
+      expect(refreshes).toBe(1);
+
+      branch = { id: 'b1', name: 'main' };
+      rollback = async () => {
+        branch = { id: 'b3', name: 'rollback/main/2' };
+        throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/2');
+      };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck-mount', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      expect(await conn.until('surgery-result', (f) => f.corrId === 'r-stuck-mount')).toMatchObject({ ok: false, code: 'failed', mountError: 'EACCES: _config/gate.json' });
+      expect(refreshes).toBe(2);
+
+      // One that moved nothing refreshes nothing, and says nothing of the mount.
+      rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while main is busy'); };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy-mount', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      const busy = await conn.until('surgery-result', (f) => f.corrId === 'r-busy-mount');
+      expect(busy.ok).toBe(false);
+      expect(busy.mountError).toBeUndefined();
+      expect(refreshes).toBe(2);
+      expect(quiet.mock.calls.map((c) => String(c[0]))).toContain('[webui] _config refresh failed: EACCES: _config/gate.json');
+    } finally {
+      quiet.mockRestore();
+      fw.getModule = ownModule;
+      rollback = async () => { throw new Error('no rollback in this test'); };
+      branch = { id: 'b1', name: 'main' };
+    }
+  });
+
+  // The same finding: a command's answer that says the _config mount wasn't
+  // written (a move whose mount write failed, a failed rollback that left
+  // the store on its new branch) is true in the TUI, whose redraw writes no
+  // mount, but the Web UI writes it after sending that answer.
+  test("a command's answer that says the _config mount wasn't written is followed by what the Web UI's refresh of it did, and another answer by nothing", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const conn = await host.operator();
+    open.push(conn);
+    const fw = (host.module as unknown as { panelApp(): { framework: Record<string, unknown> } }).panelApp().framework;
+    const own = { getModule: fw.getModule, getStore: fw.getStore, switchBranch: fw.switchBranch };
+    const ownCm = { listBranches: (cm as Record<string, unknown>).listBranches, queryMessages: (cm as Record<string, unknown>).queryMessages };
+    let refresh: () => Promise<void> = async () => {};
+    fw.getModule = (name: string) => (name === 'workspace' ? { materializeMount: () => refresh() } : undefined);
+    fw.getStore = () => ({ currentBranch: () => ({ name: branch.name }) });
+    Object.assign(cm, {
+      listBranches: () => [{ id: 'b1', name: 'main' }, { id: 'b4', name: 'experiment' }],
+      queryMessages: () => ({ messages: [{ id: 'm1', participant: 'user', content: [] }] }),
+    });
+    const answers = async (corrId: string, n: number) => {
+      const deadline = performance.now() + 5000;
+      for (;;) {
+        const got = conn.framesOf('command-result').filter((f) => f.corrId === corrId);
+        if (got.length >= n) return got.map((f) => (f.lines as Array<{ text: string }>).map((l) => l.text));
+        if (performance.now() >= deadline) throw new Error(`timed out waiting for ${n} answers to ${corrId}`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A /checkout whose move landed and whose mount write failed.
+      fw.switchBranch = async (target: string) => {
+        branch = { id: 'b4', name: target };
+        throw new Error('EIO writing _config');
+      };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-written' }));
+      const written = await answers('co-written', 3);
+      expect(written[1]![0]).toBe('Switched to branch experiment. Refreshing the _config mount from it failed: EIO writing _config');
+      expect(written[2]).toEqual(['The Web UI has since written the _config mount from experiment.']);
+
+      branch = { id: 'b1', name: 'main' };
+      refresh = async () => { throw new Error('ENOSPC'); };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-failed' }));
+      expect((await answers('co-failed', 3))[2]).toEqual(["The Web UI's refresh of the _config mount failed too: ENOSPC"]);
+
+      // A /branchto whose switch failed and whose putting the store back failed too.
+      branch = { id: 'b1', name: 'main' };
+      refresh = async () => {};
+      rollback = async () => {
+        branch = { id: 'b5', name: 'rollback-at-m1' };
+        throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback-at-m1');
+      };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/branchto m1', corrId: 'bt-stuck' }));
+      const stuck = await answers('bt-stuck', 3);
+      expect(stuck[1]![1]).toBe("  The _config mount wasn't written from rollback-at-m1: the gate's files may still be the previous branch's. /checkout rollback-at-m1 writes them.");
+      expect(stuck[2]).toEqual(['The Web UI has since written the _config mount from rollback-at-m1.']);
+
+      // A move that landed whole: its answer is followed by nothing, as the
+      // branch-changed frame sent after the refresh shows.
+      branch = { id: 'b1', name: 'main' };
+      fw.switchBranch = async (target: string) => { branch = { id: 'b4', name: target }; };
+      const moves = conn.framesOf('branch-changed').length;
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-landed' }));
+      await answers('co-landed', 2);
+      const deadline = performance.now() + 5000;
+      while (conn.framesOf('branch-changed').length <= moves) {
+        if (performance.now() >= deadline) throw new Error('timed out waiting for branch-changed');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(await answers('co-landed', 2)).toHaveLength(2);
+    } finally {
+      quiet.mockRestore();
+      Object.assign(fw, own);
+      Object.assign(cm, ownCm);
+      rollback = async () => { throw new Error('no rollback in this test'); };
+      branch = { id: 'b1', name: 'main' };
+    }
   });
 
   // DQ-4: the transcript shows the record, which keeps an undone turn's rows,

@@ -181,10 +181,10 @@ export interface WelcomeMessageEntry {
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
   /** The row is out of the conversation agent's window as an undone
-   *  turn's (agent-framework #291): an undo (which /redo puts back until
+   *  turn's (agent-framework #291): an undo (which /redo can reverse until
    *  the agent's next turn, a branch move or a restart, as agent-framework
-   *  keeps its redo in memory only) or a shed after a refusal or failed
-   *  inference (which it doesn't). Its next request is built without it,
+   *  keeps the redo in memory only) or a shed after a refusal or failed
+   *  inference (which it can't). Its next request is built without it,
    *  and the record, which the transcript shows, keeps it. Absent
    *  otherwise. */
   undone?: true;
@@ -799,6 +799,12 @@ export interface SurgeryResultMessage {
    *  (rollbackToMessage's `keptInWindowAfterTarget`). Absent when there are
    *  none. */
   keptInWindowAfterTarget?: number;
+  /** Why the Web UI's write of the `_config` mount, from the branch the
+   *  store is on, failed, so the gate's files may still be the previous
+   *  branch's. The answer comes once that write has run: after a surgery
+   *  that landed, and after one that failed and left the store on the
+   *  branch it made. Absent when it was written, or not tried. */
+  mountError?: string;
 }
 
 /** One durable operator-log record (mirrors the framework's OperatorLogEntry). */

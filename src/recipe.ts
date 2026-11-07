@@ -1209,7 +1209,8 @@ export interface RecipeModules {
    * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
    * its thinking, tool calls and tool results, and messages sent by a tool
    * call aren't sent, and nothing is sent while the host isn't connected to
-   * the relay. Also handles the relay's `interruption` events: the host
+   * the relay, so a message published then isn't matched to an
+   * interruption. Also handles the relay's `interruption` events: the host
    * edits at most one message it recently published in the interruption's
    * channel, one the heard words match, to the text the client reports as
    * voiced, and, with `notifyOnInterruption` on (its default), puts a note
@@ -1217,9 +1218,10 @@ export interface RecipeModules {
    * Nothing is edited when no message matches, and no note is written when
    * the messages that match are by more than one agent. What an agent wrote
    * and didn't publish isn't voiced, so it holds back no edit. Messages are
-   * matched in the 32 channels published in last. A channel past those
-   * keeps the names of the agents voiced there, and of those whose messages
-   * it let go: until its next interruption, a message published there later
+   * matched among each channel's latest 32, in the 32 channels published in
+   * last. A channel keeps the names of the agents voiced there, and of
+   * those whose messages it let go, a channel past those 32 or a message
+   * past its latest 32: until its next interruption, a message kept there
    * is edited, and its author told, only when no other agent's messages
    * were let go there. `token` should be `${VAR}`-substituted from .env,
    * never literal.
