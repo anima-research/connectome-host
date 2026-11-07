@@ -1056,6 +1056,11 @@ async function main() {
             ...(recipe.agent.cacheKeepalive?.refreshAfterMinutes !== undefined
               ? { refreshAfterMs: recipe.agent.cacheKeepalive.refreshAfterMinutes * 60_000 }
               : {}),
+            // Survive restarts: membrane saves what it needs to replay the
+            // last request and re-warms the cache on startup.
+            ...(recipe.agent.cacheKeepalive?.persist === true
+              ? { statePath: join(config.dataDir, 'cache-keepalive.json') }
+              : {}),
             onEvent: logKeepaliveEvent,
           },
         },

@@ -348,6 +348,12 @@ export interface RecipeAgent {
     maxIdleHours?: number;
     /** Refresh once untouched this long. Must be < 60 with a 1h TTL. Default 45. */
     refreshAfterMinutes?: number;
+    /**
+     * Save keepalive state to `<dataDir>/cache-keepalive.json` so a restart
+     * (a backup, an upgrade) replays the exact recorded request and keeps the
+     * cached prefix warm instead of starting cold. Default false.
+     */
+    persist?: boolean;
   };
   /**
    * Explicit prompt-caching override. Unset means provider-appropriate
@@ -2565,10 +2571,14 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof keepalive !== 'object' || keepalive === null) {
       throw new Error(`Recipe agent.cacheKeepalive must be an object, got ${JSON.stringify(keepalive)}.`);
     }
-    const { maxIdleHours, refreshAfterMinutes } = keepalive as {
+    const { maxIdleHours, refreshAfterMinutes, persist } = keepalive as {
       maxIdleHours?: unknown;
       refreshAfterMinutes?: unknown;
+      persist?: unknown;
     };
+    if (persist !== undefined && typeof persist !== 'boolean') {
+      throw new Error(`Recipe agent.cacheKeepalive.persist must be a boolean, got ${JSON.stringify(persist)}.`);
+    }
     if (refreshAfterMinutes !== undefined) {
       if (typeof refreshAfterMinutes !== 'number' || !(refreshAfterMinutes > 0)) {
         throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${JSON.stringify(refreshAfterMinutes)}.`);
