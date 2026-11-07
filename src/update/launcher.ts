@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, REBIND_PLAN, appendJournal, childrenFilePath,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath,
   connectedWhenMarked, copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy,
   pendingGoBack, readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
   unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
@@ -1036,13 +1036,6 @@ function clearLeftovers(root: string, lines: JournalLine[], ops: LauncherOps): v
 
 export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   takeLock(root, ops);
-  const plan = join(root, REBIND_PLAN);
-  if (exists(plan)) {
-    throw new ContractError(`a setup binding this install was cut off before it ` +
-      `finished (${plan} is its plan), so the places it names may be half bound. Setup, run again, finishes it from ` +
-      `its plan without asking about its places again, or says what stops it: run \`${shellWord(join(root, 'connectome'))} ` +
-      'setup discord`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.');
-  }
   settleCopy(root, ops);
   const record = readInstall(root, ops);
   // A start cut between a line's write and its sync leaves it in the page

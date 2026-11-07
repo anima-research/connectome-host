@@ -136,7 +136,7 @@ test('where its release has no setup and the directory\'s package has none it ca
   expect(gone.stderr).toContain(`and this one is ${gone.root}, so run its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
 });
 
-test('a record bound to another directory refuses the bare command, update and send, and a binding\'s plan standing refuses update, each before any CLI loads, while setup runs in both', () => {
+test('a record bound to another directory refuses the bare command, update and send, each before any CLI loads, while setup runs', () => {
   const { dir, root, run } = withCommands(true);
   const elsewhere = join(dirname(dir), 'elsewhere');
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(elsewhere, 'data'), extraState: [], workingDir: elsewhere }));
@@ -147,12 +147,6 @@ test('a record bound to another directory refuses the bare command, update and s
     expect(refused.stderr).toContain(`connectome: nothing runs in this install, since its record is bound to ${elsewhere}, and it's in ${dir}, so it was moved or copied here`);
   }
   expect(run('setup', 'discord').ran?.argv).toEqual(['setup', 'discord']);
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir }));
-  writeFileSync(join(root, 'rebind.json'), '{}');
-  const refused = run('update');
-  expect(refused.ran).toBeNull();
-  expect(refused.stderr).toContain(`connectome: nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, 'rebind.json')} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
-  expect(run('setup', 'discord').ran).toEqual({ who: 'current', root, argv: ['setup', 'discord'] });
 });
 
 test('a record from before workingDir runs update as it did', () => {

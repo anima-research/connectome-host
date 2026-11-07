@@ -1234,14 +1234,14 @@ describe('setup', () => {
 
 describe("setup's arguments", () => {
   test('takes a root and any number of extra states, and keeps the recorded ones when given none', () => {
-    expect(parseArgs([])).toEqual({ extraState: null, places: [] });
-    expect(parseArgs(['--root', 'r', '--extra-state', 'a', '--extra-state', '/b'])).toEqual({ root: 'r', extraState: [join(process.cwd(), 'a'), '/b'], places: [] });
+    expect(parseArgs([])).toEqual({ extraState: null, places: [], moveAside: false });
+    expect(parseArgs(['--root', 'r', '--extra-state', 'a', '--extra-state', '/b'])).toEqual({ root: 'r', extraState: [join(process.cwd(), 'a'), '/b'], places: [], moveAside: false });
   });
 
   test('says which flag lacks its value, and names what it does not take', () => {
     expect(() => parseArgs(['--root'])).toThrow("Setup's --root takes a directory, and none followed it.");
     expect(() => parseArgs(['--extra-state'])).toThrow("Setup's --extra-state takes a path, and none followed it.");
-    expect(() => parseArgs(['--data', 'x'])).toThrow('Setup takes --root DIR, --extra-state PATH and --place PATH PLACE, not "--data".');
+    expect(() => parseArgs(['--data', 'x'])).toThrow('Setup takes --root DIR, --extra-state PATH, --place PATH PLACE and --move-aside, not "--data".');
   });
 });
 

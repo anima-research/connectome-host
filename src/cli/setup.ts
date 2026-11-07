@@ -20,11 +20,14 @@ import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
-  writeJsonAtomic, writeTextAtomic, type InstallRecord,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readJournal, readRecord, releaseDir,
+  unfinishedTrial, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
-import { bindingOf, mapPath, type Binding, type Place } from '../update/rebind.js';
+import {
+  MOVE_ASIDE_BY_HAND, MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, movesPlaces, movingAside,
+  unfinishedTrialWords, type Binding, type Place,
+} from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
 
@@ -834,11 +837,6 @@ function bindingStopped(root: string, why: string, err: Io['err']): void {
 async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, binding: Binding,
   { out, err }: Io): Promise<{ dataDir: string; placeArgs: string[] } | number> {
   if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
-  if (binding.kind === 'resume') {
-    out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished. Setup finishes it from ` +
-      'its plan, with the places that run was given, or says what stops it.');
-    return { dataDir: binding.plan.record.dataDir, placeArgs: [] };
-  }
   const { from, to, ask } = binding;
   let asking = binding;
   const answer = ask.length === 0 ? '' : ' Press Enter where a place is this install\'s, or type the path of this ' +
@@ -898,10 +896,26 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       }
     }
   }
-  return {
-    dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...asking.kept] })!,
-    placeArgs: places.flatMap((place) => ['--place', place.from, place.to]),
-  };
+  const placeArgs = places.flatMap((place) => ['--place', place.from, place.to]);
+  const kept = movesPlaces(asking, places) ? keptInRoot(root) : null;
+  if (kept !== null && kept.found.length > 0) {
+    const account = keptAccount(root, from, kept);
+    const trial = unfinishedTrial(readJournal(root), readCurrent(root));
+    if (trial !== null) {
+      bindingStopped(root, `${account}\n${unfinishedTrialWords(trial)}`, err);
+      return 1;
+    }
+    out(`${account}\nMoving them aside ${movingAside(root, to)}. ${MOVED_ASIDE_AFTERWARDS}`);
+    const yes = await yesNo(world, 'Move them aside now? (yes/no) ');
+    if (yes === null) return -1;
+    if (!yes) {
+      err('Setup stops here, and the install is as it was. Run setup again and answer yes, or move them out ' +
+        `yourself: ${MOVE_ASIDE_BY_HAND}, and run setup again.`);
+      return 1;
+    }
+    placeArgs.push('--move-aside');
+  }
+  return { dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...asking.kept] })!, placeArgs };
 }
 
 function takeSetupLock(file: string): { release(): void } | null {

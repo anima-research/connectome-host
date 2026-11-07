@@ -2303,6 +2303,74 @@ test('a copy with a place outside its old directory asks where that place is in 
   expect(text(again.seen.out)).toContain(`It asks about each place outside ${dir}, since it can't tell whether that came with the install, as after a move, or is still the other install's, as after a copy. A place inside another goes with it. Press Enter where a place is this install's, or type the path of this install's own, as after a copy.`);
 });
 
+const keptInRoot = (dir: string): string => {
+  const root = join(dir, 'connectome-host');
+  mkdirSync(join(root, 'copy'));
+  mkdirSync(join(root, 'set-aside', 'm2'), { recursive: true });
+  return root;
+};
+const movedAsideAfterwards = 'Nothing removes what\'s moved aside: it takes its space until you remove it. What a Go ' +
+  'back kept holds the newer data it set aside, so move out what you want of it rather than deleting it. Until the next ' +
+  'update takes a new copy, /update back restore isn\'t there, and each update says it removes no older release.';
+
+test('a moved install whose root keeps a copy and a Go back\'s area says what moving them aside does and loses, and asks; yes hands its own setup --move-aside', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  keptInRoot(dir);
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const root = join(moved, 'connectome-host');
+  const again = world(moved, { answers: ['yes'] });
+  expect(await runSetup(moved, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual(['Move them aside now? (yes/no) ']);
+  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root, '--move-aside'], dataDir: join(moved, 'data') });
+  expect(again.seen.out).toContain(`This install was moved or copied here from ${dir}, so what its updates and Go backs ` +
+    'keep in its root names that directory\'s places, and restoring from it here would write them:\n' +
+    `  ${join(root, 'copy')}\n  ${join(root, 'set-aside', 'm2')}\n` +
+    `Moving them aside moves each into ${join(root, 'moved-aside')}, under the time it runs, and the areas each Go back ` +
+    `keeps inside a place this binding puts under ${moved} into that place's .connectome-update/moved-aside. ` +
+    movedAsideAfterwards);
+});
+
+test('a no to moving them aside stops setup with the install as it was, saying how to do it by hand, and an end of input stops as at any question', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  keptInRoot(dir);
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const record = readFileSync(join(moved, 'connectome-host', 'install.json'), 'utf-8');
+  const declined = world(moved, { answers: ['no'] });
+  expect(await runSetup(moved, ['discord'], declined)).toBe(1);
+  expect(declined.seen.err).toContain('Setup stops here, and the install is as it was. Run setup again and answer yes, or ' +
+    'move them out yourself: each one listed, and in each directory an update copies, ' +
+    '.connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for each mark listed, with or without ' +
+    '.tmp, .filling or .emptying after it, and run setup again.');
+  const ended = world(moved);
+  expect(await runSetup(moved, ['discord'], ended)).toBe(1);
+  expect(ended.seen.out).toContain('Setup stopped. Run it again in this directory to go on.');
+  for (const made of [declined, ended]) {
+    expect(made.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
+  }
+  expect(readFileSync(join(moved, 'connectome-host', 'install.json'), 'utf-8')).toBe(record);
+});
+
+test('while a trial is unfinished, a moved install whose root keeps a copy is refused, saying to let the trial end where it was, and nothing is asked', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = keptInRoot(dir);
+  writeFileSync(join(root, 'journal.jsonl'), `${JSON.stringify({
+    v: 1, at: '2026-11-01T00:00:00Z', step: 'trial-start', from: VERSION, to: '99.0.0', outcome: 'ok', mark: 'm1',
+  })}\n`);
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const again = world(moved);
+  expect(await runSetup(moved, ['discord'], again)).toBe(1);
+  expect(again.seen.asked).toEqual([]);
+  expect(text(again.seen.err)).toContain('A trial is unfinished: the journal\'s last ok trial-start, to 99.0.0, ' +
+    'has no ok commit, fallback or go-back after it');
+  expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
+});
+
 test('a record from before workingDir takes each place under this directory as this install\'s, asking nothing about them; one outside is asked about, Enter keeping it, and a data directory that isn\'t there is asked again', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
@@ -2397,27 +2465,12 @@ test('a fleet child\'s data directory outside every place is asked about after t
   });
 });
 
-test('a binding a setup run cut off is handed to the install\'s own setup, which finishes it, with no --place and asking nothing, and setup says that one finishes it or says what stops it', async () => {
-  const dir = directory();
-  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
-  const root = join(dir, 'connectome-host');
-  writeFileSync(join(root, 'rebind.json'), JSON.stringify({
-    v: 1, id: 'plan-1', from: null, to: dir, places: [],
-    record: { v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir },
-  }));
-  const again = world(dir);
-  expect(await runSetup(dir, ['discord'], again)).toBe(0);
-  expect(again.seen.asked).toEqual([]);
-  expect(text(again.seen.out)).toContain(`A setup run binding this install to ${dir} was cut off before it finished. Setup finishes it from its plan, with the places that run was given, or says what stops it.`);
-  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root], dataDir: join(dir, 'data') });
-});
-
 test('setup shows each line its install\'s own setup gives before the list of state kept outside, so a finished binding\'s summary shows too', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
   const says = [
-    `Finished binding the install at ${root} to ${dir}, which a setup run cut off had begun, with the places that run was given.`,
+    `Bound the install at ${root} to ${dir}, where it serves ${join(dir, 'data')} and runs ${VERSION}. Start its service again if it stopped.`,
     `The install at ${root} serves ${join(dir, 'data')} and runs ${VERSION}, as before.`,
   ];
   const again = world(dir, { installSetup: { status: 0, stdout: `${says.join('\n')}\n${EXTRA_STATE_LINE}: the places listed here:\n  none\n`, stderr: '' } });

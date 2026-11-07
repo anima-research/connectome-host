@@ -5,7 +5,7 @@
  * with DATA_DIR as the service gives the host (./data when it's unset):
  *
  *   DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
- *     [--place PATH PLACE]...
+ *     [--place PATH PLACE]... [--move-aside]
  *
  * It copies the install's code into the install root as its first release,
  * points `current` at the release, records the data directory the install
@@ -24,8 +24,10 @@
  * no directory, as one from before workingDir, or another one, as after a
  * move or a copy, setup binds the install to the directory it's in,
  * writing that as the record's workingDir and giving each place in the
- * record, the copy labels, each Go back's list and the fleet's children
- * file its place there. With
+ * record and in the fleet's children file in the data directory its place
+ * there. While a binding gives any place another place, it refuses an
+ * install root that holds a copy or what a Go back keeps, which name the
+ * old places, unless --move-aside moves them aside. With
  * --extra-state, it records the paths given in place of those recorded;
  * without, it keeps those recorded, at their places after any binding.
  */
@@ -38,15 +40,16 @@ import { fileURLToPath } from 'node:url';
 import {
   ContractError, ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, RESTART_EXIT_CODE, WRITE_RECORD_AGAIN, installPaths, moveCurrent,
   copyShows, readCurrent, readJournal,
-  readRecord, realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic,
+  readRecord, realOrResolved, releaseDir, unfinishedTrial, writeJsonAtomic, writeTextAtomic,
   type InstallRecord, type JournalLine,
 } from './contract.js';
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
 import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launcher.js';
 import {
-  bindingCheckLines, bindingOf, boundFiles, changesFiles, lockForBinding, mapPath, newPlan, readPlan, rebindPath,
-  removePlan, rewriteFiles, sameDirectory, workingDirOf, writePlan, type BoundFile, type Place, type RebindPlan,
+  MOVE_ASIDE_BY_HAND, MOVE_ASIDE_REFUSED, MOVED_ASIDE_AFTERWARDS, bindChildren, bindingCheckLines, bindingOf, childPathsOf,
+  childrenIn, childrenMove, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, movesPlaces, movingAside,
+  unfinishedTrialWords, workingDirOf, type MovedAside, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 
@@ -60,7 +63,7 @@ export function entryPointText(release: string | null = null): string {
     '// service starts the host here with the arguments it would give the host:',
     '// the launcher of the release this install\'s data last committed on decides what',
     '// runs, and then becomes the host of the release it decided on.',
-    "import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';",
+    "import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
     "import { dirname, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
@@ -258,7 +261,8 @@ export interface SetupOptions {
   hostRoot: string;
   say(line: string): void;
   units(cwd: string): ServiceUnits;
-  places?: Array<{ from: string; to: string }>;
+  places?: Moved[];
+  moveAside?: boolean;
 }
 
 function nestedWithRoot(rootReal: string, puts: Array<[string, string | null]>):
@@ -291,14 +295,8 @@ function setupsOwn(root: string): boolean {
   return readdirSync(releases).every((name) => name.endsWith('.tmp') || existsSync(join(releases, name, HOST_ENTRY)));
 }
 
-const CHANGED_MEANWHILE = 'This install\'s record, its binding\'s plan, its copy\'s label, a Go back\'s list or the ' +
-  'fleet\'s children file isn\'t what setup read before it held the lock, so setup has changed none of them. Run it again, and it reads them ' +
-  'afresh.';
-
-function sameFiles(a: BoundFile[], b: BoundFile[]): boolean {
-  const each = (files: BoundFile[]) => JSON.stringify(files.map(({ path, value }) => [path, value]));
-  return each(a) === each(b);
-}
+const CHANGED_MEANWHILE = 'This install\'s record or the fleet\'s children file isn\'t what setup read before it held ' +
+  'the lock, so setup has changed neither. Run it again, and it reads them afresh.';
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -337,16 +335,6 @@ export function setup(options: SetupOptions): void {
   const { say } = options;
   const root = resolve(options.root);
   const paths = installPaths(root);
-  const movedAway = (plan: RebindPlan): ContractError | null => {
-    const here = workingDirOf(root);
-    return sameDirectory(plan.to, here) ? null : new ContractError(`A setup run binding this install to ${plan.to} was ` +
-      `cut off before it finished, and the install is in ${here} now, so the places its plan ` +
-      `(${rebindPath(root)}) gives are another directory's. Setup has changed nothing. Move the install back ` +
-      `to ${plan.to}, run setup there, which finishes that binding, and then move it.`);
-  };
-  const standing = existsSync(rebindPath(root)) ? readPlan(root) : null;
-  const moved = standing === null ? null : movedAway(standing);
-  if (moved !== null) throw moved;
   if (!existsSync(options.dataDir)) {
     throw new ContractError(`The data directory ${options.dataDir} isn't there. Run setup in the directory the service runs the ` +
       'host in, with the DATA_DIR it gives the host, after the host has run there once.');
@@ -415,49 +403,12 @@ export function setup(options: SetupOptions): void {
   const bindingFound = existing === null ? null
     : bindingOf(root, given === null ? existing : { ...existing, extraState: [] }, placed);
   if (placed.length > 0 && bindingFound?.kind !== 'bind') {
-    throw new ContractError(bindingFound?.kind === 'resume'
-      ? `A binding of this install that a setup run cut off has its plan at ${join(root, 'rebind.json')}, and setup, ` +
-        'run again, finishes it from its plan with the places that run was given, or says what stops it, so it takes ' +
-        'no --place: run it again without.'
-      : `--place gives a place to a binding of a moved or copied install, and ${bindingFound === null
-        ? 'this install has no record yet' : `this install's record is bound to ${bindingFound.to}, where it is`}, so ` +
-        'there\'s nothing to bind. Run it again without.');
-  }
-  if (bindingFound?.kind === 'resume') {
-    const { plan } = bindingFound;
-    const here = workingDirOf(root);
-    const away = movedAway(plan);
-    if (away !== null) throw away;
-    lockForBinding(root, plan.from, ops);
-    try {
-      if (JSON.stringify(readPlan(root)) !== JSON.stringify(plan)) throw new ContractError(CHANGED_MEANWHILE);
-      const nested = nestedWithRoot(realOrResolved(root), [
-        [plan.record.dataDir, plan.record.dataDir],
-        ...plan.record.extraState.map((place): [string, string] => [place, place]),
-        ...boundFiles(root, plan.record.dataDir, rebindPath(root)).flatMap((file) => file.paths.map((was): [string, string | null] =>
-          [was, file.value.rebound === plan.id ? was : mapPath(was, plan)])),
-      ]);
-      if (nested !== null) {
-        const { place, real } = nested;
-        throw new ContractError(`A setup run cut off while binding this install planned ${place} as a place of its ` +
-          `state, and ${real === place ? 'that' : `that, which is ${real} once its links are followed,`} and the ` +
-          `install root ${realOrResolved(root)} are now one inside the other, so a copy of the data would hold the ` +
-          `copy itself. Setup has changed nothing more. Make ${place} a place apart from the root again, and run ` +
-          'setup again, which finishes the binding.');
-      }
-      writeEntries();
-      rewriteFiles(root, plan);
-      writeJsonAtomic(paths.install, plan.record);
-      removePlan(root);
-    } finally {
-      releaseLock(root);
-    }
-    existing = plan.record;
-    say(`Finished binding the install at ${root} to ${here}, which a setup run cut off had begun, with the ` +
-      'places that run was given.');
+    throw new ContractError(`--place gives a place to a binding of a moved or copied install, and ${bindingFound === null
+      ? 'this install has no record yet' : `this install's record is bound to ${bindingFound.to}, where it is`}, so ` +
+      'there\'s nothing to bind. Run it again without.');
   }
   const binding = bindingFound?.kind === 'bind' ? bindingFound : null;
-  let bindPlaces: RebindPlan['places'] = [];
+  let bindPlaces: Moved[] = [];
   if (binding !== null) {
     const known = (path: string) => binding.places.some((place) => place.path === path);
     const unknown = placed.find((place) => !known(place.from));
@@ -469,11 +420,11 @@ export function setup(options: SetupOptions): void {
         `places it binds:\n${binding.places.map(placeLine).join('\n')}`);
     }
     if (unknown !== undefined) {
-      throw new ContractError(`--place ${unknown.from} names no place this install's record, its copy's label` +
+      throw new ContractError(`--place ${unknown.from} names no place this install's record` +
         (binding.served === null
-          ? ' or its Go backs\' lists name. The fleet\'s children file, in the data directory, is read once the data ' +
-            'directory\'s place is given: give that with --place too. The places named:'
-          : ', its Go backs\' lists or the fleet\'s children file name. Those it names:') +
+          ? ' names. The fleet\'s children file, in the data directory, is read once the data directory\'s place is ' +
+            'given: give that with --place too. The places named:'
+          : ' or the fleet\'s children file name. Those it names:') +
         `\n${binding.places.map(placeLine).join('\n')}`);
     }
     const unanswered = binding.ask.filter((place) => !placed.some((given) => given.from === place.path));
@@ -492,6 +443,18 @@ export function setup(options: SetupOptions): void {
         'this install\'s, or the path of this install\'s own. Setup has changed nothing.');
     }
     bindPlaces = [...placed, ...binding.kept.filter((kept) => !placed.some((given) => given.from === kept.from))];
+  }
+  const moving = binding !== null && movesPlaces(binding, placed);
+  if (options.moveAside && !moving) throw new ContractError(MOVE_ASIDE_REFUSED);
+  const kept = moving ? keptInRoot(root) : null;
+  if (binding !== null && kept !== null && kept.found.length > 0) {
+    const account = keptAccount(root, binding.from, kept);
+    const trial = unfinishedTrial(readJournal(root), readCurrent(root));
+    if (trial !== null) throw new ContractError(`${account}\n${unfinishedTrialWords(trial)}`);
+    if (!options.moveAside) {
+      throw new ContractError(`${account}\nSetup has changed nothing. Run it again with --move-aside, which ` +
+        `${movingAside(root, binding.to)}, or move them out yourself: ${MOVE_ASIDE_BY_HAND}. ${MOVED_ASIDE_AFTERWARDS}`);
+    }
   }
   const bindShape = binding === null ? null : { from: binding.from, to: binding.to, places: bindPlaces };
   const placeHere = (path: string): string => bindShape === null ? path : mapPath(path, bindShape) ?? path;
@@ -676,7 +639,7 @@ export function setup(options: SetupOptions): void {
   if (binding !== null && bindShape !== null) {
     const nested = nestedWithRoot(rootReal, [
       ...given === null ? (recorded ?? []).map((was, at): [string, string] => [was, extraState[at]!]) : [],
-      ...binding.files.flatMap((file) => file.paths.map((was): [string, string | null] => [was, mapPath(was, bindShape)])),
+      ...childPathsOf(binding).map((was): [string, string | null] => [was, mapPath(was, bindShape)]),
     ]);
     if (nested !== null) {
       const { was, place, real } = nested;
@@ -794,25 +757,26 @@ export function setup(options: SetupOptions): void {
     workingDir: binding === null && existing?.workingDir !== undefined ? existing.workingDir : workingDirOf(root),
   };
   let command: { path: string; pathLine: string | null };
-  if (binding !== null) {
-    const plan = newPlan(binding.from, binding.to, bindPlaces, written);
-    const files = binding.files;
-    const rewrite = changesFiles(plan, files);
-    const locked = binding.from !== null || rewrite || bindPlaces.some((place) => place.from !== place.to);
+  let movedAside: MovedAside | null = null;
+  if (binding !== null && bindShape !== null) {
+    const rewrite = childrenMove(binding.children, bindShape);
+    const locked = moving || rewrite;
     if (locked) lockForBinding(root, binding.from, ops);
     try {
       if (locked) {
-        const now = boundFiles(root, binding.served);
+        const now = binding.served === null ? null : childrenIn(binding.served, binding.from, binding.to);
         if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
-          !sameFiles(now, files) || readPlan(root) !== null) {
+          JSON.stringify(now?.value ?? null) !== JSON.stringify(binding.children?.value ?? null)) {
           throw new ContractError(CHANGED_MEANWHILE);
         }
       }
       command = writeEntries();
-      if (rewrite) writePlan(root, plan);
-      if (rewrite) rewriteFiles(root, plan);
+      if (kept !== null && kept.found.length > 0) {
+        const places = [dataDir, ...extraState, ...childPathsOf(binding).map((was) => mapPath(was, bindShape) ?? was)];
+        movedAside = moveAside(root, binding.to, [...new Set(places)], kept, new Date());
+      }
+      if (rewrite) bindChildren(binding.children!, bindShape);
       writeJsonAtomic(paths.install, written);
-      if (rewrite) removePlan(root);
     } finally {
       if (locked) releaseLock(root);
     }
@@ -821,6 +785,17 @@ export function setup(options: SetupOptions): void {
     command = writeEntries();
   }
 
+  if (movedAside !== null) {
+    say('Moved aside what this install\'s updates and Go backs kept, which names places that aren\'t this install\'s now:');
+    for (const { from, to } of movedAside.moved) say(`  ${from} → ${to}`);
+    say(MOVED_ASIDE_AFTERWARDS);
+    if (movedAside.outside.length > 0) {
+      say(`Setup left these where they are, since they're outside ${binding!.to}: each is what a Go back kept inside a ` +
+        'place outside it, which may be another install\'s. Where the place is this install\'s own, move it out ' +
+        'yourself, keeping what you want of it:');
+      for (const path of movedAside.outside) say(`  ${path}`);
+    }
+  }
   if (settingUp) {
     say(`Set up ${root} as the install of ${readCurrent(root)} that serves ${dataDir}.`);
   } else if (binding !== null) {
@@ -890,15 +865,21 @@ export function setup(options: SetupOptions): void {
 export interface SetupArgs {
   root?: string;
   extraState: string[] | null;
-  places: Array<{ from: string; to: string }>;
+  places: Moved[];
+  moveAside: boolean;
 }
 
 export function parseArgs(argv: string[]): SetupArgs {
-  const out: SetupArgs = { extraState: null, places: [] };
+  const out: SetupArgs = { extraState: null, places: [], moveAside: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === '--move-aside') {
+      out.moveAside = true;
+      continue;
+    }
     if (arg !== '--root' && arg !== '--extra-state' && arg !== '--place') {
-      throw new ContractError(`Setup takes --root DIR, --extra-state PATH and --place PATH PLACE, not ${JSON.stringify(arg)}.`);
+      throw new ContractError('Setup takes --root DIR, --extra-state PATH, --place PATH PLACE and --move-aside, not ' +
+        `${JSON.stringify(arg)}.`);
     }
     const value = argv[++i];
     if (value === undefined) {
@@ -923,6 +904,7 @@ if (import.meta.main) {
       root: args.root ?? join(process.cwd(), 'connectome-host'),
       extraState: args.extraState,
       places: args.places,
+      moveAside: args.moveAside,
       hostRoot: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'),
       say: (line) => console.log(line),
       units: (cwd) => systemdUnits(cwd),

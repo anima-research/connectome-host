@@ -1,24 +1,21 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, linkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  ContractError, REBIND_PLAN, VersionError, childrenFilePath, copyLabelPath, installPaths, isChildEntry, itemSetAsideDir,
-  readRecord, syncDir, writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord,
-  type LockRecord,
+  ContractError, ITEM_UPDATE_DIR, VersionError, childrenFilePath, installPaths, isChildEntry, itemSetAsideDir, readRecord,
+  syncDir, writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
 } from './contract.js';
+import { makeDirs } from './data-swap.js';
 import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
 
-export interface RebindPlan {
-  v: 1;
-  id: string;
-  from: string | null;
+export interface Moved {
+  from: string;
   to: string;
-  places: Array<{ from: string; to: string }>;
-  record: InstallRecord;
 }
 
-export function rebindPath(root: string): string {
-  return join(root, REBIND_PLAN);
+export interface Mapping {
+  from: string | null;
+  to: string;
+  places: Moved[];
 }
 
 export function workingDirOf(root: string): string {
@@ -41,97 +38,40 @@ export function boundHere(record: InstallRecord, root: string): boolean {
   return typeof record.workingDir === 'string' && sameDirectory(record.workingDir, workingDirOf(root));
 }
 
-export interface BoundFile {
+const CHILDREN_FILE = "fleet's children file";
+
+export interface Children {
   path: string;
-  kind: 'label' | 'list' | 'children';
-  value: CopyLabel | GoBackList | ChildrenFile;
+  value: ChildrenFile;
   paths: string[];
+  bound: boolean;
 }
 
-const FILE_NAMES: Record<BoundFile['kind'], string> = {
-  label: "copy's label", list: "Go back's list of places", children: "fleet's children file",
-};
-
-function pathsIn(value: BoundFile['value'], kind: BoundFile['kind']): string[] | null {
-  if (kind === 'children') {
-    const { children } = value as ChildrenFile;
-    return Array.isArray(children) ? children.filter(isChildEntry).map((child) => child.dataDir) : null;
-  }
-  const lists = kind === 'label'
-    ? [(value as CopyLabel).items, (value as CopyLabel).absent ?? []]
-    : [(value as GoBackList).places];
-  const paths: string[] = [];
-  for (const list of lists) {
-    if (!Array.isArray(list)) return null;
-    for (const entry of list as unknown[]) {
-      const path = (entry as { path?: unknown } | null)?.path;
-      if (typeof path !== 'string') return null;
-      paths.push(path);
-    }
-  }
-  return paths;
-}
-
-export function boundFiles(root: string, dataDir: string | null, underWay: string | null = null): BoundFile[] {
-  const unbindable = (why: string, path: string, later = false) => new ContractError(`${why}, so setup can't bind the ` +
-    'places it names to this ' + (underWay === null
-      ? `directory, and has changed nothing. Put ${path} right, and run setup again.`
-      : `directory. A binding of this install is under way, with its plan at ${underWay}: put ${path} right and run ` +
-        'setup again, which finishes the binding or names what else stops it.') +
+export function childrenIn(dataDir: string, from: string | null, to: string): Children | null {
+  const path = childrenFilePath(dataDir);
+  const unbindable = (why: string, later = false) => new ContractError(`${why}, so setup can't bind the places it ` +
+    `names to this directory, and has changed nothing. Put ${path} right, and run setup again.` +
     (later ? ' If a later release wrote it, run that release\'s setup instead.' : ''));
-  const { copy, copyPrev, setAside } = installPaths(root);
-  const found: Array<{ path: string; kind: BoundFile['kind'] }> = [
-    { path: copyLabelPath(copy), kind: 'label' },
-    { path: copyLabelPath(copyPrev), kind: 'label' },
-  ];
+  let value: ChildrenFile | null;
   try {
-    for (const entry of readdirSync(setAside, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (entry.isDirectory()) found.push({ path: join(setAside, entry.name, 'places.json'), kind: 'list' });
-    }
+    value = readRecord<ChildrenFile>(path, CHILDREN_FILE);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw unbindable(`${setAside} can't be listed (${(error as Error).message})`, setAside);
-    }
+    throw unbindable(error instanceof ContractError ? error.message.replace(/\.+$/, '')
+      : `The ${CHILDREN_FILE} at ${path} can't be read (${(error as Error).message})`, error instanceof VersionError);
   }
-  if (dataDir !== null) found.push({ path: childrenFilePath(dataDir), kind: 'children' });
-  const files: BoundFile[] = [];
-  const read = (path: string, kind: BoundFile['kind']): void => {
-    let value: BoundFile['value'] | null;
-    try {
-      value = readRecord<BoundFile['value']>(path, FILE_NAMES[kind]);
-    } catch (error) {
-      throw unbindable(error instanceof ContractError ? error.message.replace(/\.+$/, '')
-        : `The ${FILE_NAMES[kind]} at ${path} can't be read (${(error as Error).message})`, path,
-        error instanceof VersionError);
-    }
-    if (value === null) return;
-    const paths = pathsIn(value, kind);
-    if (paths === null) throw unbindable(`${path} names its places in a form this release can't read`, path, true);
-    files.push({ path, kind, value, paths });
-  };
-  const directory = (path: string): boolean => {
-    try {
-      return statSync(path).isDirectory();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      throw unbindable(`${path} can't be looked at (${(error as Error).message})`, path);
-    }
-  };
-  for (const { path, kind } of found) read(path, kind);
-  for (const file of [...files]) {
-    if (file.kind === 'label') {
-      for (const { name } of (file.value as CopyLabel).items) {
-        const held = typeof name === 'string' ? join(dirname(file.path), name) : null;
-        if (held !== null && directory(held)) read(childrenFilePath(held), 'children');
-      }
-    } else if (file.kind === 'list' && dataDir !== null) {
-      const mark = basename(dirname(file.path));
-      for (const area of [itemSetAsideDir(dataDir, mark), itemStagingDir(dataDir, mark)]) {
-        for (const suffix of ['', '.tmp', '.filling', '.emptying']) read(childrenFilePath(area + suffix), 'children');
-      }
-    }
+  if (value === null) return null;
+  const { children, boundTo } = value;
+  if (!Array.isArray(children) || (boundTo !== undefined && typeof boundTo !== 'string')) {
+    throw unbindable(`${path} names its places in a form this release can't read`, true);
   }
-  return files;
+  const bound = boundTo !== undefined && boundTo !== from;
+  if (bound && !sameDirectory(boundTo, to)) {
+    throw new ContractError(`A setup run binding this install to ${boundTo} was cut off before it finished: the fleet's ` +
+      `children file, ${path}, is bound to ${boundTo}, and the install is in ${to} now, so the places it names are that ` +
+      `directory's. Setup has changed nothing. Move the install back to ${boundTo}, run setup there, which finishes that ` +
+      'binding, and then move it.');
+  }
+  return { path, value, paths: children.filter(isChildEntry).map((child) => child.dataDir), bound };
 }
 
 export interface Place {
@@ -141,18 +81,22 @@ export interface Place {
   files: string[];
 }
 
-export function placesOf(record: InstallRecord, files: BoundFile[]): Place[] {
-  const named = new Map<string, Place>();
+function recordedExtraState(record: InstallRecord): string[] {
+  return Array.isArray(record.extraState) ? record.extraState.filter((path) => typeof path === 'string') : [];
+}
+
+export function placesOf(record: InstallRecord, named: { path: string; paths: string[] } | null): Place[] {
+  const known = new Map<string, Place>();
   const at = (path: string): Place => {
-    let place = named.get(path);
-    if (place === undefined) named.set(path, place = { path, data: false, extra: false, files: [] });
+    let place = known.get(path);
+    if (place === undefined) known.set(path, place = { path, data: false, extra: false, files: [] });
     return place;
   };
   at(record.dataDir).data = true;
-  const extraState = Array.isArray(record.extraState) ? record.extraState.filter((path) => typeof path === 'string') : [];
+  const extraState = recordedExtraState(record);
   for (const path of extraState) at(path).extra = true;
-  for (const file of files) for (const path of file.paths) if (!at(path).files.includes(file.path)) at(path).files.push(file.path);
-  const all = [...named.values()];
+  for (const path of named?.paths ?? []) if (!at(path).files.includes(named!.path)) at(path).files.push(named!.path);
+  const all = [...known.values()];
   const outer = all.filter((place) => !all.some((other) => other !== place && isUnder(place.path, other.path)));
   for (const place of outer) {
     for (const inner of all.filter((other) => other !== place && isUnder(other.path, place.path))) {
@@ -166,22 +110,23 @@ export function placesOf(record: InstallRecord, files: BoundFile[]): Place[] {
   return outer.sort((a, b) => rank(a) - rank(b) || order(a) - order(b) || a.path.localeCompare(b.path));
 }
 
-export function mapPath(path: string, plan: Pick<RebindPlan, 'from' | 'to' | 'places'>): string | null {
-  let best: { from: string; to: string } | null = null;
-  for (const place of plan.places) {
+export function mapPath(path: string, mapping: Mapping): string | null {
+  let best: Moved | null = null;
+  for (const place of mapping.places) {
     if (isUnder(path, place.from) && (best === null || place.from.length > best.from.length)) best = place;
   }
-  if (best === null && plan.from !== null && isUnder(path, plan.from)) best = { from: plan.from, to: plan.to };
+  if (best === null && mapping.from !== null && isUnder(path, mapping.from)) best = { from: mapping.from, to: mapping.to };
   return best === null ? null : join(best.to, relative(best.from, path));
 }
 
 export type Binding =
   | { kind: 'bound'; to: string }
-  | { kind: 'resume'; plan: RebindPlan }
   | {
-    kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: RebindPlan['places'];
-    files: BoundFile[]; served: string | null;
+    kind: 'bind'; from: string | null; to: string; places: Place[]; ask: Place[]; kept: Moved[];
+    children: Children | null; served: string | null;
   };
+
+export type Bind = Extract<Binding, { kind: 'bind' }>;
 
 function keptHere(path: string, to: string, rootName: string): string | null {
   for (let at = path; ; at = dirname(at)) {
@@ -190,20 +135,23 @@ function keptHere(path: string, to: string, rootName: string): string | null {
   }
 }
 
-export function bindingOf(root: string, record: InstallRecord, placed: RebindPlan['places'] = []): Binding {
-  const plan = readPlan(root);
-  if (plan !== null) return { kind: 'resume', plan };
+export function childPathsOf(binding: Bind): string[] {
+  return binding.children === null || binding.children.bound ? [] : binding.children.paths;
+}
+
+export function bindingOf(root: string, record: InstallRecord, placed: Moved[] = []): Binding {
   const to = workingDirOf(root);
   if (boundHere(record, root)) return { kind: 'bound', to };
   const from = typeof record.workingDir === 'string' ? record.workingDir : null;
   const dataKept = from === null ? keptHere(record.dataDir, to, basename(root)) : null;
   const served = mapPath(record.dataDir,
     { from, to, places: [...placed, ...dataKept === null ? [] : [{ from: record.dataDir, to: dataKept }]] });
-  const files = boundFiles(root, served);
-  const extraState = Array.isArray(record.extraState) ? record.extraState.filter((path) => typeof path === 'string') : [];
+  const children = served === null ? null : childrenIn(served, from, to);
+  const childPaths = children === null || children.bound ? [] : children.paths;
   const named = [
-    ...[record.dataDir, ...extraState].map((path) => ({ path, by: `This install's record (${installPaths(root).install})` })),
-    ...files.flatMap((file) => file.paths.map((path) => ({ path, by: file.path }))),
+    ...[record.dataDir, ...recordedExtraState(record)]
+      .map((path) => ({ path, by: `This install's record (${installPaths(root).install})` })),
+    ...childPaths.map((path) => ({ path, by: children!.path })),
   ];
   const roundabout = named.find(({ path }) => resolve(path) !== path);
   if (roundabout !== undefined) {
@@ -212,7 +160,7 @@ export function bindingOf(root: string, record: InstallRecord, placed: RebindPla
       : 'which isn\'t an absolute path. Write the absolute path it means') +
       ', and run setup again. Setup has changed nothing.');
   }
-  const places = placesOf(record, files);
+  const places = placesOf(record, children === null ? null : { path: children.path, paths: childPaths });
   const kept = from === null
     ? places.flatMap((place) => {
       const here = keptHere(place.path, to, basename(root));
@@ -220,92 +168,133 @@ export function bindingOf(root: string, record: InstallRecord, placed: RebindPla
     })
     : [];
   return {
-    kind: 'bind', from, to, places, files, served,
+    kind: 'bind', from, to, places, children, served,
     ask: places.filter((place) => from === null ? !kept.some((one) => one.from === place.path) : !isUnder(place.path, from)),
     kept,
   };
 }
 
-export function readPlan(root: string): RebindPlan | null {
-  const path = rebindPath(root);
-  const damaged = (why: string) => new ContractError(`The plan of a binding of this install that was cut off, at ${path}, ` +
-    `${why}, so setup can't tell which place it gave each place this install names, and can't finish it. Setup has ` +
-    'changed nothing. If you know the place each should name, put this install\'s record, copy/copy.json, ' +
-    'copy.prev/copy.json, each set-aside/*/places.json, the data directory\'s fleet-children.json, and the ' +
-    'fleet-children.json in each copy of the data directory, in copy/, copy.prev/, and its own ' +
-    '.connectome-update/set-aside/* and .connectome-update/staging/*, right, and remove the plan.');
-  let plan: RebindPlan | null;
-  try {
-    plan = readRecord<RebindPlan>(path, 'plan of a binding');
-  } catch (error) {
-    throw damaged(error instanceof ContractError ? 'isn\'t one this release reads' : `can't be read (${(error as Error).message})`);
-  }
-  if (plan === null) return null;
-  const record = plan.record as Partial<InstallRecord> | undefined;
-  const readable = typeof plan.id === 'string' && plan.id !== '' && (plan.from === null || typeof plan.from === 'string') &&
-    typeof plan.to === 'string' && Array.isArray(plan.places) &&
-    plan.places.every((place) => typeof place?.from === 'string' && typeof place.to === 'string') &&
-    record?.v === 1 && typeof record.dataDir === 'string' && Array.isArray(record.extraState) &&
-    record.extraState.every((place) => typeof place === 'string') && typeof record.workingDir === 'string';
-  if (!readable) throw damaged('isn\'t one this release reads');
-  return plan;
+export function childrenMove(children: Children | null, mapping: Mapping): boolean {
+  return children !== null && !children.bound && children.paths.some((path) => mapPath(path, mapping) !== path);
 }
 
-export function newPlan(from: string | null, to: string, places: RebindPlan['places'], record: InstallRecord): RebindPlan {
-  return { v: 1, id: randomUUID(), from, to, places, record };
-}
-
-export function changesFiles(plan: RebindPlan, files: BoundFile[]): boolean {
-  return files.some((file) => file.paths.some((path) => mapPath(path, plan) !== path));
-}
-
-export function writePlan(root: string, plan: RebindPlan): void {
-  writeJsonAtomic(rebindPath(root), plan);
-}
-
-export function rewriteFiles(root: string, plan: RebindPlan): void {
-  for (const file of boundFiles(root, plan.record.dataDir, rebindPath(root))) {
-    if (file.value.rebound === plan.id) {
-      syncDir(dirname(file.path));
-      continue;
-    }
-    const placeOf = (was: string): string => {
-      const path = mapPath(was, plan);
-      if (path === null) {
-        throw new ContractError(`${file.path} names ${was}, which the plan at ${rebindPath(root)} gives no place ` +
-          'in this install, so setup can\'t bind it.');
+export function bindChildren(children: Children, mapping: Mapping): void {
+  writeJsonAtomic(children.path, {
+    ...children.value,
+    children: children.value.children.map((child) => {
+      if (!isChildEntry(child)) return child;
+      const dataDir = mapPath(child.dataDir, mapping);
+      if (dataDir === null) {
+        throw new ContractError(`${children.path} names ${child.dataDir}, which this binding gives no place, so setup ` +
+          'can\'t bind it.');
       }
-      return path;
-    };
-    const map = <T extends { path: string }>(place: T): T => ({ ...place, path: placeOf(place.path) });
-    if (file.kind === 'children') {
-      const children = file.value as ChildrenFile;
-      writeJsonAtomic(file.path, {
-        ...children,
-        children: children.children.map((child) => {
-          if (!isChildEntry(child)) return child;
-          const dataDir = placeOf(child.dataDir);
-          const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
-          return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
-        }),
-        rebound: plan.id,
-      } satisfies ChildrenFile);
-    } else if (file.kind === 'label') {
-      const label = file.value as CopyLabel;
-      writeJsonAtomic(file.path, {
-        ...label, items: label.items.map(map), ...(label.absent === undefined ? {} : { absent: label.absent.map(map) }),
-        rebound: plan.id,
-      } satisfies CopyLabel);
-    } else {
-      const list = file.value as GoBackList;
-      writeJsonAtomic(file.path, { ...list, places: list.places.map(map), rebound: plan.id } satisfies GoBackList);
-    }
-  }
+      const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
+      return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
+    }),
+    boundTo: mapping.to,
+  } satisfies ChildrenFile);
 }
 
-export function removePlan(root: string): void {
-  unlinkSync(rebindPath(root));
-  syncDir(root);
+export function movesPlaces(binding: Bind, places: Moved[]): boolean {
+  return binding.from !== null || places.some((place) => place.from !== place.to);
+}
+
+export interface KeptInRoot {
+  found: string[];
+  marks: string[];
+}
+
+export function keptInRoot(root: string): KeptInRoot {
+  const { copy, copyPrev, setAside } = installPaths(root);
+  let marks: string[] = [];
+  try {
+    marks = readdirSync(setAside).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new ContractError(`${setAside} can't be listed (${(error as Error).message}), so setup can't tell whether a ` +
+        'Go back kept anything there. Setup has changed nothing. Make it readable to this user, and run setup again.');
+    }
+  }
+  const copies = [copy, copyPrev].filter((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined);
+  return { found: [...copies, ...marks.map((mark) => join(setAside, mark))], marks };
+}
+
+export const MOVE_ASIDE_REFUSED = '--move-aside moves aside what an install\'s updates and Go backs keep once the ' +
+  'install\'s places have moved, and this run gives none of them another place, so what they keep still names this ' +
+  'install\'s places. Run it again without.';
+
+export const MOVED_ASIDE_AFTERWARDS = 'Nothing removes what\'s moved aside: it takes its space until you remove it. ' +
+  'What a Go back kept holds the newer data it set aside, so move out what you want of it rather than deleting it. ' +
+  'Until the next update takes a new copy, /update back restore isn\'t there, and each update says it removes no older ' +
+  'release.';
+
+export const MOVE_ASIDE_BY_HAND = 'each one listed, and in each directory an update copies, ' +
+  '.connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for each mark listed, with or without ' +
+  '.tmp, .filling or .emptying after it';
+
+export function keptAccount(root: string, from: string | null, kept: KeptInRoot): string {
+  return (from === null
+    ? 'This binding gives places of this install other places than its record names, so what its updates and Go ' +
+      'backs keep in its root names the places as they were'
+    : `This install was moved or copied here from ${from}, so what its updates and Go backs keep in its root names ` +
+      'that directory\'s places') +
+    `, and restoring from it here would write them:\n${kept.found.map((path) => `  ${path}`).join('\n')}`;
+}
+
+export function movingAside(root: string, to: string): string {
+  return `moves each into ${join(root, 'moved-aside')}, under the time it runs, and the areas each Go back keeps ` +
+    `inside a place this binding puts under ${to} into that place's ${ITEM_UPDATE_DIR}/moved-aside`;
+}
+
+export function unfinishedTrialWords(trial: JournalLine): string {
+  return `A trial is unfinished: the journal's last ok trial-start, to ${trial.to}, has no ok commit, ` +
+    'fallback or go-back after it, and if it ends before its commit, its fallback puts the places back from what\'s ' +
+    'listed here. Setup has changed nothing. Let that trial end where the install was, by starting it there, moving ' +
+    'it back first if it was moved, and then move or copy it again.';
+}
+
+export interface MovedAside {
+  moved: Moved[];
+  outside: string[];
+}
+
+export function moveAside(root: string, to: string, places: string[], kept: KeptInRoot, now: Date): MovedAside {
+  const time = now.toISOString().replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
+  const there = (path: string) => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  const aside = join(root, 'moved-aside', time);
+  const moves: Moved[] = [];
+  const outside: string[] = [];
+  for (const mark of kept.marks) {
+    for (const place of places) {
+      for (const area of [itemSetAsideDir(place, mark), itemStagingDir(place, mark)]) {
+        for (const path of ['', '.tmp', '.filling', '.emptying'].map((suffix) => area + suffix).filter(there)) {
+          const update = join(place, ITEM_UPDATE_DIR);
+          if (isUnder(place, to)) moves.push({ from: path, to: join(update, 'moved-aside', time, relative(update, path)) });
+          else outside.push(path);
+        }
+      }
+    }
+    moves.push({ from: join(installPaths(root).setAside, mark), to: join(aside, 'set-aside', mark) });
+  }
+  const { copy, copyPrev } = installPaths(root);
+  for (const path of [copyPrev, copy].filter(there)) moves.push({ from: path, to: join(aside, basename(path)) });
+  const moved: Moved[] = [];
+  for (const move of moves) {
+    try {
+      makeDirs(dirname(move.to));
+      renameSync(move.from, move.to);
+      syncDir(dirname(move.from));
+      syncDir(dirname(move.to));
+    } catch (error) {
+      throw new ContractError(`Moving ${move.from} to ${move.to} failed (${(error as Error).message}), so setup stops ` +
+        `there. Setup has moved ${moved.length === 0 ? 'nothing else'
+          : `only these:\n${moved.map((one) => `  ${one.from} → ${one.to}`).join('\n')}\nand nothing else`}, removes ` +
+        `nothing it moved, and hasn't bound the install. Move ${move.from} out of the way yourself, keeping what you ` +
+        'want of it, and run setup again with --move-aside, which moves what\'s left.');
+    }
+    moved.push(move);
+  }
+  return { moved, outside };
 }
 
 export function lockForBinding(root: string, from: string | null, ops: LauncherOps): void {
@@ -385,19 +374,10 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     '    return null;',
     '  }',
     '};',
-    `const plan = join(root, ${JSON.stringify(REBIND_PLAN)});`,
     "const record = readJson(join(root, 'install.json'));",
     "const bound = record?.v === 1 && typeof record.workingDir === 'string' ? record.workingDir : null;",
-    'let planned = true;',
-    'let unseen = null;',
-    'try {',
-    '  lstatSync(plan);',
-    '} catch (error) {',
-    "  if (error?.code === 'ENOENT') planned = false;",
-    '  else unseen = error?.code ?? String(error);',
-    '}',
-    "const recorded = planned ? readJson(plan)?.record?.dataDir : record?.v === 1 ? record.dataDir : null;",
-    "const served = typeof recorded !== 'string' ? null : !planned && bound !== null &&",
+    "const recorded = record?.v === 1 ? record.dataDir : null;",
+    "const served = typeof recorded !== 'string' ? null : bound !== null &&",
     "  (recorded === bound || recorded.startsWith(`${bound}/`)) ? join(dirname(root), recorded.slice(bound.length)) : recorded;",
     'const byHand = ownSetup !== null && existsSync(ownSetup) && served !== null',
     "  ? `the setup of ${writer}, the release whose setup wrote this file: \\`cd ${quoted(dirname(root))} && ` +",
@@ -413,24 +393,12 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     '      return false;',
     '    }',
     '  };',
-    '  let refused = null;',
-    '  if (unseen !== null) {',
-    "    refused = `${plan} can't be looked at (${unseen}), so whether a setup binding was cut off can't be told`;",
-    '  } else if (planned) {',
-    '    refused = `a setup binding this install was cut off before it finished (${plan} is its plan), so the places ` +',
-    "      'it names may be half bound. Setup, run again, finishes it from its plan without asking about its places ' +",
-    "      'again, or says what stops it';",
-    '  } else if (bound !== null && !sameDirectory(bound, dirname(root))) {',
-    '    refused = `its record is bound to ${bound}, and it\'s in ${dirname(root)}, so it was moved or copied here, ` +',
-    "      'and the places its record names may be another install\\'s. Setup binds it to this directory, asking about ' +",
-    '      `any place outside ${bound}`;',
-    '  }',
-    `  if (refused !== null${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
-    `    console.error(unseen !== null ? \`${said}: nothing runs in this install, since \${refused}. Start it again once \${plan} ` +
-      'can be looked at.`',
-    `      : \`${said}: nothing runs in this install, since \${refused}: run \\\`\${quoted(join(root, 'connectome'))} \` +`,
-    "      `setup discord\\`, or, for an install set up by hand, ${byHand}. A service that restarts the host will keep ` +",
-    "      'meeting this until setup has run: stop it first, and start it again after.');",
+    `  if (bound !== null && !sameDirectory(bound, dirname(root))${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
+    `    console.error(\`${said}: nothing runs in this install, since its record is bound to \${bound}, and it's in \` +`,
+    "      `${dirname(root)}, so it was moved or copied here, and the places its record names may be another install's. ` +",
+    "      `Setup binds it to this directory, asking about any place outside ${bound}: run ` +",
+    "      `\\`${quoted(join(root, 'connectome'))} setup discord\\`, or, for an install set up by hand, ${byHand}. A ` +",
+    "      'service that restarts the host will keep meeting this until setup has run: stop it first, and start it again after.');",
     '    process.exit(1);',
     '  }',
     '}',

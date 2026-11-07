@@ -27,10 +27,10 @@
  *   and what a restore sets aside; and, run from a shell with `--go-back`, a
  *   Go back's mark (writeMark);
  * - setup: the install record; and, binding an install moved or copied
- *   (rebind.ts), its plan, the paths of the copy's labels and the Go backs'
- *   lists, and the fleet's children file's data directories and, where a
- *   child's is the other install's, its process, only while it holds the
- *   lock;
+ *   (rebind.ts), the data directories of the fleet's children file in the
+ *   data directory it serves and, where a child's is the other install's,
+ *   its process, and with --move-aside the moves of the copies and of what
+ *   Go backs keep, only while it holds the lock;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
@@ -190,8 +190,6 @@ export interface InstallRecord {
   extraState: string[];
   workingDir?: string;
 }
-
-export const REBIND_PLAN = 'rebind.json';
 
 /** How the block setup prints each run with the state kept outside the data directory opens, which the remedy
  *  below names. */
@@ -372,7 +370,6 @@ export interface CopyLabel {
    *  switch to the same release left can't stand in for this one's; a label
    *  without it is no switch's copy a fallback can use. */
   mark?: string;
-  rebound?: string;
 }
 
 /** What a place an update copies or restores holds: a directory, a file, or
@@ -389,7 +386,6 @@ export type PlaceKind = typeof PLACE_KINDS[number];
 export interface GoBackList {
   v: 1;
   places: Array<{ path: string; name: string; before: PlaceKind; target: PlaceKind }>;
-  rebound?: string;
 }
 
 /** Where the Go back under `markId` lists its places (GoBackList). */
@@ -430,7 +426,7 @@ export function readGoBackList(root: string, markId: string): GoBackList['places
 export interface ChildrenFile {
   v: 1;
   children: Array<{ name: string; pid: number | null; bootId: string | null; dataDir: string }>;
-  rebound?: string;
+  boundTo?: string;
 }
 
 /** A path's real form as the places of a trial are written (trialPlaces): its
