@@ -402,7 +402,8 @@ export function undeliveredLaunchParts(
 const FALLBACK_SUBAGENT_MODEL = 'claude-haiku-4-5-20251001';
 const NO_PARENT_SYSTEM_PROMPT = 'You are a research assistant.';
 
-type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled';
+type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+type LaunchProseRouting = Exclude<ProseRouting, 'locked'>;
 
 /** What each prose-routing mode does with a stream's plain text, as
  *  agent-framework documents the mode (AgentConfig.proseRouting). As terse
@@ -415,7 +416,20 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
   hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
     'a leading ">>>destination" envelope routes that text to the destination it names instead',
   disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
+  locked: 'plain text goes to one destination on every turn, which only prose_locus moves, or is held as drafts',
 };
+
+/**
+ * The mode a subagent runs: its parent's, except that a locked parent's runs
+ * `disabled`. A locked parent's plain text goes only where it chose, and a
+ * subagent has no lock of its own, so it publishes no plain text at all; its
+ * result still reaches its parent, through subagent--return or its final
+ * text. Run as locus mode, a subagent that opens a channel would speak there,
+ * which no prose_locus move chose.
+ */
+function subagentProseRouting(parent: ProseRouting | undefined): LaunchProseRouting | undefined {
+  return parent === 'locked' ? 'disabled' : parent;
+}
 
 function proseRoutingEffect(mode: ProseRouting, shownHelp: boolean): string {
   return PROSE_ROUTING_EFFECT[mode] + (mode === 'explicit' && shownHelp ? '; the prose_help tool shows the syntax' : '');
@@ -454,7 +468,7 @@ export interface SubagentLaunch {
     maxMessageTokens: number;
     compressionModel: string;
   };
-  proseRouting?: ProseRouting;
+  proseRouting?: LaunchProseRouting;
   tools: {
     allowed: 'all' | string[];
     requested?: string[];
@@ -463,6 +477,8 @@ export interface SubagentLaunch {
   };
   parent: null | {
     stream: string;
+    /** The parent's own prose routing, where it differs from the launch's (subagentProseRouting). */
+    proseRouting?: ProseRouting;
     model: string;
     maxTokens: number;
     maxStreamTokens: number;
@@ -561,6 +577,16 @@ export function toolDifferences(extra: readonly string[], missing: readonly stri
   if (extra.length > 0) parts.push(`it also has ${joinSome(extra)}`);
   if (missing.length > 0) parts.push(`it doesn't have ${joinAll(missing)}`);
   return parts.join(', and ');
+}
+
+function proseRoutingNotInherited(launch: SubagentLaunch): string | undefined {
+  const routing = launch.proseRouting;
+  const parentRouting = launch.parent?.proseRouting;
+  if (routing === undefined || parentRouting === undefined) return undefined;
+  const allowed = launch.tools.allowed;
+  const withHelp = allowed === 'all' || (routing === 'explicit' && allowed.includes('prose_help'));
+  return `- Prose routing: ${routing}, since ${launch.kind === 'fork' ? 'the parent' : 'the caller'}'s is ${parentRouting} ` +
+    `and a subagent has no lock of its own: ${proseRoutingEffect(routing, withHelp)}.`;
 }
 
 export function describeSubagentLaunch(launch: SubagentLaunch): string {
@@ -679,18 +705,21 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
   const shownHelp = explicit && allowed !== 'all' && allowed.includes('prose_help');
 
   const routing = launch.proseRouting;
+  const routingNotInherited = proseRoutingNotInherited(launch);
   settings.push(routing === undefined
     ? {
         name: 'prose routing',
         ...(p ? { uncompared: 'at-start' as const } : {}),
         line: "- Prose routing: not set by this launch, so the framework's default applies, stated when the stream starts.",
       }
-    : {
-        name: 'prose routing',
-        ...(p ? { same: true } : {}),
-        line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ` +
-          `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
-      });
+    : routingNotInherited !== undefined
+      ? { name: 'prose routing', same: false, line: routingNotInherited }
+      : {
+          name: 'prose routing',
+          ...(p ? { same: true } : {}),
+          line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ` +
+            `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
+        });
 
   const gets = (fromList: string, offeredAt: string): string => {
     if (!shownHelp) {
@@ -2206,7 +2235,8 @@ export class SubagentModule implements Module {
     const parentRuntime = parentAgent?.getRuntimeSettings();
 
     // Without a caller, the stream takes agent-framework's default, 'locus'.
-    const proseRouting = parentAgent?.proseRouting;
+    const parentRouting = parentAgent?.proseRouting;
+    const proseRouting = subagentProseRouting(parentRouting);
     return {
       kind,
       name: input.name,
@@ -2230,6 +2260,7 @@ export class SubagentModule implements Module {
       parent: parentAgent
         ? {
             stream: parentAgent.name,
+            ...(parentRouting !== undefined && parentRouting !== proseRouting ? { proseRouting: parentRouting } : {}),
             model: parentAgent.model,
             maxTokens: parentAgent.maxTokens,
             maxStreamTokens: parentAgent.maxStreamTokens,
@@ -2268,11 +2299,12 @@ export class SubagentModule implements Module {
     };
   }
 
-  /** The fork's result head: #213's intention framing, or under `orientation: 'none'` the bare fact that this stream is the fork. */
+  /** The fork's result head: #213's intention framing, or under `orientation: 'none'` the bare fact that this stream is the fork, with its prose routing where that isn't its parent's. */
   private forkHead(depth: number, orientation: string): string {
-    return this.config.orientation === 'none'
-      ? `You are the forked stream. Your intention for this stream follows.`
-      : intentionFramedHead(depth, this.maxDepth, orientation);
+    if (this.config.orientation !== 'none') return intentionFramedHead(depth, this.maxDepth, orientation);
+    return orientation
+      ? `You are the forked stream.\n${orientation}\nYour intention for this stream follows.`
+      : `You are the forked stream. Your intention for this stream follows.`;
   }
 
   /** The fork call's result as the fork reads it: #213's intention-framed result, or under `orientation: 'none'` the head and the task alone. */
@@ -2356,7 +2388,7 @@ export class SubagentModule implements Module {
     },
     inherited: SubagentStart['inherited'],
   ): string {
-    if (this.config.orientation === 'none') return '';
+    if (this.config.orientation === 'none') return launch.kind === 'fork' ? proseRoutingNotInherited(launch) ?? '' : '';
     const framework = this.getFramework();
     let parentTools: string[] | undefined;
     let parentAgentSettings: AgentSettings | undefined;
@@ -3031,7 +3063,8 @@ export class SubagentModule implements Module {
       systemPrompt: systemPromptFor(launch.systemPrompt),
       maxTokens: launch.maxTokens,
       maxStreamTokens: launch.maxStreamTokens,
-      ...(launch.proseRouting !== undefined ? { proseRouting: launch.proseRouting } : {}),
+      // A stored launch never runs locked: a subagent has no lock of its own.
+      ...(launch.proseRouting !== undefined ? { proseRouting: subagentProseRouting(launch.proseRouting) } : {}),
       ...thinkingBindingSettings(launch.model, this.config.provider),
       allowedTools: launch.allowedTools === 'all' ? 'all' as const : [...launch.allowedTools],
       strategy: new KnowledgeStrategy({
@@ -3068,6 +3101,8 @@ export class SubagentModule implements Module {
       let resuming: ReturnType<AgentFramework['resumeAgent']> | undefined;
       let created: Awaited<ReturnType<AgentFramework['resumeAgent']>>;
       try {
+        // A resume runs as it was launched, which its orientation in the
+        // context it resumes from describes (agentConfig never runs locked).
         resuming = framework.resumeAgent(record.name, this.agentConfig(launch, record.name));
         created = await Promise.race([resuming, cancel.promise]);
       } catch (err) {
