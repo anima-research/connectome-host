@@ -1218,9 +1218,10 @@ export interface RecipeModules {
    * Nothing is edited when no message matches, and no note is written when
    * the messages that match are by more than one agent. What an agent wrote
    * and didn't publish isn't voiced, so it holds back no edit. Messages are
-   * matched in the 32 channels published in last. A channel past those
-   * keeps the names of the agents voiced there, and of those whose messages
-   * it let go: until its next interruption, a message published there later
+   * matched among each channel's latest 32, in the 32 channels published in
+   * last. A channel keeps the names of the agents voiced there, and of
+   * those whose messages it let go, a channel past those 32 or a message
+   * past its latest 32: until its next interruption, a message kept there
    * is edited, and its author told, only when no other agent's messages
    * were let go there. `token` should be `${VAR}`-substituted from .env,
    * never literal.

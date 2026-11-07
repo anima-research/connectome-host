@@ -25,13 +25,13 @@
   latest 32 of every channel together, so another channel's traffic could
   push out a message by one agent, and heard words that started it and
   another agent's message were taken as the other agent's alone. A
-  channel past those 32 keeps the names of the agents voiced there since
-  its previous interruption, and of those whose messages it let go. Until
-  its next one, heard words that start no message there are told by those
-  names, and heard words that start a message published there later edit
-  it and tell its author only when no other agent's messages were let go
-  there; otherwise nothing is edited, no note is written, and the log
-  names them.
+  channel keeps the names of the agents voiced there since its previous
+  interruption, and of those whose messages it let go, past those 32
+  channels or past its latest 32 publishes. Until its next one, heard
+  words that start no message there are told by those names, and heard
+  words that start a message kept there edit it and tell its author only
+  when no other agent's messages were let go there; otherwise nothing is
+  edited, no note is written, and the log names them.
 - tts-relay doesn't keep a message published while the host isn't
   connected to the relay to match an interruption, nor count its author as
   voiced in its channel: the relay never voiced it. It was matched like a

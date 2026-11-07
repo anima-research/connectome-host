@@ -726,5 +726,25 @@ describe('the texts kept to match an interruption', () => {
       expect(edited()).toEqual(['m-1']);
       expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
     });
+
+    // Host #485 bot review wave 6, finding 8: the first publish let go kept
+    // no record of its author, so heard words that started mira's message
+    // let go and clerk's kept were taken as clerk's alone: clerk's message
+    // was edited and clerk told. Its author is kept now, as for a channel
+    // whose texts were let go whole.
+    test("heard words that start another agent's first, let go, and a kept one: nothing is edited, and no note is written", async () => {
+      const shared = 'The ferry leaves at noon from the north pier, and the old bridge on the coast is';
+      const miraText = `${shared} closed until Friday for repairs to the deck and the railings.`;
+      const clerkText = `${shared}, since this morning, open again to cars and to the buses.`;
+      const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+      speak(trace, 'mira', '42', miraText, 'm-mira');
+      for (let i = 0; i < 31; i++) speak(trace, 'clerk', '42', `Ferry notice ${i}: the boat leaves at noon.`, `m-${i}`);
+      speak(trace, 'clerk', '42', clerkText, 'm-clerk');
+      const logged = await logOf(() => interrupt(miraText.slice(0, 100)));
+      expect(edited()).toEqual([]);
+      expect(notes).toEqual([]);
+      expect(logged).toContain('the heard words start m-clerk, and messages mira published in 42 are no longer kept — nothing edited');
+      expect(logged).toContain('the interruption in 42 is told to no agent: the heard words start a message published by clerk, and messages mira published in that channel are no longer kept');
+    });
   });
 });
