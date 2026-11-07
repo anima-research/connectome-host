@@ -429,7 +429,10 @@ describe('setup--run', () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'stubborn.pid');
     const termFile = join(dir, 'term-at');
-    const answering = run(module, `(trap 'cut -d" " -f1 /proc/uptime > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do sleep 0.1 & wait $!; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
+    // Each turn of its loop stamps its uptime, through a rename, so a kill mid-write leaves the last whole stamp: the
+    // last one dates the kill to within a turn whenever the test itself gets to look.
+    const aliveFile = join(dir, 'alive-at');
+    const answering = run(module, `(trap 'cut -d" " -f1 /proc/uptime > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do cut -d" " -f1 /proc/uptime > ${aliveFile}.new && mv ${aliveFile}.new ${aliveFile}; sleep 0.1 & wait $!; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
     const stubborn = Number(await waitForFile(pidFile));
     const termAt = Number(await waitForFile(termFile));
     let goneAt: number | null = null;
@@ -440,6 +443,7 @@ describe('setup--run', () => {
     expect(answer.stoppedAtLimit).toBe(true);
     expect(goneAt).not.toBeNull();
     expect(Math.round((goneAt! - termAt) * 1000)).toBeGreaterThanOrEqual(4_500);
+    expect(Math.round((Number(readFileSync(aliveFile, 'utf-8')) - termAt) * 1000)).toBeGreaterThanOrEqual(4_400);
   }, 30_000);
 
   linuxTest('stopping the module within 5 s of a limit still stops what that command left in its group, a SIGTERM-ignoring process too', async () => {
@@ -1061,7 +1065,9 @@ describe('setup--run', () => {
     const pidFile = join(dir, 'stubborn.pid');
     const pending = run(module, `trap '' TERM; sleep 60 & echo $! > ${pidFile}; sleep 60`);
     const stubborn = Number(await waitForFile(pidFile));
+    const stopping = performance.now();
     await module.stop();
+    expect(performance.now() - stopping).toBeGreaterThanOrEqual(4_900);
     const answer = await pending;
     expect(answer.signal).toBe('SIGKILL');
     expect(await waitForEnd(stubborn, 3_000)).toBe(true);
@@ -1080,7 +1086,10 @@ process.stdin.on('data', () => {
   if (how === 'crash') throw new Error('a crash');
   if (how === 'exit') process.exit(3);
   if (how === 'leftover') process.exit(0);
-  if (how === 'stop') void module.stop();
+  if (how === 'stop') {
+    void module.stop();
+    console.log('stopping');
+  }
 });
 setInterval(() => {}, 1000);
 `);
@@ -1110,7 +1119,7 @@ setInterval(() => {}, 1000);
           host.stdin.flush();
         }
         if (how === 'stop') {
-          expect(await until(() => said.includes('answered'), 4_500), how).toBe(true);
+          expect(await until(() => said.includes('stopping'), 4_500), how).toBe(true);
           expect(sleeping(), how).toBe(true);
           host.kill('SIGINT');
         }
