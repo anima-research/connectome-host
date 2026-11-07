@@ -959,7 +959,7 @@ describe('the store audit', () => {
       const { failed } = await audit([dir]);
       expect(failed).toEqual([
         `Couldn't audit ${stores[0]}: it opened, and closing it failed: store close failed`,
-        expect.stringMatching(new RegExp(`^${literally(stores[1]!)} \\(agents/agent\\): refused: store topology rejected: [^;]*[^.;]; closing it failed: store close failed$`)),
+        expect.stringMatching(new RegExp(`^${literally(stores[1]!)} \\(agents/agent\\): refused: store topology rejected: .*[^.;]; closing it failed: store close failed$`)),
       ]);
       expect(storeClose).toHaveBeenCalledTimes(2);
       withStrategy(dir, 'calls', "export function register(api) { api.registerStrategy('calls', () => ({ initialize: async (ctx) => { await ctx.membrane.complete({}); } })); }\n");

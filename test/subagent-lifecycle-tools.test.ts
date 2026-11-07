@@ -218,7 +218,15 @@ describe('subagents are Dendrite agents', () => {
 
   test('a resume runs as its launch did, though its resident has been locked since, as its retained orientation says', async () => {
     let calls = 0;
-    const h = await harness({ responseGenerator: () => { calls++; if (calls === 1) throw new Error('the provider is unavailable'); return 'resumed and finished'; } });
+    let resumedFrom = '';
+    const h = await harness({
+      responseGenerator: (r) => {
+        calls++;
+        if (calls === 1) throw new Error('the provider is unavailable');
+        if (calls === 2) resumedFrom = JSON.stringify(r.messages);
+        return 'resumed and finished';
+      },
+    });
     try {
       const configs: Array<Record<string, unknown>> = [];
       const fw = h.framework as unknown as Record<string, (...args: unknown[]) => unknown>;
@@ -234,6 +242,7 @@ describe('subagents are Dendrite agents', () => {
       const [launched, resumed] = configs as [Record<string, unknown>, Record<string, unknown>];
       expect(launched.proseRouting).toBe('locus');
       expect(resumed.proseRouting).toBe('locus');
+      expect(resumedFrom).toContain("- Prose routing: locus, inherited from the caller: ");
     } finally {
       await h.cleanup();
     }
@@ -938,6 +947,25 @@ describe("a resumed run's launch, and a registry stop of a live run", () => {
       expect(resumed.success).toBe(true);
       await h.until(() => seen !== undefined, "the resumed run's request");
       expect(seen).toEqual({ readFile: true, writeFile: false, maxStreamTokens: 12_345, proseRouting: 'explicit' });
+    } finally { await h.cleanup(); }
+  }, 30_000);
+
+  test('a stored launch that says locked resumes disabled, since a subagent has no lock of its own', async () => {
+    let seen: string | undefined;
+    let h: Awaited<ReturnType<typeof harness>> | undefined;
+    h = await harness({
+      responseGenerator: (r) => {
+        if (r.model === 'mock-locked') seen = h!.framework.getAgent('spawn-locked-1')!.proseRouting;
+        return 'ok';
+      },
+    });
+    try {
+      const internals = h.framework as unknown as Internals;
+      internals.registry.register(workerSpec('spawn-locked-1', { spawnedBy: 'parent', metadata: { subagent: 'locked-1', task: 'again', launch: { kind: 'spawn', model: 'mock-locked', systemPrompt: 'p', maxTokens: 64, proseRouting: 'locked', allowedTools: 'all', strategy: {} } } }));
+      internals.registry.end('spawn-locked-1', 'failed', 'test');
+      expect((await h.call('resume', { name: 'locked-1' })).success).toBe(true);
+      await h.until(() => seen !== undefined, "the resumed run's request");
+      expect(seen).toBe('disabled');
     } finally { await h.cleanup(); }
   }, 30_000);
 
