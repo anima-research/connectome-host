@@ -472,6 +472,8 @@ const OPS: FrameScopes = ['ops'];
 const TOOLS_AND_OPS: FrameScopes = ['messages', 'tools', 'ops'];
 const ALL_BUT_DEBUG: FrameScopes = AGENT_TREE_SCOPES;
 
+// A test fails on a type the installed framework raises without an entry here,
+// and on an entry for a type it no longer raises.
 export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   // The conversation and its turns.
   'message:added': MESSAGES,
@@ -690,6 +692,9 @@ export function frameScopes(frame: WebUiServerMessage): FrameScopes {
     case 'inbound-trigger':
     case 'branch-changed':
     case 'stream-ended':
+    // Which of the transcript's rows an undo took out of the agent's window,
+    // by id, as the welcome's entries mark them.
+    case 'undone-marks':
       return ['messages'];
     default:
       return FULL_CLIENTS_ONLY;

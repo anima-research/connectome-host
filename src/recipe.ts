@@ -1157,7 +1157,7 @@ export interface RecipeModules {
    * What the remote index holds: with `includePrivateTools` at the
    * framework default (true), the agent's think/journal/skip_reply prose is
    * indexed too. Search hits are checked against the CURRENT branch, so
-   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * /branchto, /checkout etc. hide rolled-back turns from results, but the remote
    * copy stays; `/session delete` removes only the local store, not the
    * remote namespace (the client has no namespace delete).
    */
@@ -1226,11 +1226,22 @@ export interface RecipeModules {
    * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
    * its thinking, tool calls and tool results, and messages sent by a tool
    * call aren't sent, and nothing is sent while the host isn't connected to
-   * the relay. Also handles the relay's `interruption` events: the host
+   * the relay, so a message published then isn't matched to an
+   * interruption. Also handles the relay's `interruption` events: the host
    * edits at most one message it recently published in the interruption's
-   * channel, to the text the client reports as voiced, and, with
-   * `notifyOnInterruption` on (its default), puts a note in the agent's
-   * context. `token` should be `${VAR}`-substituted from .env, never literal.
+   * channel, one the heard words match, to the text the client reports as
+   * voiced, and, with `notifyOnInterruption` on (its default), puts a note
+   * in the context of the agent voiced, when one agent can be named.
+   * Nothing is edited when no message matches, and no note is written when
+   * the messages that match are by more than one agent. What an agent wrote
+   * and didn't publish isn't voiced, so it holds back no edit. Messages are
+   * matched among each channel's latest 32, in the 32 channels published in
+   * last. A channel keeps the names of the agents voiced there, and of
+   * those whose messages it let go, a channel past those 32 or a message
+   * past its latest 32: until its next interruption, a message kept there
+   * is edited, and its author told, only when no other agent's messages
+   * were let go there. `token` should be `${VAR}`-substituted from .env,
+   * never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
@@ -1351,7 +1362,7 @@ export interface RecipeTtsRelay {
    *  A message published on another server isn't voiced; the host logs a line naming that server at the first such message from it. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Whether an interruption puts a note in the agent's context, saying what was voiced and whether the posted message was trimmed. Default true. */
+  /** Whether an interruption puts a note in the context of the agent voiced, when one agent can be named, saying what was voiced and whether the posted message was trimmed. Default true. */
   notifyOnInterruption?: boolean;
 }
 
@@ -1511,10 +1522,12 @@ export type RecipeForkReader = Omit<ForkReaderConfig, 'strategyFactory' | 'frami
 export type RecipeSpeech = NonNullable<FrameworkConfig['speech']>;
 
 /**
- * Tune-out without a reader (agent-framework FrameworkConfig.tuneOut): offer
- * `tune_out` / `focus` to the resident when no `subconscious` is configured.
- * A hold is then silent — nothing summarizes or wakes the resident; the
- * backlog is released on cancel or when the duration ends.
+ * Tune-out settings (agent-framework FrameworkConfig.tuneOut): `announce`
+ * only. The resident is offered `tune_out` / `focus` only with a reader
+ * (`subconscious`); there is no silent hold. `enabled`, which offered them
+ * without a reader, was removed in agent-framework 0.33.0: validateRecipe
+ * refuses `enabled: true`, as the framework's `create` does, and lets
+ * `enabled: false` load, which the framework accepts and ignores.
  */
 export type RecipeTuneOut = NonNullable<FrameworkConfig['tuneOut']>;
 
@@ -1614,7 +1627,7 @@ export interface Recipe {
   subconscious?: RecipeSubconscious;
   /** Where plain prose lands when nothing names a destination (agent-framework `speech`). */
   speech?: RecipeSpeech;
-  /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
+  /** Tune-out settings (agent-framework `tuneOut`): `announce`. `tune_out` itself comes with `subconscious`. */
   tuneOut?: RecipeTuneOut;
   /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
    *  `derivationNotice`, so an agent isn't told of a derivation and
@@ -3506,15 +3519,26 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe tuneOut must be an object.');
     }
     const tuneOut = obj.tuneOut as Record<string, unknown>;
+    // `enabled` is still read, only to refuse true: agent-framework 0.33.0
+    // removed it (agent-framework#959) and refuses `enabled: true` at
+    // create, so a recipe stating it fails here instead of loading and
+    // exiting at create. `false` the framework still accepts and ignores,
+    // so it loads here too.
     for (const key of Object.keys(tuneOut)) {
       if (key !== 'enabled' && key !== 'announce') {
-        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: enabled, announce).`);
+        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: announce).`);
       }
     }
     for (const key of ['enabled', 'announce'] as const) {
       if (tuneOut[key] !== undefined && typeof tuneOut[key] !== 'boolean') {
         throw new Error(`Recipe tuneOut.${key} must be a boolean.`);
       }
+    }
+    if (tuneOut.enabled === true) {
+      throw new Error(
+        'Recipe tuneOut.enabled was removed in agent-framework 0.33.0 (tune-out without a reader): ' +
+          'remove tuneOut.enabled; to keep tune_out, configure a subconscious as well.',
+      );
     }
   }
 
