@@ -208,9 +208,13 @@ export function showsItself(tool: string): boolean {
   return tool.startsWith(`${SETUP_MODULE}--`);
 }
 
+function redacted(text: string, secrets: Secret[]): string {
+  const bytes = Buffer.from(text);
+  return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text;
+}
+
 function shownCommand(command: string, secrets: Secret[]): string[] {
-  const bytes = Buffer.from(command);
-  return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text.split('\n').map(shown);
+  return redacted(command, secrets).split('\n').map(shown);
 }
 
 function failed(error: string): ToolResult {
@@ -572,6 +576,7 @@ export class SetupModule implements Module {
     }
     const envFile = join(this.config.dir, '.env');
     const provider = Object.hasOwn(PROVIDER_KEYS, name) ? PROVIDER_KEYS[name] : undefined;
+    let known: Secret[];
     try {
       const link = envLink(envFile);
       if (link) return linked(`Nothing was asked, so nothing was stored as ${name}`, link);
@@ -580,13 +585,13 @@ export class SetupModule implements Module {
         return failed(`Nothing was asked, so nothing was stored as ${name}: ${outside.message}. Ask the person to put ` +
           'that right, then call again.');
       }
-      this.secrets();
+      known = this.secrets().values;
     } catch (error) {
       return this.damaged(error, `Nothing was asked, so nothing was stored as ${name}`);
     }
     let value: string | null;
     try {
-      value = await asker.ask(name, shown(purpose));
+      value = await asker.ask(name, shown(redacted(purpose, known)));
     } catch (error) {
       return failed(`Nothing was asked, so nothing was stored as ${name}: ${(error as Error).message}. Calling again ` +
         'won\'t change that, so tell the person why.');
@@ -711,13 +716,14 @@ export class SetupModule implements Module {
       return failed(`Nothing is stored as ${name} in ${envFile}, so there's no key to check ${model} with. Ask the ` +
         'person for it with setup--ask_secret first.');
     }
-    this.config.show(`Checking ${shown(model)} with ${provider}.`);
     let hide: Secret[];
     try {
       hide = this.secrets().values;
     } catch (error) {
       return this.damaged(error, 'Nothing was checked');
     }
+    const seen = shown(redacted(model, hide));
+    this.config.show(`Checking ${seen} with ${provider}.`);
     const listed = await listModels(name, key, { fetch: this.config.fetch, env, hide })!;
     if (listed.kind === 'unsendable') {
       const words = `The key stored as ${name} holds a character a request header can't carry, so it can't be a key`;
@@ -743,19 +749,19 @@ export class SetupModule implements Module {
     }
     const { ids, shownIds, more } = listed.value;
     if (ids.includes(model)) {
-      this.config.show(`${provider} lists ${shown(model)} for this key.`);
+      this.config.show(`${provider} lists ${seen} for this key.`);
       return {
         success: true,
         data: `${provider} lists ${model} among the ${more ? 'first ' : ''}${ids.length} models it offers the key stored as ${name}.`,
       };
     }
     if (more) {
-      this.config.show(`${provider} lists more models than one answer holds, and ${shown(model)} isn't among the first ${ids.length}.`);
+      this.config.show(`${provider} lists more models than one answer holds, and ${seen} isn't among the first ${ids.length}.`);
       return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: it lists more models ` +
         `than one answer holds, and ${model} isn't among the first ${ids.length}. Ask the person whether ${model} is ` +
         'the one they meant before the recipe names it.');
     }
-    this.config.show(`${provider} doesn't list ${shown(model)} for this key.`);
+    this.config.show(`${provider} doesn't list ${seen} for this key.`);
     const family = familyOf(model);
     const kin = shownIds.filter((_shown, at) => ids[at] === family || ids[at]!.startsWith(`${family}-`) || ids[at]!.startsWith(`${family}.`))
       .sort();

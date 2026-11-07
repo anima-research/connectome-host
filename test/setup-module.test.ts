@@ -2309,6 +2309,21 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(result.success, result.error).toBe(true);
   });
 
+  test('a model check_model is given, or a purpose ask_secret is given, is shown with each stored value in it replaced by its name', async () => {
+    const purposes: string[] = [];
+    const made = install({
+      envFile: 'ANTHROPIC_API_KEY="sk-ant-stored-key"\nOPENAI_API_KEY="sk-openai-key"\n',
+      asker: { ask: async (_name: string, purpose: string) => { purposes.push(purpose); return 'other-token-value'; } },
+      fetch: (async () => models('gpt-6.1-terra')) as unknown as typeof fetch,
+    });
+    const asked = await askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'the token beside sk-ant-stored-key' });
+    expect(asked.success, asked.error).toBe(true);
+    expect(purposes).toEqual(['the token beside <ANTHROPIC_API_KEY>']);
+    await checkModel(made.module, { name: 'OPENAI_API_KEY', model: 'gpt-sk-ant-stored-key' });
+    expect(made.shown.join('\n')).not.toContain('sk-ant-stored-key');
+    expect(made.shown).toContain('Checking gpt-<ANTHROPIC_API_KEY> with OpenAI.');
+  });
+
   test('once the module is stopping, check_model asks the provider nothing, and says so, even waiting behind an open question', async () => {
     const asked: string[] = [];
     const fetchFn = (async (url: string) => { asked.push(String(url)); return models('gpt-6.1-terra'); }) as unknown as typeof fetch;
