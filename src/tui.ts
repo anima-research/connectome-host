@@ -808,6 +808,10 @@ export async function runTui(app: AppContext): Promise<void> {
    *  takes it, and the oldest past SCROLLBACK_CAP of them, each by then
    *  more than twice that many lines old. */
   let evictedLines: StreamedLine[] = [];
+  /** The reply entries kept since the root agent's current attempt began
+   *  (its inference:started, or its last tool round's end): an attempt
+   *  that fails stores nothing, so at its end they are let go. */
+  let attemptLines: StreamedLine[] = [];
   /** The operator's messages sent while a session switch runs, undefined
    *  while none runs: one that fails leaves them unstored, and the old
    *  session's history isn't drawn again, so their entries go then. */
@@ -836,6 +840,7 @@ export async function runTui(app: AppContext): Promise<void> {
   function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string): StreamedLine {
     const kept: StreamedLine = { kind, said, parts: [{ line, shown, color }] };
     streamedLines.push(kept);
+    if (kind !== 'you') attemptLines.push(kept);
     if (streamedLines.length > SCROLLBACK_CAP) {
       for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) evictedLines.push({ kind: gone.kind, said: gone.said, parts: [] });
       // A reply's entries go at its turn's end; an operator's message's
@@ -849,7 +854,7 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   /** Let go of entries no row will take: the operator's messages that were
-   *  never stored. */
+   *  never stored, and the reply lines of an attempt that failed. */
   function dropEntries(gone: StreamedLine[]): void {
     if (gone.length === 0) return;
     const dropped = new Set(gone);
@@ -1989,6 +1994,10 @@ export async function runTui(app: AppContext): Promise<void> {
     }
     if (streaming) endStream();
     clearedStream = undefined;
+    // A failed attempt stores nothing: its reply lines are no row's, so a
+    // row in the same words stored before it keeps its own line.
+    if (end.status === 'attempt-failed') dropEntries(attemptLines);
+    attemptLines = [];
     // The turn's rows are stored by its end, its last reply's before the
     // trace: each takes its lines now, marked if a shed took it out while
     // the turn was backgrounded. An evicted entry of a reply's no row took
@@ -2028,7 +2037,10 @@ export async function runTui(app: AppContext): Promise<void> {
     switch (event.type) {
       case 'inference:started': {
         if (agent) streamUsage.set(agent, emptyUsage());
-        if (agent === rootAgentName) attemptStart = backgroundBuffer.length;
+        if (agent === rootAgentName) {
+          attemptStart = backgroundBuffer.length;
+          attemptLines = [];
+        }
         if (agent && agent !== rootAgentName) {
           subagentFailureShown.delete(agent);
           const short = shortAgentName(agent);
@@ -2182,6 +2194,8 @@ export async function runTui(app: AppContext): Promise<void> {
             const line = addLine(shown, YELLOW);
             if (line && names) keepLine(line, 'tools', names, shown, YELLOW);
           }
+          // The round's row is stored with its calls: the next attempt starts here.
+          attemptLines = [];
         } else {
           const short = shortAgentName(agent ?? '');
           addLine(`  [${short}] ${names}`, DIM_GRAY);

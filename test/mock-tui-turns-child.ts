@@ -953,6 +953,28 @@ async function play(): Promise<void> {
     first.send('window:undone', { retracted: 2 });
     await until(async () => (await frame()).includes('(undone) a sixth ledger'), 'the mark');
     await step('undone');
+  } else if (scenario === 'undone-failed-attempt') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // A round streams its words and stores them with a tool call; the next
+    // attempt streams the same words and fails, storing nothing (#485 bot
+    // review 6, finding 15).
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'Tallied once.', blockType: 'text' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'tally' }] });
+    history.push({
+      id: 'a2', participant: 'agent',
+      content: [{ type: 'text', text: 'Tallied once.' }, { type: 'tool_use', id: 't1', name: 'tally', input: {} }],
+    });
+    first.send('inference:stream_resumed');
+    first.send('inference:tokens', { content: 'Tallied once.', blockType: 'text' });
+    first.send('inference:failed', { error: 'the provider is overloaded' });
+    await until(async () => times(await frame(), 'Tallied once.') === 2, 'the failed attempt');
+    first.send('inference:exhausted', { error: 'the provider is overloaded' });
+    // An undo of the stored round.
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone) Tallied once.'), 'the mark');
+    await step('undone');
   } else if (scenario === 'undone-moved-elsewhere') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     // Another client moves the store to a shorter branch, which

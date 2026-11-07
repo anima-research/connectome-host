@@ -489,6 +489,18 @@ describe("the TUI's undone marks on lines it streamed, through runTui", () => {
     expect(times(undone, 'the second answer')).toBe(1);
   }, 40000);
 
+  // A reply's row takes the newest line in its words, and linking runs at a
+  // failed attempt's end too: the failed attempt's line, the same words,
+  // was taken for the round stored before it (#485 bot review 6,
+  // finding 15).
+  test("a round stored before a failed attempt in the same words keeps its own line", async () => {
+    const undone = await frameOf('undone-failed-attempt', 'undone');
+    const lines = undone.split('\n').filter((line) => line.includes('Tallied once.'));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('(undone)');
+    expect(lines[1]).not.toContain('(undone)');
+  }, 40000);
+
   // /clear cuts a reply off mid-stream: its row holds the words before the
   // /clear and the rest of the block, which isn't drawn, so the line's
   // entry takes those too, and the row is a cleared line's (#485 bot
