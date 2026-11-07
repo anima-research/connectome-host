@@ -43,11 +43,12 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   first window written down with rows, or any window write of two or more
   items, such as a presentation or an undo of more than one row, moves the
   store's `MANIFEST` to version 2, which chronicle 0.5.1 and
-  earlier refuse (see the 291-presentation entry's going-back note).
+  earlier refuse (see the "Going back to an earlier release" entry below).
 
 - **Operators: `/undo` and `/redo` act on the agent's window, and `/checkout`,
   `/restore` and `/branchto` go through agent-framework** (agent-framework
-  #291, whose release this one needs: see the 291-dependency-ranges entry).
+  #291, whose release this one needs: see the "Installers and packagers"
+  entry above).
   Every agent's context now follows a
   window of its own over the one store, the rows it was shown in the order its
   requests carried them, so a command that moved the store's branch through
@@ -80,12 +81,14 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
     the store moved to it. A `/restore` whose checkpoint has no message (one
     taken on an empty branch), or whose message isn't on the current
     branch, is a `switchBranch` to the checkpoint's branch head instead, and
-    one at its checkpoint already moves nothing. Each is refused unless every agent
-    sharing the store is idle, as before, and each takes every agent's
-    context to the branch it moves to. While the command agent's own turn
-    is alive the host refuses it at once, as before (`/checkout refused: a
-    turn is in flight (…)`). While another agent's turn is, the host
-    refused it at once too; now the command answers with its progress line
+    one at its checkpoint already moves nothing. Each of the others is
+    refused unless every agent sharing the store is idle, as before, and
+    each takes every agent's context to the branch it moves to. While the
+    command agent's own turn is alive the host refuses each at once, as
+    before (`/checkout refused: a turn is in flight (…)`). While another
+    agent's turn is, the host refused each at once too; now a `/restore` at
+    its checkpoint already answers `Already at checkpoint …`, and one that
+    would move the store answers with its progress line
     (`Switching → branch …`, `Restoring to checkpoint …`, `Branching at
     …`), then with agent-framework's refusal after `Checkout failed:`,
     `Restore failed:` or `branchto failed:` (`Cannot … while … — every
@@ -95,8 +98,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
     records `/restore` and `/branchto` as `rollback`, `/checkout` and a
     `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
     `undo-turn` and `redo-turn`, each with who gave the command: `webui`
-    with the basic-auth user for the Web UI's command box, as for its
-    surgery; `headless` for a command on a headless host's socket; `fleet`
+    with the basic-auth user (`operator` without basic auth) for the Web
+    UI's command box, as for its surgery; `headless` for a command on a headless host's socket; `fleet`
     for a parent's `fleet--command`; and `host-console` for the TUI and the
     readline and piped modes. A `/nudge`'s `nudge` entry carries the same
     in its requester's name.
@@ -138,7 +141,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
     and draws below them an undone row stored since it loaded
     the history that it has no line for, past the scrollback cap too, until
     a redo puts it back, but not one whose lines `/clear` or the scrollback
-    cap took down, however many lines were drawn before its row was
+    cap took down, unless the cap took down 2,000 later lines of the same
+    kind, the operator's messages or replies, before its row was
     linked), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again, once, at each undo, redo or shed on the
@@ -256,10 +260,14 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   `/checkout`, `/restore` and `/branchto` are still refused while any agent
   sharing the store is mid-turn, the subconscious included, as the 0.16.0
   entry for #264 has it, and `/newtopic` while the agent the command acts
-  for is. A caller that reads or matches a branch command's answer gets,
-  for another agent's turn, the progress line and then agent-framework's
-  refusal (above), and the host's immediate `refused: a turn is in flight`
-  only for the command agent's own turn.
+  for is. A `/restore` at its checkpoint already is now refused only for
+  the command agent's own turn: it moves nothing, and says so while
+  another agent's turn is alive.
+  A caller that
+  reads or matches a branch command's answer gets, for another agent's
+  turn, the progress line and then agent-framework's refusal (above), and
+  the host's immediate `refused: a turn is in flight` only for the command
+  agent's own turn.
 
 - **Recipe authors:** a recipe with `"tuneOut": { "enabled": true }` is
   refused at load, naming agent-framework 0.33.0's removal of tune-out
@@ -298,8 +306,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 ### Added
 
 - Recipes accept `agent.proseRouting: "locked"` and `agent.proseLock`
-  (agent-framework's locked prose routing: plain text goes to one destination
-  the agent chose, and only its `prose_locus` tool moves it). `proseLock` is
+  (agent-framework's locked prose routing: plain text goes to one
+  destination, the recipe's `proseLock` until the agent chooses another,
+  is held as drafts while there is none, and only the agent's
+  `prose_locus` tool moves it). `proseLock` is
   refused unless `proseRouting` is `"locked"`. A locked recipe is refused
   beside `conversations`, and, without a `proseLock`, with an `allowedTools`
   list that doesn't name `prose_locus`. Subagents a locked resident launches
@@ -307,7 +317,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   lock of its own, so it publishes no plain text, and its result still
   reaches its parent.
 
-- The web UI server reports the phase of each of its process's agents to clients holding `health`: the tree's own words (`sending`, `streaming`, `invoking`, `executing`, …) and when it began, with no content. It arrives as a new `agent-phase` frame, in the welcome's `agentPhases`, and in the local `/healthz`'s `agentPhases`, so a dashboard can show what an agent is doing without being granted its messages. A fleet child's phases aren't included, and `/healthz?scope=<child>` has none. `/healthz` also keeps `kind` in `agents[].upcomingWakes` for clients without `ops`.
+- The web UI server reports the phase of each of its process's agents, from the start of its first turn, to clients holding `health`: the tree's own words (`sending`, `streaming`, `invoking`, `executing`, …) and when it began, with no content. It arrives as a new `agent-phase` frame, in the welcome's `agentPhases`, and in the local `/healthz`'s `agentPhases`, so a dashboard can show what an agent is doing without being granted its messages. A fleet child's phases aren't included, and `/healthz?scope=<child>` has none. `/healthz` also keeps `kind` in `agents[].upcomingWakes` for clients without `ops`.
 
 ### Changed
 
@@ -335,6 +345,13 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   is on, its first request after the update writes its prompt cache in
   full, once. With both of those tools, the gate's tools stay in the
   settings toolset, out of the tool list.
+- In each of these, a tool doesn't count for an agent whose
+  `agent.allowedTools` leaves it out or whose `agent.toolPresentation` file
+  hides it. Nor does one whose description that file, or a component
+  profile it selects, gives in place of agent-framework's, but for
+  `tune_out` and `wake_add_rule`, whose input schemas agent-framework
+  0.33.0 changes too (`tune_out`'s `backlogCap` description and
+  `wake_add_rule`'s new `suppress` property).
 
 - The TTS relay (`modules.ttsRelay`) sends voice clients only what the
   agent's prose published: each message, once its publish is confirmed, as
@@ -404,7 +421,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
     readline and piped modes as a one-line `/newtopic <text>`, its line
     breaks folded to spaces, since they read each line as its own input: a
     summary given back on several lines would store its first line alone
-    there, and send the rest to the agent. One given back as the TUI stops
+    there, and send the rest to the agent, but for a line starting with
+    `/`, which runs as a command. One given back as the TUI stops
     is printed to the terminal the TUI leaves, if it comes before the host
     exits, as any command's answer that comes then now is: the TUI dropped
     it, its scrollback gone. That answer names the stop once and says to
@@ -444,8 +462,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   - A subagent's first rows (its orientation and task, a fork's copy of its
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.
-- A subagent run that ends on a tool call, with no speech, answers with the
-  newest text its window holds that isn't the user's or a stored
+- A subagent run that ends on a tool call, with no speech and no
+  `subagent--return` result, answers with the newest text its window holds that isn't the user's or a stored
   injection's (and `(no text output)` when there is none), not a text row
   an undo or a shed took out of it, or one stored and never shown to it
   (another agent's mail held out of it past the run's end), which
@@ -518,9 +536,11 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   interruption, and of those whose messages it let go, past those 32
   channels or past its latest 32 publishes. Until its next one, heard
   words that start no message there are told by those names, and heard
-  words that start a message kept there edit it and tell its author only
-  when no other agent's messages were let go there; otherwise nothing is
-  edited, no note is written, and the log names them.
+  words that start messages kept there edit one of them and tell its
+  author, as above, unless an agent with no kept message there that they
+  start had messages let go there; then nothing is edited, no note is
+  written, and the log names the message and those agents, and, while
+  `notifyOnInterruption` isn't `false`, the kept messages' authors too.
 - tts-relay doesn't keep a message published while the host isn't
   connected to the relay to match an interruption, nor count its author as
   voiced in its channel: the relay never voiced it. It was matched like a
