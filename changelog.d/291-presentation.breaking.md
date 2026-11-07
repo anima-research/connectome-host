@@ -134,11 +134,16 @@
   transcript's record that an
   undo or a shed took out of that window (status `undone`), from `fromIndex`
   0, as a welcome's and a history page's entries mark them (`undone: true`).
-  Building it asks the status only of the rows out of that window that
-  aren't stamped for other residents only, where it asked every row of the
-  record (in the store the residents share, theirs too), on the host's
-  event loop, at each undo, redo or shed. `undo:completed` and
+  Building it walks every row of the record, on the host's event loop (in
+  the store the residents share, theirs too), and asks the status only of
+  the rows out of that window that aren't stamped for other residents only:
+  once at each welcome of a client it goes to, and at each undo, redo or
+  shed while such a client is connected. `undo:completed` and
   `redo:completed` are gone, with agent-framework's branch-moving undo.
+  A fleet child now sends `window:undone` and `presentation:retracted` to
+  its parent whatever its recipe's `subscription` asks, as it sends
+  `usage:updated`, so the parent's Web UI reads the child's panels again at
+  an undo, a redo or a shed on one of its agents' windows.
 - **Web UI protocol 4:** reload an open Web UI page after updating. An undo
   and a redo no longer move the branch, so a page from an earlier release,
   which learned of them from the move, would show an undone turn as still
@@ -150,6 +155,16 @@
   this release scopes no `undo:completed`, an earlier one no
   `window:undone`, and a frame no scope names goes to full clients only),
   and the child's panels don't read again.
+- **Operators: a quiesced host keeps no queue of held writes on disk**
+  (agent-framework 0.33.0, whose deferral queue is gone). A write to an
+  agent's context is stored at once, quiesced or not. Writes that arrive
+  while a rollback, a suppression or a branch switch runs (the Web UI's
+  surgery, `/checkout`, `/restore` and `/branchto`) are kept in memory and
+  stored when it ends, as are an agent's writes while its context manager
+  refuses its work after a failed re-initialization, until a branch move.
+  A crash before then loses them, where an earlier release kept a quiesced
+  host's queue on disk. agent-framework 0.33.0's entry on the deferral
+  queue says what a stop keeps.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next

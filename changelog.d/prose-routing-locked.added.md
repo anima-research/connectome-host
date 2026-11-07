@@ -6,4 +6,4 @@
   list that doesn't name `prose_locus`. Subagents a locked resident launches
   run `"disabled"`, and a resume runs as its launch did: a subagent has no
   lock of its own, so it publishes no plain text, and its result still
-  reaches its parent. Needs the agent-framework release that adds the mode.
+  reaches its parent.
