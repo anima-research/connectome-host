@@ -402,7 +402,7 @@ test('send whose turn printed a note and then gave up without a reply says so an
   expect(ran.err).toContain("connectome: the agent's turn ended without a reply.");
 });
 
-test("send prints a turn's reply before the next turn's notes when the turn's work brings another turn", async () => {
+test("send prints a turn's reply before the next turn's notes when the turn carries on into another, as a `!` continuation or autoContinue does", async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   await fakeHost(data, (message, reply) => {
