@@ -14,16 +14,18 @@
   `getPresentedMessages`), and chronicle 0.5.0 without the batched append;
   agent-framework refuses to start on either, naming the range to install.
   The context-manager, chronicle and membrane ranges are the ones
-  agent-framework declares, and chronicle's and membrane's the ones
-  context-manager declares, so an install takes one copy of each: two
+  agent-framework declares, chronicle's is the one context-manager declares,
+  and membrane's falls within context-manager's (`^0.8.0 || ^0.9.0`), so an
+  install takes one copy of each: two
   membrane copies make TypeScript refuse the host's `Membrane` where
   agent-framework or context-manager takes one, and two chronicle copies
   hand context-manager a store handle from a chronicle it doesn't load.
   Under the old ranges an install from the registry took releases without
-  those exports, and the host failed to load. Until those releases are
-  published an install of this one doesn't resolve, and `bun.lock` and
-  `package-lock.json`, which still name the old releases, are regenerated
-  once they are (then `scripts/lockfiles-agree.mjs` checks them).
+  those exports, and the host failed to load. agent-framework 0.33.0,
+  context-manager 0.25.0 and chronicle 0.6.0 are published on npm, and
+  `bun.lock` and `package-lock.json` resolve those three, with membrane at
+  0.8.0; `scripts/lockfiles-agree.mjs` finds that the two lockfiles resolve
+  the stack's packages alike.
   **Migration:** none for a host that installs connectome-host whole. A
   deployment that pins any of the four itself takes the ranges above. The
   first window written down with rows, or a presentation of more than one
