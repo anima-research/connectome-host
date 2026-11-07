@@ -67,6 +67,7 @@ export function tuiAnswer(rootAgentName: string, showing: () => boolean): Surfac
 export function surfaceTagOf(metadata: unknown): SurfaceTag | undefined {
   const tag = (metadata as Record<string, unknown> | null | undefined)?.[SURFACE_TAG_KEY] as Partial<SurfaceTag> | undefined;
   if (!tag || typeof tag !== 'object' || !SURFACE_ORDER.includes(tag.surface as SurfaceName)) return undefined;
+  if (tag.connection !== undefined && typeof tag.connection !== 'string') return undefined;
   return { surface: tag.surface as SurfaceName, ...(typeof tag.connection === 'string' ? { connection: tag.connection } : {}) };
 }
 

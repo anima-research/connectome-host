@@ -13,6 +13,7 @@ import {
   TuiModule,
   readlineAnswer,
   surfaceAnswers,
+  surfaceTagOf,
   tuiAnswer,
 } from '../src/modules/tui-module.js';
 import { WebUiModule, __getSharedServerPortForTests, pagesAnswer, stopWebUiServer } from '../src/modules/web-ui-module.js';
@@ -463,6 +464,15 @@ describe('the TUI module', () => {
       type: 'external-message', source: 'headless', content: 'from elsewhere', metadata: { [SURFACE_TAG_KEY]: { surface: 'nowhere' } },
     } as unknown as ProcessEvent, {} as never);
     expect(unknown.addMessages).toEqual([{ participant: 'user', content: [{ type: 'text', text: 'from elsewhere' }] }]);
+  });
+
+  test("reads a tag back only when its surface is known and its connection, if it has one, is a string", () => {
+    const read = (tag: unknown) => surfaceTagOf({ [SURFACE_TAG_KEY]: tag });
+    expect(read({ surface: 'web-ui', connection: 'p-1' })).toEqual({ surface: 'web-ui', connection: 'p-1' });
+    expect(read({ surface: 'readline' })).toEqual({ surface: 'readline' });
+    expect(read({ surface: 'web-ui', connection: 7 })).toBeUndefined();
+    expect(read({ surface: 'headless', connection: null })).toBeUndefined();
+    expect(read({ surface: 'nowhere', connection: 'p-1' })).toBeUndefined();
   });
 
   test('asks each surface whose messages opened the turn, in a fixed order, and joins their places', async () => {
