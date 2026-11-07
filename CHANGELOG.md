@@ -317,7 +317,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   lock of its own, so it publishes no plain text, and its result still
   reaches its parent.
 
-- The web UI server reports the phase of each of its process's agents, from the start of its first turn, to clients holding `health`: the tree's own words (`sending`, `streaming`, `invoking`, `executing`, …) and when it began, with no content. It arrives as a new `agent-phase` frame, in the welcome's `agentPhases`, and in the local `/healthz`'s `agentPhases`, so a dashboard can show what an agent is doing without being granted its messages. A fleet child's phases aren't included, and `/healthz?scope=<child>` has none. `/healthz` also keeps `kind` in `agents[].upcomingWakes` for clients without `ops`.
+- The web UI server reports the phase of each of its process's agents to clients holding `health`, from when the Web UI binds to the host's agents, at start and at each session switch, where each starts as `idle` until its next phase begins, or, for an agent added after that, from the start of its first turn: the tree's own words (`sending`, `streaming`, `invoking`, `executing`, …) and when it began, with no content. It arrives as a new `agent-phase` frame, in the welcome's `agentPhases`, and in the local `/healthz`'s `agentPhases`, so a dashboard can show what an agent is doing without being granted its messages. A fleet child's phases aren't included, and `/healthz?scope=<child>` has none. `/healthz` also keeps `kind` in `agents[].upcomingWakes` for clients without `ops`.
 
 ### Changed
 
