@@ -42,6 +42,8 @@ import {
   PANEL_OPS_THAT_CHANGE_THE_SESSION, operatorWorkRunning, refusedWhileSwitching, switchLeftForStop, trackOperatorWork,
 } from './session-switch.js';
 import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
+import { randomUUID } from 'node:crypto';
+import { REPLY_UNHEARD_KEY, SURFACE_TAG_KEY, surfaceAnswers } from './modules/tui-module.js';
 
 interface HeadlessOptions {
   socketPath?: string;
@@ -157,6 +159,11 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   let currentClient: Socket | null = null;
   let stalling: (() => void) | null = null;
   const superseded = new WeakSet<Socket>();
+  const connectionIds = new WeakMap<Socket, string>();
+  const consoleClients = new WeakSet<Socket>();
+  const explicitSubscribers = new WeakSet<Socket>();
+  let speechWritten: { text: string; client: Socket } | null = null;
+  let stopAnswering = (): void => {};
   const stoppedReadingMs = testing.stoppedReadingMs ?? STOPPED_READING_MS;
   // Framework events from before the first client connected, sent to it on
   // connect so a parent that attaches after the boot still hears it (the
@@ -199,16 +206,18 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     'command-done',
   ]);
 
-  function emit(event: Record<string, unknown>): void {
+  function emit(event: Record<string, unknown>): boolean {
     // A socket that has ended or errored takes no more writes. It stops being
     // current at its 'end' or 'close', but an error comes a tick before that.
-    if (!currentClient || currentClient.destroyed || currentClient.writableEnded) return;
+    if (!currentClient || currentClient.destroyed || currentClient.writableEnded) return false;
     const type = typeof event.type === 'string' ? event.type : '';
-    if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return;
+    if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return false;
     try {
       if (!currentClient.write(JSON.stringify({ ...event, ts: Date.now() }) + '\n')) stalling?.();
+      return true;
     } catch (err) {
       log(`emit failed for type=${type}: ${String(err)}`);
+      return false;
     }
   }
 
@@ -249,11 +258,15 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     }
     emit(event);
   };
-  // `inference:speech` fires once per "final" inference round — the round
-  // that completed without yielding tool calls.  It carries the accumulated
-  // speech text, letting the parent implement fleet--relay without having
-  // to subscribe to the whole token stream.
+  // agent-framework traces inference:completed also when an end-turn tool
+  // ends a stream after its tool round, traces inference:stream_resumed only
+  // when it gives a live stream its tool results, marks a start `silent`
+  // for a wake that must not surface prose (a silent heartbeat), and traces
+  // an empty text token of its own to discard a refused attempt's text;
+  // membrane's streams give no empty text chunk.
   let currentSpeech = '';
+  let roundOpen = false;
+  let silentStream = false;
 
   const idleTrace = (event: unknown): void => {
     const t = (event as { type?: string }).type;
@@ -270,17 +283,29 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         turnWorkDoneSince = 0;
       }
       exitSince = 0;
-      if (agentName === primaryAgentName) currentSpeech = '';
+      if (agentName === primaryAgentName) {
+        currentSpeech = '';
+        silentStream = (event as { silent?: unknown }).silent === true;
+        roundOpen = !silentStream;
+        speechWritten = null;
+      }
     } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
-      const content = (event as { content?: string }).content;
-      if (content) currentSpeech += content;
+      const { content, blockType } = event as { content?: string; blockType?: string };
+      if (blockType === 'text') currentSpeech = content === '' ? '' : currentSpeech + (content ?? '');
+    } else if (t === 'inference:stream_resumed' && agentName === primaryAgentName) {
+      roundOpen = !silentStream;
     } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
       currentSpeech = '';
+      roundOpen = false;
     } else if (t === 'inference:completed' && agentName === primaryAgentName) {
-      if (currentSpeech) {
-        emit({ type: 'inference:speech', agentName, content: currentSpeech });
+      if (roundOpen) {
+        const client = currentClient;
+        if (emit({ type: 'inference:speech', agentName, content: currentSpeech }) && currentSpeech && client) {
+          speechWritten = { text: currentSpeech, client };
+        }
       }
       currentSpeech = '';
+      roundOpen = false;
     }
   };
   let traced = app.framework;
@@ -357,6 +382,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
           return;
         }
         subscription = new Set(cmd.events);
+        explicitSubscribers.add(requester);
         log(`subscription set: ${[...subscription].join(', ') || '(none)'}`);
         return;
       }
@@ -372,11 +398,17 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         turnWorkDoneEmitted = false;
         turnWorkDoneSince = 0;
         exitSince = 0;
+        if (cmd.from === 'console') consoleClients.add(requester);
+        const unheard = cmd.from !== 'console' && !matchesSubscription('inference:speech', subscription) &&
+          !app.framework.channels;
         pushText({
           type: 'external-message',
           source: cmd.from === 'console' ? 'cli' : 'headless',
           content: cmd.content,
-          metadata: {},
+          metadata: {
+            [SURFACE_TAG_KEY]: { surface: 'headless', connection: connectionIds.get(requester) },
+            ...(unheard ? { [REPLY_UNHEARD_KEY]: true } : {}),
+          },
           triggerInference: true,
         });
         return;
@@ -622,6 +654,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       try { currentClient.end(); } catch { }
     }
     currentClient = socket;
+    connectionIds.set(socket, randomUUID());
     stalling = watchForStall(socket, stoppedReadingMs, (unsent) => {
       log(`${superseded.has(socket) ? 'superseded client' : 'client'} hadn't taken what was queued for it within ${stoppedReadingMs / 1000} s; closed with ${unsent} bytes unsent`);
       socket.destroy();
@@ -747,6 +780,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       exitCode = 1;
       log(`framework.stop() failed: ${String(err)}`);
     }
+    stopAnswering();
     try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
     try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
     try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch (err) { log(`pid unlink failed: ${String(err)}`); }
@@ -772,6 +806,28 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   {
     const IDLE_CONFIRM_MS = 500;
     let windowArmed = false;
+
+    const writeProse = (agentName: string, text: string, connections: string[]): Socket | undefined => {
+      const client = currentClient;
+      const id = client ? connectionIds.get(client) : undefined;
+      if (!client || id === undefined || !connections.includes(id)) return undefined;
+      return emit({ type: 'inference:prose', agentName, content: text }) ? client : undefined;
+    };
+    stopAnswering = surfaceAnswers.answerFor('headless', ({ agentName, text, final, connections }) => {
+      if (agentName !== primaryAgentName) return undefined;
+      const bare = (words: string): string => words.replace(/\s+/g, '');
+      const shown = !final
+        ? writeProse(agentName, text, connections)
+        : speechWritten && bare(speechWritten.text).includes(bare(text)) ? speechWritten.client : undefined;
+      if (!shown) return undefined;
+      const id = connectionIds.get(shown);
+      if (id !== undefined && connections.includes(id)) {
+        return consoleClients.has(shown)
+          ? 'the terminal that sent this turn (`connectome send`)'
+          : "the client that sent this turn on this host's socket";
+      }
+      return explicitSubscribers.has(shown) ? "another client on this host's socket, not the one that sent this turn" : undefined;
+    });
 
     const idlePoll = setInterval(() => {
       if (app.stopping) { clearInterval(idlePoll); return; }

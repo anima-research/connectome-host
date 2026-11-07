@@ -41,6 +41,7 @@ import { effectiveContextBudgetTokens } from './recipe-fit.js';
 import { storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from './stored-injection.js';
 import { speakerOf, type Speaker } from './speaker.js';
+import { SURFACE_TAG_KEY, surfaceAnswers, tuiAnswer } from './modules/tui-module.js';
 
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -380,6 +381,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
+  surfaceAnswers.answerFor('tui', tuiAnswer(rootAgentName, () => !backgrounded));
   let backgroundBuffer = '';
   let attemptStart = 0;
   let rootTurnShowing = false;
@@ -2446,7 +2448,7 @@ export async function runTui(app: AppContext): Promise<void> {
       updateStatus();
       app.framework.pushEvent({
         type: 'external-message', source: 'tui',
-        content: text, metadata: {}, triggerInference: true,
+        content: text, metadata: { [SURFACE_TAG_KEY]: { surface: 'tui' } }, triggerInference: true,
       });
     }
   }

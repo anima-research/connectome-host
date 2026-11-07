@@ -278,7 +278,7 @@ const app: {
 if (mode === 'quiet-idle') {
   whenWritten('speak', () => {
     trace({ type: 'inference:started', agentName: app.agentName });
-    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.' });
+    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.', blockType: 'text', blockIndex: 0 });
     trace({ type: 'inference:completed', agentName: app.agentName });
   });
 }
