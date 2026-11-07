@@ -798,9 +798,10 @@ async function installAndStart(
   const readAfter = readSetupState(statePath);
   const after = finishedAt(readAfter);
   const finished = after !== undefined && after !== before;
+  const goOn = `To go on with setup where it stopped: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`;
   out(finished
     ? `Setup is finished. To change something it set up, run setup again: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`
-    : `To go on with setup where it stopped: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`);
+    : after !== undefined ? `Setup finished in an earlier run, at ${after}, and this run didn't finish it again. ${goOn}` : goOn);
   if (!('state' in readAfter)) {
     out(`Whether setup finished isn't known: ${statePath}, where setup keeps its answers, ` +
       `${'absent' in readAfter ? 'is gone' : `can't be read (${readAfter.unreadable})`}.`);

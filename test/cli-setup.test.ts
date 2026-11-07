@@ -1088,7 +1088,8 @@ test('once its agent has recorded setup finished in this run, setup says it\'s f
   writeFileSync(state(earlier), JSON.stringify({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' }));
   const old = world(earlier, { answers: ['yes'], secrets: [KEY] }, { startAgent: async () => 0 });
   expect(await runSetup(earlier, ['discord'], old)).toBe(0);
-  expect(old.seen.out).toContain(resumeLine(earlier));
+  expect(old.seen.out).toContain('Setup finished in an earlier run, at 2026-10-01T00:00:00.000Z, and this run didn\'t ' +
+    `finish it again. ${resumeLine(earlier)}`);
   expect(text(old.seen.out)).not.toContain('Setup is finished');
 });
 
