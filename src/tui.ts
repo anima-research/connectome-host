@@ -353,7 +353,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
   const recipeName = app.recipe?.name ?? 'connectome-host';
   const rootAgentName = app.recipe?.agent?.name ?? 'agent';
-  surfaceAnswers.answerFor('tui', tuiAnswer(rootAgentName));
   process.stdout.write(`\x1b]0;${recipeName}\x07`);
 
   const state: TuiState = {
@@ -382,6 +381,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
+  surfaceAnswers.answerFor('tui', tuiAnswer(rootAgentName, () => !backgrounded));
   let backgroundBuffer = '';
   let attemptStart = 0;
   let rootTurnShowing = false;

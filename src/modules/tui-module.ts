@@ -60,8 +60,8 @@ export function readlineAnswer(stdoutIsTty: boolean): SurfaceAnswerer {
   return () => place;
 }
 
-export function tuiAnswer(rootAgentName: string): SurfaceAnswerer {
-  return ({ agentName }) => agentName === rootAgentName ? 'the TUI' : undefined;
+export function tuiAnswer(rootAgentName: string, showing: () => boolean): SurfaceAnswerer {
+  return ({ agentName }) => agentName === rootAgentName && showing() ? 'the TUI' : undefined;
 }
 
 export function surfaceTagOf(metadata: unknown): SurfaceTag | undefined {

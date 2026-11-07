@@ -524,12 +524,16 @@ describe('the TUI module', () => {
     expect(asked).toEqual(['headless', 'headless']);
   });
 
-  test("readline names the terminal, or standard output when it isn't one, for every agent; the TUI names itself for its root agent only", () => {
+  test("readline names the terminal, or standard output when it isn't one, for every agent; the TUI names itself for its root agent only, and not while that agent's turn is in the background", () => {
     const question = { agentName: 'helper', text: 'Hi.', final: false, connections: [] };
     expect(readlineAnswer(true)(question)).toBe('the terminal this host runs in');
     expect(readlineAnswer(false)(question)).toBe("this host's standard output");
-    expect(tuiAnswer('resident')({ ...question, agentName: 'resident' })).toBe('the TUI');
-    expect(tuiAnswer('resident')(question)).toBeUndefined();
+    let showing = true;
+    const tuiAnswers = tuiAnswer('resident', () => showing);
+    expect(tuiAnswers({ ...question, agentName: 'resident' })).toBe('the TUI');
+    expect(tuiAnswers(question)).toBeUndefined();
+    showing = false;
+    expect(tuiAnswers({ ...question, agentName: 'resident' })).toBeUndefined();
   });
 });
 
