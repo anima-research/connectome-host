@@ -127,7 +127,7 @@ describe("the web UI's own entry during a session switch", () => {
 
       await webUiModule.stop();
       client.send({ type: 'rollback', corrId: 'after-stop', messageId: 'm1', sessionId: 's1' });
-      expect(await client.next('the not-ready error after the stop', (r) => r.type === 'error')).toEqual({ type: 'error', message: 'host not ready' });
+      expect(await client.next('the not-ready error after the stop', (r) => r.type === 'error')).toEqual({ type: 'error', message: 'host not ready', corrId: 'after-stop' });
       expect(rollbacks).toEqual([]);
     } finally {
       client.close();

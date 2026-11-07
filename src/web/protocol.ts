@@ -117,7 +117,7 @@ export interface WelcomeMessage {
   /**
    * Optional host capabilities the SPA feature-detects before showing an
    * affordance: 'rollback' | 'suppress' | 'quiesce' | 'media' |
-   * 'operator-log'. Absent on older hosts (nothing shown).
+   * 'operator-log' | 'user-images'. Absent on older hosts (nothing shown).
    */
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
@@ -132,6 +132,9 @@ export interface WelcomeMessage {
   /** Recent provider calls with cache verdicts. Present when the host's
    *  provider adapter exposes the call ledger. */
   callLedger?: CallLedgerSnapshot;
+  /** The limits this host checks composer images against, from its own
+   *  recipe (`imageLimitsFrom` fills what's absent). Absent on older hosts. */
+  userImageLimits?: Partial<UserImageLimits>;
 }
 
 /**
@@ -171,18 +174,25 @@ export interface WelcomeMessageEntry {
   text: string;
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
+  /** On a stored user message: the `corrId` of the composer send it came
+   *  from, so that client can put it in place of the row it showed. */
+  corrId?: string;
 }
 
-/** Verbatim framework TraceEvent. Clients typically pipe these into the
- *  same `AgentTreeReducer` the server uses. */
+/** A framework TraceEvent as it was emitted, except that the `data` of each
+ *  `image` or `generated_image` block, at its top level or in its `source`, is
+ *  replaced by a note of its length. Image data in any other shape, such as a
+ *  `data:` URL in a provider's raw item, goes as it is. Clients typically pipe
+ *  these into the same `AgentTreeReducer` the server uses. */
 export interface TraceMessage {
   type: 'trace';
   /** TraceEvent shape — discriminated by inner `type` field. */
   event: { type: string; [k: string]: unknown };
 }
 
-/** Per-child WireEvent passthrough. Scoped by child name so the client
- *  can route into the right reducer. */
+/** A child's WireEvent as it arrived, except that image blocks' data is
+ *  replaced by a note of its length, as in a TraceMessage. Scoped by child
+ *  name so the client can route into the right reducer. */
 export interface ChildEventMessage {
   type: 'child-event';
   childName: string;
@@ -825,6 +835,119 @@ export interface ObserverAckMessage {
 export interface UserMessageMessage {
   type: 'user-message';
   content: string;
+  /** Images attached in the composer. Only sent to a host that advertises
+   *  the 'user-images' feature: an older host ignores the field, and the
+   *  images would be dropped without a word. */
+  images?: UserMessageImage[];
+  /** Names this send. Echoed on the `error` that refuses the message, and
+   *  stored with the message it becomes, whose entry carries it back to
+   *  every client, so it must be unique across clients (random, such as a
+   *  UUID), not a per-client counter. */
+  corrId?: string;
+}
+
+/** One composer image: raw base64 (no `data:` prefix) and the type the
+ *  browser gave it. The host goes by the bytes, not the declared type. */
+export interface UserMessageImage {
+  mediaType: string;
+  data: string;
+}
+
+/**
+ * Limits on composer images. The SPA fits images to them before sending, and
+ * the host checks them again (`userImageBlocks`), because an image the model
+ * API refuses would fail every later inference on this branch, not just one,
+ * until it leaves the context manager's live window.
+ *
+ * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
+ *   the per-image limit everywhere the model is served, the strictest being
+ *   Bedrock's 5 MB of base64.
+ * - `maxTotalBase64Chars`: what one message's images may come to, leaving
+ *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
+ *   bounded by it, so the composer checks the whole frame too
+ *   (`frameLimitNote`).
+ * - `maxSidePx`: a side Claude's and OpenAI's APIs take whatever else a
+ *   request carries: under the stricter limit Claude's vision docs set for a
+ *   request with more than 20 image blocks, which those docs say 3,000 px on
+ *   a side stays under on every platform, and under the 30,000 patches of
+ *   32 px that OpenAI's docs allow one image.
+ *
+ * Under the host's own strategies, `autobiographical` and `frontdesk`, a host
+ * advertises a smaller count when its recipe's live window is under 8, and
+ * less base64 when its recipe sets `maxLiveImageBytes` under the defaults
+ * (`userImageLimits` in the welcome); a strategy an extension registers gets
+ * the defaults.
+ *
+ * https://platform.claude.com/docs/en/build-with-claude/vision
+ * https://developers.openai.com/api/docs/guides/images-vision
+ */
+export interface UserImageLimits {
+  maxCount: number;
+  maxBase64Chars: number;
+  maxTotalBase64Chars: number;
+  maxSidePx: number;
+}
+
+export const USER_IMAGE_LIMITS: Readonly<UserImageLimits> = {
+  maxCount: 8,
+  maxBase64Chars: 5_000_000,
+  maxTotalBase64Chars: 12 * 1024 * 1024,
+  maxSidePx: 3000,
+};
+
+/** The limits to fit and check composer images against: each one a host
+ *  advertised, where it's a positive whole number no looser than the
+ *  default, and the default otherwise. */
+export function imageLimitsFrom(advertised?: Partial<UserImageLimits> | null): UserImageLimits {
+  const pick = (key: keyof UserImageLimits): number => {
+    const v = advertised?.[key];
+    return typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= USER_IMAGE_LIMITS[key]
+      ? v
+      : USER_IMAGE_LIMITS[key];
+  };
+  return {
+    maxCount: pick('maxCount'),
+    maxBase64Chars: pick('maxBase64Chars'),
+    maxTotalBase64Chars: pick('maxTotalBase64Chars'),
+    maxSidePx: pick('maxSidePx'),
+  };
+}
+
+/**
+ * The most one WebSocket frame from a client can carry, in bytes of its JSON
+ * as UTF-8. The host's server is set to it (`maxPayloadLength`), and Bun
+ * closes a socket that sends a larger frame without an `error` frame, so
+ * the message is lost. The composer checks each message the user sends
+ * from it (`frameLimitNote`) and keeps one that's over, to shorten.
+ */
+export const MAX_WS_FRAME_BYTES = 16 * 1024 * 1024;
+
+/** The bytes a client message takes as a frame: the SPA's wire client sends
+ *  `JSON.stringify(message)`, which the socket carries as UTF-8. */
+export function wsFrameBytes(message: WebUiClientMessage): number {
+  return new TextEncoder().encode(JSON.stringify(message)).length;
+}
+
+/** A size in bytes, KiB or MiB, rounded up to a tenth, so a size over
+ *  nothing never reads as 0. The unit follows the rounded figure, so a size
+ *  just under a MiB reads 1.0 MiB, not 1024.0 KiB. */
+function binarySize(bytes: number): string {
+  if (bytes < 1024) return bytes === 1 ? '1 byte' : `${bytes} bytes`;
+  const tenthsUp = (n: number): number => Math.ceil(n * 10) / 10;
+  const kib = tenthsUp(bytes / 1024);
+  return kib < 1024 ? `${kib.toFixed(1)} KiB` : `${tenthsUp(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/** What the composer says when a message's frame is over
+ *  `MAX_WS_FRAME_BYTES`, or null when it fits. Only a user message carries
+ *  images, so only its note offers removing one. */
+export function frameLimitNote(message: WebUiClientMessage): string | null {
+  const bytes = wsFrameBytes(message);
+  if (bytes <= MAX_WS_FRAME_BYTES) return null;
+  const hasImages = message.type === 'user-message' && (message.images?.length ?? 0) > 0;
+  return `not sent: this message is ${binarySize(bytes - MAX_WS_FRAME_BYTES)} over the ` +
+    `${MAX_WS_FRAME_BYTES / (1024 * 1024)} MiB one message can carry; ` +
+    (hasImages ? 'shorten the text or remove an image' : 'shorten the text');
 }
 
 /** Slash command. The server replies with a `command-result`
@@ -1280,7 +1403,12 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'request-mcpl':
       return isOptionalScope(v.scope);
     case 'user-message':
-      return typeof v.content === 'string';
+      return typeof v.content === 'string'
+        && (v.corrId === undefined || typeof v.corrId === 'string')
+        && (v.images === undefined || (Array.isArray(v.images) && v.images.every((img) => {
+          const i = img as Record<string, unknown> | null;
+          return !!i && typeof i === 'object' && typeof i.mediaType === 'string' && typeof i.data === 'string';
+        })));
     case 'observer-hello': {
       const id = v.identity as Record<string, unknown> | undefined;
       return !!id && id.scheme === 'ed25519'

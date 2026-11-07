@@ -22,7 +22,7 @@ export interface WireClient {
   observer: Accessor<ObserverInfo | null>;
   lastMessage: Accessor<WebUiServerMessage | null>;
   onMessage(handler: (msg: WebUiServerMessage) => void): () => void;
-  send(msg: WebUiClientMessage): void;
+  send(msg: WebUiClientMessage): boolean;
   close(): void;
 }
 
@@ -137,9 +137,10 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
     send(msg) {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.warn('[wire] dropping message; socket not open', msg.type);
-        return;
+        return false;
       }
       socket.send(JSON.stringify(msg));
+      return true;
     },
     close() {
       stopped = true;

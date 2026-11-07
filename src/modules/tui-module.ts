@@ -7,6 +7,7 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
+  ContentBlock,
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 
@@ -28,14 +29,15 @@ export class TuiModule implements Module {
     if (source !== 'tui' && source !== 'cli' && source !== 'system' && source !== 'headless') return {};
 
     const content = (event as { content: unknown }).content;
-    const text = typeof content === 'string' ? content : JSON.stringify(content);
     const triggerInference = (event as { triggerInference?: boolean }).triggerInference;
     const targetAgents = (event as { targetAgents?: string[] }).targetAgents;
+
+    const blocks: ContentBlock[] = operatorBlocks(content)
+      ?? [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }];
 
     // agent-framework routes plain prose by channel, and an IPC wake carries
     // none: a turn it opens takes the agent's home or default publish channel as
     // its locus, or none, and a wake during an open turn keeps that turn's locus.
-    const blocks: Array<{ type: 'text'; text: string }> = [{ type: 'text', text }];
     if (source === 'headless') {
       blocks.push({
         type: 'text',
@@ -48,11 +50,13 @@ export class TuiModule implements Module {
       });
     }
 
+    const corrId = (event as { metadata?: { corrId?: unknown } }).metadata?.corrId;
     const response: EventResponse = {
       addMessages: [
         {
           participant: 'user',
           content: blocks,
+          ...(typeof corrId === 'string' && corrId.length > 0 ? { metadata: { webuiCorrId: corrId } } : {}),
         },
       ],
     };
@@ -63,4 +67,26 @@ export class TuiModule implements Module {
 
     return response;
   }
+}
+
+/**
+ * Content that is already message blocks — text, and base64 images (the
+ * WebUI's composer sends both) — goes into the message as it is. Anything
+ * else returns null and is stored as text, as before.
+ */
+function operatorBlocks(content: unknown): ContentBlock[] | null {
+  if (!Array.isArray(content) || content.length === 0) return null;
+  for (const raw of content) {
+    const b = raw as { type?: unknown; text?: unknown; source?: { type?: unknown; data?: unknown; mediaType?: unknown } } | null;
+    if (!b || typeof b !== 'object') return null;
+    if (b.type === 'text' && typeof b.text === 'string') continue;
+    if (
+      b.type === 'image'
+      && b.source?.type === 'base64'
+      && typeof b.source.data === 'string'
+      && typeof b.source.mediaType === 'string'
+    ) continue;
+    return null;
+  }
+  return [...content] as ContentBlock[];
 }

@@ -95,6 +95,14 @@ export function historyUserLine(
   return { text: `${speaker.kind === 'you' ? 'You' : speaker.label}: ${text}`, speaker: speaker.kind };
 }
 
+/** The line a user-role row's images replay as, or undefined when it has none. */
+export function historyImageLine(
+  msg: { participant: string; metadata?: unknown; content: ReadonlyArray<{ type: string }> },
+): { text: string; speaker: Speaker['kind'] } | undefined {
+  const images = msg.content.filter((block) => block.type === 'image').length;
+  return images > 0 ? historyUserLine(msg, `[${images === 1 ? 'an image' : `${images} images`}]`) : undefined;
+}
+
 export function historyInjectionLine(
   msg: { content: ReadonlyArray<{ type: string; text?: unknown }>; metadata?: unknown; shardIndex?: number },
 ): string | null | undefined {
@@ -328,6 +336,10 @@ const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
 const THINKING_DIM = '#8a7aa8';
 const THINKING_PREFIX = '💭 ';
+
+function speakerColor(speaker: Speaker['kind']): string {
+  return speaker === 'you' ? GREEN : speaker === 'host' ? DIM_GRAY : CYAN;
+}
 
 type StreamBlockType = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
@@ -747,11 +759,14 @@ export async function runTui(app: AppContext): Promise<void> {
 
       const toolNames: string[] = [];
 
+      const imageLine = msg.participant === 'user' ? historyImageLine(msg) : undefined;
+      if (imageLine) addLine(imageLine.text, speakerColor(imageLine.speaker));
+
       for (const block of msg.content) {
         if (block.type === 'text' && (block as { text: string }).text.trim()) {
           if (msg.participant === 'user') {
             const line = historyUserLine(msg, (block as { text: string }).text);
-            addLine(line.text, line.speaker === 'you' ? GREEN : line.speaker === 'host' ? DIM_GRAY : CYAN);
+            addLine(line.text, speakerColor(line.speaker));
           } else {
             addLine((block as { text: string }).text, WHITE);
           }

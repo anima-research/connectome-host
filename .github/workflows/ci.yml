@@ -56,6 +56,14 @@ jobs:
         if: matrix.suite
         run: bash scripts/test-on-tmpfs.sh
 
+      - name: Install Chromium for the browser check
+        if: matrix.suite
+        run: npx playwright-core install --with-deps --only-shell chromium
+
+      - name: Browser check
+        if: matrix.suite
+        run: npm run test:browser
+
       - name: Host starts
         if: ${{ !matrix.suite }}
         run: node scripts/host-starts.mjs

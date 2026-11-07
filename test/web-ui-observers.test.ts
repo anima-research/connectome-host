@@ -1082,9 +1082,10 @@ describe('WebUiModule observer flow (e2e)', () => {
     expect(ack.label).toBe('e2e-device');
     expect((ack.scopes as string[]).sort()).toEqual(['debug', 'health', 'ops']);
 
-    ws.send(JSON.stringify({ type: 'user-message', content: 'hi' }));
+    ws.send(JSON.stringify({ type: 'user-message', content: 'hi', corrId: 'obs-1' }));
     const errFrame = await got('error');
     expect(String(errFrame.message)).toContain('forbidden');
+    expect(errFrame.corrId).toBe('obs-1');
 
     ws.send(JSON.stringify({ type: 'request-branches' }));
     const branchErr = await new Promise<Record<string, unknown>>((resolvePromise, reject) => {
@@ -1109,6 +1110,23 @@ describe('WebUiModule observer flow (e2e)', () => {
 
     ws.close();
   }, 25_000);
+
+  test("before the host is ready, an operator's send is refused naming its corrId", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { origin: base(), authorization: BASIC },
+    } as unknown as undefined);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+    await new Promise<void>((resolveOpen, reject) => {
+      const t = setTimeout(() => reject(new Error('ws never opened')), 5000);
+      ws.addEventListener('open', () => { clearTimeout(t); resolveOpen(); });
+    });
+    ws.send(JSON.stringify({ type: 'user-message', content: 'hi', corrId: 'early-1' }));
+    const deadline = Date.now() + 5000;
+    while (!frames.some((f) => f.type === 'error') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(frames.find((f) => f.type === 'error')).toMatchObject({ message: 'host not ready', corrId: 'early-1' });
+    ws.close();
+  });
 
   test('password sign-in mints a full-session cookie the WS upgrade honors', async () => {
     const res = await fetch(`${base()}/auth/basic`, { headers: { authorization: BASIC }, redirect: 'manual' });
@@ -1292,4 +1310,118 @@ describe('WebUiModule observer flow (e2e)', () => {
       expect(await healthz(`fkm_obs=${second.ack.sessionToken}`)).toBe(401);
     } finally { spy.mockRestore(); }
   }, 40_000);
+});
+
+describe('traces with observers connected', () => {
+  let tmp: string;
+  let port: number;
+  let mod: WebUiModule;
+  let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
+  const kp = makeKeypair();
+  const kpTools = makeKeypair();
+
+  beforeAll(async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'webui-observer-traces-'));
+    const observersPath = join(tmp, 'observers.json');
+    saveObserversFile(observersPath, { observers: [
+      { key: kp.id, label: 'dashboard', scopes: ['health'] },
+      { key: kpTools.id, label: 'tools', scopes: ['messages', 'tools'] },
+    ] });
+    mod = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'admin', password: 'pw' }, observersPath });
+    await mod.start({} as ModuleContext);
+    port = __getSharedServerPortForTests()!;
+    mod.setApp({
+      framework: {
+        getAllAgents: () => [],
+        getAllModules: () => [],
+        onTrace: (listener: (event: Record<string, unknown>) => void) => { emitTrace = listener; },
+        pushEvent: () => {},
+      },
+      frameworkSessionId: 's',
+      sessionManager: { findSession: () => null },
+      recipe: { name: 'recipe', agent: {} },
+    } as never);
+  });
+
+  afterAll(async () => {
+    await mod.stop();
+    await stopWebUiServer();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  async function connect(first: string, headers?: Record<string, string>) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, (headers ? { headers } : undefined) as never);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+    const until = async (type: string): Promise<Record<string, unknown>> => {
+      const deadline = performance.now() + 5000;
+      for (;;) {
+        const f = frames.find((m) => m.type === type);
+        if (f) return f;
+        if (performance.now() >= deadline) throw new Error(`timed out waiting for ${type}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+    await until(first);
+    return { ws, frames, until };
+  }
+
+  test("a trace or child's event no welcomed client takes isn't serialized, and one that clients take is serialized once", async () => {
+    let serialized = 0;
+    const image = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(5) } };
+    const event = () => ({
+      type: 'process:received',
+      processEvent: { toJSON: () => { serialized++; return { type: 'external-message', content: [image] }; } },
+    });
+    const fleet = mod as unknown as { handleFleetEvent(name: string, event: unknown): void };
+
+    const waiting = await connect('observer-auth-required');
+    emitTrace!(event());
+    fleet.handleFleetEvent('kid', event());
+    expect(serialized).toBe(0);
+
+    const dashboard = await connect('observer-auth-required');
+    dashboard.ws.send(JSON.stringify({ type: 'observer-hello', identity: helloFor(kp, `127.0.0.1:${port}`) }));
+    await dashboard.until('welcome');
+    emitTrace!(event());
+    fleet.handleFleetEvent('kid', event());
+    expect(serialized).toBe(0);
+
+    const operator = { origin: `http://127.0.0.1:${port}`, authorization: BASIC };
+    const operators = [await connect('welcome', operator), await connect('welcome', operator)];
+    emitTrace!(event());
+    expect(serialized).toBe(1);
+    for (const op of operators) {
+      const trace = await op.until('trace');
+      expect(JSON.stringify(trace.event)).not.toContain('AAAA');
+    }
+    emitTrace!({ type: 'usage:updated', totals: { inputTokens: 1, outputTokens: 1 } });
+    await dashboard.until('usage');
+    expect(dashboard.frames.filter((f) => f.type === 'trace' && (f.event as { type?: string }).type !== 'usage:updated')).toEqual([]);
+    fleet.handleFleetEvent('kid', event());
+    expect(serialized).toBe(2);
+    for (const op of operators) expect(JSON.stringify((await op.until('child-event')).event)).not.toContain('AAAA');
+    for (const c of [waiting, dashboard, ...operators]) c.ws.close();
+  }, 15_000);
+
+  test("a client without ops gets the trace with its image data taken out too", async () => {
+    const image = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'BBBB'.repeat(5) } };
+    const observer = await connect('observer-auth-required');
+    observer.ws.send(JSON.stringify({ type: 'observer-hello', identity: helloFor(kpTools, `127.0.0.1:${port}`) }));
+    await observer.until('welcome');
+    emitTrace!({ type: 'tool:completed', agentName: 'a', result: { content: [image] } });
+    const trace = await observer.until('trace');
+    expect((trace.event as { type?: string }).type).toBe('tool:completed');
+    expect(JSON.stringify(trace.event)).not.toContain('BBBB');
+    expect(JSON.stringify(trace.event)).toContain('[20 base64 characters, not sent in traces]');
+    observer.ws.close();
+  }, 15_000);
+
+  test("a stream's end that can't be sent as a trace reaches a client that takes traces as its stand-in", async () => {
+    const operator = await connect('welcome', { origin: `http://127.0.0.1:${port}`, authorization: BASIC });
+    emitTrace!({ type: 'inference:completed', agentName: 'a', tokens: 1n });
+    expect(await operator.until('stream-ended')).toEqual({ type: 'stream-ended', agentName: 'a' });
+    expect(operator.frames.filter((f) => f.type === 'trace')).toEqual([]);
+    operator.ws.close();
+  }, 15_000);
 });

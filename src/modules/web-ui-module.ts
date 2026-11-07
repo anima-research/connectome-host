@@ -14,6 +14,7 @@ import type {
   TraceEvent,
   SessionUsageSnapshot,
   WorkspaceModule,
+  ContentBlock,
 } from '@animalabs/agent-framework';
 import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
@@ -22,6 +23,7 @@ import { storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from '../stored-injection.js';
 import { speakerOf } from '../speaker.js';
 import type { ServerWebSocket } from 'bun';
+import { continuesBody } from '@animalabs/context-manager';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
@@ -50,8 +52,10 @@ import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
   WEB_PROTOCOL_VERSION,
+  MAX_WS_FRAME_BYTES,
   isChildScope,
   isClientMessage,
+  type UserImageLimits,
   type WebUiServerMessage,
   type WebUiClientMessage,
   type WelcomeMessage,
@@ -104,6 +108,10 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
+import {
+  SEND_DEPTH_SHARE, hostImageLimits, liveImageBytes, liveImageDepth, liveImageWindow, sendDepthTokens, takesUserImages,
+  userImageBlocks,
+} from '../web/user-images.js';
 import { loadRecipeDetailed } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -380,6 +388,8 @@ interface SharedServerState {
   treeAggregator: FleetTreeAggregator | null;
   fleetEventDetacher: (() => void) | null;
   messageListenerDetacher: (() => void) | null;
+  /** Sends the long message whose shards that listener is holding, if any. */
+  flushHeldRun: (() => void) | null;
   childRecipeCache: Map<string, { name: string; description?: string; version?: string; agentModel?: string }>;
   autoStartRecords: Promise<void> | null;
   bindGeneration: number;
@@ -479,6 +489,7 @@ export class WebUiModule implements Module {
       treeAggregator: null,
       fleetEventDetacher: null,
       messageListenerDetacher: null,
+      flushHeldRun: null,
     };
     const observers = state.observers;
     observers?.start(() => {
@@ -493,6 +504,8 @@ export class WebUiModule implements Module {
       hostname: host,
       fetch: (req, server) => this.handleHttp(req, server),
       websocket: {
+        // The module's own frame limit, which the SPA measures against.
+        maxPayloadLength: MAX_WS_FRAME_BYTES,
         open: (ws) => this.onWsOpen(ws as ServerWebSocket<WsData>),
         message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<WsData>, msg),
         close: (ws) => this.onWsClose(ws as ServerWebSocket<WsData>),
@@ -571,21 +584,54 @@ export class WebUiModule implements Module {
     // pushes follow the message store, which hears every message.
     const cm0 = app.framework.getAllAgents()[0]?.getContextManager() as unknown as WindowCapableCm | undefined;
     if (cm0 && typeof cm0.onMessage === 'function' && typeof cm0.getMessageCount === 'function') {
-      ss.messageListenerDetacher = cm0.onMessage((ev) => {
-        if (ev.type !== 'add' || !ev.message) return;
+      const pushEntry = (entry: WelcomeMessageEntry): void => {
+        const push: WebUiServerMessage = { type: 'message-appended', entry };
+        for (const c of ss.clients.values()) {
+          if (!c.welcomed) continue;
+          if (c.scopes === null) { this.send(c, push); continue; }
+          const filtered = filterEntryForScopes(entry, c.scopes);
+          if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
+        }
+      };
+      // context-manager appends a long message's shards in one synchronous loop.
+      let run: { messages: MessageLike[]; startIndex: number } | null = null;
+      const flushRun = (): void => {
+        const held = run;
+        run = null;
+        if (!held) return;
         try {
-          const entry = toWireEntry(ev.message as MessageLike, cm0.getMessageCount() - 1);
-          const push: WebUiServerMessage = { type: 'message-appended', entry };
-          for (const c of ss.clients.values()) {
-            if (!c.welcomed) continue;
-            if (c.scopes === null) { this.send(c, push); continue; }
-            const filtered = filterEntryForScopes(entry, c.scopes);
-            if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
+          for (const entry of coalesceAndFlatten(held.messages, held.startIndex)) pushEntry(entry);
+        } catch (err) {
+          console.error('[webui] message-appended projection failed:', err);
+        }
+      };
+      const detach = cm0.onMessage((ev) => {
+        if (ev.type !== 'add' || !ev.message) return;
+        // Never let a viewer-side projection error break the store's
+        // listener chain (ContextManager subscribes on the same path).
+        try {
+          const message = ev.message as MessageLike;
+          const index = cm0.getMessageCount() - 1;
+          if (message.bodyGroupId) {
+            if (run) {
+              run.messages.push(message);
+            } else {
+              run = { messages: [message], startIndex: index };
+              queueMicrotask(flushRun);
+            }
+            return;
           }
+          flushRun();
+          pushEntry(toWireEntry(message, index));
         } catch (err) {
           console.error('[webui] message-appended projection failed:', err);
         }
       });
+      ss.flushHeldRun = flushRun;
+      ss.messageListenerDetacher = () => {
+        detach();
+        flushRun();
+      };
     }
 
     ss.latestPerAgentCost = this.collectPerAgentCost();
@@ -682,7 +728,7 @@ export class WebUiModule implements Module {
       type: 'child-event',
       childName,
       event: event as unknown as { type: string; [k: string]: unknown },
-    }, ended ? { type: 'child-event', childName, event: { ...ended } } : null);
+    }, ended ? { type: 'child-event', childName, event: { ...ended } } : null, frameWithoutImageData);
     if (usageMsg) this.broadcast(usageMsg);
   }
 
@@ -761,15 +807,25 @@ export class WebUiModule implements Module {
     }
   }
 
-  private broadcast(frame: WebUiServerMessage, standIn?: WebUiServerMessage | null): void {
+  private broadcast(
+    frame: WebUiServerMessage,
+    standIn?: WebUiServerMessage | null,
+    prepare?: (frame: WebUiServerMessage) => WebUiServerMessage | null,
+  ): void {
     if (!sharedServer) return;
     const scopes = frameScopes(frame);
     const fallback = standIn ? { frame: standIn, scopes: frameScopes(standIn) } : null;
+    let prepared: WebUiServerMessage | null | undefined = prepare ? undefined : frame;
     let withoutText: WebUiServerMessage | undefined;
     for (const client of sharedServer.clients.values()) {
       if (!client.welcomed) continue;
       if (clientHolds(client, scopes)) {
-        this.send(client, clientHolds(client, ['ops']) ? frame : (withoutText ??= frameWithoutFailureText(frame)));
+        if (prepared === undefined) prepared = prepare!(frame);
+        if (prepared === null) {
+          if (fallback && clientHolds(client, fallback.scopes)) this.send(client, fallback.frame);
+          continue;
+        }
+        this.send(client, clientHolds(client, ['ops']) ? prepared : (withoutText ??= frameWithoutFailureText(prepared)));
       } else if (fallback && clientHolds(client, fallback.scopes)) this.send(client, fallback.frame);
     }
   }
@@ -798,7 +854,7 @@ export class WebUiModule implements Module {
     this.broadcast({
       type: 'trace',
       event: event as unknown as { type: string; [k: string]: unknown },
-    }, streamEndedFor(event as unknown as { type: string; agentName?: unknown }));
+    }, streamEndedFor(event as unknown as { type: string; agentName?: unknown }), frameWithoutImageData);
     for (const change of phaseChanges) this.broadcast({ type: 'agent-phase', ...change });
     if (event.type === 'usage:updated') {
       this.broadcast({
@@ -1435,9 +1491,14 @@ export class WebUiModule implements Module {
     return { via: 'webui', name: this.config.basicAuth?.username ?? 'operator' };
   }
 
+  private imageLimits(): UserImageLimits {
+    const strategy = sharedServer?.app?.recipe.agent.strategy;
+    return hostImageLimits(liveImageWindow(strategy), liveImageBytes(strategy));
+  }
+
   private hostFeatures(): string[] {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
-    const features = ['media'];
+    const features = takesUserImages(sharedServer?.app?.recipe.agent.strategy) ? ['media', 'user-images'] : ['media'];
     if (!fw) return features;
     if (typeof fw.rollbackToMessage === 'function') features.push('rollback');
     if (typeof fw.suppressMessages === 'function') features.push('suppress');
@@ -1666,7 +1727,9 @@ export class WebUiModule implements Module {
       return;
     }
     if (!isClientMessage(parsed)) {
-      this.send(client, { type: 'error', message: 'unknown message shape' });
+      const frame = parsed as { type?: unknown; corrId?: unknown } | null;
+      const corrId = frame?.type === 'user-message' && typeof frame.corrId === 'string' ? frame.corrId : undefined;
+      this.send(client, { type: 'error', ...(corrId !== undefined ? { corrId } : {}), message: 'unknown message shape' });
       return;
     }
 
@@ -1680,12 +1743,22 @@ export class WebUiModule implements Module {
     }
     if (client.auth === 'pending') return;
     if (client.auth === 'observer' && !this.observerMaySend(client, parsed.type)) {
-      this.send(client, { type: 'error', message: `forbidden for observer scope (${parsed.type})` });
+      const corrId = (parsed as { corrId?: unknown }).corrId;
+      this.send(client, {
+        type: 'error',
+        ...(typeof corrId === 'string' ? { corrId } : {}),
+        message: `forbidden for observer scope (${parsed.type})`,
+      });
       return;
     }
 
     if (!sharedServer?.app) {
-      this.send(client, { type: 'error', message: 'host not ready' });
+      const corrId = (parsed as { corrId?: unknown }).corrId;
+      this.send(client, {
+        type: 'error',
+        ...(typeof corrId === 'string' ? { corrId } : {}),
+        message: 'host not ready',
+      });
       return;
     }
     const app = sharedServer.app;
@@ -1700,15 +1773,89 @@ export class WebUiModule implements Module {
       case 'ping':
         return;
 
-      case 'user-message':
+      case 'user-message': {
+        // Images go ahead of the text, the order Anthropic's vision docs recommend.
+        let content: unknown = parsed.content;
+        if (parsed.images && parsed.images.length > 0) {
+          if (!takesUserImages(sharedServer?.app?.recipe.agent.strategy)) {
+            this.send(client, {
+              type: 'error',
+              ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
+              message: "message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request"
+                + (parsed.content.trim() ? '. Remove them to send the text' : ''),
+            });
+            return;
+          }
+          const checked = userImageBlocks(parsed.images, this.imageLimits(), sharedServer?.app?.recipe.agent.provider);
+          if (!checked.ok) {
+            this.send(client, {
+              type: 'error',
+              ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
+              message: `message not sent: ${checked.error}`,
+            });
+            return;
+          }
+          content = parsed.content.trim()
+            ? [...checked.blocks, { type: 'text', text: parsed.content }]
+            : checked.blocks;
+          const depth = liveImageDepth(sharedServer.app.recipe.agent.strategy);
+          const cm = sharedServer.app.framework.getAllAgents()[0]?.getContextManager();
+          if (depth !== undefined && cm) {
+            let multiplier = 1;
+            try {
+              multiplier = cm.getRenderStats()?.calibration?.multiplier ?? 1;
+            } catch {
+              // context-manager refuses the query while its strategy is not initialized, and once closed.
+            }
+            const line = depth * SEND_DEPTH_SHARE;
+            const strategy = cm.getStrategy();
+            if (sendDepthTokens(content as ContentBlock[], strategy, multiplier) > line) {
+              const past = (blocks: ContentBlock[]): boolean => sendDepthTokens(blocks, strategy, multiplier) > line;
+              const text = (content as ContentBlock[]).filter((block) => block.type === 'text');
+              const together = "these images together come within 10% of this host's image depth, the recipe's "
+                + 'imageStripDepthTokens, or past it';
+              const fitting = (beside: ContentBlock[]): string => {
+                let n = 1;
+                while (n < checked.blocks.length && !past([...checked.blocks.slice(0, n + 1), ...beside])) n++;
+                return n === 1 ? '1 image' : `${n} images`;
+              };
+              let message: string;
+              if (checked.blocks.every((image) => past([image]))) {
+                message = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too "
+                  + 'little room for an image: the host keeps images 10% clear of it, since past it they reach the model '
+                  + 'only as placeholders. Whoever runs this host can raise it';
+              } else if (past(checked.blocks) && checked.blocks.every((image) => past([image, ...text]))) {
+                message = `message not sent: ${together}, and so does the text with any one of them. `
+                  + `Send at most ${fitting([])} at once first; once the agent has answered, the text in a message of `
+                  + `its own; then attach the rest again, at most ${fitting([])} at a time, `
+                  + 'each once the agent has answered';
+              } else if (past(checked.blocks)) {
+                message = `message not sent: ${together}, where they could reach the model only as placeholders. `
+                  + `Send at most ${fitting(text)} ${text.length > 0 ? 'with this text' : 'at once'}; then attach the `
+                  + `rest again, at most ${fitting([])} at a time, each once the agent has answered`;
+              } else {
+                message = 'message not sent: with this much text, its images could be dropped before the model sees '
+                  + 'them. Send the images in a message of their own first, then the text once the agent has answered '
+                  + 'them';
+              }
+              this.send(client, {
+                type: 'error',
+                ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
+                message,
+              });
+              return;
+            }
+          }
+        }
         sharedServer?.app.framework.pushEvent({
           type: 'external-message',
           source: 'tui',
-          content: parsed.content,
-          metadata: {},
+          content,
+          metadata: parsed.corrId !== undefined ? { corrId: parsed.corrId } : {},
           triggerInference: true,
         });
         return;
+      }
 
       case 'command': {
         void this.dispatchCommand(client, parsed.command, parsed.corrId);
@@ -2932,6 +3079,7 @@ export class WebUiModule implements Module {
       },
       childTrees,
       features: this.hostFeatures(),
+      ...(takesUserImages(sharedServer?.app?.recipe.agent.strategy) ? { userImageLimits: this.imageLimits() } : {}),
       ...(hostMode ? { hostMode } : {}),
       agentPhases: sharedServer!.agentPhases.snapshot(),
       usage: sharedServer!.latestUsage,
@@ -2945,6 +3093,7 @@ export class WebUiModule implements Module {
   }
 
   private send(client: ClientState, msg: WebUiServerMessage): void {
+    sharedServer?.flushHeldRun?.();
     try {
       client.ws.send(JSON.stringify(msg));
     } catch {
@@ -3099,6 +3248,61 @@ interface MessageLike {
   shardIndex?: number;
 }
 
+/** Where a wire entry's block is stored: the message id and its block index
+ *  there, which a `/media` ref names. */
+interface BlockOrigin {
+  id?: string;
+  index: number;
+}
+
+/**
+ * A trace payload as a client gets it, JSON.stringify's text read back, with
+ * each image block's base64 data replaced by a note of its length, or
+ * undefined when JSON.stringify has nothing to send.
+ */
+export function withoutImageData(value: unknown): unknown {
+  let sent: unknown;
+  try {
+    sent = JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+  const pending: unknown[] = [sent];
+  while (pending.length > 0) {
+    const v = pending.pop();
+    if (v === null || typeof v !== 'object') continue;
+    elideImageData(v as Record<string, unknown>);
+    for (const child of Object.values(v)) pending.push(child);
+  }
+  return sent;
+}
+
+/** A frame as a client gets it, or null when it has nothing to send: when
+ *  JSON can't carry it, or its event's JSON is nothing. */
+export function frameWithoutImageData(frame: WebUiServerMessage): WebUiServerMessage | null {
+  const sent = withoutImageData(frame);
+  if (sent == null || ('event' in frame && !Object.hasOwn(sent as object, 'event'))) return null;
+  return sent as WebUiServerMessage;
+}
+
+/** The image shapes: a content block's ({ source: { data } }), a tool
+ *  result's ({ data, mimeType }, as MCP and the framework shape it), and a
+ *  generated image ({ type: 'generated_image', data, mimeType }, as membrane
+ *  shapes it). */
+function elideImageData(o: Record<string, unknown>): void {
+  if (o.type !== 'image' && o.type !== 'generated_image') return;
+  const source = o.source;
+  if (source !== null && typeof source === 'object') {
+    const s = source as Record<string, unknown>;
+    if (typeof s.data === 'string') s.data = elided(s.data);
+  }
+  if (typeof o.data === 'string') o.data = elided(o.data);
+}
+
+function elided(data: string): string {
+  return `[${data.length} base64 characters, not sent in traces]`;
+}
+
 const TEXT_CAP = 64 * 1024;
 const THINKING_CAP = 32 * 1024;
 const TOOL_INPUT_CAP = 16 * 1024;
@@ -3112,16 +3316,21 @@ function capText(s: string, cap: number): { text: string; truncated?: boolean } 
 export function toWireEntry(
   msg: MessageLike,
   index: number,
-  opts: { storedBlockIndices?: boolean } = {},
+  /** For a coalesced shard run: where each merged block is stored, since
+   *  its index in the merged content names no stored message. */
+  opts: { origin?: (blockIndex: number) => BlockOrigin | undefined } = {},
 ): WelcomeMessageEntry {
   const blocks: import('../web/protocol.js').MessageBlock[] = [];
   const textParts: string[] = [];
   let toolResults = 0;
   let conversational = 0;
-  const mediaRef = (blockPath: string, mediaType: string): string | undefined =>
-    opts.storedBlockIndices !== false && typeof msg.id === 'string' && msg.id.length > 0 && mediaType.startsWith('image/')
-      ? `${encodeURIComponent(msg.id)}/${blockPath}`
+  const mediaRef = (bi: number, inner: string, mediaType: string): string | undefined => {
+    if (!mediaType.startsWith('image/')) return undefined;
+    const at: BlockOrigin | undefined = opts.origin ? opts.origin(bi) : { id: msg.id, index: bi };
+    return at && typeof at.id === 'string' && at.id.length > 0
+      ? `${encodeURIComponent(at.id)}/${at.index}${inner}`
       : undefined;
+  };
 
   for (const [bi, block] of msg.content.entries()) {
     const b = block as {
@@ -3185,7 +3394,7 @@ export function toWireEntry(
                 : ib?.type === 'blob_ref' && typeof ib.ref?.mediaType === 'string' ? ib.ref.mediaType
                 : null;
               if (!mt || !mt.startsWith('image/')) continue;
-              const ref = mediaRef(`${bi}.${ii}`, mt);
+              const ref = mediaRef(bi, `.${ii}`, mt);
               blocks.push({ kind: 'media', mediaType: mt, ...(ref ? { ref } : {}), toolUseId: b.toolUseId });
             }
           }
@@ -3199,13 +3408,13 @@ export function toWireEntry(
           typeof b.source?.mediaType === 'string' ? b.source.mediaType
           : typeof b.mediaType === 'string' ? b.mediaType
           : b.type;
-        const ref = b.type === 'image' ? mediaRef(String(bi), mediaType) : undefined;
+        const ref = b.type === 'image' ? mediaRef(bi, '', mediaType) : undefined;
         blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
       }
       case 'blob_ref': {
         const mediaType = typeof b.ref?.mediaType === 'string' ? b.ref.mediaType : 'blob';
-        const ref = mediaRef(String(bi), mediaType);
+        const ref = mediaRef(bi, '', mediaType);
         blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
       }
@@ -3235,6 +3444,8 @@ export function toWireEntry(
   if (msg.id) entry.id = msg.id;
   const ts = msg.timestamp instanceof Date ? msg.timestamp.getTime() : msg.timestamp;
   if (ts) entry.timestamp = ts;
+  const corrId = (msg.metadata as { webuiCorrId?: unknown } | null | undefined)?.webuiCorrId;
+  if (participant === 'user' && typeof corrId === 'string' && corrId.length > 0) entry.corrId = corrId;
   return entry;
 }
 
@@ -3251,7 +3462,7 @@ function flattenToolResultContent(content: unknown): string {
   return parts.join('\n');
 }
 
-function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
+export function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
   const out: WelcomeMessageEntry[] = [];
   let i = 0;
   while (i < messages.length) {
@@ -3262,26 +3473,28 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
       continue;
     }
     const runStart = i;
-    while (i < messages.length && messages[i]!.bodyGroupId === m.bodyGroupId) i++;
-    const shards = messages.slice(runStart, i)
-      .map((shard, k) => ({ shard, k }))
-      .sort((a, b) => (a.shard.shardIndex ?? a.k) - (b.shard.shardIndex ?? b.k))
-      .map(({ shard }) => shard);
+    i++;
+    while (i < messages.length && continuesBody(messages[i - 1], messages[i])) i++;
+    const shards = messages.slice(runStart, i);
     // context-manager's shards are substrings of one body that join back with
     // no separator, so their text is merged without one.
     const mergedContent: unknown[] = [];
-    for (const blk of shards.flatMap((s) => [...s.content])) {
-      const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
-      const cur = blk as { type?: string; text?: unknown };
-      if (prev?.type === 'text' && cur.type === 'text'
-          && typeof prev.text === 'string' && typeof cur.text === 'string') {
-        mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
-      } else {
-        mergedContent.push(blk);
+    const origins: BlockOrigin[] = [];
+    for (const shard of shards) {
+      for (const [si, blk] of shard.content.entries()) {
+        const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
+        const cur = blk as { type?: string; text?: unknown };
+        if (prev?.type === 'text' && cur.type === 'text'
+            && typeof prev.text === 'string' && typeof cur.text === 'string') {
+          mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
+        } else {
+          mergedContent.push(blk);
+          origins.push({ id: shard.id, index: si });
+        }
       }
     }
     const merged: MessageLike = { ...shards[0]!, content: mergedContent };
-    out.push(toWireEntry(merged, startIndex + runStart, { storedBlockIndices: false }));
+    out.push(toWireEntry(merged, startIndex + runStart, { origin: (bi) => origins[bi] }));
   }
   return out;
 }

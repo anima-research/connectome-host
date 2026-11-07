@@ -228,15 +228,22 @@ bun test            # test suite
 bunx tsc --noEmit   # typecheck the host's source (src/)
 (cd web && bunx tsc --noEmit)   # typecheck the web app
 bun src/index.ts    # run (generic assistant)
+
+# the Web UI's browser check, against its build, in headless Chromium
+# (on Linux, add --with-deps to the install if Chromium can't start for
+# missing system libraries; it installs them, as CI does)
+npm run build:web
+npx playwright-core install --only-shell chromium
+npm run test:browser
 ```
 
 CI (`ci.yml`) runs on every pull request and every push to `main`, on ubuntu
 and macOS. Both install the root and the web app with a strict lockfile
 (`npm ci`), which fails when a lock doesn't match its `package.json` or
-lacks that platform's packages, and build the web app. The test suite runs
-once, on ubuntu at the oldest Node and Bun the package supports (22.12.0 and
-1.4.3). Every other leg checks instead that the host starts there
-(`node scripts/host-starts.mjs`: `@opentui/core` loads with its native package
+lacks that platform's packages, and build the web app. The test suite and
+the browser check run once, on ubuntu at the oldest Node and Bun the package
+supports (22.12.0 and 1.4.3). Every other leg checks instead that the host
+starts there (`node scripts/host-starts.mjs`: `@opentui/core` loads with its native package
 for that platform, and the offline smoke run answers). A typecheck job
 checks the types of the host's source (`src/`; `test/` and `scripts/`
 aren't checked) and of the web app (`tsc --noEmit`), which nothing else
