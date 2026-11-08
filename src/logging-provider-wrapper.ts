@@ -6,9 +6,10 @@
 // (stop reason, usage, per-block shape, full text) on every call, plus the
 // raw provider response. The raw request is kept on a failure, and on a
 // success only with LLM_CALLS_FULL_PAYLOADS=1, as the Anthropic writer keeps
-// it: on the OpenAI Responses path a request carries the whole compiled
-// context, so keeping it on every success put ~3 MB per call into the file
-// that the call ledger and /bug read from their tails (#341).
+// it, and on a refusal or an anomalous response (see responseAnomaly) too:
+// on the OpenAI Responses path a request carries the whole compiled context,
+// so keeping it on every success put ~3 MB per call into the file whose last
+// ~64 MiB the call ledger and /bug read (#341). A cancelled call keeps none.
 //
 // Each line: { type: 'call'|'error', provider, kind: 'complete'|'stream',
 //   timestamp, durationMs, requestSummary?, response?, rawRequest?,
@@ -28,7 +29,8 @@ import type {
   StreamCallbacks,
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
-import { envFlag } from './logging-adapter.js';
+import { summarizeCacheControls } from './call-ledger.js';
+import { envFlag, responseAnomaly } from './logging-adapter.js';
 import { describeError } from './logging-error-fields.js';
 import { serializeRecord } from './logging-record.js';
 
@@ -42,10 +44,19 @@ function summarizeRequest(request: ProviderRequest): Record<string, unknown> {
           .map((b) => (b?.type === 'text' ? (b.text ?? '').slice(0, 120) : `[${b?.type}]`))
           .join(' | ').slice(0, 300)
       : undefined;
+  // The ledger reads cache flags from the summary first and from the raw
+  // request only as a fallback, and counts `messages`; both are here so a
+  // record without its raw request restores as it did with it. The cache
+  // walk visits the whole request, so a request it can't walk (a cycle)
+  // keeps the rest of its summary and no cache fields.
+  let cache: { count: number; ttls: string[] } | undefined;
+  try { cache = summarizeCacheControls(request); } catch { cache = undefined; }
   return {
     model: request.model,
     maxTokens: request.maxTokens,
     messageCount: msgs.length,
+    messages: msgs.length,
+    ...(cache ? { cacheBreakpoints: cache.count, cacheTtls: cache.ttls } : {}),
     systemChars: typeof request.system === 'string'
       ? request.system.length
       : Array.isArray(request.system)
@@ -73,13 +84,20 @@ function summarizeResponse(response: ProviderResponse, convention: ProviderAdapt
   };
 }
 
+/** A response the provider ended as a refusal, by membrane's stop reason or the raw one. */
+function isRefusal(response: ProviderResponse): boolean {
+  const raw = (response as { raw?: { stop_reason?: unknown } | null }).raw;
+  return response.stopReason === 'refusal' || raw?.stop_reason === 'refusal';
+}
+
 export class LoggingProviderAdapter implements ProviderAdapter {
   readonly name: string;
 
   onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
   onProviderSuccess?: (kind: 'complete' | 'stream') => void;
 
-  /** Keep the raw request on successful calls too; LLM_CALLS_FULL_PAYLOADS=1 by default. */
+  /** Keep the raw request on successful calls too. Off unless the constructor
+   *  says otherwise or LLM_CALLS_FULL_PAYLOADS is set to 1/true; read once. */
   private readonly fullPayloads: boolean;
 
   constructor(
@@ -136,16 +154,26 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     };
     let record: Record<string, unknown>;
     try {
+      const errorFields = failed ? describeError(outcome.error) : undefined;
+      const anomaly = failed ? undefined : responseAnomaly(outcome.response);
+      // Which calls keep the raw request, as the Anthropic writer decides it:
+      // a failure keeps the request that was refused, except a cancelled
+      // call (membrane types it `abort`), which is never the request's
+      // doing; a success keeps it when the response is a refusal or
+      // anomalous (a client tool_use under another stop reason), or when
+      // asked for every call.
+      const keepRaw = failed
+        ? errorFields?.errorType !== 'abort'
+        : this.fullPayloads || anomaly !== undefined || isRefusal(outcome.response);
       record = {
         ...head,
         requestSummary: summarizeRequest(request),
-        // A failure keeps the request that was refused; a success keeps it
-        // only when asked, as the Anthropic writer does.
-        ...(failed || this.fullPayloads ? { rawRequest: request } : {}),
+        ...(keepRaw ? { rawRequest: request } : {}),
         ...('response' in outcome
           ? { response: summarizeResponse(outcome.response, this.usageCacheConvention), rawResponse: outcome.response.raw ?? null }
           : {}),
-        ...(failed ? describeError(outcome.error) : {}),
+        ...(anomaly ? { anomaly } : {}),
+        ...(errorFields ?? {}),
       };
     } catch {
       record = { ...head, summaryUnavailable: true, ...(failed ? describeError(outcome.error) : {}) };

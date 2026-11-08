@@ -38,6 +38,17 @@ function succeeding(): ProviderAdapter {
   } as ProviderAdapter;
 }
 
+function answering(answer: ProviderResponse): ProviderAdapter {
+  return {
+    name: 'answer-fixture',
+    usageCacheConvention: 'cache-excluded',
+    requiresNativeResponsesInput: false,
+    supportsModel: () => true,
+    complete: async () => answer,
+    stream: async () => answer,
+  } as ProviderAdapter;
+}
+
 function failing(error: unknown): ProviderAdapter {
   return {
     name: 'error-fixture',
@@ -88,6 +99,93 @@ describe('LoggingProviderAdapter and the raw request', () => {
       expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
     });
   }
+
+  test('a refusal keeps the raw request without the opt-in', async () => {
+    const path = logFile();
+    const refusal = { ...response, stopReason: 'refusal', raw: { id: 'resp_r', stop_reason: 'refusal' } } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(refusal), path, { fullPayloads: false }).complete(request);
+    const [record] = records(path);
+    expect(record!.type).toBe('call');
+    expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
+    expect('anomaly' in record!).toBe(false);
+  });
+
+  test('an anomalous response (a client tool_use under end_turn) keeps the raw request and carries anomaly', async () => {
+    const path = logFile();
+    const anomalous = {
+      content: [{ type: 'tool_use', id: 'tu_1', name: 'zz_tool', input: {} }],
+      stopReason: 'end_turn',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      raw: { id: 'resp_a' },
+    } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(anomalous), path, { fullPayloads: false }).complete(request);
+    const [record] = records(path);
+    expect(record!.type).toBe('call');
+    expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
+    expect(record!.anomaly).toMatchObject({ kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', toolNames: ['zz_tool'] });
+  });
+
+  test('a cancelled call keeps no raw request, as the Anthropic writer keeps none', async () => {
+    const path = logFile();
+    const aborted = Object.assign(new Error('zz aborted'), { name: 'MembraneError', type: 'abort', retryable: false });
+    const wrapped = new LoggingProviderAdapter(failing(aborted), path, { fullPayloads: false });
+    await expect(wrapped.complete(request)).rejects.toBe(aborted);
+    const [record] = records(path);
+    expect(record!.type).toBe('error');
+    expect(record!.errorType).toBe('abort');
+    expect('rawRequest' in record!).toBe(false);
+  });
+
+  test('the summary carries what the ledger reads without the raw request: messages, cache breakpoints and TTLs', async () => {
+    const path = logFile();
+    const marked = {
+      ...request,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'zz-a', cache_control: { type: 'ephemeral', ttl: '1h' } }] },
+        { role: 'user', content: 'zz-b' },
+      ],
+    } as unknown as ProviderRequest;
+    await new LoggingProviderAdapter(succeeding(), path, { fullPayloads: false }).complete(marked);
+    const [record] = records(path);
+    expect(record!.requestSummary).toMatchObject({ messageCount: 2, messages: 2, cacheBreakpoints: 1, cacheTtls: ['1h'] });
+    const plain = logFile();
+    await new LoggingProviderAdapter(succeeding(), plain, { fullPayloads: false }).complete(request);
+    expect(records(plain)[0]!.requestSummary).toMatchObject({ messages: 1, cacheBreakpoints: 0, cacheTtls: [] });
+    // A request the cache walk can't visit (a cycle) keeps the rest of its summary.
+    const cyclic = { model: 'zz-model', maxTokens: 16, messages: [{ role: 'user', content: 'zz' }] } as Record<string, unknown>;
+    cyclic.self = cyclic;
+    const loop = logFile();
+    await new LoggingProviderAdapter(succeeding(), loop, { fullPayloads: false }).complete(cyclic as unknown as ProviderRequest);
+    const summary = records(loop)[0]!.requestSummary as Record<string, unknown>;
+    expect(summary).toMatchObject({ model: 'zz-model', messages: 1 });
+    expect('cacheBreakpoints' in summary).toBe(false);
+  });
+
+  test('the environment is read once, at construction', async () => {
+    const saved = process.env.LLM_CALLS_FULL_PAYLOADS;
+    try {
+      delete process.env.LLM_CALLS_FULL_PAYLOADS;
+      const path = logFile();
+      const wrapped = new LoggingProviderAdapter(succeeding(), path);
+      process.env.LLM_CALLS_FULL_PAYLOADS = '1';
+      await wrapped.complete(request);
+      expect('rawRequest' in records(path)[0]!).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.LLM_CALLS_FULL_PAYLOADS; else process.env.LLM_CALLS_FULL_PAYLOADS = saved;
+    }
+  });
+
+  test('a false constructor override beats an enabled environment flag', async () => {
+    const saved = process.env.LLM_CALLS_FULL_PAYLOADS;
+    try {
+      process.env.LLM_CALLS_FULL_PAYLOADS = '1';
+      const path = logFile();
+      await new LoggingProviderAdapter(succeeding(), path, { fullPayloads: false }).complete(request);
+      expect('rawRequest' in records(path)[0]!).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.LLM_CALLS_FULL_PAYLOADS; else process.env.LLM_CALLS_FULL_PAYLOADS = saved;
+    }
+  });
 
   test('the default reads LLM_CALLS_FULL_PAYLOADS, off when unset', async () => {
     const saved = process.env.LLM_CALLS_FULL_PAYLOADS;
