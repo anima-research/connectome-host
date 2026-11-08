@@ -371,13 +371,18 @@ resident speaks to, and get no answer from any service.
    entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
    and a host it starts writes the install's own files. Start it in an environment of
    its own:
-   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock CONNECTOME_UPDATE_CHECK=0 OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
    The host gets only the variables the command names, and from that directory Bun loads
    none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
-   key is a mock, and with `HOME` the new directory, Codex has no login. Where the
-   recipe's provider needs a key of its own to start, give its name a mock value the
-   same way: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and
-   `AWS_SECRET_ACCESS_KEY` for Bedrock. Where the resident's environment sets `MODEL` or
+   key is a mock, and with `HOME` the new directory, Codex has no login.
+   `CONNECTOME_UPDATE_CHECK=0` keeps it from asking npm's registry for a newer release,
+   as the fleet does for each child it starts. Where the recipe's provider needs a key of
+   its own to start, give its name a mock value the same way: `OPENROUTER_API_KEY`,
+   `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for Bedrock. For
+   `openai-codex`, give `CODEX_GATE_TOKEN` a mock value and `CODEX_BASE_URL`
+   `http://127.0.0.1:9`: with both set no Codex login runs, where without them its first
+   turn asks OpenAI for a device-code login and waits for it. Where the resident's
+   environment sets `MODEL` or
    `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. Give any other
    variable the copy names as `${…}` too, since the host fills each from its environment
    and won't load a recipe naming one it can't, with a mock value where it's a
@@ -388,9 +393,12 @@ resident speaks to, and get no answer from any service.
    the resident was down, gets no reply and calls no tool. The `mock`
    provider is the exception: it needs no key, and a turn on it gets the reply the
    recipe's `agent.mock` gives, by default an echo of the turn.
-   On a gateway, the check can leave out a binding model's changed thinking that the
-   resident sends, since what the host found of the account is kept per base URL and the
-   check names none. The recipe's absolute workspace mounts are the resident's own
+   On a model whose thinking binds, the check leaves the transcript's signed thinking out
+   where the resident may send it: the host decides that by asking the account at start,
+   which the mock key refuses, and falls back only on what an earlier start on the same
+   route recorded in the data directory, which a data directory no host has started on
+   doesn't hold. So the check's request, and a count made from it, can be short of those
+   blocks. The recipe's absolute workspace mounts are the resident's own
    files, so run no tool in the check, as `/puppet` would. The observers variable names a
    file in the new, empty directory, which doesn't exist, so no observer the resident
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
