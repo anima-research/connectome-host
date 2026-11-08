@@ -351,9 +351,11 @@ next start. Nor does it change a recipe: a fleet child that a recipe starts
 with an absolute `dataDir` has that directory, the original's, in a copy
 too, so the copy's autostart can start that child there. Give such a child a
 `dataDir` relative to the directory the host runs in, or change the copy's
-recipe to name its own, before the copy's first start. A binding that
-changes any path takes the install's lock, so it needs the host stopped, and
-refuses while it runs, saying so. Each place outside the
+recipe to name its own, before the copy's first start. A binding of an
+install moved or copied from the directory its record names, one that gives
+any place another place, or one that rewrites the fleet's children file
+takes the install's lock, so it needs the host stopped, and refuses while it
+runs, saying so. Each place outside the
 old directory needs its place in this install: `connectome setup` asks, and
 by hand setup names each one and takes it as `--place PATH PLACE`, with
 `PLACE` the same path after a move, or the copy's own after a copy; a
@@ -367,7 +369,8 @@ the record's. What updates and Go backs keep in the install root, the copy
 (`copy`, and `copy.prev` after a cut) and each Go back's list
 (`set-aside/<mark>`, with that mark's areas in `.connectome-update` inside
 each directory an update copies), names the old directory's places, and
-restoring from it would write them. So while a binding gives any place of
+restoring from it would write them. So where the install was moved or
+copied from the directory its record names, or a binding gives any place of
 the install another place, setup refuses while any of these is in the root,
 naming each. `connectome setup` then asks whether to move them aside, and by
 hand `--move-aside` does: it moves each into `<root>/moved-aside/<time>/`,

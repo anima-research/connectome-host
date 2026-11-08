@@ -25,9 +25,10 @@
  * move or a copy, setup binds the install to the directory it's in,
  * writing that as the record's workingDir and giving each place in the
  * record and in the fleet's children file in the data directory its place
- * there. While a binding gives any place another place, it refuses an
- * install root that holds a copy or what a Go back keeps, which name the
- * old places, unless --move-aside moves them aside. With
+ * there. Where the install was moved or copied from the directory its
+ * record names, or a binding gives any place another place, it refuses an
+ * install root that holds a copy or what a Go back keeps, which name the old
+ * places, unless --move-aside moves them aside. With
  * --extra-state, it records the paths given in place of those recorded;
  * without, it keeps those recorded, at their places after any binding.
  */

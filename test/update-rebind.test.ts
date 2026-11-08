@@ -881,7 +881,7 @@ describe('the fleet\'s children file', () => {
     ...machineOps(), cwd: () => at, dataDir: () => join(at, 'data'), agentOverlay: () => join(at, 'mcpl-servers.agent.json'),
   });
 
-  test('a copy binds its children file: a child\'s data directory under the old directory goes to the same place under the new, and a child the original runs is no process of the copy\'s, so its updates neither wait for it nor copy the original\'s', () => {
+  test('a copy binds its children file: a child\'s data directory under the old directory goes to the same place under the new, and a child the original runs is no process of the copy\'s, so its updates are neither refused for it nor copy the original\'s', () => {
     setup(options(install));
     const pid = live();
     withChild(install, join(install, 'data', 'kids', 'c'), pid);
@@ -897,7 +897,7 @@ describe('the fleet\'s children file', () => {
     expect(present).toContain(join(copy, 'data'));
   });
 
-  test('a moved install binds its children file and keeps the pid of a child still running, which is its own, so its updates still wait for it', () => {
+  test('a moved install binds its children file and keeps the pid of a child still running, which is its own, so its updates are still refused while it runs', () => {
     setup(options(install));
     const pid = live();
     withChild(install, join(install, 'data', 'kids', 'c'), pid);
