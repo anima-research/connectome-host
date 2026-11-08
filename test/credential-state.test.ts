@@ -1,9 +1,3 @@
-/**
- * Credential monitor: provider errors, quota-meter readings, expiry metadata
- * and device-code logins become one named state; transitions travel the
- * ops-alert pipeline as `<kind>` / `<kind>-clear` pairs with the actions the
- * host can run; runAction moves the state on the probe's verdict.
- */
 import { describe, expect, test } from 'bun:test';
 import { CredentialMonitor, isAuthFailure, type CredentialSource } from '../src/credential-state.js';
 import { QuotaMeter, type QuotaSource, type QuotaWindow } from '../src/quota-meter.js';
@@ -91,7 +85,7 @@ describe('CredentialMonitor — auth verdicts', () => {
     expect(refresh.kind).toBe('auth-rejected');
     const login = await monitor.runAction('login');
     expect(login.lastAction).toMatchObject({ id: 'login', ok: false });
-    expect(login.kind).toBe('auth-rejected'); // nothing clears it but the next accepted call
+    expect(login.kind).toBe('auth-rejected');
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('ok');
   });
@@ -115,7 +109,7 @@ describe('CredentialMonitor — auth verdicts', () => {
     monitor.observeError(Object.assign(new Error('429'), { type: 'rate_limit' }));
     expect(monitor.snapshot().kind).toBe('ok');
     monitor.observeError(authErr());
-    monitor.observeError(authErr()); // same state, same message: no re-fire
+    monitor.observeError(authErr());
     expect(alerts.length).toBe(1);
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('ok');
@@ -143,7 +137,6 @@ describe('CredentialMonitor — expiry warning', () => {
       expiryWarningMs: 10 * 60_000,
       source: { expiresAt: () => 5 * 60_000, canRefresh: () => true, refresh: async () => {} },
     });
-    // The timer is armed at construction; drive the check by hand.
     (monitor as unknown as { checkExpiry(): void }).checkExpiry();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(monitor.snapshot().actions[0]!.id).toBe('refresh');
@@ -295,15 +288,16 @@ describe('CredentialMonitor — actions', () => {
     expect(done.kind).toBe('ok');
   });
 
-  test('a persist warning from the source rides on the action outcome', async () => {
-    const { monitor } = harness({
-      source: { canRefresh: () => true, refresh: async () => {}, probe: async () => {}, persistWarning: () => 'credential rotated in memory but not written to /x: EACCES' },
-    });
+  test('a refresh whose write to the file fails answers with a state that says so', async () => {
+    let monitor!: CredentialMonitor;
+    ({ monitor } = harness({
+      source: { canRefresh: () => true, refresh: async () => { monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied'); }, probe: async () => {} },
+    }));
     monitor.observeError(authErr());
     const s = await monitor.runAction('refresh');
     expect(s.kind).toBe('ok');
     expect(s.lastAction?.ok).toBe(true);
-    expect(s.lastAction?.message).toContain('WARNING: credential rotated in memory but not written to /x');
+    expect(s.unsaved).toContain('/x/creds.json');
   });
 
   test('a restart during a pending login is refused when the source cannot cancel; a later fresh login runs', async () => {
@@ -320,7 +314,7 @@ describe('CredentialMonitor — actions', () => {
     release();
     const done = await first;
     expect(done.kind).toBe('ok');
-    const fresh = await monitor.runAction('login'); // a new login request from ok is a real login
+    const fresh = await monitor.runAction('login');
     expect(fresh.lastAction).toMatchObject({ id: 'login', ok: true });
     expect(logins).toBe(2);
   });
@@ -330,7 +324,7 @@ describe('CredentialMonitor — actions', () => {
     let logins = 0;
     const source: Partial<CredentialSource> = {
       login: async () => { logins++; if (logins === 1) await new Promise<void>((r) => { release = r; }); },
-      cancelLogin: async () => false, // nothing it could cancel (the flow completed on its own)
+      cancelLogin: async () => false,
     };
     const { monitor } = harness({ source });
     monitor.loginRequired({ verificationUrl: 'https://x', userCode: 'ABCD' });
@@ -377,7 +371,7 @@ describe('CredentialMonitor — actions', () => {
     const firstOutcome = await first;
     expect(firstOutcome.lastAction).toMatchObject({ id: 'login', ok: false });
     expect(firstOutcome.lastAction!.message).toContain('cancelled');
-    expect(firstOutcome.kind).toBe('auth-login-required'); // still pending: the restart is next
+    expect(firstOutcome.kind).toBe('auth-login-required');
     const secondOutcome = await second;
     expect(cancels).toBe(1);
     expect(logins).toBe(2);
@@ -390,9 +384,9 @@ describe('CredentialMonitor — actions', () => {
     const { monitor } = harness({ meter, now: () => 0, source: { probe: async () => {} } });
     await meter.refresh(); await meter.refresh(); await meter.refresh();
     expect(monitor.snapshot().kind).toBe('quota-unreadable');
-    const s = await monitor.runAction('recheck'); // 4th read still fails
+    const s = await monitor.runAction('recheck');
     expect(s.kind).toBe('quota-unreadable');
-    const s2 = await monitor.runAction('recheck'); // 5th read succeeds
+    const s2 = await monitor.runAction('recheck');
     expect(s2.kind).toBe('ok');
     meter.dispose();
   });
@@ -406,15 +400,13 @@ describe('CredentialMonitor — precedence', () => {
     expect(monitor.snapshot().kind).toBe('quota-spent');
     monitor.observeError(authErr());
     expect(monitor.snapshot().kind).toBe('auth-rejected');
-    await meter.refresh(); // a later poll with the same spent window must not hide the auth alarm
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('auth-rejected');
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('quota-spent');
     expect(alerts.map((a) => a.kind)).toEqual([
       'quota-spent', 'quota-spent-clear', 'auth-rejected', 'auth-rejected-clear', 'quota-spent',
     ]);
-    // No intermediate "ok": the clear says what took over, so a channel-side
-    // listener does not announce recovery while quota still blocks.
     expect(alerts[3]!.message).toBe('superseded by quota-spent');
     meter.dispose();
   });
@@ -444,12 +436,12 @@ describe('CredentialMonitor — precedence', () => {
     const { monitor, alerts } = harness({ meter, now: () => t, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => 5 * 60_000, canRefresh: () => true, refresh: async () => {} } });
     (monitor as unknown as { checkExpiry(): void }).checkExpiry();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
-    await meter.refresh(); // clean read: not news about the expiry
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring']);
-    await meter.refresh(); // spent: outranks the warning
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('quota-spent');
-    await meter.refresh(); // reset, token still short: the warning is back
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear', 'quota-spent', 'quota-spent-clear', 'auth-expiring']);
     meter.dispose();
@@ -461,11 +453,62 @@ describe('CredentialMonitor — precedence', () => {
     const { monitor, alerts } = harness({ now: () => 0, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => expiresAt, canRefresh: () => true, refresh: async () => {} } });
     (monitor as unknown as { checkExpiry(): void }).checkExpiry();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
-    expiresAt = 3 * HOUR; // rotated inside a provider call; only a success tap follows
+    expiresAt = 3 * HOUR;
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('ok');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear']);
     expect(alerts[1]!.message).toContain('credential ok');
+    monitor.dispose();
+  });
+
+  test('after a rotation the state shows the new expiry, and no auth-expiring comes from the old one', () => {
+    let t = 0;
+    let expiresAt = 20 * 60_000;
+    const { monitor, alerts } = harness({ now: () => t, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => expiresAt, canRefresh: () => true, refresh: async () => {} } });
+    expect(monitor.snapshot().expiresAt).toBe(20 * 60_000);
+    expiresAt = 3 * HOUR;
+    monitor.observeSuccess();
+    expect(monitor.snapshot().expiresAt).toBe(3 * HOUR);
+    t = 15 * 60_000;
+    (monitor as unknown as { checkExpiry(): void }).checkExpiry();
+    expect(monitor.snapshot().kind).toBe('ok');
+    expect(alerts).toEqual([]);
+    monitor.dispose();
+  });
+
+  test('after a pasted token replaces a refreshable one, the state says the host can no longer refresh it', async () => {
+    let refreshable = true;
+    const { monitor } = harness({ source: { canRefresh: () => refreshable, setToken: () => { refreshable = false; }, probe: async () => {} } });
+    expect(monitor.snapshot().rotatable).toBe(true);
+    const s = await monitor.runAction('set-token', { token: 'pasted' });
+    expect(s.kind).toBe('ok');
+    expect(s.rotatable).toBe(false);
+    monitor.dispose();
+  });
+
+  test("a quota verdict shows the credential's own expiry, and whether the host can refresh it, as they are when read", async () => {
+    let expiresAt = 3 * HOUR;
+    let refreshable = true;
+    const meter = fakeMeter([[{ key: 'seven_day', label: 'weekly', utilization: 100, resetsAt: 2 * HOUR }]], () => 0);
+    const { monitor } = harness({ meter, now: () => 0, source: { expiresAt: () => expiresAt, canRefresh: () => refreshable, refresh: async () => {} } });
+    await meter.refresh();
+    expect(monitor.snapshot().kind).toBe('quota-spent');
+    expect(monitor.snapshot().expiresAt).toBe(3 * HOUR);
+    expect(monitor.snapshot().rotatable).toBe(true);
+    expiresAt = 5 * HOUR;
+    refreshable = false;
+    expect(monitor.snapshot().expiresAt).toBe(5 * HOUR);
+    expect(monitor.snapshot().rotatable).toBe(false);
+    expect(monitor.snapshot().kind).toBe('quota-spent');
+    meter.dispose();
+    monitor.dispose();
+  });
+
+  test('a pending login still says the host can\'t refresh the credential, whatever the source could do otherwise', () => {
+    const { monitor } = harness({ source: { canRefresh: () => true, refresh: async () => {}, login: async () => {} } });
+    monitor.loginRequired({ verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' });
+    expect(monitor.snapshot().kind).toBe('auth-login-required');
+    expect(monitor.snapshot().rotatable).toBe(false);
     monitor.dispose();
   });
 
@@ -485,6 +528,72 @@ describe('CredentialMonitor — precedence', () => {
     const { monitor } = harness({ source: { currentToken: () => 'sk-live' } });
     expect(monitor.bearer()).toBe('sk-live');
     expect(JSON.stringify(monitor.snapshot())).not.toContain('sk-live');
+  });
+});
+
+describe('CredentialMonitor — a credential not written to its file', () => {
+  test('each failed write raises credential-unsaved, naming the file and the error and offering a re-check, and leaves the state as it was', () => {
+    const { monitor, alerts } = harness({ source: { canRefresh: () => true, refresh: async () => {} } });
+    monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied');
+    expect(alerts.map((a) => a.kind)).toEqual(['credential-unsaved']);
+    expect(alerts[0]!.message).toContain('/x/creds.json');
+    expect(alerts[0]!.message).toContain('EACCES: permission denied');
+    expect((alerts[0]!.data.actions as Array<{ id: string }>).map((a) => a.id)).toEqual(['recheck']);
+    expect(monitor.snapshot().kind).toBe('ok');
+    expect(monitor.snapshot().unsaved).toBe(alerts[0]!.message);
+    monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied');
+    expect(alerts.map((a) => a.kind)).toEqual(['credential-unsaved', 'credential-unsaved']);
+    monitor.dispose();
+  });
+
+  test('it stands beside the credential state, whose alerts go on as before', () => {
+    const { monitor, alerts } = harness({ source: { canRefresh: () => true, refresh: async () => {} } });
+    monitor.observeError(authErr());
+    monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied');
+    expect(monitor.snapshot().kind).toBe('auth-rejected');
+    monitor.observeSuccess();
+    expect(monitor.snapshot().kind).toBe('ok');
+    expect(monitor.snapshot().unsaved).toBeDefined();
+    expect(alerts.map((a) => a.kind)).toEqual(['auth-rejected', 'credential-unsaved', 'auth-rejected-clear']);
+    monitor.dispose();
+  });
+
+  test('the next write that succeeds clears it once; one with nothing standing raises nothing', () => {
+    const { monitor, alerts } = harness();
+    monitor.observeWriteBack('/x/creds.json');
+    expect(alerts).toEqual([]);
+    monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied');
+    monitor.observeWriteBack('/x/creds.json');
+    monitor.observeWriteBack('/x/creds.json');
+    expect(alerts.map((a) => a.kind)).toEqual(['credential-unsaved', 'credential-unsaved-clear']);
+    expect(alerts[1]!.message).toContain('/x/creds.json');
+    expect(monitor.snapshot().unsaved).toBeUndefined();
+    monitor.dispose();
+  });
+
+  test('/auth recheck writes the credential again while the alert stands, and only then', async () => {
+    let writable = false;
+    let writes = 0;
+    let monitor!: CredentialMonitor;
+    let alerts!: Alert[];
+    ({ monitor, alerts } = harness({
+      source: {
+        probe: async () => {},
+        writeBack: () => { writes++; monitor.observeWriteBack('/x/creds.json', writable ? undefined : 'EACCES: permission denied'); },
+      },
+    }));
+    monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied');
+    const still = await monitor.runAction('recheck');
+    expect(writes).toBe(1);
+    expect(still.unsaved).toBeDefined();
+    writable = true;
+    const fixed = await monitor.runAction('recheck');
+    expect(writes).toBe(2);
+    expect(fixed.unsaved).toBeUndefined();
+    expect(alerts.at(-1)!.kind).toBe('credential-unsaved-clear');
+    await monitor.runAction('recheck');
+    expect(writes).toBe(2);
+    monitor.dispose();
   });
 });
 

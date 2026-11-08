@@ -3,8 +3,13 @@ import {
   PassthroughStrategy,
   type ContextStrategy,
   type ConversationRouterConfig,
+  type FrameworkConfig,
+  type SubconsciousConfig,
 } from '@animalabs/agent-framework';
-import type { Recipe, RecipeStrategy } from './recipe.js';
+import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
+import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
+import { resolvePromptCaching } from './framework-agent-config.js';
+import { defaultRecentWindowTokens, headWindowTokens } from './recipe-fit.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
 
@@ -23,6 +28,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionSplitMaxCallsPerChunk',
   'compressionSplitMaxCallsPer10Min',
   'compressionRecallBudgetTokens',
+  'recoverLiteralThinkingWrappedCompression',
   'positionedRecallPairs',
   'recallHeaderTemplate',
   'carrierPolicy',
@@ -58,18 +64,70 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'witnessedIdentityReminder',
 ];
 
+/**
+ * Cache prices are multiples of the model's base input price, as the
+ * provider bills them: Anthropic writes at 2x on the 1-hour cache and 1.25x
+ * on the 5-minute one, and Bedrock has only the 5-minute cache. Reads, and
+ * OpenAI's prices, come from the pricing table (anthropicCacheReadMultiplier,
+ * openaiCacheMultipliers), where Sonnet 5.5 takes 0.1x, as its entry
+ * explains.
+ */
+export function standardKvUnifiedConfig(recipe: Recipe, model: string): RecipeKvUnifiedConfig {
+  const provider = recipe.agent.provider;
+  const ttl = provider === 'bedrock' ? '5m' : (recipe.agent.cacheTtl ?? '1h');
+  const uncached = resolvePromptCaching(recipe, model) === false;
+  const prices = uncached
+    ? { read: 1, write: 1 }
+    : provider === 'openai-responses' || provider === 'openai-codex'
+      ? openaiCacheMultipliers(model, provider === 'openai-codex' ? 'codex' : 'api')
+      : { read: anthropicCacheReadMultiplier(model), write: ttl === '5m' ? 1.25 : 2 };
+  return {
+    policy: {
+      alpha: 0.7,
+      budgetLowRatio: 0.6,
+      budgetHighRatio: 0.85,
+      budgetUnderLambda: 1_000,
+      budgetOverLambda: 4_000,
+      cacheLambda: 1,
+      cacheScale: 100_000,
+      cacheReadPrice: prices.read,
+      cacheWritePrice: prices.write,
+      continuityLambda: 1,
+      continuityScale: 100_000,
+      continuityRecencyHalfLifeTokens: 100_000,
+      continuityRecencyFloor: 0.2,
+      continuityStableHalfLife: 16,
+      continuityStableFloor: 0.25,
+    },
+    tokenBucketSize: 50_000,
+    continuityBucketSize: 50_000,
+    fidelityBucketSize: 100_000,
+    labelCeiling: 100_000,
+    adoptEpsilon: 3_000,
+    treeifyNonContiguousSummaries: false,
+    preserveGapBearingSummaries: false,
+    hysteresisCertificate: true,
+  };
+}
+
+export function strategyMessageCap(recipe: Recipe): number | undefined {
+  const strategyConfig = recipe.agent.strategy;
+  const strategyType = strategyConfig?.type ?? 'autobiographical';
+  if (strategyType === 'passthrough') return undefined;
+  if (!isBuiltinStrategyType(strategyType)) return strategyConfig?.maxMessageTokens;
+  return strategyConfig?.maxMessageTokens ?? 10000;
+}
+
 export function buildFrameworkStrategy(
   recipe: Recipe,
   model: string,
   timeZone: string,
   extensions?: ExtensionRegistry,
+  agentName?: string,
 ): ContextStrategy {
   const strategyConfig = recipe.agent.strategy;
   const strategyType = strategyConfig?.type ?? 'autobiographical';
 
-  // Non-built-in types resolve through the extension registry. Validation
-  // already required a strategy-kind extension to be declared; this catches
-  // the declared-but-didn't-register case with a precise error.
   if (!isBuiltinStrategyType(strategyType)) {
     const factory = extensions?.strategies.get(strategyType);
     if (!factory) {
@@ -86,14 +144,14 @@ export function buildFrameworkStrategy(
     });
   }
   const autobiographicalOpts: Record<string, unknown> = {
-    headWindowTokens: strategyConfig?.headWindowTokens ?? 4000,
-    recentWindowTokens: strategyConfig?.recentWindowTokens ?? 30000,
+    headWindowTokens: headWindowTokens(recipe),
+    recentWindowTokens: strategyConfig?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model),
     compressionModel: strategyConfig?.compressionModel ?? model,
     ...(strategyConfig?.compressionMaxTokens !== undefined
       ? { compressionMaxTokens: strategyConfig.compressionMaxTokens }
       : {}),
     autoTickOnNewMessage: true,
-    maxMessageTokens: strategyConfig?.maxMessageTokens ?? 10000,
+    maxMessageTokens: strategyMessageCap(recipe),
     ...(strategyType === 'frontdesk' ? { timeZone } : {}),
   };
 
@@ -102,13 +160,6 @@ export function buildFrameworkStrategy(
     if (value !== undefined) autobiographicalOpts[key] = value;
   }
 
-  // Autobiographical AND frontdesk agents default to adaptive resolution
-  // unless a recipe opts out. Frontdesk historically kept the hierarchical
-  // renderer; that geometry has no tail reservation and no way to shed
-  // summary mass, so a long-lived agent saturates a fixed budget into a
-  // terminal context refusal (2026-08-03 boter clerk outage). The adaptive
-  // picker solves a frontier to fit — recipes can still pin
-  // `adaptiveResolution: false` as a rollback lever.
   if (
     (strategyType === 'autobiographical' || strategyType === 'frontdesk') &&
     autobiographicalOpts.adaptiveResolution === undefined
@@ -116,26 +167,32 @@ export function buildFrameworkStrategy(
     autobiographicalOpts.adaptiveResolution = true;
   }
 
-  // Reasonable memory defaults for recipes that omit strategy tuning:
-  //
-  // - foldingStrategy 'kv-stable': the library's own fallback is
-  //   'flat-profile', which replans compile layouts without regard for
-  //   prompt-cache stability. Long-lived agents want cache-stable folds by
-  //   default; recipes can still pin 'flat-profile'/'oldest-first' explicitly.
-  //   (Only meaningful under adaptive resolution, so gate on it.)
-  // - summaryParticipant <agent name>: the library falls back to the literal
-  //   'Claude', which voices self-recollections as a stranger for any agent
-  //   not named Claude. Summaries should speak as the agent itself.
+  // context-manager's own defaults, which these replace for a recipe that
+  // leaves them out: under adaptive resolution its folding strategy is
+  // 'flat-profile', which plans layouts without regard for the prompt cache;
+  // kv-unified takes no defaults and refuses an incomplete kvUnified block;
+  // its summary participant is the literal 'Claude', which voices the
+  // agent's own recollections as a stranger's; and its summary label asks
+  // "What do you remember from earlier?", which doesn't tell the agent that
+  // a summary has replaced the exact text.
   if (
     (strategyType === 'autobiographical' || strategyType === 'frontdesk') &&
     autobiographicalOpts.adaptiveResolution !== false &&
     autobiographicalOpts.foldingStrategy === undefined
   ) {
-    autobiographicalOpts.foldingStrategy = 'kv-stable';
+    autobiographicalOpts.foldingStrategy = 'kv-unified';
   }
-  if (autobiographicalOpts.summaryParticipant === undefined && recipe.agent.name) {
-    autobiographicalOpts.summaryParticipant = recipe.agent.name;
+  if (autobiographicalOpts.foldingStrategy === 'kv-unified' && autobiographicalOpts.kvUnified === undefined) {
+    autobiographicalOpts.kvUnified = standardKvUnifiedConfig(recipe, model);
   }
+  const voice = agentName ?? recipe.agent.name;
+  if (autobiographicalOpts.summaryParticipant === undefined && voice) {
+    autobiographicalOpts.summaryParticipant = voice;
+  }
+  // No host default for summaryContextLabel: what a resident reads before its
+  // own memories is context-manager's default unless its recipe sets one. A
+  // change to that wording reaches every resident's sense of its memory, so it
+  // is decided with them, per recipe, not as a host default.
 
   return strategyType === 'passthrough'
     ? new PassthroughStrategy()
@@ -145,13 +202,10 @@ export function buildFrameworkStrategy(
 }
 
 /**
- * Map a recipe's `conversations` block to the framework's
- * ConversationRouterConfig. The host supplies the two fields a recipe
- * cannot: `templateAgent` is the recipe's own (sole) agent, and
- * `strategyFactory` builds a FRESH instance of the recipe's configured
- * strategy per fork — strategy instances are stateful and must never be
- * shared between ContextManagers (without a factory the framework would
- * silently give forks passthrough, i.e. no compression).
+ * agent-framework gives a fork a passthrough strategy, with no compression,
+ * when no strategyFactory is given, so the factory builds a new instance of
+ * the recipe's strategy for each fork: a strategy instance holds state and
+ * can't be shared between context managers.
  */
 export function buildConversationsConfig(
   recipe: Recipe,
@@ -170,5 +224,48 @@ export function buildConversationsConfig(
     ...(conv.closurePrompt !== undefined ? { closurePrompt: conv.closurePrompt } : {}),
     ...(conv.agentPrefix !== undefined ? { agentPrefix: conv.agentPrefix } : {}),
     strategyFactory: () => buildFrameworkStrategy(recipe, model, timeZone, extensions),
+  };
+}
+
+/**
+ * Map a recipe's `subconscious` block to the framework's SubconsciousConfig
+ * (agent-framework#77, #232). The persistent reader passes through verbatim;
+ * the framework owns its defaults. Reader forks get the one field a recipe
+ * cannot state: `strategyFactory`, a FRESH instance of the recipe's strategy
+ * per fork (the `conversations` pattern), so a fork reuses the resident's
+ * fold state and rendering. Without it the framework refuses forks unless
+ * the resident runs a passthrough strategy.
+ */
+export function buildSubconsciousConfig(
+  recipe: Recipe,
+  model: string,
+  timeZone: string,
+  extensions?: ExtensionRegistry,
+): SubconsciousConfig | undefined {
+  const sub = recipe.subconscious;
+  if (!sub) return undefined;
+  if (sub.reader !== 'forks') return sub;
+  return { ...sub, strategyFactory: () => buildFrameworkStrategy(recipe, model, timeZone, extensions) };
+}
+
+/**
+ * The Dendrite part of what the host hands AgentFramework.create()
+ * (agent-framework#546): the reader (mapped above) and the `speech`,
+ * `tuneOut` and `dendrite` blocks, each present only when the recipe states
+ * it, so the framework's defaults apply to the rest. Spread into create()'s
+ * argument as is.
+ */
+export function dendriteCreateOptions(
+  recipe: Recipe,
+  model: string,
+  timeZone: string,
+  extensions?: ExtensionRegistry,
+): Pick<FrameworkConfig, 'subconscious' | 'speech' | 'tuneOut' | 'dendrite'> {
+  const subconscious = buildSubconsciousConfig(recipe, model, timeZone, extensions);
+  return {
+    ...(subconscious ? { subconscious } : {}),
+    ...(recipe.speech ? { speech: recipe.speech } : {}),
+    ...(recipe.tuneOut ? { tuneOut: recipe.tuneOut } : {}),
+    ...(recipe.dendrite ? { dendrite: recipe.dendrite } : {}),
   };
 }

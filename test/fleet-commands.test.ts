@@ -1,18 +1,8 @@
-/**
- * Unit tests for the /fleet slash-command dispatcher in commands.ts.
- *
- * Covers the surface the rest of the test suite doesn't touch: argument
- * parsing, subcommand routing, unknown/usage-hint paths, and the
- * CommandResult flags (switchToFleetView, switchToFleetPeek, asyncWork)
- * that the TUI relies on for view changes.
- */
 import { describe, test, expect } from 'bun:test';
 import { handleCommand, type CommandResult } from '../src/commands.js';
 import type { FleetModule } from '../src/modules/fleet-module.js';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
-
-// --- Minimal AppContext + FleetModule stubs ------------------------------
 
 interface StubChild {
   name: string;
@@ -79,7 +69,6 @@ function buildStubApp(fleet: StubFleet | null): Parameters<typeof handleCommand>
   return {
     framework: {
       getAllModules: () => modules,
-      // We don't need the rest of AgentFramework for /fleet dispatch.
     } as unknown as AgentFramework,
     sessionManager: {} as never,
     recipe: { name: 'test' } as never,
@@ -87,8 +76,6 @@ function buildStubApp(fleet: StubFleet | null): Parameters<typeof handleCommand>
     switchSession: async () => {},
   };
 }
-
-// --- Tests ---------------------------------------------------------------
 
 describe('/fleet dispatcher', () => {
   test('no fleet module → graceful hint, not a crash', () => {

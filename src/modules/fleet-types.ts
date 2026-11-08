@@ -1,30 +1,29 @@
 /**
  * Shared wire-protocol types for the headless daemon ↔ FleetModule IPC.
  *
- * Both `src/headless.ts` (child runtime) and `src/modules/fleet-module.ts`
- * (parent module) import from here so the JSONL envelope shapes stay
- * identical at both ends.
- *
  * See docs/fleet-protocol.md for the protocol reference.
  */
-
-// ---------------------------------------------------------------------------
-// Parent → Child: commands
-// ---------------------------------------------------------------------------
 
 export type IncomingCommand =
   /** Set which event types the child emits.  Supports glob: ["tool:*", "lifecycle"]. */
   | { type: 'subscribe'; events: string[] }
-  /** Inject a user-like message; equivalent to typing in the child's TUI. */
-  | { type: 'text'; content: string }
-  /** Run a slash command in the child's commands.ts handler. */
-  | { type: 'command'; command: string }
-  /** Graceful (default) or immediate shutdown. */
+  /** Inject a user-like message; equivalent to typing in the child's TUI.
+   *  `from: 'console'` sends it as a console line, as batch mode's are, for a
+   *  reader at a shell; without it, it comes as the host's IPC line, whose
+   *  note tells the agent a plain-prose reply won't reach the sender. */
+  | { type: 'text'; content: string; from?: 'console' }
+  /** Run a slash command in the child's commands.ts handler. With a corrId,
+   *  each output line carries it and a `command-done` ends the answer.
+   *  `from: 'fleet'` is a parent's fleet--command: the child's operator log
+   *  records the move, rollback, undo, redo or nudge it makes as the fleet's,
+   *  and without it as the headless socket's. */
+  | { type: 'command'; command: string; corrId?: string; from?: 'fleet' }
+  /** Shut down; `graceful: false` changes only the reason `lifecycle:exiting` gives. */
   | { type: 'shutdown'; graceful?: boolean }
   /** Request a state snapshot. The child responds with a single 'snapshot'
    *  event carrying the full agent tree, exempt from subscription filtering.
-   *  Used as a recovery verb (TUI cold start, reconnect, after restart) — not
-   *  a query verb. See docs/history/UNIFIED-TREE-PLAN.md §3 for the lockstep model. */
+   *  Used as a recovery verb (TUI cold start, reconnect, after restart) —
+   *  not a query verb. */
   | { type: 'describe'; corrId?: string }
   /** Pull the child's lesson library. Response is `lessons-snapshot`. */
   | { type: 'request-lessons'; corrId?: string }
@@ -40,25 +39,22 @@ export type IncomingCommand =
    *  in a fleet child rather than the conductor. */
   | { type: 'cancel-subagent'; name: string; corrId?: string }
   /**
-   * Run one operator-panel operation in the child (see PANEL_OPS in
-   * src/web/panel-data.ts: mcpl / settings(-update|-reset|-cancel-transition)
-   * / pins / pin-add / pin-remove / health / context-makeup /
-   * context-coverage / context-curve / context-preview / debug-context).
-   * Response is a single `panel-response` with the same corrId. One generic
-   * verb rather than a verb per panel: both ends dispatch through the SAME
-   * shared handler (`runPanelOp`), so a new panel surface needs no protocol
-   * change to work across the fleet.
+   * Run one operator-panel operation in the child, one of PANEL_OPS in
+   * src/web/panel-data.ts. Response is a single `panel-response` with the same
+   * corrId.
    */
-  | { type: 'panel-request'; op: string; params?: Record<string, unknown>; corrId?: string };
-
-// ---------------------------------------------------------------------------
-// Child → Parent: events
-// ---------------------------------------------------------------------------
+  | { type: 'panel-request'; op: string; params?: Record<string, unknown>; corrId?: string }
+  /** A switch's request of a fleet child, from its parent's install host:
+   *  quiesce under the switch's reason and wait for its turns, answering
+   *  whether it drained and who holds a turn; or end the switch's quiesce.
+   *  Response is `update-response`. */
+  | { type: 'update-request'; request: import('../update/quiesce.js').SwitchRequest; corrId: string };
 
 /** Lifecycle events added by the headless runtime (not framework TraceEvents). */
 export type LifecycleEvent =
-  | { type: 'lifecycle'; phase: 'ready'; pid: number; dataDir: string; recipe?: string; ts?: number }
-  | { type: 'lifecycle'; phase: 'idle'; ts?: number }
+  | { type: 'lifecycle'; phase: 'ready'; pid: number; dataDir: string; recipe?: string; idle?: boolean; turnWork?: boolean; agent?: string; ts?: number }
+  | { type: 'lifecycle'; phase: 'turn-work-done'; texts?: number; ts?: number }
+  | { type: 'lifecycle'; phase: 'idle'; texts?: number; ts?: number }
   | { type: 'lifecycle'; phase: 'exiting'; reason: string; ts?: number };
 
 /** Output line from a slash-command run, surfaced as an event. */
@@ -66,6 +62,19 @@ export interface CommandOutputEvent {
   type: 'command-output';
   text: string;
   style: string | null;
+  corrId?: string;
+  ts?: number;
+}
+
+/** The end of the answer to a `command` that carried a corrId, with the
+ *  error when the command threw, and `refused` when `/update` answered
+ *  that it didn't do what was asked; its lines say why. No other command
+ *  sets it. */
+export interface CommandDoneEvent {
+  type: 'command-done';
+  corrId: string;
+  error?: string;
+  refused?: true;
   ts?: number;
 }
 
@@ -76,7 +85,7 @@ export interface SnapshotEvent {
   type: 'snapshot';
   corrId?: string;
   /** Wall-clock at which the child built the snapshot. Receivers should drop
-   *  events with `timestamp < asOfTs` after applying. */
+   *  events with `ts < asOfTs` after applying. */
   asOfTs: number;
   child: {
     name: string;
@@ -85,8 +94,7 @@ export interface SnapshotEvent {
     startedAt: number;
   };
   /** Serialized AgentTreeReducer state. Shape matches AgentTreeSnapshot in
-   *  src/state/agent-tree-reducer.ts. Kept structurally typed here to avoid
-   *  cross-cutting imports. */
+   *  src/state/agent-tree-reducer.ts. */
   tree: {
     nodes: Array<Record<string, unknown>>;
     callIdIndex: Record<string, string>;
@@ -162,6 +170,17 @@ export interface PanelResponseEvent {
   ts?: number;
 }
 
+/** Response to a {type:'update-request'} request: `data` is
+ *  answerSwitchRequest's answer, or `error` says why there's none. */
+export interface UpdateResponseEvent {
+  type: 'update-response';
+  corrId: string;
+  ok: boolean;
+  data?: unknown;
+  error?: string;
+  ts?: number;
+}
+
 /** Response to a {type:'request-workspace-file'} request. */
 export interface WorkspaceFileSnapshotEvent {
   type: 'workspace-file-snapshot';
@@ -178,13 +197,14 @@ export interface WorkspaceFileSnapshotEvent {
 }
 
 /**
- * A wire event from the child.  In practice this is either a framework
- * TraceEvent (typed loosely as Record<string,unknown>), or one of our
- * lifecycle / command-output additions.
+ * A wire event from the child: a framework TraceEvent (typed loosely as
+ * Record<string,unknown>), a lifecycle or command-output event, or the
+ * response to a command.
  */
 export type WireEvent =
   | LifecycleEvent
   | CommandOutputEvent
+  | CommandDoneEvent
   | SnapshotEvent
   | LessonsSnapshotEvent
   | WorkspaceMountsSnapshotEvent
@@ -192,14 +212,11 @@ export type WireEvent =
   | WorkspaceFileSnapshotEvent
   | CancelSubagentResultEvent
   | PanelResponseEvent
+  | UpdateResponseEvent
   // Arbitrary framework TraceEvent passthrough. The child stamps every emitted
-  // event with `ts: Date.now()` in `emit()` (see headless.ts), so ts is always
-  // present on the wire even when the underlying TraceEvent doesn't declare it.
+  // event with `ts: Date.now()`, so ts is always present on the wire even when
+  // the underlying TraceEvent doesn't declare it.
   | (Record<string, unknown> & { type: string; ts?: number });
-
-// ---------------------------------------------------------------------------
-// Subscription matching (used by both ends)
-// ---------------------------------------------------------------------------
 
 /**
  * Match an event type against a subscription set.  Supports:
@@ -215,10 +232,6 @@ export function matchesSubscription(eventType: string, subscription: Set<string>
   }
   return false;
 }
-
-// ---------------------------------------------------------------------------
-// Direct-routing helper for TUI input
-// ---------------------------------------------------------------------------
 
 export interface FleetRoute {
   /** Target child's name as parsed from the prefix. */

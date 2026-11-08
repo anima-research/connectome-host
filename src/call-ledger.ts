@@ -1,15 +1,6 @@
-/**
- * Recent provider-call ledger for the WebUI.
- *
- * The provider adapter feeds this tracker compact, content-free call records.
- * It reconstructs the cache verdict operators actually need (hit, first
- * write, expired rewrite, uncached auxiliary call) and retains a bounded
- * window. Older process logs are replayed on startup so a host restart does
- * not leave the dashboard blank.
- */
-
-import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
 import type {
   CallLedgerRow,
   CallLedgerSnapshot,
@@ -19,7 +10,7 @@ import { ANTHROPIC_PRICING_VERSION, priceAnthropicCall } from './call-pricing.js
 
 export interface ProviderCallRecord {
   timestamp: string;
-  kind: 'complete' | 'stream';
+  kind: 'complete' | 'stream' | 'keepalive';
   durationMs: number;
   model: string;
   messages: number;
@@ -31,18 +22,20 @@ export interface ProviderCallRecord {
    *  Anthropic charges different multipliers for 5m and 1h writes. */
   cacheWrite5mTokens?: number;
   cacheWrite1hTokens?: number;
-  /** True only when the split came from the response usage object. */
   cacheWriteBucketsAuthoritative?: boolean;
   inferenceGeo?: string;
   serviceTier?: string;
-  /** Undefined for historical compact logs written before cache summaries. */
   cacheBreakpoints?: number;
   /** TTLs found on cache_control blocks. `default` means provider default. */
   cacheTtls?: string[];
   stopReason?: string;
-  /** Present exactly when the call failed: its error text, which can be empty. */
   error?: string;
+  /** membrane's key for the call's cache lineage: its model, system and
+   *  tools. */
+  lineage?: string;
 }
+
+const LINEAGES_REMEMBERED = 256;
 
 export interface CallLedgerOptions {
   dataDir?: string;
@@ -59,6 +52,7 @@ export class CallLedger {
   private readonly defaultTtl: '5m' | '1h';
   private readonly listeners = new Set<Listener>();
   private lastCacheActivityAt: number | null = null;
+  private readonly lastCacheActivityByLineage = new Map<string, number>();
   private sequence = 0;
 
   constructor(opts: CallLedgerOptions = {}) {
@@ -129,8 +123,9 @@ export class CallLedger {
     const ttlSeconds = ttl === '1h' ? 3600 : 300;
     const hasKnownFlags = call.cacheBreakpoints !== undefined;
     const hasCacheControls = (call.cacheBreakpoints ?? 0) > 0;
-    const cacheActivity = call.cacheReadTokens > 0 || call.cacheWriteTokens > 0;
-    const priorCacheAt = this.lastCacheActivityAt;
+    const ownCacheAt = call.lineage !== undefined ? this.lastCacheActivityByLineage.get(call.lineage) : undefined;
+    const priorCacheAt = ownCacheAt ?? this.lastCacheActivityAt;
+    const gapFromAnyLineage = call.lineage !== undefined && ownCacheAt === undefined;
     const gapSeconds = priorCacheAt !== null && Number.isFinite(at)
       ? Math.max(0, Math.round((at - priorCacheAt) / 1000))
       : undefined;
@@ -141,6 +136,7 @@ export class CallLedger {
       hasCacheControls,
       ttlSeconds,
       gapSeconds,
+      gapFromAnyLineage,
     });
 
     const write5m = call.cacheWrite5mTokens ?? 0;
@@ -149,7 +145,6 @@ export class CallLedger {
     const splitMismatch = call.cacheWriteTokens > 0 && (
       !call.cacheWriteBucketsAuthoritative || reportedSplit !== call.cacheWriteTokens
     );
-    // A failure is priced at nothing, whatever its text: an empty one too.
     const cost = call.error !== undefined ? undefined : priceAnthropicCall(call.model, call.timestamp, {
       inputTokens: call.inputTokens,
       outputTokens: call.outputTokens,
@@ -167,7 +162,7 @@ export class CallLedger {
       id: `${call.timestamp}:${++this.sequence}`,
       timestamp: call.timestamp,
       kind: call.kind,
-      originEstimate: call.kind === 'stream' ? 'turn~' : 'aux~',
+      originEstimate: call.kind === 'keepalive' ? 'keepalive' : call.kind === 'stream' ? 'turn~' : 'aux~',
       model: call.model,
       messages: call.messages,
       durationMs: call.durationMs,
@@ -191,13 +186,25 @@ export class CallLedger {
 
     this.rows.push(row);
     if (this.rows.length > this.maxRows) this.rows.splice(0, this.rows.length - this.maxRows);
-    if (cacheActivity && Number.isFinite(at)) this.lastCacheActivityAt = at;
+    this.noteCacheActivity(call);
 
     if (notify) {
       const snapshot = this.snapshot();
       for (const listener of this.listeners) {
-        try { listener(snapshot); } catch { /* observability must not break inference */ }
+        try { listener(snapshot); } catch { }
       }
+    }
+  }
+
+  private noteCacheActivity(call: ProviderCallRecord): void {
+    const at = Date.parse(call.timestamp);
+    if (!(call.cacheReadTokens > 0 || call.cacheWriteTokens > 0) || !Number.isFinite(at)) return;
+    this.lastCacheActivityAt = at;
+    if (call.lineage === undefined) return;
+    this.lastCacheActivityByLineage.delete(call.lineage);
+    this.lastCacheActivityByLineage.set(call.lineage, at);
+    if (this.lastCacheActivityByLineage.size > LINEAGES_REMEMBERED) {
+      this.lastCacheActivityByLineage.delete(this.lastCacheActivityByLineage.keys().next().value!);
     }
   }
 
@@ -214,18 +221,36 @@ export class CallLedger {
     }
 
     const calls: ProviderCallRecord[] = [];
-    for (const file of files) {
-      for (const line of readTailLines(file, 16 * 1024 * 1024)) {
-        try {
-          const parsed = parseLoggedCall(JSON.parse(line) as Record<string, unknown>);
-          if (parsed) calls.push(parsed);
-        } catch {
-          // Partial/legacy/oversized forensic lines are skipped individually.
-        }
+    let budget = CALL_LOG_READ_BUDGET;
+    for (const file of files.reverse()) {
+      let read;
+      try {
+        read = readLinesFromEnd(file, budget, (line) => {
+          try {
+            const parsed = parseLoggedCall(JSON.parse(line) as Record<string, unknown>);
+            if (parsed) calls.push(parsed);
+          } catch {
+          }
+        });
+      } catch {
+        continue;
       }
+      budget -= read.bytes;
+      if (budget <= 0) break;
     }
-    calls.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-    for (const call of calls.slice(-this.maxRows)) this.append(call, false);
+    calls.reverse();
+    const at = (call: ProviderCallRecord): number => {
+      const time = Date.parse(call.timestamp);
+      return Number.isFinite(time) ? time : -Infinity;
+    };
+    calls.sort((a, b) => {
+      const x = at(a);
+      const y = at(b);
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    const kept = Math.max(0, calls.length - this.maxRows);
+    for (const call of calls.slice(0, kept)) this.noteCacheActivity(call);
+    for (const call of calls.slice(kept)) this.append(call, false);
   }
 }
 
@@ -235,9 +260,9 @@ function classifyCall(opts: {
   hasCacheControls: boolean;
   ttlSeconds: number;
   gapSeconds?: number;
+  gapFromAnyLineage?: boolean;
 }): { verdict: CallLedgerVerdict; cause: string } {
-  const { call, hasKnownFlags, hasCacheControls, ttlSeconds, gapSeconds } = opts;
-  // A call failed exactly when it carries an error, whatever its text.
+  const { call, hasKnownFlags, hasCacheControls, ttlSeconds, gapSeconds, gapFromAnyLineage } = opts;
   if (call.error !== undefined) return { verdict: 'ERROR', cause: call.error || 'the error carried no text' };
   if (hasKnownFlags && !hasCacheControls) {
     return { verdict: 'uncached', cause: 'no cache_control flags in request' };
@@ -253,12 +278,17 @@ function classifyCall(opts: {
     if (gapSeconds === undefined) {
       return { verdict: 'first-write', cause: `created ${formatTokens(call.cacheWriteTokens)} cache tokens` };
     }
+    const anyLineage = gapFromAnyLineage
+      ? '; the ledger holds no earlier cache activity of this lineage, so the gap runs from any lineage\'s last'
+      : '';
     if (gapSeconds > ttlSeconds) {
-      return { verdict: 'rewrite:expired', cause: `gap ${gapSeconds}s > ttl ${ttlSeconds}s` };
+      return { verdict: 'rewrite:expired', cause: `gap ${gapSeconds}s > ttl ${ttlSeconds}s${anyLineage}` };
     }
     return {
       verdict: 'rewrite:unexplained',
-      cause: `cache miss inside ttl (${gapSeconds}s <= ${ttlSeconds}s); prefix changed or was truncated`,
+      cause: gapFromAnyLineage
+        ? `cache miss inside ttl (${gapSeconds}s <= ${ttlSeconds}s)${anyLineage}: a changed prefix, a new agent's first call, or a lineage last active before what the ledger holds`
+        : `cache miss inside ttl (${gapSeconds}s <= ${ttlSeconds}s); prefix changed or was truncated`,
     };
   }
   if (!hasKnownFlags) {
@@ -284,11 +314,11 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-function parseLoggedCall(record: Record<string, unknown>): ProviderCallRecord | null {
+export function parseLoggedCall(record: Record<string, unknown>): ProviderCallRecord | null {
   const kind = record.kind;
   const timestamp = record.timestamp;
   const summary = record.requestSummary as Record<string, unknown> | undefined;
-  if ((kind !== 'complete' && kind !== 'stream') || typeof timestamp !== 'string' || !summary) return null;
+  if ((kind !== 'complete' && kind !== 'stream' && kind !== 'keepalive') || typeof timestamp !== 'string' || !summary) return null;
   const rawResponse = record.rawResponse as Record<string, unknown> | null | undefined;
   const usage = rawResponse?.usage as Record<string, unknown> | undefined;
   const cacheCreation = usage?.cache_creation as Record<string, unknown> | undefined;
@@ -313,13 +343,13 @@ function parseLoggedCall(record: Record<string, unknown>): ProviderCallRecord | 
     cacheBreakpoints: optionalNumber(summary.cacheBreakpoints) ?? summarized?.count,
     cacheTtls: stringArray(summary.cacheTtls) ?? summarized?.ttls,
     stopReason: typeof rawResponse?.stop_reason === 'string' ? rawResponse.stop_reason : undefined,
+    lineage: optionalString(summary.lineage),
     error: typeof error === 'string'
       ? error
       : typeof error?.message === 'string' ? error.message : undefined,
   };
 }
 
-/** Content-free cache_control inventory from an actual provider payload. */
 export function summarizeCacheControls(raw: unknown): { count: number; ttls: string[] } {
   let count = 0;
   const ttls: string[] = [];
@@ -341,29 +371,6 @@ export function summarizeCacheControls(raw: unknown): { count: number; ttls: str
   };
   visit(raw);
   return { count, ttls };
-}
-
-function readTailLines(path: string, maxBytes: number): string[] {
-  let fd: number | undefined;
-  try {
-    const size = statSync(path).size;
-    const start = Math.max(0, size - maxBytes);
-    const length = size - start;
-    if (length <= 0) return [];
-    fd = openSync(path, 'r');
-    const buffer = Buffer.allocUnsafe(length);
-    readSync(fd, buffer, 0, length, start);
-    let text = buffer.toString('utf8');
-    if (start > 0) {
-      const firstNewline = text.indexOf('\n');
-      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
-    }
-    return text.split('\n').filter(Boolean);
-  } catch {
-    return [];
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
 }
 
 const number = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) ? v : 0;

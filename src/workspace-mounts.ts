@@ -1,26 +1,7 @@
-/**
- * Workspace mount construction — the single source of truth for which mounts
- * a recipe's `modules.workspace` produces and with what flags.
- *
- * Used by BOTH the runtime (src/index.ts, to build the real WorkspaceModule
- * config) and recipe validation (validateRecipe's instructions cross-check,
- * which reasons about mount names, modes, and autoMaterialize). Keeping one
- * builder prevents the validator from modeling a mount differently than the
- * host constructs it — the exact split-brain the `_config` mount had when
- * validation assumed it auto-materialized and the runtime built it without.
- */
-
 import { join, resolve } from 'node:path';
 import type { MountConfig } from '@animalabs/agent-framework';
 import type { RecipeModules, RecipeWorkspaceMount } from './recipe.js';
 
-/**
- * Build the mount list for a recipe's workspace declaration.
- *
- * Returns null when the workspace is disabled (`workspace: false`).
- * `storePath` anchors the `_config` mount (session store config dir); pass
- * any placeholder when only mount names/modes/flags are needed (validation).
- */
 export function buildWorkspaceMounts(
   workspace: RecipeModules['workspace'],
   storePath: string,
@@ -29,43 +10,38 @@ export function buildWorkspaceMounts(
 
   let mounts: MountConfig[];
   if (typeof workspace === 'object' && workspace.mounts) {
-    // Only pass fields the recipe explicitly provides; let WorkspaceModule
-    // default the rest. watch is overridden to 'never' since the host does
-    // not need chokidar filesystem watchers by default.
-    mounts = workspace.mounts.map((m: RecipeWorkspaceMount) => {
-      const mount: MountConfig = {
-        name: m.name,
-        path: resolve(m.path),
-        mode: m.mode ?? 'read-write',
-        watch: m.watch ?? 'never',
-      };
-      if (m.ignore) mount.ignore = m.ignore;
-      if (m.maxFileSize !== undefined) mount.maxFileSize = m.maxFileSize;
-      if (m.wakeOnChange !== undefined) mount.wakeOnChange = m.wakeOnChange;
-      if (m.autoMaterialize !== undefined) mount.autoMaterialize = m.autoMaterialize;
-      return mount;
-    });
+    mounts = workspace.mounts.map(({ path, mode, watch, ...rest }: RecipeWorkspaceMount): MountConfig => ({
+      ...rest,
+      path: resolve(path),
+      mode: mode ?? 'read-write',
+      watch: watch ?? 'never',
+    }));
   } else {
-    // Default: read-only input mount + read-write products mount.
     mounts = [
       { name: 'input', path: resolve('./input'), mode: 'read-only', watch: 'never' },
       { name: 'products', path: resolve('./output'), mode: 'read-write', watch: 'never' },
     ];
   }
 
-  // Config mount: version-controls gate.json (and future config files) via
-  // Chronicle. Opt-in via recipe: workspace.configMount = true. NOTE: this
-  // mount is deliberately NOT autoMaterialize — the host re-materializes it
-  // explicitly after branch-changing commands, and ordinary agent edits stay
-  // Chronicle-side until then. Anything that assumes `_config` disk content
-  // tracks agent edits is wrong (see the instructions-path validation).
+  // A branch switch or a rollback rewinds this mount through
+  // agent-framework's materializeMount, which does nothing for a direct
+  // mount, so its backend is said rather than left to the framework's
+  // default. An undo moves no branch (agent-framework #291), so it leaves the
+  // mount as it is. The gate keeps the recipe it last applied in
+  // gate.recipe.json beside gate.json and reads it at each start, so a rewind
+  // takes it back with gate.json. The include keeps editors' and recovery
+  // files out (anima-research/connectome-host#278); each name covers that
+  // name in any directory beneath as well, since agent-framework's include
+  // has no form for the root alone.
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({
       name: '_config',
       path: resolve(join(storePath, 'config')),
       mode: 'read-write',
+      backend: 'chronicle',
       watch: 'always',
+      include: ['gate.json', 'gate.js', 'gate.recipe.json'],
     });
   }
 

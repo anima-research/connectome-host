@@ -1,27 +1,12 @@
-/**
- * End-to-end test for FleetTreeAggregator + FleetModule + headless child.
- *
- * Spawns a real headless child via FleetModule.handleLaunch, registers it
- * with the aggregator, and asserts the snapshot round-trips through the
- * IPC and ends up populating the per-child reducer.
- *
- * This is the integration check that Phase 1 + 2 + 3 + 6 actually compose:
- *   - Phase 6 lets the child recipe pass validation
- *   - Phase 1's describe verb returns a snapshot event
- *   - Phase 2's reducer accepts applySnapshot from that event's tree
- *   - Phase 3's aggregator orchestrates the describe handshake
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { FleetTreeAggregator } from '../src/state/fleet-tree-aggregator.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 const CHILD_RECIPE = {
   name: 'AggregatorChildRecipe',
@@ -51,15 +36,13 @@ describe('FleetTreeAggregator — e2e against headless child', () => {
   let aggregator: FleetTreeAggregator;
 
   beforeAll(async () => {
-    // Children validate credentials during startup but never infer in this test.
-    process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'sk-test-fleet-aggregator';
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-agg-e2e-'));
     recipePath = join(tmpDir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify(CHILD_RECIPE), 'utf-8');
 
     fleet = new FleetModule({
       childRuntimePath: 'bun',
-      childIndexPath: INDEX_PATH,
+      childIndexPath: join(TEST_DIR, 'mock-runheadless-child.ts'),
       readyTimeoutMs: 15_000,
     });
     aggregator = new FleetTreeAggregator(fleet);
@@ -67,20 +50,18 @@ describe('FleetTreeAggregator — e2e against headless child', () => {
 
   afterAll(async () => {
     aggregator.dispose();
-    // Best-effort cleanup of the spawned child.
     try {
       await fleet.handleToolCall({
         id: 'cleanup',
         name: 'kill',
         input: { name: 'aggregated-child' },
       });
-    } catch { /* noop */ }
+    } catch { }
     await new Promise((r) => setTimeout(r, 500));
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('snapshot round-trips through aggregator after launch', async () => {
-    // Register the child name BEFORE launch so we don't miss lifecycle:ready.
     aggregator.registerChild('aggregated-child');
 
     const launch = await fleet.handleToolCall({
@@ -94,9 +75,6 @@ describe('FleetTreeAggregator — e2e against headless child', () => {
     });
     expect((launch as { success?: boolean }).success).toBe(true);
 
-    // Wait for the snapshot to arrive and populate the reducer.
-    // The aggregator requests describe on lifecycle:ready, the child responds
-    // with a snapshot event carrying the seeded 'commander' framework agent.
     await waitFor(
       () => aggregator.getChildNodes('aggregated-child').some(n => n.name === 'commander'),
       15_000,

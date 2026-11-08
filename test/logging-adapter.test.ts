@@ -1,15 +1,18 @@
 import { describe, test, expect } from 'bun:test';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
+import { cacheLineageKey, Membrane, NativeFormatter } from '@animalabs/membrane';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
+import type { ModuleContext } from '@animalabs/agent-framework';
+import { SettingsModule } from '../src/modules/settings-module.js';
+import { validateRecipe } from '../src/recipe.js';
+import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
-// Regression guard for the reasoning passthrough. `withReasoning` injects
-// adaptive `thinking` into `request.extra`, which the Anthropic adapter
-// forwards to the API params verbatim. This is invisible to the type system
-// (membrane's ProviderRequest doesn't type `thinking`), so it's exactly the
-// kind of contract that silently rots on a dependency bump — pin it here so
-// the next break is a red test with a name, not a tsc error blamed on the
-// wrong package (see the git history of this file).
+// membrane's Anthropic adapter merges `request.extra` into the API params,
+// which is how the reasoning setting's `thinking` reaches the API.
 
 const baseRequest: ProviderRequest = {
   messages: [],
@@ -26,7 +29,6 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
     expect((out.extra as Record<string, { type?: string }> | undefined)?.thinking?.type).toBe('adaptive');
-    // shallow clone — original request untouched
     expect((baseRequest as { extra?: unknown }).extra).toBeUndefined();
   });
 
@@ -40,26 +42,26 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
     expect((extra.thinking as { type?: string }).type).toBe('adaptive');
   });
 
-  test('no-op (same reference) when reasoning disabled', () => {
+  test('adds nothing when reasoning is disabled', () => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', disabled);
+    const given = structuredClone(baseRequest);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
-    expect(out).toBe(baseRequest);
+    expect(out).toEqual(given);
   });
 
-  test('no-op when no reasoning getter is wired', () => {
+  test('adds nothing when no reasoning getter is wired', () => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
+    const given = structuredClone(baseRequest);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
-    expect(out).toBe(baseRequest);
+    expect(out).toEqual(given);
   });
 
-  // Reasoning is host-wide, but every call through the shared membrane passes
-  // here — including RetrievalModule's Haiku calls. Models without adaptive
-  // thinking 400 on it, so they must go out untouched.
   test.each([
     'claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-5',
     'claude-opus-4-1', 'anthropic.claude-haiku-4-5', 'claude-opus-4-5@20251101',
+    'claude-haiku-5-50', 'claude-haiku-5-6', 'claude-haiku-5-5-1',
   ])('no thinking for %s (rejects adaptive)', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const req = { ...baseRequest, model };
@@ -71,7 +73,7 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
   test.each([
     'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
     'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1',
-    'claude-mythos-5-1', 'anthropic.claude-opus-5-5',
+    'claude-mythos-5-1', 'anthropic.claude-opus-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5-20260301',
   ])('adaptive thinking for %s', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
@@ -97,9 +99,10 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect((fable as { extra?: unknown }).extra).toBeUndefined();
   });
 
-  test("no-op (same reference) for 'default' and for unset", () => {
-    expect(withEffort('default')).toBe(fable);
-    expect(withEffort(undefined)).toBe(fable);
+  test("adds no effort for 'default' or for unset", () => {
+    const given = structuredClone(fable);
+    expect(withEffort('default')).toEqual(given);
+    expect(withEffort(undefined)).toEqual(given);
   });
 
   test('merges into an existing output_config instead of replacing it', () => {
@@ -118,8 +121,304 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
   });
 
   test('never sends a level outside the known set, whatever the model', () => {
-    expect(withEffort('minimal')).toBe(fable);
+    const given = structuredClone(fable);
+    expect(withEffort('minimal')).toEqual(given);
     expect(withEffort('minimal', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+  });
+});
+
+describe('LoggingAnthropicAdapter.withProgressNotes', () => {
+  type WithProgressNotes = { withProgressNotes(r: ProviderRequest): ProviderRequest };
+  const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
+  const notes = (req: ProviderRequest) => (adapter as unknown as WithProgressNotes).withProgressNotes(req);
+  const thinkingOf = (req: ProviderRequest) => (req.extra as { thinking?: unknown } | undefined)?.thinking;
+  const opus55: ProviderRequest = { ...baseRequest, model: 'claude-opus-5-5' };
+
+  test.each([
+    'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5',
+    'anthropic.claude-opus-5-5', 'anthropic/claude-sonnet-5-5', 'claude-opus-5-5[1m]',
+    'claude-opus-5-5-20260301', 'claude-sonnet-5-5-20260101', 'claude-fable-5-1-20261001', 'claude-opus-5-5@20260301',
+  ])('sends adaptive thinking with display updates to %s when no config would be sent', (model) => {
+    const req = { ...baseRequest, model };
+    expect(thinkingOf(notes(req))).toEqual({ type: 'adaptive', display: 'updates' });
+    expect((req as { extra?: unknown }).extra).toBeUndefined();
+  });
+
+  test.each([
+    'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5-5', 'claude-haiku-4-5',
+    'claude-mythos-5', 'claude-fable-5-2', 'claude-opus-5-6', 'claude-opus-5-50',
+    'claude-fable-5-10', 'claude-fable-5-1-1', 'claude-mythos-5-12',
+  ])('leaves %s untouched (same reference)', (model) => {
+    const req = { ...baseRequest, model };
+    expect(notes(req)).toBe(req);
+  });
+
+  test("turns an explicit 'omitted', in extra or top-level, into 'updates', keeping the config's other fields", () => {
+    const viaExtra = { ...opus55, extra: { keep: 1, thinking: { type: 'adaptive', display: 'omitted' } } } as ProviderRequest;
+    const out = notes(viaExtra);
+    expect(thinkingOf(out)).toEqual({ type: 'adaptive', display: 'updates' });
+    expect((out.extra as Record<string, unknown>).keep).toBe(1);
+    const binding = { prefix_mismatch_behavior: 'drop_block' };
+    const topLevel = { ...opus55, thinking: { type: 'adaptive', display: 'omitted', block_binding: binding } } as ProviderRequest;
+    expect(thinkingOf(notes(topLevel))).toEqual({ type: 'adaptive', display: 'updates', block_binding: binding });
+    const noDisplay = { ...opus55, thinking: { type: 'adaptive', block_binding: binding } } as ProviderRequest;
+    expect(thinkingOf(notes(noDisplay))).toEqual({ type: 'adaptive', block_binding: binding, display: 'updates' });
+  });
+
+  test('extra.thinking wins over request.thinking, as in the adapter', () => {
+    const req = {
+      ...opus55,
+      thinking: { type: 'adaptive', display: 'summarized' },
+      extra: { thinking: { type: 'adaptive', display: 'omitted' } },
+    } as ProviderRequest;
+    expect(thinkingOf(notes(req))).toEqual({ type: 'adaptive', display: 'updates' });
+  });
+
+  test("leaves 'summarized' and 'updates' alone: both return the notes", () => {
+    for (const display of ['summarized', 'updates']) {
+      const req = { ...opus55, extra: { thinking: { type: 'adaptive', display } } } as ProviderRequest;
+      expect(notes(req)).toBe(req);
+    }
+  });
+
+  test("leaves a config of another type alone ('disabled', 'between_tools')", () => {
+    for (const type of ['disabled', 'between_tools']) {
+      const req = { ...baseRequest, model: 'claude-sonnet-5-5', extra: { thinking: { type } } } as ProviderRequest;
+      expect(notes(req)).toBe(req);
+    }
+  });
+
+  const wireAdapter = (reasoning: () => { enabled: boolean; budgetTokens: number; display?: 'summarized' | 'omitted' }) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const headers: Array<Record<string, string> | undefined> = [];
+    const live = new LoggingAnthropicAdapter({ apiKey: 'test', cacheKeepalive: { enabled: false } }, '/dev/null', reasoning);
+    (live as unknown as { client: unknown }).client = {
+      withOptions() { return this; },
+      messages: {
+        stream: async (body: Record<string, unknown>, opts?: { headers?: Record<string, string> }) => {
+          bodies.push(body);
+          headers.push(opts?.headers);
+          return {
+            controller: { abort() {} },
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'message_start', message: { model: body.model, usage: { input_tokens: 1 } } };
+              yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+              yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } };
+              yield { type: 'content_block_stop', index: 0 };
+              yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+            },
+          };
+        },
+      },
+    };
+    const send = (model: string) => live.stream(
+      { ...baseRequest, model, messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] } as ProviderRequest,
+      { onChunk: () => {} },
+    );
+    const betas = (i: number) => (headers[i]?.['anthropic-beta'] ?? '').split(',').filter(Boolean);
+    return { bodies, betas, send, live };
+  };
+
+  test('with reasoning off, the wire request still asks for updates, with the beta that needs (stream lane, through the real adapter)', async () => {
+    const wire = wireAdapter(disabled);
+    await wire.send('claude-opus-5-5');
+    await wire.send('claude-fable-5-1');
+    await wire.send('claude-opus-4-8');
+    await wire.send('claude-fable-5');
+    expect(wire.bodies).toHaveLength(4);
+    for (const i of [0, 1, 3]) {
+      // membrane >= 0.7.0 adds the beta 'updates' needs; without it the API refuses the value.
+      expect(wire.betas(i)).toContain('thinking-display-updates-2026-08-18');
+    }
+    for (const i of [0, 1]) {
+      expect(wire.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
+      expect(wire.betas(i)).toContain('thinking-binding-controls-2026-08-01');
+    }
+    expect(wire.bodies[3]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+    expect(wire.betas(3)).not.toContain('thinking-binding-controls-2026-08-01');
+    expect(wire.bodies[2]?.thinking).toBeUndefined();
+    expect(wire.betas(2)).not.toContain('thinking-display-updates-2026-08-18');
+    expect(wire.betas(2)).not.toContain('thinking-binding-controls-2026-08-01');
+  });
+
+  test("with reasoning on, stream() applies the reasoning setting before the progress-note step", async () => {
+    const wire = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
+    await wire.send('claude-opus-5-5');
+    await wire.send('claude-opus-4-8');
+    expect(wire.bodies).toHaveLength(2);
+    expect(wire.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
+    expect(wire.betas(0)).toContain('thinking-display-updates-2026-08-18');
+    expect(wire.bodies[1]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
+    const summarized = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'summarized' as const }));
+    await summarized.send('claude-opus-5-5');
+    await summarized.send('claude-fable-5-1');
+    expect(summarized.bodies).toHaveLength(2);
+    for (const i of [0, 1]) {
+      // Membrane applies extra.thinking in place of its own config, control included.
+      expect(summarized.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
+      expect(summarized.betas(i)).not.toContain('thinking-display-updates-2026-08-18');
+      expect(summarized.betas(i)).toContain('thinking-binding-controls-2026-08-01');
+    }
+  });
+
+  test("through membrane, a recipe's 'summarized' goes as 'updates' wherever membrane sends no config for it, as chosen where it sends one, and the reasoning setting decides over it", async () => {
+    // membrane sends the Fable and Mythos family a thinking config only for
+    // binding controls or 'updates' (buildThinkingParam), and another model one
+    // only when the recipe's `enabled` is true.
+    const recipeSend = (membrane: Membrane, model: string, enabled = true) => membrane.stream({
+      messages: [{ participant: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      config: { model, maxTokens: 64, thinking: { enabled, type: 'adaptive', display: 'summarized' } },
+    }, { onChunk: () => {} });
+    const updates = { type: 'adaptive', display: 'updates' };
+    const bound = { prefix_mismatch_behavior: 'drop_block' };
+    const off = wireAdapter(disabled);
+    const viaOff = new Membrane(off.live, { formatter: new NativeFormatter() });
+    for (const model of ['claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1']) await recipeSend(viaOff, model);
+    await recipeSend(viaOff, 'claude-opus-5-5', false);
+    await recipeSend(viaOff, 'claude-opus-5-5');
+    await recipeSend(viaOff, 'claude-mythos-5');
+    expect(off.bodies).toHaveLength(6);
+    for (const i of [0, 1, 2, 3]) {
+      expect(off.bodies[i]?.thinking).toEqual(i === 1 || i === 3 ? { ...updates, block_binding: bound } : updates);
+      expect(off.betas(i)).toContain('thinking-display-updates-2026-08-18');
+    }
+    expect(off.bodies[4]?.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: bound });
+    expect(off.betas(4)).not.toContain('thinking-display-updates-2026-08-18');
+    expect(off.bodies[5]?.thinking).toBeUndefined();
+    const on = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
+    await recipeSend(new Membrane(on.live, { formatter: new NativeFormatter() }), 'claude-opus-4-8');
+    expect(on.bodies).toHaveLength(1);
+    expect(on.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
+  });
+
+  test('complete() gets no progress-note step, and the reasoning setting still applies there', async () => {
+    const oneShot = (reasoning: () => { enabled: boolean; budgetTokens: number; display?: 'summarized' | 'omitted' }) => {
+      const bodies: Array<Record<string, unknown>> = [];
+      const live = new LoggingAnthropicAdapter({ apiKey: 'test', cacheKeepalive: { enabled: false } }, '/dev/null', reasoning);
+      (live as unknown as { client: unknown }).client = {
+        withOptions() { return this; },
+        messages: {
+          create: async (body: Record<string, unknown>) => {
+            bodies.push(body);
+            return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', model: 'claude-opus-5-5', usage: { input_tokens: 1, output_tokens: 1 } };
+          },
+        },
+      };
+      const send = () => live.complete({ ...opus55, messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] } as ProviderRequest);
+      return { bodies, send };
+    };
+    const off = oneShot(disabled);
+    await off.send();
+    expect(off.bodies).toHaveLength(1);
+    expect(off.bodies[0]?.thinking).toBeUndefined();
+    const on = oneShot(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
+    await on.send();
+    expect(on.bodies).toHaveLength(1);
+    expect(on.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
+  });
+});
+
+describe('LoggingAnthropicAdapter initial recipe effort', () => {
+  test("a host started from its recipe sends the recipe's effort on its first request, with no settings update", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chost-initial-effort-'));
+    let server: ReturnType<typeof Bun.serve> | undefined;
+    let child: ReturnType<typeof Bun.spawn> | undefined;
+    try {
+      const recipePath = join(dir, 'recipe.json');
+      let first: Record<string, unknown> | undefined;
+      server = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        async fetch(request) {
+          if (new URL(request.url).pathname === '/v1/messages') first ??= await request.json() as Record<string, unknown>;
+          return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+        },
+      });
+      writeFileSync(recipePath, JSON.stringify({
+        name: 'Initial effort startup',
+        agent: { model: baseRequest.model, systemPrompt: 'Answer briefly.', thinking: { enabled: false, effort: 'medium' } },
+        modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      }));
+      const host = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/index.ts'), recipePath, '--no-tui'], {
+        cwd: dir,
+        env: { ...process.env, DATA_DIR: join(dir, 'data'), ANTHROPIC_API_KEY: 'sk-ant-effort-test', ANTHROPIC_BASE_URL: server.url.href },
+        stdin: new Blob(['hello\n']), stdout: 'ignore', stderr: 'ignore',
+      });
+      child = host;
+      const deadline = Date.now() + 10_000;
+      while (first === undefined && host.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
+      expect(first).toMatchObject({ output_config: { effort: 'medium' } });
+    } finally {
+      child?.kill('SIGKILL');
+      await child?.exited;
+      server?.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test('first stream builds medium effort on the wire without a settings update', async () => {
+    const recipe = validateRecipe({
+      name: 'initial-effort-test',
+      agent: { systemPrompt: 'sys', thinking: { enabled: false, effort: 'medium' } },
+    });
+    const settings = new SettingsModule(recipe.agent.thinking?.effort);
+    await settings.start({ getState: () => undefined } as unknown as ModuleContext);
+    const config = buildFrameworkAgentConfig(recipe, 'agent', baseRequest.model, undefined);
+    let wire: unknown;
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        requests += 1;
+        wire = await request.json();
+        return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+      },
+    });
+    try {
+      const adapter = new LoggingAnthropicAdapter(
+        { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } },
+        '/dev/null', () => settings.getReasoning(),
+      );
+      await expect(adapter.stream(baseRequest, {})).rejects.toThrow(/local request fixture/);
+      expect(requests).toBe(1);
+      expect(wire).toMatchObject({ output_config: { effort: 'medium' }, stream: true });
+      expect(config.thinking).toEqual({ enabled: false });
+      expect((wire as { thinking?: unknown }).thinking).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe('LoggingAnthropicAdapter cache lineage', () => {
+  test("a stream call's row and its live ledger record name the wire request's cache lineage", async () => {
+    let wire: Record<string, unknown> | undefined;
+    const server = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        wire = await request.json() as Record<string, unknown>;
+        return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'stream-lineage-'));
+    const seen: ProviderCallRecord[] = [];
+    try {
+      const adapter = new LoggingAnthropicAdapter(
+        { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } },
+        join(dir, 'llm-calls.test.jsonl'), undefined, (call) => { seen.push(call); },
+      );
+      const request = { ...baseRequest, system: 'You are a fixture.', tools: [{ name: 'shell', description: 'run a command', inputSchema: { type: 'object', properties: {} } }] } as ProviderRequest;
+      await expect(adapter.stream(request, {})).rejects.toThrow(/local request fixture/);
+      expect(wire).toMatchObject({ tools: [{ name: 'shell' }] });
+      expect(JSON.stringify(wire!.system)).toContain('You are a fixture.');
+      const row = JSON.parse(readFileSync(join(dir, 'llm-calls.test.jsonl'), 'utf8').trim());
+      expect(row.kind).toBe('stream');
+      expect(typeof row.requestSummary.lineage).toBe('string');
+      expect(row.requestSummary.lineage).toBe(cacheLineageKey(wire!));
+      expect(seen.map((call) => [call.kind, call.lineage])).toEqual([['stream', row.requestSummary.lineage]]);
+    } finally {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -127,7 +426,7 @@ describe('LoggingAnthropicAdapter request logging', () => {
   const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
   const internals = adapter as unknown as {
     requestSummary(r: ProviderRequest, raw?: unknown): Record<string, unknown>;
-    refusalRawRequest(r: ProviderResponse, raw: unknown): unknown;
+    retainedRawRequest(r: ProviderResponse, raw: unknown): unknown;
   };
 
   test('summarizes requests without retaining message content', () => {
@@ -159,13 +458,13 @@ describe('LoggingAnthropicAdapter request logging', () => {
     expect(JSON.stringify(internals.requestSummary(baseRequest, raw))).not.toContain('do not log me');
   });
 
-  test('retains the raw request only for refusals', () => {
+  test('of calls that get a response, retains the raw request only for refusals', () => {
     const rawRequest = { messages: ['forensic context'] };
     const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
     const refusal = { raw: { stop_reason: 'refusal' } } as unknown as ProviderResponse;
 
-    expect(internals.refusalRawRequest(success, rawRequest)).toBeUndefined();
-    expect(internals.refusalRawRequest(refusal, rawRequest)).toBe(rawRequest);
+    expect(internals.retainedRawRequest(success, rawRequest)).toBeUndefined();
+    expect(internals.retainedRawRequest(refusal, rawRequest)).toBe(rawRequest);
   });
 
   test('LLM_CALLS_FULL_PAYLOADS=1 retains the raw request on every call', () => {
@@ -177,8 +476,8 @@ describe('LoggingAnthropicAdapter request logging', () => {
       const rawRequest = { messages: ['forensic context'] };
       const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
       const refusal = { raw: { stop_reason: 'refusal' } } as unknown as ProviderResponse;
-      expect(fi.refusalRawRequest(success, rawRequest)).toBe(rawRequest);
-      expect(fi.refusalRawRequest(refusal, rawRequest)).toBe(rawRequest);
+      expect(fi.retainedRawRequest(success, rawRequest)).toBe(rawRequest);
+      expect(fi.retainedRawRequest(refusal, rawRequest)).toBe(rawRequest);
     } finally {
       if (prev === undefined) delete process.env.LLM_CALLS_FULL_PAYLOADS;
       else process.env.LLM_CALLS_FULL_PAYLOADS = prev;
@@ -193,7 +492,7 @@ describe('LoggingAnthropicAdapter request logging', () => {
         const a = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
         const ai = a as unknown as typeof internals;
         const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
-        expect(ai.refusalRawRequest(success, { m: 1 })).toBeUndefined();
+        expect(ai.retainedRawRequest(success, { m: 1 })).toBeUndefined();
       }
     } finally {
       if (prev === undefined) delete process.env.LLM_CALLS_FULL_PAYLOADS;

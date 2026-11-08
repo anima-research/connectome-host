@@ -42,7 +42,6 @@ async function runEvacuator(args: string[], options: {
       rawPrompt: 'fixture', adjustedPrompt: 'fixture', finalSystemPrompt: 'fixture',
       finalMemoriesBlock: '',
     }));
-    // Capture the actual warmup launch without making compression calls.
     const bin = join(dir, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'bun'),
@@ -97,7 +96,7 @@ async function observeHostSwitch(recipe: Recipe, importedName: string) {
     const native = sessions.createSession('Native');
     const imported = sessions.createSession('Imported');
     writeFileSync(join(dataDir, 'sessions', imported.id + '.import-source.json'), JSON.stringify({ agentName: importedName }));
-    sessions.setActiveSession(native.id); // the documented pre-import active session
+    sessions.setActiveSession(native.id);
     writeFileSync(extension, `
       import { appendFileSync } from 'node:fs';
       const membranes = new WeakMap();
@@ -187,6 +186,13 @@ describe('evacuator participant naming', () => {
     const changed = await runEvacuator(['--agent', 'Other'], { existingOutput });
     expect(changed.exitCode).toBe(0);
     expect(changed.stderr).toContain('Changing revival participant from "Custom Import" to "Other"');
+  });
+
+  test('a prior recipe an editor saved with a byte order mark is compared, not reported as unreadable', async () => {
+    const result = await runEvacuator([], { existingOutput: '\uFEFF' + JSON.stringify({ agent: { name: 'Custom Import' } }) });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain('Changing revival participant from "Custom Import" to "Claude"');
+    expect(result.stderr).not.toContain('Could not read the existing output recipe participant');
   });
 
   test('an unreadable prior recipe is reported before replacement', async () => {

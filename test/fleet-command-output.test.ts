@@ -26,8 +26,6 @@ test('command replies survive fleet narrowing and an empty direct-client subscri
     sigtermEscalationMs: 500,
   });
   try {
-    // Recipe-only env keeps the fixture's dummy key out of the test runner's
-    // environment. This calls the same launch path that autoStart uses.
     const launched = await (fleet as any).handleLaunch({
       name: 'leaf', recipe, dataDir: join(dir, 'data'),
       env: { ANTHROPIC_API_KEY: 'sk-offline-command-output-test' },
@@ -50,14 +48,10 @@ test('command replies survive fleet narrowing and an empty direct-client subscri
       event => event.type === 'command-output' && event.text?.includes('/unknown-fleet-response'),
     )).toBe(true);
 
-    // Bypass the parent's forced event floor, as a direct socket client can.
-    // Subscribe is synchronous; dispatch processes it before the next line.
     child.socket!.write(JSON.stringify({ type: 'subscribe', events: [] }) + '\n');
     child.socket!.write(JSON.stringify({ type: 'command', command: '/unknown-direct-response' }) + '\n');
     await waitFor(() => hasReply('/unknown-direct-response'), 'empty-subscription response');
 
-    // An empty filter still suppresses telemetry, including the exiting
-    // lifecycle event. The process exit, rather than that event, ends stop().
     await fleet.stop();
     expect(child.events.some(event => event.type === 'lifecycle' && event.phase === 'exiting')).toBe(false);
     expect(child.process?.exitCode).toBe(0);

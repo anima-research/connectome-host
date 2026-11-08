@@ -12,6 +12,7 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
     "paths": {
       "@conhost/state/*": ["../src/state/*"],
       "@conhost/web/*": ["../src/web/*"]

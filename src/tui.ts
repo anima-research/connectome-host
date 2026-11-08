@@ -1,22 +1,6 @@
-/**
- * OpenTUI-based terminal interface.
- *
- * Layout (top to bottom):
- *   ┌─────────────────────────────┐
- *   │  ScrollBox (conversation)   │  ← flexGrow, stickyScroll
- *   │  └─ TextRenderable per msg  │
- *   ├─────────────────────────────┤
- *   │  Status bar (1 row)         │  ← [status | tool | N sub]
- *   ├─────────────────────────────┤
- *   │  TextareaRenderable         │  ← user input (Enter submits, Alt+Enter newline)
- *   └─────────────────────────────┘
- *
- * Tab toggles between conversation and agent fleet tree view.
- * Fleet view: interactive tree with expand/collapse (↑↓ navigate, ⏎ toggle).
- */
-
 import {
   createCliRenderer,
+  CliRenderEvents,
   type CliRenderer,
   BoxRenderable,
   TextRenderable,
@@ -29,29 +13,41 @@ import {
   stripAnsiSequences,
 } from '@opentui/core';
 import { createWriteStream, mkdirSync } from 'node:fs';
-import { sessionMarker } from './bug-report.js';
+import { sessionMarker } from './session-marker.js';
 import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
-import type { AutobiographicalStrategy } from '@animalabs/context-manager';
+import { continuesBody, type AutobiographicalStrategy, type StoredMessage } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
 import type { AgentNode } from './state/agent-tree-reducer.js';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './state/stream-usage.js';
+import { STREAM_END_TRACES, TURN_RUNNING_TRACES, traceError } from './state/turn-trace.js';
+import { createFailureLines, createTurnFailures, turnEndedLine, type FailureStep } from './state/turn-failures.js';
+import { credentialActionHint, opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
+import { failureHint } from './failure-hint.js';
+import { TurnInterrupts, interruptSubagents } from './state/turn-interrupt.js';
+import { switchFollowing, traceFollower } from './piped-turns.js';
 import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
+import { refusedWhileSwitching, trackOperatorWork } from './session-switch.js';
 import { formatQuotaReadout } from './quota-meter.js';
-import { takeRecipeWarnings } from './recipe.js';
+import { recipeModel } from './recipe.js';
+import { takeRecipeWarnings } from './recipe-warnings.js';
+import { bunFloorNotice } from './bun-floor-check.js';
+import { hostUpdate } from './update/update.js';
+import { effectiveContextBudgetTokens } from './recipe-fit.js';
+import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
+import { storedInjectionLabel } from './stored-injection.js';
+import { speakerOf, type Speaker } from './speaker.js';
 
-/** Format a token count compactly: 1.2M / 3.5k / 42. */
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return String(n);
 }
 
-/** Format elapsed seconds for humans: 48s / 5m48s / 1h02m. */
 export function fmtElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const min = Math.floor(seconds / 60);
@@ -59,26 +55,14 @@ export function fmtElapsed(seconds: number): string {
   return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}m`;
 }
 
-/**
- * How close a context is to its budget. Drives status-bar color escalation:
- * the operator's real question is not "how many tokens" but "how close to
- * compression/trouble" — a bare number can't answer that.
- */
 export function ctxSeverity(ctx: number, budget?: number): 'ok' | 'warn' | 'high' {
   if (!budget || budget <= 0 || ctx <= 0) return 'ok';
   const frac = ctx / budget;
   return frac >= 0.9 ? 'high' : frac >= 0.75 ? 'warn' : 'ok';
 }
 
-/** Alert kinds that always win the status-bar label, in priority order. */
 const ALERT_KIND_PRIORITY = ['compression-quarantine', 'inference-exhausted'];
 
-/**
- * Which alert kind the status bar should name when several are active.
- * Priority kinds (quarantine, hard-down) win; otherwise the most recent
- * (= last inserted, since upserts keep their original Map position but new
- * kinds append).
- */
 export function pickTopAlert(kinds: string[]): string | null {
   if (kinds.length === 0) return null;
   for (const p of ALERT_KIND_PRIORITY) {
@@ -87,64 +71,195 @@ export function pickTopAlert(kinds: string[]): string | null {
   return kinds[kinds.length - 1] ?? null;
 }
 
-/**
- * Viewport slice for a cursor-driven line list: which [start, end) range of
- * `len` lines fits in `avail` rows while keeping `cursor` visible. Callers
- * render a `┈ N above ┈` marker when start > 0 and `┈ N below ┈` when
- * end < len — the marker rows are budgeted for here, which is why the body
- * grows by one at either edge (that marker doesn't render).
- */
+const MARKER_ROW = 1;
+
 export function sliceViewport(len: number, cursor: number, avail: number): { start: number; end: number } {
   if (len <= avail) return { start: 0, end: len };
-  const body = Math.max(1, avail - 2);
+  const body = Math.max(1, avail - 2 * MARKER_ROW);
   const start = Math.max(0, Math.min(cursor - Math.floor(body / 2), len - body));
   const end = start + body;
-  if (start === 0) return { start, end: Math.min(len, Math.max(1, avail - 1)) };
-  if (end >= len) return { start: Math.max(0, len - Math.max(1, avail - 1)), end: len };
+  if (start === 0) return { start, end: Math.min(len, Math.max(1, avail - MARKER_ROW)) };
+  if (end >= len) return { start: Math.max(0, len - Math.max(1, avail - MARKER_ROW)), end: len };
   return { start, end };
 }
 
-/** Local wall-clock HH:MM, for event-line timestamps. */
+function headerMessage(message: string): string {
+  return message.length > 70 ? `${message.slice(0, 67).replace(/[\uD800-\uDBFF]$/, '')}…` : message;
+}
+
+export function historyUserLine(
+  msg: { participant: string; metadata?: unknown },
+  text: string,
+): { text: string; speaker: Speaker['kind'] } {
+  const speaker = speakerOf(msg.participant, msg.metadata);
+  return { text: `${speaker.kind === 'you' ? 'You' : speaker.label}: ${text}`, speaker: speaker.kind };
+}
+
+export function historyInjectionLine(
+  msg: { content: ReadonlyArray<{ type: string; text?: unknown }>; metadata?: unknown; shardIndex?: number },
+): string | null | undefined {
+  const mark = storedInjectionMarkOf(msg.metadata);
+  if (!mark) return undefined;
+  if (typeof msg.shardIndex === 'number' && msg.shardIndex > 0) return null;
+  const text = msg.content
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const line = text === '' ? storedInjectionLabel(mark) : `${storedInjectionLabel(mark)} ${text}`;
+  return line.length > 120 ? `${line.slice(0, 117).replace(/[\uD800-\uDBFF]$/, '')}…` : line;
+}
+
+export function fleetNoticeLine(notice: string): string {
+  const newline = notice.indexOf('\n');
+  return `  ⚠ ${headerMessage(newline < 0 ? notice : `${notice.slice(0, newline)} …`)}`;
+}
+
 function hhmm(now = new Date()): string {
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 }
 
-/**
- * What a submission at the armed /quit prompt means. Pure so the semantics
- * are pinned by tests: the default for arbitrary input is CANCEL — the
- * pre-fix behavior ("anything else → kill everything") meant a user who
- * forgot the prompt and typed a normal chat message killed the fleet.
- * `cancel-keep-input` = the input looks like a real message; the caller
- * must restore it rather than discard it.
- */
 export type QuitConfirmAction = 'kill' | 'detach' | 'cancel' | 'cancel-keep-input';
 export function resolveQuitConfirm(raw: string): QuitConfirmAction {
   const c = raw.trim().toLowerCase();
-  // Re-typing the quit command at the prompt is a confirmation, not a cancellation.
   if (c === 'y' || c === 'yes' || c === 'q' || c === 'quit' || c === '/q' || c === '/quit') return 'kill';
   if (c === 'd' || c === 'detach') return 'detach';
   if (c === '' || c === 'n' || c === 'no' || c === 'cancel') return 'cancel';
   return 'cancel-keep-input';
 }
 
-/**
- * Canonical short name for a subagent's full framework name. The single
- * source of truth for full↔short resolution — ad-hoc `.includes()` matching
- * here used to cross-wire agents whose names were substrings of each other
- * (e.g. `web` / `websearch`).
- *
- * Naming schemes (see subagent-module.ts spawn/fork paths):
- *   spawn: `spawn-{name}-{ts}`
- *   fork:  `{name}-d{depth}-{ts}` / `{name}-d{depth}-retry{n}-{ts}` — no
- *          fork- prefix at all; the -d{depth} suffix must be stripped too,
- *          or every fork resolves to e.g. `web-d1` and matches nothing.
- */
+
+export interface RootTurnEnd {
+  status: 'idle' | 'error' | 'attempt-failed';
+  background: 'show' | 'drop' | 'cut';
+  line?: { text: string; tone: 'error' | 'note' };
+}
+export function rootTurnEnd(
+  event: { type: string; error?: unknown; reason?: unknown },
+  turnShowing: boolean,
+): RootTurnEnd | null {
+  // agent-framework sends inference:failed only for an attempt it started, so
+  // a failure shows a turn under way even when the TUI didn't see it start.
+  if (!turnShowing && event.type !== 'inference:failed') return null;
+  switch (event.type) {
+    case 'inference:completed':
+    case 'inference:turn_ended':
+      return { status: 'idle', background: 'show' };
+    case 'inference:failed':
+      return { status: 'attempt-failed', background: 'cut', line: { text: `Error: ${traceError(event)}`, tone: 'error' } };
+    case 'inference:aborted': {
+      const reason = typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : '';
+      return { status: 'idle', background: 'drop', line: { text: `(turn aborted${reason})`, tone: 'note' } };
+    }
+    case 'inference:exhausted':
+      // After a `failed`, it ends a turn the framework gave up on. Alone, without
+      // a `failed` first, it ends a stream aborted for a reason other than a
+      // stop, which agent-framework doesn't treat as deliberate. Either way it
+      // shows as a failure; a stop ends with `aborted`.
+      return { status: 'error', background: 'drop', line: { text: `(turn ended: ${traceError(event)})`, tone: 'error' } };
+    default:
+      return null;
+  }
+}
+
+export function peekEndLine(
+  event: { type: string; reason?: unknown; error?: unknown },
+): { text: string; tone: 'dim' | 'warn' | 'error' } | null {
+  switch (event.type) {
+    case 'inference:turn_ended':
+      return { text: '── turn ended by a tool ──', tone: 'dim' };
+    case 'inference:aborted':
+      return { text: `✗ turn aborted${typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : ''}`, tone: 'warn' };
+    case 'inference:failed':
+      return { text: `✗ inference failed: ${traceError(event)}`, tone: 'error' };
+    case 'inference:exhausted':
+      return { text: `✗ turn ended: ${traceError(event)}`, tone: 'error' };
+    default:
+      return null;
+  }
+}
+
+export function peekEndColor(tone: 'dim' | 'warn' | 'error'): string {
+  return tone === 'dim' ? DIM_GRAY : tone === 'warn' ? YELLOW : RED;
+}
+
+export function formatWireEvent(evt: WireEvent): { text: string; color: string } | null {
+  const type = typeof evt.type === 'string' ? evt.type : '';
+  if (!type) return null;
+  const get = (k: string): unknown => (evt as Record<string, unknown>)[k];
+
+  switch (type) {
+    case 'lifecycle': {
+      const phase = get('phase') as string;
+      const color = phase === 'ready' ? GREEN : phase === 'exiting' ? YELLOW : GRAY;
+      return { text: `◆ lifecycle: ${phase}${get('reason') ? ` (${get('reason') as string})` : ''}`, color };
+    }
+    case 'inference:started': return { text: `─ inference started (${get('agentName') ?? '?'}) ─`, color: DIM_GRAY };
+    case 'inference:completed': return { text: `─ inference completed ─`, color: DIM_GRAY };
+    case 'inference:turn_ended':
+    case 'inference:aborted':
+    case 'inference:failed':
+    case 'inference:exhausted': {
+      const end = peekEndLine(evt as { type: string; reason?: unknown; error?: unknown });
+      return end && { text: end.text, color: peekEndColor(end.tone) };
+    }
+    case 'inference:tokens': {
+      return null;
+    }
+    case 'inference:content_block':
+    case 'inference:usage':
+    case 'usage:updated':
+      return null;
+    case 'ops:alert': {
+      const kind = typeof get('kind') === 'string' ? get('kind') as string : 'unknown';
+      const msg = typeof get('message') === 'string' ? get('message') as string : '';
+      const who = typeof get('agentName') === 'string' ? ` [${get('agentName') as string}]` : '';
+      return kind.endsWith('-clear')
+        ? { text: `✓${who} ${kind}: ${msg}`, color: CYAN }
+        : { text: `⚠${who} ${kind}: ${msg}`, color: RED };
+    }
+    case 'tool:started': return { text: `  ⟳ ${get('tool') as string}`, color: YELLOW };
+    case 'tool:completed': return { text: `  ✓ ${get('tool') as string} (${get('durationMs') ?? '?'}ms)`, color: CYAN };
+    case 'tool:failed': return { text: `  ✗ ${get('tool') as string}: ${get('error') as string}`, color: RED };
+    case 'command-output': return { text: `  ${get('text') as string}`, color: GRAY };
+    default:
+      return { text: `· ${type}`, color: DIM_GRAY };
+  }
+}
+
+export function escapeActs(status: string, rootTurnRunning: boolean): boolean {
+  if (status === 'idle' || status === 'switching') return false;
+  return status !== 'error' || rootTurnRunning;
+}
+
+export function escapeLine(
+  outcome: 'aborted' | 'deferred' | 'idle',
+  stopped: string,
+): { text: string | null; endsTurn: boolean } {
+  switch (outcome) {
+    case 'aborted':
+      return { text: stopped ? `  (${stopped})` : null, endsTurn: false };
+    case 'deferred':
+      return { text: `  (interrupting: the turn stops as soon as it can be aborted${stopped ? `; ${stopped}` : ''})`, endsTurn: false };
+    case 'idle':
+      return { text: stopped ? `  (no turn interrupted — ${stopped})` : '  (no turn interrupted)', endsTurn: true };
+  }
+}
+
+export function rootTurnStep(
+  showing: boolean,
+  event: { type: string; error?: unknown; reason?: unknown },
+): { showing: boolean; end: RootTurnEnd | null } {
+  if (event.type === 'inference:started' || TURN_RUNNING_TRACES.has(event.type)) return { showing: true, end: null };
+  if (event.type === 'inference:failed') return { showing: true, end: rootTurnEnd(event, true) };
+  if (!STREAM_END_TRACES.has(event.type)) return { showing, end: null };
+  return { showing: false, end: rootTurnEnd(event, showing) };
+}
+
 export function shortAgentName(full: string): string {
-  return full
-    .replace(/^(spawn|fork)-/, '')
-    .replace(/-d\d+(-retry\d+)?-\d+$/, '')
-    .replace(/-\d+$/, '')
-    .replace(/-retry\d+$/, '');
+  if (full.startsWith('spawn-')) return full.slice('spawn-'.length).replace(/-\d+$/, '');
+  return full.replace(/-d\d+(-retry\d+)?-\d+$/, '');
 }
 
 interface AppContext {
@@ -156,133 +271,76 @@ interface AppContext {
   userMessageCount: number;
   quotaMeter?: import('./quota-meter.js').QuotaMeter | null;
   credentials?: import('./credential-state.js').CredentialMonitor | null;
-  /** Subscription without a local meter (openai-codex through a gateway). */
   subscriptionUnmetered?: boolean;
-  switchSession(id: string): Promise<void>;
+  stopping?: boolean;
+  switching?: boolean;
+  switchSession(id: string): Promise<unknown>;
 }
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
 
 interface TokenUsage {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  /** Session cost estimate from the framework's UsageTracker, when priced. */
   cost?: { total: number; currency: string };
-  /** Subscription hosts only: the quota-window readout that replaces the
-   *  dollar figure (list-price dollars are fiction on a subscription).
-   *  null = subscription host with no reading yet — print neither. */
   quota?: string | null;
-}
-
-/** One active operator alert from the ops:alert pipeline, keyed
- *  `${agent}:${kind}` (fleet-child alerts prefix the child name). */
-interface OpsAlertEntry {
-  kind: string;
-  agent: string;
-  message: string;
-  count: number;
 }
 
 interface TuiState {
   status: string;
   tool: string | null;
-  /** When the currently-running root-agent tool started (epoch ms). Lets the
-   *  status bar show a running elapsed on slow tools — the "is it stuck?"
-   *  answer without switching views. */
   toolStartedAt: number | null;
   subagents: ActiveSubagent[];
-  /**
-   * chat       — conversation + stream
-   * fleet      — in-process subagent tree (existing)
-   * peek       — peek into a subagent's live stream (existing)
-   * processes  — cross-process child fleet (new, FleetModule-backed)
-   * peek-proc  — peek into a child process's live event stream (new)
-   */
   viewMode: 'chat' | 'fleet' | 'peek' | 'peek-proc';
-  /** Session-cumulative usage (usage:updated totals across all agents). */
   tokens: TokenUsage;
-  /** Root agent's CURRENT context size: its latest provider call's prompt,
-   *  read from the inference usage samples (see noteUsageSample).
-   *  Deliberately separate from tokens.input — conflating them made the
-   *  status line oscillate between two different quantities under the same
-   *  label. */
   ctxTokens: number;
   peekTarget: string | null;
-  /** Name of the child process being peeked at (peek-proc mode). */
   peekProcTarget: string | null;
-  /** When set, peek-proc is filtered to this one agent inside the child —
-   *  the honest per-agent view for agents and sub-subagents living in a
-   *  fleet child. Null = whole-process stream. */
   peekProcAgent: string | null;
-  /** True while we're waiting for the user to resolve a pending /quit with children still running. */
   pendingQuitConfirm: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Fleet tree types
-// ---------------------------------------------------------------------------
 
 type FleetNodeKind = 'researcher' | 'subagent' | 'fleet-child' | 'fleet-child-agent';
 
 interface FleetNode {
-  /** Short display name (used as key in expandedNodes / visibleNodeIds). */
   name: string;
-  /** Full agent name (for lookups in transcript/token maps). */
   fullName: string;
-  /** What this node represents — drives renderer behavior. */
   kind: FleetNodeKind;
-  /** ActiveSubagent data — only set for kind='subagent'. */
   agent?: ActiveSubagent;
-  /** Reducer node from FleetTreeAggregator — set for kind='fleet-child-agent'. */
   reducerNode?: AgentNode;
-  /** Fleet child name — set for kind='fleet-child' (the process header) and inherited
-   *  by descendants of that header so peek/stop know which child they target. */
   fleetChildName?: string;
   children: FleetNode[];
 }
 
-/** A single line in the fleet view with its color. */
 interface FleetLine {
   text: string;
   color: string;
 }
-
-// ---------------------------------------------------------------------------
-// Colours (hex strings for OpenTUI)
-// ---------------------------------------------------------------------------
 
 const GREEN = '#00cc00';
 const YELLOW = '#cccc00';
 const CYAN = '#00cccc';
 const MAGENTA = '#cc00cc';
 const RED = '#cc0000';
+const ORANGE = '#cc6600';
 const GRAY = '#888888';
 const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
 const THINKING_DIM = '#8a7aa8';
+/** The prefix of a history line whose row an undo took out of the agent's window. */
+const UNDONE_MARK = '(undone) ';
 const THINKING_PREFIX = '💭 ';
 
-/** Block kinds the membrane can route into a stream lane. */
 type StreamBlockType = 'text' | 'thinking' | 'tool_call' | 'tool_result';
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 export async function runTui(app: AppContext): Promise<void> {
   const membrane = app.membrane;
 
-  // Redirect stderr to a log file — console.error is invisible once the TUI owns the terminal
   const logDir = process.env.DATA_DIR || './data';
   mkdirSync(logDir, { recursive: true });
   const logPath = `${logDir}/tui-error.log`;
   const logStream = createWriteStream(logPath, { flags: 'a' });
   logStream.write(`\n${sessionMarker(new Date())}\n`);
-  // The recipe was validated before the TUI took the terminal: its warnings go into this log.
   for (const warning of takeRecipeWarnings()) logStream.write(`warning: ${warning}\n`);
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -292,7 +350,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
 
-  // Set terminal title
+  let stopping = false;
+
   const recipeName = app.recipe?.name ?? 'connectome-host';
   const rootAgentName = app.recipe?.agent?.name ?? 'agent';
   process.stdout.write(`\x1b]0;${recipeName}\x07`);
@@ -311,68 +370,57 @@ export async function runTui(app: AppContext): Promise<void> {
     pendingQuitConfirm: false,
   };
 
-  /** Active ops alerts (quarantine klaxon, refusal streaks, …), keyed
-   *  `${agent}:${kind}`. Drives the status-bar ⚠ segment; each firing also
-   *  prints a chat line so the alert exists in scrollback. */
   const opsAlerts = new Map<string, OpsAlertEntry>();
 
-  /** A credential alert names the actions the host can run; in a terminal
-   *  the click is a command, so say which. */
-  function credentialActionHint(data: unknown): string {
-    const actions = (data as { actions?: unknown } | undefined)?.actions;
-    if (!Array.isArray(actions) || actions.length === 0) return '';
-    const ids = actions
-      .map((a) => (a as { id?: unknown })?.id)
-      .filter((id): id is string => typeof id === 'string')
-      .map((id) => (id === 'set-token' ? '/auth token <tok>' : `/auth ${id}`));
-    return ids.length > 0 ? ` — ${ids.join(' | ')}` : '';
-  }
-
   function handleOpsAlert(kind: string, agent: string, message: string): void {
-    // All-clears travel as a distinct `<kind>-clear` kind (the alarm kind's
-    // ops cooldown must never swallow the stand-down). Remove the base alert
-    // and announce the recovery instead of adding a row.
-    if (kind.endsWith('-clear')) {
-      const baseKey = `${agent}:${kind.slice(0, -'-clear'.length)}`;
-      if (opsAlerts.delete(baseKey)) {
-        addEvent(`✓ [${agent}] ${kind}: ${message}`, CYAN);
-        updateStatus();
-      }
-      return;
-    }
-    const key = `${agent}:${kind}`;
-    const existing = opsAlerts.get(key);
-    opsAlerts.set(key, { kind, agent, message, count: (existing?.count ?? 0) + 1 });
-    const times = existing ? ` (×${existing.count + 1})` : '';
-    addEvent(`⚠ [${agent}] ${kind}${times}: ${message}`, RED);
+    const line = opsAlertLine(opsAlerts, kind, agent, message);
+    if (line === null) return;
+    addEvent(line.text, line.cleared ? CYAN : RED);
     updateStatus();
   }
 
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
-  let backgrounded = false;       // researcher pushed to background via Ctrl+B
-  let backgroundBuffer = '';      // accumulates tokens while backgrounded
+  let backgrounded = false;
+  /** What a backgrounded root turn's text says since Ctrl+B, shown when it
+   *  returns: a line per round, each ending where `backgroundBreaks` says a
+   *  tool call ended one, or a thinking block ended its text, as streaming
+   *  draws the text on its two sides as two lines. Its thinking is left out,
+   *  as a collapsed thinking line shows none of its words. */
+  let backgroundBuffer = '';
+  let backgroundBreaks: number[] = [];
+  /** The text line streamed before Ctrl+B, which the first round's words
+   *  in the buffer continue: one row holds both. */
+  let backgroundPartial: StreamedLine | undefined;
+  let attemptStart = 0;
+  /** The command answers drawn since a branch move's answer came while a
+   *  root turn ran, the move's first: the branch is drawn once the turn
+   *  ends, with these below it. */
+  let redrawAfterTurn: Array<{ text: string; color: string }> | undefined;
+  let rootTurnShowing = false;
+  const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
   let verboseChat = false;
 
-  // Main agent spinner + token counter
   let streamOutputTokens = 0;
   let spinnerFrame = 0;
   const SPINNER = ['·', '.', 'o', 'O'];
 
-  // Subagent phase tracking
-  type SubagentPhase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'failed';
+  type SubagentPhase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'attempt-failed' | 'failed';
   const subagentPhase = new Map<string, SubagentPhase>();
+  const subagentFailureShown = new Set<string>();
+  let turnFailures = createTurnFailures();
+  const failedTurnHint = failureHint(app.recipe, process.env, app.credentials);
+  const failureLines = createFailureLines();
   const PHASE_COLOR: Record<SubagentPhase, string> = {
     sending: YELLOW,
     streaming: CYAN,
     invoking: MAGENTA,
     executing: YELLOW,
     done: DIM_GRAY,
+    'attempt-failed': ORANGE,
     failed: RED,
   };
-
-  // ── Layout ────────────────────────────────────────────────────────────
 
   const rootBox = new BoxRenderable(renderer, {
     id: 'root',
@@ -396,10 +444,8 @@ export async function runTui(app: AppContext): Promise<void> {
     paddingTop: 1,
   });
   let fleetLineCounter = 0;
+  const STATUS_INPUT_PADDING_ROWS = 3;
 
-  /** Detach AND destroy all fleetBox lines. These views rebuild on every
-   *  poll tick — remove() without destroy() leaked one native text buffer
-   *  per line per repaint. */
   function clearFleetBox(): void {
     for (const child of [...fleetBox.getChildren()]) {
       fleetBox.remove(child.id);
@@ -428,11 +474,8 @@ export async function runTui(app: AppContext): Promise<void> {
     justifyContent: 'space-between',
   });
 
-  // Multi-line input. Enter submits; Alt+Enter (meta+return) and Ctrl+J
-  // (linefeed, default Textarea binding) insert a newline. Shift+Enter is
-  // not bound because most terminals don't transmit the shift modifier on
-  // Enter without Kitty Keyboard protocol; users who want it can run their
-  // terminal's equivalent of Claude Code's /terminal-setup.
+  // Ctrl+J is a linefeed, which OpenTUI's Textarea binds to a newline by
+  // default.
   const input = new TextareaRenderable(renderer, {
     id: 'input',
     placeholder: 'Type a message or /help — Alt+Enter for newline',
@@ -444,24 +487,17 @@ export async function runTui(app: AppContext): Promise<void> {
     onSubmit: () => { handleSubmit(); },
   });
 
-  // ── Paste handling ─────────────────────────────────────────────────
-  // Short single-line pastes are inlined for visibility. Larger or
-  // multi-line pastes get stored out-of-band; an informative placeholder
-  // — `[paste #N: "head…" Nch, Mlines]` — appears in the input. The
-  // placeholder is expanded back to the original text on submit.
   const INLINE_PASTE_THRESHOLD = 200;
   const pastedTexts: string[] = [];
+  const PASTE_PLACEHOLDER = /\[paste #(\d+):[^\]]*\]/g;
   function formatPastePlaceholder(n: number, text: string): string {
-    // Square brackets in the head would terminate the `[^\]]*` expansion
-    // regex early on submit, mangling the message (pasted JSON/code/links
-    // all contain `]`). Substitute them in the *display* head only — the
-    // stored paste text is untouched.
     const head = text.replace(/\s+/g, ' ').trim().slice(0, 30).replace(/[[\]]/g, '·');
     const lines = text.split(/\r?\n/).length;
     const sizeHint = lines > 1 ? `${text.length}ch, ${lines}L` : `${text.length}ch`;
     return `[paste #${n}: "${head}…" ${sizeHint}]`;
   }
   (input as any).handlePaste = (event: { bytes: Uint8Array }) => {
+    if (stopping) return;
     const text = stripAnsiSequences(decodePasteBytes(event.bytes));
     if (text.length <= INLINE_PASTE_THRESHOLD && !/[\r\n]/.test(text)) {
       (input as any).insertText(text);
@@ -477,7 +513,6 @@ export async function runTui(app: AppContext): Promise<void> {
     paddingLeft: 1,
   });
 
-  // Assembly — both views always present; fleet starts hidden
   statusBox.add(statusLeft);
   statusBox.add(statusRight);
   inputBox.add(input);
@@ -490,35 +525,18 @@ export async function runTui(app: AppContext): Promise<void> {
 
   input.focus();
 
-  // ── Agent observability maps ──────────────────────────────────────
-
-  /** Accumulated transcript per agent (text output + tool calls). Retention
-   *  is capped; the synesthete summarizer only ever reads the last 10k. */
   const agentTranscripts = new Map<string, string>();
   const TRANSCRIPT_CAP = 30_000;
-  /** Cumulative appended chars per agent — drives the "enough new text to
-   *  re-summarize" delta, which transcript.length can't once it hits the cap. */
   const transcriptTotalLen = new Map<string, number>();
 
-  /** Parent tracking: child short name → parent full agent name. */
   const agentParent = new Map<string, string>();
 
-  /** Context window size per agent: its latest provider call's prompt
-   *  (fresh input plus cache reads and writes), projected forward while it
-   *  streams. */
   const agentContextTokens = new Map<string, number>();
-  /** Each agent's current stream usage as of its latest sample, so the next
-   *  sample's own call can be told apart from the stream's running total. */
   const streamUsage = new Map<string, UsageCounts>();
 
-  /** Synesthete summary per agent, keyed by full agent name. */
   const summaryCache = new Map<string, string>();
   const summarySnapshotLen = new Map<string, number>();
   const summaryPending = new Set<string>();
-  /** Earliest next attempt per agent after a FAILED summary call. Without
-   *  this, a failing provider (outage, 429 storm) meets the 500ms poll tick
-   *  and becomes a 2 Hz per-agent inference retry hose — summaryPending only
-   *  guards concurrency, not the gap between a fast failure and the next tick. */
   const summaryBackoffUntil = new Map<string, number>();
 
   const SUMMARY_DELTA = 2000;
@@ -561,89 +579,79 @@ export async function runTui(app: AppContext): Promise<void> {
       summaryBackoffUntil.delete(agentName);
       if (state.viewMode === 'fleet') updateFleetView();
     } catch {
-      // Best-effort display — but never an unthrottled retry loop.
       summaryBackoffUntil.set(agentName, Date.now() + SUMMARY_FAILURE_BACKOFF_MS);
     } finally {
       summaryPending.delete(agentName);
     }
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────
-
   let messageCounter = 0;
 
-  /** Scrollback retention: one TextRenderable per line accretes forever
-   *  otherwise (render cost degrades long before memory hurts). */
   const SCROLLBACK_CAP = 2000;
   function pruneScrollback() {
     const children = scrollBox.getChildren();
     if (children.length <= SCROLLBACK_CAP) return;
     for (const child of children.slice(0, children.length - SCROLLBACK_CAP)) {
-      if (child === currentStreamText) continue; // never destroy the live stream element
-      // remove() only detaches; destroy() is what frees the native text
-      // buffer. Without it the "cap" bounds render cost but still leaks
-      // one native buffer per line.
+      if (child === currentStreamText) continue;
+      // OpenTUI's remove() only detaches a renderable; destroy() frees its
+      // native text buffer.
       scrollBox.remove(child.id);
       child.destroy();
     }
   }
 
-  function addLine(text: string, color: string = WHITE) {
-    scrollBox.add(new TextRenderable(renderer, {
+  function addLine(text: string, color: string = WHITE): TextRenderable | undefined {
+    if (stopping) return undefined;
+    const line = new TextRenderable(renderer, {
       id: `msg-${++messageCounter}`,
       content: text,
       fg: color,
-    }));
+    });
+    scrollBox.add(line);
     pruneScrollback();
+    return line;
   }
 
-  /** addLine with an HH:MM prefix — for *event* lines (alerts, tool batches,
-   *  subagent results, branch switches…): scrollback read an hour later is
-   *  useless without knowing WHEN things happened. Streamed prose and
-   *  immediate-feedback hints stay unstamped. */
   function addEvent(text: string, color: string = WHITE) {
     addLine(`${hhmm()} ${text}`, color);
   }
 
-  /**
-   * Live context budget for an agent. Runtime overrides (persisted in the
-   * `framework/state` slot) win over the recipe — same seam the web module's
-   * /curve endpoint uses; reading only the recipe plots the wrong gauge on
-   * any agent whose budget was ever changed at runtime.
-   */
+  function showFailure(agent: string, label: string, step: Exclude<FailureStep, { show: 'ended' }>, color: string): void {
+    failureLines.show(agent, `${hhmm()} ${label}`, step, (text) => {
+      const line = addLine(text, color);
+      return line && { setText: (next: string) => { line.content = next; }, get isDestroyed() { return line.isDestroyed; } };
+    });
+  }
+
   function getAgentBudget(name: string): number | undefined {
     try {
       const live = (app.framework as unknown as {
         getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number } | undefined;
       }).getAgentRuntimeSettings?.(name)?.contextBudgetTokens;
       if (typeof live === 'number' && live > 0) return live;
-    } catch { /* fall through to recipe */ }
-    return name === rootAgentName ? app.recipe?.agent?.contextBudgetTokens : undefined;
+    } catch { }
+    return name === rootAgentName && app.recipe
+      ? effectiveContextBudgetTokens(app.recipe, recipeModel(app.recipe, process.env.MODEL))
+      : undefined;
   }
 
   function updateStatus() {
+    if (stopping) return;
     const topAlert = pickTopAlert([...opsAlerts.values()].map(a => a.kind));
-    let left = formatStatusLeft(state, SPINNER[spinnerFrame], streamOutputTokens, opsAlerts.size, topAlert);
-    // An active ops alert repaints the whole left segment — a one-cell glyph
-    // in default gray is exactly the kind of signal that gets scrolled past.
+    let left = formatStatusLeft(state, SPINNER[spinnerFrame], streamOutputTokens, opsAlerts.size, topAlert, interrupts.isRunning(rootAgentName));
     statusLeft.fg = opsAlerts.size > 0 ? RED : GRAY;
 
     const budget = getAgentBudget(rootAgentName);
     const right = formatTokens(state.tokens, verboseChat, state.ctxTokens, budget) + formatMemStats(getRootCM());
-    // Same escalation as the ctx gauge itself: the right segment goes yellow
-    // at 75% of budget, red at 90% — visible even when the numbers aren't read.
     const sev = ctxSeverity(state.ctxTokens, budget);
     statusRight.fg = sev === 'high' ? RED : sev === 'warn' ? YELLOW : DIM_GRAY;
     statusRight.content = right;
 
-    // Width budget: long tool names + peek target + alerts must lose to the
-    // tokens/mem segment, not shove it off the row.
     const maxLeft = Math.max(12, renderer.terminalWidth - right.length - 4);
     if (left.length > maxLeft) left = left.slice(0, maxLeft - 1) + '…';
     statusLeft.content = left;
   }
 
-  /** Best-effort handle to the root agent's ContextManager, for stats queries. */
   function getRootCM(): { getRenderStats?: () => unknown; getStrategy?: () => { getStats?: () => unknown } } | null {
     try {
       const ag = app.framework.getAgent(rootAgentName);
@@ -655,27 +663,43 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   let currentStreamBlockType: StreamBlockType = 'text';
+  /** The block the line being streamed draws, what that block says so far
+   *  (in full while a collapsed thinking line shows only its size), and
+   *  what the line shows. */
+  let currentStreamKind: 'text' | 'thinking' = 'text';
+  let currentStreamSaid = '';
+  let currentStreamShown = '';
+  /** The entry of a line /clear took down mid-stream. Its row holds the
+   *  block's words after the /clear too, which aren't drawn, so they go on
+   *  into the entry, with no line, until the block ends (the stream's next
+   *  line, the round's end or the turn's): the row takes it then as a
+   *  cleared line's, and an undo doesn't draw it again. */
+  let clearedStream: StreamedLine | undefined;
 
-  // Terse mode (Ctrl+V off) collapses live thinking into a single counting
-  // line instead of streaming the full monologue — the toggle's label always
-  // promised "showing agent thoughts" but thinking streamed regardless.
   let thinkingCollapsed = false;
   let thinkingCollapsedChars = 0;
 
-  /** Freeze a collapsed thinking line at its final size when the stream
-   *  leaves the thinking lane (or ends). */
+  function showStream(text: string) {
+    currentStreamShown = text;
+    if (currentStreamText) currentStreamText.content = text;
+  }
+
   function finalizeCollapsedThinking() {
     if (!thinkingCollapsed) return;
     if (currentStreamText && currentStreamBlockType === 'thinking') {
-      currentStreamText.content = `${THINKING_PREFIX}(thought, ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok)`;
+      showStream(`${THINKING_PREFIX}(thought, ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok)`);
     }
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
   }
 
   function beginStream() {
+    clearedStream = undefined;
     currentStreamBuffer = '';
     currentStreamBlockType = 'text';
+    currentStreamKind = 'text';
+    currentStreamSaid = '';
+    currentStreamShown = '';
     currentStreamText = new TextRenderable(renderer, {
       id: `stream-${++messageCounter}`,
       content: '',
@@ -686,40 +710,32 @@ export async function runTui(app: AppContext): Promise<void> {
     streaming = true;
   }
 
-  /**
-   * Switch the active stream element to a different block lane. Called from
-   * inference:content_block (block_start). If the new block is the same lane
-   * as the current one, this is a no-op — Anthropic's stream occasionally
-   * splits a single logical "lane" across multiple blocks (e.g. interleaved
-   * thinking) and we want them visually contiguous within their kind.
-   */
   function switchStreamBlock(blockType: StreamBlockType) {
     if (currentStreamBlockType === blockType && currentStreamText) return;
     if (blockType !== 'thinking') finalizeCollapsedThinking();
-    // Tool blocks (tool_call / tool_result) aren't rendered as a stream lane
-    // here — they're surfaced via the tool:* trace events instead. We still
-    // need to update currentStreamBlockType so that when tokens swing back to
-    // text or thinking, the next switchStreamBlock() call sees a "different
-    // lane than before" and creates a fresh TextRenderable instead of
-    // appending to the prior element across a tool sandwich.
     if (blockType !== 'text' && blockType !== 'thinking') {
       currentStreamBlockType = blockType;
       return;
     }
+    keepStreamedLine();
     currentStreamBuffer = '';
     currentStreamBlockType = blockType;
+    currentStreamKind = blockType;
+    currentStreamSaid = '';
     if (blockType === 'thinking') {
       if (!verboseChat) {
         thinkingCollapsed = true;
         thinkingCollapsedChars = 0;
       }
       currentStreamBuffer = thinkingCollapsed ? `${THINKING_PREFIX}thinking…` : THINKING_PREFIX;
+      currentStreamShown = currentStreamBuffer;
       currentStreamText = new TextRenderable(renderer, {
         id: `stream-thinking-${++messageCounter}`,
         content: currentStreamBuffer,
         fg: THINKING_DIM,
       });
     } else {
+      currentStreamShown = '';
       currentStreamText = new TextRenderable(renderer, {
         id: `stream-${++messageCounter}`,
         content: '',
@@ -732,116 +748,488 @@ export async function runTui(app: AppContext): Promise<void> {
 
   function streamToken(text: string) {
     if (!currentStreamText) return;
+    currentStreamSaid += text;
     if (thinkingCollapsed && currentStreamBlockType === 'thinking') {
-      // Count instead of print: liveness without the wall of text.
       thinkingCollapsedChars += text.length;
-      currentStreamText.content = `${THINKING_PREFIX}thinking… ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok`;
+      showStream(`${THINKING_PREFIX}thinking… ~${fmtTokens(Math.ceil(thinkingCollapsedChars / 4))} tok`);
       return;
     }
     currentStreamBuffer += text;
-    currentStreamText.content = currentStreamBuffer;
+    showStream(currentStreamBuffer);
   }
 
-  function endStream() {
+  function endStream(): StreamedLine | undefined {
     finalizeCollapsedThinking();
+    const kept = keepStreamedLine();
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
     currentStreamBlockType = 'text';
+    currentStreamKind = 'text';
+    currentStreamSaid = '';
+    currentStreamShown = '';
+    return kept;
   }
 
-  /** Replay at most this many messages on startup/branch-switch. A long
-   *  session replayed in full floods scrollback with thousands of lines
-   *  (thinking included) before the user can type; the full history is one
-   *  /curve or web-UI visit away. */
+  /** Keep the line just streamed, for linkStreamedLines to link to its row. */
+  function keepStreamedLine(): StreamedLine | undefined {
+    if (!currentStreamText || !currentStreamSaid.trim()) return undefined;
+    return keepLine(currentStreamText, currentStreamKind, currentStreamSaid, currentStreamShown, currentStreamKind === 'thinking' ? THINKING_DIM : WHITE);
+  }
+
   const HISTORY_REPLAY_MAX = 50;
 
-  function loadSessionHistory() {
+  /** A line drawn for a row of the root agent's record, with how it is drawn
+   *  while the row is in the agent's window, so an undo or a redo marks it
+   *  again in place (remarkHistory). `appended` marks a line remarkHistory
+   *  drew itself, for an undone row the history had no line for. */
+  interface RecordLine { line: TextRenderable; id: string; text: string; color: string; appended: boolean }
+  let recordLines: RecordLine[] = [];
+  /** How many of the record's rows the session history read: a row past them was stored after it was drawn. */
+  let historyRead = 0;
+  /** A line drawn as it was streamed or sent, before its row was stored: a
+   *  block of a root turn's reply (its text or its thinking), the tools a
+   *  round of it called, or the operator's message. `said` is what the row
+   *  holds for it (for `tools`, the calls' names joined by `, `), and each
+   *  part a line that draws it, `shown` and `color` how: one line, or for
+   *  a reply backgrounded mid-stream the line streamed before Ctrl+B and the
+   *  line its return drew. linkStreamedLines links it to its row. */
+  interface StreamedLine {
+    kind: 'text' | 'thinking' | 'tools' | 'you';
+    said: string;
+    parts: Array<{ line: TextRenderable; shown: string; color: string }>;
+  }
+  /** The lines streamed or sent that no row has taken yet. */
+  let streamedLines: StreamedLine[] = [];
+  /** The entries streamedLines let go past the scrollback cap, whose lines
+   *  the scrollback has taken down by then, each the same entry with no
+   *  line (`parts` emptied), so what holds it (a failed switch's messages,
+   *  a backgrounded reply's line before Ctrl+B) still finds it: a row that
+   *  takes one isn't drawn again. The operator's messages' (evictedSent)
+   *  go once their rows take them, and the replies' (evictedReplies) at
+   *  their turn's end, by when its rows are stored. Each list keeps at most
+   *  SCROLLBACK_CAP, the oldest let go first, each by then more than twice
+   *  that many lines old: its row, if it comes, is drawn again at an undo. */
+  let evictedSent: StreamedLine[] = [];
+  let evictedReplies: StreamedLine[] = [];
+  /** The reply entries kept since the root agent's current attempt began
+   *  (its inference:started, or its last tool round's end): an attempt
+   *  that fails stores nothing, so at its end they are let go. */
+  let attemptLines: StreamedLine[] = [];
+  /** The operator's messages sent while a session switch runs, undefined
+   *  while none runs: one that fails leaves them unstored, and the old
+   *  session's history isn't drawn again, so their entries go then. */
+  let sentDuringSwitch: StreamedLine[] | undefined;
+  /** The store's branch whose history loadSessionHistory drew. */
+  let drawnBranch: string | undefined;
+  /** Async commands whose answer hasn't come: one of them can have moved
+   *  the store already, and its answer draws the branch. */
+  let commandsAnswering = 0;
+  /** A link or a mark was skipped while an answer was pending, the store on
+   *  another branch than the one drawn: the last answer looks again. */
+  let branchCheckAtAnswer = false;
+  /** Rows stored after the history was drawn whose lines /clear or the
+   *  scrollback cap took down: an undo doesn't draw them again. */
+  let clearedRows = new Set<string>();
+  /** How many of the record's rows linkStreamedLines has read for the
+   *  root agent's replies, and for the operator's messages: the rows past
+   *  them were stored since. A backgrounded turn's replies wait for its
+   *  return, its messages don't. */
+  let linkedThrough = 0;
+  let sentLinkedThrough = 0;
+  /** A remark while a turn was backgrounded left its undone replies' rows
+   *  for its return to mark, when their lines are drawn. */
+  let remarkAfterBackground = false;
+
+  function keepLine(line: TextRenderable, kind: StreamedLine['kind'], said: string, shown: string, color: string): StreamedLine {
+    const kept: StreamedLine = { kind, said, parts: [{ line, shown, color }] };
+    streamedLines.push(kept);
+    if (kind !== 'you') attemptLines.push(kept);
+    if (streamedLines.length > SCROLLBACK_CAP) {
+      for (const gone of streamedLines.splice(0, streamedLines.length - SCROLLBACK_CAP)) {
+        gone.parts = [];
+        const list = gone.kind === 'you' ? evictedSent : evictedReplies;
+        list.push(gone);
+        if (list.length > SCROLLBACK_CAP) list.splice(0, list.length - SCROLLBACK_CAP);
+      }
+    }
+    return kept;
+  }
+
+  /** Let go of entries no row will take: the operator's messages that were
+   *  never stored, and the reply lines of an attempt that failed. */
+  function dropEntries(gone: StreamedLine[]): void {
+    if (gone.length === 0) return;
+    const dropped = new Set(gone);
+    streamedLines = streamedLines.filter((l) => !dropped.has(l));
+    evictedSent = evictedSent.filter((l) => !dropped.has(l));
+    evictedReplies = evictedReplies.filter((l) => !dropped.has(l));
+  }
+
+  /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
+  function undoneIn(cm: { windowStatusOf?: (id: string) => string }): (id: string) => boolean {
+    return (id) => typeof cm.windowStatusOf === 'function' && cm.windowStatusOf(id) === 'undone';
+  }
+
+  /** Draw one line of a row: marked and dim while the row is undone. */
+  function addRecordLine(id: string, text: string, color: string, out: boolean, appended: boolean): void {
+    const line = addLine(out ? `${UNDONE_MARK}${text}` : text, out ? DIM_GRAY : color);
+    if (line) recordLines.push({ line, id, text, color, appended });
+  }
+
+  /** Draw a row of the record: its text, its thinking and the tools it called, each a line. */
+  function drawRow(msg: StoredMessage, out: boolean, appended: boolean): void {
+    const injected = historyInjectionLine(msg);
+    if (injected !== undefined) {
+      if (injected !== null) addRecordLine(msg.id, injected, DIM_GRAY, out, appended);
+      return;
+    }
+
+    const toolNames: string[] = [];
+    for (const block of msg.content) {
+      if (block.type === 'text' && (block as { text: string }).text.trim()) {
+        if (msg.participant === 'user') {
+          const line = historyUserLine(msg, (block as { text: string }).text);
+          addRecordLine(msg.id, line.text, line.speaker === 'you' ? GREEN : line.speaker === 'host' ? DIM_GRAY : CYAN, out, appended);
+        } else {
+          addRecordLine(msg.id, (block as { text: string }).text, WHITE, out, appended);
+        }
+      } else if (block.type === 'thinking') {
+        const t = (block as { thinking?: string }).thinking;
+        if (t && t.trim()) {
+          const line = t.trim().replace(/\s+/g, ' ');
+          addRecordLine(msg.id, `${THINKING_PREFIX}${line.length > 120 ? line.slice(0, 117) + '…' : line}`, THINKING_DIM, out, appended);
+        }
+      } else if (block.type === 'tool_use') {
+        toolNames.push((block as { name: string }).name);
+      }
+    }
+
+    if (toolNames.length > 0) {
+      addRecordLine(msg.id, `[tools] ${toolNames.join(', ')}`, YELLOW, out, appended);
+    }
+  }
+
+  /** Draw the root agent's history, from where the record starts, and read
+   *  its rows from the record's end from here on. With `draw` false it
+   *  draws nothing and only takes up the record (a /clear while a redraw
+   *  waits). */
+  function loadSessionHistory(draw = true) {
+    recordLines = [];
+    historyRead = 0;
+    linkedThrough = 0;
+    sentLinkedThrough = 0;
+    remarkAfterBackground = false;
+    streamedLines = [];
+    evictedSent = [];
+    evictedReplies = [];
+    clearedRows = new Set();
+    drawnBranch = storeBranchName();
+    branchCheckAtAnswer = false;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
     const all = cm.getAllMessages();
-    if (all.length === 0) return;
+    historyRead = all.length;
+    linkedThrough = all.length;
+    sentLinkedThrough = all.length;
+    if (all.length === 0 || !draw) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
+    // The history is the record. A row an undo took out of the agent's
+    // window (agent-framework #291) is still in it: drawn dim and marked,
+    // since the agent's next request is built without it.
+    const undone = undoneIn(cm);
 
     addLine(messages.length < all.length
       ? `── session history (last ${messages.length} of ${all.length} messages — full history in the web UI) ──`
       : `── session history (${messages.length} messages) ──`, DIM_GRAY);
 
-    for (const msg of messages) {
-      const toolNames: string[] = [];
-
-      for (const block of msg.content) {
-        if (block.type === 'text' && (block as { text: string }).text.trim()) {
-          if (msg.participant === 'user') {
-            addLine(`You: ${(block as { text: string }).text}`, GREEN);
-          } else {
-            addLine((block as { text: string }).text, WHITE);
-          }
-        } else if (block.type === 'thinking') {
-          const t = (block as { thinking?: string }).thinking;
-          if (t && t.trim()) {
-            // Replayed thinking is context, not content — one truncated line
-            // per block keeps the flavor without re-flooding scrollback.
-            const line = t.trim().replace(/\s+/g, ' ');
-            addLine(`${THINKING_PREFIX}${line.length > 120 ? line.slice(0, 117) + '…' : line}`, THINKING_DIM);
-          }
-        } else if (block.type === 'tool_use') {
-          toolNames.push((block as { name: string }).name);
-        }
-        // skip tool_result blocks
-      }
-
-      if (toolNames.length > 0) {
-        addLine(`[tools] ${toolNames.join(', ')}`, YELLOW);
-      }
-    }
+    for (const msg of messages) drawRow(msg, undone(msg.id), false);
 
     addLine(`── end history ──`, DIM_GRAY);
   }
 
-  /**
-   * Rebuild the TUI display from Chronicle state after a branch switch.
-   * Clears conversation, reloads messages, restores fleet tree from persisted subagent state.
-   */
-  function refreshFromStore() {
+  function storeBranchName(): string | undefined {
+    try {
+      return app.framework.getStore().currentBranch().name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Whether the store is on another branch than the one drawn, moved by
+   *  another client (a Web UI /checkout, /restore or /branchto), which
+   *  agent-framework traces nothing of: the history's cursors are the drawn
+   *  branch's, so the branch is drawn now, or once a root turn running on
+   *  it ends (redrawAfterTurn), and the caller leaves the drawn lines
+   *  alone. A move of this TUI's own is drawn by its command's answer, and
+   *  a session switch's by its end. A redraw waiting for a root turn's end
+   *  with none running, the turn set aside by a session switch that then
+   *  failed, is drawn now too. While an async command's answer is pending
+   *  (it may be this TUI's own move), nothing is linked or marked from the
+   *  drawn branch's cursors, and the last answer looks again
+   *  (lookAgainAtAnswer). */
+  function branchMovedElsewhere(): boolean {
+    const branch = storeBranchName();
+    if (branch === undefined || drawnBranch === undefined || branch === drawnBranch) return false;
+    if (redrawAfterTurn) {
+      if (rootTurnShowing || streaming) return true;
+      const answered = redrawAfterTurn;
+      refreshFromStore({ mount: false });
+      for (const l of answered) addLine(l.text, l.color);
+      return true;
+    }
+    if (sentDuringSwitch) return false;
+    if (commandsAnswering > 0) {
+      branchCheckAtAnswer = true;
+      return true;
+    }
+    const line = { text: `${hhmm()} Branch moved (by another client): ${branch}`, color: CYAN };
+    if (rootTurnShowing || streaming) {
+      redrawAfterTurn = [line];
+      return true;
+    }
+    refreshFromStore({ mount: false });
+    addLine(line.text, line.color);
+    return true;
+  }
+
+  /** Once no async command's answer is pending, the links and marks skipped
+   *  while one was: another client's move is drawn, or with none they are
+   *  made now. */
+  function lookAgainAtAnswer(): void {
+    if (!branchCheckAtAnswer || commandsAnswering > 0) return;
+    branchCheckAtAnswer = false;
+    remarkHistory();
+  }
+
+  /** The streamed lines of a row stored after the history was drawn, each
+   *  the one not linked yet whose kind and words are a run of the row's
+   *  blocks (its text or its thinking, or the operator's message), or the
+   *  tools it called, taken out of streamedLines, or with no line out of
+   *  evictedSent or evictedReplies: the oldest for the operator's message,
+   *  each echoed and then stored in the order it was sent, and the newest
+   *  for a reply's runs. A run is the blocks of one kind with no block of
+   *  the other kind between them, which streaming draws as one line: it
+   *  starts a line only where text and thinking meet (switchStreamBlock),
+   *  not at a tool call or another block. */
+  function takeStreamedLines(msg: StoredMessage): StreamedLine[] {
+    const runs: Array<{ kind: StreamedLine['kind']; said: string }> = [];
+    const tools: string[] = [];
+    let previous: StreamedLine['kind'] | undefined;
+    for (const block of msg.content) {
+      if (block.type === 'tool_use') tools.push((block as { name: string }).name);
+      const said = block.type === 'text' ? (block as { text?: string }).text ?? ''
+        : block.type === 'thinking' ? (block as { thinking?: string }).thinking ?? ''
+        : undefined;
+      if (said === undefined) continue;
+      const kind = block.type === 'thinking' ? 'thinking' : msg.participant === 'user' ? 'you' : 'text';
+      if (kind === previous) runs[runs.length - 1]!.said += said;
+      else runs.push({ kind, said });
+      previous = kind;
+    }
+    if (tools.length > 0) runs.push({ kind: 'tools', said: tools.join(', ') });
+    const taken: StreamedLine[] = [];
+    for (const { kind, said } of runs) {
+      if (!said.trim()) continue;
+      const matches = (l: StreamedLine) => l.kind === kind && l.said.trim() === said.trim();
+      // The evicted entries are older than every kept one.
+      for (const list of kind === 'you' ? [evictedSent, streamedLines] : [streamedLines, evictedReplies]) {
+        let at = -1;
+        if (kind === 'you') at = list.findIndex(matches);
+        else for (let i = list.length - 1; i >= 0 && at < 0; i--) if (matches(list[i]!)) at = i;
+        if (at < 0) continue;
+        taken.push(...list.splice(at, 1));
+        break;
+      }
+    }
+    return taken;
+  }
+
+  /** One message as the record holds it: a row, or the rows of a body
+   *  context-manager stored in shards (a long message, under adaptive
+   *  resolution), joined as its compile joins them, every part's other
+   *  blocks ahead of the text. `at` is its first row's place in the rows
+   *  read, `ids` every row's id. */
+  interface StoredBody { msg: StoredMessage; ids: string[]; at: number }
+  function storedBodies(rows: StoredMessage[]): StoredBody[] {
+    const bodies: StoredBody[] = [];
+    for (let at = 0; at < rows.length; at++) {
+      const first = rows[at]!;
+      let end = at;
+      while (end + 1 < rows.length && continuesBody(rows[end], rows[end + 1])) end++;
+      if (end === at) {
+        bodies.push({ msg: first, ids: [first.id], at });
+        continue;
+      }
+      const parts = rows.slice(at, end + 1);
+      const blocks = parts.flatMap((row) => row.content);
+      const text = blocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('');
+      bodies.push({
+        msg: { ...first, content: [...blocks.filter((b) => b.type !== 'text'), { type: 'text', text }] } as StoredMessage,
+        ids: parts.map((row) => row.id),
+        at,
+      });
+      at = end;
+    }
+    return bodies;
+  }
+
+  /** Link the lines streamed or sent to the rows stored since the last
+   *  call, each row once: at each root turn's end, once its last line is
+   *  kept, and before each remark. A line is linked while it is fresh, so a
+   *  later line in the same words can't leave its row without it, and an
+   *  entry the scrollback cap let go links its row as one whose line it
+   *  took down. The operator's messages are read oldest first, as their
+   *  echoes are, so the same words sent twice are linked in order though a
+   *  turn ends between their stores; an echo whose message is never stored
+   *  (one the framework refused, or one sent during a session switch that
+   *  failed) is let go first (dropEntries), so no later row takes it. The
+   *  replies are read newest first, as
+   *  their lines are, so a line no row took (an attempt that failed, say)
+   *  isn't taken for a later row in the same words. While a turn is
+   *  backgrounded its replies wait: their lines are drawn when it returns.
+   *  A row stamped for other residents only (a co-resident's, in the store
+   *  the residents share) is no line's: the TUI streams the root agent's
+   *  turns. A message context-manager stored in shards is linked as one
+   *  (storedBodies): its line holds it whole, and is the line of each
+   *  shard's row, which an undo takes out together. */
+  function linkStreamedLines(): void {
+    if (branchMovedElsewhere()) return;
+    const cm = app.framework.getAgent(rootAgentName)?.getContextManager();
+    if (!cm) return;
+    const total = cm.getMessageCount();
+    const sentFrom = Math.min(sentLinkedThrough, total);
+    const repliesFrom = backgrounded ? total : Math.min(linkedThrough, total);
+    sentLinkedThrough = total;
+    if (!backgrounded) linkedThrough = total;
+    const from = Math.min(sentFrom, repliesFrom);
+    if (from === total || streamedLines.length + evictedSent.length + evictedReplies.length === 0) return;
+    const stored = cm.getMessageWindow(from, total - from, { resolveBlobs: false }).messages;
+    const bodies = storedBodies(stored);
+    const link = ({ msg, ids }: StoredBody): void => {
+      const stamp = audienceOf(msg.metadata);
+      if (stamp && !stamp.audience.includes(rootAgentName)) return;
+      const taken = takeStreamedLines(msg);
+      const cleared = taken.some((l) => l.parts.length === 0 || l.parts.some((part) => part.line.isDestroyed));
+      for (const id of ids) {
+        if (cleared) clearedRows.add(id);
+        for (const part of taken.flatMap((l) => l.parts)) {
+          if (!part.line.isDestroyed) recordLines.push({ line: part.line, id, text: part.shown, color: part.color, appended: false });
+        }
+      }
+    };
+    for (const body of bodies) {
+      if (body.at >= sentFrom - from && body.msg.participant === 'user') link(body);
+    }
+    for (const body of [...bodies].reverse()) {
+      if (body.at >= repliesFrom - from && body.msg.participant !== 'user') link(body);
+    }
+    // The scrollback takes old lines down: a linked line it took down leaves
+    // the list, its row in clearedRows, so an undo doesn't draw it again.
+    if (recordLines.length > 2 * SCROLLBACK_CAP) {
+      recordLines = recordLines.filter((record) => {
+        if (record.line.isDestroyed) clearedRows.add(record.id);
+        return !record.line.isDestroyed;
+      });
+    }
+  }
+
+  /** Mark the history's lines again in place, as an undo or a redo on the
+   *  root agent's window (window:undone) has left each row in it or out, and
+   *  leave every other line as it is. A row stored after the history was
+   *  drawn (a turn of this session) has the lines streamed for it, its
+   *  reply's and the operator's message, marked in place, once linked to it
+   *  by their words (linkStreamedLines). An undone one with no such line is
+   *  drawn below, marked, and taken down again once a redo puts it back in
+   *  the window. A row whose lines /clear or the scrollback cap took down
+   *  isn't drawn again. While a turn is backgrounded, a reply's row not
+   *  linked yet waits for the turn's return to draw its lines, and is
+   *  marked then (remarkAfterBackground). */
+  function remarkHistory() {
+    if (branchMovedElsewhere()) return;
+    const agent = app.framework.getAgent(rootAgentName);
+    if (!agent) return;
+    const cm = agent.getContextManager();
+    linkStreamedLines();
+    remarkAfterBackground = false;
+    const undone = undoneIn(cm);
+    const kept: RecordLine[] = [];
+    for (const record of recordLines) {
+      if (record.line.isDestroyed) {
+        clearedRows.add(record.id);
+        continue;
+      }
+      const out = undone(record.id);
+      if (record.appended && !out) {
+        scrollBox.remove(record.line.id);
+        record.line.destroy();
+        continue;
+      }
+      record.line.content = out ? `${UNDONE_MARK}${record.text}` : record.text;
+      record.line.fg = out ? DIM_GRAY : record.color;
+      kept.push(record);
+    }
+    recordLines = kept;
+    const drawn = new Set(kept.map((record) => record.id));
+    const total = cm.getMessageCount();
+    cm.getMessageWindow(historyRead, total - historyRead, { resolveBlobs: false }).messages.forEach((msg, i) => {
+      if (drawn.has(msg.id) || clearedRows.has(msg.id) || !undone(msg.id)) return;
+      if (backgrounded && msg.participant !== 'user' && historyRead + i >= linkedThrough) remarkAfterBackground = true;
+      else drawRow(msg, true, true);
+    });
+  }
+
+  /** Draw the store's branch again. `mount: false` leaves the `_config`
+   *  mount alone, for a branch move agent-framework writes it for:
+   *  switchBranch (/checkout, and /restore to a branch head) inside its
+   *  reservation of the store, the move's answer saying if that failed, and
+   *  rollbackToMessage (/restore to a message, /branchto) as it lets the
+   *  store go, without awaiting the write, a failure only in agent-
+   *  framework's log. A rollback that failed and left the store on the new
+   *  branch has it written by neither, and its answer says so. `draw:
+   *  false` takes up the branch and draws nothing, leaving the scrollback's
+   *  lines as they are (a /clear while a redraw waits). */
+  function refreshFromStore(opts: { mount?: boolean; draw?: boolean } = {}) {
+    const draw = opts.draw !== false;
+    redrawAfterTurn = undefined;
     // Reset streaming state BEFORE destroying renderables so nothing can
     // touch a freed native buffer through currentStreamText.
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
+    currentStreamSaid = '';
+    currentStreamShown = '';
+    clearedStream = undefined;
     thinkingCollapsed = false;
     thinkingCollapsedChars = 0;
 
-    // Clear conversation display (destroy frees the native text buffers)
-    const children = [...scrollBox.getChildren()];
-    for (const child of children) {
-      scrollBox.remove(child.id);
-      child.destroy();
+    if (draw) {
+      const children = [...scrollBox.getChildren()];
+      for (const child of children) {
+        scrollBox.remove(child.id);
+        child.destroy();
+      }
+      messageCounter = 0;
     }
-    messageCounter = 0;
     state.status = 'idle';
     state.tool = null;
 
-    // Reload conversation from Chronicle
-    loadSessionHistory();
+    loadSessionHistory(draw);
 
-    // Restore fleet tree from persisted subagent module state
     if (subMod) {
       subMod.restoreFromStore();
       state.subagents = [...subMod.activeSubagents.values()];
 
-      // Rebuild TUI-side parent map from persisted data
       agentParent.clear();
       for (const [child, parent] of subMod.parentMap) {
         agentParent.set(child, parent);
       }
     }
 
-    // Materialize config files from the (possibly new) branch so gate.json stays in sync
-    const ws = app.framework.getModule('workspace');
+    const ws = opts.mount === false ? undefined : app.framework.getModule('workspace');
     if (ws && 'materializeMount' in ws) {
-      (ws as any).materializeMount('_config').catch(() => {});
+      trackOperatorWork(app, "the _config mount's refresh", (ws as any).materializeMount('_config')).catch(() => {});
     }
 
     updateStatus();
@@ -849,22 +1237,11 @@ export async function runTui(app: AppContext): Promise<void> {
 
   const fmtK = fmtTokens;
 
-  // ── Fleet tree view ────────────────────────────────────────────────
-
   const expandedNodes = new Set<string>([rootAgentName]);
-  /** Tracks fleet-child header IDs we've seen so we only auto-expand once per
-   *  child (a manual collapse afterward sticks). */
   const seenFleetHeaders = new Set<string>();
   let fleetCursor = 0;
-  /** Line index (within the tree-lines array) of the cursor's header row —
-   *  set during renderNode, consumed by the viewport slice so the cursor can
-   *  never walk below the fold into rows the terminal isn't showing. */
   let fleetCursorLine = 0;
-  /** Ordered list of node IDs in current rendering (for cursor navigation). */
   let visibleNodeIds: string[] = [];
-  /** Maps node ID → FleetNode for the currently-rendered tree, so keypress
-   *  handlers can dispatch on `node.kind` (a typed discriminator) rather than
-   *  re-parsing prefixes off the string ID. Rebuilt each `updateFleetView`. */
   const visibleNodes = new Map<string, FleetNode>();
 
   function buildFleetTree(): FleetNode {
@@ -875,11 +1252,9 @@ export async function runTui(app: AppContext): Promise<void> {
       children: [],
     };
 
-    // Index subagents by short name for tree building
     const byName = new Map<string, FleetNode>();
     for (const sa of state.subagents) {
-      const fullName = [...(subMod?.activeSubagents.keys() ?? [])]
-        .find(k => k === sa.name || shortAgentName(k) === sa.name) ?? sa.name;
+      const fullName = [...(subMod?.activeSubagents ?? [])].find(([, entry]) => entry === sa)?.[0] ?? sa.name;
       const node: FleetNode = {
         name: sa.name,
         fullName,
@@ -890,22 +1265,19 @@ export async function runTui(app: AppContext): Promise<void> {
       byName.set(sa.name, node);
     }
 
-    // Build parent-child links
     for (const sa of state.subagents) {
       const parentFullName = agentParent.get(sa.name);
       if (parentFullName && parentFullName !== rootAgentName) {
-        // Find the parent's short name
-        const parentShort = byName.has(parentFullName) ? parentFullName : shortAgentName(parentFullName);
+        const short = byName.has(parentFullName) ? parentFullName : shortAgentName(parentFullName);
+        const parentShort = byName.has(short) ? short : short.replace(/-retry\d+$/, '');
         if (byName.has(parentShort)) {
           byName.get(parentShort)!.children.push(byName.get(sa.name)!);
           continue;
         }
       }
-      // Default: child of researcher
       root.children.push(byName.get(sa.name)!);
     }
 
-    // Sort children: running on top, then by startedAt ascending (stable reading order)
     const sortChildren = (children: FleetNode[]) => {
       children.sort((a, b) => {
         const aRunning = a.agent?.status === 'running' ? 0 : 1;
@@ -919,10 +1291,6 @@ export async function runTui(app: AppContext): Promise<void> {
     };
     sortChildren(root.children);
 
-    // Append fleet children as additional descendants of the researcher root.
-    // Each fleet-child header carries a subtree built from its AgentTreeReducer:
-    // top-level framework agents become direct children of the header, with
-    // any subagents they spawned (visible via their parent edge) nested below.
     if (treeAggregator && fleetMod) {
       for (const fc of fleetMod.getChildren().values()) {
         const reducerNodes = treeAggregator.getChildNodes(fc.name);
@@ -930,10 +1298,6 @@ export async function runTui(app: AppContext): Promise<void> {
           .filter(n => n.parent === undefined)
           .map(n => buildAggregatorSubtree(n, reducerNodes, fc.name));
         const headerKey = `proc:${fc.name}`;
-        // Auto-expand a fleet-child header the first time it's rendered so the
-        // user sees its agents without an extra keystroke. Subsequent toggles
-        // (manual collapse / re-expand) are persisted via expandedNodes as
-        // usual; we only seed once per header name.
         if (!seenFleetHeaders.has(headerKey)) {
           seenFleetHeaders.add(headerKey);
           expandedNodes.add(headerKey);
@@ -952,7 +1316,6 @@ export async function runTui(app: AppContext): Promise<void> {
     return root;
   }
 
-  /** Build a FleetNode subtree from an AgentTreeReducer node and its descendants. */
   function buildAggregatorSubtree(
     rootReducerNode: AgentNode,
     allNodes: AgentNode[],
@@ -971,18 +1334,14 @@ export async function runTui(app: AppContext): Promise<void> {
     return node;
   }
 
-  /** Priority order for "which active phase is most visible." Higher = more
-   *  user-attention-worthy. Quiescent phases (done/idle/failed) are absent
-   *  on purpose: rollups represent *current* work. */
   const PHASE_PRIORITY: Partial<Record<SubagentPhase, number>> = {
     streaming: 5,
     invoking: 4,
     executing: 3,
     sending: 2,
+    'attempt-failed': 1,
   };
 
-  /** Pick the busiest active phase from a sequence of phases. Returns null
-   *  if none qualify. */
   function pickBusiest(phases: Iterable<SubagentPhase | undefined>): SubagentPhase | null {
     let best: SubagentPhase | null = null;
     let bestScore = -1;
@@ -997,14 +1356,10 @@ export async function runTui(app: AppContext): Promise<void> {
     return best;
   }
 
-  /** Pick the busiest active phase across a list of reducer nodes. */
   function rollupActivePhase(nodes: AgentNode[]): SubagentPhase | null {
     return pickBusiest(nodes.map(n => n.phase as SubagentPhase));
   }
 
-  /** "Is anything underneath the researcher busy?" Aggregates across local
-   *  subagents + every fleet child's reducer. Used so the researcher header
-   *  shows activity even when the researcher's own inference is idle. */
   function anyDescendantActive(): SubagentPhase | null {
     const phases: Array<SubagentPhase | undefined> = [];
     for (const sa of state.subagents) {
@@ -1026,10 +1381,8 @@ export async function runTui(app: AppContext): Promise<void> {
     const isExpanded = expandedNodes.has(node.name);
     const hasChildren = node.children.length > 0;
 
-    // Determine node color based on status
     let nodeColor: string;
     if (node.kind === 'researcher') {
-      // Researcher color: own activity wins; otherwise reflect descendants.
       if (state.status !== 'idle' && state.status !== 'error') {
         nodeColor = WHITE;
       } else {
@@ -1049,9 +1402,6 @@ export async function runTui(app: AppContext): Promise<void> {
     } else if (node.kind === 'fleet-child') {
       const fc = fleetMod?.getChildren().get(node.fleetChildName!);
       if (fc?.status === 'ready') {
-        // Process is alive — surface the busiest agent inside it instead of
-        // a flat "ready", so the user can see *what* the child is doing without
-        // having to unfold and inspect each agent.
         const active = rollupActivePhase(treeAggregator?.getChildNodes(node.fleetChildName!) ?? []);
         nodeColor = active ? PHASE_COLOR[active] : CYAN;
       } else {
@@ -1060,23 +1410,16 @@ export async function runTui(app: AppContext): Promise<void> {
           : DIM_GRAY;
       }
     } else {
-      // fleet-child-agent
       const rn = node.reducerNode!;
-      // Postmortem 2026-05-28 P1 #3: 'cancelled' = benign termination
-      // (user cancel, zombie-reclaim, supersession, budget restart). Must
-      // not paint red — that was the visible "failed labels" symptom that
-      // drove the operator to file the postmortem.
       if (rn.status === 'failed') nodeColor = RED;
       else if (rn.phase === 'idle' || rn.phase === 'done' || rn.phase === 'cancelled') nodeColor = DIM_GRAY;
       else nodeColor = PHASE_COLOR[rn.phase as SubagentPhase] ?? GRAY;
     }
 
-    // Dimmer variant for detail/child lines
     const detailColor = node.kind === 'researcher'
       ? (state.status === 'idle' ? DIM_GRAY : GRAY)
       : (node.kind === 'subagent' && node.agent?.status === 'running' ? GRAY : DIM_GRAY);
 
-    // Status tag
     let statusTag: string;
     if (node.kind === 'researcher') {
       if (state.status === 'error') {
@@ -1084,9 +1427,6 @@ export async function runTui(app: AppContext): Promise<void> {
       } else if (state.status !== 'idle') {
         statusTag = `… ${state.status}`;
       } else {
-        // Researcher's own inference is idle — but if anything underneath
-        // (local subagent or fleet child) is active, surface that so the
-        // header doesn't lie about an "idle" tree where work is happening.
         const descendant = anyDescendantActive();
         statusTag = descendant ? `… ${descendant} (descendant)` : '✓ idle';
       }
@@ -1095,9 +1435,6 @@ export async function runTui(app: AppContext): Promise<void> {
       const endTime = sa.completedAt ?? Date.now();
       const elapsed = Math.floor((endTime - sa.startedAt) / 1000);
       if (sa.status !== 'running') {
-        // Postmortem 2026-05-28 P1 #4: 'cancelled' is a third terminal state
-        // (zombie reclaim, user cancel). Show it distinctly so the operator
-        // can tell which subagents ended on a benign cancel vs. a fault.
         statusTag = sa.status === 'completed' ? `done ${fmtElapsed(elapsed)}`
           : sa.status === 'cancelled' ? `cancelled ${fmtElapsed(elapsed)}`
           : `failed ${fmtElapsed(elapsed)}`;
@@ -1109,23 +1446,17 @@ export async function runTui(app: AppContext): Promise<void> {
       const fc = fleetMod?.getChildren().get(node.fleetChildName!);
       const elapsed = fc ? Math.floor((Date.now() - fc.startedAt) / 1000) : 0;
       if (fc?.status === 'ready') {
-        // Roll up agent activity from inside the child. Lifecycle 'ready' is
-        // the boring case ("process alive, doing nothing right now"); when
-        // any agent is busy, surface that phase instead so the header
-        // reflects what's actually happening.
         const active = rollupActivePhase(treeAggregator?.getChildNodes(node.fleetChildName!) ?? []);
         statusTag = active ? `${active} ${fmtElapsed(elapsed)}` : `ready ${fmtElapsed(elapsed)}`;
       } else {
         statusTag = fc ? `${fc.status} ${fmtElapsed(elapsed)}` : 'unknown';
       }
     } else {
-      // fleet-child-agent
       const rn = node.reducerNode!;
       const elapsed = rn.startedAt ? Math.floor(((rn.completedAt ?? Date.now()) - rn.startedAt) / 1000) : 0;
       statusTag = `${rn.phase} ${fmtElapsed(elapsed)}`;
     }
 
-    // Context size: local maps for researcher/subagent, reducer node for fleet-child-agent.
     let ctxTokens: number | undefined;
     if (node.kind === 'fleet-child-agent') {
       const v = node.reducerNode?.tokens.input;
@@ -1133,9 +1464,6 @@ export async function runTui(app: AppContext): Promise<void> {
     } else if (node.kind !== 'fleet-child') {
       ctxTokens = agentContextTokens.get(node.fullName) ?? agentContextTokens.get(node.name);
     }
-    // Local agents get the gauge form (142k/180k) — their budget is readable
-    // from this process. Fleet-child agents live in another process whose
-    // budgets we don't see over the IPC; a bare number is the honest display.
     const ctxBudget = ctxTokens && node.kind !== 'fleet-child-agent' && node.kind !== 'fleet-child'
       ? getAgentBudget(node.fullName)
       : undefined;
@@ -1143,7 +1471,6 @@ export async function runTui(app: AppContext): Promise<void> {
       ? (ctxBudget ? ` ${fmtK(ctxTokens)}/${fmtK(ctxBudget)}ctx` : ` ${fmtK(ctxTokens)}ctx`)
       : '';
 
-    // Compression stats (researcher only — we can access the strategy)
     let compStr = '';
     if (node.kind === 'researcher') {
       try {
@@ -1156,20 +1483,17 @@ export async function runTui(app: AppContext): Promise<void> {
             compStr = ` ${stats.compressionCount}comp`;
           }
         }
-      } catch { /* best-effort */ }
+      } catch { }
     }
 
-    // Fold marker
     const marker = hasChildren ? (isExpanded ? '▼' : '►') : '─';
 
-    // Header line (this is a navigable node)
     const isCursor = visibleNodeIds.length === fleetCursor;
     if (isCursor) fleetCursorLine = lines.length;
     const cursor = isCursor ? '→' : ' ';
     visibleNodeIds.push(node.name);
     visibleNodes.set(node.name, node);
 
-    // Contextual key hints on the cursor line
     let hints = '';
     if (isCursor) {
       if (node.kind === 'subagent') {
@@ -1184,8 +1508,6 @@ export async function runTui(app: AppContext): Promise<void> {
       }
     }
 
-    // Display name: strip the namespace prefix added in buildAggregatorSubtree
-    // so fleet-child agents read as their bare names ('commander', not 'miner:commander').
     const displayName = node.kind === 'fleet-child-agent' ? node.fullName
       : node.kind === 'fleet-child' ? `▣ ${node.fleetChildName}`
       : node.name;
@@ -1197,7 +1519,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
     if (!isExpanded) return;
 
-    // Detail lines (indented further)
     const detail = indent + '    ';
 
     if (node.kind === 'researcher' && state.tool) {
@@ -1205,7 +1526,6 @@ export async function runTui(app: AppContext): Promise<void> {
     }
     if (node.kind === 'subagent' && node.agent) {
       const sa = node.agent;
-      // Truncate task to 60 chars
       const task = sa.task.length > 60 ? sa.task.slice(0, 57) + '...' : sa.task;
       lines.push({ text: `  ${detail}task: ${task}`, color: detailColor });
       if (sa.statusMessage) {
@@ -1232,9 +1552,6 @@ export async function runTui(app: AppContext): Promise<void> {
       }
     }
 
-    // Synesthete summary — only meaningful for nodes whose transcripts we own
-    // locally (researcher + local subagents). Fleet-child agents transcribe to
-    // their own process; we don't have their text here.
     const fullName = node.kind === 'fleet-child' || node.kind === 'fleet-child-agent'
       ? null
       : node.kind === 'researcher' ? rootAgentName
@@ -1246,21 +1563,17 @@ export async function runTui(app: AppContext): Promise<void> {
       } else if (summaryPending.has(fullName)) {
         lines.push({ text: `  ${detail}┈ …`, color: DIM_GRAY });
       }
-      // Summary GENERATION is triggered from the poll tick, not here —
-      // rendering must never originate an inference call.
     }
 
-    // Recurse into children
     for (const child of node.children) {
       renderNode(child, depth + 1, lines);
     }
   }
 
-  /** Transient error notice shown inside the fleet view — the operator is
-   *  looking at THIS view when a kill/restart fails, not the chat scrollback. */
   let fleetNotice: string | null = null;
   let fleetNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   function showFleetNotice(text: string): void {
+    if (stopping) return;
     fleetNotice = text;
     if (fleetNoticeTimer) clearTimeout(fleetNoticeTimer);
     fleetNoticeTimer = setTimeout(() => {
@@ -1268,13 +1581,10 @@ export async function runTui(app: AppContext): Promise<void> {
       fleetNoticeTimer = null;
       if (state.viewMode === 'fleet') updateFleetView();
     }, 6000);
-    // Also record it in scrollback so it survives after the notice fades.
     addEvent(`  ${text}`, RED);
     if (state.viewMode === 'fleet') updateFleetView();
   }
 
-  /** One-line fleet totals: local subagent states, fleet-child processes,
-   *  session cost. The at-a-glance row the ops view opens with. */
   function fleetSummaryLine(): string {
     let running = 0, done = 0, failed = 0, cancelled = 0;
     for (const sa of state.subagents) {
@@ -1283,9 +1593,6 @@ export async function runTui(app: AppContext): Promise<void> {
       else if (sa.status === 'cancelled') cancelled++;
       else failed++;
     }
-    // Fleet-child agents: count from the reducers, using the same phase
-    // classification the tree paints with. 'idle' is neither running nor
-    // done (a child's root agent idles between rounds), so it's not counted.
     if (treeAggregator && fleetMod) {
       for (const childName of fleetMod.getChildren().keys()) {
         for (const rn of treeAggregator.getChildNodes(childName)) {
@@ -1320,23 +1627,20 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   function updateFleetView() {
+    if (stopping) return;
     const tree = buildFleetTree();
     visibleNodeIds = [];
     visibleNodes.clear();
     fleetCursorLine = 0;
 
-    // Header block — pinned above the scrolling tree region.
     const header: FleetLine[] = [];
     header.push({ text: '─── Agent Fleet ─── ↑↓:nav  ⏎/→:fold  p:peek  Del:stop  r:restart  Esc:chat ───', color: GRAY });
     if (fleetNotice) {
-      header.push({ text: `  ⚠ ${fleetNotice}`, color: RED });
+      header.push({ text: fleetNoticeLine(fleetNotice), color: RED });
     }
-    // Active ops alerts, in full — the status bar only has room for a count,
-    // and the firing lines are somewhere back in chat scrollback. This is the
-    // ops view; the ringing klaxons belong at the top of it.
     const alerts = [...opsAlerts.values()];
     for (const a of alerts.slice(0, 3)) {
-      const msg = a.message.length > 70 ? a.message.slice(0, 67) + '…' : a.message;
+      const msg = headerMessage(a.message);
       header.push({ text: `  ⚠ [${a.agent}] ${a.kind}${a.count > 1 ? ` ×${a.count}` : ''} — ${msg}`, color: RED });
     }
     if (alerts.length > 3) {
@@ -1348,22 +1652,16 @@ export async function runTui(app: AppContext): Promise<void> {
     const treeLines: FleetLine[] = [];
     renderNode(tree, 0, treeLines);
 
-    // Clamp cursor
     if (fleetCursor >= visibleNodeIds.length) fleetCursor = visibleNodeIds.length - 1;
     if (fleetCursor < 0) fleetCursor = 0;
 
-    // Viewport: the tree region gets whatever rows the header leaves of the
-    // fleetBox (terminalHeight - 3: status bar, input row, paddingTop). Without
-    // this, a real fleet outgrows the terminal and the cursor walks below the
-    // fold — navigating (and Del:stopping) rows the operator cannot see.
-    const avail = Math.max(5, renderer.terminalHeight - 3 - header.length);
+    const avail = Math.max(5, renderer.terminalHeight - STATUS_INPUT_PADDING_ROWS - header.length);
     const { start, end } = sliceViewport(treeLines.length, fleetCursorLine, avail);
     const lines: FleetLine[] = [...header];
     if (start > 0) lines.push({ text: `  ┈ ${start} lines above ┈`, color: DIM_GRAY });
     lines.push(...treeLines.slice(start, end));
     if (end < treeLines.length) lines.push({ text: `  ┈ ${treeLines.length - end} lines below ┈`, color: DIM_GRAY });
 
-    // Rebuild fleetBox children: clear old, add new per-line renderables
     clearFleetBox();
     for (const line of lines) {
       fleetBox.add(new TextRenderable(renderer, {
@@ -1400,8 +1698,6 @@ export async function runTui(app: AppContext): Promise<void> {
     lines.push({ text: '', color: GRAY });
 
     if (child && agentFilter) {
-      // Per-agent header: the reducer node carries the honest phase/tokens/
-      // task for this one agent inside the child.
       const rn = treeAggregator?.getChildNodes(name).find(n => n.name === agentFilter);
       if (rn) {
         const elapsed = rn.startedAt ? Math.floor(((rn.completedAt ?? Date.now()) - rn.startedAt) / 1000) : 0;
@@ -1410,6 +1706,10 @@ export async function runTui(app: AppContext): Promise<void> {
           : PHASE_COLOR[rn.phase as SubagentPhase] ?? CYAN;
         const ctx = rn.tokens.input > 0 ? `  ${fmtK(rn.tokens.input)}ctx` : '';
         lines.push({ text: `  ${rn.phase}  ${fmtElapsed(elapsed)}  ${rn.toolCallsCount} tool calls${ctx}`, color: phaseColor });
+        if (rn.attemptError) {
+          const error = rn.attemptError.length > 70 ? rn.attemptError.slice(0, 67) + '...' : rn.attemptError;
+          lines.push({ text: `  error: ${error}`, color: phaseColor });
+        }
         if (rn.task) {
           const task = rn.task.length > 70 ? rn.task.slice(0, 67) + '...' : rn.task;
           lines.push({ text: `  task: ${task}`, color: GRAY });
@@ -1440,15 +1740,10 @@ export async function runTui(app: AppContext): Promise<void> {
     lines.push({ text: '', color: GRAY });
 
     const log = procPeekLogs.get(key);
-    // In-progress token line (not yet flushed to log) — appended after the
-    // tail below; fetched first so the tail budget accounts for its row.
     const pending = procPeekTokenLine.get(key);
     if (log && log.length > 0) {
-      // Same viewport accounting as updatePeekView: header lines already in
-      // `lines`, the "N lines above" marker, and the pending token line all
-      // occupy rows of the terminalHeight - 3 the fleetBox actually has.
-      const available = renderer.terminalHeight - 3;
-      const maxLines = Math.max(5, available - lines.length - 1 - (pending ? 1 : 0));
+      const available = renderer.terminalHeight - STATUS_INPUT_PADDING_ROWS;
+      const maxLines = Math.max(5, available - lines.length - MARKER_ROW - (pending ? 1 : 0));
       const tail = log.slice(-maxLines);
       if (log.length > maxLines) {
         lines.push({ text: `  ┈ (${log.length - maxLines} lines above)`, color: DIM_GRAY });
@@ -1476,14 +1771,6 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
-  /**
-   * Peek a fleet child's live event stream. With `agentFilter` set, the view
-   * narrows to that one agent inside the child — the honest per-agent peek
-   * for fleet-child agents and their subagents (sub-subagents from the
-   * parent's point of view). Events on the fleet IPC carry `agentName`
-   * verbatim from the child's framework traces, so the filter sees exactly
-   * what a local peek of that agent would.
-   */
   function enterPeekProc(name: string, agentFilter?: string): void {
     if (!fleetMod) return;
     const child = fleetMod.getChildren().get(name);
@@ -1495,8 +1782,6 @@ export async function runTui(app: AppContext): Promise<void> {
     const matches = (evt: WireEvent): boolean =>
       !agentFilter || (evt as { agentName?: string }).agentName === agentFilter;
 
-    // Seed the log from the child's existing event buffer so the user
-    // doesn't have to wait for the next event to see history.
     if (!procPeekLogs.has(key)) procPeekLogs.set(key, []);
     const log = procPeekLogs.get(key)!;
     const lastEvt = child.events[child.events.length - 1];
@@ -1507,17 +1792,10 @@ export async function runTui(app: AppContext): Promise<void> {
         if (formatted) log.push(formatted);
       }
     } else if (lastEvt && procPeekLastEvent.get(key) !== lastEvt) {
-      // The subscription was torn down when the user left this peek; events
-      // the child emitted since then are absent from this log. Mark the gap
-      // instead of silently resuming from "now". (Object identity on the
-      // child's ring buffer is the tell — same process, same array.)
       appendProcPeekLog(key, '┈ re-attached — events emitted while detached are not shown ┈', DIM_GRAY);
     }
     if (lastEvt) procPeekLastEvent.set(key, lastEvt);
 
-    // Subscribe for live updates.  Handle token events with line merging so
-    // streaming output shows up as a natural-looking line buffer rather
-    // than one log entry per token.
     if (procPeekUnsub) { procPeekUnsub(); procPeekUnsub = null; }
     procPeekUnsub = fleetMod.onChildEvent(name, (_childName, evt) => {
       procPeekLastEvent.set(key, evt);
@@ -1533,7 +1811,6 @@ export async function runTui(app: AppContext): Promise<void> {
         const prev = procPeekTokenLine.get(key) ?? '';
         const merged = prev + content;
         const parts = merged.split('\n');
-        // Flush completed lines (everything except the last segment).
         for (let i = 0; i < parts.length - 1; i++) {
           if (parts[i]!.trim()) appendProcPeekLog(key, parts[i]!, WHITE);
         }
@@ -1542,8 +1819,6 @@ export async function runTui(app: AppContext): Promise<void> {
         return;
       }
 
-      // Non-token event: flush any pending token line first so its text
-      // doesn't get visually chopped by subsequent log entries.
       const pending = procPeekTokenLine.get(key);
       if (pending?.trim()) {
         appendProcPeekLog(key, pending, WHITE);
@@ -1561,8 +1836,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
   function cleanupPeekProc(): void {
     if (procPeekUnsub) { procPeekUnsub(); procPeekUnsub = null; }
-    // Flush any in-progress token line into the log before clearing it so
-    // re-entering peek-proc doesn't lose the last few tokens mid-stream.
     if (state.peekProcTarget) {
       const key = procLogKey(state.peekProcTarget, state.peekProcAgent ?? undefined);
       const pending = procPeekTokenLine.get(key);
@@ -1575,11 +1848,8 @@ export async function runTui(app: AppContext): Promise<void> {
     state.peekProcAgent = null;
   }
 
-  // ── Peek view ────────────────────────────────────────────────────────
-
-  /** Accumulated event log per agent (keyed by display name). */
+  const PEEK_LOG_MAX_LINES = 500;
   const peekLogs = new Map<string, FleetLine[]>();
-  /** Current in-progress tool per agent (for sticky display). */
   const peekCurrentTool = new Map<string, string | null>();
   let peekUnsubscribe: (() => void) | null = null;
 
@@ -1587,9 +1857,7 @@ export async function runTui(app: AppContext): Promise<void> {
     if (!peekLogs.has(name)) peekLogs.set(name, []);
     const log = peekLogs.get(name)!;
     log.push({ text, color });
-    // Cap to match appendProcPeekLog — these accumulate for EVERY subagent
-    // via the global stream subscription, whether anyone ever peeks or not.
-    if (log.length > 500) log.splice(0, log.length - 500);
+    if (log.length > PEEK_LOG_MAX_LINES) log.splice(0, log.length - PEEK_LOG_MAX_LINES);
   }
 
   function cleanupPeek() {
@@ -1601,26 +1869,21 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   function enterPeek(name: string) {
-    // Peek any known subagent — finished ones included: their captured log
-    // is exactly what "what did that fork actually do?" needs post-hoc.
     const sa = state.subagents.find(s => s.name === name);
     if (!sa) return;
 
     state.viewMode = 'peek';
     state.peekTarget = name;
 
-    // Ensure log exists (may already have entries from global subscriber)
     if (!peekLogs.has(name)) peekLogs.set(name, []);
 
     if (subMod) {
-      // Get initial snapshot (async, best-effort) — seed the log if empty
       subMod.peek(name).then(snapshots => {
         if (snapshots.length > 0 && state.viewMode === 'peek' && state.peekTarget === name) {
           const snap = snapshots[0]!;
           const log = peekLogs.get(name);
           if (log && log.length === 0) {
             if (snap.currentStream) {
-              // Show last few lines of existing stream as initial context
               const streamLines = snap.currentStream.split('\n').slice(-10);
               for (const l of streamLines) {
                 if (l.trim()) appendPeekLog(name, l, WHITE);
@@ -1651,8 +1914,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
     const sa = state.subagents.find(s => s.name === name);
     if (sa) {
-      // Finished subagents (peekable since the enterPeek relaxation) show
-      // their final runtime, not a clock that keeps counting after done.
       const endTime = sa.completedAt ?? Date.now();
       const elapsed = Math.floor((endTime - sa.startedAt) / 1000);
       const timeStr = fmtElapsed(elapsed);
@@ -1663,7 +1924,6 @@ export async function runTui(app: AppContext): Promise<void> {
       lines.push({ text: `  task: ${task}`, color: GRAY });
     }
 
-    // Sticky: current pending tool (if any)
     const log = peekLogs.get(name);
     if (peekCurrentTool.get(name)) {
       lines.push({ text: '', color: GRAY });
@@ -1672,14 +1932,9 @@ export async function runTui(app: AppContext): Promise<void> {
 
     lines.push({ text: '', color: GRAY });
 
-    // Accumulated event log — show last N lines. Tail budget: fleetBox shows
-    // terminalHeight - 3 rows (status bar, input row, box paddingTop), and
-    // everything already in `lines` plus the "N lines above" marker must fit
-    // too — otherwise the NEWEST lines, the whole point of a tail-follow
-    // view, get clipped off the bottom of the box.
     if (log && log.length > 0) {
-      const available = renderer.terminalHeight - 3;
-      const maxLines = Math.max(5, available - lines.length - 1);
+      const available = renderer.terminalHeight - STATUS_INPUT_PADDING_ROWS;
+      const maxLines = Math.max(5, available - lines.length - MARKER_ROW);
       const tail = log.slice(-maxLines);
       if (log.length > maxLines) {
         lines.push({ text: `  ┈ (${log.length - maxLines} lines above)`, color: DIM_GRAY });
@@ -1691,7 +1946,6 @@ export async function runTui(app: AppContext): Promise<void> {
       lines.push({ text: '  (waiting for output)', color: DIM_GRAY });
     }
 
-    // Rebuild fleetBox children
     clearFleetBox();
     for (const line of lines) {
       fleetBox.add(new TextRenderable(renderer, {
@@ -1702,13 +1956,6 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
-  // ── Trace listener ──────────────────────────────────────────────────
-
-  /** Fold a usage sample from `inference:usage` or `inference:completed`
-   *  into the agent's context size. A sample is the stream's usage so far
-   *  (see stream-usage.ts), so the context size is the prompt of the call
-   *  it adds. Samples must not overwrite the session totals, which
-   *  usage:updated owns. */
   function noteUsageSample(agent: string, sample: UsageSample | undefined): void {
     if (!sample) return;
     const step = foldUsageSample(streamUsage.get(agent), sample);
@@ -1724,16 +1971,125 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
+  function leaveBackground(): void {
+    backgrounded = false;
+    backgroundBuffer = '';
+    backgroundBreaks = [];
+    backgroundPartial = undefined;
+  }
+
+  /** A thinking block of a backgrounded turn's: the text buffered since the
+   *  last break is a line of its own, and with none, the line streamed
+   *  before Ctrl+B takes no more words. */
+  function breakBackgroundText(): void {
+    if (backgroundBuffer.length > (backgroundBreaks.at(-1) ?? 0)) backgroundBreaks.push(backgroundBuffer.length);
+    else if (backgroundBreaks.length === 0) backgroundPartial = undefined;
+  }
+
+  /** Draw what a backgrounded turn said, a line per round (and per text on
+   *  each side of a thinking block), each kept for its row: the first one's
+   *  words with the line streamed before Ctrl+B, whose entry the scrollback
+   *  cap may have let go meanwhile, its line taken down. */
+  function showBackgroundRounds(): void {
+    const ends = [...backgroundBreaks, backgroundBuffer.length];
+    let from = 0;
+    ends.forEach((end, i) => {
+      const said = backgroundBuffer.slice(from, end);
+      from = end;
+      if (!said.trim()) return;
+      const line = addLine(said, WHITE);
+      if (!line) return;
+      const partial = i === 0 ? backgroundPartial : undefined;
+      const list = partial === undefined ? undefined : [streamedLines, evictedReplies].find((l) => l.includes(partial));
+      if (!list) {
+        keepLine(line, 'text', said, said, WHITE);
+        return;
+      }
+      list.splice(list.indexOf(partial!), 1);
+      streamedLines.push({ kind: 'text', said: partial!.said + said, parts: [...partial!.parts, { line, shown: said, color: WHITE }] });
+    });
+  }
+
+  /** Draw a line of a command's answer, kept to be drawn again below the
+   *  branch when its redraw waits for a root turn's end (redrawAfterTurn). */
+  function addAnswerLine(text: string, color: string): void {
+    addLine(text, color);
+    redrawAfterTurn?.push({ text, color });
+  }
+
+  function showRootTurnEnd(end: RootTurnEnd): void {
+    state.status = end.status;
+    state.tool = null;
+    state.toolStartedAt = null;
+    if (backgrounded && end.background === 'cut') {
+      backgroundBuffer = backgroundBuffer.slice(0, attemptStart);
+      backgroundBreaks = backgroundBreaks.filter((at) => at <= attemptStart);
+      // The attempt streaming at Ctrl+B failed before its round ended: the
+      // words streamed before the press are no row's start.
+      if (backgroundBreaks.length === 0) backgroundPartial = undefined;
+    } else if (backgrounded) {
+      if (end.background === 'show') {
+        showBackgroundRounds();
+        addEvent('  (researcher returned from background)', CYAN);
+      }
+      leaveBackground();
+    }
+    if (streaming) endStream();
+    clearedStream = undefined;
+    // A failed attempt stores nothing: its reply lines are no row's, so a
+    // row in the same words stored before it keeps its own line.
+    if (end.status === 'attempt-failed') dropEntries(attemptLines);
+    attemptLines = [];
+    // The turn's rows are stored by its end, its last reply's before the
+    // trace: each takes its lines now, marked if a shed took it out while
+    // the turn was backgrounded. An evicted entry of a reply's no row took
+    // then is no row's.
+    if (remarkAfterBackground && !backgrounded) remarkHistory();
+    else linkStreamedLines();
+    if (!backgrounded) evictedReplies = [];
+    if (redrawAfterTurn && end.status !== 'attempt-failed') {
+      // A branch move's follow-up came while this turn ran on the branch:
+      // the branch is drawn now, and the move's answer again below it, with
+      // each command answer drawn since.
+      const answered = redrawAfterTurn;
+      refreshFromStore({ mount: false });
+      for (const l of answered) addLine(l.text, l.color);
+    }
+    // A redraw, here or at the link above once the turn has ended, leaves
+    // the status idle: it is the turn's end's.
+    state.status = end.status;
+    if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
+    updateStatus();
+  }
+
   function onTrace(event: Record<string, unknown>) {
     const agent = event.agentName as string | undefined;
+    interrupts.onTrace(event as { type: string; agentName?: unknown });
+    let rootEnd: RootTurnEnd | null = null;
+    if (agent === rootAgentName) {
+      const step = rootTurnStep(rootTurnShowing, event as { type: string });
+      rootTurnShowing = step.showing;
+      rootEnd = step.end;
+    }
+    const failure = turnFailures.onTrace(event as { type: string; agentName?: unknown });
+    if (agent === rootAgentName && failure && (failure.show !== 'ended' || !failure.alone) && rootEnd?.line) {
+      rootEnd = { status: rootEnd.status, background: rootEnd.background };
+    }
 
     switch (event.type) {
       case 'inference:started': {
-        // A new stream: its usage samples count from zero.
         if (agent) streamUsage.set(agent, emptyUsage());
         if (agent === rootAgentName) {
+          attemptStart = backgroundBuffer.length;
+          attemptLines = [];
+        }
+        if (agent && agent !== rootAgentName) {
+          subagentFailureShown.delete(agent);
+          const short = shortAgentName(agent);
+          if (subagentPhase.get(short) === 'attempt-failed') subagentPhase.set(short, 'sending');
+        }
+        if (agent === rootAgentName) {
           if (backgrounded) {
-            // Root agent is running in background — don't show stream UI
             state.status = 'background';
             streamOutputTokens = 0;
           } else {
@@ -1749,11 +2105,11 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:content_block': {
         if (agent === rootAgentName && event.phase === 'block_start') {
-          // `as string` rather than narrowing to StreamBlockType up front:
-          // honest about the trust boundary. Anthropic ships block types we
-          // may not have enumerated yet (e.g. redacted_thinking); ignore them.
           const bt = event.blockType as string;
-          if (bt === 'text' || bt === 'thinking') {
+          // A backgrounded turn draws its words when it returns.
+          if (backgrounded) {
+            if (bt === 'thinking') breakBackgroundText();
+          } else if (bt === 'text' || bt === 'thinking') {
             if (!streaming) beginStream();
             switchStreamBlock(bt);
           }
@@ -1766,13 +2122,10 @@ export async function runTui(app: AppContext): Promise<void> {
         const blockType = event.blockType as string | undefined;
         if (content) {
           if (agent === rootAgentName && backgrounded) {
-            // Silently accumulate tokens while backgrounded
-            backgroundBuffer += content;
+            if (blockType !== 'thinking') backgroundBuffer += content;
+            else breakBackgroundText();
             streamOutputTokens += Math.ceil(content.length / 4);
           } else if (agent === rootAgentName && streaming) {
-            // Belt-and-braces: if a token's blockType disagrees with what
-            // block_start announced (or block_start was missed), switch lanes
-            // before appending so thinking doesn't leak into the text element.
             if (blockType && (blockType === 'text' || blockType === 'thinking')
               && blockType !== currentStreamBlockType) {
               switchStreamBlock(blockType);
@@ -1781,10 +2134,12 @@ export async function runTui(app: AppContext): Promise<void> {
             streamOutputTokens += Math.ceil(content.length / 4);
             spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
             updateStatus();
+          } else if (agent === rootAgentName && clearedStream) {
+            if (blockType && (blockType === 'text' || blockType === 'thinking') && blockType !== clearedStream.kind) clearedStream = undefined;
+            else clearedStream.said += content;
           }
           if (agent) {
             appendTranscript(agent, content);
-            // Project context growth: output tokens will be in context next round
             const prev = agentContextTokens.get(agent);
             if (prev) {
               const delta = Math.ceil(content.length / 4);
@@ -1798,29 +2153,12 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'inference:usage': {
-        // A usage sample after each provider call of a yielding stream.
         if (agent) noteUsageSample(agent, event.tokenUsage as UsageSample | undefined);
         break;
       }
 
       case 'inference:completed': {
         if (agent) noteUsageSample(agent, event.tokenUsage as UsageSample | undefined);
-
-        if (agent === rootAgentName) {
-          state.status = 'idle';
-          state.tool = null;
-          state.toolStartedAt = null;
-          if (backgrounded) {
-            // Researcher returned from background — show accumulated output as a message
-            if (backgroundBuffer.trim()) {
-              addLine(backgroundBuffer, WHITE);
-            }
-            addEvent('  (researcher returned from background)', CYAN);
-            backgrounded = false;
-            backgroundBuffer = '';
-          }
-          if (streaming) endStream();
-        }
         updateStatus();
         break;
       }
@@ -1837,30 +2175,29 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'ops:alert': {
-        handleOpsAlert(
-          typeof event.kind === 'string' ? event.kind : 'unknown',
-          typeof event.agentName === 'string' ? event.agentName : '?',
-          (typeof event.message === 'string' ? event.message : '') + credentialActionHint(event.data),
-        );
+        const alert = opsAlertOf(event);
+        handleOpsAlert(alert.kind, alert.agent, alert.message);
         break;
       }
 
       case 'inference:failed': {
-        if (agent === rootAgentName) {
-          state.status = 'error';
-          if (backgrounded) {
-            backgrounded = false;
-            backgroundBuffer = '';
-          }
-          if (streaming) endStream();
-          addEvent(`Error: ${event.error}`, RED);
-          updateStatus();
-        } else {
+        if (agent !== rootAgentName) {
           if (agent) {
             const short = shortAgentName(agent);
-            subagentPhase.set(short, 'failed');
+            subagentPhase.set(short, 'attempt-failed');
+            subagentFailureShown.add(agent);
           }
-          addEvent(`[${agent}] Error: ${event.error}`, DIM_GRAY);
+          if (agent && failure && failure.show !== 'ended') showFailure(agent, `[${agent}] `, failure, DIM_GRAY);
+          else addEvent(`[${agent}] Error: ${traceError(event)}`, DIM_GRAY);
+        }
+        break;
+      }
+
+      case 'inference:exhausted': {
+        if (agent !== rootAgentName) {
+          if (agent) subagentPhase.set(shortAgentName(agent), 'failed');
+          if (agent && subagentFailureShown.delete(agent)) break;
+          addEvent(`[${agent}] Error: ${traceError(event)}`, DIM_GRAY);
         }
         break;
       }
@@ -1876,7 +2213,6 @@ export async function runTui(app: AppContext): Promise<void> {
           }).join('\n');
           appendTranscript(agent, '\n' + toolSnippet + '\n');
 
-          // Track parent-child for fleet tree
           for (const call of calls) {
             if (call.name === 'subagent--spawn' || call.name === 'subagent--fork') {
               const childName = (call.input as Record<string, unknown>)?.name as string | undefined;
@@ -1888,10 +2224,20 @@ export async function runTui(app: AppContext): Promise<void> {
         }
 
         if (agent === rootAgentName) {
+          attemptStart = backgroundBuffer.length;
+          if (backgrounded) backgroundBreaks.push(backgroundBuffer.length);
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
-          if (!backgrounded) addEvent(`[tools] ${names}`, YELLOW);
+          clearedStream = undefined;
+          if (!backgrounded) {
+            // Kept, as the round's text is, for the row that holds its calls.
+            const shown = `${hhmm()} [tools] ${names}`;
+            const line = addLine(shown, YELLOW);
+            if (line && names) keepLine(line, 'tools', names, shown, YELLOW);
+          }
+          // The round's row is stored with its calls: the next attempt starts here.
+          attemptLines = [];
         } else {
           const short = shortAgentName(agent ?? '');
           addLine(`  [${short}] ${names}`, DIM_GRAY);
@@ -1915,7 +2261,6 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
 
-      // Wake subscription trigger notice
       case 'process:received': {
         const pe = event.processEvent as { type: string; source?: string; metadata?: Record<string, unknown> } | undefined;
         if (pe?.source === 'wake:triggered' && pe.metadata) {
@@ -1935,7 +2280,6 @@ export async function runTui(app: AppContext): Promise<void> {
           state.toolStartedAt = Date.now();
           updateStatus();
         }
-        // Show file operations in chat
         const toolInput = event.input as Record<string, unknown> | undefined;
         if (toolInput && (agent === rootAgentName || verboseChat)) {
           const short = agent === rootAgentName ? '' : `[${shortAgentName(agent ?? '')}] `;
@@ -1946,9 +2290,8 @@ export async function runTui(app: AppContext): Promise<void> {
             const dir = String(toolInput.targetDir);
             const files = toolInput.files as string[] | undefined;
             const fileList = files ? files.join(', ') : 'all';
-            // OSC 8 hyperlink for the target directory
-            const link = `\x1b]8;;file://${dir}\x07${dir}\x1b]8;;\x07`;
-            addLine(`  ${short}materialize → ${link} (${fileList})`, DIM_GRAY);
+            const osc8Link = `\x1b]8;;file://${dir}\x07${dir}\x1b]8;;\x07`;
+            addLine(`  ${short}materialize → ${osc8Link} (${fileList})`, DIM_GRAY);
           } else if (tool === 'lessons--create' && toolInput.content) {
             const content = String(toolInput.content);
             const tags = (toolInput.tags as string[] | undefined)?.join(', ') ?? '';
@@ -1960,9 +2303,6 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'tool:completed': {
-        // Root-agent tools used to be fire-and-forget: after "[tools] x, y"
-        // only failures ever printed, so success and stuck looked identical.
-        // Verbose shows every completion; terse only the slow ones (≥2s).
         if (agent === rootAgentName) {
           state.toolStartedAt = null;
           const tool = event.tool as string;
@@ -1987,6 +2327,22 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
 
+      case 'window:undone': {
+        // An undo or a redo on the root agent's window, from here or from
+        // another client: the history marks its lines again in place, and
+        // the scrollback's other lines stay as they are.
+        if (agent === rootAgentName) remarkHistory();
+        break;
+      }
+
+      case 'presentation:retracted': {
+        // A refusal rewind's or a failed inference's shed from the root
+        // agent's window takes its rows out as an undone turn's, with no
+        // window:undone: the history marks them, as the Web UI's marks do.
+        if (agent === rootAgentName && event.reason === 'shed') remarkHistory();
+        break;
+      }
+
       case 'branches:changed': {
         const branchEvent = event.event as string;
         const branch = event.branch as string;
@@ -1995,8 +2351,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
         if (branchEvent === 'switched') {
           resetBranchState(app.branchState);
-          // Announce AFTER the refresh — refreshFromStore clears the
-          // scrollbox, so a line printed first was destroyed unread.
           refreshFromStore();
           addEvent(`Branch switched: ${previous ?? '?'} → ${branch} (via ${source})`, CYAN);
         } else if (branchEvent === 'created') {
@@ -2008,32 +2362,30 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
     }
+    if (rootEnd) showRootTurnEnd(rootEnd);
+    else if (agent === rootAgentName && STREAM_END_TRACES.has(event.type as string)) updateStatus();
+    if (agent === rootAgentName && failure) {
+      if (failure.show !== 'ended') showFailure(agent, '', failure, RED);
+      else {
+        const ended = turnEndedLine(failure, failedTurnHint(failure.errorType));
+        if (ended) addEvent(ended, RED);
+      }
+    }
   }
 
-  // ── Subagent polling ────────────────────────────────────────────────
+  const rootTraces = traceFollower(onTrace as (e: unknown) => void);
 
   let subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
   let fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
 
-  // FleetTreeAggregator owns one AgentTreeReducer per fleet child plus a local
-  // one. Drives the unified subagent-tree rendering: fleet children appear as
-  // first-class nodes alongside in-process subagents, with the same readouts
-  // (phase, context tokens, tool calls). See docs/history/UNIFIED-TREE-PLAN.md.
-  // Rebuilt (not just re-scanned) on session switch: its IPC subscriptions
-  // live on the fleetMod it was constructed with, so an aggregator from the
-  // old session silently stops receiving events.
   let treeAggregator: FleetTreeAggregator | null = null;
   function initTreeAggregator(): void {
     treeAggregator?.dispose();
     treeAggregator = fleetMod ? new FleetTreeAggregator(fleetMod) : null;
     if (treeAggregator && fleetMod) {
-      // Register any fleet children that already exist (e.g. autoStart entries
-      // brought up before TUI init, or reattached survivors after parent restart).
       for (const childName of fleetMod.getChildren().keys()) {
         treeAggregator.registerChild(childName);
       }
-      // Re-render fleet view when any tracked child's tree changes — gives live
-      // updates without polling.
       treeAggregator.onTreeUpdate(() => {
         if (state.viewMode === 'fleet') updateFleetView();
       });
@@ -2041,37 +2393,22 @@ export async function runTui(app: AppContext): Promise<void> {
   }
   initTreeAggregator();
 
-  // Fleet-child ops alerts: a quarantine klaxon or refusal streak inside a
-  // child process must be as loud here as a local one — the operator is
-  // looking at THIS terminal, not the child's log. Default subscription is
-  // '*' so ops:alert events flow over the IPC with agentName intact.
-  // Re-bound on session switch alongside fleetMod itself.
   let fleetOpsUnsub: (() => void) | null = null;
   function subscribeFleetOps(): void {
     fleetOpsUnsub?.();
     fleetOpsUnsub = fleetMod?.onChildEvent('*', (childName, evt) => {
       if (evt.type !== 'ops:alert') return;
-      const e = evt as Record<string, unknown>;
-      handleOpsAlert(
-        typeof e.kind === 'string' ? e.kind : 'unknown',
-        `${childName}/${typeof e.agentName === 'string' ? e.agentName : '?'}`,
-        typeof e.message === 'string' ? e.message : '',
-      );
+      const alert = opsAlertOf(evt as Record<string, unknown>, childName);
+      handleOpsAlert(alert.kind, alert.agent, alert.message);
     }) ?? null;
   }
   subscribeFleetOps();
 
-  // Per-child event log (analogue of peekLogs but for child processes).
-  // Keys come from procLogKey: bare child name for the whole-process stream,
-  // `child#agent` for an agent-filtered stream — the two never mix.
   const procPeekLogs = new Map<string, FleetLine[]>();
   function procLogKey(child: string, agentFilter?: string): string {
     return agentFilter ? `${child}#${agentFilter}` : child;
   }
-  // In-progress token line buffer per child (flushed to log on newline / next event).
   const procPeekTokenLine = new Map<string, string>();
-  /** Last event (by object identity) each peek key has processed — detects
-   *  "events arrived while detached" on re-entry so the gap can be marked. */
   const procPeekLastEvent = new Map<string, WireEvent>();
   let procPeekUnsub: (() => void) | null = null;
 
@@ -2079,59 +2416,12 @@ export async function runTui(app: AppContext): Promise<void> {
     if (!procPeekLogs.has(name)) procPeekLogs.set(name, []);
     const log = procPeekLogs.get(name)!;
     log.push({ text, color });
-    // Cap at 500 lines to match FleetModule buffer sizing.
-    if (log.length > 500) log.splice(0, log.length - 500);
+    if (log.length > PEEK_LOG_MAX_LINES) log.splice(0, log.length - PEEK_LOG_MAX_LINES);
   }
 
-  function formatWireEvent(evt: WireEvent): { text: string; color: string } | null {
-    const type = typeof evt.type === 'string' ? evt.type : '';
-    if (!type) return null;
-    const get = (k: string): unknown => (evt as Record<string, unknown>)[k];
-
-    switch (type) {
-      case 'lifecycle': {
-        const phase = get('phase') as string;
-        const color = phase === 'ready' ? GREEN : phase === 'exiting' ? YELLOW : GRAY;
-        return { text: `◆ lifecycle: ${phase}${get('reason') ? ` (${get('reason') as string})` : ''}`, color };
-      }
-      case 'inference:started': return { text: `─ inference started (${get('agentName') ?? '?'}) ─`, color: DIM_GRAY };
-      case 'inference:completed': return { text: `─ inference completed ─`, color: DIM_GRAY };
-      case 'inference:failed': return { text: `✗ inference failed: ${get('error') as string}`, color: RED };
-      case 'inference:tokens': {
-        // Token streams would spam the log; the line-merge needed to show them
-        // nicely is in peek-proc's dedicated renderer, not this formatter.
-        return null;
-      }
-      case 'inference:content_block':
-      case 'inference:usage':
-      case 'usage:updated':
-        // High-frequency bookkeeping events — a `· type` dot line per block/
-        // round is pure noise between the lines that carry meaning.
-        return null;
-      case 'ops:alert': {
-        // The single most important thing a child can say must not fall
-        // through to the dim default-dot rendering.
-        const kind = typeof get('kind') === 'string' ? get('kind') as string : 'unknown';
-        const msg = typeof get('message') === 'string' ? get('message') as string : '';
-        const who = typeof get('agentName') === 'string' ? ` [${get('agentName') as string}]` : '';
-        return kind.endsWith('-clear')
-          ? { text: `✓${who} ${kind}: ${msg}`, color: CYAN }
-          : { text: `⚠${who} ${kind}: ${msg}`, color: RED };
-      }
-      case 'tool:started': return { text: `  ⟳ ${get('tool') as string}`, color: YELLOW };
-      case 'tool:completed': return { text: `  ✓ ${get('tool') as string} (${get('durationMs') ?? '?'}ms)`, color: CYAN };
-      case 'tool:failed': return { text: `  ✗ ${get('tool') as string}: ${get('error') as string}`, color: RED };
-      case 'command-output': return { text: `  ${get('text') as string}`, color: GRAY };
-      default:
-        return { text: `· ${type}`, color: DIM_GRAY };
-    }
-  }
-
-  // Subscribe to each subagent's stream for peek logs + done events.
   const subagentStreamUnsubs: Array<() => void> = [];
   const subscribedSubagents = new Set<string>();
 
-  /** Tracks the last token line being built for each agent (to merge consecutive token events). */
   const peekTokenLine = new Map<string, string>();
 
   function subscribeSubagentStream(name: string) {
@@ -2151,13 +2441,10 @@ export async function runTui(app: AppContext): Promise<void> {
 
         case 'tokens': {
           if (subagentPhase.get(name) !== 'streaming') subagentPhase.set(name, 'streaming');
-          // Merge consecutive token events into the last line
           const prev = peekTokenLine.get(name) ?? '';
           const merged = prev + event.content;
-          // Split by newlines — only the last segment is "in progress"
           const parts = merged.split('\n');
           if (parts.length > 1) {
-            // Flush completed lines
             for (let i = 0; i < parts.length - 1; i++) {
               if (parts[i]!.trim()) appendPeekLog(name, parts[i]!, WHITE);
             }
@@ -2168,7 +2455,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
         case 'tool_calls': {
           subagentPhase.set(name, 'invoking');
-          // Flush any pending token line
           const pending = peekTokenLine.get(name);
           if (pending?.trim()) appendPeekLog(name, pending, WHITE);
           peekTokenLine.delete(name);
@@ -2203,9 +2489,21 @@ export async function runTui(app: AppContext): Promise<void> {
         case 'inference:completed':
           break;
 
+        case 'inference:turn_ended':
+        case 'inference:aborted':
+        case 'inference:failed':
+        case 'inference:exhausted': {
+          const pending = peekTokenLine.get(name);
+          if (pending?.trim()) appendPeekLog(name, pending, WHITE);
+          peekTokenLine.delete(name);
+          peekCurrentTool.set(name, null);
+          const end = peekEndLine(event);
+          if (end) appendPeekLog(name, end.text, peekEndColor(end.tone));
+          break;
+        }
+
         case 'done': {
           subagentPhase.set(name, 'done');
-          // Flush any pending token line
           const pendingTok = peekTokenLine.get(name);
           if (pendingTok?.trim()) appendPeekLog(name, pendingTok, WHITE);
           peekTokenLine.delete(name);
@@ -2215,14 +2513,10 @@ export async function runTui(app: AppContext): Promise<void> {
           const truncated = summary.length > 100 ? summary.slice(0, 97) + '...' : summary;
           appendPeekLog(name, `── done: ${truncated} ──`, DIM_GRAY);
 
-          // Update context tokens from done event
           if (event.lastInputTokens) {
             agentContextTokens.set(name, event.lastInputTokens);
           }
 
-          // Surface the result in chat — a fork that completes with no
-          // visible line looks like it never returned. Verbose shows more
-          // of the summary; terse shows a shorter, dimmer line.
           const limit = verboseChat ? 200 : 100;
           const chatTruncated = summary.length > limit ? summary.slice(0, limit - 3) + '...' : summary;
           addEvent(`  ◀ [${name}] ${chatTruncated}`, verboseChat ? CYAN : DIM_GRAY);
@@ -2239,14 +2533,6 @@ export async function runTui(app: AppContext): Promise<void> {
     subagentStreamUnsubs.push(unsub);
   }
 
-  /**
-   * Per-session observability reset. Everything here accumulates from trace
-   * and IPC subscriptions bound to the CURRENT framework; after a session
-   * switch the old subscriptions feed dead modules and the caches describe
-   * agents that no longer exist. Worse, a new session's subagent with a
-   * previously-seen name would never re-subscribe (subscribeSubagentStream
-   * early-returns on the subscribedSubagents guard).
-   */
   function resetObservabilityState(): void {
     for (const unsub of subagentStreamUnsubs) unsub();
     subagentStreamUnsubs.length = 0;
@@ -2267,6 +2553,7 @@ export async function runTui(app: AppContext): Promise<void> {
     summaryPending.clear();
     summaryBackoffUntil.clear();
     subagentPhase.clear();
+    subagentFailureShown.clear();
     state.subagents = [];
     seenFleetHeaders.clear();
     expandedNodes.clear();
@@ -2275,8 +2562,6 @@ export async function runTui(app: AppContext): Promise<void> {
     initTreeAggregator();
   }
 
-  // Subscription host: the status line carries quota windows, not dollars.
-  // An open TUI counts as someone looking, so the meter polls while it runs.
   let releaseQuotaWatch: (() => void) | undefined;
   let unsubQuota: (() => void) | undefined;
   if (app.quotaMeter) {
@@ -2288,38 +2573,28 @@ export async function runTui(app: AppContext): Promise<void> {
     });
     releaseQuotaWatch = meter.watch();
   } else if (app.subscriptionUnmetered) {
-    // a subscription whose windows live in the gateway: nothing to read
-    // here, and the dollar estimate is not a bill either
     state.tokens.quota = '';
   }
-  // A credential alarm raised before this TUI attached (headless start, or
-  // a session switch) would otherwise be invisible until it re-fires.
   if (app.credentials) {
     const state = app.credentials.snapshot();
     if (state.kind !== 'ok') handleOpsAlert(state.kind, rootAgentName, state.message + credentialActionHint(state));
   }
 
   const pollTimer = setInterval(() => {
-    // Animate spinner when researcher is active (not just on token events)
     if (state.status !== 'idle' && state.status !== 'error') {
       spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
     }
 
     if (subMod) {
       state.subagents = [...subMod.activeSubagents.values()];
-      // Subscribe to stream events for any new subagents
       for (const sa of state.subagents) {
         subscribeSubagentStream(sa.name);
       }
       if (state.viewMode === 'fleet') updateFleetView();
       else if (state.viewMode === 'peek') updatePeekView();
     }
-    // Unconditional: the spinner and the slow-tool elapsed readout repaint on
-    // this tick even when no subagent module is loaded.
     updateStatus();
     if (fleetMod) {
-      // Pick up fleet children that were launched after TUI init so the
-      // aggregator can request describe + start folding their event stream.
       if (treeAggregator) {
         const known = new Set(treeAggregator.getAllChildNames());
         for (const name of fleetMod.getChildren().keys()) {
@@ -2328,9 +2603,6 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       if (state.viewMode === 'peek-proc') updatePeekProcView();
     }
-    // Synesthete summaries for the fleet view. Triggered here — NOT from the
-    // render path — so a repaint can never originate a Haiku call.
-    // generateSummary self-throttles (pending guard + 2k-char delta).
     if (state.viewMode === 'fleet') {
       generateSummary(rootAgentName);
       for (const sa of state.subagents) {
@@ -2340,17 +2612,14 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }, 500);
 
-  // ── Keyboard ───────────────────────────────────────────────────────
-
   renderer.keyInput.on('keypress', (key: { name?: string; ctrl?: boolean }) => {
+    // OpenTUI's destroy hands the keys still buffered to these handlers,
+    // so keys typed as the stop begins can reach them once it has: they
+    // start nothing then.
+    if (stopping) return;
     if (key.name === 'tab') {
       cleanupPeek();
       cleanupPeekProc();
-      // Tab toggles between chat and the unified fleet view, which now
-      // subsumes the per-process status that used to live in a separate
-      // "processes" view. The fleet view is useful whenever either
-      // SubagentModule (for local subagents) or FleetModule (for fleet
-      // children) is loaded; otherwise stay on chat.
       const next = state.viewMode === 'chat'
         ? ((subMod || fleetMod) ? 'fleet' : 'chat')
         : 'chat';
@@ -2358,7 +2627,6 @@ export async function runTui(app: AppContext): Promise<void> {
       updateStatus();
       return;
     }
-    // Ctrl+F: jump directly to fleet view from anywhere (or back to chat if already there).
     if (key.ctrl && key.name === 'f' && (subMod || fleetMod)) {
       cleanupPeek();
       cleanupPeekProc();
@@ -2367,9 +2635,6 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
     if (key.ctrl && key.name === 'c') {
-      // Same semantics as /quit: children running → confirm first. A second
-      // Ctrl+C while the prompt is pending force-quits (kills children) —
-      // preserves "mash Ctrl+C to really exit" muscle memory.
       if (!state.pendingQuitConfirm && promptQuitConfirmIfNeeded()) return;
       cleanup();
       return;
@@ -2379,13 +2644,9 @@ export async function runTui(app: AppContext): Promise<void> {
       addLine(verboseChat ? '(verbose: on — showing agent thoughts & subagent results)' : '(verbose: off)', DIM_GRAY);
       return;
     }
-    // Ctrl+B: push to background — detach any blocking sync subagents and/or
-    // background the researcher's current inference (stop displaying tokens,
-    // re-enable input; result appears as message when done)
     if (key.ctrl && key.name === 'b' && (state.viewMode === 'chat' || state.viewMode === 'fleet')) {
       let acted = false;
 
-      // 1. Detach any blocking sync subagents
       if (subMod?.hasDetachable()) {
         const detached = subMod.detachAll();
         if (detached > 0) {
@@ -2394,10 +2655,10 @@ export async function runTui(app: AppContext): Promise<void> {
         }
       }
 
-      // 2. Background the researcher's streaming output
       if (streaming && state.status !== 'idle') {
-        endStream();
+        const partial = endStream();
         backgrounded = true;
+        backgroundPartial = partial?.kind === 'text' ? partial : undefined;
         addLine('  (researcher moved to background — result will appear when done)', CYAN);
         updateStatus();
         acted = true;
@@ -2409,31 +2670,33 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
 
-    // Chat view: Escape interrupts the active agent and all running subagents
     if (key.name === 'escape' && state.viewMode === 'chat') {
-      if (state.status !== 'idle' && state.status !== 'error') {
-        // Cancel all subagents first so their results propagate up
-        const cancelled = subMod?.cancelAll() ?? 0;
+      if (escapeActs(state.status, interrupts.isRunning(rootAgentName))) {
+        const reason = 'interrupted from the TUI';
+        const cancelled = interruptSubagents(
+          app.framework.getAllAgents().map(a => a.name),
+          name => subMod?.isSubagentAgent(name) ?? false,
+          interrupts,
+          () => subMod?.cancelAll() ?? 0,
+          reason,
+        ).stopped;
         const agent = app.framework.getAgent(rootAgentName);
         if (agent) {
-          agent.cancelStream();
-          if (streaming) endStream();
-          if (backgrounded) {
-            backgrounded = false;
-            backgroundBuffer = '';
+          const stopped = cancelled > 0 ? `${cancelled} subagent${cancelled > 1 ? 's' : ''} stopped` : '';
+          const shown = escapeLine(interrupts.interrupt(rootAgentName, reason), stopped);
+          if (shown.endsTurn) {
+            if (streaming) endStream();
+            if (backgrounded) leaveBackground();
+            state.status = 'idle';
+            state.tool = null;
           }
-          state.status = 'idle';
-          state.tool = null;
-          addLine(cancelled > 0
-            ? `  (interrupted — ${cancelled} subagent${cancelled > 1 ? 's' : ''} stopped)`
-            : '  (interrupted)', YELLOW);
-          updateStatus();
+          if (shown.text) addLine(shown.text, YELLOW);
+          if (shown.endsTurn) updateStatus();
         }
       }
       return;
     }
 
-    // Peek view: Escape or p goes back to fleet
     if (state.viewMode === 'peek') {
       if (key.name === 'escape' || key.name === 'p') {
         cleanupPeek();
@@ -2443,7 +2706,6 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
 
-    // Peek-proc view: Escape goes back to the unified fleet view
     if (state.viewMode === 'peek-proc') {
       if (key.name === 'escape' || key.name === 'p') {
         cleanupPeekProc();
@@ -2453,7 +2715,6 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
 
-    // Fleet view navigation
     if (state.viewMode === 'fleet') {
       if (key.name === 'escape') {
         switchView('chat');
@@ -2481,16 +2742,11 @@ export async function runTui(app: AppContext): Promise<void> {
         const nodeId = visibleNodeIds[fleetCursor];
         const node = nodeId ? visibleNodes.get(nodeId) : undefined;
         if (node && node.kind !== 'researcher') {
-          // Dispatch by node kind, not string-prefix surgery on the ID.
           if (node.kind === 'fleet-child') {
             enterPeekProc(node.fleetChildName!);
           } else if (node.kind === 'fleet-child-agent') {
-            // Honest per-agent peek: the child's event stream filtered to
-            // this one agent (works for the child's root agent and for its
-            // subagents — sub-subagents from where we stand).
             enterPeekProc(node.fleetChildName!, node.fullName);
           } else {
-            // node.kind === 'subagent' — local in-process peek.
             enterPeek(nodeId!);
           }
         }
@@ -2500,9 +2756,12 @@ export async function runTui(app: AppContext): Promise<void> {
         if (node && node.kind !== 'researcher') {
           if (node.kind === 'fleet-child' && fleetMod) {
             const childName = node.fleetChildName!;
-            // handleToolCall resolves with {success:false, error} rather than
-            // throwing — a bare .catch() here used to swallow every failure.
-            fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } })
+            const refused = refusedWhileSwitching(app, `stop ${childName}`);
+            if (refused) {
+              showFleetNotice(refused);
+              return;
+            }
+            trackOperatorWork(app, `stop ${childName}`, fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } }))
               .then((res) => {
                 if (!res.success) showFleetNotice(`stop ${childName} failed: ${res.error ?? 'unknown'}`);
                 updateFleetView();
@@ -2516,15 +2775,18 @@ export async function runTui(app: AppContext): Promise<void> {
               }
             }
           }
-          // fleet-child-agent: no per-agent stop yet (would need the child to
-          // expose a cancel command over IPC). Future work.
         }
       } else if (key.name === 'r') {
         const nodeId = visibleNodeIds[fleetCursor];
         const node = nodeId ? visibleNodes.get(nodeId) : undefined;
         if (node?.kind === 'fleet-child' && fleetMod) {
           const childName = node.fleetChildName!;
-          fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } })
+          const refused = refusedWhileSwitching(app, `restart ${childName}`);
+          if (refused) {
+            showFleetNotice(refused);
+            return;
+          }
+          trackOperatorWork(app, `restart ${childName}`, fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } }))
             .then((res) => {
               if (!res.success) showFleetNotice(`restart ${childName} failed: ${res.error ?? 'unknown'}`);
               updateFleetView();
@@ -2535,16 +2797,9 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   });
 
-  // ── Input handling ─────────────────────────────────────────────────
-
   let resolveExit: (() => void) | null = null;
+  let rejectExit: ((error: unknown) => void) | null = null;
 
-  /**
-   * If fleet children are alive, print the quit-confirm prompt, arm
-   * pendingQuitConfirm, and return true (caller should NOT exit yet).
-   * Returns false when nothing is running — safe to exit immediately.
-   * Shared by /quit and Ctrl+C so both exit paths have the same semantics.
-   */
   function promptQuitConfirmIfNeeded(): boolean {
     const running = fleetMod
       ? [...fleetMod.getChildren().values()].filter((c) => c.status === 'ready' || c.status === 'starting')
@@ -2563,13 +2818,10 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   function handleSubmit() {
+    if (stopping) return;
     const raw = ((input as any).plainText as string).trim();
     (input as any).clear();
 
-    // Resolve a pending /quit confirmation prompt first — BEFORE the
-    // empty-input early return, or plain Enter (the advertised [y/N/d]
-    // default: cancel) would silently do nothing and leave the prompt
-    // armed to swallow the user's next real message.
     if (state.pendingQuitConfirm) {
       state.pendingQuitConfirm = false;
       const action = resolveQuitConfirm(raw);
@@ -2585,11 +2837,6 @@ export async function runTui(app: AppContext): Promise<void> {
         return;
       }
       if (action === 'cancel-keep-input') {
-        // The user typed a real message at the prompt. Cancel the quit and
-        // put the message BACK — clearing it (with its paste referents)
-        // while advising "type it again" would destroy a paste the user
-        // cannot re-type. pastedTexts is deliberately left intact so the
-        // restored placeholders still expand on the next submit.
         (input as any).insertText(raw);
         addLine('  (quit cancelled — your message was restored to the input; press Enter to send)', GRAY);
       } else {
@@ -2601,9 +2848,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
     if (!raw) { pastedTexts.length = 0; return; }
 
-    // Expand paste placeholders
     const text = pastedTexts.length > 0
-      ? raw.replace(/\[paste #(\d+):[^\]]*\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
+      ? raw.replace(PASTE_PLACEHOLDER, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
       : raw;
     pastedTexts.length = 0;
 
@@ -2616,77 +2862,128 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       if (text === '/clear' || text.startsWith('/clear ')) {
         // End any live stream first — its renderable is about to be
-        // destroyed, and streamToken must not write to a freed buffer.
-        if (streaming) endStream();
+        // destroyed, and streamToken must not write to a freed buffer. The
+        // rest of its block goes into its entry (clearedStream).
+        if (streaming) clearedStream = endStream();
         const children = [...scrollBox.getChildren()];
         for (const child of children) {
           scrollBox.remove(child.id);
           child.destroy();
         }
-      } else {
-        for (const l of result.lines) {
-          addLine(l.text, GRAY);
+        // A redraw waiting for a root turn's end is taken up here, drawing
+        // nothing, so the scrollback stays clear: the store is on the new
+        // branch, and the lines this /clear took down were the only ones of
+        // its rows stored so far. Its rows are read from its end, and the
+        // lines drawn from here on (the rest of the turn, a message sent
+        // meanwhile) are linked at the turn's end as any are. The line
+        // streaming at the /clear is the turn's, its row stored later.
+        if (redrawAfterTurn) {
+          const { status, tool } = state;
+          const cut = clearedStream;
+          refreshFromStore({ mount: false, draw: false });
+          state.status = status;
+          state.tool = tool;
+          if (cut) streamedLines.push(cut);
+          clearedStream = cut;
         }
+      } else {
+        for (const l of result.lines) addAnswerLine(l.text, GRAY);
       }
 
-      // Branch operation: refresh display from Chronicle state
       if (result.branchChanged) {
         refreshFromStore();
       }
 
-      // Async command follow-up (e.g. /newtopic generating transition summary)
       if (result.asyncWork) {
-        state.status = 'thinking';
+        // A root turn's status is the turn's: the command's answer leaves it
+        // as it is too.
+        if (!(rootTurnShowing || streaming)) state.status = 'thinking';
         updateStatus();
-        result.asyncWork.then(asyncResult => {
-          for (const l of asyncResult.lines) {
-            addLine(l.text, GRAY);
+        commandsAnswering++;
+        result.asyncWork.finally(() => { commandsAnswering--; }).then(asyncResult => {
+          // An answer that comes once the TUI has stopped, a bare
+          // /newtopic's summary given back say, goes to the terminal: the
+          // renderer is gone, and with it the scrollback.
+          if (stopping) {
+            for (const l of asyncResult.lines) console.log(l.text);
+            return;
           }
-          state.status = 'idle';
+          // A turn of the root agent's can have started since the command:
+          // its stream and its status are left as they are.
+          const turnRunning = rootTurnShowing || streaming;
+          // A branch move or a rollback lands in the follow-up, and
+          // agent-framework traces neither: the follow-up saying the branch
+          // changed is what has the TUI draw the branch the store is on, once
+          // a turn that started on it since has ended (showRootTurnEnd).
+          // The framework writes the `_config` mount for the move.
+          if (asyncResult.branchChanged && turnRunning) {
+            redrawAfterTurn ??= [];
+          } else if (asyncResult.branchChanged) {
+            refreshFromStore({ mount: false });
+          } else {
+            lookAgainAtAnswer();
+          }
+          for (const l of asyncResult.lines) addAnswerLine(l.text, GRAY);
+          if (!turnRunning) state.status = 'idle';
           updateStatus();
         }).catch(err => {
-          addLine(`Async command failed: ${err}`, RED);
-          state.status = 'error';
+          if (stopping) {
+            console.log(`Async command failed: ${err}`);
+            return;
+          }
+          lookAgainAtAnswer();
+          addAnswerLine(`Async command failed: ${err}`, RED);
+          if (!(rootTurnShowing || streaming)) state.status = 'error';
           updateStatus();
         });
       }
 
-      // Session switch: async teardown + rebuild
       if (result.switchToSessionId) {
         state.status = 'switching';
         updateStatus();
-        app.framework.offTrace(onTrace as (e: unknown) => void);
+        sentDuringSwitch = [];
+        interrupts.reset();
+        rootTurnShowing = false;
+        turnFailures = createTurnFailures();
+        failureLines.clear();
 
-        app.switchSession(result.switchToSessionId).then(() => {
-          // Rebind to new framework
+        const sessionId = result.switchToSessionId;
+        const follower = {
+          follow: (source: Parameters<typeof rootTraces.follow>[0]) => { if (!stopping) rootTraces.follow(source); },
+          stop: () => rootTraces.stop(),
+        };
+        void switchFollowing(follower, async () => {
+          await app.switchSession(sessionId);
+          leaveBackground();
+          attemptStart = 0;
+          if (stopping) return;
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
           fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
           subscribeFleetOps();
           resetObservabilityState();
-          app.framework.onTrace(onTrace as (e: unknown) => void);
-
+        }, () => app.framework).then(() => {
+          sentDuringSwitch = undefined;
+          if (stopping) return;
           const session = app.sessionManager.getActiveSession();
           refreshFromStore();
           addLine(`Session: ${session?.name ?? 'unknown'}`, GRAY);
-          // The quota readout belongs to the credential, not the session.
           state.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
             ...(state.tokens.quota !== undefined ? { quota: state.tokens.quota } : {}) };
           state.ctxTokens = 0;
-          // Alerts describe the OLD session's strategy/agents; the new
-          // session's own klaxons re-fire within their alarm interval if the
-          // condition still holds there. A stale alert with no reachable
-          // all-clear would otherwise pin the status bar red forever.
           opsAlerts.clear();
           updateStatus();
         }).catch(err => {
+          // The messages sent while it ran went to the framework it stopped,
+          // or one it never started: none is stored, and the history isn't
+          // drawn again, so their entries go here.
+          if (sentDuringSwitch) dropEntries(sentDuringSwitch);
+          sentDuringSwitch = undefined;
           addLine(`Session switch failed: ${err}`, RED);
           state.status = 'error';
           updateStatus();
         });
       }
 
-      // /fleet view → switch to the unified fleet view (formerly the
-      // processes view, now subsumed by the unified subagent + fleet tree).
       if (result.switchToFleetView) {
         cleanupPeek();
         cleanupPeekProc();
@@ -2694,14 +2991,12 @@ export async function runTui(app: AppContext): Promise<void> {
         updateStatus();
       }
 
-      // /fleet peek <name> → enter peek-proc mode.
       if (result.switchToFleetPeek) {
         cleanupPeek();
         enterPeekProc(result.switchToFleetPeek);
         updateStatus();
       }
     } else {
-      // @childname routing — send text directly to a child, bypassing conductor.
       const route = parseFleetRoute(text);
       if (route && fleetMod) {
         const child = fleetMod.getChildren().get(route.childName);
@@ -2721,60 +3016,123 @@ export async function runTui(app: AppContext): Promise<void> {
         });
         return;
       }
-      addEvent(`You: ${raw}`, GREEN);
+      const shown = `${hhmm()} You: ${raw}`;
+      const echo = addLine(shown, GREEN);
+      const sent = echo ? keepLine(echo, 'you', text, shown, GREEN) : undefined;
+      if (sent) sentDuringSwitch?.push(sent);
       const agent = app.framework.getAgent(rootAgentName);
       const agentBusy = agent && (agent.state.status === 'streaming' || agent.state.status === 'inferring' || agent.state.status === 'waiting_for_tools');
       state.status = agentBusy ? 'queued' : 'thinking';
       updateStatus();
-      app.framework.pushEvent({
-        type: 'external-message', source: 'tui',
-        content: text, metadata: {}, triggerInference: true,
-      });
+      try {
+        app.framework.pushEvent({
+          type: 'external-message', source: 'tui',
+          content: text, metadata: {}, triggerInference: true,
+        });
+      } catch (err) {
+        // A send the framework refused (its queue closed by a stop) is never
+        // stored: its echo is no row's, so a later message in the same words
+        // takes its own.
+        if (sent) dropEntries([sent]);
+        throw err;
+      }
     }
   }
-
-  // ── Init ───────────────────────────────────────────────────────────
 
   const session = app.sessionManager.getActiveSession();
   addLine(`${recipeName}. Type /help for commands.`, GRAY);
   if (session) addLine(`Session: ${session.name}`, DIM_GRAY);
   addLine(`Error log: ${logPath}`, DIM_GRAY);
-  app.framework.onTrace(onTrace as (e: unknown) => void);
+  rootTraces.follow(app.framework);
   loadSessionHistory();
+  // Printed at start too, but the alternate screen OpenTUI draws on hides
+  // that line.
+  if (bunFloorNotice) addLine(bunFloorNotice, YELLOW);
 
-  // ── Cleanup ────────────────────────────────────────────────────────
+  const describe = (error: unknown): string => error instanceof Error ? error.message : String(error);
+  const STOP_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+  const LOG_CLOSE_LIMIT_MS = 2_000;
+  let logEnded = false;
 
   function cleanup() {
-    releaseQuotaWatch?.();
-    unsubQuota?.();
-    cleanupPeek();
-    cleanupPeekProc();
-    if (fleetNoticeTimer) clearTimeout(fleetNoticeTimer);
-    fleetOpsUnsub?.();
-    treeAggregator?.dispose();
-    for (const unsub of subagentStreamUnsubs) unsub();
-    clearInterval(pollTimer);
-    app.framework.offTrace(onTrace as (e: unknown) => void);
-    renderer.destroy();
-    process.stdout.write('\x1b]0;\x07');
-    // Restore stderr
+    if (stopping) return;
+    stopping = true;
+    app.stopping = true;
+    // OpenTUI's destroy removes its own signal listeners, so a second stop
+    // signal during the stop would end the process by default. These join the
+    // stop instead, until it settles.
+    for (const signal of STOP_SIGNALS) process.on(signal, cleanup);
+    const step = (what: string, run: () => void): void => {
+      try {
+        run();
+      } catch (error) {
+        logStream.write(`stopping: ${what} failed (${describe(error)}); the stop goes on\n`);
+      }
+    };
+    step('clearing the poll timer', () => clearInterval(pollTimer));
+    step('clearing the fleet notice', () => { if (fleetNoticeTimer) clearTimeout(fleetNoticeTimer); });
+    step('ending the trace subscription', () => rootTraces.stop());
+    step('ending the fleet subscription', () => fleetOpsUnsub?.());
+    step('ending the subagent tree', () => treeAggregator?.dispose());
+    for (const unsub of subagentStreamUnsubs) step('ending a subagent stream', unsub);
+    step('releasing the quota watch', () => releaseQuotaWatch?.());
+    step('ending the quota subscription', () => unsubQuota?.());
+    step('closing the peek', cleanupPeek);
+    step('closing the fleet peek', cleanupPeekProc);
+    step('destroying the renderer', () => renderer.destroy());
+    step('resetting the title', () => { process.stdout.write('\x1b]0;\x07'); });
     process.stderr.write = origStderrWrite;
-    logStream.end();
-    app.framework.stop().then(() => {
+    const settled = async (): Promise<void> => {
+      logEnded = true;
+      await new Promise<void>((done) => {
+        const limit = setTimeout(() => {
+          console.error(`[host] tui-error.log hadn't taken its last lines after ${LOG_CLOSE_LIMIT_MS / 1000} s, so the TUI ends without them`);
+          done();
+        }, LOG_CLOSE_LIMIT_MS);
+        logStream.end(() => { clearTimeout(limit); done(); });
+      });
+      for (const signal of STOP_SIGNALS) process.off(signal, cleanup);
+    };
+    // agent-framework's stop() gives a later call the stop under way, or the
+    // one that finished, and after a failed stop whose storage is still open it
+    // starts the teardown again.
+    Promise.resolve().then(() => app.framework.stop()).then(async () => {
+      await settled();
       resolveExit?.();
+    }, async (error) => {
+      await settled();
+      rejectExit?.(error);
     });
   }
 
-  // ── Wait for exit ──────────────────────────────────────────────────
+  hostUpdate.attachStop({
+    supervised: false,
+    stop: (_reason, farewell) => { setTimeout(() => { cleanup(); console.log(farewell); }, 0); },
+  });
 
-  await new Promise<void>(resolve => {
+  // OpenTUI destroys the renderer itself on SIGTERM, SIGINT, SIGHUP and its
+  // other exit signals, so the TUI stops on its destroy, as /quit does.
+  renderer.on(CliRenderEvents.DESTROY, cleanup);
+  // With the terminal gone (its window or SSH session closed), OpenTUI's
+  // destroy fails turning raw mode off, and the title reset fails writing,
+  // each as an error on stdin or stdout. Unheard, either would end the process
+  // before the TUI stopped.
+  let terminalReported = false;
+  const terminalFailed = (error: unknown): void => {
+    if (!terminalReported && !logEnded) {
+      terminalReported = true;
+      logStream.write(`terminal failed (${describe(error)}): stopping as /quit does\n`);
+    }
+    cleanup();
+  };
+  process.stdin.on('error', terminalFailed);
+  process.stdout.on('error', terminalFailed);
+
+  await new Promise<void>((resolve, reject) => {
     resolveExit = resolve;
+    rejectExit = reject;
   });
 }
-
-// ---------------------------------------------------------------------------
-// Status bar formatter
-// ---------------------------------------------------------------------------
 
 function formatStatusLeft(
   state: TuiState,
@@ -2782,12 +3140,11 @@ function formatStatusLeft(
   outputTokens?: number,
   alertCount = 0,
   topAlertKind: string | null = null,
+  rootTurnRunning = false,
 ): string {
   const sColor = state.status === 'idle' ? '✓' : state.status === 'error' ? '✗' : state.status === 'background' ? '↓' : state.status === 'queued' ? '⏳' : '…';
   let bar = `[${sColor} ${state.status}`;
   if (alertCount > 0) {
-    // Name the worst active alert — "⚠ 2 alerts" forces a trip back through
-    // scrollback to learn WHICH klaxon is ringing.
     const kind = topAlertKind && topAlertKind.length > 26 ? topAlertKind.slice(0, 25) + '…' : topAlertKind;
     bar += ` | ⚠ ${alertCount}${kind ? ` · ${kind}` : ''}`;
   }
@@ -2799,12 +3156,8 @@ function formatStatusLeft(
     }
   }
   if (state.tool) {
-    // A parallel batch of long MCPL-prefixed names would otherwise push the
-    // right status segment (tokens/cost/mem) clean off the row.
     const tool = state.tool.length > 40 ? state.tool.slice(0, 37) + '…' : state.tool;
     bar += ` | ${tool}`;
-    // Slow tool running: show elapsed so "still executing" and "stuck" stop
-    // looking identical. Repainted by the 500ms poll tick.
     if (state.toolStartedAt) {
       const secs = Math.floor((Date.now() - state.toolStartedAt) / 1000);
       if (secs >= 5) bar += ` ${fmtElapsed(secs)}`;
@@ -2821,8 +3174,9 @@ function formatStatusLeft(
       ? ` | peek: ${state.peekProcTarget}›${state.peekProcAgent}`
       : ` | peek-proc: ${state.peekProcTarget}`;
   } else if (state.viewMode === 'chat') {
-    if (state.status === 'background') bar += ' Esc:stop';
-    else if (state.status !== 'idle' && state.status !== 'error') bar += ' Ctrl+B:bg Esc:stop';
+    if (escapeActs(state.status, rootTurnRunning)) {
+      bar += state.status === 'background' || state.status === 'error' || state.status === 'attempt-failed' ? ' Esc:stop' : ' Ctrl+B:bg Esc:stop';
+    }
     if (running > 0) bar += ' Tab:fleet';
   }
   bar += ']';
@@ -2832,9 +3186,6 @@ function formatStatusLeft(
 function formatTokens(tokens: TokenUsage, verbose: boolean, ctxTokens = 0, ctxBudget?: number): string {
   const parts: string[] = [];
 
-  // Current context size first, session totals (Σ) after — two different
-  // quantities, two labels. With a known budget the readout is a gauge
-  // (142k/180k), not a trivia number.
   if (ctxTokens > 0) {
     parts.push(ctxBudget && ctxBudget > 0
       ? `ctx:${fmtTokens(ctxTokens)}/${fmtTokens(ctxBudget)}`
@@ -2851,23 +3202,12 @@ function formatTokens(tokens: TokenUsage, verbose: boolean, ctxTokens = 0, ctxBu
     }
     parts.push(s);
   }
-  // Outside the `total > 0` guard: how much quota is left matters most
-  // before the first call of a session.
   if (tokens.quota) parts.push(tokens.quota);
 
   parts.push(verbose ? 'C-v:terse' : 'C-v:verbose');
   return parts.join('  ');
 }
 
-/**
- * Render strategy memory stats for the status line. Prefers the richer
- * `getRenderStats()` (tail size + per-level token sums) and falls back to
- * `getStats()` if only that's available.
- *
- * Output shape: `mem: L1=5/9k L2=1/2k tail=770/495k (3 pending, 1 merge)`
- *   - L1=count/totalTokens (compact e.g. 9k = 9000)
- *   - tail=messageCount/tokenCount
- */
 function formatMemStats(
   cm: { getRenderStats?: () => unknown; getStrategy?: () => { getStats?: () => unknown } } | null,
 ): string {
@@ -2901,7 +3241,6 @@ function formatMemStats(
       if (parts.length === 0 && tags.length === 0) return '';
       return `  mem: ${parts.join(' ')}${tags.length > 0 ? ` (${tags.join(', ')})` : ''}`;
     }
-    // Fallback to old getStats
     const strategy = cm.getStrategy?.();
     if (!strategy?.getStats) return '';
     const s = strategy.getStats() as {

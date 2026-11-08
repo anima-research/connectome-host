@@ -1,9 +1,3 @@
-/**
- * A resident with reviewed inherited history: the recipe's witnessed and
- * live reminders reach the context-manager strategy unchanged
- * (witnessedIdentityReminder / identityReminder). identityReminderSilent is
- * retired: a reminder that should apply silently ends with its own sentence.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { PassthroughStrategy } from '@animalabs/agent-framework';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';

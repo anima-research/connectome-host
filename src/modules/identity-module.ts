@@ -1,33 +1,8 @@
 /**
- * Agent identity — the agent's own archipelago-home principal (connectome
- * docs/home-node.md §4).
- *
- * Two audiences, deliberately separated:
- *
- * HOST-FACING (this module's public methods): the deployment holds an
- * ed25519 keypair in the data dir; `accessFor(audience)` exchanges a
- * key-proof at the home node for a short-lived aid1 token, and
- * `httpAuthFor(audience)` wraps it for HTTP. This is plumbing other host
- * pieces call — the MCPL transport's per-dial credential provider, future
- * HTTP helpers. Credentials live and die HERE.
- *
- * AGENT-FACING (utilities, via the `utils` meta-tool): deliberately small
- * and deliberately boring — `status` ("who am I registered as, where is
- * that recognized") and `accept_invite` ("register with an invitation code
- * from your operator"). No tokens, keys, proofs, or signing in any
- * agent-visible name, description, or result: the agent asks for access by
- * name (`mcpl_deploy … access: "eidoverse"`); the host does the rest. This
- * is both hygiene (credentials never enter model context, so they never
- * enter chronicles, compression, or channels) and framing (an agent
- * narrating credential mechanics reads as exfiltration to safety
- * classifiers — so it simply never has them to narrate).
- *
- * Utilities-only module: enrollment is one-time; it costs no tool slots.
- * Wire statements per the home-node spec (archipelago-home
- * src/statements.ts is the source of truth — re-copy, don't fork).
+ * The wire statements follow archipelago-home's src/statements.ts.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import {
   createPrivateKey,
   createPublicKey,
@@ -36,63 +11,80 @@ import {
   createHash,
   type KeyObject,
 } from 'node:crypto';
-import type {
-  Module,
-  ModuleContext,
-  ToolCall,
-  ToolResult,
-  ToolDefinition,
-  WorkspaceModule,
+import {
+  WorkspaceReadError,
+  type Module,
+  type ModuleContext,
+  type ToolCall,
+  type ToolResult,
+  type ToolDefinition,
+  type WorkspaceModule,
 } from '@animalabs/agent-framework';
+import { settingsRoute, unknownToolResult } from './unknown-tool.js';
+
+/** agent-framework's disk read reports a file disk lacks as not_found with
+ *  ENOENT (nothing there, or a link that leads nowhere), ENOTDIR (a parent
+ *  that's a file) or ENAMETOOLONG, and a mount whose directory is gone, or
+ *  has a file in its place, as mount_unavailable with ENOENT or ENOTDIR.
+ *  mount_unavailable with another errno, or none, is a root it couldn't
+ *  resolve or trust. */
+function diskHasNoFile(error: WorkspaceReadError): boolean {
+  const gone = ['ENOENT', 'ENOTDIR'];
+  if (error.code === 'mount_unavailable') return gone.includes(error.errno ?? '');
+  return error.code === 'not_found' && [...gone, 'ENAMETOOLONG'].includes(error.errno ?? '');
+}
+
+function diskRemedy(error: WorkspaceReadError): string {
+  switch (error.code as string) {
+    case 'directory':
+      return 'Name a file, not a directory.';
+    case 'symlink':
+      return 'It\'s a link, and this mount doesn\'t follow links. If you know it points to a file in the workspace, name ' +
+        'that file by its own path; otherwise an upload can\'t send it, though your operator can put the file in the workspace.';
+    case 'escape':
+      return 'It leads, through a link, outside this mount, and an upload sends only a file that lies inside the mount ' +
+        'it\'s named through. If you know the file lies in another mount, name it by its path there; otherwise your ' +
+        'operator can put it in the workspace.';
+    case 'parent_symlink':
+      return 'A directory on its path is a link, and this mount doesn\'t follow links. If the link leads to a ' +
+        'directory, which the reason shows by saying the mount\'s host can set followSymlinks, name the file by its ' +
+        'path there. Otherwise ask your operator, giving them this reason.';
+    case 'changed':
+      return 'It changed while it was being read, and calling again reads it afresh.';
+    default:
+      return 'Disk refused the read, which is the host\'s to fix: ask your operator, giving them this reason.';
+  }
+}
+
+export class IdentityError extends Error {
+  constructor(message: string, readonly forAgent: string) {
+    super(message);
+    this.name = 'IdentityError';
+  }
+}
 
 export interface IdentityModuleConfig {
-  /** ed25519 PKCS#8 PEM, generated on first use, 0600. dataDir-anchored:
-   *  identity is per-deployment, not per-session. */
   keyPath: string;
-  /** Home node domain (the trust anchor), e.g. `id.animalabs.ai`. */
   home: string;
-  /** Audience assumed when none is named. */
   defaultAudience?: string;
-  /**
-   * Services reachable through the `request` utility: audience name → API
-   * base URL. The allowlist IS the security boundary — the host only ever
-   * attaches standing access to these bases, so the utility can't be
-   * steered at arbitrary URLs. Merged over built-in defaults for the
-   * animalabs services.
-   */
   services?: Record<string, string>;
-  /** Injectable for tests. */
   fetchImpl?: typeof fetch;
 }
 
-/** Known services when anchored at the animalabs home — a recipe can extend
- *  or override via `services`. */
 const DEFAULT_SERVICES: Record<string, string> = {
   orrery: 'https://orrery.animalabs.ai',
   eidoverse: 'https://eidoverse.animalabs.ai',
 };
 
-/** How long a fetched service directory is trusted before a background-ish
- *  refresh. Short by design: "a service changed" should reach residents in
- *  about a minute, and an unknown name forces a refresh immediately anyway. */
 const SERVICES_TTL_MS = 60_000;
 const SERVICES_TIMEOUT_MS = 5_000;
+const IDENTITY_TIMEOUT_MS = 15_000;
 
-/** HTTP methods the `request` utility sends. The security boundary is the
- *  service allowlist with host-attached access, and each service authorizes
- *  every request itself; this list just names the verbs services route.
- *  The advertised schema and the runtime check both read it. */
 const REQUEST_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 
 const REQUEST_BODY_MAX = 256 * 1024;
-/** Uploads are bytes the host streams from a workspace file, not text the
- *  model wrote, so the small JSON-body cap would be the wrong limit: a track
- *  or a render is legitimately megabytes. Still bounded — one call should not
- *  be able to push an unbounded file at a service. */
 const UPLOAD_BODY_MAX = 64 * 1024 * 1024;
 
-/** Enough to label the common uploads honestly; anything else is
- *  application/octet-stream unless the caller says otherwise. */
 const CONTENT_TYPES: Record<string, string> = {
   mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg',
   opus: 'audio/opus', m4a: 'audio/mp4', aac: 'audio/aac',
@@ -105,18 +97,25 @@ const CONTENT_TYPES: Record<string, string> = {
 
 function guessContentType(path: string): string {
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-  return CONTENT_TYPES[ext] ?? 'application/octet-stream';
+  return Object.hasOwn(CONTENT_TYPES, ext) ? CONTENT_TYPES[ext] : 'application/octet-stream';
 }
 const RESPONSE_INLINE_MAX = 24 * 1024;
 const RESPONSE_BODY_MAX = 64 * 1024 * 1024;
 
-/** Persisted beside the key after a successful registration. */
 interface IdentityRecord {
   sub: string;
   name: string;
   home: string;
   enrolledAt: string;
 }
+
+type HeldRegistration = Omit<IdentityRecord, 'sub'> & { sub: string | null };
+
+interface RegistrationState {
+  held: HeldRegistration | null;
+  enrolling: boolean;
+}
+const registrationStates = new Map<string, RegistrationState>();
 
 function ok(data: unknown): ToolResult {
   return { success: true, data };
@@ -125,17 +124,51 @@ function fail(text: string): ToolResult {
   return { success: false, error: text, isError: true };
 }
 
+const sentence = (text: string): string => `${text.trim().replace(/\.+$/, '')}.`;
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+const codeOf = (err: unknown): string => {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === 'string') return code;
+  return err instanceof Error ? err.name : 'a thrown value that isn\'t an error';
+};
+
+const transient = (status: number): boolean => status === 429 || status >= 500;
+
+function shown(value: unknown): string {
+  if (value === undefined) return 'nothing';
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? String(value);
+  } catch {
+    text = String(value);
+  }
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+const IDENTITY_UNLOADED =
+  'this host\'s identity couldn\'t be loaded. It\'s the host\'s to fix: ask your operator, who can find the reason in ' +
+  'the host\'s log';
+
+const HELD_NOTE =
+  'This host holds this registration only until it restarts, since it couldn\'t record it. If your operator hasn\'t ' +
+  'recorded it yet, ask them to, before the host restarts.';
+
 export class IdentityModule implements Module {
   readonly name = 'identity';
   private readonly recordPath: string;
 
-  /** Last good service directory from the home node, and when we got it. */
   private servicesFromHome: Record<string, string> = {};
   private servicesFetchedAt = 0;
   private servicesInflight: Promise<void> | null = null;
 
+  private readonly state: RegistrationState;
+
   constructor(private readonly config: IdentityModuleConfig) {
     this.recordPath = config.keyPath.replace(/\.pem$/, '') + '.json';
+    const key = resolve(this.recordPath);
+    let state = registrationStates.get(key);
+    if (!state) registrationStates.set(key, (state = { held: null, enrolling: false }));
+    this.state = state;
   }
 
   private ctx: ModuleContext | null = null;
@@ -144,7 +177,7 @@ export class IdentityModule implements Module {
   async stop(): Promise<void> { this.ctx = null; }
 
   getTools(): ToolDefinition[] {
-    return []; // utilities-only, by design — see module header
+    return [];
   }
 
   getUtilities(): ToolDefinition[] {
@@ -186,7 +219,7 @@ export class IdentityModule implements Module {
         description:
           'Register with the identity service using an invitation code from your operator. ' +
           'One-time: it establishes the name services will know you by. After this, the ' +
-          'host handles access automatically (e.g. mcpl_deploy with an `access` name).',
+          'host handles access automatically (e.g. mcpl-admin--mcpl_deploy with an `access` name).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -207,12 +240,20 @@ export class IdentityModule implements Module {
         case 'accept_invite':
           return await this.acceptInvite(call.input as { invite?: unknown; name?: unknown });
         case 'request':
-          return await this.request(call.input as { service?: unknown; path?: unknown; method?: unknown; body?: unknown; saveAs?: unknown });
+          return await this.request(call.input as {
+            service?: unknown; path?: unknown; method?: unknown; body?: unknown; fromFile?: unknown; contentType?: unknown; saveAs?: unknown;
+          });
         default:
-          return fail(`Unknown identity utility: ${call.name}`);
+          return unknownToolResult(this, call.name);
       }
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      console.error(`[identity] ${call.name} failed: ${errorText(err)}`);
+      const before = call.name === 'status' ? '' : ' before anything was sent';
+      if (err instanceof IdentityError) return fail(`identity--${call.name} failed${before}: ${sentence(err.forAgent)}`);
+      return fail(
+        `identity--${call.name} failed${before} (${codeOf(err)}). It's the host's to fix, so if it keeps happening, ask ` +
+        'your operator.',
+      );
     }
   }
 
@@ -220,58 +261,112 @@ export class IdentityModule implements Module {
     return {};
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Host-facing API — credential plumbing. Nothing below ever reaches model
-  // context; callers (MCPL dial provider, HTTP helpers) consume the values
-  // outside the agent's view.
-  // ────────────────────────────────────────────────────────────────────────
-
-  /** True once this deployment holds a registered principal. */
   isEnrolled(): boolean {
     return this.record() !== null;
   }
 
-  /** The registered principal id (`agent:<name>@<domain>`), if any. */
   sub(): string | null {
     return this.record()?.sub ?? null;
   }
 
-  /**
-   * Exchange a key-proof for a fresh aid1 token for `audience`. Called per
-   * MCPL dial (connect + every reconnect) and by HTTP helpers — which is
-   * what lets audience tokens be short-lived. Throws with an actionable
-   * message when unregistered or refused.
-   */
   async accessFor(audience?: string): Promise<string> {
     const aud = audience ?? this.config.defaultAudience;
-    if (!aud) throw new Error('identity: no audience named and none configured');
-    if (!this.record()) {
-      throw new Error(
-        `identity: not registered with ${this.config.home} — the agent needs to accept an operator invite first (utils run identity--accept_invite)`,
+    const home = this.config.home;
+    if (!aud) {
+      throw new IdentityError(
+        'access was asked for without naming an audience, and the identity module sets no default ' +
+          '(modules.identity.audience in the recipe)',
+        'this host asked for access without naming a service. It\'s the host\'s to fix: ask your operator',
       );
     }
-    const key = this.loadOrCreateKey();
-    const timestamp = new Date().toISOString();
-    const statement = `archipelago-token|v1|${this.config.home}|${aud}|${timestamp}`;
-    const proof = cryptoSign(null, Buffer.from(statement, 'utf8'), key.privateKey).toString('base64url');
-    const { status, json } = await this.post('/token', { id: key.id, audience: aud, timestamp, proof });
-    if (status !== 200 || typeof json.token !== 'string') {
-      throw new Error(`identity: ${this.config.home} refused access to "${aud}" (${status}): ${String(json.error ?? 'unknown')}`);
+    if (!this.record()) {
+      const none = `no registration with the identity service at ${home} is recorded on this host, so it has no access ` +
+        `to give "${aud}"`;
+      throw new IdentityError(
+        `${none}; registering takes an invitation code, which the agent redeems through identity--accept_invite`,
+        `${none}. Registering takes an invitation code from your operator: call identity--accept_invite with the ` +
+          `code and a name; reach it with ${settingsRoute('identity--accept_invite')}`,
+      );
     }
-    return json.token;
+    const timestamp = new Date().toISOString();
+    const { id, proof } = this.prove(`archipelago-token|v1|${home}|${aud}|${timestamp}`);
+    let reply: { status: number; json: Record<string, unknown> };
+    try {
+      reply = await this.post('/token', { id, audience: aud, timestamp, proof });
+    } catch (err) {
+      const unreachable = `the identity service at ${home} couldn't be reached for access to "${aud}" (${errorText(err)})`;
+      throw new IdentityError(unreachable, `${unreachable}. Try again shortly`);
+    }
+    const { status, json } = reply;
+    if (status === 200 && typeof json.token === 'string') return json.token;
+    if (status === 200) {
+      const unread = `the identity service at ${home} answered 200 for access to "${aud}", but its reply couldn't be read`;
+      throw new IdentityError(unread, `${unread}. Try again shortly`);
+    }
+    const error = String(json.error ?? 'no reason given');
+    if (transient(status)) {
+      const busy = `the identity service at ${home} couldn't give access to "${aud}" just now (${status}: ${error})`;
+      throw new IdentityError(busy, `${busy}. Try again shortly`);
+    }
+    const refused = `the identity service at ${home} refused access to "${aud}" (${status}: ${error})`;
+    throw new IdentityError(
+      refused,
+      `${refused}. identity--status shows this host's registration. If this host should have that access, ask your ` +
+        'operator, giving them the reason',
+    );
   }
 
-  /** Authorization header for HTTP calls to an audience's API. */
   async httpAuthFor(audience?: string): Promise<Record<string, string>> {
     return { authorization: `Bearer ${await this.accessFor(audience)}` };
   }
 
-  // ── key material ──
+  /** archipelago-home's /token finds a registration by its key, so a key made
+   *  anew beside a registration gets no access. */
+  private identityKey(): { privateKey: KeyObject; id: string } {
+    if (!existsSync(this.config.keyPath)) {
+      const rec = this.record();
+      if (rec) {
+        const rotate = this.state.held
+          ? 'restart the host, which forgets the registration it holds in memory, and register it again'
+          : 'remove the record as well and register this host again';
+        throw new IdentityError(
+          `this host's registration as "${rec.name}" with ${rec.home} is ` +
+            `${this.state.held ? 'held in memory' : `recorded at ${this.recordPath}`}, but its identity key at ` +
+            `${this.config.keyPath} is missing, so no new key was made: the service holds the registration under the ` +
+            `old key and would refuse every access signed with a new one. Restore the key file. To rotate the key on ` +
+            `purpose, ${rotate} with an invitation code; the service keeps the old registration, so the new one needs ` +
+            'a name the old one doesn\'t hold',
+          IDENTITY_UNLOADED,
+        );
+      }
+    }
+    try {
+      return this.loadOrCreateKey();
+    } catch (err) {
+      throw this.keyFailure(err);
+    }
+  }
+
+  private keyFailure(err: unknown): IdentityError {
+    return new IdentityError(
+      `this host's identity key at ${this.config.keyPath} couldn't be read, made or used: ${errorText(err)}`,
+      IDENTITY_UNLOADED,
+    );
+  }
+
+  private prove(statement: string): { id: string; proof: string } {
+    const key = this.identityKey();
+    return { id: key.id, proof: cryptoSign(null, Buffer.from(statement, 'utf8'), key.privateKey).toString('base64url') };
+  }
 
   private loadOrCreateKey(): { privateKey: KeyObject; id: string } {
     let privateKey: KeyObject;
     if (existsSync(this.config.keyPath)) {
       privateKey = createPrivateKey(readFileSync(this.config.keyPath, 'utf8'));
+      // archipelago-home's ids and proofs are ed25519's.
+      if (privateKey.asymmetricKeyType !== 'ed25519') {
+        throw new Error(`it holds a key of type ${privateKey.asymmetricKeyType}, not ed25519`);
+      }
     } else {
       privateKey = generateKeyPairSync('ed25519').privateKey;
       mkdirSync(dirname(this.config.keyPath), { recursive: true });
@@ -281,12 +376,53 @@ export class IdentityModule implements Module {
     return { privateKey, id: `ed25519:${spki.subarray(spki.length - 32).toString('base64url')}` };
   }
 
-  private record(): IdentityRecord | null {
+  private record(): IdentityRecord | HeldRegistration | null {
+    let rec: IdentityRecord | null;
     try {
-      return JSON.parse(readFileSync(this.recordPath, 'utf8')) as IdentityRecord;
-    } catch {
-      return null;
+      rec = this.recordFile();
+    } catch (err) {
+      if (this.state.held) return this.state.held;
+      throw err;
     }
+    if (rec) this.state.held = null;
+    return rec ?? this.state.held;
+  }
+
+  private recordFile(): IdentityRecord | null {
+    let text: string;
+    try {
+      text = readFileSync(this.recordPath, 'utf8');
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code === 'ENOENT') return null;
+      throw this.unreadableRecord(errorText(err));
+    }
+    let rec: unknown;
+    try {
+      rec = JSON.parse(text);
+    } catch {
+      throw this.unreadableRecord('it isn\'t JSON');
+    }
+    const fields = rec as Partial<IdentityRecord> | null;
+    if (typeof fields !== 'object' || fields === null || typeof fields.sub !== 'string' || typeof fields.name !== 'string') {
+      throw this.unreadableRecord('it holds no registration');
+    }
+    return fields as IdentityRecord;
+  }
+
+  private unreadableRecord(detail: string): IdentityError {
+    return new IdentityError(
+      `this host's registration record ${this.recordPath} couldn't be read (${detail}), so whether this host is ` +
+        'registered is unknown until it is fixed or restored',
+      'this host\'s registration record couldn\'t be read, so whether this host is registered is unknown. It\'s the ' +
+        'host\'s to fix: ask your operator, who can find the reason in the host\'s log',
+    );
+  }
+
+  private recordByHand(name: string, sub: string | null, enrolledAt: string): string {
+    const home = this.config.home;
+    if (sub !== null) return `To record it, write ${JSON.stringify({ sub, name, home, enrolledAt })} to ${this.recordPath}.`;
+    return `To record it, write ${JSON.stringify({ name, home, enrolledAt })} to ${this.recordPath}, adding "sub" with ` +
+      'the id the identity service holds for this registration.';
   }
 
   private saveRecord(rec: IdentityRecord): void {
@@ -300,16 +436,15 @@ export class IdentityModule implements Module {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(IDENTITY_TIMEOUT_MS),
     });
-    return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+    const parsed: unknown = await res.json().catch(() => null);
+    const json = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+    return { status: res.status, json };
   }
 
-  // ── agent-facing utilities ──
-
   private status(): ToolResult {
-    // Key material is deliberately created lazily here too, so `status` is
-    // always safe to call — but none of it surfaces in the result.
-    this.loadOrCreateKey();
+    this.identityKey();
     const rec = this.record();
     return ok(
       rec
@@ -318,33 +453,23 @@ export class IdentityModule implements Module {
             id: rec.sub,
             recognizedBy: rec.home,
             since: rec.enrolledAt,
-            note: 'Access to services is handled by the host automatically (e.g. mcpl_deploy with an `access` name).',
+            note: this.state.held
+              ? HELD_NOTE
+              : 'Access to services is handled by the host automatically (e.g. mcpl-admin--mcpl_deploy with an `access` name).',
           }
         : {
             registeredAs: null,
-            note: `Not registered with ${this.config.home} yet — ask your operator for an invitation code, then use accept_invite.`,
+            note: `No registration with ${this.config.home} is recorded on this host. To register, ask your operator for an ` +
+              'invitation code, then call identity--accept_invite with it; reach it with ' +
+              `${settingsRoute('identity--accept_invite')}.`,
           },
     );
   }
 
-  /** Audience → API base, resolved from the home node's `/services` directory
-   *  at runtime. The archipelago's service list belongs to the trust anchor,
-   *  not to a constant compiled into every host: a service added at the home
-   *  node reaches every resident without a restart or a recipe edit.
-   *
-   *  Layering, most specific last: fetched directory → built-in defaults for
-   *  anything the directory omits → recipe `services` (explicit local config
-   *  still wins, for testing and for hosts anchored elsewhere).
-   *
-   *  Never throws: a home node that is down, slow, or rate-limiting leaves the
-   *  last good directory in place (or the built-in defaults on a cold start),
-   *  so losing discovery degrades to today's behaviour rather than to an
-   *  outage. */
   private async resolveServices(opts: { force?: boolean } = {}): Promise<Record<string, string>> {
     const now = Date.now();
     const fresh = this.servicesFetchedAt > 0 && now - this.servicesFetchedAt < SERVICES_TTL_MS;
     if (!opts.force && fresh) return this.layerServices();
-    // Collapse concurrent refreshes onto one request.
     if (!this.servicesInflight) {
       const f = this.config.fetchImpl ?? fetch;
       this.servicesInflight = (async () => {
@@ -363,7 +488,6 @@ export class IdentityModule implements Module {
           this.servicesFromHome = map;
           this.servicesFetchedAt = Date.now();
         } catch (err) {
-          // Keep whatever we had; note it once per failure for the operator.
           console.error(
             `[identity] service directory refresh failed (${this.config.home}): ${err instanceof Error ? err.message : String(err)}`,
           );
@@ -380,10 +504,6 @@ export class IdentityModule implements Module {
     return { ...DEFAULT_SERVICES, ...this.servicesFromHome, ...this.config.services };
   }
 
-  /** The agent-facing HTTP seam for non-MCPL services (Orrery et al.): the
-   *  host resolves the base URL from the directory, fetches fresh access,
-   *  attaches it, and returns only {status, body}. The credential exists
-   *  for the duration of one fetch, outside model context. */
   private async request(input: {
     service?: unknown;
     path?: unknown;
@@ -394,97 +514,110 @@ export class IdentityModule implements Module {
     saveAs?: unknown;
   }): Promise<ToolResult> {
     const service = typeof input.service === 'string' ? input.service : '';
+    const baseOf = (map: Record<string, string>): string | undefined => (Object.hasOwn(map, service) ? map[service] : undefined);
     let services = await this.resolveServices();
-    let base = services[service];
+    let base = baseOf(services);
     if (!base && service) {
-      // A name we don't know yet is the likeliest moment for the directory to
-      // have moved under us — a service that went live since our last refresh.
-      // Re-ask once before refusing, so a new archipelago service is usable
-      // immediately rather than after a cache expiry.
       services = await this.resolveServices({ force: true });
-      base = services[service];
+      base = baseOf(services);
     }
     if (!base) {
-      return fail(`Unknown service "${service}". Available: ${Object.keys(services).join(', ')}`);
+      const known = Object.keys(services).join(', ');
+      return fail(service
+        ? `Nothing was sent: there's no service "${service}" here. The services are ${known}.`
+        : `Nothing was sent: identity--request needs \`service\`, the name of one of the services: ${known}.`);
     }
     if (typeof input.path !== 'string' || !input.path.startsWith('/')) {
-      return fail('`path` must be a string starting with "/"');
+      return fail(
+        'Nothing was sent: `path` must be text starting with "/", the part of the address after the service\'s, ' +
+        `such as "/api/ops"; it was ${shown(input.path)}.`,
+      );
     }
     const method = typeof input.method === 'string' ? input.method.toUpperCase() : 'GET';
-    if (!(REQUEST_METHODS as readonly string[]).includes(method)) return fail(`unsupported method ${method}`);
-    // A body or an upload with GET would be dropped while the call reports
-    // success, and `method` defaults to GET, so a write that forgot its verb
-    // would silently read instead. Refuse it, naming the verbs that carry one.
-    const carrying = REQUEST_METHODS.filter((m) => m !== 'GET').join(', ');
-    if (method === 'GET' && input.body !== undefined) {
-      return fail(`\`body\` needs a method that sends one (${carrying}); method is GET${typeof input.method === 'string' ? '' : ' by default'}`);
+    if (!(REQUEST_METHODS as readonly string[]).includes(method)) {
+      return fail(
+        `Nothing was sent: method "${method}" isn't one this utility sends. Use ${REQUEST_METHODS.slice(0, -1).join(', ')} ` +
+        `or ${REQUEST_METHODS[REQUEST_METHODS.length - 1]}.`,
+      );
     }
+    const carrying = REQUEST_METHODS.filter((m) => m !== 'GET').join(', ');
+    const isGet = `the method is GET${typeof input.method === 'string' ? '' : ' by default'}`;
+    if (method === 'GET' && input.body !== undefined) {
+      return fail(
+        `Nothing was sent: \`body\` needs a method that sends one (${carrying}), and ${isGet}. Pass one of those as ` +
+        '`method`, or leave `body` out to read.',
+      );
+    }
+    const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
     let bodyStr: string | undefined;
     if (input.body !== undefined) {
       bodyStr = typeof input.body === 'string' ? input.body : JSON.stringify(input.body);
-      if (bodyStr.length > REQUEST_BODY_MAX) return fail(`body too large (${bodyStr.length} > ${REQUEST_BODY_MAX})`);
+      if (bodyStr.length > REQUEST_BODY_MAX) {
+        return fail(
+          `Nothing was sent: the body is ${bodyStr.length} characters, over the ${REQUEST_BODY_MAX}-character limit for \`body\`.` +
+          (workspace
+            ? ' To send more, write it to a workspace file and pass that file\'s path as `fromFile` instead, which takes up to 64 MiB.'
+            : ''),
+        );
+      }
+    }
+    const saveAs = typeof input.saveAs === 'string' && input.saveAs.length > 0 ? input.saveAs : undefined;
+    if (saveAs !== undefined && !workspace) {
+      return fail(
+        'Nothing was sent: `saveAs` writes the response to the workspace, and this host has no workspace. Leave ' +
+        '`saveAs` out to have a text response returned to you, or ask your operator to enable the workspace.',
+      );
+    }
+    if (saveAs !== undefined && workspace) {
+      const unkept = this.cannotKeep(workspace, saveAs);
+      if (unkept) return fail(`Nothing was sent: ${unkept}`);
     }
 
-    // Uploads: the agent names a workspace file, the host sends its bytes. The
-    // mirror of saveAs — a file too big to write into a turn is exactly the
-    // case that needs this, so the bytes never enter model context, and the
-    // small JSON body cap does not apply to them.
-    let upload: { bytes: Buffer; contentType: string; path: string } | undefined;
+    let upload: { bytes: Buffer; contentType: string; path: string; from: string } | undefined;
     if (typeof input.fromFile === 'string' && input.fromFile.length > 0) {
-      if (bodyStr !== undefined) return fail('pass either `body` or `fromFile`, not both');
+      if (bodyStr !== undefined) return fail('Nothing was sent: pass `body` or `fromFile`, not both.');
       if (method === 'GET') {
-        return fail(`\`fromFile\` needs a method that sends a body (${carrying}); method is GET${typeof input.method === 'string' ? '' : ' by default'}`);
+        return fail(`Nothing was sent: \`fromFile\` needs a method that sends a body (${carrying}), and ${isGet}. Pass one of those as \`method\`.`);
       }
-      const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
-      if (!workspace) return fail('identity request: workspace module is not available for fromFile');
-      // Disk first, store second. An upload is egress: reading it through the
-      // append-only store would retain every byte forever and refuse anything
-      // binary or over the mount's maxFileSize — which is most media. Disk
-      // has neither problem. The store remains the fallback for a file the
-      // resident wrote through the workspace and never materialized.
-      const diskRead = (workspace as WorkspaceModule & {
-        readBinaryFromDisk?: (
-          path: string,
-          opts?: { maxBytes?: number },
-        ) => Promise<{ data: Buffer; absolutePath: string } | { error: string }>;
-      }).readBinaryFromDisk;
-      const fromDisk = diskRead
-        ? await diskRead.call(workspace, input.fromFile, { maxBytes: UPLOAD_BODY_MAX })
-        : { error: 'this host has no disk read path' };
-      let bytes: Buffer;
-      if (!('error' in fromDisk)) {
-        bytes = fromDisk.data;
-      } else {
-        const fromStore = await workspace.readBinary(input.fromFile);
-        if ('error' in fromStore) {
-          return fail(
-            `identity request: could not read ${input.fromFile}: ${fromDisk.error}; ${fromStore.error}`,
-          );
-        }
-        bytes = fromStore.data;
+      if (!workspace) {
+        return fail(
+          'Nothing was sent: `fromFile` reads a workspace file, and this host has no workspace, so it can\'t be used ' +
+          'here. Send JSON content as `body` instead; a binary file can\'t be uploaded from this host.',
+        );
       }
-      if (bytes.byteLength > UPLOAD_BODY_MAX) {
-        return fail(`file too large (${bytes.byteLength} > ${UPLOAD_BODY_MAX})`);
+      const contentType = typeof input.contentType === 'string' && input.contentType
+        ? input.contentType
+        : guessContentType(input.fromFile);
+      // Headers refuses a value with a line break, a NUL or a character past
+      // Latin-1, and so does fetch, before it connects.
+      try {
+        new Headers({ 'content-type': contentType });
+      } catch {
+        return fail(
+          `Nothing was sent: \`contentType\` ${shown(input.contentType)} can't be sent as a header. Pass one such as ` +
+          '"audio/mpeg", or leave it out to have it inferred from the file\'s extension.',
+        );
       }
-      upload = {
-        bytes,
-        contentType:
-          typeof input.contentType === 'string' && input.contentType
-            ? input.contentType
-            : guessContentType(input.fromFile),
-        path: input.fromFile,
-      };
+      const read = await this.readUpload(workspace, input.fromFile, service);
+      if ('refusal' in read) return fail(read.refusal);
+      upload = { bytes: read.bytes, contentType, path: input.fromFile, from: read.from };
     }
 
     let access: string;
     try {
-      access = await this.accessFor(service); // service name == audience name
+      access = await this.accessFor(service);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      if (!(err instanceof IdentityError)) throw err;
+      console.error(`[identity] request to "${service}": ${err.message}`);
+      return fail(`Nothing was sent to "${service}": ${sentence(err.forAgent)}`);
     }
+    const copySent = upload && upload.from !== 'disk'
+      ? ` The upload was the workspace's copy of "${upload.path}", since disk has no file at this path.`
+      : '';
     const f = this.config.fetchImpl ?? fetch;
+    let res: Response;
     try {
-      const res = await f(`${base}${input.path}`, {
+      res = await f(`${base}${input.path}`, {
         method,
         headers: {
           authorization: `Bearer ${access}`,
@@ -492,25 +625,47 @@ export class IdentityModule implements Module {
           ...(upload ? { 'content-type': upload.contentType } : {}),
         },
         ...(bodyStr !== undefined ? { body: bodyStr } : {}),
-        // Uint8Array view, not the Buffer itself: Buffer is not a BodyInit.
         ...(upload ? { body: new Uint8Array(upload.bytes) } : {}),
       });
+    } catch (err) {
+      return fail(
+        `The request to "${service}" got no reply: ${sentence(errorText(err))} Whether it reached the service is ` +
+        (method === 'GET' ? 'unknown; a GET only reads, so it can be sent again.' : `unknown, so check whether the ${method} took effect before sending it again.`) +
+        copySent,
+      );
+    }
+    const answered = `The request to "${service}" was answered with status ${res.status}`;
+    const changed = method === 'GET'
+      ? ''
+      : ` Anything the ${method} changed on the service stays changed, so check before sending it again.`;
+    const sent = upload
+      ? { sent: { path: upload.path, size: upload.bytes.byteLength, contentType: upload.contentType, from: upload.from } }
+      : {};
+    try {
       const bytes = Buffer.from(await res.arrayBuffer());
       if (bytes.byteLength > RESPONSE_BODY_MAX) {
-        return fail(`response too large (${bytes.byteLength} > ${RESPONSE_BODY_MAX})`);
+        return fail(`${answered}, but its response is ${bytes.byteLength} bytes, over the ${RESPONSE_BODY_MAX}-byte limit, so it wasn't kept.${copySent}${changed}`);
       }
       const declaredType = res.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() || '';
       const contentType = declaredType || 'application/octet-stream';
       const sha256 = createHash('sha256').update(bytes).digest('hex');
 
-      if (typeof input.saveAs === 'string' && input.saveAs.length > 0) {
-        const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
-        if (!workspace) return fail('identity request: workspace module is not available for saveAs');
-        const written = await workspace.writeBinary(input.saveAs, bytes, contentType);
-        if (!written.success) return fail(`identity request: could not save response: ${written.error ?? 'unknown'}`);
+      if (saveAs !== undefined && workspace) {
+        const written = await workspace.writeBinary(saveAs, bytes, contentType);
+        // agent-framework's writeBinary answers inChronicle: true for a file the
+        // store took in whose later step failed, such as its copy on disk; the
+        // workspace's tools read it from the store.
+        const stored = written.success || (written.data as { inChronicle?: boolean } | undefined)?.inChronicle === true;
+        if (!stored) {
+          return fail(`${answered}, but its response couldn't be saved to "${saveAs}": ${sentence(written.error ?? 'no reason given')}${copySent}${changed}`);
+        }
         return ok({
           status: res.status,
-          saved: { path: input.saveAs, size: bytes.byteLength, contentType, sha256 },
+          saved: {
+            path: saveAs, size: bytes.byteLength, contentType, sha256,
+            ...(written.success ? {} : { diskCopyError: written.error ?? 'its copy on disk failed' }),
+          },
+          ...sent,
         });
       }
 
@@ -521,27 +676,15 @@ export class IdentityModule implements Module {
         parsed = JSON.parse(text);
         parsedJson = true;
       } catch {
-        /* not JSON */
       }
       const textual = declaredType.startsWith('text/')
         || declaredType === 'application/json'
         || declaredType.endsWith('+json')
         || declaredType === 'application/xml'
         || declaredType.endsWith('+xml')
-        // Some tiny internal/fake services omit content-type on JSON. A full
-        // successful parse is a safer fallback than treating valid JSON as
-        // opaque bytes; arbitrary binary almost never parses as one JSON value.
         || (!declaredType && parsedJson);
-      // An empty body (a 204, or an empty 200) is an empty success, not an
-      // omitted binary: advising a repeat with saveAs would re-send a write.
       if (bytes.byteLength === 0) {
-        return ok({
-          status: res.status,
-          body: '',
-          ...(upload
-            ? { sent: { path: upload.path, size: upload.bytes.byteLength, contentType: upload.contentType } }
-            : {}),
-        });
+        return ok({ status: res.status, body: '', ...sent });
       }
       if (!textual) {
         return ok({
@@ -549,8 +692,15 @@ export class IdentityModule implements Module {
           body: null,
           binary: {
             size: bytes.byteLength, contentType, sha256,
-            note: 'Binary response omitted from text context; repeat the request with saveAs to write it byte-exactly to a workspace mount.',
+            note: !workspace
+              ? 'Binary response omitted from text context, and not kept: keeping one takes `saveAs`, which needs a ' +
+                'workspace, and this host has none. If you need it, your operator can enable the workspace.'
+              : method === 'GET'
+                ? 'Binary response omitted from text context; repeat the request with saveAs to write it byte-exactly to a workspace mount.'
+                : `Binary response omitted from text context, and not kept: sending this ${method} again with \`saveAs\` would ` +
+                  'repeat it. When you need a write\'s binary response, pass `saveAs` with the write itself.',
           },
+          ...sent,
         });
       }
 
@@ -559,49 +709,230 @@ export class IdentityModule implements Module {
       if (raw.length > RESPONSE_INLINE_MAX) {
         body = `${raw.slice(0, RESPONSE_INLINE_MAX)}… [truncated ${raw.length - RESPONSE_INLINE_MAX} chars]`;
       }
-      return ok({
-        status: res.status,
-        body,
-        // A receipt for what left the house, so an upload is verifiable from
-        // the turn that made it without re-reading the file.
-        ...(upload
-          ? { sent: { path: upload.path, size: upload.bytes.byteLength, contentType: upload.contentType } }
-          : {}),
-      });
+      return ok({ status: res.status, body, ...sent });
     } catch (err) {
-      return fail(`${service} request failed: ${err instanceof Error ? err.message : String(err)}`);
+      return fail(`${answered}, but its response couldn't be read or kept: ${sentence(errorText(err))}${copySent}${changed}`);
     }
+  }
+
+  private cannotKeep(workspace: WorkspaceModule, path: string): string | null {
+    const mounts = workspace.getMounts();
+    const writable = mounts.filter((m) => m.mode === 'read-write' && m.name !== '_config');
+    const named = writable.map((m) => (m.include ? `"${m.name}" for ${m.include.join(' or ')}` : `"${m.name}"`)).join(', ');
+    const remedy = writable.length > 0
+      ? ` Pass \`saveAs\` a path in a mount it can write to (${named}), as "<mount>/<file>", or leave it ` +
+        'out to have a text response returned to you.'
+      : ' The workspace has no mount a response can be kept in, so leave `saveAs` out to have a text response returned to you.';
+    const slash = path.indexOf('/');
+    const name = slash < 0 ? path : path.slice(0, slash);
+    const mount = mounts.find((m) => m.name === name);
+    if (!mount) return `\`saveAs\` names no mount the workspace has: "${path}".${remedy}`;
+    if (slash < 0 || slash === path.length - 1) return `\`saveAs\` names the mount "${name}" but no file in it.${remedy}`;
+    if (name === '_config') return `\`saveAs\` names "_config", which holds the gate's config, where no response is kept.${remedy}`;
+    if (path.slice(slash + 1).startsWith('/')) {
+      return `\`saveAs\` "${path}" has an empty part right after the mount's name, which the workspace can't save to; name the file by its plain path.${remedy}`;
+    }
+    if (path.slice(slash + 1).split('/').some((part) => part === '.' || part === '..')) {
+      return `\`saveAs\` "${path}" has a "." or ".." in it, which the workspace can't save to; name the file by its plain path.${remedy}`;
+    }
+    if (workspace.resolveAbsolutePath(path) === null) {
+      return `\`saveAs\` "${path}" isn't a path the mount "${name}" holds: it leads out of the mount, lies in another mount's directory, falls outside its include, or can't name a file there.${remedy}`;
+    }
+    if (mount.mode === 'read-only') return `\`saveAs\` names the read-only mount "${name}", where nothing can be saved.${remedy}`;
+    return null;
+  }
+
+  /** agent-framework's store keeps every byte read through it, and its mount's
+   *  maxFileSize applies, so an upload reads disk first. */
+  private async readUpload(
+    workspace: WorkspaceModule,
+    path: string,
+    service: string,
+  ): Promise<{ bytes: Buffer; from: string } | { refusal: string }> {
+    const nothingSent = `Nothing was sent to "${service}":`;
+    const overLimit = (size: number, whose: string): { refusal: string } => ({
+      refusal: `${nothingSent} ${whose} is ${size} bytes, over the ${UPLOAD_BODY_MAX}-byte upload limit, which is fixed, ` +
+        'so calling again won\'t change that: send a smaller file.',
+    });
+    let onDisk: WorkspaceReadError;
+    try {
+      const fromDisk = await workspace.readFileFromDisk(path, { maxBytes: UPLOAD_BODY_MAX });
+      if (fromDisk.truncated) return overLimit(fromDisk.size, `"${path}"`);
+      return { bytes: fromDisk.bytes, from: 'disk' };
+    } catch (err) {
+      if (!(err instanceof WorkspaceReadError)) throw err;
+      onDisk = err;
+    }
+    // agent-framework's read reports a path in another mount's directory nested
+    // in this one, or reached through a link into one, as other_mount, naming
+    // that mount and the path to use there.
+    if (['unknown_mount', 'traversal', 'outside_include', 'other_mount'].includes(onDisk.code)) {
+      return { refusal: `${nothingSent} ${sentence(onDisk.message)}` };
+    }
+    const diskReason = sentence(`${onDisk.message}${onDisk.errno ? ` (${onDisk.errno})` : ''}`);
+    if (!diskHasNoFile(onDisk)) {
+      return {
+        refusal: `${nothingSent} "${path}" couldn't be read from disk, and the workspace's copy wasn't sent in its ` +
+          `place, since it can differ from disk's. On disk: ${diskReason} ${diskRemedy(onDisk)}`,
+      };
+    }
+    const fromStore = await workspace.readBinary(path);
+    if ('error' in fromStore) {
+      const reasons = onDisk.message === fromStore.error
+        ? sentence(fromStore.error)
+        : `On disk: ${diskReason} In the workspace: ${sentence(fromStore.error)}`;
+      return { refusal: `${nothingSent} "${path}" couldn't be read. ${reasons}` };
+    }
+    if (fromStore.data.byteLength > UPLOAD_BODY_MAX) {
+      return overLimit(fromStore.data.byteLength, `the workspace's copy of "${path}"`);
+    }
+    return { bytes: fromStore.data, from: 'the workspace, since disk has no file at this path' };
   }
 
   private async acceptInvite(input: { invite?: unknown; name?: unknown }): Promise<ToolResult> {
     if (typeof input.invite !== 'string' || typeof input.name !== 'string') {
-      return fail('accept_invite needs { invite, name }');
+      return fail(
+        'Nothing was sent: identity--accept_invite needs both `invite`, the invitation code from your operator, ' +
+        'and `name`, the name to register as, each as text.',
+      );
+    }
+    // A fetch's timeout signal bounds reading its reply's body too, so a
+    // registration under way ends within IDENTITY_TIMEOUT_MS.
+    if (this.state.enrolling) {
+      return fail(
+        'Nothing was sent: a registration is already under way on this host, and its answer goes to the call that ' +
+        `started it, which may be in an earlier session. It ends within ${IDENTITY_TIMEOUT_MS / 1000} seconds, and ` +
+        'identity--status then shows this host\'s registration if it recorded or holds one. If it shows none, call ' +
+        'identity--accept_invite again with the same code and name.',
+      );
     }
     const existing = this.record();
     if (existing) {
-      return fail(`Already registered as "${existing.name}" (${existing.sub}) — registration is one-time.`);
+      return fail(
+        `Nothing changed: this host is already registered as "${existing.name}"${existing.sub ? ` (${existing.sub})` : ''}, ` +
+        `and registration happens once. identity--status shows it.${this.state.held ? ` ${HELD_NOTE}` : ''}`,
+      );
     }
-    const key = this.loadOrCreateKey();
+    this.state.enrolling = true;
+    try {
+      return await this.enroll(input.invite, input.name);
+    } finally {
+      this.state.enrolling = false;
+    }
+  }
+
+  private async enroll(invite: string, name: string): Promise<ToolResult> {
+    const home = this.config.home;
     const timestamp = new Date().toISOString();
-    const statement = `archipelago-enroll|v1|${this.config.home}|${input.invite}|${timestamp}`;
-    const proof = cryptoSign(null, Buffer.from(statement, 'utf8'), key.privateKey).toString('base64url');
-    const { status, json } = await this.post('/enroll', {
-      invite: input.invite,
-      id: key.id,
-      name: input.name,
-      timestamp,
-      proof,
-    });
-    if (status !== 200 || typeof json.sub !== 'string') {
-      return fail(`Registration refused (${status}): ${String(json.error ?? 'unknown')}`);
+    const { id, proof } = this.prove(`archipelago-enroll|v1|${home}|${invite}|${timestamp}`);
+    const unknownToOperator = (what: string): void => {
+      console.error(
+        `[identity] registering this host as ${JSON.stringify(name)} with ${home}: the service ${what}, so whether it registered ` +
+          `this host is unknown; if it holds this registration, record it by hand. ${this.recordByHand(name, null, timestamp)}`,
+      );
+    };
+    // archipelago-home adds the principal and uses the invite before a step
+    // that can still fail, and checks the invite and the name before the key.
+    const unknownOutcome = (what: string): ToolResult => {
+      unknownToOperator(what);
+      return fail(
+        `The identity service at ${home} ${what}, so whether it registered this host is unknown. Call ` +
+        'identity--accept_invite again shortly with the same code and name. If that\'s refused, the first call may ' +
+        'have registered this host without this host recording it, so don\'t try another name: ask your operator to ' +
+        'check whether the identity service holds this registration, and if it does, to record it on this host by hand.',
+      );
+    };
+    let reply: { status: number; json: Record<string, unknown> };
+    try {
+      reply = await this.post('/enroll', { invite, id, name, timestamp, proof });
+    } catch (err) {
+      return unknownOutcome(`gave no reply (${errorText(err)})`);
     }
-    this.saveRecord({ sub: json.sub, name: input.name, home: this.config.home, enrolledAt: timestamp });
-    // Note what is NOT returned: the first token the home node minted. The
-    // host fetches its own, fresh, per use — the agent never holds one.
+    const { status, json } = reply;
+    if (status === 200) return this.registered(name, typeof json.sub === 'string' ? json.sub : null, timestamp);
+    const error = String(json.error ?? 'no reason given');
+    if (status >= 500) return unknownOutcome(`answered with a fault of its own (${status}: ${error})`);
+    if (status === 429) {
+      // The service's rate limit answers before it looks at the registration,
+      // so this call registered nothing, whatever an earlier one did.
+      return fail(
+        `The identity service at ${home} couldn't take the registration just now (429: ${error}), so this call ` +
+        'registered nothing. Try again shortly.',
+      );
+    }
+    if (status === 400) {
+      // archipelago-home answers 400 before it registers anything (a malformed
+      // request, a name it doesn't take, a stale timestamp) or after: "no audience
+      // configured" comes once it has added the principal and used the invite.
+      unknownToOperator(`answered with 400: ${error}`);
+      return fail(
+        `The identity service at ${home} answered the registration with 400: ${error}. A 400 can come after the ` +
+        'service has registered this host, so whether this call did is unknown. If the reason is about the name, call ' +
+        'identity--accept_invite again with another name. Otherwise ask your operator, giving them the reason, to check ' +
+        'whether the service holds this registration, and if it does, to record it on this host by hand.',
+      );
+    }
+    // archipelago-home's 403s each come before it registers anything (the
+    // invite, the proof, the name, the key).
+    console.error(
+      `[identity] registering this host as ${JSON.stringify(name)} with ${home}: the service answered ${status}: ${error}. ` +
+        'If an earlier call got no reply, a fault of the service\'s own, or a 400 not about the name, it may have ' +
+        'registered this host: check the service, and if it holds this registration, record it by hand as that call\'s ' +
+        'line says.',
+    );
+    return fail(
+      `The identity service at ${home} answered the registration with ${status}: ${error}. If an earlier call got no ` +
+      'reply, a fault of the service\'s own, or a 400 not about the name, that call may have registered this host, so ' +
+      'don\'t try another name: ask your operator to check whether the service holds this registration. Otherwise, if ' +
+      'it refused the name, call identity--accept_invite again with another; for anything else, ask your operator, ' +
+      'giving them the reason.',
+    );
+  }
+
+  /** archipelago-home holds a registration it answered 200 for, so registering
+   *  again is refused. */
+  private registered(name: string, sub: string | null, enrolledAt: string): ToolResult {
+    const home = this.config.home;
+    const holding =
+      'This host holds the registration until it restarts, so identity--status and access work until then. Don\'t ' +
+      'call identity--accept_invite again: the service already holds this registration.';
+    if (sub === null) {
+      console.error(
+        `[identity] ${home} answered 200 to registering this host as ${JSON.stringify(name)}, but no id could be read from its ` +
+          `reply, so it wasn't recorded. This host holds it in memory only until it restarts. ` +
+          this.recordByHand(name, null, enrolledAt),
+      );
+      this.state.held = { sub, name, home, enrolledAt };
+      return fail(
+        `The identity service at ${home} answered that it registered this host as "${name}" (200), but no id could ` +
+        `be read from its reply, so this host couldn't record it. ${holding} Ask your operator to record this registration ` +
+        'on this host by hand, with the id the identity service holds for it, before the host restarts.',
+      );
+    }
+    try {
+      this.saveRecord({ sub, name, home, enrolledAt });
+    } catch (err) {
+      console.error(
+        `[identity] ${home} registered ${sub}, but its record couldn't be saved to ${this.recordPath}: ` +
+          `${sentence(errorText(err))} This host holds it in memory only until it restarts. ` +
+          this.recordByHand(name, sub, enrolledAt),
+      );
+      this.state.held = { sub, name, home, enrolledAt };
+      return fail(
+        `The identity service at ${home} registered this host as "${name}" (${sub}), but this host couldn't record ` +
+        `that. ${holding} Ask your operator to fix what stopped the write, which the host's log names, and to record ` +
+        'this registration by hand, before the host restarts.',
+      );
+    }
+    console.error(
+      `[identity] registered this host as ${JSON.stringify(name)} with ${home} (${sub}), recorded at ${this.recordPath}.`,
+    );
+    // archipelago-home's /enroll answers with a first token, which isn't passed
+    // on.
     return ok({
-      registeredAs: input.name,
-      id: json.sub,
-      recognizedBy: this.config.home,
+      registeredAs: name,
+      id: sub,
+      recognizedBy: home,
       note: 'Done — the host now handles access for you automatically.',
     });
   }
