@@ -1279,11 +1279,17 @@ export interface RecipeModules {
    * (default `discord`) only for unregistered bare ids (no `:`) or its own
    * namespace; unknown namespaces never use a different fallback server.
    * Debounced mode refuses unknown, disconnected, or ambiguous ownership before
-   * changing anything. Mentions mode prefers the persisted last debounced owner
-   * over a fresh lookup, unless the tool call supplies `serverId`. It always
-   * attempts rule/pin cleanup and sends the close to a known owner even when
-   * disconnected (recorded for re-registration); only unknown or ambiguous
-   * ownership skips the close. The framework's close answer owns retry guidance.
+   * changing anything. Mentions mode prefers the saved live debounced owner
+   * over a fresh lookup, unless the tool call supplies `serverId`; without a
+   * saved owner, an explicit `serverId` is required for the close to prevent
+   * retargeting repeated cleanup after removal/restart. It always attempts
+   * rule/pin cleanup and closes a known owner even when disconnected (recorded
+   * for re-registration). The framework's close answer owns retry guidance.
+   * Owners are saved only after open + rule install succeed, then deleted after
+   * completed mentions cleanup (including durably recorded closes). New ids
+   * are refused before effects at 1024 live owners, including in-flight opens;
+   * complete tracked mentions cleanup to free a slot, restoring a removed
+   * server/registration first if needed. Existing owners are never evicted.
    * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).

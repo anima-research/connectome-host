@@ -211,14 +211,22 @@ action.
   to a different fallback server. Registry ownership still overrides any prefix.
   Debounced mode refuses unknown, disconnected, or ambiguous ownership before
   changing anything; a disconnected-owner error names the server to reconnect.
-  Mentions mode prefers the last debounced owner saved in module state (also
-  after restart or server removal) over a fresh registry lookup, unless the
-  call supplies `serverId`. It always attempts to remove the debounce rule and
-  pin. It sends the close to a known owner even when disconnected: the framework
-  records the close for re-registration, and its answer explains whether any
-  retry is needed. Only unknown or ambiguous ownership skips the close. Skipped
-  or failed closes are reported separately. One mode/rule is kept per exact
-  channel id; an explicit `serverId` selects which owner that mode targets.
+  Mentions mode prefers the live debounced owner saved in module state (also
+  after restart or server removal), unless the call supplies `serverId`. Owners
+  are saved only after open and rule installation both succeed, and deleted
+  after rule/pin cleanup and a successful or durably recorded close. Without a
+  saved owner, mentions still attempts rule/pin cleanup but requires explicit
+  `serverId` for the close: a fresh lookup could retarget repeated cleanup after
+  server removal/restart. It sends the close to a known owner even when
+  disconnected: the framework records it for re-registration, and its answer
+  explains whether any retry is needed. Skipped or failed closes are reported
+  separately. One mode/rule is kept per exact channel id; an explicit `serverId`
+  selects which owner that mode targets.
+  New distinct debounced ids are refused before effects at 1024 live owners
+  (including in-flight opens). Complete mentions cleanup for a tracked channel
+  to free capacity; restore its server/registration first if removed. Existing
+  ids can still be reapplied. Owners are never evicted: legacy state already
+  above the limit must be drained through cleanup before adding ids.
   Previously saved rules with the wrong source are replaced on the next debounced
   call or removed on the next mentions call; reapply the mode on affected channels.
   Each channel gets its own rule, so its own timer. This does not change the

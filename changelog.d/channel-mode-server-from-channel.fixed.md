@@ -6,11 +6,16 @@
   fallback server. Debounced mode refuses unknown, disconnected, or ambiguous
   ownership before changes.
   The tool's optional `serverId` selects a known server or registry owner when
-  ids are ambiguous. Mentions mode prefers the persisted last debounced owner,
-  unless explicitly overridden, so server removal cannot retarget cleanup. It
-  still removes the rule and pin when ownership is unknown or ambiguous,
-  reporting the skipped close; for a known disconnected owner it sends the close
-  so the framework records it for re-registration, preserving its retry guidance.
+  ids are ambiguous. Mentions mode prefers the persisted live debounced owner,
+  unless explicitly overridden. Owners are saved only after open and rule install
+  succeed, and deleted after completed cleanup (including durably recorded
+  closes). Without a saved owner, pass `serverId` for the close, so repeated
+  cleanup after removal/restart cannot retarget another server. Rule/pin cleanup
+  is always attempted. Known disconnected owners still receive the close for
+  durable re-registration, preserving the framework's retry guidance. New
+  debounced ids are refused before effects at 1024 live owners (including
+  in-flight opens); complete tracked mentions cleanup to free a slot, restoring
+  a removed server/registration first if needed. Existing owners are not evicted.
   Reapply the mode on affected non-Discord
   channels: previously saved wrong-source rules are replaced or removed on the
   next call, not migrated at startup.

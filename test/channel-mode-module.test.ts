@@ -30,14 +30,14 @@ function wired(options: {
     return call.name === 'channel_close' && options.closeError
       ? { success: false, error: options.closeError } : { success: true };
   } } as unknown as ModuleContext);
-  const set = (channelId: string, mode = 'debounced') => m.handleToolCall({
-    id: 'test', name: 'set_channel_mode', input: { channelId, mode },
+  const set = (channelId: string, mode = 'debounced', serverId?: string) => m.handleToolCall({
+    id: 'test', name: 'set_channel_mode', input: { channelId, mode, serverId },
   });
   return { m, calls, rules, removed, set };
 }
 
 // Lifecycle stubs model a real transport: requests cannot succeed while down.
-function registryWired(ids = ['zulip', 'discord', 'slack']) {
+function registryWired(ids = ['zulip', 'discord', 'slack'], initialState?: unknown) {
   const sent: Array<{ serverId: string; method: string }> = [];
   const servers = ids.map(id => ({
     id, isConnected: true, willReconnect: true,
@@ -56,7 +56,8 @@ function registryWired(ids = ['zulip', 'discord', 'slack']) {
   const channels = new ChannelRegistry({ getServer: (id: string) => servers.find(s => s.id === id) } as never, {} as never, () => {}, () => {});
   const rules = new Map<string, Rule>();
   const calls: ToolCall[] = [];
-  let saved: unknown;
+  let saved: unknown = initialState;
+  const writes: unknown[] = [];
   const framework = {
     channels, listMcplServers: () => servers.map(s => ({ id: s.id, connected: s.isConnected })),
     addGatePolicy: (r: Rule) => { rules.set(r.name, r); },
@@ -66,7 +67,7 @@ function registryWired(ids = ['zulip', 'discord', 'slack']) {
     const m = new ChannelModeModule();
     m.setFramework(framework);
     await m.start({
-      getState: () => structuredClone(saved), setState: (state: unknown) => { saved = structuredClone(state); },
+      getState: () => structuredClone(saved), setState: (state: unknown) => { saved = structuredClone(state); writes.push(saved); },
       callTool: async (call: ToolCall) => {
         calls.push(call);
         return call.name.startsWith('subscription-gc--') ? { success: true }
@@ -78,7 +79,7 @@ function registryWired(ids = ['zulip', 'discord', 'slack']) {
   const set = (m: ChannelModeModule, channelId: string, mode = 'debounced', serverId?: string) =>
     m.handleToolCall({ id: 'real', name: 'set_channel_mode', input: { channelId, mode, serverId } });
   const register = (serverId: string, id: string) => channels.handleRegister(serverId, { channels: [{ id, label: id }] } as never);
-  return { channels, servers, rules, calls, sent, framework, createModule, set, register, saved: () => saved };
+  return { channels, servers, rules, calls, sent, framework, createModule, set, register, writes, saved: () => saved };
 }
 
 describe('channel-mode server ownership', () => {
@@ -320,6 +321,7 @@ describe('channel-mode server ownership', () => {
       expect(result.error).toContain('no need to call channel_close again');
       expect(result.error).not.toContain('to retry');
       expect(w.channels.getDesiredState(serverId, channelId)).toBe('closed');
+      expect(w.saved()).toEqual({ owners: {} });
       expect(w.rules.size).toBe(0);
       expect(w.calls.at(-1)).toMatchObject({ input: { channelId, pinned: false } });
       w.sent.length = 0;
@@ -343,7 +345,7 @@ describe('channel-mode server ownership', () => {
     expect(w.rules.get('channel-mode:debounced:zulip:general')!.match.source).toBe('realm-b');
     expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
     expect(w.channels.getDesiredState('realm-a', 'zulip:general')).toBe('closed');
-    // Saved ownership also disambiguates mentions when serverId is omitted.
+    // Live saved ownership also disambiguates mentions when serverId is omitted.
     expect((await w.set(m, 'zulip:general', 'mentions')).success).toBe(true);
     expect((await w.set(m, 'zulip:general', 'debounced', 'realm-b')).success).toBe(true);
     expect((await w.set(m, 'zulip:general', 'mentions', 'realm-b')).success).toBe(true);
@@ -358,7 +360,7 @@ describe('channel-mode server ownership', () => {
     await m.stop();
   });
 
-  test('explicit known server overrides a sole registry owner; mentions closes a known disconnected prefix without saved state', async () => {
+  test('explicit known server overrides a sole registry owner; explicit mentions closes a known disconnected owner without saved state', async () => {
     const w = registryWired();
     const m = await w.createModule();
     await w.register('zulip', 'zulip:backend');
@@ -370,7 +372,7 @@ describe('channel-mode server ownership', () => {
     expect((await w.channels.handleChannelToolCall('channel_open', { serverId: 'zulip', channelId: 'zulip:other' }, { kind: 'module' })).success).toBe(true);
     w.channels.transportClosed('zulip');
     w.servers.find(s => s.id === 'zulip')!.isConnected = false;
-    const result = await w.set(m, 'zulip:other', 'mentions');
+    const result = await w.set(m, 'zulip:other', 'mentions', 'zulip');
     expect(result.error).toContain('no need to call channel_close again');
     expect(w.channels.getDesiredState('zulip', 'zulip:other')).toBe('closed');
     await m.stop();
@@ -403,6 +405,119 @@ describe('channel-mode server ownership', () => {
       await restarted.stop();
     });
   }
+
+  test('failed real opens and failed rule installs never persist an owner', async () => {
+    const w = registryWired();
+    const m = await w.createModule();
+    const missing = await w.set(m, 'zulip:missing');
+    expect(missing.success).toBe(false);
+    expect(w.saved()).toBeUndefined();
+    expect(w.writes).toEqual([]);
+    await w.register('zulip', 'zulip:backend');
+    w.framework.addGatePolicy = () => { throw new Error('rule write failed'); };
+    expect((await w.set(m, 'zulip:backend')).success).toBe(false);
+    expect(w.channels.getDesiredState('zulip', 'zulip:backend')).toBe('open');
+    expect(w.saved()).toBeUndefined();
+    expect(w.writes).toEqual([]);
+    await m.stop();
+  });
+
+  test('completed mentions deletes its owner; repeated cleanup after restart cannot retarget', async () => {
+    const w = registryWired(['realm-a', 'realm-b']);
+    const m = await w.createModule();
+    await w.register('realm-a', 'zulip:general');
+    expect((await w.set(m, 'zulip:general')).success).toBe(true);
+    expect((await w.set(m, 'zulip:general', 'mentions')).success).toBe(true);
+    expect(w.saved()).toEqual({ owners: {} });
+    await m.stop();
+    w.channels.removeServer('realm-a');
+    w.servers.splice(0, 1);
+    await w.register('realm-b', 'zulip:general');
+    await w.channels.handleChannelToolCall('channel_open', { serverId: 'realm-b', channelId: 'zulip:general' }, { kind: 'module' });
+    const restarted = await w.createModule();
+    w.calls.length = 0;
+    const repeated = await w.set(restarted, 'zulip:general', 'mentions');
+    expect(repeated.error).toContain('Pass serverId');
+    expect(w.calls.map(c => c.name)).not.toContain('channel_close');
+    expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
+    expect((await w.set(restarted, 'zulip:general', 'mentions', 'realm-b')).success).toBe(true);
+    await restarted.stop();
+  });
+
+  test('owner remains when local cleanup fails or close is unanswered and not recorded', async () => {
+    const w = registryWired();
+    const m = await w.createModule();
+    await w.register('zulip', 'zulip:backend');
+    await w.set(m, 'zulip:backend');
+    w.framework.removeGatePolicy = () => { throw new Error('cannot remove'); };
+    expect((await w.set(m, 'zulip:backend', 'mentions')).success).toBe(false);
+    expect(w.saved()).toEqual({ owners: { 'zulip:backend': 'zulip' } });
+    w.framework.removeGatePolicy = () => true;
+    await m.start({ getState: () => w.saved(), setState: () => { throw new Error('unexpected deletion'); },
+      callTool: async (call: ToolCall) => call.name.startsWith('subscription-gc--')
+        ? { success: false, error: 'unpin failed' }
+        : w.channels.handleChannelToolCall(call.name, call.input, { kind: 'module' }),
+    } as unknown as ModuleContext);
+    expect((await w.set(m, 'zulip:backend', 'mentions')).error).toContain('unpin failed');
+    expect(w.saved()).toEqual({ owners: { 'zulip:backend': 'zulip' } });
+    await m.start({ getState: () => w.saved(), setState: () => { throw new Error('unexpected deletion'); },
+      callTool: async (call: ToolCall) => {
+        if (call.name === 'channel_close') throw new Error('no answer');
+        return { success: true };
+      },
+    } as unknown as ModuleContext);
+    await w.channels.handleChannelToolCall('channel_open', { serverId: 'zulip', channelId: 'zulip:backend' }, { kind: 'module' });
+    expect((await w.set(m, 'zulip:backend', 'mentions')).error).toContain('got no answer');
+    expect(w.saved()).toEqual({ owners: { 'zulip:backend': 'zulip' } });
+    await m.stop();
+  });
+
+  test('1024 live-owner limit refuses before effects; mentions frees capacity, existing ids can be reapplied', async () => {
+    const owners = Object.fromEntries(Array.from({ length: 1023 }, (_, i) => [`zulip:tracked-${i}`, 'zulip']));
+    const w = registryWired(undefined, { owners });
+    const m = await w.createModule();
+    await w.register('zulip', 'zulip:last');
+    await w.register('zulip', 'zulip:extra');
+    expect((await w.set(m, 'zulip:last')).success).toBe(true);
+    expect(Object.keys((w.saved() as { owners: object }).owners)).toHaveLength(1024);
+    w.calls.length = 0;
+    w.writes.length = 0;
+    const beforeRules = [...w.rules];
+    const refused = await w.set(m, 'zulip:extra');
+    expect(refused.error).toContain('Nothing changed');
+    expect(refused.error).toContain('1024');
+    expect(refused.error).toContain('Complete mentions cleanup');
+    expect(w.calls).toEqual([]);
+    expect(w.writes).toEqual([]);
+    expect([...w.rules]).toEqual(beforeRules);
+    expect(w.channels.getDesiredState('zulip', 'zulip:extra')).toBe('closed');
+    expect((await w.set(m, 'zulip:last')).success).toBe(true);
+    expect((await w.set(m, 'zulip:last', 'mentions')).success).toBe(true);
+    expect(Object.keys((w.saved() as { owners: object }).owners)).toHaveLength(1023);
+    expect((await w.set(m, 'zulip:extra')).success).toBe(true);
+    await m.stop();
+  });
+
+  test('capacity includes in-flight opens before effects', async () => {
+    const owners = Object.fromEntries(Array.from({ length: 1023 }, (_, i) => [`zulip:tracked-${i}`, 'zulip']));
+    const w = registryWired(undefined, { owners });
+    const m = await w.createModule();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const calls: ToolCall[] = [];
+    await m.start({ getState: () => ({ owners }), setState: () => {}, callTool: async (call: ToolCall) => {
+      calls.push(call);
+      if (call.name === 'channel_open') await pending;
+      return { success: true };
+    } } as unknown as ModuleContext);
+    const first = w.set(m, 'zulip:last');
+    expect(calls).toHaveLength(1);
+    expect((await w.set(m, 'zulip:extra')).error).toContain('1024');
+    expect(calls).toHaveLength(1);
+    release();
+    expect((await first).success).toBe(true);
+    await m.stop();
+  });
 
   test('mentions still removes rule and pin when ownership is unknown or ambiguous', async () => {
     for (const entries of [[], ['zulip', 'slack'].map(serverId => ({ serverId, descriptor: { id: 'legacy-id' } }))]) {
@@ -440,7 +555,7 @@ describe('channel-mode server ownership', () => {
         expect(gate.probe(event).policyName).toBe(name);
         m.setFramework({ listMcplServers: () => [{ id: 'zulip', connected: true }], addGatePolicy: gate.addPolicy.bind(gate), removeGatePolicy: gate.removePolicy.bind(gate) } as unknown as AgentFramework);
         await m.start({ getState: () => undefined, setState: () => {}, callTool: async () => ({ success: true }) } as unknown as ModuleContext);
-        expect((await m.handleToolCall({ id: 'reapply', name: 'set_channel_mode', input: { channelId, mode } })).success).toBe(true);
+        expect((await m.handleToolCall({ id: 'reapply', name: 'set_channel_mode', input: { channelId, mode, serverId: 'zulip' } })).success).toBe(true);
         expect(gate.probe(event).policyName).toBeNull();
         expect(gate.probe({ ...event, serverId: 'zulip' }).policyName).toBe(mode === 'debounced' ? name : null);
         const saved = JSON.parse(readFileSync(configPath, 'utf8')).policies;
