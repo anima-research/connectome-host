@@ -2216,23 +2216,15 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     if (isObject(kvUnified)) {
       check('agent.strategy.kvUnified.policy.', kvUnified.policy, RECIPE_KV_UNIFIED_POLICY_KEYS);
     }
-  }
-  check('modules.', obj.modules, RECIPE_MODULE_KEYS);
-  // A strategy's keys are open: an extension strategy's factory gets the whole
-  // strategy config and reads its own keys. So a retired key is named only for
-  // a built-in type, the type buildFrameworkStrategy defaults to included.
-  const strategy = obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)
-    ? (obj.agent as Record<string, unknown>).strategy
-    : undefined;
-  const strategyType = strategy && typeof strategy === 'object' && !Array.isArray(strategy)
-    ? (strategy as Record<string, unknown>).type ?? 'autobiographical'
-    : undefined;
-  if (typeof strategyType === 'string' && isBuiltinStrategyType(strategyType)) {
-    for (const key of Object.keys(strategy as Record<string, unknown>)) {
-      const path = `agent.strategy.${key}`;
-      if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+    const strategy = obj.agent.strategy;
+    if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
+      for (const key of Object.keys(strategy)) {
+        const path = `agent.strategy.${key}`;
+        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+      }
     }
   }
+  check('modules.', obj.modules, RECIPE_MODULE_KEYS);
   return found;
 }
 

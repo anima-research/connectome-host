@@ -72,7 +72,6 @@ describe('unknownRecipeKeys', () => {
       const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
       expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired]);
     }
-    // With no type, the strategy is the built-in autobiographical one.
     expect(unknownRecipeKeys(base({}, { strategy: { identityReminderSilent: false } }))).toEqual([retired]);
     expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
     expect(unknownRecipeKeys(base({}, { strategy: 'autobiographical' }))).toEqual([]);
