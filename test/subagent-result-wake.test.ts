@@ -13,9 +13,6 @@ async function boot(): Promise<{ h: PresentedHost; subagent: SubagentModule }> {
 const spawnAsync = (subagent: SubagentModule, name: string) =>
   subagent.handleToolCall({ id: `call-${name}`, name: 'spawn', input: { name, systemPrompt: 'p', task: 'answer' }, callerAgentName: 'parent' } as unknown as ToolCall);
 
-const resultStored = (h: PresentedHost) => () => h.framework.getAgent('parent')!.getContextManager().getAllMessages()
-  .some((m) => (m.metadata as { kind?: string } | undefined)?.kind === 'agent-result');
-
 async function atRest(h: PresentedHost): Promise<void> {
   const pending = () => (h.framework as unknown as { pendingRequests: Array<{ agentName: string }> }).pendingRequests
     .filter((r) => r.agentName === 'parent').length;
@@ -36,7 +33,7 @@ describe("an async subagent's result by its message route", () => {
       expect(nudged.ok).toBe(true);
       await until(() => h.gates.entered.has('g'), 'the gate call');
       expect((await spawnAsync(subagent, 'scout')).success).toBe(true);
-      await until(resultStored(h), 'the result stored for the launcher');
+      await until(() => h.rowWith('parent', "[Subagent 'scout' returned]") !== undefined, 'the result stored for the launcher');
       h.gates.release('g');
       await atRest(h);
       expect(h.adapter.wireOf('parent')[1]).toContain("[Subagent 'scout' returned]");
