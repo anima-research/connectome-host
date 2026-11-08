@@ -2560,10 +2560,9 @@ export class SubagentModule implements Module {
     const route = record?.relationships.resultTo;
     const to = route?.to ?? parentAgentName;
     const toRecord: AgentRecord | null = fw ? fw.getAgentRecord(to) : null;
-    const primaryLive = to === this.config.parentAgentName && toRecord !== null && toRecord.ended === undefined;
     const launcherRecord: AgentRecord | null = launcher !== undefined && fw ? fw.getAgentRecord(launcher) : null;
     const forEnded = launcherRecord?.ended !== undefined && to !== parentAgentName ? `, for '${launcherShown ?? launcher}', which has ended` : undefined;
-    if (fw && record && !(outcome === 'failed' && primaryLive)) {
+    if (fw && record) {
       const content = [{ type: 'text' as const, text: `[Subagent '${name}' ${outcome}${forEnded ?? ''}]\n\n${body}` }];
       try {
         if (route?.as === 'message') {
