@@ -2568,8 +2568,7 @@ export class SubagentModule implements Module {
       try {
         if (route?.as === 'message') {
           const delivered = fw.deliverAgentResult(record.name, content);
-          if (delivered.delivered) ctx.pushEvent({ type: 'inference-request', agentName: delivered.to, reason, source: 'subagent' });
-          else this.noteHeld(name, outcome, delivered.to);
+          if (!delivered.delivered) this.noteHeld(name, outcome, delivered.to);
           return;
         }
         if (toRecord) {
