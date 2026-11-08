@@ -303,6 +303,11 @@ between single quotes, so the shell passes it as it is, an apostrophe in it
 written `'\''`. It copies the install as the first release of an install root,
 `./connectome-host` unless `--root` names another, and writes the entry point
 `start.js` there, with the install's own command, `connectome`, beside it.
+That command's `connectome setup` works in the directory that holds the
+install root, reading and writing its `.env`, `.setup`, `package.json` and
+`node_modules` there. So for a root anywhere but directly in the service's
+working directory, it sets up the root's parent instead: to use it, keep the
+root directly in the working directory, as the default root is.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
