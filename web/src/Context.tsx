@@ -233,9 +233,11 @@ export function ContextPanel(props: {
           <div class="flex items-center justify-between">
             <span class="text-neutral-300">Summary coverage</span>
             <span class="text-neutral-600">
-              {coverage()!.queue.inFlight || coverage()!.queue.l1.length > 0 || coverage()!.queue.merges.length > 0
-                ? 'active'
-                : 'idle'}
+              {!coverage()!.queue.inFlight && coverage()!.queue.pending === null && coverage()!.queue.waiting
+                ? 'waiting'
+                : coverage()!.queue.inFlight || coverage()!.queue.l1.length > 0 || coverage()!.queue.merges.length > 0
+                  ? 'active'
+                  : 'idle'}
             </span>
           </div>
 
