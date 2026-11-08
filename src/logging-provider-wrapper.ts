@@ -2,9 +2,13 @@
 // request, response, usage, timing, and any error to the same
 // `llm-calls.<iso>.jsonl` file the Anthropic and Bedrock paths use.
 //
-// Contents: full raw request and a summarized-but-complete response record
+// Contents: a request summary and a summarized-but-complete response record
 // (stop reason, usage, per-block shape, full text) on every call, plus the
-// raw provider response.
+// raw provider response. The raw request is kept on a failure, and on a
+// success only with LLM_CALLS_FULL_PAYLOADS=1, as the Anthropic writer keeps
+// it: on the OpenAI Responses path a request carries the whole compiled
+// context, so keeping it on every success put ~3 MB per call into the file
+// that the call ledger and /bug read from their tails (#341).
 //
 // Each line: { type: 'call'|'error', provider, kind: 'complete'|'stream',
 //   timestamp, durationMs, requestSummary?, response?, rawRequest?,
@@ -24,6 +28,7 @@ import type {
   StreamCallbacks,
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
+import { envFlag } from './logging-adapter.js';
 import { describeError } from './logging-error-fields.js';
 import { serializeRecord } from './logging-record.js';
 
@@ -74,11 +79,16 @@ export class LoggingProviderAdapter implements ProviderAdapter {
   onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
   onProviderSuccess?: (kind: 'complete' | 'stream') => void;
 
+  /** Keep the raw request on successful calls too; LLM_CALLS_FULL_PAYLOADS=1 by default. */
+  private readonly fullPayloads: boolean;
+
   constructor(
     private readonly inner: ProviderAdapter,
     private readonly logPath: string,
+    options: { fullPayloads?: boolean } = {},
   ) {
     this.name = inner.name;
+    this.fullPayloads = options.fullPayloads ?? envFlag(process.env.LLM_CALLS_FULL_PAYLOADS);
   }
 
   get usageCacheConvention(): ProviderAdapter['usageCacheConvention'] {
@@ -129,7 +139,9 @@ export class LoggingProviderAdapter implements ProviderAdapter {
       record = {
         ...head,
         requestSummary: summarizeRequest(request),
-        rawRequest: request,
+        // A failure keeps the request that was refused; a success keeps it
+        // only when asked, as the Anthropic writer does.
+        ...(failed || this.fullPayloads ? { rawRequest: request } : {}),
         ...('response' in outcome
           ? { response: summarizeResponse(outcome.response, this.usageCacheConvention), rawResponse: outcome.response.raw ?? null }
           : {}),
