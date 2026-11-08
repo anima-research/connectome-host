@@ -8,6 +8,7 @@
   was a line in the primary's context with that wake of the host's own. A
   run that failed before its agent was created has no route, and is still
   told to its launcher as a line in its context, with a wake.
-  `recipes/clerk.json`'s system prompt now says a returned fork's result
-  arrives as a message that wakes the resident, and a failed fork as an
+  `recipes/clerk.json`'s system prompt now says a fork's result or failure
+  arrives as a message from the fork that wakes the resident, and one that
+  never started, or whose message can't be delivered, as an
   `inference-request` scope event.
