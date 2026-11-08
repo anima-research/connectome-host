@@ -51,6 +51,9 @@ function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
   return { url: under(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1', '/models'), headers: bearer(key) };
 }
 
+const openrouter = (path: string) => (key: string, env: ReadonlyMap<string, string>): Request =>
+  ({ url: under(env.get('OPENROUTER_BASE_URL') || 'https://openrouter.ai/api/v1', path), headers: bearer(key) });
+
 // Anthropic's List Models takes `limit` from 1 to 1000 (https://docs.anthropic.com/en/api/models-list).
 function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request {
   return {
@@ -65,12 +68,12 @@ export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
   ANTHROPIC_API_KEY: { provider: 'Anthropic', check: anthropicModels, accepts: listed, models: anthropicModels },
   OPENROUTER_API_KEY: {
     provider: 'OpenRouter',
-    check: (key) => ({ url: 'https://openrouter.ai/api/v1/key', headers: bearer(key) }),
+    check: openrouter('/key'),
     accepts: (body) => {
       const data = dataOf(body);
       return data !== null && typeof data === 'object' && !Array.isArray(data);
     },
-    models: (key) => ({ url: 'https://openrouter.ai/api/v1/models', headers: bearer(key) }),
+    models: openrouter('/models'),
   },
 };
 

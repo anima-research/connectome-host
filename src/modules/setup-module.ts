@@ -312,7 +312,8 @@ export class SetupModule implements Module {
           'Ask the person for a secret in this terminal, with nothing shown as they type, and store it in the ' +
           "install's .env. You get back only where it was stored, never the value. A DISCORD_TOKEN is checked with " +
           'Discord first, and an OPENAI_API_KEY, OPENROUTER_API_KEY or ANTHROPIC_API_KEY with its provider, at the ' +
-          'OPENAI_BASE_URL or ANTHROPIC_BASE_URL .env names if it names one; one that is refused is not stored. ' +
+          'OPENAI_BASE_URL, OPENROUTER_BASE_URL or ANTHROPIC_BASE_URL .env names if it names one; one that is refused ' +
+          'is not stored. ' +
           'Bedrock\'s keys aren\'t checked, since a request with them needs AWS\'s signing, nor Codex\'s login, which ' +
           'isn\'t a key, nor OPENAI_COMPATIBLE_API_KEY, whose endpoint is the recipe\'s.',
         inputSchema: {
@@ -337,7 +338,8 @@ export class SetupModule implements Module {
         name: 'check_model',
         description:
           'Check with the provider whether it offers a model to the key stored in the install\'s .env as name: ' +
-          'OPENAI_API_KEY (OpenAI, or the OPENAI_BASE_URL .env names), OPENROUTER_API_KEY, or ANTHROPIC_API_KEY ' +
+          'OPENAI_API_KEY (OpenAI, or the OPENAI_BASE_URL .env names), OPENROUTER_API_KEY (OpenRouter, or the ' +
+          'OPENROUTER_BASE_URL .env names), or ANTHROPIC_API_KEY ' +
           '(Anthropic, or the ANTHROPIC_BASE_URL .env names). You get back whether it lists the model, and if not, the ' +
           'models it lists of the same family, the part of the name before its first - or ., or how many it lists ' +
           'where none share it. The key\'s value is never shown. Bedrock, Codex and openai-compatible models aren\'t ' +
@@ -870,7 +872,8 @@ function redirect(service: string, answer: { status: number; to: string | null }
 }
 
 function redirectRemedy(service: string, name?: string): string {
-  const base = name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL' : null;
+  const base = name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL'
+    : name === 'OPENROUTER_API_KEY' ? 'OPENROUTER_BASE_URL' : null;
   return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
       `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
     : `. Something between this machine and ${service} may have sent it, or ${service} itself: tell the person, and that ` +

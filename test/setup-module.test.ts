@@ -106,6 +106,7 @@ const PROVIDER_CREDENTIALS = {
   OPENAI_BASE_URL: 'https://openai-gateway.example/v1?key=openai-gateway-key',
   BEDROCK_BASE_URL: 'https://bedrock-gateway.example/?key=bedrock-gateway-key',
   CODEX_BASE_URL: 'https://codex-gateway.example/?key=codex-gateway-key',
+  OPENROUTER_BASE_URL: 'https://openrouter-gateway.example/api/v1?key=openrouter-gateway-key',
 };
 
 describe('setup--finished', () => {
@@ -2612,7 +2613,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. Something between this machine and OpenRouter may have sent it, or OpenRouter itself: tell the person, and that if it wasn\'t OpenRouter, their connection is theirs to check.');
+    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, set OPENROUTER_BASE_URL to it, then call again.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check.');
@@ -2698,6 +2699,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const result = await askSecret(made.module, { name: 'OPENAI_COMPATIBLE_API_KEY', purpose: 'a key' });
     expect(String(result.data)).toBe(`stored as OPENAI_COMPATIBLE_API_KEY in ${join(made.dir, '.env')}`);
     expect(called).toBe(0);
+  });
+
+  test('an OPENROUTER_API_KEY is checked, and its models listed, at the OPENROUTER_BASE_URL .env names', async () => {
+    const requests: string[] = [];
+    const routing = (async (url: string) => {
+      requests.push(String(url));
+      return String(url).endsWith('/key') ? Response.json({ data: { label: 'sk-or-…' } }) : models('openai/gpt-6.1-terra');
+    }) as unknown as typeof fetch;
+    const made = install({ envFile: 'OPENROUTER_BASE_URL=https://router.example/api/v1/\n', asker: typed('sk-or-routed'), fetch: routing });
+    const stored = await askSecret(made.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
+    expect(stored.success, stored.error).toBe(true);
+    const listed = await checkModel(made.module, { name: 'OPENROUTER_API_KEY', model: 'openai/gpt-6.1-terra' });
+    expect(listed.success, listed.error).toBe(true);
+    expect(requests).toEqual(['https://router.example/api/v1/key', 'https://router.example/api/v1/models']);
   });
 
   test('check_model says a model the provider lists for the stored key is listed, never showing the key', async () => {
