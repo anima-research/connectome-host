@@ -1301,6 +1301,17 @@ describe("a fleet's adoption of the children its store names, after its install 
     expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
   });
 
+  test("a child neither the children file nor a recipe directory that's there names, as when its recipe names a directory that isn't there, is adopted where its store names it", async () => {
+    const first = await startedFleet();
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const { result: next, logged } = await logging(() => startedFleet({
+      childrenFile: childrenFilePath(parentDataDir()),
+      autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: join(first.dir, 'not-there') }],
+    }, { record: first.record() }));
+    expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
+    expect(logged.filter((line) => line.includes('isn\'t adopted'))).toEqual([]);
+  });
+
   test("a copy of an install whose fleet wrote no children file doesn't adopt a child its store names at the original's data directory, since its recipe keeps that child in the copy", async () => {
     const first = await startedFleet();
     expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);

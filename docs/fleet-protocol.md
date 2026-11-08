@@ -405,10 +405,11 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
   another install's, as after a copy of the install: it isn't probed, adopted
   or kept in the record, and the host logs one line naming both directories.
   Where the install keeps it is the children file's entry of that name, as
-  the host finds the file at its start, else the recipe's child of that name,
-  compared by device and inode as setup's binding compares them. A child
-  neither names, or whose data directory is gone, as after a move, is taken
-  as below.
+  the host finds the file at its start, else the recipe's child of that name
+  where its data directory is there, compared by device and inode as setup's
+  binding compares them. A child neither names, as when the recipe's
+  directory for it isn't there, or whose data directory is gone, as after a
+  move, is taken as below.
   For each persisted child whose record allows it (`ready`
   or `starting` with no exit time, or `crashed` by an earlier failed
   adoption): check the pid is alive and the socket path is a socket, connect,

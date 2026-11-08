@@ -465,7 +465,8 @@ export class FleetModule implements Module {
       const entries = Array.isArray(listed) ? listed.filter(isChildEntry).filter((entry) => entry.name === name) : [];
       if (entries.length > 0) return entries.map((entry) => entry.dataDir);
       const configured = this.autoStartChildren.find((child) => child.name === name);
-      return configured === undefined ? [] : [fleetChildDataDir(configured)];
+      const dir = configured === undefined ? null : fleetChildDataDir(configured);
+      return dir !== null && existsSync(dir) ? [dir] : [];
     };
     this.adopting = true;
     try {
