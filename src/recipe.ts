@@ -1281,8 +1281,8 @@ export interface RecipeModules {
    * Debounced mode refuses unknown, disconnected, or ambiguous ownership before
    * changing anything. Mentions mode prefers the saved live debounced owner
    * over a fresh lookup, unless the tool call supplies `serverId`; without a
-   * saved owner, an explicit `serverId` is required for the close to prevent
-   * retargeting repeated cleanup after removal/restart. It always attempts
+   * saved owner, the same registry/prefix/legacy fallback resolution applies.
+   * A removed saved owner is never retargeted to a replacement. It always attempts
    * rule/pin cleanup and closes a known owner even when disconnected (recorded
    * for re-registration). The framework's close answer owns retry guidance.
    * Owners are saved only after open + rule install succeed, then deleted after

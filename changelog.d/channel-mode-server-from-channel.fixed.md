@@ -9,9 +9,11 @@
   ids are ambiguous. Mentions mode prefers the persisted live debounced owner,
   unless explicitly overridden. Owners are saved only after open and rule install
   succeed, and deleted after completed cleanup (including durably recorded
-  closes). Without a saved owner, pass `serverId` for the close, so repeated
-  cleanup after removal/restart cannot retarget another server. Rule/pin cleanup
-  is always attempted. Known disconnected owners still receive the close for
+  closes). Without a saved owner, mentions uses the same per-channel resolution
+  as debounced mode, including pre-upgrade and directly opened channels. A removed
+  saved owner is never retargeted to a replacement. Rule/pin cleanup is always
+  attempted; only unknown or ambiguous ownership skips the close. Known
+  disconnected owners still receive the close for
   durable re-registration, preserving the framework's retry guidance. New
   debounced ids are refused before effects at 1024 live owners (including
   in-flight opens); complete tracked mentions cleanup to free a slot, restoring

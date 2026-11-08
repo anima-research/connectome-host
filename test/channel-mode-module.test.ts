@@ -333,6 +333,57 @@ describe('channel-mode server ownership', () => {
     });
   }
 
+  for (const [serverId, channelId] of [['discord', 'discord:g:c'], ['zulip', 'zulip:x']]) {
+    for (const disconnected of [false, true]) {
+      for (const legacyRule of [false, true]) {
+        test(`R1-1 unsaved ${serverId} owner closes (disconnected: ${disconnected}, pre-upgrade rule: ${legacyRule})`, async () => {
+          const w = registryWired([serverId]);
+          await w.register(serverId, channelId);
+          // Direct/agent channel_open or persisted pre-upgrade debounced state:
+          // neither has a channel-mode owner record.
+          expect((await w.channels.handleChannelToolCall('channel_open', { serverId, channelId }, { kind: 'module' })).success).toBe(true);
+          const policyName = `channel-mode:debounced:${channelId}`;
+          if (legacyRule) w.rules.set(policyName, { name: policyName, match: { source: serverId, channel: channelId } });
+          const m = await w.createModule();
+          if (disconnected) {
+            w.channels.transportClosed(serverId);
+            w.servers[0].isConnected = false;
+          }
+          const result = await w.set(m, channelId, 'mentions');
+          expect(result.success).toBe(!disconnected);
+          if (disconnected) expect(result.error).toContain('no need to call channel_close again');
+          expect(w.calls).toMatchObject([
+            { name: 'channel_close', input: { serverId, channelId } },
+            { name: 'subscription-gc--pin_channel_idle_limit', input: { channelId, pinned: false } },
+          ]);
+          expect(w.channels.getDesiredState(serverId, channelId)).toBe('closed');
+          expect(w.rules.size).toBe(0);
+          expect(w.writes).toEqual([]);
+          w.sent.length = 0;
+          w.servers[0].isConnected = true;
+          await w.register(serverId, channelId);
+          expect(w.sent).toEqual([{ serverId, method: 'channels/close' }]);
+          expect(w.channels.isChannelOpen({ serverId, channelId })).toBe(false);
+          await m.stop();
+        });
+      }
+    }
+  }
+
+  test('unsaved mentions uses explicit > registry > known prefix > bare/own-namespace fallback', async () => {
+    for (const [channelId, options, explicit, expected] of [
+      ['zulip:x', { entries: [{ serverId: 'slack', descriptor: { id: 'zulip:x' } }] }, 'discord', 'discord'],
+      ['zulip:x', { entries: [{ serverId: 'slack', descriptor: { id: 'zulip:x' } }] }, undefined, 'slack'],
+      ['zulip:x', {}, undefined, 'zulip'],
+      ['legacy', { fallback: 'slack' }, undefined, 'slack'],
+      ['slack:x', { fallback: 'slack' }, undefined, 'slack'],
+    ] as const) {
+      const w = wired(options);
+      expect((await w.set(channelId, 'mentions', explicit)).success).toBe(true);
+      expect(w.calls[0]).toMatchObject({ name: 'channel_close', input: { channelId, serverId: expected } });
+    }
+  });
+
   test('R1-4 explicit serverId disambiguates real registry owners and is validated', async () => {
     const w = registryWired(['realm-a', 'realm-b']);
     const m = await w.createModule();
@@ -390,6 +441,7 @@ describe('channel-mode server ownership', () => {
       if (removeKnownServer) w.servers.splice(0, 1);
       else w.servers[0].isConnected = false;
       await w.register('realm-b', 'zulip:general');
+      await w.channels.handleChannelToolCall('channel_open', { serverId: 'realm-b', channelId: 'zulip:general' }, { kind: 'module' });
       const restarted = await w.createModule();
       w.calls.length = 0;
       const result = await w.set(restarted, 'zulip:general', 'mentions');
@@ -397,7 +449,8 @@ describe('channel-mode server ownership', () => {
       expect(w.rules.size).toBe(0);
       expect(w.calls.filter(c => c.name === 'channel_close').map(c => c.input.serverId))
         .toEqual(removeKnownServer ? [] : ['realm-a']);
-      expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('closed');
+      expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
+      expect(w.saved()).toEqual({ owners: { 'zulip:general': 'realm-a' } });
       // An explicit override remains available to target the other owner.
       expect((await w.set(restarted, 'zulip:general', 'debounced', 'realm-b')).success).toBe(true);
       expect((await w.set(restarted, 'zulip:general', 'mentions')).success).toBe(true);
@@ -422,7 +475,7 @@ describe('channel-mode server ownership', () => {
     await m.stop();
   });
 
-  test('completed mentions deletes its owner; repeated cleanup after restart cannot retarget', async () => {
+  test('completed mentions deletes its owner; a new unsaved call after restart uses the current registry', async () => {
     const w = registryWired(['realm-a', 'realm-b']);
     const m = await w.createModule();
     await w.register('realm-a', 'zulip:general');
@@ -437,10 +490,10 @@ describe('channel-mode server ownership', () => {
     const restarted = await w.createModule();
     w.calls.length = 0;
     const repeated = await w.set(restarted, 'zulip:general', 'mentions');
-    expect(repeated.error).toContain('Pass serverId');
-    expect(w.calls.map(c => c.name)).not.toContain('channel_close');
-    expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
-    expect((await w.set(restarted, 'zulip:general', 'mentions', 'realm-b')).success).toBe(true);
+    expect(repeated.success).toBe(true);
+    expect(w.calls[0]).toMatchObject({ name: 'channel_close', input: { serverId: 'realm-b' } });
+    expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('closed');
+    expect(w.saved()).toEqual({ owners: {} });
     await restarted.stop();
   });
 

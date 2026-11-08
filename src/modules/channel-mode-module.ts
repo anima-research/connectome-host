@@ -93,7 +93,7 @@ export class ChannelModeModule implements Module {
         name: 'set_channel_mode',
         description:
           'Set how a channel gets your attention, in one step. The owning MCPL server is resolved per channel; ' +
-          'debounced mode requires a connected owner; mentions mode always attempts local cleanup and closes even a disconnected known owner. Without a saved debounced owner, pass serverId for the close. ' +
+          'debounced mode requires a connected owner; mentions mode always attempts local cleanup and closes even a disconnected known owner. Without a saved debounced owner, the same per-channel resolution as debounced mode selects the close owner; only unknown or ambiguous ownership skips the close. ' +
           '`mode: "debounced"` = wake on EVERY message but batched: it opens ' +
           'to the channel, adds a gate rule that debounces its ambient traffic ' +
           '(one wake after the burst settles), and pins the channel so it is never ' +
@@ -105,7 +105,7 @@ export class ChannelModeModule implements Module {
           type: 'object',
           properties: {
             channelId: { type: 'string', description: 'Channel id EXACTLY as it appears in incoming events (GateEventInfo.channelId). Examples: zulip:backend, slack:<conversationId> (for example slack:C0123ABCD), or the Discord MCPL-namespaced id discord:<guildId>:<channelId>, not a raw channel snowflake. Unregistered bare ids (no colon) or ids in the fallback server namespace may use the legacy server fallback (default discord). Unknown namespaces are refused, not routed to a different fallback; a raw id does not match namespaced incoming events; copy their exact id for a working debounce rule.' },
-            serverId: { type: 'string', description: 'Optional owning MCPL server id; overrides inferred or saved ownership. Required for a mentions close when no saved debounced owner exists. Must name a known server or a registry owner. Use this when multiple servers register the same channelId.' },
+            serverId: { type: 'string', description: 'Optional owning MCPL server id; overrides inferred or saved ownership. Must name a known server or a registry owner. Use this when multiple servers register the same channelId.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms for debounced mode (100–300000). Checked whenever it is given, in either mode.' },
           },
@@ -174,12 +174,9 @@ export class ChannelModeModule implements Module {
     }
 
     const preferred = (serverId as string | undefined) ?? (mode === 'mentions' ? this.owners.get(channelId) : undefined);
-    let resolved = this.resolveServer(channelId, preferred);
-    // Once cleanup deletes its record, a fresh lookup cannot distinguish a
-    // first call from a repeated cleanup after the old owner was removed.
-    if (mode === 'mentions' && preferred === undefined && 'serverId' in resolved) {
-      resolved = { error: `No saved debounced owner for channel ${channelId}. Pass serverId to choose the cleanup owner explicitly; a fresh registry lookup could target a different server after removal or restart.` };
-    }
+    // A saved owner remains authoritative even after removal: resolving it must
+    // fail rather than retarget a replacement. Without one, use normal inference.
+    const resolved = this.resolveServer(channelId, preferred);
     if (mode === 'debounced') {
       const error = 'error' in resolved ? resolved.error : !resolved.connected
         ? `MCPL server ${resolved.serverId} for channel ${channelId} is disconnected. Connect that server before retrying.`

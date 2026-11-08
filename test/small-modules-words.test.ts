@@ -135,13 +135,13 @@ describe('channel-mode', () => {
   });
 
   test('in mentions mode, a removed rule, or none, reads as what happened', async () => {
-    const removed = await wired({ failing: ['channel_close'] }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions', serverId: 'discord' }));
+    const removed = await wired({ failing: ['channel_close'] }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(removed.error).toStartWith(
       'Channel discord:1:2 is only partly in mentions mode: its debounce rule was removed and it isn\'t pinned, ' +
       'and closing the channel failed (channel_close refused: Server not found: discord).',
     );
     expect(removed.error).not.toContain('to retry');
-    const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions', serverId: 'discord' }));
+    const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
   });
 

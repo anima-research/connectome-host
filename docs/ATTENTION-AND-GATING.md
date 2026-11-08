@@ -215,9 +215,11 @@ action.
   after restart or server removal), unless the call supplies `serverId`. Owners
   are saved only after open and rule installation both succeed, and deleted
   after rule/pin cleanup and a successful or durably recorded close. Without a
-  saved owner, mentions still attempts rule/pin cleanup but requires explicit
-  `serverId` for the close: a fresh lookup could retarget repeated cleanup after
-  server removal/restart. It sends the close to a known owner even when
+  saved owner, mentions resolves ownership just like debounced mode: explicit
+  `serverId`, registry owner, known prefix, then the legacy fallback for bare or
+  own-namespace ids. A removed saved owner is never retargeted to a replacement.
+  Rule/pin cleanup is always attempted; only unknown or ambiguous ownership skips
+  the close. It sends the close to a known owner even when
   disconnected: the framework records it for re-registration, and its answer
   explains whether any retry is needed. Skipped or failed closes are reported
   separately. One mode/rule is kept per exact channel id; an explicit `serverId`
