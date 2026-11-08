@@ -217,7 +217,7 @@ describe('the notice', () => {
     expect(noticeLines(check, '0.12.1', true)).toEqual([
       'connectome-host 0.13.0 is out; this host runs 0.12.1.',
       'None of the releases since this one is breaking.',
-      '0.13.0 needs Bun >=1.5.0: upgrade Bun first, and Update installs nothing until then.',
+      '0.13.0 needs Bun >=1.5.0: upgrade Bun first, and /update install installs nothing until then.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.13.0/CHANGELOG.md',
       'To take it: /update install, then /update restart.',
     ]);

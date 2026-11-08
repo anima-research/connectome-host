@@ -101,8 +101,8 @@ const NO_INSTALL_HEADLESS =
 const THEIRS_GO_AT_ONCE = 'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, ' +
   'turns in progress get up to 2 min to end, and if any don\'t,';
 
-const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs, and only your cancel disarms a restart or Go back ' +
-  'you asked for, though their own restart or back goes ahead in its place.';
+const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs: their check gives them a link to the notes, and ' +
+  'only your cancel disarms a restart or Go back you asked for, though their own restart or back goes ahead in its place.';
 
 const personHeadless = (command: string): string =>
   'The person who runs your host updates it with their own command, not this tool. They type it in a shell, as the ' +

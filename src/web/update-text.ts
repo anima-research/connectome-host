@@ -196,13 +196,13 @@ export function bunUpgrade(ways: UpdateWays): string {
   return ways.reader === 'agent'
     ? 'Only the person who runs your host can upgrade its Bun (`bun upgrade`, or the package manager that installed ' +
       `it) and start the host again; then ${ways.install} can install it.`
-    : 'Upgrade Bun (`bun upgrade`, or the package manager that installed it), start the host again, then Update.';
+    : `Upgrade Bun (\`bun upgrade\`, or the package manager that installed it), start the host again, then ${ways.install}.`;
 }
 
 function bunFirst(ways: UpdateWays): string {
   return ways.reader === 'agent'
     ? `the person who runs your host upgrades Bun first, and ${ways.install} installs nothing until then.`
-    : 'upgrade Bun first, and Update installs nothing until then.';
+    : `upgrade Bun first, and ${ways.install} installs nothing until then.`;
 }
 
 export function armedName(armed: Pick<ArmedSwitch, 'to' | 'why' | 'keepData'>, opening = true): string {

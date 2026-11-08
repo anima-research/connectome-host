@@ -242,7 +242,7 @@ const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs a
   'then `connectome update back keep` or `connectome update back restore`. Their restart and back begin at once, ' +
   'without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, ' +
   'their command says who is still busy and how to wait longer, stop now or call it off. notes and cancel have no ' +
-  'command of theirs, and only your cancel disarms a restart or Go back you asked for, though their own restart or back ' +
+  'command of theirs: their check gives them a link to the notes, and only your cancel disarms a restart or Go back you asked for, though their own restart or back ' +
   'goes ahead in its place.';
 
 for (const [kind, options] of [
@@ -296,7 +296,8 @@ test('on a host run in a terminal, the update tool names the person\'s /update, 
     '`connectome update` in another shell doesn\'t reach this host. Their restart and back begin at once, without waiting ' +
     'for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, its answer says ' +
     'who is still busy and how to wait longer, stop now or call it off. Once it stops, they start the host again ' +
-    'themselves, and that start switches. notes and cancel have no command of theirs, and only your cancel disarms a ' +
+    'themselves, and that start switches. notes and cancel have no command of theirs: their check gives them a link ' +
+    'to the notes, and only your cancel disarms a ' +
     'restart or Go back you asked for, though their own restart or back goes ahead in its place.');
 });
 
@@ -327,7 +328,7 @@ test('when the newest release needs a newer Bun, the update tool says the person
   expect(text(await host.call({ action: 'check' }))).toContain('0.15.0 needs Bun >=1.5.0: the person who runs your host ' +
     'upgrades Bun first, and lifecycle--update install installs nothing until then.');
   expect((await host.update.install()).lines.join('\n')).toContain('so nothing was installed. Upgrade Bun (`bun upgrade`, ' +
-    'or the package manager that installed it), start the host again, then Update.');
+    'or the package manager that installed it), start the host again, then /update install.');
 });
 
 test('on a host with no install, the update tool says nothing the agent calls changes that, where /update tells the person how', async () => {
