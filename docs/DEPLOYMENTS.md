@@ -101,7 +101,7 @@ Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
 declares no tool definitions, so the first chunk whose compression request carries a
 tool call or result waits, as does each later chunk whose request carries that one too,
 and everything on a Fable- or Mythos-family compression model. It names the
-work it left and exits 1, and that work waits for the restarted host to declare tool
+work it left, and that work waits for the restarted host to declare tool
 definitions for the agent: its context maintenance does so before each pass, the first
 at start, or with `maintenanceIntervalMs: 0` the agent's first request does. An agent
 with no tools leaves it waiting.

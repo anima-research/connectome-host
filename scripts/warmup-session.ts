@@ -294,7 +294,6 @@ async function main() {
         `${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
         `Total: ${spend.inputTokens.toLocaleString()} in / ${spend.outputTokens.toLocaleString()} out, $${spend.cost.toFixed(2)}.`,
     );
-    process.exitCode = 1;
   } else if (finalStats.l1QueueLength === 0 && finalStats.mergeQueueLength === 0) {
     console.error(
       `Converged. ${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +

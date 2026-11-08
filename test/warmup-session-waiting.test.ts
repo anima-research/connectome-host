@@ -64,15 +64,15 @@ function expectWaitingReport(output: string) {
 }
 
 describe('warmup-session with work that waits on the host', () => {
-  test('history holding tool calls: says what waits and why, never "Converged.", and exits 1', async () => {
+  test('history holding tool calls: says what waits and why, never "Converged.", and exits 0', async () => {
     const { exitCode, output } = await runWarmup({ toolCalls: true });
     expectWaitingReport(output);
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(0);
   }, 60_000);
 
   test('a Fable-family compression model on history without tool calls: the same', async () => {
     const { exitCode, output } = await runWarmup({ toolCalls: false, model: 'claude-fable-5-1' });
     expectWaitingReport(output);
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(0);
   }, 60_000);
 });

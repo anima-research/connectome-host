@@ -5,7 +5,5 @@
   or Mythos-family compression model every chunk and merge waits: it printed
   "Converged." with such work uncompressed, and its progress line counted it
   done. It now says "Not converged:", names the waiting work as
-  context-manager describes it, says why and when the host compresses it,
-  and exits 1, which the evacuator, when it runs the
-  warmup, passes on as its own exit. Its progress line counts that work as
-  waiting, not done.
+  context-manager describes it, and says why and when the host compresses
+  it. Its progress line counts that work as waiting, not done.
