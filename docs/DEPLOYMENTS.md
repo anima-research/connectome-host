@@ -375,7 +375,15 @@ trial end where the install was, and then move or copy it again. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
 move out what you want of it rather than deleting it. Until the next update
 takes a new copy, `/update back restore` isn't there, and each update
-removes no older release. A Go back to a release from before
+removes no older release. A record with no `workingDir`, from before this
+release or written again by hand, doesn't say where the install was, so
+where none of its places is given another place, setup binds it without
+that refusal. If
+such an install was moved or copied with every recorded place outside its
+directory, its copy still names the old directory's `mcpl-servers.json`
+and agent overlay, which `/update back restore` would write: move `copy`,
+`copy.prev` and `set-aside` out of the root yourself, with each mark's
+areas. A Go back to a release from before
 this one keeps the refusal of `start.js` and `connectome` only until that
 release's own setup runs there, since that setup writes `start.js`, and
 `connectome` where it has one, without it, and the record without

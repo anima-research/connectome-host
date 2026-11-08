@@ -799,7 +799,9 @@ describe('what a moved or copied install\'s root keeps', () => {
     const said = setupThroughMounts([[held, held]], moved, { moveAside: true });
     expect(said).toContain(`Moving ${join(held, 'm2')} to `);
     expect(said).toContain('EXDEV');
-    expect(said).toContain('Setup has moved nothing else, removes nothing it moved, and hasn\'t bound the install');
+    expect(said).toContain('Setup has moved nothing else, removes nothing it moved, and hasn\'t bound the install. ' +
+      `Move ${join(held, 'm2')} out of the way yourself, keeping what you want of it, and run setup again, which moves ` +
+      'what\'s left (by hand, with --move-aside again).');
     expect(existsSync(join(held, 'm2'))).toBe(true);
     expect(existsSync(join(root, 'set-aside', 'm2'))).toBe(true);
     expect(record(moved)!.workingDir).toBe(install);
@@ -955,7 +957,13 @@ describe('the fleet\'s children file', () => {
     expect(stampOf(moved)).toBe(moved);
   });
 
-  test('a binding cut off after the children file, and the install then moved again, is refused as bound elsewhere, saying to finish it there, and nothing changes', () => {
+  const boundElsewhere = (at: string, to: string) => `The fleet's children file, ${join(at, 'data', 'fleet-children.json')}, ` +
+    `is bound to ${to}, by a setup run there that was cut off before it wrote this install's record, or that ` +
+    'finished before a Go back to a release from before this one, whose setup wrote the record without its ' +
+    `directory. The install is in ${at} now, so the places that file names are ${to}'s. Setup has changed ` +
+    `nothing. Move the install back to ${to}, run setup there, which binds it there again, and then move it.`;
+
+  test('a binding cut off after the children file, and the install then moved again, is refused as bound elsewhere, saying to bind it there again, and nothing changes', () => {
     setup(options(install));
     withChild(install, join(install, 'data', 'kids', 'c'), null);
     const copy = join(dir, 'copy');
@@ -964,10 +972,25 @@ describe('the fleet\'s children file', () => {
     const moved = join(dir, 'moved');
     renameSync(copy, moved);
     const kept = tree(moved);
-    expect(refusal(() => setup(options(moved)))).toBe(`A setup run binding this install to ${copy} was cut off before ` +
-      `it finished: the fleet's children file, ${join(moved, 'data', 'fleet-children.json')}, is bound to ${copy}, and ` +
-      `the install is in ${moved} now, so the places it names are that directory's. Setup has changed nothing. Move the ` +
-      `install back to ${copy}, run setup there, which finishes that binding, and then move it.`);
+    expect(refusal(() => setup(options(moved)))).toBe(boundElsewhere(moved, copy));
     expect(tree(moved)).toEqual(kept);
+  });
+
+  test('a stamp a finished binding left, once an older release\'s setup has written the record without its directory, is refused the same way when the install moves, and setup run back there binds it again', () => {
+    setup(options(install));
+    withChild(install, join(install, 'data', 'kids', 'c'), null);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    setup(options(copy));
+    writeJsonAtomic(installPaths(rootOf(copy)).install, { v: 1, dataDir: join(copy, 'data'), extraState: [] });
+    const moved = join(dir, 'moved');
+    renameSync(copy, moved);
+    const kept = tree(moved);
+    const places = [{ from: join(copy, 'data'), to: join(moved, 'data') }];
+    expect(refusal(() => setup(options(moved, { places })))).toBe(boundElsewhere(moved, copy));
+    expect(tree(moved)).toEqual(kept);
+    renameSync(moved, copy);
+    setup(options(copy));
+    expect(record(copy)!.workingDir).toBe(copy);
   });
 });

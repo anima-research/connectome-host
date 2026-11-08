@@ -66,10 +66,11 @@ export function childrenIn(dataDir: string, from: string | null, to: string): Ch
   }
   const bound = boundTo !== undefined && boundTo !== from;
   if (bound && !sameDirectory(boundTo, to)) {
-    throw new ContractError(`A setup run binding this install to ${boundTo} was cut off before it finished: the fleet's ` +
-      `children file, ${path}, is bound to ${boundTo}, and the install is in ${to} now, so the places it names are that ` +
-      `directory's. Setup has changed nothing. Move the install back to ${boundTo}, run setup there, which finishes that ` +
-      'binding, and then move it.');
+    throw new ContractError(`The fleet's children file, ${path}, is bound to ${boundTo}, by a setup run there that was ` +
+      'cut off before it wrote this install\'s record, or that finished before a Go back to a release from before this ' +
+      `one, whose setup wrote the record without its directory. The install is in ${to} now, so the places that file ` +
+      `names are ${boundTo}'s. Setup has changed nothing. Move the install back to ${boundTo}, run setup there, which ` +
+      'binds it there again, and then move it.');
   }
   return { path, value, paths: children.filter(isChildEntry).map((child) => child.dataDir), bound };
 }
@@ -290,7 +291,7 @@ export function moveAside(root: string, to: string, places: string[], kept: Kept
         `there. Setup has moved ${moved.length === 0 ? 'nothing else'
           : `only these:\n${moved.map((one) => `  ${one.from} → ${one.to}`).join('\n')}\nand nothing else`}, removes ` +
         `nothing it moved, and hasn't bound the install. Move ${move.from} out of the way yourself, keeping what you ` +
-        'want of it, and run setup again with --move-aside, which moves what\'s left.');
+        'want of it, and run setup again, which moves what\'s left (by hand, with --move-aside again).');
     }
     moved.push(move);
   }
