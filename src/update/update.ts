@@ -456,7 +456,11 @@ export class HostUpdate {
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
       'however long that takes, so it goes only once every host has said no turn is running there, and asks ' +
       `nobody. ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
-      'stops for another reason first, nothing stays armed. ' +
+      'stops for any other reason first, nothing stays armed, and from its next start check says the ' +
+      `${request.why === 'go-back' ? 'Go back' : 'restart'} didn't go ahead, with that stop as the reason, though a ` +
+      'crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An operator\'s own ' +
+      'Restart or Go back also takes its place. Until the host next starts, or until you arm another, check says when ' +
+      'one didn\'t go ahead for another reason, and why. ' +
       `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${TOOL_WAYS.check} shows whether it committed or ` +
       'went back, and why' + (request.why === 'go-back'
         ? `, if ${request.to} has lifecycle--update; the person's /update check shows it either way.`

@@ -15,7 +15,7 @@ import { hostNoteMetadata } from '../speaker.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { hostUpdate, type HostUpdate, type UpdateAnswer } from '../update/update.js';
 import {
-  ARMED_RETRY, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, goBackLines, inAgentWords, inShellWords, statusLines,
+  TOOL_CANCEL, TOOL_WAYS, armedName, goBackLines, inAgentWords, inShellWords, statusLines,
   toolWays,
 } from '../web/update-text.js';
 import {
@@ -71,68 +71,58 @@ const UPDATE_ACTIONS = ['check', 'notes', 'install', 'restart', 'back', 'cancel'
 const UPDATE_DESCRIPTION =
   'Update your own host to a newer connectome-host release, or go back to the one before, with nobody\'s hands needed. ' +
   '`action`:\n' +
-  '- check: what is out and what it costs (which releases since yours are breaking, and which rewrite your prompt ' +
-  'cache once), the release you run, an install under way, an armed restart, and how the last switch ended: committed, ' +
-  'or went back, and why.\n' +
-  '- notes: once a release newer than yours is installed, the notes of each release after yours up to it, from its ' +
-  'own CHANGELOG.md, when they fit in one answer (24,000 characters). When they don\'t, it lists those releases with ' +
-  'each one\'s size, and notes with `version` gives one release\'s notes: their first part, if even those don\'t fit, ' +
-  'with how much was left out and where the rest is. check names it while a newer release is installed.\n' +
-  '- install: installs the newest release beside the one you run, which runs on. It answers once the install has ' +
-  'begun; check shows when it is done.\n' +
-  '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment, once ' +
-  QUIET_MOMENT + ', however long that takes, so it goes only once every host has said no turn is running there, ' +
-  'and asks nobody: your turn ends as it would. ' +
-  ARMED_RETRY + ' The host then stops, and its service starts it again on the new release. If the host stops for ' +
-  'any other reason first, nothing stays armed, and from its next start check says the restart didn\'t go ahead, with that stop as the ' +
-  'reason, though a crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An ' +
-  'operator\'s own Restart or Go back also takes its place. Until the host next starts, or until you arm another, ' +
-  'check says when one didn\'t go ahead for another reason, and why.\n' +
-  '- back: arms a Go back to the release whose data the copy holds, the same way. `data` is required. keep runs ' +
-  'that release on your data as it is now, so you lose nothing; if it can\'t read that data, its start goes back to ' +
-  'the release you run now by itself, and restore is the way then. restore puts back the copy taken at the last ' +
-  'switch, so everything since then, for you everything you have lived since, is set aside, not deleted.\n' +
+  '- check: what is out and what it costs, the release you run, an install under way, an armed restart, and how the ' +
+  'last switch ended.\n' +
+  '- notes: the notes of the releases after yours up to the one installed; with `version`, one release\'s.\n' +
+  '- install: installs the newest release beside the one you run, which runs on; check shows when it is done.\n' +
+  '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
+  'nobody: your turn ends as it would.\n' +
+  '- back: arms a Go back to the release whose data the copy holds, the same way, with `data`: keep runs it on your ' +
+  'data as it is now, so you lose nothing; restore puts back the copy taken at the last switch, so everything you ' +
+  'have lived since is set aside, not deleted.\n' +
   '- cancel: disarms an armed restart or Go back before it begins.\n' +
-  '`version`, with restart or back, is the release you looked at: if the release they would go to is another by ' +
-  'then, nothing is armed. With notes, it is the release whose notes you want. Restart and back need the host to ' +
-  'run headless with `CONNECTOME_SUPERVISED=1` in its ' +
-  'environment when it started. `connectome service install` sets it only for a service that starts the host again ' +
-  'when it exits with 75 and with 1, and a service written by hand needs the line and both restarts. Elsewhere they ' +
-  'refuse, say why, and arm nothing. After a restart nothing tells you it happened: check says what you run now ' +
-  'and how the switch went. ';
+  '`version`, with restart or back, is the release you looked at: if they would go to another by then, nothing is ' +
+  'armed. Restart and back need a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere they refuse and ' +
+  'say why. After a restart nothing tells you it happened: check says what you run now and how the switch went. ' +
+  'The person who runs your host can\'t call this tool, ';
+
+const personWord = (headless: boolean, command: string | null): string =>
+  !headless ? 'so never give them its name to type: their own command is `/update`, typed in the host\'s terminal, and ' +
+    'check says how they use it.'
+    : command === null ? 'so never give them its name to type. This host has no command of theirs to update it: check ' +
+    'says how it\'s updated.'
+      : `so never give them its name to type: their own command is \`${command} update\`, typed in a shell, and check ` +
+      'says how they use it.';
 
 const NO_INSTALL_HEADLESS =
-  'The person who runs your host can\'t call this tool, so never give them its name or an action of it to type. ' +
   'This host runs headless with no install of its own, so it has no command of theirs to update it: a fleet child is ' +
   'updated with its parent\'s install where its parent has one, and any other host by hand (docs/DEPLOYMENTS.md, ' +
   '"Updating an install"), and your restart and back refuse here, saying so.';
 
+const THEIRS_GO_AT_ONCE = 'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, ' +
+  'turns in progress get up to 2 min to end, and if any don\'t,';
+
+const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs, and only your cancel disarms a restart or Go back ' +
+  'you asked for, though their own restart or back goes ahead in its place.';
+
 const personHeadless = (command: string): string =>
-  'The person who runs your install can\'t call this tool, so never give them its name or an action of it to type. ' +
-  'This host runs headless, so their own command for each is typed in a shell, as the user your host runs as: check ' +
-  `is \`${command} update check\`, install is \`${command} update install\`, restart is \`${command} update restart\`, ` +
-  `and back is \`${command} update back\`, then \`${command} update back keep\` or \`${command} update back restore\`. ` +
-  'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, turns in progress ' +
-  'get up to 2 min to end, and if any don\'t, their command says who is still busy and how to wait longer, stop now or call ' +
-  'it off. notes and cancel have no command of theirs: check gives them a link to the notes, and only your cancel ' +
-  'disarms a restart or Go back you armed, though their own restart or back goes ahead in its place.';
+  'The person who runs your host updates it with their own command, not this tool. They type it in a shell, as the ' +
+  `user your host runs as: check is \`${command} update check\`, install is \`${command} update install\`, restart is ` +
+  `\`${command} update restart\`, and back is \`${command} update back\`, then \`${command} update back keep\` or ` +
+  `\`${command} update back restore\`. ${THEIRS_GO_AT_ONCE} their command says who is still busy and how to wait longer, ` +
+  `stop now or call it off. ${NO_NOTES_OR_CANCEL}`;
 
 const PERSON_IN_A_TERMINAL =
-  'The person who runs your install can\'t call this tool, so never give them its name or an action of it to type. ' +
-  'This host runs in a terminal, so their own command for each is typed there: check is `/update check`, install is ' +
-  '`/update install`, restart is `/update restart`, and back is `/update back`, then `/update back keep` or ' +
-  '`/update back restore`. `connectome update` in another shell doesn\'t reach this host. Their restart and back ' +
-  'begin at once, without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, ' +
-  'and if any don\'t, its answer says who is still busy and how to wait longer, stop now or call it off. Once it ' +
-  'stops, they start the host again themselves, and that start switches. notes and cancel have no command of ' +
-  'theirs: check gives them a link to the notes, and only your cancel disarms a restart or Go back you armed, ' +
-  'though their own restart or back goes ahead in its place.';
+  'The person who runs your host updates it with their own command, not this tool. They type it in the host\'s ' +
+  'terminal: check is `/update check`, install is `/update install`, restart is `/update restart`, and back is ' +
+  '`/update back`, then `/update back keep` or `/update back restore`. `connectome update` in another shell doesn\'t ' +
+  `reach this host. ${THEIRS_GO_AT_ONCE} its answer says who is still busy and how to wait longer, stop now or call it ` +
+  `off. Once it stops, they start the host again themselves, and that start switches. ${NO_NOTES_OR_CANCEL}`;
 
 function updateTool(headless: boolean, command: string | null): ToolDefinition {
   return {
     name: 'update',
-    description: UPDATE_DESCRIPTION + (!headless ? PERSON_IN_A_TERMINAL : command === null ? NO_INSTALL_HEADLESS
-      : personHeadless(command)),
+    description: UPDATE_DESCRIPTION + personWord(headless, command),
     inputSchema: {
       type: 'object',
       properties: {
@@ -378,7 +368,7 @@ export class LifecycleModule implements Module {
         const pending = this.state.armedRequest();
         answer = { done: status.check?.ok !== false, lines: [
           ...statusLines(status, toolWays(this.headless, this.command)), ...(pending === null ? [] : [capital(plainRestart(pending))]),
-          ...this.update.notesPointer(status.installed),
+          ...this.update.notesPointer(status.installed), this.personLine(),
         ] };
         break;
       }
@@ -409,6 +399,10 @@ export class LifecycleModule implements Module {
     const said = inAgentWords(answer.lines.join('\n'));
     const text = this.headless && input.action !== 'notes' ? inShellWords(said, this.command) : said;
     return answer.done ? { success: true, data: text } : refuse(text);
+  }
+
+  private personLine(): string {
+    return !this.headless ? PERSON_IN_A_TERMINAL : this.ownInstall ? personHeadless(this.command) : NO_INSTALL_HEADLESS;
   }
 
   private when(iso: string): string {
