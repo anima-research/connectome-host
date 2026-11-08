@@ -3120,14 +3120,6 @@ export class SubagentModule implements Module {
 
   /** An agent's config from its stored launch, for a launch and a resume alike, so a resumed run gets what it launched with,
    *  less the legacy fold paragraph a launch stored by an earlier host may carry. */
-  private cacheSettings(): RecipeCacheSettings {
-    return {
-      ...(this.config.promptCaching !== undefined && { promptCaching: this.config.promptCaching }),
-      ...(this.config.cacheTtl && { cacheTtl: this.config.cacheTtl }),
-      ...(this.config.provider && { provider: this.config.provider }),
-    };
-  }
-
   private agentConfig(launch: ResumableLaunch, agentName: string) {
     return {
       model: launch.model,
@@ -3138,9 +3130,10 @@ export class SubagentModule implements Module {
       ...(launch.proseRouting !== undefined ? { proseRouting: subagentProseRouting(launch.proseRouting) } : {}),
       ...thinkingBindingSettings(launch.model, this.config.provider),
       // The recipe's caching settings, gated on this subagent's own model
-      // where Bedrock decides per model: an operator's promptCaching: false
-      // reaches the subagent, and a Bedrock child on a model the gate denies
-      // sends no cache_control (#339).
+      // where Bedrock decides per model, for the requests this agent sends
+      // itself (#339). Its strategy's compression calls set no promptCaching
+      // and take the host's one membrane default, set from the resident's
+      // model in index.ts.
       ...cacheSettingsFor(this.cacheSettings(), launch.model),
       allowedTools: launch.allowedTools === 'all' ? 'all' as const : [...launch.allowedTools],
       strategy: new KnowledgeStrategy({
@@ -3151,6 +3144,15 @@ export class SubagentModule implements Module {
         maxMessageTokens: launch.strategy.maxMessageTokens,
         summaryParticipant: agentName,
       }),
+    };
+  }
+
+  /** The recipe's caching settings as the host handed them to this module; `cacheSettingsFor` gates them on a launch's model. */
+  private cacheSettings(): RecipeCacheSettings {
+    return {
+      ...(this.config.promptCaching !== undefined && { promptCaching: this.config.promptCaching }),
+      ...(this.config.cacheTtl && { cacheTtl: this.config.cacheTtl }),
+      ...(this.config.provider && { provider: this.config.provider }),
     };
   }
 
