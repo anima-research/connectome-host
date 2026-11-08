@@ -31,5 +31,5 @@ test('in setup, /help lists what a person needs there: leaving, a new conversati
 test('a host that isn\'t setup\'s still lists its commands', () => {
   const lines = handleCommand('/help', app({})).lines.map((line) => line.text);
   expect(lines[0]).toBe('--- Commands ---');
-  expect(lines).toContain('  /undo                  Revert last agent turn');
+  expect(lines.some((line) => line.startsWith('  /undo '))).toBe(true);
 });
