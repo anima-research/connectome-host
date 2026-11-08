@@ -85,10 +85,58 @@ export function bedrockModelSupportsPromptCaching(model: string): boolean {
   return !/claude-(v2|instant|3-(opus|sonnet|haiku)|3-5-sonnet)(?![a-z0-9])/.test(id);
 }
 
-export function resolvePromptCaching(recipe: Recipe, model: string): boolean | undefined {
-  if (recipe.agent.promptCaching !== undefined) return recipe.agent.promptCaching;
-  if (recipe.agent.provider === 'bedrock') return bedrockModelSupportsPromptCaching(model);
+/**
+ * What a recipe says about prompt caching, as the host hands it to any agent
+ * it builds from that recipe: the resident, and each subagent the subagent
+ * module launches. The subagent module keeps a copy, since it has the recipe's
+ * values and not the recipe.
+ */
+export interface RecipeCacheSettings {
+  /** The recipe's explicit `agent.promptCaching`, when it sets one. */
+  promptCaching?: boolean;
+  /** The recipe's `agent.cacheTtl`, when it sets one. */
+  cacheTtl?: Recipe['agent']['cacheTtl'];
+  /** The recipe's provider; Bedrock gates caching per model and takes no TTL. */
+  provider?: string;
+}
+
+/**
+ * The prompt-caching setting an agent on `model` gets: the recipe's explicit
+ * `promptCaching`, else Bedrock's per-model gate, else undefined, which
+ * leaves membrane's default (on). Shared by the resident's config and each
+ * subagent's, so the gate applies to the model each of them runs.
+ */
+export function promptCachingFor(settings: RecipeCacheSettings, model: string): boolean | undefined {
+  if (settings.promptCaching !== undefined) return settings.promptCaching;
+  if (settings.provider === 'bedrock') return bedrockModelSupportsPromptCaching(model);
   return undefined; // membrane default (on)
+}
+
+/**
+ * The cache-related agent config fields an agent on `model` gets:
+ * `promptCaching` where the recipe or Bedrock's gate decides one, and
+ * `cacheTtl` where the recipe sets one and the provider takes it. Bedrock
+ * offers only the default 5m cache, so cacheTtl isn't forwarded there;
+ * agent-framework sends its own default ('1h') when the host omits it.
+ */
+export function cacheSettingsFor(settings: RecipeCacheSettings, model: string): { promptCaching?: boolean; cacheTtl?: Recipe['agent']['cacheTtl'] } {
+  const promptCaching = promptCachingFor(settings, model);
+  return {
+    ...(settings.cacheTtl && settings.provider !== 'bedrock' && { cacheTtl: settings.cacheTtl }),
+    ...(promptCaching !== undefined && { promptCaching }),
+  };
+}
+
+export function recipeCacheSettings(recipe: Recipe): RecipeCacheSettings {
+  return {
+    ...(recipe.agent.promptCaching !== undefined && { promptCaching: recipe.agent.promptCaching }),
+    ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
+    ...(recipe.agent.provider && { provider: recipe.agent.provider }),
+  };
+}
+
+export function resolvePromptCaching(recipe: Recipe, model: string): boolean | undefined {
+  return promptCachingFor(recipeCacheSettings(recipe), model);
 }
 
 /**
@@ -111,7 +159,6 @@ export function buildFrameworkAgentConfig(
   model: string,
   strategy: FrameworkAgentConfig['strategy'],
 ): FrameworkAgentConfig {
-  const promptCaching = resolvePromptCaching(recipe, model);
   const contextBudgetTokens = effectiveContextBudgetTokens(recipe, model);
   let thinking: FrameworkAgentConfig['thinking'];
   if (recipe.agent.thinking) {
@@ -131,11 +178,7 @@ export function buildFrameworkAgentConfig(
     maxStreamTokens: recipe.agent.maxStreamTokens
       ?? (recipe.agent.contextBudgetTokens === undefined ? contextBudgetTokens + 20_000 : 150_000),
     contextBudgetTokens,
-    // Bedrock offers only the default 5m cache, so cacheTtl isn't forwarded
-    // there. agent-framework sends its own default ('1h') when the host omits it.
-    ...(recipe.agent.cacheTtl && recipe.agent.provider !== 'bedrock'
-      && { cacheTtl: recipe.agent.cacheTtl }),
-    ...(promptCaching !== undefined && { promptCaching }),
+    ...cacheSettingsFor(recipeCacheSettings(recipe), model),
     ...(recipe.agent.prefillUserMessage && { prefillUserMessage: recipe.agent.prefillUserMessage }),
     ...((recipe.agent.provider === 'openai-responses' || recipe.agent.provider === 'openai-codex') && {
       providerParams: {

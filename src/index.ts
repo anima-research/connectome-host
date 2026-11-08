@@ -278,6 +278,8 @@ async function createFramework(
       parentAgentName: agentName,
       provider: resolveProvider(recipe),
       formatter: recipe.agent.formatter,
+      ...(recipe.agent.promptCaching !== undefined ? { promptCaching: recipe.agent.promptCaching } : {}),
+      ...(recipe.agent.cacheTtl ? { cacheTtl: recipe.agent.cacheTtl } : {}),
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
       ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
