@@ -136,7 +136,7 @@ export function BranchPanel(props: {
         </Show>
         <div class="mt-3 px-1 text-neutral-600 leading-relaxed">
           Branches fork from <span class="text-neutral-500">@sequence</span> in their parent.
-          /undo, /checkpoint, /branchto and live rollback/suppress create them; checkout switches the live context.
+          /branchto, live rollback/suppress and a /restore to a checkpoint's message create them; /undo takes a turn out of the agent's window and makes none; checkout switches the live context.
           To undo a rollback or suppression, checkout its parent.
         </div>
         <Show when={props.operatorLog}>

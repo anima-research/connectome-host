@@ -1,6 +1,8 @@
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
+import { OperatorActionError } from '@animalabs/agent-framework';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
+import { applyUndoneMarksTo, type MarkableRow } from '../web/src/undone-marks';
 
 describe('what each client is sent', () => {
   let host: ObservedHost;
@@ -28,6 +30,11 @@ describe('what each client is sent', () => {
     actions: [{ id: 'refresh', label: 'Refresh' }], login, lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
   };
   let onRead: ((offset: number, limit: number) => void) | undefined;
+  // A read of the whole record (getAllMessages), which the undone-marks
+  // frame makes and a welcome doesn't (it reads getMessageWindow).
+  let onRecordRead: (() => void) | undefined;
+  // The rows an undo took out of the agent's window (agent-framework #291's windowStatusOf).
+  let undone = new Set<string>();
   const cm = {
     getMessageCount: () => transcript.length,
     getMessageWindow: (offset: number, limit: number, opts?: { alignToBodyGroups?: boolean }) => {
@@ -42,7 +49,17 @@ describe('what each client is sent', () => {
       appended = listener;
       return () => { if (appended === listener) appended = undefined; };
     },
+    getAllMessages: () => {
+      onRead?.(0, transcript.length);
+      onRecordRead?.();
+      return transcript;
+    },
     currentBranch: () => branch,
+    windowStatusOf: (id: string) => (undone.has(id) ? 'undone' : transcript.some((m) => m.id === id) ? 'in' : 'absent'),
+    ordinalOf: (id: string) => {
+      const at = transcript.findIndex((m) => m.id === id);
+      return at === -1 || undone.has(id) ? undefined : at;
+    },
     getMessage: (id: string) => transcript.find((m) => m.id === id) ?? stored,
     getStrategy: () => ({
       getCompressionQuarantineStatus: () => ({
@@ -72,11 +89,14 @@ describe('what each client is sent', () => {
     requestPanel: async (_child: string, op: string) => ({ ok: true, data: panels[op] }),
   };
   const open: Connection[] = [];
+  /** What the framework's rollbackToMessage does, for the Surgery panel's rollback. */
+  let rollback: () => Promise<unknown> = async () => { throw new Error('no rollback in this test'); };
 
   beforeAll(async () => {
     host = await startObservedHost({
       grants: {
         dashboard: ['health'],
+        watch: ['health', 'ops'],
         reader: ['messages'],
         interior: ['messages', 'thinking', 'tools'],
         everything: ['health', 'ops', 'messages', 'thinking', 'tools'],
@@ -86,6 +106,8 @@ describe('what each client is sent', () => {
         getAllModules: () => [fleet],
         getAgent: (name: string) => (name === 'main' ? agent : undefined),
         getHostModeStatus: () => hostStatus,
+        rollbackToMessage: () => rollback(),
+        getModule: () => undefined,
         getAgentRuntimeSettings: () => ({ contextBudgetTokens: 1000, transition: 'stable' }),
         healthSnapshot: () => ({
           at: '2026-10-22T06:00:00.000Z',
@@ -135,6 +157,13 @@ describe('what each client is sent', () => {
     for (const c of open) c.ws.close();
     await host.stop();
   });
+
+  /** The undone-marks frames a client was sent after its welcomes (#485 bot
+   *  review 5, finding 20), and the ones an undo, a redo or a shed sent: a
+   *  socket keeps its frames in order, and the server sends the first kind
+   *  right after the welcome. */
+  const marksAfterWelcome = (conn: Connection) => conn.frames.filter((f, i) => f.type === 'undone-marks' && conn.frames[i - 1]?.type === 'welcome');
+  const tracedMarks = (conn: Connection) => conn.frames.filter((f, i) => f.type === 'undone-marks' && conn.frames[i - 1]?.type !== 'welcome');
 
   async function everyone() {
     const clients = {
@@ -633,6 +662,376 @@ describe('what each client is sent', () => {
     const read = c.reader.framesOf('welcome').at(-1)!;
     expect(read.branch).toEqual({ id: 'b2', name: 'experiment' });
     expect(read.session).toEqual({ id: 's1', name: 'Debugging the bridge', autoNamed: true });
+  });
+
+  // HOST-1: a Surgery rollback whose switch failed once chronicle had moved,
+  // and whose putting the store back failed too, left the store on the new
+  // branch while every client went on showing the old one.
+  test("a rollback that failed and left the store on its new branch takes the clients there, and one that moved nothing doesn't", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const c = await everyone();
+    rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while mira is busy'); };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+    expect((await c.operator.until('surgery-result', (f) => f.corrId === 'r-busy')).ok).toBe(false);
+    rollback = async () => {
+      branch = { id: 'b2', name: 'rollback/main/1' };
+      throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1');
+    };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+    const stuck = await c.operator.until('surgery-result', (f) => f.corrId === 'r-stuck');
+    expect(stuck).toMatchObject({ ok: false, code: 'failed', error: 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1' });
+    await host.fence([c.operator, c.reader]);
+    for (const conn of [c.operator, c.reader]) {
+      expect(conn.framesOf('branch-changed').map((f) => f.branch)).toEqual([{ id: 'b2', name: 'rollback/main/1' }]);
+      expect(conn.framesOf('welcome').at(-1)!.branch).toEqual({ id: 'b2', name: 'rollback/main/1' });
+    }
+    rollback = async () => { throw new Error('no rollback in this test'); };
+    branch = { id: 'b1', name: 'main' };
+  });
+
+  // Host #485 bot review wave 6, finding 7: the Web UI refreshed the
+  // _config mount after it had sent a surgery's answer, and dropped the
+  // refresh's failure, so the dialog said Done with the gate's files stale,
+  // and a failed rollback that left the store on its new branch never said
+  // whether the refresh wrote them.
+  test("a surgery's answer comes once the Web UI has refreshed the _config mount, and says when that failed", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const conn = await host.operator();
+    open.push(conn);
+    const fw = (host.module as unknown as { panelApp(): { framework: Record<string, unknown> } }).panelApp().framework;
+    const ownModule = fw.getModule;
+    let refreshes = 0;
+    fw.getModule = (name: string) => (name === 'workspace'
+      ? { materializeMount: async () => { refreshes++; throw new Error('EACCES: _config/gate.json'); } }
+      : undefined);
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      rollback = async () => {
+        branch = { id: 'b2', name: 'rollback/main/1' };
+        return { sourceBranch: 'main', targetBranch: 'rollback/main/1', messagesRemoved: 1, lastVisible: null };
+      };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-landed', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      expect(await conn.until('surgery-result', (f) => f.corrId === 'r-landed')).toMatchObject({ ok: true, mountError: 'EACCES: _config/gate.json' });
+      expect(refreshes).toBe(1);
+
+      branch = { id: 'b1', name: 'main' };
+      rollback = async () => {
+        branch = { id: 'b3', name: 'rollback/main/2' };
+        throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/2');
+      };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck-mount', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      expect(await conn.until('surgery-result', (f) => f.corrId === 'r-stuck-mount')).toMatchObject({ ok: false, code: 'failed', mountError: 'EACCES: _config/gate.json' });
+      expect(refreshes).toBe(2);
+
+      // One that moved nothing refreshes nothing, and says nothing of the mount.
+      rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while main is busy'); };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy-mount', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      const busy = await conn.until('surgery-result', (f) => f.corrId === 'r-busy-mount');
+      expect(busy.ok).toBe(false);
+      expect(busy.mountError).toBeUndefined();
+      expect(refreshes).toBe(2);
+      expect(quiet.mock.calls.map((c) => String(c[0]))).toContain('[webui] _config refresh failed: EACCES: _config/gate.json');
+    } finally {
+      quiet.mockRestore();
+      fw.getModule = ownModule;
+      rollback = async () => { throw new Error('no rollback in this test'); };
+      branch = { id: 'b1', name: 'main' };
+    }
+  });
+
+  // The same finding: a command's answer that says the _config mount wasn't
+  // written (a move whose mount write failed, a failed rollback that left
+  // the store on its new branch) is true in the TUI, whose redraw writes no
+  // mount, but the Web UI writes it after sending that answer.
+  test("a command's answer that says the _config mount wasn't written is followed by what the Web UI's refresh of it did, and another answer by nothing", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const conn = await host.operator();
+    open.push(conn);
+    const fw = (host.module as unknown as { panelApp(): { framework: Record<string, unknown> } }).panelApp().framework;
+    const own = { getModule: fw.getModule, getStore: fw.getStore, switchBranch: fw.switchBranch };
+    const ownCm = { listBranches: (cm as Record<string, unknown>).listBranches, queryMessages: (cm as Record<string, unknown>).queryMessages };
+    let refresh: () => Promise<void> = async () => {};
+    fw.getModule = (name: string) => (name === 'workspace' ? { materializeMount: () => refresh() } : undefined);
+    fw.getStore = () => ({ currentBranch: () => ({ name: branch.name }) });
+    Object.assign(cm, {
+      listBranches: () => [{ id: 'b1', name: 'main' }, { id: 'b4', name: 'experiment' }],
+      queryMessages: () => ({ messages: [{ id: 'm1', participant: 'user', content: [] }] }),
+    });
+    const answers = async (corrId: string, n: number) => {
+      const deadline = performance.now() + 5000;
+      for (;;) {
+        const got = conn.framesOf('command-result').filter((f) => f.corrId === corrId);
+        if (got.length >= n) return got.map((f) => (f.lines as Array<{ text: string }>).map((l) => l.text));
+        if (performance.now() >= deadline) throw new Error(`timed out waiting for ${n} answers to ${corrId}`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A /checkout whose move landed and whose mount write failed.
+      fw.switchBranch = async (target: string) => {
+        branch = { id: 'b4', name: target };
+        throw new Error('EIO writing _config');
+      };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-written' }));
+      const written = await answers('co-written', 3);
+      expect(written[1]![0]).toBe('Switched to branch experiment. Refreshing the _config mount from it failed: EIO writing _config');
+      expect(written[2]).toEqual(['The Web UI has since written the _config mount from experiment.']);
+
+      branch = { id: 'b1', name: 'main' };
+      refresh = async () => { throw new Error('ENOSPC'); };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-failed' }));
+      expect((await answers('co-failed', 3))[2]).toEqual(["The Web UI's refresh of the _config mount failed too: ENOSPC"]);
+
+      // A /branchto whose switch failed and whose putting the store back failed too.
+      branch = { id: 'b1', name: 'main' };
+      refresh = async () => {};
+      rollback = async () => {
+        branch = { id: 'b5', name: 'rollback-at-m1' };
+        throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback-at-m1');
+      };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/branchto m1', corrId: 'bt-stuck' }));
+      const stuck = await answers('bt-stuck', 3);
+      expect(stuck[1]![1]).toBe("  The _config mount wasn't written from rollback-at-m1: the gate's files may still be the previous branch's. /checkout rollback-at-m1 writes them.");
+      expect(stuck[2]).toEqual(['The Web UI has since written the _config mount from rollback-at-m1.']);
+
+      // A move that landed whole: its answer is followed by nothing, as the
+      // branch-changed frame sent after the refresh shows.
+      branch = { id: 'b1', name: 'main' };
+      fw.switchBranch = async (target: string) => { branch = { id: 'b4', name: target }; };
+      const moves = conn.framesOf('branch-changed').length;
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-landed' }));
+      await answers('co-landed', 2);
+      const deadline = performance.now() + 5000;
+      while (conn.framesOf('branch-changed').length <= moves) {
+        if (performance.now() >= deadline) throw new Error('timed out waiting for branch-changed');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(await answers('co-landed', 2)).toHaveLength(2);
+    } finally {
+      quiet.mockRestore();
+      Object.assign(fw, own);
+      Object.assign(cm, ownCm);
+      rollback = async () => { throw new Error('no rollback in this test'); };
+      branch = { id: 'b1', name: 'main' };
+    }
+  });
+
+  // DQ-4: the transcript shows the record, which keeps an undone turn's rows,
+  // and marks them as out of the agent's window.
+  test("an undo or a redo on the transcript agent's window marks its rows again for clients that hold messages, and a welcome and a history page carry the marks", async () => {
+    transcript = [
+      { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
+      { id: 'a1', participant: 'assistant', content: [{ type: 'text', text: 'three' }] },
+    ];
+    undone = new Set(['a1']);
+    try {
+      const c = await everyone();
+      const marks = (entries: unknown) => (entries as Array<{ id?: string; undone?: boolean }>).map((e) => [e.id, e.undone ?? false]);
+      for (const conn of [c.operator, c.reader]) expect(marks(conn.framesOf('welcome').at(-1)!.messages)).toEqual([['u1', false], ['a1', true]]);
+
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      // Another agent's window is not the transcript's.
+      host.emitTrace({ type: 'window:undone', agentName: 'someone-else', retracted: 1 });
+      await host.fence(Object.values(c));
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        expect(tracedMarks(conn)).toEqual([
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        ]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+
+      undone = new Set(['u1']);
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-undone', beforeIndex: 2, limit: 10 }));
+      const page = await c.operator.until('history-page', (f) => f.corrId === 'h-undone');
+      expect(marks(page.entries)).toEqual([['u1', true], ['a1', false]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // Host #485 bot review wave 3, finding 16: the transcript joined every
+  // run of rows with one bodyGroupId, so two ingestions of one text were one
+  // entry, by the first one's first part, and an undo of the second marked
+  // nothing, or of the first both.
+  test('two ingestions of one text, each stored in parts, are two entries, and an undo of the second marks it alone', async () => {
+    const part = (id: string, text: string, shardIndex: number) =>
+      ({ id, participant: 'user', content: [{ type: 'text', text }], bodyGroupId: 'g1', shardIndex });
+    transcript = [
+      part('p0', 'The ferry leaves ', 0), part('p1', 'at noon.', 1),
+      part('q0', 'The ferry leaves ', 0), part('q1', 'at noon.', 1),
+    ];
+    undone = new Set(['q0', 'q1']);
+    try {
+      const c = await everyone();
+      type Entry = { id?: string; index?: number; text?: string; undone?: boolean };
+      const welcome = c.operator.framesOf('welcome').at(-1)!.messages as Entry[];
+      expect(welcome.map((e) => [e.id, e.index, e.text, e.undone ?? false])).toEqual([
+        ['p0', 0, 'The ferry leaves at noon.', false],
+        ['q0', 2, 'The ferry leaves at noon.', true],
+      ]);
+      // The marks frame names q's parts; the page marks the entry q0 carries.
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 2 });
+      await host.fence([c.operator]);
+      const rows: MarkableRow[] = welcome.map((e) => ({ storeId: e.id, index: e.index }));
+      applyUndoneMarksTo(rows, c.operator.framesOf('undone-marks').at(-1) as never);
+      expect(rows.map((r) => [r.storeId, r.undone ?? false])).toEqual([['p0', false], ['q0', true]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // HOST-1: the frame named undone rows only in the welcome's tail (the
+  // record's last 200 rows), and a page leaves a row before `fromIndex` as
+  // it was. The agent's reply with 200 rows of others' traffic stored after
+  // it stayed shown as in its context after an undo, and a row a redo put
+  // back after it left the tail kept its undone label.
+  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, and so do a shed's", async () => {
+    const say = (id: string, participant: string, text: string) => ({ id, participant, content: [{ type: 'text', text }] });
+    transcript = [
+      say('u1', 'user', 'count the ledgers'),
+      say('a1', 'assistant', 'three'),
+      ...Array.from({ length: 250 }, (_, i) => say(`x${i}`, 'user', `traffic ${i}`)),
+    ];
+    try {
+      const c = await everyone();
+      const welcome = c.operator.framesOf('welcome').at(-1)!;
+      expect((welcome.history as { startIndex: number }).startIndex).toBe(52);
+      // The page reads back to the start, so it holds the reply.
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-back', beforeIndex: 52, limit: 100 }));
+      const back = await c.operator.until('history-page', (f) => f.corrId === 'h-back');
+      type Entry = { id?: string; index?: number; undone?: boolean };
+      const rows: MarkableRow[] = [...(back.entries as Entry[]), ...(welcome.messages as Entry[])]
+        .map((e) => ({ storeId: e.id, index: e.index, ...(e.undone ? { undone: true } : {}) }));
+      expect(rows.length).toBe(252);
+      const marked = () => rows.filter((r) => r.undone).map((r) => r.storeId);
+      const frames = () => tracedMarks(c.operator);
+
+      undone = new Set(['a1']);
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['a1']);
+
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual([]);
+
+      // A shed takes rows out of the window as an undone turn's.
+      undone = new Set(['x3']);
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x3'], reason: 'shed' });
+      // Neither another reason nor another agent's window marks anything.
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x4'], reason: 'hide' });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'someone-else', messageIds: ['x5'], reason: 'shed' });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['x3']);
+      expect(frames()).toEqual([
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
+      ]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // A welcome to the same session and branch keeps a page's rows older than
+  // its tail, marks and all, and marks only its tail; an undo or a redo
+  // while the page was disconnected moves no branch, so the page reads the
+  // marks of every row it holds from the frame after each welcome (#485 bot
+  // review 5, finding 20).
+  test('each welcome to a client that holds messages is followed by the record\'s undone marks, from index 0', async () => {
+    const say = (id: string, text: string) => ({ id, participant: 'user', content: [{ type: 'text', text }] });
+    transcript = Array.from({ length: 250 }, (_, i) => say(`w${i}`, `row ${i}`));
+    undone = new Set(['w3']);
+    try {
+      const c = await everyone();
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        await conn.until('undone-marks');
+        expect(marksAfterWelcome(conn)).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['w3'] }]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+      // A redo while a page is away, then its welcome again: the row before
+      // the welcome's tail is named no longer.
+      undone = new Set();
+      await host.fence([c.operator, c.dashboard]);
+      await c.operator.until('undone-marks', (f) => (f.undone as string[]).length === 0);
+      expect(marksAfterWelcome(c.operator).at(-1)).toEqual({ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] });
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // Host #485 bot review finding 17: the frame read the whole record at each
+  // undo, redo and shed while any client was connected, a health or an ops
+  // observer that is never sent it as well.
+  test("an undo, a redo or a shed reads no record while no connected client holds messages", async () => {
+    const say = (id: string, text: string) => ({ id, participant: 'user', content: [{ type: 'text', text }] });
+    transcript = Array.from({ length: 5 }, (_, i) => say(`r${i}`, `row ${i}`));
+    undone = new Set(['r4']);
+    const reads: [number, number][] = [];
+    let recordReads = 0;
+    try {
+      // Only observers without messages stay connected.
+      const closed = open.splice(0).map((c) => new Promise<void>((resolve) => {
+        if (c.ws.readyState === WebSocket.CLOSED) return resolve();
+        c.ws.addEventListener('close', () => resolve());
+        c.ws.close();
+      }));
+      await Promise.all(closed);
+      const dashboard = await host.observer('dashboard');
+      const watch = await host.observer('watch');
+      open.push(dashboard, watch);
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      onRecordRead = () => { recordReads++; };
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['r4'], reason: 'shed' });
+      // Reads of any kind are watched past the traces' microtasks and a
+      // timer's turn (host #485 bot review wave 3, finding 29), and the
+      // record's whole listing, the marks frame's read, on through the fence
+      // and the next client's connection, so one deferred longer is seen too
+      // (wave 4, finding 20). The fence and a connection welcome a client,
+      // which reads the record's tail (getMessageWindow), so that read is
+      // watched only up to them.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      onRead = undefined;
+      expect(reads).toEqual([]);
+      await host.fence([dashboard, watch]);
+      for (const conn of [dashboard, watch]) expect(conn.framesOf('undone-marks')).toEqual([]);
+
+      // A client that holds messages connects: the record is read again.
+      const reader = await host.observer('reader');
+      open.push(reader);
+      await host.fence([reader]);
+      onRecordRead = undefined;
+      // Each of the reader's two welcomes, its connection's and the fence's,
+      // reads the record once, for the marks frame after it (#485 bot review
+      // 5, finding 20); a read the traces deferred would make a third.
+      expect(recordReads).toBe(2);
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      onRead = undefined;
+      expect(reads).toEqual([[0, 5]]);
+      await host.fence([reader]);
+      expect(tracedMarks(reader)).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['r4'] }]);
+    } finally {
+      onRead = undefined;
+      onRecordRead = undefined;
+      transcript = [];
+      undone = new Set();
+    }
   });
 
   test("pins and context settings reach full clients alone, a child's as well as the host's, and credential state, the host's and a child's, reaches clients that hold health", async () => {
