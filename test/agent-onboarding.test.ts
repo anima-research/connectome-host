@@ -132,8 +132,8 @@ describe('what the guide names ships, or is the install\'s own', () => {
     const anchors: Array<{ from: string; doc: keyof typeof docs; anchor: string }> = [];
     for (const from of sources) {
       const text = joined(from);
-      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|claude-code-ingest|<host>\/README)\.md`?\)?(?:\\?'s|,) ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
-        const doc = `${match[1]!.replace('<host>/', '')}.md` as keyof typeof docs;
+      for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|claude-code-ingest|(?:<host>|<dir>\/connectome-host\/current\/node_modules\/@animalabs\/connectome-host)\/README)\.md`?\)?(?:\\?'s|,) ((?:"[^"]+"(?:, (?:and )?| and )?)+)/g)) {
+        const doc = `${match[1]!.replace(/^.*\//, '')}.md` as keyof typeof docs;
         for (const named of match[2]!.matchAll(/"([^"]+)"/g)) pointers.push({ from, doc, heading: named[1]!.replace(/`/g, '') });
       }
       for (const match of text.matchAll(/(AGENT-ONBOARDING|DEPLOYMENTS|claude-code-ingest)\.md#([\p{L}\p{N}_-]+)/gu)) {
