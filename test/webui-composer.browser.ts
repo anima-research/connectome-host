@@ -306,6 +306,16 @@ const rowsOf = (page: Page, text: string): Locator =>
 const REFUSED = 'not sent: the host refused it';
 const OLDER = 'scroll to the top or click to load 200 older messages';
 
+const BRANCH_CHIP = 'Chronicle branches — click to browse lineage';
+
+async function refusedWithDraft(c: Composer, text: string): Promise<UserMessageMessage> {
+  const frame = await send(c, text);
+  await c.box.fill('a second draft');
+  c.host.refuse(frame.corrId!);
+  await until('the refused mark', () => rowsOf(c.page, text).getByText(REFUSED).count(), (n) => n === 1);
+  return frame;
+}
+
 async function olderReadyOrAsked(c: Composer): Promise<void> {
   await until('the older-history control enabled, or a request of the pane\'s own',
     async () => c.host.historyAsked() > 1 || await c.page.getByTitle(OLDER).isEnabled().catch(() => false), (v) => v, 3_000);
@@ -334,6 +344,20 @@ describe('a message is never lost', () => {
       expect(await c.page.getByTitle(/^dot\.png/).count()).toBe(1);
       expect(await rowsOf(c.page, 'cherry').count()).toBe(0);
       expect(c.host.received.length).toBe(from);
+    });
+  });
+
+  test('a refused send survives a change of branch, naming the branch it was sent in, and one sent after branch-changed names none', async () => {
+    await withComposer(async (c) => {
+      await refusedWithDraft(c, 'lime');
+      c.host.announceBranch('b2', 'side');
+      await until('the header on the new branch', () => c.page.getByTitle(BRANCH_CHIP).textContent(), (t) => (t ?? '').includes('side'));
+      await refusedWithDraft(c, 'pear');
+      c.host.welcomeAgain();
+      const lime = rowsOf(c.page, 'lime').getByText(/; sent in branch /);
+      await until('a mark naming a branch', () => lime.count(), (n) => n === 1);
+      expect(await lime.textContent()).toBe(`${REFUSED} (refused by the scripted host); sent in branch main`);
+      expect(await rowsOf(c.page, 'pear').getByText(REFUSED).textContent()).toBe(`${REFUSED} (refused by the scripted host)`);
     });
   });
 
