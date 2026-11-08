@@ -149,7 +149,7 @@ Compression should be driven by the same model used in the conversation. Autobio
 
 The warmup declares no tool definitions, so the first chunk whose compression request carries a tool call or result waits, as does each later chunk whose request carries that one too, and everything on a Fable- or Mythos-family compression model. An export keeps claude.ai's tool calls (`scripts/import-claudeai-export.ts`). The warmup names the work it left. The host compresses that work once it declares tool definitions for the agent: its context maintenance does so before each pass, the first at the host's start, or with `maintenanceIntervalMs: 0` the agent's first request does. An agent with no tools leaves it waiting.
 
-Resumable: autobio persists its compression and merge queues to Chronicle, so re-running picks up where it left off. The progress bar shows L1 chunks remaining, queued merges, running token totals, USD cost, elapsed, and ETA.
+Resumable: autobio persists its compression and merge queues to Chronicle, so re-running picks up where it left off. A re-run reports the work that waits on tool definitions again and makes no progress on it, since only the host, once it declares them, compresses it. The progress bar shows L1 chunks remaining, queued merges, running token totals, USD cost, elapsed, and ETA.
 
 Useful warmup flags:
 

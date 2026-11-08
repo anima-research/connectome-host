@@ -284,13 +284,11 @@ async function main() {
     );
   } else if (waiting) {
     console.error(
-      `Not converged: ${waiting.description}. This script declares no tool definitions. Without them, ` +
-        `context-manager holds back the first chunk whose compression request carries a tool call or result, and ` +
-        `each later chunk whose request carries that one too; on a Fable- or Mythos-family compression model ` +
-        `it holds back every chunk and merge. The host compresses this work once it declares tool definitions for ` +
-        `the agent: its context maintenance does so before each pass, the first at the host's start, unless the ` +
-        `recipe sets maintenanceIntervalMs to 0, when the agent's first request does. An agent with no tools leaves ` +
-        `it waiting. ` +
+      `Not converged: ${waiting.description}. This script declares no tool definitions, and this work waits ` +
+        `for them; docs/claudeai-evacuation.md, Stage 3, says which work waits. The host compresses it once it ` +
+        `declares tool definitions for the agent: its context maintenance does so before each pass, the first at ` +
+        `the host's start, unless the recipe sets maintenanceIntervalMs to 0, when the agent's first request does. ` +
+        `An agent with no tools leaves it waiting. ` +
         `${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
         `Total: ${spend.inputTokens.toLocaleString()} in / ${spend.outputTokens.toLocaleString()} out, $${spend.cost.toFixed(2)}.`,
     );
