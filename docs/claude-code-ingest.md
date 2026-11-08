@@ -335,8 +335,9 @@ original data directory. Instead:
    `openai-codex`, give `CODEX_GATE_TOKEN` a mock value and `CODEX_BASE_URL`
    `http://127.0.0.1:9`: with both set no Codex login runs, where without them its first
    turn asks OpenAI for a device-code login and waits for it. Where the resident's
-   environment sets `MODEL` or
-   `COUNT_TOKENS_MODEL`, give it too, since each changes what's compiled. Give any other
+   environment sets `MODEL`, give it too, since it changes what's compiled, and where it
+   sets `COUNT_TOKENS_MODEL`, give that too, since `/debug/context/makeup` reports it as
+   the `countModel` you count against below. Give any other
    variable the copy names as `${…}` too, since the host fills each from its environment
    and won't load a recipe naming one it can't, with a mock value where it's a
    credential, and, where it's a URL the host connects to, such as a provider's base URL
