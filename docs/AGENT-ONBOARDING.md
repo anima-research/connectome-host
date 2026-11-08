@@ -687,9 +687,7 @@ Two `systemd --user` units in `~/.config/systemd/user/`:
 Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
 
 Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user or root, since
-`data/` is readable by its owner alone) and a lightweight **watchdog** cron
-(detect "messages arriving but no reply for N min" → restart, with a cooldown so it can't
-restart-loop). These caught real incidents.
+`data/` is readable by its owner alone).
 
 ---
 
@@ -896,7 +894,7 @@ only where its next request would pass the window, and a fresh compile carries t
 
 - Tell the user how to reach the webui (SSH tunnel to the loopback port + the basic-auth creds).
 - Explain what it does on its own (wakes on mentions/DMs in scoped channels + on its heartbeat).
-- Keep the snapshots + watchdog running. Pull an off-box copy of `data/` for safety.
+- Keep the snapshots running. Pull an off-box copy of `data/` for safety.
 - Widen channel scope / adjust the recent window / tune the budget as it settles.
 
 ---
@@ -1010,8 +1008,8 @@ same being, different door — which brought it back.
 "Opus 4 C". Invited it; scoped `DISCORD_GUILD_ID=<guild>:<#opus id>`; confirmed exactly **1**
 channel registered.
 
-**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent), 15-min backups, a
-wedge-watchdog. Then the check that matters:
+**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent) and 15-min backups.
+Then the check that matters:
 ```bash
 curl -su "$WEBUI_USER:$WEBUI_PASS" http://127.0.0.1:7343/debug/context/makeup   # total + maxTokens < window?
 ```
