@@ -517,9 +517,12 @@ export class RetrievalModule implements Module {
   private getRecentContext(agentName: string): RecentRetrievalContext | null {
     if (!this.ctx) return null;
 
-    // agent-framework marks a write it still holds `held`, and a row a tune-out
-    // holds from the residents `heldFromResidents` (stamped
-    // `metadata.tuneOut`), and shows a resident neither.
+    // Each agent's context follows its own window (agent-framework #291), so
+    // the read is the gathering agent's. agent-framework marks a stored row
+    // that is not in that agent's window `held` (it enters at a later point,
+    // or it is an undone turn's), and a row a tune-out holds from the
+    // residents `heldFromResidents` (stamped `metadata.tuneOut`), and shows a
+    // resident neither.
     const { messages } = this.ctx.queryMessages({}, { forAgent: agentName });
     const shown = messages.filter(m =>
       m.held !== true && m.heldFromResidents !== true && !(m.metadata as { tuneOut?: unknown } | undefined)?.tuneOut

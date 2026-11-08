@@ -1,7 +1,7 @@
 /**
  * WebUI wire protocol — JSON-over-WebSocket envelope for the web admin client.
  *
- * Versioning: v3. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
+ * Versioning: v4. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
  * mismatch the Web UI page shows a banner saying what to do and keeps the
  * welcome, session and messages it had: `applyWelcome` returns before taking
  * any of them. The welcome's other readers still read it, among them the
@@ -32,13 +32,22 @@
  * after a command, reaches them before their next welcome. The new framework's
  * traces and stored messages don't, since the server follows a framework's
  * events only once it has started.
+ *
+ * v4: an undo and a redo leave the branch alone (agent-framework #291). The
+ * page learns of them from the `window:undone` trace and the `undone-marks`
+ * frame, and transcript entries carry `undone`, where a v3 host moved the
+ * branch and sent `branch-changed` and a fresh welcome. The local
+ * `pins-list` carries `candidates`, which the pin picker lists, where a v3
+ * page listed the transcript's loaded rows. A v3 page on a v4 host would show
+ * an undone turn as still in context, and a v4 page on a v3 host an empty
+ * picker, so each shows the mismatch banner instead.
  */
 
 import type { Line } from '../output-line.js';
 import type { AgentPhaseState } from '../state/agent-phases.js';
 import type { AgentPhase } from '../state/agent-tree-reducer.js';
 
-export const WEB_PROTOCOL_VERSION = 3;
+export const WEB_PROTOCOL_VERSION = 4;
 
 /** What an observer needs to be sent the agent trees, and so what a page
  *  needs to build and show them: every scope but 'debug'. A tree's nodes
@@ -177,6 +186,14 @@ export interface WelcomeMessageEntry {
   /** On a stored user message: the `corrId` of the composer send it came
    *  from, so that client can put it in place of the row it showed. */
   corrId?: string;
+  /** The row is out of the conversation agent's window as an undone
+   *  turn's (agent-framework #291): an undo (which /redo can reverse until
+   *  the agent's next turn, a branch move or a restart, as agent-framework
+   *  keeps the redo in memory only) or a shed after a refusal or failed
+   *  inference (which it can't). Its next request is built without it,
+   *  and the record, which the transcript shows, keeps it. Absent
+   *  otherwise. */
+  undone?: true;
 }
 
 /** A framework TraceEvent as it was emitted, except that the `data` of each
@@ -354,11 +371,29 @@ export interface PerAgentCost {
   inferenceCount: number;
 }
 
-/** Sent when the active branch changes (undo/redo/checkout). A fresh
- *  `welcome` with the new branch's messages follows it. */
+/** Sent when the active branch changes (checkout, restore, branchto, a
+ *  rollback). A fresh `welcome` with the new branch's messages follows it. */
 export interface BranchChangedMessage {
   type: 'branch-changed';
   branch: { id: string; name: string };
+}
+
+/** After an undo or a redo on the conversation agent's window
+ *  (agent-framework #291, the `window:undone` trace), or a shed from it
+ *  (`presentation:retracted`, reason `shed`), and right after each welcome:
+ *  which of the transcript's rows from `fromIndex` on are out of that window
+ *  as undone (`WelcomeMessageEntry.undone`), by store id. A row from there
+ *  that isn't named isn't undone. This host sends `fromIndex` 0, every row
+ *  of the record, so a page marks each row it holds, however far back its
+ *  history reaches, the rows older than a welcome's tail that the page keeps
+ *  across a reconnect included. A row before `fromIndex` would keep its
+ *  mark. The one after a welcome moved no window, so the page reads its
+ *  panels again at neither. */
+export interface UndoneMarksMessage {
+  type: 'undone-marks';
+  agent: string;
+  fromIndex: number;
+  undone: string[];
 }
 
 /** That an agent's stream ended, with nothing of how or why: sent in place
@@ -553,11 +588,16 @@ export interface PinsListMessage {
   levelHonored: boolean;
   /** Deepest fold level currently present, so the UI can bound level inputs. */
   deepestLevel?: number;
-  /** Recent pinnable messages (REAL store ids) from the scoped process.
-   *  Shipped for fleet-child scopes, where the SPA has no message window of
-   *  its own to build a picker from; local scope keeps using the client-side
-   *  candidate list. */
+  /** Recent pinnable messages (REAL store ids) from the scoped process, the
+   *  local one's as well as a fleet child's: the record's last 200 rows,
+   *  less a row out of the agent's window as undone and a row whose audience
+   *  stamp leaves the agent out (another resident's on a shared store), or,
+   *  on a legacy window, which reads no stamp, the rows the resident's view
+   *  leaves out instead (held traffic, suppressed rows, another agent's
+   *  stored injections). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 /** Credential state of one process. Every field but `type`, `scope` and
@@ -757,6 +797,24 @@ export interface SurgeryResultMessage {
   targetBranch?: string;
   messagesRemoved?: number;
   lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+  /** A rollback on a presented window (agent-framework #291): the rows after
+   *  the target that stay in the record, out of the agent's window until its
+   *  next turn starts, which presents them, or until a restart of the host
+   *  before then, whose pass over every agent at rest does
+   *  (rollbackToMessage's `returnedToArrivals`). Absent when there are none. */
+  returnedToArrivals?: number;
+  /** A rollback on a presented window: the rows after the target that one
+   *  write presented with it, which stay in the agent's window, since a branch
+   *  cut can't separate them; a suppression or a hide takes them out
+   *  (rollbackToMessage's `keptInWindowAfterTarget`). Absent when there are
+   *  none. */
+  keptInWindowAfterTarget?: number;
+  /** Why the Web UI's write of the `_config` mount, from the branch the
+   *  store is on, failed, so the gate's files may still be the previous
+   *  branch's. The answer comes once that write has run: after a surgery
+   *  that landed, and after one that failed and left the store on the
+   *  branch it made. Absent when it was written, or not tried. */
+  mountError?: string;
 }
 
 /** One durable operator-log record (mirrors the framework's OperatorLogEntry). */
@@ -788,6 +846,7 @@ export type WebUiServerMessage =
   | UsageMessage
   | CallLedgerMessage
   | BranchChangedMessage
+  | UndoneMarksMessage
   | BranchesListMessage
   | SessionChangedMessage
   | PeekMessage
@@ -1069,9 +1128,9 @@ export interface McplSetEnvMessage {
   env: Record<string, string>;
 }
 
-/** Pull the agent's protected ranges. Response is a `pins-list` envelope.
- *  With a fleet-child `scope` the child also ships picker `candidates`
- *  (recent real store ids) since the SPA has no window into its store. */
+/** Pull the agent's protected ranges. Response is a `pins-list` envelope,
+ *  with picker `candidates` (recent real store ids) for the local scope and
+ *  a fleet-child `scope` alike. */
 export interface RequestPinsMessage {
   type: 'request-pins';
   /** Fleet child name, or 'local'/undefined for the parent process. */

@@ -1,6 +1,6 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "description": "Recipe-configured host for long-lived agents on the Connectome stack: TUI, headless daemon, fleets, and a web operator console",
   "type": "module",
   "bin": {
@@ -31,9 +31,9 @@
     "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.32.0",
-    "@animalabs/chronicle": "^0.5.1",
-    "@animalabs/context-manager": "^0.24.0",
+    "@animalabs/agent-framework": "^0.33.0",
+    "@animalabs/chronicle": "^0.6.0",
+    "@animalabs/context-manager": "^0.25.0",
     "@animalabs/membrane": "^0.8.0",
     "@opentui/core": "^0.2.16"
   },
@@ -56,7 +56,7 @@
     "url": "https://github.com/anima-research/connectome-host/issues"
   },
   "connectomeRelease": {
-    "breaking": false,
+    "breaking": true,
     "cacheWrite": false
   }
 }

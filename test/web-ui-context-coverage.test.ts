@@ -58,4 +58,30 @@ describe('context coverage snapshot', () => {
     expect(snapshot.chunks[0].maxLevel).toBe(1);
     expect(snapshot.queue.inFlight).toBe(false);
   });
+
+  test('names queued work that waits on the host, and nothing when none waits', () => {
+    const strategy = {
+      summaries: [],
+      chunks: [{ index: 0, tokens: 200, compressed: false, messages: [{ id: 'm1' }] }],
+      compressionQueue: [0],
+      mergeQueue: [],
+      resolutions: new Map(),
+      pendingCompression: null,
+    };
+    const waiting = buildContextCoverageSnapshot('fable', {
+      currentBranch: () => ({ name: 'test-branch' }),
+      getStrategy: () => strategy,
+      getPendingWork: () => null,
+      getWaitingWork: () => ({ waitingOn: 'tools', description: "1 chunk waits on the host's tool definitions" }),
+    });
+    expect(waiting.queue).toMatchObject({ pending: null, waiting: "1 chunk waits on the host's tool definitions", l1: [0] });
+
+    const none = buildContextCoverageSnapshot('fable', {
+      currentBranch: () => ({ name: 'test-branch' }),
+      getStrategy: () => strategy,
+      getPendingWork: () => ({ description: 'Compressing chunk 0' }),
+      getWaitingWork: () => null,
+    });
+    expect(none.queue.waiting).toBeNull();
+  });
 });
