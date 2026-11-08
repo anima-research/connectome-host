@@ -168,6 +168,9 @@ export const QUIET_MOMENT = 'nothing the host counts as in flight is still going
   'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
   'going there, such as a turn, background script, operator\'s work or credential action';
 
+export const ASKS_NOBODY = 'however long that takes, so it goes only once every host has said no turn is running ' +
+  'there, and asks nobody';
+
 export const ARMED_RETRY = 'A try that finds something still going waits at least a minute before the next.';
 
 export const TOOL_CANCEL = 'lifecycle--update cancel';
@@ -459,8 +462,7 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       'top bar lets them through. Whether it\'s quiesced now makes no difference.',
     ways.check === TOOL_WAYS.check
       ? 'Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, it begins at the host\'s first quiet ' +
-        'moment, however long that takes, so it goes only once every host has said no turn is running there, and ' +
-        `asks nobody. ${ARMED_RETRY} Anywhere else, back refuses and arms nothing.`
+        `moment, ${ASKS_NOBODY}. ${ARMED_RETRY} Anywhere else, back refuses and arms nothing.`
       : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }

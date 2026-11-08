@@ -16,7 +16,7 @@ import {
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
 import {
-  ARMED_RETRY, BUN_UPGRADE, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, NOT_AN_INSTALL, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, busyLines, cliWays,
+  ARMED_RETRY, ASKS_NOBODY, BUN_UPGRADE, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, NOT_AN_INSTALL, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, busyLines, cliWays,
   deprecatedLine,
   inAgentWords, noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
@@ -454,8 +454,7 @@ export class HostUpdate {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
-      'however long that takes, so it goes only once every host has said no turn is running there, and asks ' +
-      `nobody. ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
+      `${ASKS_NOBODY}. ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
       'stops for any other reason first, nothing stays armed, and from its next start check says the ' +
       `${request.why === 'go-back' ? 'Go back' : 'restart'} didn't go ahead, with that stop as the reason, though a ` +
       'crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An operator\'s own ' +
