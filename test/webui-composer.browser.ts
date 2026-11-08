@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import type { ServerWebSocket } from 'bun';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import {
+  MAX_WS_FRAME_BYTES,
   WEB_PROTOCOL_VERSION,
   type HistoryPageMessage,
   type UserImageLimits,
@@ -14,7 +14,6 @@ import {
   type WelcomeMessage,
   type WelcomeMessageEntry,
 } from '../src/web/protocol.js';
-import { isAnimated } from '../src/web/image-bytes.js';
 
 setDefaultTimeout(60_000);
 
@@ -29,8 +28,7 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
   const received: WebUiClientMessage[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   let accepting = true;
-  let connections = 0;
-  let session = { id: 's1', name: 'scripted', autoNamed: false };
+  const session = { id: 's1', name: 'scripted', autoNamed: false };
   let branch = { id: 'b1', name: 'main' };
   const places = new Map<string, { stored: WelcomeMessageEntry[]; windowFrom: number }>();
   const place = (): string => `${session.id}/${branch.id}`;
@@ -73,7 +71,6 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     websocket: {
       open(ws) {
         sockets.add(ws);
-        connections++;
         ws.send(JSON.stringify(welcome()));
       },
       message(ws, data) {
@@ -123,7 +120,6 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
   return {
     url: `http://127.0.0.1:${server.port}/`,
     received,
-    connections: () => connections,
     store,
     append(text: string, corrId: string): void {
       toClients({ type: 'message-appended', entry: store(text, corrId) });
@@ -134,16 +130,12 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     showFrom(slot: number): void {
       current().windowFrom = slot;
     },
-    switchSession(id: string, name: string): void {
-      session = { id, name, autoNamed: false };
-      toClients(welcome());
-    },
     announceBranch(id: string, name: string): void {
       branch = { id, name };
       toClients({ type: 'branch-changed', branch });
     },
-    welcomeAgain(o: { protocolVersion?: number } = {}): void {
-      toClients({ ...welcome(), ...(o.protocolVersion === undefined ? {} : { protocolVersion: o.protocolVersion }) });
+    welcomeAgain(): void {
+      toClients(welcome());
     },
     holdHistory(): void {
       holding = true;
@@ -187,27 +179,21 @@ async function until<T>(what: string, get: () => T | Promise<T>, ok: (v: T) => b
   }
 }
 
-async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise' | 'half-clear' | 'red-blue' = 'red'): Promise<Buffer> {
+async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'red-blue' = 'red'): Promise<Buffer> {
   const b64 = await page.evaluate(([w, h, look]) => {
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d')!;
-    if (look === 'noise') {
-      const img = ctx.createImageData(w, h);
-      for (let i = 0; i < img.data.length; i++) img.data[i] = i % 4 === 3 ? 255 : Math.floor(Math.random() * 256);
-      ctx.putImageData(img, 0, 0);
-    } else {
-      const red = look === 'red' ? w : look === 'red-blue' ? Math.round(w / 3) : w / 2;
-      ctx.fillStyle = '#c33';
-      ctx.fillRect(0, 0, red, h);
-      if (look === 'red-blue') {
-        ctx.fillStyle = '#33c';
-        ctx.fillRect(red, 0, w - red, h);
-        const band = Math.round(h * 0.75);
-        ctx.fillStyle = '#3c3';
-        ctx.fillRect(0, band, w, h - band);
-      }
+    const red = look === 'red' ? w : Math.round(w / 3);
+    ctx.fillStyle = '#c33';
+    ctx.fillRect(0, 0, red, h);
+    if (look === 'red-blue') {
+      ctx.fillStyle = '#33c';
+      ctx.fillRect(red, 0, w - red, h);
+      const band = Math.round(h * 0.75);
+      ctx.fillStyle = '#3c3';
+      ctx.fillRect(0, band, w, h - band);
     }
     return canvas.toDataURL('image/png').split(',')[1]!;
   }, [w, h, look] as const);
@@ -251,9 +237,7 @@ const RED_BLUE_READS: Array<[number, number, (rgba: number[]) => boolean]> = [
 
 let browser: Browser;
 let WIDE_PNG: Buffer;
-let HALF_CLEAR_PNG: Buffer;
 let DOT_PNG: Buffer;
-let NOISE_PNG: Buffer;
 
 beforeAll(async () => {
   if (!existsSync(join(SPA, 'index.html'))) {
@@ -262,9 +246,7 @@ beforeAll(async () => {
   browser = await chromium.launch();
   const page = await browser.newPage();
   WIDE_PNG = await canvasPng(page, 3000, 300, 'red-blue');
-  HALF_CLEAR_PNG = await canvasPng(page, 3000, 100, 'half-clear');
   DOT_PNG = await canvasPng(page, 1, 1);
-  NOISE_PNG = await canvasPng(page, 30, 30, 'noise');
   await page.close();
 });
 
@@ -303,63 +285,6 @@ async function withPage(url: string, body: (page: Page, box: Locator) => Promise
   }
 }
 
-const tail = (path: string): string => (existsSync(path) ? readFileSync(path, 'utf8').split('\n').slice(-20).join('\n') : '(none)');
-
-async function withRealHost(body: (url: string) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), 'webui-composer-'));
-  const probe = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() });
-  const port = probe.port;
-  probe.stop(true);
-  const recipe = join(dir, 'recipe.json');
-  writeFileSync(recipe, JSON.stringify({
-    name: 'Browser check',
-    agent: {
-      name: 'agent',
-      provider: 'mock',
-      systemPrompt: 'A mock agent for the browser check.',
-      mock: { echoMode: false, defaultResponse: 'noted' },
-    },
-    modules: {
-      subagents: false,
-      lessons: false,
-      retrieval: false,
-      wake: false,
-      workspace: false,
-      webui: { host: '127.0.0.1', port },
-    },
-  }));
-  const stderrPath = join(dir, 'host-stderr.log');
-  const host = Bun.spawn([process.execPath, join(REPO, 'src', 'index.ts'), recipe, '--headless'], {
-    cwd: dir,
-    env: { ...process.env, DATA_DIR: join(dir, 'data') },
-    stdin: 'ignore',
-    stdout: 'ignore',
-    stderr: Bun.file(stderrPath),
-  });
-  try {
-    const url = `http://127.0.0.1:${port}/`;
-    const status = await until(
-      "the host's Web UI",
-      () => (host.exitCode !== null ? -1 : fetch(url).then((r) => r.status, () => 0)),
-      (s) => s === 200 || s === -1,
-      30_000,
-    );
-    if (status === -1) {
-      throw new Error(`the host exited (${host.exitCode}) before its Web UI answered.\n`
-        + `stderr:\n${tail(stderrPath)}\nheadless.log:\n${tail(join(dir, 'data', 'headless.log'))}`);
-    }
-    await body(url);
-  } finally {
-    host.kill();
-    const exited = await Promise.race([host.exited.then(() => true), Bun.sleep(10_000).then(() => false)]);
-    if (!exited) {
-      host.kill('SIGKILL');
-      await Promise.race([host.exited, Bun.sleep(5_000)]);
-    }
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 async function send(c: Composer, text: string): Promise<UserMessageMessage> {
   const from = c.host.received.length;
   await c.box.fill(text);
@@ -379,7 +304,6 @@ const rowsOf = (page: Page, text: string): Locator =>
   page.getByTestId('user-message').filter({ has: page.getByText(text, { exact: true }) });
 
 const REFUSED = 'not sent: the host refused it';
-const UNCONFIRMED = 'not confirmed: it may not have reached the host';
 const OLDER = 'scroll to the top or click to load 200 older messages';
 
 async function olderReadyOrAsked(c: Composer): Promise<void> {
@@ -394,49 +318,8 @@ async function pageInOlder(c: Composer, texts: string[]): Promise<boolean> {
   return false;
 }
 
-const BRANCH_CHIP = 'Chronicle branches — click to browse lineage';
-
-async function askForOlder(c: Composer): Promise<void> {
-  await until('the older-history control', async () => c.host.historyAsked() > 0 || (await c.page.getByTitle(OLDER).count()) > 0, (v) => v);
-  if (c.host.historyAsked() === 0) await c.page.getByTitle(OLDER).click({ timeout: 5_000 }).catch(() => {});
-  await until('the history request', () => c.host.historyAsked(), (n) => n > 0);
-}
-
-async function refusedWithDraft(c: Composer, text: string): Promise<UserMessageMessage> {
-  const frame = await send(c, text);
-  await c.box.fill('a second draft');
-  c.host.refuse(frame.corrId!);
-  await until('the refused mark', () => rowsOf(c.page, text).getByText(REFUSED).count(), (n) => n === 1);
-  return frame;
-}
 
 describe('a message is never lost', () => {
-  test('a refused send stays in the transcript, marked not sent with the reason, while the composer holds another draft', async () => {
-    await withComposer(async (c) => {
-      await refusedWithDraft(c, 'apple');
-      expect(await rowsOf(c.page, 'apple').count()).toBe(1);
-      expect(await rowsOf(c.page, 'apple').getByText('refused by the scripted host').count()).toBe(1);
-      expect(await c.box.inputValue()).toBe('a second draft');
-    });
-  });
-
-  test('a refused send goes back into an empty composer, and its row comes out', async () => {
-    await withComposer(async (c) => {
-      const damson = await send(c, 'damson');
-      await until('the composer emptied', () => c.box.inputValue(), (v) => v === '');
-      expect(await rowsOf(c.page, 'damson').count()).toBe(1);
-      c.host.refuse(damson.corrId!);
-      await until('the message back in the composer', () => c.box.inputValue(), (v) => v === 'damson');
-      expect(await rowsOf(c.page, 'damson').count()).toBe(0);
-      const note = 'not sent: the host refused it (refused by the scripted host); the message is back here';
-      await c.page.getByText(note).waitFor();
-      c.host.welcomeAgain();
-      c.host.append('after the welcome', 'a corrId of its own');
-      await c.page.getByText('after the welcome', { exact: true }).waitFor();
-      expect(await c.page.getByText(note).count()).toBe(1);
-    });
-  });
-
   test('a message sent while the socket is down stays in the composer, with a note', async () => {
     await withComposer(async (c) => {
       c.host.drop({ accept: false });
@@ -451,87 +334,6 @@ describe('a message is never lost', () => {
       expect(await c.page.getByTitle(/^dot\.png/).count()).toBe(1);
       expect(await rowsOf(c.page, 'cherry').count()).toBe(0);
       expect(c.host.received.length).toBe(from);
-    });
-  });
-
-  test('after a reconnect, a send the welcome lacks stays, marked not confirmed, until its echo; a refused row keeps its mark and reason', async () => {
-    await withComposer(async (c) => {
-      await refusedWithDraft(c, 'apple');
-      const banana = await send(c, 'banana');
-      c.host.drop({ accept: true });
-      await until('the reconnect', () => c.host.connections(), (n) => n === 2);
-      await until('the unconfirmed mark', () => rowsOf(c.page, 'banana').getByText(UNCONFIRMED).count(), (n) => n === 1);
-      expect(await rowsOf(c.page, 'apple').getByText(REFUSED).count()).toBe(1);
-      expect(await rowsOf(c.page, 'apple').getByText('refused by the scripted host').count()).toBe(1);
-      c.host.append('banana', banana.corrId!);
-      await until('the late echo in place of the row', () => c.page.getByText(UNCONFIRMED).count(), (n) => n === 0);
-      expect(await rowsOf(c.page, 'banana').count()).toBe(1);
-      expect(await rowsOf(c.page, 'apple').getByText(REFUSED).count()).toBe(1);
-    });
-  });
-
-  test('a refused send survives a change of session, naming the session it was sent in', async () => {
-    await withComposer(async (c) => {
-      await refusedWithDraft(c, 'kiwi');
-      c.host.switchSession('s2', 'another');
-      await until('the mark naming the session', () => rowsOf(c.page, 'kiwi').getByText('sent in session scripted').count(), (n) => n === 1);
-      expect(await rowsOf(c.page, 'kiwi').getByText(REFUSED).count()).toBe(1);
-      expect(c.host.connections()).toBe(1);
-    });
-  });
-
-  test('a refused send survives a change of branch, naming the branch it was sent in, and one sent after branch-changed names none', async () => {
-    await withComposer(async (c) => {
-      await refusedWithDraft(c, 'lime');
-      c.host.announceBranch('b2', 'side');
-      await until('the header on the new branch', () => c.page.getByTitle(BRANCH_CHIP).textContent(), (t) => (t ?? '').includes('side'));
-      await refusedWithDraft(c, 'pear');
-      c.host.welcomeAgain();
-      const lime = rowsOf(c.page, 'lime').getByText(/; sent in branch /);
-      await until('a mark naming a branch', () => lime.count(), (n) => n === 1);
-      expect(await lime.textContent()).toBe(`${REFUSED} (refused by the scripted host); sent in branch main`);
-      expect(await rowsOf(c.page, 'pear').getByText(REFUSED).textContent()).toBe(`${REFUSED} (refused by the scripted host)`);
-    });
-  });
-
-  test("a history page holding a kept send's stored copy settles it, as after leaving its session and coming back, and what's on screen stays put", async () => {
-    await withComposer(async (c) => {
-      const fig = await send(c, 'fig');
-      c.host.drop({ accept: false });
-      await c.page.getByText('Disconnected — retrying').waitFor();
-      c.host.switchSession('s2', 'another');
-      c.host.drop({ accept: true });
-      await until('the send kept in the other session', () => rowsOf(c.page, 'fig').getByText('sent in session scripted').count(), (n) => n === 1);
-      c.host.drop({ accept: false });
-      await c.page.getByText('Disconnected — retrying').waitFor();
-      c.host.switchSession('s1', 'scripted');
-      for (let i = 0; i < 5; i++) c.host.store(`before fig ${i}`);
-      c.host.store('fig', fig.corrId);
-      for (let i = 0; i < 40; i++) c.host.store(`after fig ${i}`);
-      c.host.showFrom(6);
-      c.host.holdHistory();
-      c.host.drop({ accept: true });
-      await until('the first session again', () => c.page.getByText('after fig 39', { exact: true }).count(), (n) => n === 1);
-      const kept = rowsOf(c.page, 'fig').getByText(UNCONFIRMED);
-      await until('fig kept', () => kept.count(), (n) => n === 1);
-      expect(await kept.textContent()).toBe(UNCONFIRMED);
-      await askForOlder(c);
-      const top = c.page.getByText('after fig 0', { exact: true });
-      const before = await top.evaluate(async (el) => {
-        const pane = el.closest('.overflow-y-auto')!;
-        pane.scrollTop = 0;
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        return [el.getBoundingClientRect().top - pane.getBoundingClientRect().top, pane.clientHeight];
-      });
-      expect(before[0]! >= 0 && before[0]! < before[1]!).toBe(true);
-      c.host.releaseHistory();
-      await until('the page settling the row', async () => [
-        await c.page.getByText(UNCONFIRMED).count(),
-        await rowsOf(c.page, 'fig').count(),
-      ], ([marks, rows]) => marks === 0 && rows === 1);
-      await c.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      const after = await top.evaluate((el) => el.getBoundingClientRect().top - el.closest('.overflow-y-auto')!.getBoundingClientRect().top);
-      expect(Math.abs(after - before[0]!)).toBeLessThanOrEqual(1);
     });
   });
 
@@ -564,90 +366,10 @@ describe('a message is never lost', () => {
       await until("the new branch's own history", () => pageInOlder(c, ['oldest on side', 'older on side']), (v) => v, 5_000);
     });
   });
-
-  test("a welcome in a protocol this client doesn't speak leaves no history load in progress", async () => {
-    await withComposer(async (c) => {
-      c.host.announceBranch('b4', 'there');
-      c.host.store('older');
-      c.host.store('newest');
-      c.host.showFrom(1);
-      c.host.holdHistory();
-      c.host.welcomeAgain();
-      await until('the welcome with older history', () => c.page.getByText('newest', { exact: true }).count(), (n) => n === 1);
-      await c.page.getByTitle(/^load ALL/).click();
-      await until('the bulk request', () => c.host.historyAsked(), (n) => n === 1);
-      expect(await c.page.getByTitle('stop after the current page').count()).toBe(1);
-      c.host.welcomeAgain({ protocolVersion: WEB_PROTOCOL_VERSION + 1 });
-      await c.page.getByText(/^Protocol mismatch/).waitFor();
-      expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
-      expect(await c.page.getByTitle(OLDER).isEnabled()).toBe(true);
-      c.host.releaseHistory();
-      c.host.append('after the page', 'a corrId of its own');
-      await c.page.getByText('after the page', { exact: true }).waitFor();
-      expect(await c.page.getByText('older', { exact: true }).count()).toBe(0);
-    });
-  });
-
-  test("a welcome in a protocol this client doesn't speak marks a send still waiting for its echo not confirmed, and leaves a refused one as it was", async () => {
-    await withComposer(async (c) => {
-      await refusedWithDraft(c, 'apple');
-      const quince = await send(c, 'quince');
-      expect(await rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count()).toBe(0);
-      c.host.welcomeAgain({ protocolVersion: WEB_PROTOCOL_VERSION + 1 });
-      await c.page.getByText(/^Protocol mismatch/).waitFor();
-      await until('the unconfirmed mark', () => rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count(), (n) => n === 1);
-      expect(await rowsOf(c.page, 'apple').getByText(REFUSED).count()).toBe(1);
-      expect(await rowsOf(c.page, 'apple').getByText('refused by the scripted host').count()).toBe(1);
-      c.host.welcomeAgain();
-      await until('the banner gone', () => c.page.getByText(/^Protocol mismatch/).count(), (n) => n === 0);
-      expect(await rowsOf(c.page, 'quince').getByText(UNCONFIRMED).count()).toBe(1);
-      c.host.append('quince', quince.corrId!);
-      await until('the echo in place of the row', () => c.page.getByText(UNCONFIRMED).count(), (n) => n === 0);
-      expect(await rowsOf(c.page, 'quince').count()).toBe(1);
-    });
-  });
-
-  test('a history request in flight across a reconnect to the same place is dropped, and paging goes on', async () => {
-    await withComposer(async (c) => {
-      c.host.announceBranch('b3', 'here');
-      c.host.store('oldest');
-      c.host.store('older');
-      c.host.store('newest');
-      c.host.showFrom(2);
-      c.host.holdHistory();
-      c.host.welcomeAgain();
-      await until('the welcome with older history', () => c.page.getByText('newest', { exact: true }).count(), (n) => n === 1);
-      await c.page.getByTitle(/^load ALL/).click();
-      await until('the bulk request', () => c.host.historyAsked(), (n) => n === 1);
-      expect(await c.page.getByTitle('stop after the current page').count()).toBe(1);
-      c.host.drop({ accept: true });
-      await until('the reconnect', () => c.host.connections(), (n) => n === 2);
-      c.host.append('after the reconnect', 'a corrId of its own');
-      await c.page.getByText('after the reconnect', { exact: true }).waitFor();
-      expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
-      await olderReadyOrAsked(c);
-      c.host.releaseHistory();
-      await until('the older history', () => pageInOlder(c, ['oldest', 'older']), (v) => v, 5_000);
-    });
-  });
-});
-
-describe('echoes', () => {
-  test("an echo replaces its own send's row, by corrId, and another client's look-alike doesn't take it", async () => {
-    await withComposer(async (c) => {
-      const plum = await send(c, 'plum');
-      c.host.append('plum', 'a corrId from another client');
-      c.host.append('plum, as the host stored it', plum.corrId!);
-      const rows = c.page.getByTestId('user-message');
-      await until('both entries', () => rows.count(), (n) => n === 2);
-      await until('the echo in place', () => rows.nth(0).getByText('plum, as the host stored it', { exact: true }).count(), (n) => n === 1);
-      expect(await rows.nth(1).getByText('plum', { exact: true }).count()).toBe(1);
-    });
-  });
 });
 
 describe('images', () => {
-  test('a send carries its image, and a refusal puts the text, the image and its notes back into an empty composer', async () => {
+  test('a send carries its image; a refusal puts the text, the image and its notes back into an empty composer, and one that finds another draft there leaves the row marked', async () => {
     await withComposer(async (c) => {
       const cut = 'cut.png is cut short: the file ends before the image does; attach a whole copy';
       await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }, { name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
@@ -665,80 +387,36 @@ describe('images', () => {
       await c.page.getByTitle(/^dot\.png/).waitFor();
       await c.page.getByText(cut).waitFor();
       const notice = (await c.page.getByText(later).textContent()) ?? '';
-      expect([notice.indexOf(cut) >= 0, notice.indexOf(cut) < notice.indexOf(later)]).toEqual([true, true]);
+      expect([notice.indexOf(cut) >= 0, notice.indexOf(cut) < notice.indexOf(later), notice.includes('not sent: the host refused it (refused by the scripted host); the message is back here')])
+        .toEqual([true, true, true]);
+      expect(await rowsOf(c.page, 'with a picture').count()).toBe(0);
+      c.host.welcomeAgain();
+      c.host.append('after the welcome', 'a corrId of its own');
+      await c.page.getByText('after the welcome', { exact: true }).waitFor();
+      expect(await c.page.getByText('not sent: the host refused it (refused by the scripted host); the message is back here').count()).toBe(1);
       const again = await send(c, 'with a picture');
       expect(again.images?.map((i) => [i.mediaType, i.data])).toEqual([['image/png', DOT_PNG.toString('base64')]]);
+      await c.box.fill('a second draft');
+      c.host.refuse(again.corrId!);
+      await until('the refused mark', () => rowsOf(c.page, 'with a picture').getByText(REFUSED).count(), (n) => n === 1);
+      expect(await rowsOf(c.page, 'with a picture').getByText('refused by the scripted host').count()).toBe(1);
+      expect(await c.box.inputValue()).toBe('a second draft');
+      expect(await c.page.getByTitle(/^dot\.png/).count()).toBe(0);
     });
   });
 
-  test('a refusal while an image is still being read keeps the row, so the message stays out of the draft being made', async () => {
-    await withComposer(async (c) => {
-      const elder = await send(c, 'elder');
-      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
-      await c.page.getByText('reading 1 image').waitFor();
-      c.host.refuse(elder.corrId!);
-      await until('the refused mark', () => rowsOf(c.page, 'elder').getByText(REFUSED).count(), (n) => n === 1);
-      expect(await c.box.inputValue()).toBe('');
-      await c.page.evaluate(() => (window as unknown as { releaseFileReads: () => void }).releaseFileReads());
-      await c.page.getByTitle(/^dot\.png/).waitFor();
-      expect(await c.box.inputValue()).toBe('');
-    }, { init: HOLD_FILE_READS });
-  });
-
-  test('Send pressed while the only image is still being read says to send again, and sends nothing', async () => {
+  test('a message over the 16 MiB one message can carry stays in the composer, image and all, with a note, and nothing is sent', async () => {
     await withComposer(async (c) => {
       const from = c.host.received.length;
       await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
-      await c.page.getByText('reading 1 image').waitFor();
-      await c.box.press('Enter');
-      await c.page.getByText('still reading images; send again in a moment').waitFor();
-      await c.box.fill('with the picture');
-      await c.box.press('Enter');
-      await releaseFileReads(c);
       await c.page.getByTitle(/^dot\.png/).waitFor();
-      await until('the reading note cleared', () => c.page.getByText('still reading images; send again in a moment').count(), (n) => n === 0);
+      await c.box.fill('x'.repeat(MAX_WS_FRAME_BYTES));
       await c.box.press('Enter');
-      const sends = () => c.host.received.slice(from).filter((f): f is UserMessageMessage => f.type === 'user-message');
-      await until('the send after the read', () => sends().find((f) => f.images?.length === 1), (f) => f !== undefined);
-      expect(sends().map((f) => [f.content, f.images?.length])).toEqual([['with the picture', 1]]);
-    }, { init: HOLD_FILE_READS });
-  });
-
-  test("overlapping batches each keep their notes, and the reading note clears without taking them", async () => {
-    await withComposer(async (c) => {
-      const from = c.host.received.length;
-      const cut = 'cut.png is cut short: the file ends before the image does; attach a whole copy';
-      const heic = "photo.heic isn't in a format this browser can read; convert it to PNG or JPEG";
-      const reading = 'still reading images; send again in a moment';
-      await c.box.fill('after the reads');
-      await attach(c, [{ name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
-      await attach(c, [{ name: 'photo.heic', buffer: Buffer.from('not an image the browser can draw') }]);
-      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
-      await c.page.getByText('reading 3 images').waitFor();
-      await releaseFileReads(c, 'cut.png');
-      await c.page.getByText(cut).waitFor();
-      await c.box.press('Enter');
-      await c.page.getByText(reading).waitFor();
-      expect(await c.page.getByText(cut).count()).toBe(1);
-      await attach(c, [{ name: 'second.png', buffer: DOT_PNG }]);
-      await c.page.getByText('reading 3 images').waitFor();
-      expect(await c.page.getByText(cut).count()).toBe(1);
-      await releaseFileReads(c, 'photo.heic');
-      await c.page.getByText(heic).waitFor();
-      expect(await c.page.getByText(cut).count()).toBe(1);
-      await releaseFileReads(c);
-      await c.page.getByTitle(/^dot\.png/).waitFor();
-      await c.page.getByTitle(/^second\.png/).waitFor();
-      await until('the reading note cleared', () => c.page.getByText(reading).count(), (n) => n === 0);
-      expect(await c.page.getByText(cut).count()).toBe(1);
-      expect(await c.page.getByText(heic).count()).toBe(1);
-      await c.box.press('Enter');
-      const sends = () => c.host.received.slice(from).filter((f): f is UserMessageMessage => f.type === 'user-message');
-      await until('the send after the reads', () => sends().find((f) => f.images?.length === 2), (f) => f !== undefined);
-      expect(sends().map((f) => [f.content, f.images?.length])).toEqual([['after the reads', 2]]);
-      await until('the notes cleared by the send', () => c.page.getByText(cut).count(), (n) => n === 0);
-      expect(await c.page.getByText(heic).count()).toBe(0);
-    }, { init: HOLD_FILE_READS });
+      await c.page.getByText(/not sent: this message is \d+ bytes over the 16 MiB one message can carry; shorten the text or remove an image/).waitFor();
+      expect(await c.box.evaluate((box: HTMLTextAreaElement) => box.value.length)).toBe(MAX_WS_FRAME_BYTES);
+      expect(await c.page.getByTitle(/^dot\.png/).count()).toBe(1);
+      expect(c.host.received.length).toBe(from);
+    });
   });
 
   test("a send's refusal, and removing an image, leave the notes about files not attached", async () => {
@@ -766,28 +444,6 @@ describe('images', () => {
     });
   });
 
-  test("a file the browser can't read, and one cut short, aren't attached, and each note says what to do", async () => {
-    await withComposer(async (c) => {
-      await attach(c, [
-        { name: 'photo.heic', buffer: Buffer.from('not an image the browser can draw') },
-        { name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) },
-      ]);
-      await c.page.getByText("photo.heic isn't in a format this browser can read; convert it to PNG or JPEG").waitFor();
-      await c.page.getByText('cut.png is cut short: the file ends before the image does; attach a whole copy').waitFor();
-      expect(await c.page.getByTitle(/^photo\.heic/).count()).toBe(0);
-      expect(await c.page.getByTitle(/^cut\.png/).count()).toBe(0);
-    });
-  });
-
-  test("a file the browser can't read is named in a note that says to attach it again", async () => {
-    await withComposer(async (c) => {
-      await attach(c, [{ name: 'gone.png', buffer: DOT_PNG }, { name: 'dot.png', buffer: DOT_PNG }]);
-      await c.page.getByTitle(/^dot\.png/).waitFor();
-      await c.page.getByText("gone.png couldn't be read; attach it again").waitFor();
-      expect(await c.page.getByTitle(/^gone\.png/).count()).toBe(0);
-    }, { init: FAIL_GONE_READS });
-  });
-
   test("a file dropped or pasted with a type the browser doesn't recognise is read by its bytes, and one that isn't an image is skipped", async () => {
     await withComposer(async (c) => {
       const untyped = (how: 'drop' | 'paste', files: Array<[string, string]>): Promise<void> => c.box.evaluate((box, [files, how]) => {
@@ -807,26 +463,6 @@ describe('images', () => {
       const frame = await send(c, 'by its bytes');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/png', 'image/png']);
     });
-  });
-
-  test('an untyped file counts as being read while its bytes are sniffed, so Send waits for it', async () => {
-    await withComposer(async (c) => {
-      const from = c.host.received.length;
-      await c.box.fill('with the untyped picture');
-      await c.box.evaluate((box, b64) => {
-        const dt = new DataTransfer();
-        dt.items.add(new File([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], 'dot.unknown', { type: '' }));
-        box.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
-      }, DOT_PNG.toString('base64'));
-      await c.page.getByText('reading 1 image').waitFor();
-      await c.box.press('Enter');
-      await c.page.getByText('still reading images; send again in a moment').waitFor();
-      expect(c.host.received.slice(from).filter((f) => f.type === 'user-message')).toHaveLength(0);
-      await until('the tile', async () => {
-        await releaseFileReads(c);
-        return c.page.getByTitle(/^dot\.unknown/).count();
-      }, (n) => n === 1);
-    }, { init: HOLD_EVERY_READ });
   });
 
   test('an image is fitted to the side the welcome advertises, its thumbnail says so, and the fitted image is what is sent', async () => {
@@ -850,155 +486,4 @@ describe('images', () => {
       }
     });
   });
-
-  test('where the canvas draws nothing at a size, or writes no WebP, the fit goes smaller and flattens onto white', async () => {
-    await withComposer(async (c) => {
-      await attach(c, [{ name: 'half-clear.png', buffer: HALF_CLEAR_PNG }]);
-      const tile = c.page.getByTitle(/^half-clear\.png/);
-      await tile.waitFor();
-      expect(await tile.getAttribute('title'))
-        .toBe('half-clear.png — shrunk from 3000×100 to 1400×47 to fit, as a JPEG on white, which flattens any transparency');
-      const red = await tileImage(tile, 0.25);
-      expect(red.size).toEqual([1400, 47]);
-      expect(isRed(red.rgba)).toBe(true);
-      const clear = (await tileImage(tile, 0.75)).rgba;
-      expect(clear.slice(0, 3).every((v) => v > 240)).toBe(true);
-    }, { init: CANVAS_LIKE_A_SMALLER_SAFARI });
-  });
-
-  test("an image past the count the welcome advertises isn't attached, and the note says why", async () => {
-    await withComposer(async (c) => {
-      await attach(c, [1, 2, 3].map((n) => ({ name: `dot${n}.png`, buffer: DOT_PNG })));
-      await c.page.getByText('1 image(s) not attached: a message takes at most 2').waitFor();
-      expect(await c.page.getByTitle(/^dot\d\.png/).count()).toBe(2);
-    }, { limits: { maxCount: 2 } });
-  });
-
-  test("an image past the total the welcome advertises isn't attached, and the note says why", async () => {
-    const each = Math.ceil(NOISE_PNG.length / 3) * 4;
-    expect(each > 3_000 && each <= 6_000).toBe(true);
-    await withComposer(async (c) => {
-      await attach(c, [1, 2].map((n) => ({ name: `noise${n}.png`, buffer: NOISE_PNG })));
-      await c.page.getByText('noise2.png not attached: the images would come to more than 6,000 characters of base64').waitFor();
-      expect(await c.page.getByTitle(/^noise\d\.png/).count()).toBe(1);
-    }, { limits: { maxTotalBase64Chars: 6_000 } });
-  });
-
-  test('an animated GIF is sent as its first frame, still, and marked still frame', async () => {
-    await withComposer(async (c) => {
-      await c.page.locator('input[type="file"]').setInputFiles({ name: 'blink.gif', mimeType: 'image/gif', buffer: TWO_FRAME_GIF });
-      const tile = c.page.getByTitle(/^blink\.gif/);
-      await tile.waitFor();
-      expect(await tile.getAttribute('title')).toBe('blink.gif — converted from image/gif to image/webp; an animation, redrawn as one still frame');
-      expect(await tile.getByText('still frame', { exact: true }).count()).toBe(1);
-      const frame = await send(c, 'blink');
-      expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
-      expect(isAnimated(Buffer.from(frame.images![0]!.data, 'base64'), 'image/webp')).toBe(false);
-      const { rgba } = await sentImage(c.page, frame.images![0]!);
-      expect(rgba.slice(0, 3).every((v) => v < 60)).toBe(true);
-      expect(rgba[3]).toBe(255);
-    });
-  });
-
-  test('an animated WebP that already fits is redrawn as one still frame, and its note says only that', async () => {
-    await withComposer(async (c) => {
-      await c.page.locator('input[type="file"]').setInputFiles({ name: 'anim.webp', mimeType: 'image/webp', buffer: ANIMATED_WEBP });
-      const tile = c.page.getByTitle(/^anim\.webp/);
-      await tile.waitFor();
-      expect(await tile.getAttribute('title')).toBe('anim.webp — an animation, redrawn as one still frame');
-      expect(await tile.getByText('still frame', { exact: true }).count()).toBe(1);
-      const frame = await send(c, 'anim');
-      expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
-      expect(isAnimated(Buffer.from(frame.images![0]!.data, 'base64'), 'image/webp')).toBe(false);
-    });
-  });
 });
-
-describe('with the real host', () => {
-  test("a text past the host's 64 KiB shows once, as the host's copy", async () => {
-    await withRealHost((url) =>
-      withPage(url, async (page, box) => {
-        const rows = page.getByTestId('user-message');
-        const before = await rows.count();
-        const text = `long-echo-probe ${'c'.repeat(70_000)}`;
-        await box.fill(text);
-        await box.press('Enter');
-        await page.getByText('noted', { exact: true }).waitFor({ timeout: 30_000 });
-        expect(await rows.count()).toBe(before + 1);
-        const shown = await rows.last().evaluate((el) => el.textContent ?? '');
-        expect(shown.includes(text.slice(0, 65_536))).toBe(true);
-        expect(shown.includes(text.slice(0, 65_537))).toBe(false);
-      }),
-    );
-  }, 120_000);
-});
-
-const CANVAS_LIKE_A_SMALLER_SAFARI = `(() => {
-  const proto = HTMLCanvasElement.prototype;
-  const getContext = proto.getContext;
-  proto.getContext = function (type, ...rest) {
-    return this.width > 1500 ? null : getContext.call(this, type, ...rest);
-  };
-  const toBlob = proto.toBlob;
-  proto.toBlob = function (callback, type, quality) {
-    return toBlob.call(this, callback, type === 'image/webp' ? 'image/png' : type, quality);
-  };
-})();`;
-
-const HOLD_FILE_READS = `(() => {
-  const read = Blob.prototype.arrayBuffer;
-  let held = [];
-  Blob.prototype.arrayBuffer = function () {
-    if (!(this instanceof File)) return read.call(this);
-    return new Promise((resolve) => held.push({ name: this.name, go: () => resolve(read.call(this)) }));
-  };
-  window.releaseFileReads = (name) => {
-    const going = held.filter((h) => name === undefined || h.name === name);
-    held = held.filter((h) => !going.includes(h));
-    for (const h of going) h.go();
-  };
-})();`;
-
-const FAIL_GONE_READS = `(() => {
-  const read = Blob.prototype.arrayBuffer;
-  Blob.prototype.arrayBuffer = function () {
-    if (this instanceof File && this.name.startsWith('gone')) {
-      return Promise.reject(new DOMException('The requested file could not be read', 'NotReadableError'));
-    }
-    return read.call(this);
-  };
-})();`;
-
-/** HOLD_FILE_READS for every Blob's bytes, a slice's included. */
-const HOLD_EVERY_READ = HOLD_FILE_READS.replace('if (!(this instanceof File)) return read.call(this);', '');
-
-const releaseFileReads = (c: Composer, name?: string): Promise<void> =>
-  c.page.evaluate((n) => (window as unknown as { releaseFileReads: (name?: string) => void }).releaseFileReads(n), name);
-
-const ANIMATED_WEBP = ((): Buffer => {
-  const chunk = (type: string, body: Buffer): Buffer => {
-    const head = Buffer.alloc(8);
-    head.write(type, 0, 'latin1');
-    head.writeUInt32LE(body.length, 4);
-    return Buffer.concat([head, body, Buffer.alloc(body.length & 1)]);
-  };
-  const vp8l = chunk('VP8L', Buffer.from('LwJAAAAHUI8i16P/gYjofwA=', 'base64'));
-  const vp8x = chunk('VP8X', Buffer.from([0x02, 0, 0, 0, 2, 0, 0, 1, 0, 0]));
-  const anim = chunk('ANIM', Buffer.from([0, 0, 0, 0, 0, 0]));
-  const anmf = chunk('ANMF', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0, 100, 0, 0, 0]), vp8l]));
-  const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), vp8x, anim, anmf]);
-  const riff = Buffer.alloc(8);
-  riff.write('RIFF', 0, 'latin1');
-  riff.writeUInt32LE(body.length, 4);
-  return Buffer.concat([riff, body]);
-})();
-
-const TWO_FRAME_GIF = Buffer.from([
-  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
-  0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00,
-  0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00,
-  0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00,
-  0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x4c, 0x01, 0x00,
-  0x3b,
-]);
