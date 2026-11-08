@@ -189,7 +189,8 @@ describe('what to check names where this host sends its calls', () => {
     expect(net({ provider: 'bedrock' }, { BEDROCK_BASE_URL: 'https://gate.example.com/bedrock/x' })).toBe('Check the network, any proxy, and BEDROCK_BASE_URL (set to gate.example.com).');
     expect(net({ provider: 'openai-codex' })).toBe('Check the network, any proxy, and CODEX_BASE_URL (not set, so the default).');
     expect(net({ provider: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' })).toBe("Check the network, any proxy, and the recipe's agent.baseUrl (set to localhost:11434).");
-    expect(net({ provider: 'openrouter' })).toBe('Check the network and any proxy.');
+    expect(net({ provider: 'openrouter' })).toBe('Check the network, any proxy, and OPENROUTER_BASE_URL (not set, so the default).');
+    expect(net({ provider: 'openrouter' }, { OPENROUTER_BASE_URL: 'https://gate.example.com/openrouter/v1' })).toBe('Check the network, any proxy, and OPENROUTER_BASE_URL (set to gate.example.com).');
     expect(net({ provider: 'mock' })).toBeUndefined();
   });
 

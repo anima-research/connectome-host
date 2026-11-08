@@ -368,9 +368,23 @@ export interface RecipeAgent {
    * prose bounces to a clipboard instead of auto-routing.
    * 'hybrid' = unprefixed prose keeps the current locus while an exact leading
    * `>>>destination` envelope routes through the authorized channel registry.
+   * 'locked' = plain text goes to one destination the agent chose, on every
+   * turn; only its `prose_locus` tool moves it, to a channel or to drafts
+   * (agent-framework docs/locked-prose-routing.md). An `allowedTools` list
+   * must name `prose_locus` for the agent to move it, and `drafts` for it to
+   * resend drafts; without a `proseLock`, a list that doesn't name
+   * `prose_locus` is refused. Refused beside `conversations`, whose forks
+   * speak in their home channel.
    * Default 'locus'.
    */
-  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+  /**
+   * Locked routing's destination until the agent chooses one with
+   * `prose_locus`: "#channel", "@person", a channel id or "drafts". Left out,
+   * plain text is held as drafts until the agent chooses. Refused under any
+   * other mode, which would ignore it.
+   */
+  proseLock?: string;
   /** Default-off containment of whole-response prose wrappers for known tools. */
   toolWrapperProseGuard?: boolean;
   /**
@@ -940,9 +954,12 @@ export interface RecipeModules {
      * What a forked or spawned stream is told at its start. `'full'`
      * (default) describes the launch and the stream's place in it, and
      * gives a fork the "two parallel streams of you" framing; `'none'` hands
-     * a spawn its task alone, and a fork its task after one line saying it
-     * is the forked stream. What a stream is told is the deployment's to
-     * decide, not the host's.
+     * a spawn its task alone; a fork with a parent agent its task after
+     * saying it is the forked stream and, where its prose routing isn't its
+     * parent's (a locked parent's fork runs disabled), what that routing is;
+     * and a fork with no parent agent its task after saying to return its
+     * findings with subagent--return. What a stream is told is the
+     * deployment's to decide, not the host's.
      */
     orientation?: 'full' | 'none';
     /**
@@ -1140,7 +1157,7 @@ export interface RecipeModules {
    * What the remote index holds: with `includePrivateTools` at the
    * framework default (true), the agent's think/journal/skip_reply prose is
    * indexed too. Search hits are checked against the CURRENT branch, so
-   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * /branchto, /checkout etc. hide rolled-back turns from results, but the remote
    * copy stays; `/session delete` removes only the local store, not the
    * remote namespace (the client has no namespace delete).
    */
@@ -1201,14 +1218,30 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
-   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
-   * the host mirrors the agent's streaming generation — chunks, block
-   * boundaries, activation start/end, tagged with the turn's channel — to
-   * the relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak
-   * it. Also handles the relay's `interruption` events: the just-posted
-   * Discord message is edited down to the words actually voiced, and a note
-   * lands in the agent's context. `token` should be `${VAR}`-substituted
-   * from .env, never literal.
+   * TTS relay tap (melodeus-tts-relay). Off by default. When set, the host
+   * sends the agent's turns (activation start/end, on the turn's channel)
+   * and each message its prose publishes on the server `editServerId` names
+   * (one text block, on the channel it was published to; a message that's
+   * only whitespace isn't sent) to the relay's `/bot` WebSocket, where
+   * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
+   * its thinking, tool calls and tool results, and messages sent by a tool
+   * call aren't sent, and nothing is sent while the host isn't connected to
+   * the relay, so a message published then isn't matched to an
+   * interruption. Also handles the relay's `interruption` events: the host
+   * edits at most one message it recently published in the interruption's
+   * channel, one the heard words match, to the text the client reports as
+   * voiced, and, with `notifyOnInterruption` on (its default), puts a note
+   * in the context of the agent voiced, when one agent can be named.
+   * Nothing is edited when no message matches, and no note is written when
+   * the messages that match are by more than one agent. What an agent wrote
+   * and didn't publish isn't voiced, so it holds back no edit. Messages are
+   * matched among each channel's latest 32, in the 32 channels published in
+   * last. A channel keeps the names of the agents voiced there, and of
+   * those whose messages it let go, a channel past those 32 or a message
+   * past its latest 32: until its next interruption, a message kept there
+   * is edited, and its author told, only when no other agent's messages
+   * were let go there. `token` should be `${VAR}`-substituted from .env,
+   * never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
@@ -1326,10 +1359,11 @@ export interface RecipeTtsRelay {
   userId?: string;
   /** Display name stamped on stream events. Defaults to the agent's name. */
   username?: string;
-  /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
+  /** MCPL server whose channels the relay voices, and which owns `edit_message` for interruption trims. Default 'discord'.
+   *  A message published on another server isn't voiced; the host logs a line naming that server at the first such message from it. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption trims a posted message. Default true. */
+  /** Whether an interruption puts a note in the context of the agent voiced, when one agent can be named, saying what was voiced and whether the posted message was trimmed. Default true. */
   notifyOnInterruption?: boolean;
 }
 
@@ -1489,10 +1523,12 @@ export type RecipeForkReader = Omit<ForkReaderConfig, 'strategyFactory' | 'frami
 export type RecipeSpeech = NonNullable<FrameworkConfig['speech']>;
 
 /**
- * Tune-out without a reader (agent-framework FrameworkConfig.tuneOut): offer
- * `tune_out` / `focus` to the resident when no `subconscious` is configured.
- * A hold is then silent — nothing summarizes or wakes the resident; the
- * backlog is released on cancel or when the duration ends.
+ * Tune-out settings (agent-framework FrameworkConfig.tuneOut): `announce`
+ * only. The resident is offered `tune_out` / `focus` only with a reader
+ * (`subconscious`); there is no silent hold. `enabled`, which offered them
+ * without a reader, was removed in agent-framework 0.33.0: validateRecipe
+ * refuses `enabled: true`, as the framework's `create` does, and lets
+ * `enabled: false` load, which the framework accepts and ignores.
  */
 export type RecipeTuneOut = NonNullable<FrameworkConfig['tuneOut']>;
 
@@ -1592,7 +1628,7 @@ export interface Recipe {
   subconscious?: RecipeSubconscious;
   /** Where plain prose lands when nothing names a destination (agent-framework `speech`). */
   speech?: RecipeSpeech;
-  /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
+  /** Tune-out settings (agent-framework `tuneOut`): `announce`. `tune_out` itself comes with `subconscious`. */
   tuneOut?: RecipeTuneOut;
   /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
    *  `derivationNotice`, so an agent isn't told of a derivation and
@@ -1973,7 +2009,7 @@ const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
   'toolWrapperProseGuard', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
@@ -2316,9 +2352,36 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.proseRouting !== 'locus' &&
     agent.proseRouting !== 'explicit' &&
     agent.proseRouting !== 'hybrid' &&
-    agent.proseRouting !== 'disabled'
+    agent.proseRouting !== 'disabled' &&
+    agent.proseRouting !== 'locked'
   ) {
-    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
+    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got ${JSON.stringify(agent.proseRouting)}.`);
+  }
+
+  if (agent.proseLock !== undefined && (typeof agent.proseLock !== 'string' || !agent.proseLock.trim())) {
+    throw new Error(
+      `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${JSON.stringify(agent.proseLock)}.`,
+    );
+  }
+  // Only locked routing reads it: under any other mode the lock would never
+  // apply, and nothing would say so.
+  if (agent.proseLock !== undefined && agent.proseRouting !== 'locked') {
+    throw new Error(
+      `Recipe agent.proseLock requires agent.proseRouting "locked", got ${agent.proseRouting === undefined ? 'no proseRouting (locus)' : JSON.stringify(agent.proseRouting)}.`,
+    );
+  }
+  if (
+    agent.proseRouting === 'locked' &&
+    agent.proseLock === undefined &&
+    Array.isArray(agent.allowedTools) &&
+    !agent.allowedTools.includes('prose_locus')
+  ) {
+    throw new Error(
+      'Recipe agent.proseRouting "locked" without agent.proseLock needs agent.allowedTools to name "prose_locus": ' +
+        "otherwise the agent can't move its prose lock, so its plain text stays held as drafts, or where it chose before, on every turn. " +
+        'Add "prose_locus" to allowedTools (and "drafts", to resend drafts), or, for an agent that hasn\'t chosen yet, set agent.proseLock ' +
+        '("drafts" to hold plain text on purpose); a choice it has made stays until prose_locus moves it.',
+    );
   }
 
   if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
@@ -2492,7 +2555,7 @@ export function validateRecipe(raw: unknown): Recipe {
   } else if (agent.baseUrl !== undefined) {
     throw new Error(
       `Recipe agent.baseUrl only applies to agent.provider 'openai-compatible' (got provider ${JSON.stringify(agent.provider ?? 'anthropic')}); ` +
-      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL.',
+      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL / CODEX_BASE_URL / OPENROUTER_BASE_URL.',
     );
   }
 
@@ -3272,6 +3335,9 @@ export function validateRecipe(raw: unknown): Recipe {
       if (typeof tr.token !== 'string' || !tr.token) {
         throw new Error('modules.ttsRelay.token must be a non-empty string (use ${VAR} substitution)');
       }
+      if (tr.editServerId !== undefined && (typeof tr.editServerId !== 'string' || !tr.editServerId)) {
+        throw new Error("modules.ttsRelay.editServerId must be a non-empty string, the key of the server the relay voices (leave it out for 'discord')");
+      }
     }
 
     if (mods.fleet && typeof mods.fleet === 'object') {
@@ -3458,15 +3524,26 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe tuneOut must be an object.');
     }
     const tuneOut = obj.tuneOut as Record<string, unknown>;
+    // `enabled` is still read, only to refuse true: agent-framework 0.33.0
+    // removed it (agent-framework#959) and refuses `enabled: true` at
+    // create, so a recipe stating it fails here instead of loading and
+    // exiting at create. `false` the framework still accepts and ignores,
+    // so it loads here too.
     for (const key of Object.keys(tuneOut)) {
       if (key !== 'enabled' && key !== 'announce') {
-        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: enabled, announce).`);
+        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: announce).`);
       }
     }
     for (const key of ['enabled', 'announce'] as const) {
       if (tuneOut[key] !== undefined && typeof tuneOut[key] !== 'boolean') {
         throw new Error(`Recipe tuneOut.${key} must be a boolean.`);
       }
+    }
+    if (tuneOut.enabled === true) {
+      throw new Error(
+        'Recipe tuneOut.enabled was removed in agent-framework 0.33.0 (tune-out without a reader): ' +
+          'remove tuneOut.enabled; to keep tune_out, configure a subconscious as well.',
+      );
     }
   }
 
@@ -3541,6 +3618,13 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error(
         'Recipe conversations.agentPrefix must be a non-empty string of [A-Za-z0-9_-] ' +
         '(it names fork agents and their Chronicle namespaces).',
+      );
+    }
+    if (agent.proseRouting === 'locked') {
+      throw new Error(
+        'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
+          'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
+          'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.',
       );
     }
   }

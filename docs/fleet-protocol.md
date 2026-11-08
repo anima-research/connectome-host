@@ -118,7 +118,7 @@ Types live in `IncomingCommand` (`src/modules/fleet-types.ts`).
 |---|---|---|
 | `subscribe` | `events: string[]` | **Replaces** the filter (not additive; `[]` blocks every non-exempt event). No reply. |
 | `text` | `content`, `from?` | Pushes an `external-message`, which requests inference; a recipe's wake gate may decline it, and then no turn starts. Without `from`, its `source` is `'headless'`, and the agent is told the message has no channel locus, so a plain-prose reply won't reach a chat surface. With `from: "console"`, as `connectome send` sends it, its `source` is `'cli'`, as batch mode's lines are, with no such note. A received text counts as activity, and stays in flight until a framework has processed it: the next `lifecycle:turn-work-done` and `lifecycle:idle` cover it (their `texts`). In a session switch, a text the replaced framework hadn't taken from its queue, and one the stopped framework refuses, goes to the new session's framework when the host follows the switch. If the switch fails, no framework runs, so those texts stay in flight, neither comes, and an `--exit-when-idle` host doesn't exit on its own. While a switch is under way the host isn't quiet, and a second switch is refused until it has finished, before any session is made or made active. |
-| `command` | `command` (e.g. `"/status"`), `corrId?` | Runs through the slash-command handler (`src/commands.ts`). Each output line comes back as a `command-output` event. With a `corrId`, each line carries it and a `command-done` ends the answer, after any follow-up the command awaits; without one, nothing marks the last line. `/quit` triggers shutdown, after the `command-done`. |
+| `command` | `command` (e.g. `"/status"`), `corrId?`, `from?` | Runs through the slash-command handler (`src/commands.ts`). With `from: "fleet"`, as `fleet--command` sends it, the operator log records the move, rollback, undo, redo or nudge the command makes as the fleet's; without it, as the headless socket's. Each output line comes back as a `command-output` event. With a `corrId`, each line carries it and a `command-done` ends the answer, after any follow-up the command awaits; without one, nothing marks the last line. `/quit` triggers shutdown, after the `command-done`. |
 | `shutdown` | `graceful?` | See Shutdown above. |
 | `describe` | `corrId?` | → `snapshot` |
 | `request-lessons` | `corrId?` | → `lessons-snapshot` |
@@ -327,9 +327,10 @@ Every `subscribe` the parent sends passes through `sendToChild`, which (unless
 the list already contains `*`) adds any event the tree reducer needs that no
 existing pattern covers. That set, `REDUCER_REQUIRED_EVENTS`, is derived from
 the reducer's handlers in `src/state/agent-tree-reducer.ts` — adding a handler
-extends it with no recipe edits — plus `usage:updated`, which the host forces.
-A recipe's `subscription` therefore means "events I want *in addition to* what
-rendering needs".
+extends it with no recipe edits — plus the events the host forces:
+`usage:updated`, and `window:undone` and `presentation:retracted`, at which
+the Web UI reads the child's panels again. A recipe's `subscription`
+therefore means "events I want *in addition to* what rendering needs".
 
 **Not forced:** `lifecycle` (needed by `fleet--await`), `inference:speech`
 (needed by `fleet--relay`) and `ops:alert`. A narrowed recipe must list the

@@ -20,7 +20,7 @@ function fakeFramework(options: {
   let fields: Partial<HostModeStatus> = {};
   const status = (): HostModeStatus => ({
     ...mode, drained: ended || reads >= (options.drainAfter ?? 0), activeTurns: 0, parkedAdmissions: 0, gatedRequests: 0,
-    backgroundScripts: 1, deferredWrites: 2, activeTurnAgents: ended ? [] : options.holders ?? [], ...fields,
+    backgroundScripts: 1, activeTurnAgents: ended ? [] : options.holders ?? [], ...fields,
   } as HostModeStatus);
   const framework: QuiesceFramework = {
     quiesce: async (opts = {}) => {
