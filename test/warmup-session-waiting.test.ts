@@ -2,11 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ContextManager } from '@animalabs/context-manager';
 import { AutobiographicalStrategy } from '@animalabs/agent-framework';
 import { SessionManager } from '../src/session-manager.js';
 
-const script = new URL('../scripts/warmup-session.ts', import.meta.url).pathname;
+const script = fileURLToPath(new URL('../scripts/warmup-session.ts', import.meta.url));
 const root = resolve(dirname(script), '..');
 
 const prose = (n: number, chars: number) => `Part ${n}. ` + 'The reading goes on through the long afternoon. '.repeat(Math.ceil(chars / 48)).slice(0, chars);
