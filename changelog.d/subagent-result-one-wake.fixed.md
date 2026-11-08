@@ -10,5 +10,5 @@
   told to its launcher as a line in its context, with a wake.
   `recipes/clerk.json`'s system prompt now says a fork's result or failure
   arrives as a message from the fork that wakes the resident, and one that
-  never started, or whose message can't be delivered, as an
+  couldn't be created, or whose message can't be delivered, as an
   `inference-request` scope event.
