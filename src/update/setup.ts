@@ -49,7 +49,7 @@ import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launch
 import {
   MOVE_ASIDE_BY_HAND, MOVE_ASIDE_REFUSED, MOVED_ASIDE_AFTERWARDS, bindChildren, bindingCheckLines, bindingOf, childPathsOf,
   childrenIn, childrenMove, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, movesPlaces, movingAside,
-  unfinishedTrialWords, workingDirOf, type MovedAside, type Moved, type Place,
+  unfinishedTrialWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 
@@ -295,8 +295,9 @@ function setupsOwn(root: string): boolean {
   return readdirSync(releases).every((name) => name.endsWith('.tmp') || existsSync(join(releases, name, HOST_ENTRY)));
 }
 
-const CHANGED_MEANWHILE = 'This install\'s record or the fleet\'s children file isn\'t what setup read before it held ' +
-  'the lock, so setup has changed neither. Run it again, and it reads them afresh.';
+const CHANGED_MEANWHILE = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
+  'backs, or the trial its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
+  'changed none of them. Run it again, and it reads them afresh.';
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -757,7 +758,6 @@ export function setup(options: SetupOptions): void {
     workingDir: binding === null && existing?.workingDir !== undefined ? existing.workingDir : workingDirOf(root),
   };
   let command: { path: string; pathLine: string | null };
-  let movedAside: MovedAside | null = null;
   if (binding !== null && bindShape !== null) {
     const rewrite = childrenMove(binding.children, bindShape);
     const locked = moving || rewrite;
@@ -765,15 +765,27 @@ export function setup(options: SetupOptions): void {
     try {
       if (locked) {
         const now = binding.served === null ? null : childrenIn(binding.served, binding.from, binding.to);
+        const keptNow = kept === null ? null : keptInRoot(root);
         if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
-          JSON.stringify(now?.value ?? null) !== JSON.stringify(binding.children?.value ?? null)) {
+          JSON.stringify(now?.value ?? null) !== JSON.stringify(binding.children?.value ?? null) ||
+          JSON.stringify(keptNow) !== JSON.stringify(kept) ||
+          (keptNow !== null && keptNow.found.length > 0 && unfinishedTrial(readJournal(root), readCurrent(root)) !== null)) {
           throw new ContractError(CHANGED_MEANWHILE);
         }
       }
       command = writeEntries();
       if (kept !== null && kept.found.length > 0) {
         const places = [dataDir, ...extraState, ...childPathsOf(binding).map((was) => mapPath(was, bindShape) ?? was)];
-        movedAside = moveAside(root, binding.to, [...new Set(places)], kept, new Date());
+        const { moved, outside } = moveAside(root, binding.to, [...new Set(places)], kept, new Date());
+        say('Moved aside what this install\'s updates and Go backs kept, which names places that aren\'t this install\'s now:');
+        for (const { from, to } of moved) say(`  ${from} → ${to}`);
+        say(MOVED_ASIDE_AFTERWARDS);
+        if (outside.length > 0) {
+          say(`Setup left these where they are, since they're outside ${binding.to}: each is what a Go back kept inside ` +
+            'a place outside it, which may be another install\'s. Where the place is this install\'s own, move it out ' +
+            'yourself, keeping what you want of it:');
+          for (const path of outside) say(`  ${path}`);
+        }
       }
       if (rewrite) bindChildren(binding.children!, bindShape);
       writeJsonAtomic(paths.install, written);
@@ -785,17 +797,6 @@ export function setup(options: SetupOptions): void {
     command = writeEntries();
   }
 
-  if (movedAside !== null) {
-    say('Moved aside what this install\'s updates and Go backs kept, which names places that aren\'t this install\'s now:');
-    for (const { from, to } of movedAside.moved) say(`  ${from} → ${to}`);
-    say(MOVED_ASIDE_AFTERWARDS);
-    if (movedAside.outside.length > 0) {
-      say(`Setup left these where they are, since they're outside ${binding!.to}: each is what a Go back kept inside a ` +
-        'place outside it, which may be another install\'s. Where the place is this install\'s own, move it out ' +
-        'yourself, keeping what you want of it:');
-      for (const path of movedAside.outside) say(`  ${path}`);
-    }
-  }
   if (settingUp) {
     say(`Set up ${root} as the install of ${readCurrent(root)} that serves ${dataDir}.`);
   } else if (binding !== null) {

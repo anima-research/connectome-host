@@ -64,13 +64,14 @@ export function childrenIn(dataDir: string, from: string | null, to: string): Ch
   if (!Array.isArray(children) || (boundTo !== undefined && typeof boundTo !== 'string')) {
     throw unbindable(`${path} names its places in a form this release can't read`, true);
   }
-  const bound = boundTo !== undefined && boundTo !== from;
+  const bound = boundTo !== undefined && !(from !== null && (boundTo === from || sameDirectory(boundTo, from)));
   if (bound && !sameDirectory(boundTo, to)) {
-    throw new ContractError(`The fleet's children file, ${path}, is bound to ${boundTo}, by a setup run there that was ` +
-      'cut off before it wrote this install\'s record, or that finished before a Go back to a release from before this ' +
-      `one, whose setup wrote the record without its directory. The install is in ${to} now, so the places that file ` +
-      `names are ${boundTo}'s. Setup has changed nothing. Move the install back to ${boundTo}, run setup there, which ` +
-      'binds it there again, and then move it.');
+    throw new ContractError(`The fleet's children file, ${path}, is bound to ${boundTo} by a setup run there, and this ` +
+      'install\'s record doesn\'t say it was bound there: that run was cut off before it wrote the record, or the ' +
+      'record was written again without its directory after that run, by the setup of a release from before this ' +
+      `one after a Go back, or by hand. The install is in ${to} now, so the places that file names are ${boundTo}'s. ` +
+      `Setup has changed nothing. Move the install back to ${boundTo}, run setup there, which binds it there again, ` +
+      'and then move it.');
   }
   return { path, value, paths: children.filter(isChildEntry).map((child) => child.dataDir), bound };
 }

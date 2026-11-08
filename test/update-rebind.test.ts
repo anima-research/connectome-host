@@ -506,6 +506,10 @@ describe('binding an install to the directory it is in', () => {
 });
 
 describe('what setup read before it held the lock', () => {
+  const changedMeanwhile = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
+    'backs, or the trial its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
+    'changed none of them. Run it again, and it reads them afresh.';
+
   test('a children file replaced after setup read it, before the lock, is refused as changed meanwhile, and nothing is rewritten', () => {
     setup(options(install));
     const children = (at: string) => join(at, 'data', 'fleet-children.json');
@@ -516,12 +520,41 @@ describe('what setup read before it held the lock', () => {
     const replaced: ChildrenFile = { v: 1, children: [{ name: 'd', pid: null, bootId: null, dataDir: join(install, 'data', 'other') }] };
     const restore = beforeTheLock(moved, () => writeJsonAtomic(children(moved), replaced));
     try {
-      expect(refusal(() => setup(options(moved)))).toBe('This install\'s record or the fleet\'s children file isn\'t what ' +
-        'setup read before it held the lock, so setup has changed neither. Run it again, and it reads them afresh.');
+      expect(refusal(() => setup(options(moved)))).toBe(changedMeanwhile);
     } finally {
       restore();
     }
     expect(readRecord<ChildrenFile>(children(moved), 'children file')).toEqual(replaced);
+    expect(record(moved)!.workingDir).toBe(install);
+  });
+
+  test('a copy that appears in the root after setup read it, or a trial begun meanwhile, is refused as changed meanwhile, and nothing is moved or bound', () => {
+    setup(options(install));
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    const appears = beforeTheLock(moved, () => {
+      mkdirSync(join(root, 'copy'));
+      writeFileSync(join(root, 'copy', 'copy.json'), '{}');
+    });
+    try {
+      expect(refusal(() => setup(options(moved)))).toBe(changedMeanwhile);
+    } finally {
+      appears();
+    }
+    expect(record(moved)!.workingDir).toBe(install);
+    const kept = tree(moved);
+    const begun = beforeTheLock(moved, () => writeFileSync(installPaths(root).journal, `${JSON.stringify({
+      v: 1, at: '2026-11-01T00:00:00Z', step: 'trial-start', from: '0.10.2', to: '0.11.0', outcome: 'ok', mark: 'm1',
+    })}\n`));
+    try {
+      expect(refusal(() => setup(options(moved, { moveAside: true })))).toBe(changedMeanwhile);
+    } finally {
+      begun();
+    }
+    const now = tree(moved);
+    delete now['connectome-host/journal.jsonl'];
+    expect(now).toEqual(kept);
     expect(record(moved)!.workingDir).toBe(install);
   });
 
@@ -537,7 +570,7 @@ describe('what setup read before it held the lock', () => {
         restore();
       }
     })();
-    expect(why).toContain('isn\'t what setup read before it held the lock, so setup has changed neither.');
+    expect(why).toBe(changedMeanwhile);
     expect(record(moved)!.workingDir).toBe(moved);
     expect(startOf(moved).exitCode).toBe(0);
   });
@@ -811,6 +844,25 @@ describe('what a moved or copied install\'s root keeps', () => {
     expect(record(moved)!.workingDir).toBe(moved);
   });
 
+  test('what was moved aside is said as soon as it is moved, so a binding stopped after the moves still names where each went', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    mkdirSync(`${installPaths(root).install}.tmp`);
+    said = [];
+    expect(() => setup(options(moved, { moveAside: true }))).toThrow(/install\.json\.tmp/);
+    const time = aside(root);
+    expect(said).toEqual([
+      'Moved aside what this install\'s updates and Go backs kept, which names places that aren\'t this install\'s now:',
+      `  ${join(root, 'set-aside', 'm2')} → ${join(root, 'moved-aside', time, 'set-aside', 'm2')}`,
+      `  ${join(root, 'copy')} → ${join(root, 'moved-aside', time, 'copy')}`,
+      afterwards,
+    ]);
+    expect(record(moved)!.workingDir).toBe(install);
+  });
+
   test('parseArgs reads --move-aside, which takes no value', () => {
     expect(parseArgs(['--move-aside', '--root', 'r']).moveAside).toBe(true);
     expect(parseArgs(['--root', 'r']).moveAside).toBe(false);
@@ -958,10 +1010,29 @@ describe('the fleet\'s children file', () => {
   });
 
   const boundElsewhere = (at: string, to: string) => `The fleet's children file, ${join(at, 'data', 'fleet-children.json')}, ` +
-    `is bound to ${to}, by a setup run there that was cut off before it wrote this install's record, or that ` +
-    'finished before a Go back to a release from before this one, whose setup wrote the record without its ' +
-    `directory. The install is in ${at} now, so the places that file names are ${to}'s. Setup has changed ` +
+    `is bound to ${to} by a setup run there, and this install's record doesn't say it was bound there: that run was ` +
+    'cut off before it wrote the record, or the record was written again without its directory after that run, by ' +
+    'the setup of a release from before this one after a Go back, or by hand. ' +
+    `The install is in ${at} now, so the places that file names are ${to}'s. Setup has changed ` +
     `nothing. Move the install back to ${to}, run setup there, which binds it there again, and then move it.`;
+
+  test('a stamp naming another spelling of the directory the record is bound to, through a link, is a finished binding\'s, so a copy binds the file', () => {
+    setup(options(install));
+    withChild(install, join(install, 'data', 'kids', 'c'), null);
+    const first = join(dir, 'first');
+    copyOf(install, first);
+    setup(options(first));
+    const spelling = join(dir, 'spelling');
+    symlinkSync(first, spelling);
+    writeJsonAtomic(installPaths(rootOf(first)).install,
+      { v: 1, dataDir: join(spelling, 'data'), extraState: [], workingDir: spelling });
+    const second = join(dir, 'second');
+    copyOf(first, second);
+    const kid = join(first, 'data', 'kids', 'c');
+    setup(options(second, { places: [{ from: kid, to: join(second, 'data', 'kids', 'c') }] }));
+    expect(childrenOf(second)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: join(second, 'data', 'kids', 'c') }]);
+    expect(stampOf(second)).toBe(second);
+  });
 
   test('a binding cut off after the children file, and the install then moved again, is refused as bound elsewhere, saying to bind it there again, and nothing changes', () => {
     setup(options(install));
