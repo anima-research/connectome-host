@@ -46,7 +46,7 @@ describe('channel-mode', () => {
       },
       removeGatePolicy: () => { steps.push('removeGatePolicy'); return opts.ruleExists ?? true; },
     } as never);
-    void m.start({
+    void m.start({ getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         steps.push(c.name);
         return failing.includes(c.name) ? { success: false, error: `${c.name} refused: Server not found: discord` } : { success: true };
@@ -140,7 +140,7 @@ describe('channel-mode', () => {
       'Channel discord:1:2 is only partly in mentions mode: its debounce rule was removed and it isn\'t pinned, ' +
       'and closing the channel failed (channel_close refused: Server not found: discord).',
     );
-    expect(removed.error).toContain('with the same channelId and mode to retry');
+    expect(removed.error).not.toContain('to retry');
     const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
   });
@@ -157,7 +157,7 @@ describe('channel-mode', () => {
   test('a step whose call threw may have taken effect, and the result says so', async () => {
     const m = new ChannelModeModule();
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { throw new Error('debounce rule refused'); }, removeGatePolicy: () => true } as never);
-    await m.start({
+    await m.start({ getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: false, error: `${c.name} refused` };
@@ -171,7 +171,7 @@ describe('channel-mode', () => {
 
     const m2 = new ChannelModeModule();
     m2.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
-    await m2.start({
+    await m2.start({ getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: true };
@@ -185,7 +185,7 @@ describe('channel-mode', () => {
     const m = new ChannelModeModule();
     const gate: string[] = [];
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { gate.push('add'); }, removeGatePolicy: () => true } as never);
-    await m.start({
+    await m.start({ getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') await m.stop();
         return { success: true };

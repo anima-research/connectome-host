@@ -22,6 +22,8 @@ export interface ChannelModeConfig {
 }
 
 type ChannelMode = 'debounced' | 'mentions';
+type ServerResolution = { serverId: string; connected: boolean } | { error: string };
+interface ChannelModeState { owners: Record<string, string> }
 
 interface StepResult {
   step: string;
@@ -36,6 +38,7 @@ export class ChannelModeModule implements Module {
   private ctx: ModuleContext | null = null;
   private framework: AgentFramework | null = null;
   private callSeq = 0;
+  private owners = new Map<string, string>();
 
   private readonly fallbackServerId: string;
   private readonly gcModuleName: string;
@@ -76,6 +79,7 @@ export class ChannelModeModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
+    this.owners = new Map(Object.entries(ctx.getState<ChannelModeState>()?.owners ?? {}));
   }
 
   async stop(): Promise<void> {
@@ -88,7 +92,7 @@ export class ChannelModeModule implements Module {
         name: 'set_channel_mode',
         description:
           'Set how a channel gets your attention, in one step. The owning MCPL server is resolved per channel; ' +
-          'Debounced mode requires a connected owner; mentions mode always attempts local cleanup, reporting any skipped close. ' +
+          'debounced mode requires a connected owner; mentions mode always attempts local cleanup and closes even a disconnected known owner. ' +
           '`mode: "debounced"` = wake on EVERY message but batched: it opens ' +
           'to the channel, adds a gate rule that debounces its ambient traffic ' +
           '(one wake after the burst settles), and pins the channel so it is never ' +
@@ -99,7 +103,8 @@ export class ChannelModeModule implements Module {
         inputSchema: {
           type: 'object',
           properties: {
-            channelId: { type: 'string', description: 'Channel id EXACTLY as it appears in incoming events (GateEventInfo.channelId). Examples: zulip:backend, slack:<teamId>:<channelId>, or the Discord MCPL-namespaced id discord:<guildId>:<channelId>, not a raw channel snowflake. Unregistered bare ids (no colon) or ids in the fallback server namespace may use the legacy server fallback (default discord). Unknown namespaces are refused, not routed to a different fallback; a raw id does not match namespaced incoming events; copy their exact id for a working debounce rule.' },
+            channelId: { type: 'string', description: 'Channel id EXACTLY as it appears in incoming events (GateEventInfo.channelId). Examples: zulip:backend, slack:<conversationId> (for example slack:C0123ABCD), or the Discord MCPL-namespaced id discord:<guildId>:<channelId>, not a raw channel snowflake. Unregistered bare ids (no colon) or ids in the fallback server namespace may use the legacy server fallback (default discord). Unknown namespaces are refused, not routed to a different fallback; a raw id does not match namespaced incoming events; copy their exact id for a working debounce rule.' },
+            serverId: { type: 'string', description: 'Optional owning MCPL server id; overrides inferred or saved ownership. Must name a known server or a registry owner. Use this when multiple servers register the same channelId.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms for debounced mode (100–300000). Checked whenever it is given, in either mode.' },
           },
@@ -114,6 +119,7 @@ export class ChannelModeModule implements Module {
     const input = (call.input ?? {}) as Record<string, unknown>;
     const channelId = input.channelId;
     const mode = input.mode;
+    const serverId = input.serverId;
     const given = input.debounceMs;
     const debounceMs = given === undefined
       ? this.defaultDebounceMs
@@ -141,6 +147,9 @@ export class ChannelModeModule implements Module {
         `not ${shown(given)}; leave it out for ${this.defaultDebounceMs}`,
       );
     }
+    if (serverId !== undefined && !(typeof serverId === 'string' && serverId.length > 0)) {
+      problems.push(`serverId must be a nonempty MCPL server id as text, not ${shown(serverId)}`);
+    }
     if (!channelOk || !modeOk || problems.length > 0) {
       return { success: false, error: `Nothing changed: ${problems.join('; ')}.`, isError: true };
     }
@@ -163,9 +172,13 @@ export class ChannelModeModule implements Module {
       };
     }
 
-    const resolved = this.resolveServer(channelId);
-    if (mode === 'debounced' && 'error' in resolved) {
-      return { success: false, error: `Nothing changed: ${resolved.error}`, isError: true };
+    const resolved = this.resolveServer(channelId,
+      (serverId as string | undefined) ?? (mode === 'mentions' ? this.owners.get(channelId) : undefined));
+    if (mode === 'debounced') {
+      const error = 'error' in resolved ? resolved.error : !resolved.connected
+        ? `MCPL server ${resolved.serverId} for channel ${channelId} is disconnected. Connect that server before retrying.`
+        : undefined;
+      if (error) return { success: false, error: `Nothing changed: ${error}`, isError: true };
     }
     const steps: StepResult[] =
       mode === 'debounced' && 'serverId' in resolved
@@ -180,7 +193,9 @@ export class ChannelModeModule implements Module {
         ? `${STEP_NAMES[s.step] ?? s.step} got no answer (${s.detail}), so it may or may not have taken effect`
         : `${STEP_NAMES[s.step] ?? s.step} failed (${s.detail})`)
       .join('; ');
-    const retry =
+    // The registry's close answer owns retry guidance (a deferred close needs
+    // no retry), even if the transport dropped after ownership was resolved.
+    const retry = mode === 'mentions' && failed.some(s => s.step === 'close' && !s.unanswered) ? '' :
       'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId and ' +
       (mode === 'debounced' ? `mode, and debounceMs ${debounceMs},` : 'mode') +
       ' to retry; if it fails the same way, ask whoever runs this host.';
@@ -191,9 +206,9 @@ export class ChannelModeModule implements Module {
           : `Channel ${channelId} set to mentions mode.`
         : worked.length === 0
           ? `${unsure ? `Channel ${channelId} may not have changed` : `Nothing changed for channel ${channelId}`}: ` +
-            `${failures}. ${retry}`
+            `${failures}.${retry ? ` ${retry}` : ''}`
           : `Channel ${channelId} ${unsure ? 'may be' : 'is'} only partly in ${mode} mode: ` +
-            `${listOf(worked.map(doneText))}, and ${failures}. ${retry}`;
+            `${listOf(worked.map(doneText))}, and ${failures}.${retry ? ` ${retry}` : ''}`;
 
     return {
       success: failed.length === 0,
@@ -207,17 +222,24 @@ export class ChannelModeModule implements Module {
     return {};
   }
 
-  private resolveServer(channelId: string): { serverId: string } | { error: string } {
+  private resolveServer(channelId: string, preferredServerId?: string): ServerResolution {
     const framework = this.framework!;
-    // Registry ownership is authoritative: channel ids need not begin with the
-    // connection id. GateEventInfo's source match also uses that serverId for
+    // Without an explicit/saved owner, registry ownership is authoritative:
+    // channel ids need not begin with the connection id. GateEventInfo's source match also uses that serverId for
     // both channels/incoming and push events (agent-framework's admission path).
     const owners = framework.channels?.listChannelsRaw()
       .filter(entry => entry.descriptor.id === channelId) ?? [];
-    if (owners.length > 1) {
-      return { error: `Channel ${channelId} is registered on multiple MCPL servers; ask your operator to give it a unique channel id.` };
-    }
     const servers = framework.listMcplServers();
+    if (preferredServerId !== undefined) {
+      const server = servers.find(server => server.id === preferredServerId);
+      if (!server && !owners.some(owner => owner.serverId === preferredServerId)) {
+        return { error: `MCPL server ${preferredServerId} for channel ${channelId} is unknown. Pass serverId naming a known server or a registry owner.` };
+      }
+      return { serverId: preferredServerId, connected: server?.connected === true };
+    }
+    if (owners.length > 1) {
+      return { error: `Channel ${channelId} is registered on multiple MCPL servers: ${owners.map(owner => owner.serverId).sort().join(', ')}. Pass serverId to select its owner.` };
+    }
     const colon = channelId.indexOf(':');
     const prefix = colon >= 0 ? channelId.slice(0, colon) : undefined;
     // A legacy bare id may fall back, but an unknown namespace must never be
@@ -229,10 +251,7 @@ export class ChannelModeModule implements Module {
     if (!owners.length && !server) {
       return { error: `Cannot resolve a known MCPL server for channel ${channelId}. Copy the exact registered channel id from incoming events; for legacy ids, ask your operator to configure modules.channelMode.serverId.` };
     }
-    if (!server?.connected) {
-      return { error: `MCPL server ${serverId} for channel ${channelId} is disconnected. Connect that server before retrying.` };
-    }
-    return { serverId };
+    return { serverId: serverId!, connected: server?.connected === true };
   }
 
   private policyName(channelId: string): string {
@@ -241,6 +260,10 @@ export class ChannelModeModule implements Module {
 
   private async applyDebounced(channelId: string, serverId: string, debounceMs: number): Promise<StepResult[]> {
     const steps: StepResult[] = [];
+    // Retain the last debounced owner, including after mentions cleanup, so
+    // a removed server's id can never silently retarget a repeated cleanup.
+    this.owners.set(channelId, serverId);
+    this.ctx!.setState<ChannelModeState>({ owners: Object.fromEntries(this.owners) });
 
     steps.push(await this.callToolStep('open', 'channel_open', { channelId, serverId }));
 
@@ -274,7 +297,7 @@ export class ChannelModeModule implements Module {
     return steps;
   }
 
-  private async applyMentions(channelId: string, resolved: { serverId: string } | { error: string }): Promise<StepResult[]> {
+  private async applyMentions(channelId: string, resolved: ServerResolution): Promise<StepResult[]> {
     const steps: StepResult[] = [];
 
     // agent-framework sends a removed rule's pending batch.

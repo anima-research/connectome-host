@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { ChannelRegistry, EventGate, type AgentFramework, type ModuleContext, type ToolCall } from '@animalabs/agent-framework';
+import { ChannelRegistry, EventGate, AgentFramework, type ModuleContext, type ToolCall } from '@animalabs/agent-framework';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChannelModeModule } from '../src/modules/channel-mode-module.js';
+import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { SubscriptionGcModule } from '../src/modules/subscription-gc-module.js';
 
 type Rule = { name: string; match: { source: string; channel: string } };
@@ -24,7 +25,7 @@ function wired(options: {
     addGatePolicy: (rule: Rule) => { rules.set(rule.name, rule); },
     removeGatePolicy: (name: string) => { removed.push(name); return rules.delete(name); },
   } as unknown as AgentFramework);
-  void m.start({ callTool: async (call: ToolCall) => {
+  void m.start({ getState: () => undefined, setState: () => {}, callTool: async (call: ToolCall) => {
     calls.push(call);
     return call.name === 'channel_close' && options.closeError
       ? { success: false, error: options.closeError } : { success: true };
@@ -35,39 +36,89 @@ function wired(options: {
   return { m, calls, rules, removed, set };
 }
 
-describe('channel-mode server ownership', () => {
-  test('real registry ownership produces a rule matched by the real event gate for incoming and push events', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'channel-mode-'));
-    const channels = new ChannelRegistry({ getServer: () => undefined } as never, {} as never, () => {}, () => {});
-    const gate = new EventGate({
-      configPath: join(dir, 'gate.json'), emitTrace: () => {}, addMessage: () => {},
-      requestInference: () => {}, getAgentNames: () => ['test'],
-    });
+// Lifecycle stubs model a real transport: requests cannot succeed while down.
+function registryWired(ids = ['zulip', 'discord', 'slack']) {
+  const sent: Array<{ serverId: string; method: string }> = [];
+  const servers = ids.map(id => ({
+    id, isConnected: true, willReconnect: true,
+    grant: { has: (path: string) => path === 'channels.lifecycle' },
+    sendChannelsOpen: async ({ channelId }: { channelId: string }) => {
+      if (!servers.find(s => s.id === id)!.isConnected) throw new Error('transport closed');
+      sent.push({ serverId: id, method: 'channels/open' });
+      return { channelId };
+    },
+    sendChannelsClose: async () => {
+      if (!servers.find(s => s.id === id)!.isConnected) throw new Error('transport closed');
+      sent.push({ serverId: id, method: 'channels/close' });
+      return {};
+    },
+  }));
+  const channels = new ChannelRegistry({ getServer: (id: string) => servers.find(s => s.id === id) } as never, {} as never, () => {}, () => {});
+  const rules = new Map<string, Rule>();
+  const calls: ToolCall[] = [];
+  let saved: unknown;
+  const framework = {
+    channels, listMcplServers: () => servers.map(s => ({ id: s.id, connected: s.isConnected })),
+    addGatePolicy: (r: Rule) => { rules.set(r.name, r); },
+    removeGatePolicy: (name: string) => rules.delete(name),
+  } as unknown as AgentFramework;
+  const createModule = async () => {
     const m = new ChannelModeModule();
+    m.setFramework(framework);
+    await m.start({
+      getState: () => structuredClone(saved), setState: (state: unknown) => { saved = structuredClone(state); },
+      callTool: async (call: ToolCall) => {
+        calls.push(call);
+        return call.name.startsWith('subscription-gc--') ? { success: true }
+          : channels.handleChannelToolCall(call.name, call.input, { kind: 'module' });
+      },
+    } as unknown as ModuleContext);
+    return m;
+  };
+  const set = (m: ChannelModeModule, channelId: string, mode = 'debounced', serverId?: string) =>
+    m.handleToolCall({ id: 'real', name: 'set_channel_mode', input: { channelId, mode, serverId } });
+  const register = (serverId: string, id: string) => channels.handleRegister(serverId, { channels: [{ id, label: id }] } as never);
+  return { channels, servers, rules, calls, sent, framework, createModule, set, register, saved: () => saved };
+}
+
+describe('channel-mode server ownership', () => {
+  test('real lifecycle and framework push routing match the registry owner, not the prefix', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'channel-mode-'));
+    const w = registryWired();
+    const fw = await AgentFramework.create({
+      storePath: join(dir, 'store'), membrane: new Membrane(new MockAdapter()),
+      agents: [{ name: 'test', model: 'mock', systemPrompt: 'test' }], modules: [],
+      gate: { configPath: join(dir, 'gate.json'), onboarding: false },
+    });
+    const gate = (fw as unknown as { eventGate: EventGate }).eventGate;
+    const m = await w.createModule();
+    m.setFramework({ channels: w.channels, listMcplServers: w.framework.listMcplServers,
+      addGatePolicy: fw.addGatePolicy.bind(fw), removeGatePolicy: fw.removeGatePolicy.bind(fw),
+    } as unknown as AgentFramework);
     try {
       // The descriptor prefix deliberately differs from the owning connection.
-      await channels.handleRegister('slack', { channels: [{ id: 'zulip:backend', label: 'Backend' }] } as never);
-      m.setFramework({
-        channels, listMcplServers: () => [{ id: 'slack', connected: true }, { id: 'zulip', connected: true }],
-        addGatePolicy: gate.addPolicy.bind(gate), removeGatePolicy: gate.removePolicy.bind(gate),
-      } as unknown as AgentFramework);
-      await m.start({ callTool: async () => ({ success: true }) } as unknown as ModuleContext);
-      expect((await m.handleToolCall({ id: 'real', name: 'set_channel_mode', input: { channelId: 'zulip:backend', mode: 'debounced' } })).success).toBe(true);
+      await w.register('slack', 'zulip:backend');
+      expect((await w.set(m, 'zulip:backend')).success).toBe(true);
       for (const eventType of ['mcpl:channel-incoming', 'mcpl:push-event']) {
-        const event = { content: 'ambient', eventType, serverId: 'slack', channelId: 'zulip:backend', tags: ['chat:ambient'] };
+        // Pushes carry the composite id in origin metadata, not channelId.
+        // This exercises the framework's resolveRouteChannel/derivePushEventChannel.
+        const event = { content: 'ambient', eventType, serverId: 'slack',
+          channelId: eventType === 'mcpl:push-event' ? 'backend' : 'zulip:backend',
+          metadata: { mcplChannelId: 'zulip:backend' }, tags: ['chat:ambient'] };
         expect(gate.probe(event).policyName).toBe('channel-mode:debounced:zulip:backend');
         expect(gate.probe({ ...event, serverId: 'zulip' }).policyName).toBeNull();
       }
-      expect((await m.handleToolCall({ id: 'revert', name: 'set_channel_mode', input: { channelId: 'zulip:backend', mode: 'mentions' } })).success).toBe(true);
+      expect((await w.set(m, 'zulip:backend', 'mentions')).success).toBe(true);
       expect(gate.probe({ content: 'ambient', eventType: 'mcpl:channel-incoming', serverId: 'slack', channelId: 'zulip:backend', tags: ['chat:ambient'] }).policyName).toBeNull();
+      expect(w.sent.at(-1)).toEqual({ serverId: 'slack', method: 'channels/close' });
     } finally {
       await m.stop();
-      gate.dispose();
+      await fw.stop();
       rmSync(dir, { recursive: true, force: true });
     }
   });
   for (const [channelId, serverId] of [
-    ['zulip:backend', 'zulip'], ['slack:T123:C456', 'slack'], ['discord:guild:channel', 'discord'],
+    ['zulip:backend', 'zulip'], ['slack:C0123ABCD', 'slack'], ['discord:guild:channel', 'discord'],
   ]) {
     test(`${channelId}: open, gate source, and close use ${serverId}`, async () => {
       const w = wired();
@@ -83,9 +134,9 @@ describe('channel-mode server ownership', () => {
 
   test('mixed servers in one module keep distinct rules and remove only the requested rule', async () => {
     const w = wired();
-    for (const id of ['zulip:backend', 'slack:T:C', 'discord:g:c']) await w.set(id);
+    for (const id of ['zulip:backend', 'slack:C456', 'discord:g:c']) await w.set(id);
     expect([...w.rules.values()].map(r => r.match.source)).toEqual(['zulip', 'slack', 'discord']);
-    await w.set('slack:T:C', 'mentions');
+    await w.set('slack:C456', 'mentions');
     expect([...w.rules.values()].map(r => r.match.channel)).toEqual(['zulip:backend', 'discord:g:c']);
     expect(w.calls.filter(c => c.name === 'channel_open' || c.name === 'channel_close').map(c => c.input.serverId))
       .toEqual(['zulip', 'slack', 'discord', 'slack']);
@@ -177,7 +228,7 @@ describe('channel-mode server ownership', () => {
           channels, listMcplServers: () => [{ id: 'discord', connected: true }],
           addGatePolicy: gate.addPolicy.bind(gate), removeGatePolicy: gate.removePolicy.bind(gate),
         } as unknown as AgentFramework);
-        await m.start({ callTool: async (call: ToolCall) => {
+        await m.start({ getState: () => undefined, setState: () => {}, callTool: async (call: ToolCall) => {
           calls.push(call);
           return call.name.startsWith('subscription-gc--')
             ? gc.handleToolCall({ ...call, name: call.name.split('--')[1]! })
@@ -214,13 +265,20 @@ describe('channel-mode server ownership', () => {
     });
   }
 
-  test('single-Discord recipe without serverId still accepts a legacy raw id', async () => {
-    const w = wired({ servers: [{ id: 'discord', connected: true }] });
-    const channelId = '123456789012345678';
-    expect((await w.set(channelId)).success).toBe(true);
-    expect(w.calls[0]).toMatchObject({ name: 'channel_open', input: { channelId, serverId: 'discord' } });
-    expect((await w.set(channelId, 'mentions')).success).toBe(true);
-    expect(w.calls[2]).toMatchObject({ name: 'channel_close', input: { channelId, serverId: 'discord' } });
+  test('real registry accepts Slack conversation ids and refuses an unregistered raw Discord snowflake', async () => {
+    const w = registryWired();
+    const m = await w.createModule();
+    await w.register('slack', 'slack:C0123ABCD');
+    await w.register('discord', 'discord:g:123456789012345678');
+    expect((await w.set(m, 'slack:C0123ABCD')).success).toBe(true);
+    expect(w.channels.getDesiredState('slack', 'slack:C0123ABCD')).toBe('open');
+    expect((await w.set(m, 'slack:C0123ABCD', 'mentions')).success).toBe(true);
+    const raw = await w.set(m, '123456789012345678');
+    // Legacy routing remains, but the registry must not pretend this id exists.
+    expect(raw.success).toBe(false);
+    expect((raw.data as { steps: Array<{ step: string; ok: boolean }> }).steps[0]).toMatchObject({ step: 'open', ok: false });
+    expect(w.channels.getDesiredState('discord', '123456789012345678')).toBeUndefined();
+    await m.stop();
   });
 
   test('debounced refuses unknown, disconnected, and ambiguous ownership before any step', async () => {
@@ -244,20 +302,105 @@ describe('channel-mode server ownership', () => {
     }
   });
 
-  for (const registered of [false, true]) {
-    test(`mentions cleans up after disconnect (${registered ? 'registry' : 'prefix'} owner), without using fallback`, async () => {
-      const servers = [{ id: 'zulip', connected: true }, { id: 'discord', connected: true }];
-      const w = wired({ servers, fallback: 'discord', entries: registered ? [{ serverId: 'zulip', descriptor: { id: 'zulip:backend' } }] : [] });
-      await w.set('zulip:backend');
-      servers[0].connected = false;
-      w.calls.length = 0;
-      const result = await w.set('zulip:backend', 'mentions');
+  for (const [serverId, channelId] of [['zulip', 'zulip:backend'], ['discord', 'discord:g:c']]) {
+    test(`R1-1 mentions records a disconnected ${serverId} close and re-registration never reopens`, async () => {
+      const w = registryWired();
+      const m = await w.createModule();
+      await w.register(serverId, channelId);
+      expect((await w.set(m, channelId)).success).toBe(true);
+      expect(w.channels.getDesiredState(serverId, channelId)).toBe('open');
+      w.channels.transportClosed(serverId);
+      w.servers.find(s => s.id === serverId)!.isConnected = false;
+      const before = structuredClone(w.saved());
+      const refused = await w.set(m, channelId);
+      expect(refused.error).toContain('Nothing changed');
+      expect(w.saved()).toEqual(before);
+      const result = await w.set(m, channelId, 'mentions');
       expect(result.success).toBe(false);
-      expect(result.error).toContain('skipped');
-      expect(result.error).toMatch(/zulip.*disconnected/);
+      expect(result.error).toContain('no need to call channel_close again');
+      expect(result.error).not.toContain('to retry');
+      expect(w.channels.getDesiredState(serverId, channelId)).toBe('closed');
       expect(w.rules.size).toBe(0);
-      expect(w.removed).toEqual(['channel-mode:debounced:zulip:backend']);
-      expect(w.calls).toMatchObject([{ name: 'subscription-gc--pin_channel_idle_limit', input: { channelId: 'zulip:backend', pinned: false } }]);
+      expect(w.calls.at(-1)).toMatchObject({ input: { channelId, pinned: false } });
+      w.sent.length = 0;
+      w.servers.find(s => s.id === serverId)!.isConnected = true;
+      await w.register(serverId, channelId);
+      expect(w.sent).toEqual([{ serverId, method: 'channels/close' }]);
+      expect(w.channels.isChannelOpen({ serverId, channelId })).toBe(false);
+      await m.stop();
+    });
+  }
+
+  test('R1-4 explicit serverId disambiguates real registry owners and is validated', async () => {
+    const w = registryWired(['realm-a', 'realm-b']);
+    const m = await w.createModule();
+    for (const server of w.servers) await w.register(server.id, 'zulip:general');
+    const ambiguous = await w.set(m, 'zulip:general');
+    expect(ambiguous.error).toContain('realm-a, realm-b');
+    expect(ambiguous.error).toContain('Pass serverId');
+    expect(w.calls).toEqual([]);
+    expect((await w.set(m, 'zulip:general', 'debounced', 'realm-b')).success).toBe(true);
+    expect(w.rules.get('channel-mode:debounced:zulip:general')!.match.source).toBe('realm-b');
+    expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
+    expect(w.channels.getDesiredState('realm-a', 'zulip:general')).toBe('closed');
+    // Saved ownership also disambiguates mentions when serverId is omitted.
+    expect((await w.set(m, 'zulip:general', 'mentions')).success).toBe(true);
+    expect((await w.set(m, 'zulip:general', 'debounced', 'realm-b')).success).toBe(true);
+    expect((await w.set(m, 'zulip:general', 'mentions', 'realm-b')).success).toBe(true);
+    expect(w.sent.at(-1)).toEqual({ serverId: 'realm-b', method: 'channels/close' });
+    const count = w.calls.length;
+    expect((await w.set(m, 'zulip:general', 'debounced', 'missing')).error).toContain('missing');
+    expect(w.calls).toHaveLength(count);
+    for (const serverId of ['', 42, null]) {
+      const invalid = await m.handleToolCall({ id: 'invalid', name: 'set_channel_mode', input: { channelId: 'zulip:general', mode: 'debounced', serverId } });
+      expect(invalid.error).toContain('Nothing changed: serverId');
+    }
+    await m.stop();
+  });
+
+  test('explicit known server overrides a sole registry owner; mentions closes a known disconnected prefix without saved state', async () => {
+    const w = registryWired();
+    const m = await w.createModule();
+    await w.register('zulip', 'zulip:backend');
+    const wrongKnown = await w.set(m, 'zulip:backend', 'debounced', 'slack');
+    // A known connection is accepted, but the real registry refuses its missing channel.
+    expect((wrongKnown.data as { steps: Array<{ step: string; ok: boolean }> }).steps[0]).toMatchObject({ step: 'open', ok: false });
+    expect(w.calls[0]).toMatchObject({ input: { serverId: 'slack' } });
+    await w.register('zulip', 'zulip:other');
+    expect((await w.channels.handleChannelToolCall('channel_open', { serverId: 'zulip', channelId: 'zulip:other' }, { kind: 'module' })).success).toBe(true);
+    w.channels.transportClosed('zulip');
+    w.servers.find(s => s.id === 'zulip')!.isConnected = false;
+    const result = await w.set(m, 'zulip:other', 'mentions');
+    expect(result.error).toContain('no need to call channel_close again');
+    expect(w.channels.getDesiredState('zulip', 'zulip:other')).toBe('closed');
+    await m.stop();
+  });
+
+  for (const removeKnownServer of [false, true]) {
+    test(`R1-4 persisted owner prevents cleanup retargeting after removeServer (known removed: ${removeKnownServer})`, async () => {
+      const w = registryWired(['realm-a', 'realm-b']);
+      const m = await w.createModule();
+      await w.register('realm-a', 'zulip:general');
+      expect((await w.set(m, 'zulip:general')).success).toBe(true);
+      expect(w.saved()).toEqual({ owners: { 'zulip:general': 'realm-a' } });
+      await m.stop();
+      w.channels.removeServer('realm-a');
+      if (removeKnownServer) w.servers.splice(0, 1);
+      else w.servers[0].isConnected = false;
+      await w.register('realm-b', 'zulip:general');
+      const restarted = await w.createModule();
+      w.calls.length = 0;
+      const result = await w.set(restarted, 'zulip:general', 'mentions');
+      expect(result.success).toBe(false);
+      expect(w.rules.size).toBe(0);
+      expect(w.calls.filter(c => c.name === 'channel_close').map(c => c.input.serverId))
+        .toEqual(removeKnownServer ? [] : ['realm-a']);
+      expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('closed');
+      // An explicit override remains available to target the other owner.
+      expect((await w.set(restarted, 'zulip:general', 'debounced', 'realm-b')).success).toBe(true);
+      expect((await w.set(restarted, 'zulip:general', 'mentions')).success).toBe(true);
+      expect(w.sent.at(-1)).toEqual({ serverId: 'realm-b', method: 'channels/close' });
+      await restarted.stop();
     });
   }
 
@@ -296,7 +439,7 @@ describe('channel-mode server ownership', () => {
       try {
         expect(gate.probe(event).policyName).toBe(name);
         m.setFramework({ listMcplServers: () => [{ id: 'zulip', connected: true }], addGatePolicy: gate.addPolicy.bind(gate), removeGatePolicy: gate.removePolicy.bind(gate) } as unknown as AgentFramework);
-        await m.start({ callTool: async () => ({ success: true }) } as unknown as ModuleContext);
+        await m.start({ getState: () => undefined, setState: () => {}, callTool: async () => ({ success: true }) } as unknown as ModuleContext);
         expect((await m.handleToolCall({ id: 'reapply', name: 'set_channel_mode', input: { channelId, mode } })).success).toBe(true);
         expect(gate.probe(event).policyName).toBeNull();
         expect(gate.probe({ ...event, serverId: 'zulip' }).policyName).toBe(mode === 'debounced' ? name : null);
@@ -317,5 +460,8 @@ describe('channel-mode server ownership', () => {
     expect(schema).toContain('no colon');
     expect(schema).toContain('Unknown namespaces are refused');
     expect(schema).not.toContain('silently');
+    expect(schema).toContain('slack:<conversationId>');
+    expect(schema).not.toContain('teamId');
+    expect(schema).toContain('serverId');
   });
 });

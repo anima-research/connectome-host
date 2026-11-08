@@ -1272,10 +1272,19 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. Server ownership is resolved per channel from the registry,
-   * then a connected server matching its id prefix. `serverId` is an explicit
-   * fallback for otherwise unresolved ids; `toolPrefix` is deprecated and read
-   * by nothing. Unknown or ambiguous ownership refuses before any step.
+   * `false` disables. The tool's optional `serverId` selects a known server or
+   * registry owner, disambiguating ids registered on multiple servers. Otherwise
+   * ownership comes from the registry, then a known server matching the id prefix
+   * (even if disconnected). This config's `serverId` is the legacy fallback
+   * (default `discord`) only for unregistered bare ids (no `:`) or its own
+   * namespace; unknown namespaces never use a different fallback server.
+   * Debounced mode refuses unknown, disconnected, or ambiguous ownership before
+   * changing anything. Mentions mode prefers the persisted last debounced owner
+   * over a fresh lookup, unless the tool call supplies `serverId`. It always
+   * attempts rule/pin cleanup and sends the close to a known owner even when
+   * disconnected (recorded for re-registration); only unknown or ambiguous
+   * ownership skips the close. The framework's close answer owns retry guidance.
+   * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).
    */

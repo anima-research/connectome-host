@@ -191,15 +191,19 @@ action.
   look before ending the turn.
 - **`wake_remove_rule`** `{ name }` — removes a rule (a pending debounce batch is
   delivered first) and says whether anything was removed.
-- **`channel-mode--set_channel_mode`** `{ channelId, mode, debounceMs? }` — present
+- **`channel-mode--set_channel_mode`** `{ channelId, mode, debounceMs?, serverId? }` — present
   by default whenever the gate is on. One step flips a channel between
   `"mentions"` (closed; only addressed messages reach you) and `"debounced"`
   (opens the channel, prepends a rule debouncing its `chat:ambient` traffic —
   default 180000 ms — and pins the channel so it isn't auto-closed for being
   chatty). Pass the exact id as events carry it (for example `zulip:backend`,
-  `slack:<teamId>:<channelId>`, or `discord:<guildId>:<channelId>`), not a raw
-  platform id. Open, gate source, and close use the owning MCPL server from the
-  channel registry. If the id is not registered, a prefix before the first `:`
+  `slack:<conversationId>` such as `slack:C0123ABCD`, or
+  `discord:<guildId>:<channelId>`), not a raw
+  platform id. Open, gate source, and close use the owning MCPL server. An
+  optional tool-call `serverId` selects a known server or registry owner, even
+  when multiple servers register the same id; ambiguity errors name those
+  servers. Otherwise ownership comes from the channel registry. If the id is
+  not registered, a prefix before the first `:`
   is used when it names a known server, even if disconnected;
   `modules.channelMode.serverId` is the legacy fallback (default `discord`) only
   for unregistered bare ids with no `:`, or ids whose prefix is that fallback
@@ -207,8 +211,14 @@ action.
   to a different fallback server. Registry ownership still overrides any prefix.
   Debounced mode refuses unknown, disconnected, or ambiguous ownership before
   changing anything; a disconnected-owner error names the server to reconnect.
-  Mentions mode always attempts to remove the debounce rule and pin, even when
-  ownership cannot be resolved; it reports a skipped or failed close separately.
+  Mentions mode prefers the last debounced owner saved in module state (also
+  after restart or server removal) over a fresh registry lookup, unless the
+  call supplies `serverId`. It always attempts to remove the debounce rule and
+  pin. It sends the close to a known owner even when disconnected: the framework
+  records the close for re-registration, and its answer explains whether any
+  retry is needed. Only unknown or ambiguous ownership skips the close. Skipped
+  or failed closes are reported separately. One mode/rule is kept per exact
+  channel id; an explicit `serverId` selects which owner that mode targets.
   Previously saved rules with the wrong source are replaced on the next debounced
   call or removed on the next mentions call; reapply the mode on affected channels.
   Each channel gets its own rule, so its own timer. This does not change the
