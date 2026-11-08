@@ -21,7 +21,6 @@ specific to the Claude Code source; this document covers only what is.
 | You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim, except on a model whose thinking binds (below) |
 | You want to change models | Possible, but thinking blocks must be dropped or wrapped as text (see §4.2); expect a different being |
 | You only want a static transcript | No — the `.jsonl` already is one |
-| The session is short (< ~50 messages) | Yes |
 
 ## What the transcript contains, and what round-trips
 
@@ -74,9 +73,11 @@ Three structural facts matter:
 Here `<agent>-cm` is the resident's directory, `<dir>` in the setup guide, and
 `<agent>-cm/data` is its data directory, unless the install's record,
 `<agent>-cm/connectome-host/install.json`, names another as `dataDir`: then use that
-wherever this document writes `<agent>-cm/data` or `data`. If the setup agent sent you
-here, setup has run there, and the setup agent goes live only after the import.
-Otherwise run `bunx @animalabs/connectome-host setup discord` first, in a new, empty
+wherever this document writes `<agent>-cm/data` or `data`. If you're the setup agent,
+following this from the guide's "Importing a history", setup has run there: you go live
+only after the import, and you skip stage 3, whose check is an operator's, and check
+after going live instead, as stage 3's last paragraph says. If you're an operator who came here on
+your own, run `bunx @animalabs/connectome-host setup discord` first, in a new, empty
 `<agent>-cm`: setup installs only into an empty directory or one it set up. Tell its
 agent that you'll bring in a Claude Code history yourself, and leave it with `/quit`
 once it has written the recipe ("The recipe"), before its "Going live", which starts
@@ -200,7 +201,7 @@ the release `current` names, the version the host runs, rather than the copy set
 installed in `<agent>-cm/node_modules`, which an update leaves behind. Where `scripts/node_modules` is
 already there and isn't a link, move it aside first: `ln` would put the link inside it. Point `DATA_DIR` at the install's
 legacy store path, `store` in its data directory: the script takes it from
-`SEED_DATA_DIR` when that's set, and refuses a link there. The host migrates `data/store` →
+`SEED_DATA_DIR` when that's set. The host migrates `data/store` →
 `data/sessions/<id>/` on first launch.
 
 The migration needs a data directory with no `sessions.json`. A host's first start
@@ -236,10 +237,6 @@ const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
-if (lstatSync(resolve(DATA_DIR), { throwIfNoEntry: false })?.isSymbolicLink()) {
-  console.error(`${DATA_DIR} is a link: set the data directory's own store path (stage 2).`);
-  process.exit(1);
-}
 const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
 const SESSIONS = join(dirname(resolve(DATA_DIR)), 'sessions');
 const there = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
@@ -337,8 +334,9 @@ strategy config chunks its frontier under *that* config):
    human's.
 
 The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage 4) give
-you 1–2 on a running instance. For a pre-boot check, run the host on copies, so that
-nothing it does reaches the original:
+you 1–2 on a running instance. For a pre-boot check, run the host on copies that act on
+nothing outside themselves: they change none of the original's files, reach no one the
+resident speaks to, and get no answer from any service.
 1. Copy the data directory the install's record names (stage 1), wherever it is,
    following links (`cp -RL`), so a link in it doesn't lead the copy back to the
    original.
@@ -373,7 +371,7 @@ nothing it does reaches the original:
    entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
    and a host it starts writes the install's own files. Start it in an environment of
    its own:
-   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock MCPL_AGENT_OVERLAY_FILE="$PWD/no-overlay.json" OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
    The host gets only the variables the command names, and from that directory Bun loads
    none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
    key is a mock, and with `HOME` the new directory, Codex has no login. Where the
@@ -393,10 +391,8 @@ nothing it does reaches the original:
    On a gateway, the check can leave out a binding model's changed thinking that the
    resident sends, since what the host found of the account is kept per base URL and the
    check names none. The recipe's absolute workspace mounts are the resident's own
-   files, so run no tool in the check, as `/puppet` would. The overlay variable names a
-   file in the new, empty directory, which doesn't exist, so the servers the resident
-   deployed for itself (`mcpl-servers.agent.json`) stay out too. The observers variable
-   names a file there too, which doesn't exist either, so no observer the resident
+   files, so run no tool in the check, as `/puppet` would. The observers variable names a
+   file in the new, empty directory, which doesn't exist, so no observer the resident
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
    Where the host asks the
    API for a count, the count fails, and where it asks for none, there's none live
@@ -442,7 +438,7 @@ stage 3's pre-boot check, you made all but the Web UI already):
   (300k) and accept that the early conversation folds into first-person summaries
   before the first wake. Both are fine; decide deliberately. `DEPLOYMENTS.md`'s
   "The context budget and the model's window" has the window arithmetic.
-- **Strategy**: mirror what the ingest used (§2) for chunking. The recipe's
+- **Strategy**: mirror what the ingest used (stage 2) for chunking. The recipe's
   `agent.strategy` takes `"type": "autobiographical"` and the script's values for
   `adaptiveResolution`, `targetChunkTokens`, `compressionSlackRatio`, `mergeThreshold`,
   `headWindowTokens`, `recentWindowTokens`, `maxMessageTokens`, `enforceBudget`,
