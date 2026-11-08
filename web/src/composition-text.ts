@@ -77,6 +77,38 @@ export function latestInferenceError(last: (LastInference & { lastError?: string
   return lastInferenceState(last)?.word === 'failed' && last?.lastError ? last.lastError : undefined;
 }
 
+/** A turn's wait for its error policy's next try, as agent-framework's
+ *  healthSnapshot() reports it (from the release that adds it). */
+export interface AgentRetrying {
+  since?: number;
+  until?: number;
+  nextTry?: number;
+  maxTries?: number;
+  retryClass?: string;
+}
+
+/** What an agent's health row says it is doing. agent-framework's `status` is
+ *  its agent's state machine, which reads `idle` between a failed call and
+ *  its retry: the failed call reset it. `retrying` and `turnAlive` say what it
+ *  doesn't, from the agent-framework release that adds them; before it, the
+ *  row reads `status` as it always did. */
+export function agentActivity(
+  a: { status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null },
+  now: number,
+  inFor: (ms: number) => string,
+): { word: string; detail?: string } {
+  const r = a.retrying;
+  if (r) {
+    const parts: string[] = [];
+    if (r.retryClass) parts.push(r.retryClass);
+    if (typeof r.nextTry === 'number') parts.push(typeof r.maxTries === 'number' ? `try ${r.nextTry} of ${r.maxTries}` : `try ${r.nextTry}`);
+    if (typeof r.until === 'number') parts.push(r.until > now ? `in ${inFor(r.until - now)}` : 'due now');
+    return parts.length ? { word: 'retrying', detail: parts.join(' · ') } : { word: 'retrying' };
+  }
+  if (a.turnAlive && a.status === 'idle') return { word: 'idle+turn-alive' };
+  return { word: a.status ?? '?' };
+}
+
 export function notCounted(countSource: string): string {
   if (countSource === 'count_tokens_unsupported_model') return "not counted: count_tokens doesn't take this agent's model";
   const failed = /^count_tokens_failed_(\d+)$/.exec(countSource);
