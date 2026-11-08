@@ -1892,34 +1892,13 @@ export class WebUiModule implements Module {
             const line = depth * SEND_DEPTH_SHARE;
             const strategy = cm.getStrategy();
             if (sendDepthTokens(content as ContentBlock[], strategy, multiplier) > line) {
-              const past = (blocks: ContentBlock[]): boolean => sendDepthTokens(blocks, strategy, multiplier) > line;
-              const text = (content as ContentBlock[]).filter((block) => block.type === 'text');
-              const together = "these images together come within 10% of this host's image depth, the recipe's "
-                + 'imageStripDepthTokens, or past it';
-              const fitting = (beside: ContentBlock[]): string => {
-                let n = 1;
-                while (n < checked.blocks.length && !past([...checked.blocks.slice(0, n + 1), ...beside])) n++;
-                return n === 1 ? '1 image' : `${n} images`;
-              };
-              let message: string;
-              if (checked.blocks.every((image) => past([image]))) {
-                message = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too "
-                  + 'little room for an image: the host keeps images 10% clear of it, since past it they reach the model '
-                  + 'only as placeholders. Whoever runs this host can raise it';
-              } else if (past(checked.blocks) && checked.blocks.every((image) => past([image, ...text]))) {
-                message = `message not sent: ${together}, and so does the text with any one of them. `
-                  + `Send at most ${fitting([])} at once first; once the agent has answered, the text in a message of `
-                  + `its own; then attach the rest again, at most ${fitting([])} at a time, `
-                  + 'each once the agent has answered';
-              } else if (past(checked.blocks)) {
-                message = `message not sent: ${together}, where they could reach the model only as placeholders. `
-                  + `Send at most ${fitting(text)} ${text.length > 0 ? 'with this text' : 'at once'}; then attach the `
-                  + `rest again, at most ${fitting([])} at a time, each once the agent has answered`;
-              } else {
-                message = 'message not sent: with this much text, its images could be dropped before the model sees '
-                  + 'them. Send the images in a message of their own first, then the text once the agent has answered '
-                  + 'them';
-              }
+              const noImageFits = checked.blocks.every((image) => sendDepthTokens([image], strategy, multiplier) > line);
+              const message = noImageFits
+                ? "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
+                  + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as '
+                  + 'placeholders. Whoever runs this host can raise it'
+                : 'message not sent: these images could be stripped to placeholders before the model sees them. Send '
+                  + 'fewer, or less text with them, and send the rest once the agent has answered';
               this.send(client, {
                 type: 'error',
                 ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),

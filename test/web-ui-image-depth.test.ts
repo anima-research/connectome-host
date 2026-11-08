@@ -11,16 +11,8 @@ import { validateRecipe } from '../src/recipe.js';
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/user-images.json', import.meta.url), 'utf-8')) as Record<string, string>;
 const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 const IMAGE = { mediaType: 'image/png', data: FIX.png };
-const REFUSAL = 'message not sent: with this much text, its images could be dropped before the model sees them. '
-  + 'Send the images in a message of their own first, then the text once the agent has answered them';
-const TOGETHER = "these images together come within 10% of this host's image depth, the recipe's imageStripDepthTokens, "
-  + 'or past it';
-const IMAGES_REFUSAL = (fit: string, alone: string) => `message not sent: ${TOGETHER}, where they could reach the `
-  + `model only as placeholders. Send at most ${fit}; then attach the rest again, at most ${alone} at a time, each `
-  + 'once the agent has answered';
-const BOTH_REFUSAL = (alone: string) => `message not sent: ${TOGETHER}, and so does the text with any one of them. `
-  + `Send at most ${alone} at once first; once the agent has answered, the text in a message of its own; then attach `
-  + `the rest again, at most ${alone} at a time, each once the agent has answered`;
+const REFUSAL = 'message not sent: these images could be stripped to placeholders before the model sees them. Send '
+  + 'fewer, or less text with them, and send the rest once the agent has answered';
 const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
   + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as placeholders. '
   + 'Whoever runs this host can raise it';
@@ -161,32 +153,20 @@ describe("a send whose images the strategy would strip at once", () => {
       .toEqual({ type: 'error', corrId: 'c-one-text', message: DEPTH_REFUSAL });
   });
 
-  test('says how many images fit when it is their number that passes the line', async () => {
+  test('says to send fewer images, or less text with them, whenever one image alone fits', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
-    expect((await send({ content: '', images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL('2 images at once', '2 images') });
-    expect((await send({ content: 'a'.repeat(1_000), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-short' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together-short', message: IMAGES_REFUSAL('2 images with this text', '2 images') });
-    expect((await send({ content: 'a'.repeat(5_500), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-text' })).error)
-      .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL('1 image with this text', '2 images') });
-  });
-
-  test('asks about the text alone when the images together are under the line, even if the text leaves no room for one', async () => {
-    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
-    expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE], corrId: 'c-no-room' })).error)
-      .toEqual({ type: 'error', corrId: 'c-no-room', message: REFUSAL });
-  });
-
-  test('asks for both when the images together pass the line and the text leaves no room for even one', async () => {
-    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
-    expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-both' })).error)
-      .toEqual({ type: 'error', corrId: 'c-both', message: BOTH_REFUSAL('2 images') });
-  });
-
-  test('is refused for its text when the images alone are under the line', async () => {
-    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
-    expect((await send({ content: 'a'.repeat(1_300), images: [IMAGE, IMAGE], corrId: 'c-text' })).error)
-      .toEqual({ type: 'error', corrId: 'c-text', message: REFUSAL });
+    const sends: Array<[string, number, number]> = [
+      ['c-together', 0, 3],
+      ['c-together-short', 1_000, 3],
+      ['c-together-text', 5_500, 3],
+      ['c-no-room', 5_900, 2],
+      ['c-both', 5_900, 3],
+      ['c-text', 1_300, 2],
+    ];
+    for (const [corrId, chars, images] of sends) {
+      expect((await send({ content: 'a'.repeat(chars), images: Array(images).fill(IMAGE), corrId })).error)
+        .toEqual({ type: 'error', corrId, message: REFUSAL });
+    }
   });
 
   test("goes through where the host knows no depth: a depth of 0, or a strategy an extension registers", async () => {

@@ -58,7 +58,12 @@ export function liveImageDepth(strategy: RecipeStrategy | undefined): number | u
 /** The share of `liveImageDepth` a send's own estimate may take. */
 export const SEND_DEPTH_SHARE = 0.9;
 
-/** context-manager 0.24.0's estimate for an image block with no `tokenEstimate`. */
+/**
+ * context-manager's estimate for an image block with no `tokenEstimate`, in
+ * 0.24.0 and 0.25.0. Its `MessageStore` prices content, but `ContextManager`
+ * doesn't hand its store to callers, so the host keeps a copy;
+ * `test/image-depth-estimate.test.ts` holds the host's figure to the store's.
+ */
 const IMAGE_TOKENS = 1600;
 
 /** The ingestion chunking a context-manager strategy may apply to a message. */
