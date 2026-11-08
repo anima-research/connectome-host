@@ -7,5 +7,6 @@
   for a fleet child's). An image the host keeps nowhere a client can fetch
   it, such as a `tool:result_dropped` trace's result or an incoming event's
   image that no module stores, now reaches a client by no route.
-  Unchanged: transcript frames and their refs, and the Context document,
-  which reads `/debug/context`.
+  Transcript frames keep their refs, and a coalesced shard run's images now
+  carry refs too, each naming the shard it's stored in. The Context
+  document, which reads `/debug/context`, is unchanged.

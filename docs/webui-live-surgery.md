@@ -236,10 +236,13 @@ cannot mutate, so they only appear for read requests that fail).
 
 Client → server: `rollback {messageId, sessionId, agent?, note?}`, `suppress
 {messageIds, sessionId, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
-`request-host-mode`, `request-operator-log {limit?}`.
+`request-host-mode`, `request-operator-log {limit?}`, and `user-message`'s
+`images` and `corrId`.
 Server → client: `surgery-result` (with `returnedToArrivals` and
 `keptInWindowAfterTarget` when a rollback kept rows), `host-mode`,
-`operator-log`, `undone-marks`; `welcome.features`, `welcome.hostMode`.
+`operator-log`, `undone-marks`; `welcome.features`, `welcome.hostMode`,
+`welcome.userImageLimits`; and a stored user message's entry carries its
+send's `corrId`.
 `sessionId` is the session whose messages the operator chose from, as the
 server stamped it on them: the welcome's `session` for the transcript, and
 the `/debug/context` answer's `sessionId` for the Context view, each the
