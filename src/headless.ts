@@ -395,7 +395,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         let refused = false;
         try {
           const { handleCommand } = await import('./commands.js');
-          const result = handleCommand(cmd.command, app);
+          const result = handleCommand(cmd.command, app, typeof cmd.typed === 'string' ? cmd.typed : undefined);
           for (const line of result.lines) output(line.text, line.style);
           refused = result.refused === true;
           if (result.asyncWork) {

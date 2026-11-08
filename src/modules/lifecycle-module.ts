@@ -15,8 +15,7 @@ import { hostNoteMetadata } from '../speaker.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { hostUpdate, type HostUpdate, type UpdateAnswer } from '../update/update.js';
 import {
-  TOOL_CANCEL, TOOL_WAYS, armedName, goBackLines, inAgentWords, inShellWords, statusLines,
-  toolWays,
+  TOOL_CANCEL, armedName, goBackLines, statusLines, toolWays,
 } from '../web/update-text.js';
 import {
   SELF_RESTART_EXIT_CODE,
@@ -360,6 +359,7 @@ export class LifecycleModule implements Module {
       return pending === null ? null : { done: false, lines: [`Nothing was armed: ${plainRestart(pending)}`] };
     };
     const capital = (line: string) => line.charAt(0).toUpperCase() + line.slice(1);
+    const ways = toolWays(this.headless, this.command);
     let answer: UpdateAnswer;
     switch (input.action as (typeof UPDATE_ACTIONS)[number]) {
       case 'check': {
@@ -367,37 +367,35 @@ export class LifecycleModule implements Module {
         const status = this.update.status();
         const pending = this.state.armedRequest();
         answer = { done: status.check?.ok !== false, lines: [
-          ...statusLines(status, toolWays(this.headless, this.command)), ...(pending === null ? [] : [capital(plainRestart(pending))]),
+          ...statusLines(status, ways), ...(pending === null ? [] : [capital(plainRestart(pending))]),
           ...this.update.notesPointer(status.installed), this.personLine(),
         ] };
         break;
       }
       case 'notes':
-        answer = this.update.installedNotes(version);
+        answer = this.update.installedNotes(version, ways);
         break;
       case 'install':
-        answer = await this.update.startInstall(TOOL_WAYS.check);
+        answer = await this.update.startInstall(ways);
         break;
       case 'restart':
-        answer = selfRestartPending() ?? this.update.armRestart(by, version, toolWays(this.headless, this.command));
+        answer = selfRestartPending() ?? this.update.armRestart(by, version, ways);
         break;
       case 'back':
         answer = input.data === undefined
           ? { done: false, lines: ['Nothing was armed: back needs `data`, keep or restore.',
-            ...goBackLines(this.update.status(), toolWays(this.headless, this.command))] }
-          : selfRestartPending() ??
-            this.update.armGoBack(input.data === 'keep', by, version, toolWays(this.headless, this.command));
+            ...goBackLines(this.update.status(), ways)] }
+          : selfRestartPending() ?? this.update.armGoBack(input.data === 'keep', by, version, ways);
         break;
       case 'cancel': {
         const armed = this.update.armedSwitch() !== null;
-        answer = await this.update.cancelArmed();
+        answer = await this.update.cancelArmed(ways);
         const pending = this.state.armedRequest();
         if (!armed && pending !== null) answer = { done: true, lines: [...answer.lines, capital(plainRestart(pending))] };
         break;
       }
     }
-    const said = inAgentWords(answer.lines.join('\n'));
-    const text = this.headless && input.action !== 'notes' ? inShellWords(said, this.command) : said;
+    const text = answer.lines.join('\n');
     return answer.done ? { success: true, data: text } : refuse(text);
   }
 

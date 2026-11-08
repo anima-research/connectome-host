@@ -1120,7 +1120,9 @@ export function shellWord(word: string): string {
  * is up, so its own Go back, which
  * quiesces first, is the way.
  */
-export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string): number {
+/** `back` is how its reader asks a host that's up to go back: /update back, or the install's command in a shell. */
+export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string,
+  back = '/update back'): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
   if (unknown.length > 0) {
     ops.report(`[update] ${GO_BACK_FLAG} takes only ${KEEP_DATA_FLAG}, and was given ${unknown.join(' ')}. Nothing ` +
@@ -1140,7 +1142,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
       }
       if (ops.now().getTime() >= until) {
         ops.report(`[update] Nothing was asked for: this install's lock has been held for the last ` +
-          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`/update back\`, ` +
+          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`${back}\`, ` +
           'which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
         return 1;
       }

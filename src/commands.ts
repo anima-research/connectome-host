@@ -43,7 +43,7 @@ import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
 import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
-import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
+import { COMMAND_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays } from './web/update-text.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -215,15 +215,17 @@ function stillRunning(app: AppContext): CommandResult | null {
   };
 }
 
-export function handleCommand(command: string, app: AppContext): CommandResult {
+/** `typed` is how the reader types this install's own command in a shell, where that's who reads the answer, such
+ *  as `connectome update`'s: /update then names each way as they type it. */
+export function handleCommand(command: string, app: AppContext, typed?: string): CommandResult {
   const cmd = parseCommand(command).name;
   const change = sessionChangeNamed(cmd, command.slice(1).trim().split(/\s+/).slice(1));
-  const result = dispatchCommand(command, cmd, change, app);
+  const result = dispatchCommand(command, cmd, change, app, typed === undefined ? COMMAND_WAYS : cliWays(typed));
   if (result.asyncWork) result.asyncWork = trackOperatorWork(app, change, result.asyncWork);
   return result;
 }
 
-function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext): CommandResult {
+function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext, ways: UpdateWays): CommandResult {
   const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
   const refused = change ? refusedWhileSwitching(app, change) : null;
@@ -377,7 +379,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleFleet(app, args);
 
     case 'update':
-      return handleUpdate(args);
+      return handleUpdate(args, ways);
 
     default:
       return {
@@ -390,7 +392,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
  *  lines come back as the command's follow-up. Restart and Go back's two
  *  ways take the release they're for, as the Web UI sends them, so the
  *  host refuses rather than act on another one. */
-function handleUpdate(args: string[]): CommandResult {
+function handleUpdate(args: string[], ways: UpdateWays): CommandResult {
   const say = (lines: string[]): CommandResult => ({ lines: lines.map((text) => ({ text, style: 'system' as const })) });
   const after = (first: string, work: Promise<UpdateAnswer>): CommandResult =>
     ({ ...say([first]), asyncWork: work.then((answer) => ({ ...say(answer.lines), ...(answer.done ? {} : { refused: true }) })) });
@@ -402,27 +404,27 @@ function handleUpdate(args: string[]): CommandResult {
     return after('Reading the registry…',
       hostUpdate.readRegistry().then(() => {
         const status = hostUpdate.status();
-        return { done: status.check?.ok !== false, lines: statusLines(status) };
+        return { done: status.check?.ok !== false, lines: statusLines(status, ways) };
       }));
   }
-  if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install());
+  if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install(ways));
   if (sub === 'restart' && release === undefined) {
     const quiescing = 'Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up ' +
       'to 2 min to end…';
-    if (choice === undefined) return after(quiescing, hostUpdate.restartToInstalled());
-    if (choice === 'wait') return after('Waiting up to 10 min more for turns to end…', hostUpdate.waitLonger());
-    if (choice === 'now') return after('Stopping now…', hostUpdate.stopNow());
-    if (choice === 'resume') return after('Calling the restart off…', hostUpdate.resume());
-    if (version(choice)) return after(quiescing, hostUpdate.restartToInstalled(choice));
+    if (choice === undefined) return after(quiescing, hostUpdate.restartToInstalled(undefined, ways));
+    if (choice === 'wait') return after('Waiting up to 10 min more for turns to end…', hostUpdate.waitLonger(ways));
+    if (choice === 'now') return after('Stopping now…', hostUpdate.stopNow(ways));
+    if (choice === 'resume') return after('Calling the restart off…', hostUpdate.resume(ways));
+    if (version(choice)) return after(quiescing, hostUpdate.restartToInstalled(choice, ways));
   }
   if (sub === 'back') {
     if (choice === undefined) {
       const status = hostUpdate.status();
-      return { ...say(goBackLines(status)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
+      return { ...say(goBackLines(status, ways)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
     }
     if ((choice === 'keep' || choice === 'restore') && (release === undefined || version(release))) {
       return after('Asking the host to go back. If it goes ahead, new turns are held, and turns in progress get up to ' +
-        '2 min to end…', hostUpdate.goBack(choice === 'keep', release));
+        '2 min to end…', hostUpdate.goBack(choice === 'keep', release, ways));
     }
   }
   return usage;

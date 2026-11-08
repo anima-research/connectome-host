@@ -92,7 +92,10 @@ export interface ArmedSwitch {
   lastTry: { at: string; waited: string; hosts: HostQuiet[] } | null;
 }
 
+/** How each update action is reached, as the text's reader takes it, and who that reader is: the person who runs
+ *  the host, or the agent, whose text names its own tool and says what is the person's to do. */
 export interface UpdateWays {
+  reader: 'person' | 'agent';
   install: string;
   restart: string;
   wait: string;
@@ -105,6 +108,7 @@ export interface UpdateWays {
 }
 
 export const COMMAND_WAYS: UpdateWays = {
+  reader: 'person',
   install: '/update install',
   restart: '/update restart',
   wait: '/update restart wait',
@@ -117,6 +121,7 @@ export const COMMAND_WAYS: UpdateWays = {
 };
 
 export const PAGE_WAYS: UpdateWays = {
+  reader: 'person',
   install: 'Update',
   restart: 'Restart',
   wait: 'Wait longer',
@@ -130,6 +135,7 @@ export const PAGE_WAYS: UpdateWays = {
 
 export function cliWays(typed: string): UpdateWays {
   return {
+    reader: 'person',
     install: `${typed} update install`,
     restart: `${typed} update restart`,
     wait: `${typed} update restart wait`,
@@ -142,26 +148,30 @@ export function cliWays(typed: string): UpdateWays {
   };
 }
 
-export const TOOL_WAYS: UpdateWays = {
-  install: 'lifecycle--update install',
-  restart: 'lifecycle--update restart',
-  wait: `the person's ${cliWays('connectome').wait}`,
-  now: `the person's ${cliWays('connectome').now}`,
-  resume: `the person's ${cliWays('connectome').resume}`,
-  back: 'lifecycle--update back',
-  keep: 'lifecycle--update back with data keep',
-  restore: 'lifecycle--update back with data restore',
-  check: 'lifecycle--update check',
-};
-
-export function toolWays(headless: boolean, command = 'connectome'): UpdateWays {
+/** The agent's ways: its own tool's actions, and the person's command for what only the person can do. */
+export function toolWays(headless: boolean, command = 'connectome'): UpdateWays & { person: UpdateWays } {
   const person = headless ? cliWays(command) : COMMAND_WAYS;
   return {
-    ...TOOL_WAYS,
+    reader: 'agent',
+    install: 'lifecycle--update install',
+    restart: 'lifecycle--update restart',
     wait: `the person's ${person.wait}`,
     now: `the person's ${person.now}`,
     resume: `the person's ${person.resume}`,
+    back: 'lifecycle--update back',
+    keep: 'lifecycle--update back with data keep',
+    restore: 'lifecycle--update back with data restore',
+    check: 'lifecycle--update check',
+    person,
   };
+}
+
+export const TOOL_WAYS = toolWays(true);
+
+/** The person's own command for a way, as an agent's text names it, or the way itself in a person's text. */
+export function personWay(ways: UpdateWays, way: UpdateWay): string {
+  const person = (ways as Partial<{ person: UpdateWays }>).person;
+  return ways.reader === 'agent' && person !== undefined ? `the person's ${person[way]}` : ways[way];
 }
 
 export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
@@ -182,14 +192,17 @@ export const QUOTED = '  ';
 const WROTE_LAST = ', as it kept it (the service\'s log, or the terminal it was started in, also has what this leaves ' +
   'out, such as an error Bun reported itself):';
 
-export const BUN_UPGRADE = 'Upgrade Bun (`bun upgrade`, or the package manager that installed it), start the host ' +
-  'again, then Update.';
+export function bunUpgrade(ways: UpdateWays): string {
+  return ways.reader === 'agent'
+    ? 'Only the person who runs your host can upgrade its Bun (`bun upgrade`, or the package manager that installed ' +
+      `it) and start the host again; then ${ways.install} can install it.`
+    : 'Upgrade Bun (`bun upgrade`, or the package manager that installed it), start the host again, then Update.';
+}
 
-export const BUN_FIRST = 'upgrade Bun first, and Update installs nothing until then.';
-
-export function inShellWords(text: string, command: string): string {
-  return text.split('\n').map((line) => line.startsWith(QUOTED) ? line
-    : line.replace(/(^|[^\w/])\/update(?![\w/-])/g, (_, before: string) => `${before}${command} update`)).join('\n');
+function bunFirst(ways: UpdateWays): string {
+  return ways.reader === 'agent'
+    ? `the person who runs your host upgrades Bun first, and ${ways.install} installs nothing until then.`
+    : 'upgrade Bun first, and Update installs nothing until then.';
 }
 
 export function armedName(armed: Pick<ArmedSwitch, 'to' | 'why' | 'keepData'>, opening = true): string {
@@ -203,42 +216,20 @@ export function notesUrl(version: string): string {
   return `https://github.com/anima-research/connectome-host/blob/v${version}/CHANGELOG.md`;
 }
 
-const TO_AN_INSTALL = 'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the ' +
-  'directory you start the host in and with the DATA_DIR you start it with ' +
-  '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says how ' +
-  'to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".';
-
-export const NOT_AN_INSTALL = 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
-  TO_AN_INSTALL;
-
-const AGENT_WORDS: ReadonlyArray<readonly [string, string]> = [
-  [BUN_UPGRADE, 'Only the person who runs your host can upgrade its Bun (`bun upgrade`, or the package manager that ' +
-    `installed it) and start the host again; then ${TOOL_WAYS.install} can install it.`],
-  [BUN_FIRST, `the person who runs your host upgrades Bun first, and ${TOOL_WAYS.install} installs nothing until then.`],
-  [TO_AN_INSTALL, 'Nothing you call changes that: only the person who runs your host can, by making it an install ' +
-    'with setup or by updating it by hand.'],
-];
+export function notAnInstall(ways: UpdateWays): string {
+  return 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
+    (ways.reader === 'agent'
+      ? 'Nothing you call changes that: only the person who runs your host can, by making it an install with setup or ' +
+        'by updating it by hand.'
+      : 'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory you start ' +
+        'the host in and with the DATA_DIR you start it with ' +
+        '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says ' +
+        'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
+}
 
 const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
   'is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ask is ' +
   'done falls back the same way.';
-
-export function inAgentWords(text: string): string {
-  const said: string[] = [];
-  let kept: 'none' | 'heading' | 'quoted' = 'none';
-  for (const line of text.split('\n')) {
-    if (line.startsWith(QUOTED)) {
-      said.push(line);
-      if (kept === 'heading') kept = 'quoted';
-      continue;
-    }
-    if (kept === 'quoted') said.push(HOST_LINES);
-    kept = line.endsWith(WROTE_LAST) ? 'heading' : 'none';
-    said.push(AGENT_WORDS.reduce((words, [person, agent]) => words.split(person).join(agent), line));
-  }
-  if (kept === 'quoted') said.push(HOST_LINES);
-  return said.join('\n');
-}
 
 export const GO_BACK_UNREAD = 'whether a Go back is offered';
 
@@ -284,10 +275,10 @@ export function noticeLines(
   if (check.runningDeprecated !== null) lines.push(deprecatedLine(running, check.runningDeprecated));
   lines.push(...costLines(check.costs));
   if (check.bunFloorUnmet !== null) {
-    lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: ${BUN_FIRST}`);
+    lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: ${bunFirst(ways)}`);
   }
   lines.push(`Notes: ${notesUrl(check.candidate)}`);
-  lines.push(!install ? NOT_AN_INSTALL
+  lines.push(!install ? notAnInstall(ways)
     : installed === check.candidate ? `To take it: ${ways.restart}.` : `To take it: ${ways.install}, then ${ways.restart}.`);
   return lines;
 }
@@ -340,7 +331,7 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     lines.push(...noticeLines(check, status.running, status.install, ways, status.installed));
   }
   if (!status.install) {
-    if (check === null || !check.ok || check.candidate === null) lines.push(NOT_AN_INSTALL);
+    if (check === null || !check.ok || check.candidate === null) lines.push(notAnInstall(ways));
     return [...lines, ...problemLines(status.problems)];
   }
   if (status.installing !== null) lines.push(`Installing ${status.installing}.`);
@@ -385,8 +376,8 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       if (holding.length > 0) lines.push('Holding it then:', ...holding);
     }
     const instead = [...status.installed !== null ? [ways.restart] : [], ...status.goBack !== null ? [ways.keep, ways.restore] : []];
-    lines.push(ways.check === TOOL_WAYS.check || instead.length === 0
-      ? `${ways.check === TOOL_WAYS.check ? '' : 'The agent\'s own '}${TOOL_CANCEL} disarms it.`
+    lines.push(ways.reader === 'agent' || instead.length === 0
+      ? `${ways.reader === 'agent' ? '' : 'The agent\'s own '}${TOOL_CANCEL} disarms it.`
       : `The agent's own ${TOOL_CANCEL} disarms it, and ${instead.length > 1 ? `${instead.slice(0, -1).join(', ')} or ` +
         instead.at(-1) : instead[0]} here goes ahead in its place.`);
   }
@@ -401,18 +392,19 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   if (status.switchQuiesceLeft) {
     lines.push(`This host is quiesced for a switch that isn't going ahead: ${ways.resume} ends it.`);
   }
-  if (status.lastSwitch !== null) lines.push(...lastSwitchLines(status.lastSwitch));
+  if (status.lastSwitch !== null) lines.push(...lastSwitchLines(status.lastSwitch, ways));
   return [...lines, ...problemLines(status.problems)];
 }
 
-export function lastSwitchLines(last: SwitchOutcome): string[] {
+export function lastSwitchLines(last: SwitchOutcome, ways: UpdateWays = COMMAND_WAYS): string[] {
   if (last.outcome === 'committed') return [`Last switch: ${last.from} to ${last.to}, committed at ${last.at}.`];
   if (last.outcome === 'refused') return [told(`Last request: to ${last.to}, didn't go ahead at ${last.at}`, last.reason)];
   const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}` +
     (last.reason ? `: ${last.reason}.` : '.');
   const kept = keptLines(last);
   if (kept.length === 0) return [`${head} ${MORE_IN_LOG}`];
-  return [`${head} What ${last.to} wrote last${WROTE_LAST}`, ...kept.map((line) => `${QUOTED}${line}`)];
+  return [`${head} What ${last.to} wrote last${WROTE_LAST}`, ...kept.map((line) => `${QUOTED}${line}`),
+    ...ways.reader === 'agent' ? [HOST_LINES] : []];
 }
 
 function failedInstall(install: { version: string; error?: string }): string {
@@ -441,7 +433,7 @@ export function goBackUnread(status: UpdateStatus): string | undefined {
 }
 
 export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
-  if (!status.install) return [NOT_AN_INSTALL];
+  if (!status.install) return [notAnInstall(ways)];
   if (status.goBack === null) {
     const unread = goBackUnread(status);
     return [unread !== undefined
@@ -458,9 +450,9 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     `- ${ways.restore}: the copy is restored, and everything since ${since} is set aside, not deleted. For ` +
       'residents, that is everything they have lived since then. The host comes back answering new turns, unless ' +
       'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
-      `and ${ways.check === TOOL_WAYS.check ? 'the person\'s click on' : 'clicking'} "⏸ quiesced" in the Web UI's ` +
+      `and ${ways.reader === 'agent' ? 'the person\'s click on' : 'clicking'} "⏸ quiesced" in the Web UI's ` +
       'top bar lets them through. Whether it\'s quiesced now makes no difference.',
-    ways.check === TOOL_WAYS.check
+    ways.reader === 'agent'
       ? 'Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, it begins at the host\'s first quiet ' +
         `moment, ${ASKS_NOBODY}. ${ARMED_RETRY} Anywhere else, back refuses and arms nothing.`
       : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
@@ -493,7 +485,7 @@ export function restartLines(status: UpdateStatus): string[] | null {
   return lines;
 }
 
-export type UpdateWay = keyof UpdateWays;
+export type UpdateWay = Exclude<keyof UpdateWays, 'reader'>;
 
 function updateOffered(status: UpdateStatus): boolean {
   const check = status.check;

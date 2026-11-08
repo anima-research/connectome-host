@@ -16,9 +16,9 @@ import {
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
 import {
-  ARMED_RETRY, ASKS_NOBODY, BUN_UPGRADE, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, NOT_AN_INSTALL, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName, busyLines, cliWays,
-  deprecatedLine,
-  inAgentWords, noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
+  ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName,
+  bunUpgrade, busyLines, cliWays, deprecatedLine,
+  notAnInstall, noticeLines, notesUrl, personWay, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
   type SwitchOutcome, type UpdateStatus, type UpdateWays,
 } from '../web/update-text.js';
@@ -109,7 +109,7 @@ function notesAnswer(path: string, running: string, installed: string, version?:
     return refused(`No notes were given: ${path} has no notes for the releases after ${running} up to ${installed}: ` +
       `${notesUrl(installed)} has ${installed}'s.`);
   }
-  const fits = (answer: UpdateAnswer): boolean => inAgentWords(answer.lines.join('\n')).length <= NOTES_BUDGET;
+  const fits = (answer: UpdateAnswer): boolean => answer.lines.join('\n').length <= NOTES_BUDGET;
   if (version === undefined) {
     const whole = done(`The notes of ${list(sections.map(({ version: v }) => v))}, from ${path}:`,
       sections.map(({ text: body }) => body).join('\n\n'));
@@ -128,14 +128,11 @@ function notesAnswer(path: string, running: string, installed: string, version?:
   }
   const whole = done(`The notes of ${one.version}, from ${path}:`, one.text);
   if (fits(whole)) return whole;
-  let shown = NOTES_BUDGET;
-  for (;;) {
-    const cut = done(`The notes of ${one.version}, from ${path}, cut: the first ${shown.toLocaleString('en-US')} of its ` +
-      `${characters(one.text.length)}. The rest is in that file, and at ${notesUrl(one.version)}:`, one.text.slice(0, shown));
-    const over = inAgentWords(cut.lines.join('\n')).length - NOTES_BUDGET;
-    if (over <= 0) return cut;
-    shown -= over;
-  }
+  const head = (shown: number): string => `The notes of ${one.version}, from ${path}, cut: the first ` +
+    `${shown.toLocaleString('en-US')} of its ${characters(one.text.length)}. The rest is in that file, and at ` +
+    `${notesUrl(one.version)}:`;
+  const shown = NOTES_BUDGET - head(NOTES_BUDGET).length - 1;
+  return done(head(shown), one.text.slice(0, shown));
 }
 
 export class HostUpdate {
@@ -229,30 +226,28 @@ export class HostUpdate {
         }
       }
       if (read) this.logged.add(candidate);
-      const ways = setup.here !== null && setup.headless === true
-        ? cliWays(installCommandAt(setup.here.root))
-        : COMMAND_WAYS;
-      const lines = noticeLines(this.check, setup.running, setup.here !== null, ways, installed);
+      const lines = noticeLines(this.check, setup.running, setup.here !== null, this.hostWays(), installed);
       for (const line of lines) this.log(`[update] ${line}`);
     }
     return this.check;
   }
 
-  async install(): Promise<UpdateAnswer> {
-    const begun = await this.beginInstall();
+  async install(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
+    const begun = await this.beginInstall(ways);
     return 'refusal' in begun ? begun.refusal : begun.installed;
   }
 
-  async startInstall(check: string): Promise<UpdateAnswer> {
-    const begun = await this.beginInstall();
+  async startInstall(ways: UpdateWays): Promise<UpdateAnswer> {
+    const begun = await this.beginInstall(ways);
     if ('refusal' in begun) return begun.refusal;
     void begun.installed;
-    return done(`Installing ${begun.version} beside ${this.need().running}, which runs on. ${check} shows when it's done.`);
+    return done(`Installing ${begun.version} beside ${this.need().running}, which runs on. ${ways.check} shows when it's done.`);
   }
 
-  private async beginInstall(): Promise<{ refusal: UpdateAnswer } | { version: string; installed: Promise<UpdateAnswer> }> {
+  private async beginInstall(ways: UpdateWays):
+    Promise<{ refusal: UpdateAnswer } | { version: string; installed: Promise<UpdateAnswer> }> {
     const setup = this.need();
-    if (setup.here === null) return { refusal: refused(NOT_AN_INSTALL) };
+    if (setup.here === null) return { refusal: refused(notAnInstall(ways)) };
     if (this.installing !== null) return { refusal: refused(`An install of ${this.installing} is under way.`) };
     if (this.restart !== null) return { refusal: refused(`${restartName(this.restart, true)} is under way.`) };
     if (this.endingSwitchQuiesce) return { refusal: refused(ENDING_SWITCH_QUIESCE) };
@@ -276,7 +271,7 @@ export class HostUpdate {
     if (check.bunFloorUnmet !== null) {
       this.installing = null;
       return { refusal: refused(`${check.candidate} needs Bun ${check.bunFloorUnmet}, and this host runs on Bun ${this.bun()}, ` +
-        `so nothing was installed. ${BUN_UPGRADE}`) };
+        `so nothing was installed. ${bunUpgrade(ways)}`) };
     }
     const version = check.candidate;
     this.installing = version;
@@ -292,13 +287,13 @@ export class HostUpdate {
       }
       this.lastInstall = { version, at, ok: true };
       return done(`${version} is installed beside ${setup.running}, which runs on. Restart switches to the newest release ` +
-        'installed: /update restart.');
+        `installed: ${ways.restart}.`);
     })();
     return { version, installed };
   }
 
-  async restartToInstalled(expected?: string): Promise<UpdateAnswer> {
-    const refusal = this.restartRefusal();
+  async restartToInstalled(expected?: string, ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
+    const refusal = this.restartRefusal(ways);
     if (refusal !== null) return refused(refusal);
     let to: string | null;
     try {
@@ -311,11 +306,11 @@ export class HostUpdate {
       return refused(`The release installed to restart onto is now ${to}, not ${expected}, so nothing is restarting. ` +
         `Look at what ${to} costs, then ask again.`);
     }
-    return this.beginRestart({ to, why: 'update', keepData: false });
+    return this.beginRestart({ to, why: 'update', keepData: false }, ways);
   }
 
-  async goBack(keepData: boolean, expected?: string): Promise<UpdateAnswer> {
-    const refusal = this.restartRefusal();
+  async goBack(keepData: boolean, expected?: string, ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
+    const refusal = this.restartRefusal(ways);
     if (refusal !== null) return refused(refusal);
     const here = this.need().here!;
     let offer: { to: string } | null;
@@ -329,7 +324,7 @@ export class HostUpdate {
       return refused(`Going back is now offered to ${offer.to}, not ${expected}, so nothing is going back. Look at what ` +
         'each way does, then ask again.');
     }
-    return this.beginRestart({ to: offer.to, why: 'go-back', keepData });
+    return this.beginRestart({ to: offer.to, why: 'go-back', keepData }, ways);
   }
 
   armRestart(by: string | null, expected?: string, ways: UpdateWays = toolWays(this.need().headless === true)): UpdateAnswer {
@@ -343,14 +338,14 @@ export class HostUpdate {
     }
     if (to === null) {
       return refused(`Nothing was armed: no release newer than ${this.need().running} is installed, and ` +
-        `${TOOL_WAYS.install} installs one first.`);
+        `${ways.install} installs one first.`);
     }
     if (expected !== undefined && to !== expected) {
       return refused(`Nothing was armed: the release installed to restart onto is ${to}, not ${expected}. ` +
-        `${TOOL_WAYS.check} shows what's installed and what's out, and ${TOOL_WAYS.install} installs the newest ` +
+        `${ways.check} shows what's installed and what's out, and ${ways.install} installs the newest ` +
         'release offered.');
     }
-    return this.arm({ to, why: 'update', keepData: false }, by);
+    return this.arm({ to, why: 'update', keepData: false }, by, ways);
   }
 
   armGoBack(
@@ -367,24 +362,24 @@ export class HostUpdate {
     }
     if (offer === null) return refused('Nothing was armed: no Go back is offered, since the copy doesn\'t hold another installed release\'s data.');
     if (expected !== undefined && offer.to !== expected) {
-      return refused(`Nothing was armed: going back is offered to ${offer.to}, not ${expected}. ${TOOL_WAYS.check} shows ` +
+      return refused(`Nothing was armed: going back is offered to ${offer.to}, not ${expected}. ${ways.check} shows ` +
         'what\'s offered, and back without `data` says what each way does.');
     }
-    return this.arm({ to: offer.to, why: 'go-back', keepData }, by);
+    return this.arm({ to: offer.to, why: 'go-back', keepData }, by, ways);
   }
 
-  async cancelArmed(): Promise<UpdateAnswer> {
+  async cancelArmed(ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
     const armed = this.armed;
     if (armed === null) return done('Nothing was armed with lifecycle--update, so there was nothing to cancel.');
     if (this.trying) {
-      return refused(`${armedName(armed)} is being tried now. Once the try has answered, ${TOOL_WAYS.check} shows whether ` +
+      return refused(`${armedName(armed)} is being tried now. Once the try has answered, ${ways.check} shows whether ` +
         'it went ahead, and cancel disarms it if it didn\'t.');
     }
     this.armed = null;
     const ended = await this.endLeftQuiesce();
     return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + (ended === null
       ? ' A switch\'s quiesce is being ended already, which also ends any quiesce an earlier try left.'
-      : leftQuiesced(ended, false)));
+      : leftQuiesced(ended, false, ways)));
   }
 
   /** Whether this host is running a switch now: null where it can't tell, on a host with no install of its own,
@@ -392,6 +387,13 @@ export class HostUpdate {
   switchUnderWay(): boolean | null {
     if (!this.setup?.here) return null;
     return this.restart !== null;
+  }
+
+  /** The person's ways on this host, for text it keeps for whoever reads it later, such as its log and a reason an
+   *  armed switch was dropped: their command in a shell on a headless install, and /update anywhere else. */
+  private hostWays(): UpdateWays {
+    const setup = this.need();
+    return setup.here !== null && setup.headless === true ? cliWays(installCommandAt(setup.here.root)) : COMMAND_WAYS;
   }
 
   armedSwitch(): ArmedSwitch | null {
@@ -418,7 +420,7 @@ export class HostUpdate {
       const framework = setup.host.framework();
       const hold = operatorHold(framework.getHostModeStatus());
       if (hold !== null) return this.stayArmed(hold, []);
-      const refusal = this.restartRefusal();
+      const refusal = this.restartRefusal(this.hostWays());
       if (refusal !== null) return await this.dropArmed(refusal);
       let gone: string | null;
       try {
@@ -434,23 +436,23 @@ export class HostUpdate {
       const fleet = setup.host.fleet();
       if ((fleet?.runningChildren().length ?? 0) > 0) {
         const children = await lookAtChildren(fleet, armed.to);
-        if (setup.host.framework() !== framework) return await this.callOff(SESSION_CHANGED_AT_LOOK);
+        if (setup.host.framework() !== framework) return await this.callOff(SESSION_CHANGED_AT_LOOK, this.hostWays());
         const childHeld = childHold(children);
         if (childHeld !== null) return await this.endAndStayArmed(children, childHeld);
         if (!children.every(settled)) {
           return await this.endAndStayArmed(children, operatorHold(framework.getHostModeStatus()));
         }
       }
-      return await this.quiesceThenStop(0, stillQuiet);
+      return await this.quiesceThenStop(0, stillQuiet, this.hostWays());
     } catch (error) {
       const why = `its try failed: ${said(error)}`;
-      return this.restart !== null ? await this.callOff(why) : await this.dropArmed(why);
+      return this.restart !== null ? await this.callOff(why, this.hostWays()) : await this.dropArmed(why);
     } finally {
       this.trying = false;
     }
   }
 
-  private arm(request: Pick<ArmedSwitch, 'to' | 'why' | 'keepData'>, by: string | null): UpdateAnswer {
+  private arm(request: Pick<ArmedSwitch, 'to' | 'why' | 'keepData'>, by: string | null, ways: UpdateWays): UpdateAnswer {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
@@ -460,9 +462,9 @@ export class HostUpdate {
       'crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An operator\'s own ' +
       'Restart or Go back also takes its place. Until the host next starts, or until you arm another, check says when ' +
       'one didn\'t go ahead for another reason, and why. ' +
-      `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${TOOL_WAYS.check} shows whether it committed or ` +
+      `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${ways.check} shows whether it committed or ` +
       'went back, and why' + (request.why === 'go-back'
-        ? `, if ${request.to} has lifecycle--update; the person's /update check shows it either way.`
+        ? `, if ${request.to} has lifecycle--update; ${personWay(ways, 'check')} shows it either way.`
         : '.'));
   }
 
@@ -477,7 +479,7 @@ export class HostUpdate {
         `${TOOL_CANCEL} disarms it.`;
     }
     if (this.installing !== null) {
-      return `Nothing was armed: an install of ${this.installing} is under way. Ask again once ${TOOL_WAYS.check} shows ` +
+      return `Nothing was armed: an install of ${this.installing} is under way. Ask again once ${ways.check} shows ` +
         'it has ended.';
     }
     const refusal = this.restartRefusal(ways);
@@ -498,7 +500,7 @@ export class HostUpdate {
       ...(holding.some((h) => h.answered && h.inFlight !== undefined) ? ['a fleet child had work going outside any turn'] : []),
     ];
     const what = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held.at(-1)}` : held[0] ?? 'this host had work in flight again';
-    const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true);
+    const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true, this.hostWays());
     return this.stayArmed(waited, hold !== null ? [] : holding);
   }
 
@@ -513,7 +515,7 @@ export class HostUpdate {
     this.disarm(reason);
     const ended = await this.endLeftQuiesce();
     const dropped = this.armedDropped!;
-    if (ended !== null) dropped.reason += leftQuiesced(ended, false);
+    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
     return refused(`${armedName(armed)} didn't go ahead: ${dropped.reason}`);
   }
 
@@ -533,21 +535,21 @@ export class HostUpdate {
     this.armedDropped = { to, why, keepData, since, at: this.now().toISOString(), reason: reason.replace(/\.?$/, '.') };
   }
 
-  async waitLonger(): Promise<UpdateAnswer> {
+  async waitLonger(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
     if (this.restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
-    return this.quiesceThenStop(this.need().waits?.longerMs ?? WAIT_LONGER_MS);
+    return this.quiesceThenStop(this.need().waits?.longerMs ?? WAIT_LONGER_MS, undefined, ways);
   }
 
-  async stopNow(): Promise<UpdateAnswer> {
+  async stopNow(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
     if (this.restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
-    if (this.need().host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED);
-    return this.markAndStop();
+    if (this.need().host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
+    return this.markAndStop(ways);
   }
 
-  async resume(): Promise<UpdateAnswer> {
+  async resume(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
     const restart = this.restart;
     if (restart !== null && restart.phase !== 'busy') return refused(`${restartName(restart, true)} is ${PHASE[restart.phase]}.`);
-    if (restart !== null) return this.callOff(null);
+    if (restart !== null) return this.callOff(null, ways);
     if (this.endingSwitchQuiesce) return refused(ENDING_SWITCH_QUIESCE);
     this.endingSwitchQuiesce = true;
     let ended;
@@ -560,7 +562,7 @@ export class HostUpdate {
     const first = ended.stuck > 0
       ? on !== null ? `${on}, but not on every host.` : 'No restart is waiting, and the switch\'s quiesce couldn\'t be ended.'
       : on !== null ? `${on}.` : 'No restart is waiting, and no host was quiesced for a switch.';
-    return ended.stuck > 0 ? refused(first, ...ended.lines, RESUME_AGAIN) : done(first, ...ended.lines);
+    return ended.stuck > 0 ? refused(first, ...ended.lines, resumeAgain(ways)) : done(first, ...ended.lines);
   }
 
   status(): UpdateStatus {
@@ -636,9 +638,9 @@ export class HostUpdate {
       `them from ${notesPath(setup.here.root, installed)}.`];
   }
 
-  installedNotes(version?: string): UpdateAnswer {
+  installedNotes(version?: string, ways: UpdateWays = TOOL_WAYS): UpdateAnswer {
     const setup = this.need();
-    if (setup.here === null) return refused(`No notes were given: ${NOT_AN_INSTALL}`);
+    if (setup.here === null) return refused(`No notes were given: ${notAnInstall(ways)}`);
     let installed: string | null;
     try {
       installed = this.installedTarget();
@@ -646,7 +648,7 @@ export class HostUpdate {
       return refused(`No notes were given: which releases are installed can't be read: ${said(error)}`);
     }
     if (installed === null) {
-      return refused(`No notes were given: no release newer than ${setup.running} is installed. ${TOOL_WAYS.check} ` +
+      return refused(`No notes were given: no release newer than ${setup.running} is installed. ${ways.check} ` +
         'says what\'s out, with its notes link.');
     }
     return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version);
@@ -663,7 +665,7 @@ export class HostUpdate {
 
   private restartRefusal(ways: UpdateWays = COMMAND_WAYS): string | null {
     const here = this.need().here;
-    if (here === null) return NOT_AN_INSTALL;
+    if (here === null) return notAnInstall(ways);
     if (this.stopper === null) {
       return 'This host has no stop a restart can use: a batch run ends on its own, and the next start, once it has, ' +
         'runs whatever release is installed and asked for.';
@@ -689,13 +691,13 @@ export class HostUpdate {
     return null;
   }
 
-  private async beginRestart(request: Pick<RestartState, 'to' | 'why' | 'keepData'>): Promise<UpdateAnswer> {
+  private async beginRestart(request: Pick<RestartState, 'to' | 'why' | 'keepData'>, ways: UpdateWays): Promise<UpdateAnswer> {
     this.restart = { ...request, phase: 'quiescing', hosts: [] };
     if (this.armed !== null) this.disarm(`an operator's ${request.why === 'go-back' ? 'Go back' : 'Restart'} took its place.`);
-    return this.quiesceThenStop(this.need().waits?.restartMs ?? RESTART_QUIESCE_MS);
+    return this.quiesceThenStop(this.need().waits?.restartMs ?? RESTART_QUIESCE_MS, undefined, ways);
   }
 
-  private async quiesceThenStop(timeoutMs: number, armedQuiet?: () => boolean): Promise<UpdateAnswer> {
+  private async quiesceThenStop(timeoutMs: number, armedQuiet: (() => boolean) | undefined, ways: UpdateWays): Promise<UpdateAnswer> {
     const setup = this.need();
     const restart = this.restart!;
     restart.phase = 'quiescing';
@@ -706,30 +708,30 @@ export class HostUpdate {
     try {
       quiet = await quiesceForSwitch(framework, setup.host.fleet(), { to: restart.to, timeoutMs });
     } catch (error) {
-      return this.callOff(`its quiesce was refused: ${said(error)}`);
+      return this.callOff(`its quiesce was refused: ${said(error)}`, ways);
     }
-    if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED);
+    if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED, ways);
     if (armedQuiet !== undefined) {
       const hold = operatorHold(framework.getHostModeStatus()) ?? childHold(quiet.hosts);
       if (hold !== null) return this.endAndStayArmed(quiet.hosts, hold);
-      return quiet.drained && quiet.hosts.every(settled) && armedQuiet() ? this.markAndStop() : this.endAndStayArmed(quiet.hosts);
+      return quiet.drained && quiet.hosts.every(settled) && armedQuiet() ? this.markAndStop(ways) : this.endAndStayArmed(quiet.hosts);
     }
-    if (quiet.drained) return this.markAndStop();
+    if (quiet.drained) return this.markAndStop(ways);
     restart.phase = 'busy';
     restart.hosts = quiet.hosts;
-    return refused(...busyLines(restart, timeoutMs));
+    return refused(...busyLines(restart, timeoutMs, ways));
   }
 
-  private async markAndStop(): Promise<UpdateAnswer> {
+  private async markAndStop(ways: UpdateWays): Promise<UpdateAnswer> {
     const setup = this.need();
     const restart = this.restart!;
-    if (this.trying && this.stopper?.stopping?.() === true) return this.callOff(STOPPING_FIRST);
+    if (this.trying && this.stopper?.stopping?.() === true) return this.callOff(STOPPING_FIRST, ways);
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
       ({ unsynced } = writeMark(setup.here!.root, { to: restart.to, why: restart.why, keepData: restart.keepData, connected }, this.now()));
     } catch (error) {
-      return this.callOff(`its mark couldn't be written: ${said(error)}`);
+      return this.callOff(`its mark couldn't be written: ${said(error)}`, ways);
     }
     restart.phase = 'stopping';
     restart.hosts = [];
@@ -746,19 +748,19 @@ export class HostUpdate {
     return done(farewell);
   }
 
-  private async callOff(why: string | null): Promise<UpdateAnswer> {
+  private async callOff(why: string | null, ways: UpdateWays): Promise<UpdateAnswer> {
     const restart = this.restart!;
     restart.phase = 'ending';
     restart.hosts = [];
     const ended = await this.endQuiesce();
     this.restart = null;
     if (this.trying && this.armed !== null) {
-      this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + leftQuiesced(ended, false));
+      this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + leftQuiesced(ended, false, this.hostWays()));
     }
     const first = why === null
       ? `${restartName(restart, true)} is called off, and nothing switches.`
       : `${restartName(restart, true)} is called off, and nothing switches: ${why}`;
-    if (ended.stuck > 0) return refused(first, ...ended.lines, RESUME_AGAIN);
+    if (ended.stuck > 0) return refused(first, ...ended.lines, resumeAgain(ways));
     return why === null ? done(first, ...ended.lines) : refused(first, ...ended.lines);
   }
 
@@ -780,7 +782,8 @@ const SESSION_CHANGED = 'the session changed while turns were ending, so this ho
   'quiesce. Ask again.';
 const SESSION_CHANGED_AT_LOOK = 'the session changed while the fleet\'s children were asked whether they were busy, ' +
   'before this host was quiesced, so the try ended there. Ask again.';
-const RESUME_AGAIN = 'For a host still quiesced, /update restart resume tries again, as does the host\'s next start.';
+const resumeAgain = (ways: UpdateWays): string =>
+  `For a host still quiesced, ${ways.resume} tries again, as does the host's next start.`;
 const ENDING_SWITCH_QUIESCE = 'A switch\'s quiesce is being ended. Ask again once that has answered.';
 const ASK_AGAIN = 'Asking again won\'t change that: whoever runs this host can.';
 const NO_INSTALL_OF_ITS_OWN = 'Nothing was armed: this host has no install of its own to restart onto a release. A fleet ' +
@@ -810,10 +813,11 @@ const operatorHold = (status: { quiesced: boolean; reason?: string }): string | 
   status.quiesced && !isSwitchQuiesce(status.reason)
     ? `this host is quiesced by its operator${status.reason ? ` (${status.reason})` : ''}.`
     : null;
-const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: boolean): string =>
-  ended.stuck === 0 ? '' : ` Ending the switch's quiesce didn't reach every host: ${ended.lines.join(' ')} An ` +
-    `operator's /update restart resume ends it, as does the host's next start${tryingAgain ? ', and so does this ' +
-    'restart\'s next try' : ''}.`;
+const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: boolean, ways: UpdateWays): string =>
+  ended.stuck === 0 ? '' : ` Ending the switch's quiesce didn't reach every host: ${ended.lines.join(' ')} ` +
+    `${ways.reader === 'agent' ? ways.resume.charAt(0).toUpperCase() + ways.resume.slice(1) : `An operator's ${ways.resume}`} ` +
+    'ends it, as does the ' +
+    `host's next start${tryingAgain ? ', and so does this restart\'s next try' : ''}.`;
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';
 

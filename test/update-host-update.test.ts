@@ -1000,7 +1000,7 @@ describe('/update', () => {
         goBack: { to: '0.12.0', since: 'then' }, restart: null, armed: null, armedDropped: null, operatorQuiesced: null,
         switchQuiesceLeft: false, lastSwitch: null, problems: [],
       };
-      const ways = (Object.keys(COMMAND_WAYS) as UpdateWay[]).filter((way) => way !== 'back' && way !== 'check');
+      const ways = (Object.keys(COMMAND_WAYS) as UpdateWay[]).filter((way) => !['back', 'check', 'reader'].includes(way));
       for (const way of ways) expect((await run(commandFor(way, shown)!)).at(-1)).toBe('answered');
       expect(calls).toEqual(['install', 'restart 0.13.1', 'wait', 'now', 'resume', 'back true 0.12.0', 'back false 0.12.0']);
       for (const line of ['/update restart', '/update back keep', '/update restart 0.13.1-rc.1', '/update back restore 0.12.0-rc.2']) {

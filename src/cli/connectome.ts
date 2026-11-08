@@ -8,7 +8,7 @@ import {
   KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord, type LauncherOps,
 } from '../update/launcher.js';
 import {
-  COMMAND_WAYS, cliWays, inShellWords, statusLines, type UpdateStatus,
+  COMMAND_WAYS, cliWays, statusLines, type UpdateStatus,
 } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
@@ -223,7 +223,7 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     const shell = host.ready.turnWork !== undefined;
     const typed = typedCommand(root);
     const ways = shell ? cliWays(typed) : COMMAND_WAYS;
-    for (const line of statusLines(update, ways)) ctx.out(`  ${shell ? inShellWords(line, typed) : line}`);
+    for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
   }
   return Math.max(status, service(ctx));
 }
@@ -376,7 +376,7 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
     return 1;
   }
   const typed = typedCommand(ctx.root!);
-  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inShellWords(line, typed)));
+  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(line), typed);
   host.close();
   if (answer.how === 'closed') {
     ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
@@ -385,7 +385,7 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
     return 1;
   }
   if (answer.error !== undefined) {
-    ctx.err(`connectome: the host's update command failed: ${inShellWords(answer.error, typed)}`);
+    ctx.err(`connectome: the host's update command failed: ${answer.error}`);
     return 1;
   }
   if (answer.refused) return 1;
@@ -446,7 +446,7 @@ function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: No
   }
   const typed = typedCommand(root);
   return goBackFromShell(root, choice === 'keep' ? [KEEP_DATA_FLAG] : [],
-    { ...launcher, report: (text) => ctx.err(inShellWords(text, typed)) }, release);
+    { ...launcher, report: (text) => ctx.err(text) }, release, cliWays(typed).back);
 }
 
 function noHost(ctx: CliContext, host: NoHost): number {
@@ -487,7 +487,7 @@ async function reach(ctx: CliContext): Promise<HostClient | NoHost | null> {
 
 type Answer = { how: 'done'; error?: string; refused?: true } | { how: 'closed' };
 
-async function command(host: HostClient, text: string, print: (line: string) => void): Promise<Answer> {
+async function command(host: HostClient, text: string, print: (line: string) => void, typed?: string): Promise<Answer> {
   host.subscribe([]);
   const corrId = `connectome-command-${process.pid}`;
   const ended = new Promise<Answer>((done) => {
@@ -504,7 +504,9 @@ async function command(host: HostClient, text: string, print: (line: string) => 
     });
     void host.closed.then(() => done({ how: 'closed' }));
   });
-  host.send({ type: 'command', command: text, corrId });
+  // `typed` asks the host to name each update way as this command is typed. A host older than this command ignores it
+  // and answers in its terminal's /update spelling.
+  host.send({ type: 'command', command: text, corrId, ...(typed === undefined ? {} : { typed }) });
   return ended;
 }
 
