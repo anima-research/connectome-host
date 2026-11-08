@@ -660,7 +660,7 @@ test('bare, before the host has read the registry, says how to read it', async (
     `  The registry hasn't been read yet: ${path} update check reads it.\n`);
 });
 
-test('bare gives a reason the host stored, such as an armed try\'s, in the words this shell takes', async () => {
+test('bare gives a reason the host stored, such as an armed try\'s, as the host wrote it', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   const waited = 'turns were still going. Ending the switch\'s quiesce didn\'t reach every host: kid: it didn\'t say why. ' +
@@ -675,8 +675,7 @@ test('bare gives a reason the host stored, such as an armed try\'s, in the words
   });
   const ran = await run(path, [], root);
   expect(ran.status).toBe(0);
-  expect(ran.out).toContain(`An operator's ${path} update restart resume ends it`);
-  expect(ran.out).not.toContain('/update restart resume');
+  expect(ran.out).toContain(waited);
 });
 
 test('send isn\'t ended by an idle from before its line (texts 0), and ends at the idle that covers it', async () => {
@@ -1029,9 +1028,11 @@ test('update runs /update with the same words in the host and prints its answer 
   const asked: string[] = [];
   let child: ChildProcess | undefined;
   let runningAtDone = false;
+  const typed: unknown[] = [];
   await fakeHost(data, async (message, reply, socket) => {
     if (message.type !== 'command') return;
     asked.push(String(message.command));
+    typed.push(message.typed);
     if (typeof message.corrId !== 'string') {
       socket.end();
       return;
@@ -1052,8 +1053,9 @@ test('update runs /update with the same words in the host and prints its answer 
   const ran = await run(path, ['update', 'install'], root, (spawned) => { child = spawned; });
   expect(ran.status).toBe(0);
   expect(asked).toEqual(['/update install']);
+  expect(typed).toEqual([path]);
   expect(ran.out).toBe('Reading the registry, then installing…\nSee /update-log and /updates.\n' +
-    `Installed 0.15.0: ${path} update restart switches to it.\n`);
+    'Installed 0.15.0: /update restart switches to it.\n');
   expect(runningAtDone).toBe(true);
   const checked = await run(path, ['update', 'check'], root);
   expect(checked.status).toBe(0);
@@ -1084,7 +1086,7 @@ test('update spells the install\'s command as plain `connectome` in its usage an
   expect(wrong.err).toStartWith('connectome: usage: connectome update [check');
   await fakeHost(data, (message, reply) => {
     if (message.type !== 'command') return;
-    reply({ type: 'command-output', text: 'Installed 0.15.0: /update restart switches to it.', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-output', text: `Installed 0.15.0: ${String(message.typed)} update restart switches to it.`, style: 'system', corrId: message.corrId });
     reply({ type: 'command-done', corrId: message.corrId });
   });
   const ran = await run(path, ['update', 'install'], root, undefined, root);
@@ -1109,7 +1111,7 @@ test('update whose command fails in the host says so and exits 1', async () => {
   });
   const ran = await run(path, ['update'], root);
   expect(ran.status).toBe(1);
-  expect(ran.err).toContain(`registry unreachable: try ${path} update again`);
+  expect(ran.err).toContain('registry unreachable: try /update again');
   expect(ran.out).toBe('');
 });
 

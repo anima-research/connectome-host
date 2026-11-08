@@ -1,9 +1,11 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { copyLabelPath, installPaths, moveCurrent, realOrResolved } from '../src/update/contract.js';
+import { RELEASE_HOST } from '../src/update/launcher.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 3_000;
@@ -111,6 +113,47 @@ test('an answer refused without a follow-up, as /update back at a host that isn\
     expect(answer.at(-1)).toEqual({ type: 'command-done', corrId: 'back', refused: true });
     expect(answer.some((event) => String(event.text).includes('wasn\'t started through an install\'s entry point'))).toBe(true);
   }, { UPDATE_NOT_AN_INSTALL: '1' });
+});
+
+function goBackOffered(): { root: string; done: () => void } {
+  const root = mkdtempSync(join(tmpdir(), 'headless-command-install-'));
+  for (const version of ['0.12.1', '0.13.0']) {
+    const host = join(root, 'releases', version, RELEASE_HOST);
+    mkdirSync(join(host, 'src', 'update'), { recursive: true });
+    writeFileSync(join(root, 'releases', version, 'package.json'),
+      JSON.stringify({ dependencies: { '@animalabs/connectome-host': version } }));
+    writeFileSync(join(host, 'package.json'), JSON.stringify({ version }));
+    writeFileSync(join(host, 'src', 'index.ts'), '');
+    writeFileSync(join(host, 'src', 'update', 'launcher.ts'), 'export function launch() {}');
+  }
+  moveCurrent(root, '0.13.0');
+  const data = join(root, 'data');
+  mkdirSync(data);
+  const { copy } = installPaths(root);
+  mkdirSync(join(copy, '0-data'), { recursive: true });
+  writeFileSync(copyLabelPath(copy), JSON.stringify({
+    v: 1, from: '0.12.1', at: '2026-10-20T10:00:00.000Z', items: [{ path: realOrResolved(data), name: '0-data' }], mark: 'm1',
+  }));
+  return { root, done: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+test('/update with the reader\'s typed command names each way as they type it, and without it as /update', async () => {
+  const offered = goBackOffered();
+  try {
+    await withChild(async (send, events) => {
+      send({ type: 'command', corrId: 'typed', command: '/update back', typed: 'connectome' });
+      send({ type: 'command', corrId: 'plain', command: '/update back' });
+      const said = (corrId: string) => events.filter((event) => event.corrId === corrId && event.type === 'command-output')
+        .map((event) => String(event.text)).join('\n');
+      await until(() => ['typed', 'plain'].every((corrId) =>
+        events.some((event) => event.type === 'command-done' && event.corrId === corrId)), 'both answers');
+      expect(said('typed')).toContain('- connectome update back keep: 0.12.1 runs on the data as it is now');
+      expect(said('typed')).not.toContain('/update');
+      expect(said('plain')).toContain('- /update back keep: 0.12.1 runs on the data as it is now');
+    }, { UPDATE_INSTALL_ROOT: offered.root });
+  } finally {
+    offered.done();
+  }
 });
 
 test('a command with a corrId that isn\'t a string command is refused with command-done', async () => {

@@ -635,7 +635,7 @@ test('a child that doesn\'t take its resume after a try is named, in the try\'s 
     expect(said).not.toContain('so the switch\'s quiesce ended');
     expect(said).toContain('kid');
   }
-  expect(check).toContain('An operator\'s connectome update restart resume ends it');
+  expect(check).toContain(`An operator's ${shellWord(join(root, 'connectome'))} update restart resume ends it`);
   expect(check).not.toContain('/update');
 });
 

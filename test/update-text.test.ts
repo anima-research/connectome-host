@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, inAgentWords, keptDismissal,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, keptDismissal,
   noticeLines, openWays, restartLines, shownBanner, statusLines,
   type ReadCheck, type RestartState, type SwitchOutcome, type UpdateStatus,
 } from '../src/web/update-text.js';
@@ -229,7 +229,7 @@ describe('each way named as its caller names it', () => {
   });
 
   test('the agent is told whose a fallback\'s quoted lines are right after them, and after no other status', () => {
-    const said = (status: UpdateStatus) => inAgentWords(statusLines(status, TOOL_WAYS).join('\n')).split('\n');
+    const said = (status: UpdateStatus) => statusLines(status, TOOL_WAYS);
     const told = (line: string) => line.startsWith('Those quoted lines are your host\'s');
     const fell = said({ ...base, lastSwitch: fellBack });
     expect(fell.slice(-4))
@@ -247,7 +247,6 @@ describe('each way named as its caller names it', () => {
       },
     ];
     for (const lastSwitch of [null, ...others]) expect(said({ ...base, lastSwitch }).some(told)).toBe(false);
-    expect(inAgentWords('Notes:\n  - an indented line\n  - another')).toBe('Notes:\n  - an indented line\n  - another');
   });
 
   test('a trial log keeps its blank lines', () => {
