@@ -95,11 +95,15 @@ export function historyUserLine(
   return { text: `${speaker.kind === 'you' ? 'You' : speaker.label}: ${text}`, speaker: speaker.kind };
 }
 
-/** The line a user-role row's images replay as, or undefined when it has none. */
+/** The line a user-role row's images replay as, or undefined when it has none.
+ *  A row read with `resolveBlobs: false`, as the undo redraw reads it, holds
+ *  each image stored from its data as a `blob_ref` whose `ref.originalType`
+ *  is `'image'`. */
 export function historyImageLine(
   msg: { participant: string; metadata?: unknown; content: ReadonlyArray<{ type: string }> },
 ): { text: string; speaker: Speaker['kind'] } | undefined {
-  const images = msg.content.filter((block) => block.type === 'image').length;
+  const images = msg.content.filter((block) => block.type === 'image'
+    || (block.type === 'blob_ref' && (block as { ref?: { originalType?: unknown } }).ref?.originalType === 'image')).length;
   return images > 0 ? historyUserLine(msg, `[${images === 1 ? 'an image' : `${images} images`}]`) : undefined;
 }
 

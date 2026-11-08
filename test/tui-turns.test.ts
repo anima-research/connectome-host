@@ -802,6 +802,15 @@ describe("the TUI's numbered fork phases, through runTui", () => {
   }
 });
 
+describe("the TUI's undo redraw of rows it drew no line for", () => {
+  test("a user row's images get their line, though the redraw reads its images as blob refs", async () => {
+    const undone = (await play('undone-images')).get('undone')!.frame;
+    expect(undone).toContain('(undone) You: see the seventh ledger');
+    expect(undone).toContain('(undone) You: [an image]');
+    expect(undone).toContain('(undone) You: [2 images]');
+  }, 40000);
+});
+
 describe("the TUI's history replay, through runTui", () => {
   test('a replayed image line names the speaker of the text after it, in the same colour, and an image alone still shows', async () => {
     const colors = (await play('history-images')).get('history')!.colors!;

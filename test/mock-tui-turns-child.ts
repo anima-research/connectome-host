@@ -46,12 +46,25 @@ const undoneRows = new Set<string>();
 /** The store's branch in `async-branch`, which a /checkout moves (the framework's switchBranch traces nothing). */
 let storeBranch = 'main';
 /** The record's reads the TUI makes of the agent's context, over `rows`. */
+/** A row as the store reads it back with `resolveBlobs: false`: each image a
+ *  `blob_ref`, the shape context-manager stores it in. */
+const unresolved = (row: (typeof history)[number]) => ({
+  ...row,
+  content: row.content.map((block) => (block.type === 'image'
+    ? { type: 'blob_ref', ref: { hash: `blob-${row.id}`, mediaType: 'image/png', originalType: 'image' } }
+    : block)),
+});
 const recordOf = (rows: typeof history) => ({
   getAllMessages: () => rows,
   getMessageCount: () => rows.length,
-  getMessageWindow: (offset: number, limit: number) => ({
-    messages: rows.slice(offset, offset + limit), startIndex: offset, totalCount: rows.length,
-  }),
+  getMessageWindow: (offset: number, limit: number, options?: { resolveBlobs?: boolean }) => {
+    const window = rows.slice(offset, offset + limit);
+    return {
+      messages: options?.resolveBlobs === false ? window.map(unresolved) : window,
+      startIndex: offset,
+      totalCount: rows.length,
+    };
+  },
 });
 
 /** The record in the `history-images` scenario. */
@@ -1180,6 +1193,20 @@ async function play(): Promise<void> {
     undoneRows.add('a3');
     first.send('window:undone', { retracted: 1003 });
     await until(async () => (await frame()).includes('(undone) a twelfth ledger'), 'the mark');
+    await step('undone');
+  } else if (scenario === 'undone-images') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // Two sends with images from another client, stored after the history
+    // was drawn, so the TUI drew no line for them, then undone.
+    const fromWebUi = { inboundSource: { kind: 'surface', surface: 'webui', acceptedAt: 1 } };
+    history.push(
+      { id: 'u2', participant: 'user', content: [{ type: 'image' }, { type: 'text', text: 'see the seventh ledger' }], metadata: fromWebUi },
+      { id: 'u3', participant: 'user', content: [{ type: 'image' }, { type: 'image' }], metadata: fromWebUi },
+    );
+    undoneRows.add('u2');
+    undoneRows.add('u3');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) You: see the seventh ledger'), 'the mark');
     await step('undone');
   } else if (scenario === 'undone') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
