@@ -63,6 +63,16 @@ describe('a replayed image line names the same speaker as the text after it', ()
   test('a row with no images has no image line', () => {
     expect(historyImageLine(withImages(surface, 0))).toBeUndefined();
   });
+
+  test('an image read with its blob unresolved counts, and a stored document, audio or video doesn\'t', () => {
+    const stored = (originalType: string) => ({
+      participant: 'user',
+      content: [{ type: 'blob_ref', ref: { hash: 'h', mediaType: 'application/octet-stream', originalType } }, { type: 'text', text: 'hello' }],
+      metadata: surface,
+    });
+    expect(historyImageLine(stored('image'))).toEqual({ text: 'You: [an image]', speaker: 'you' });
+    for (const kind of ['document', 'audio', 'video']) expect(historyImageLine(stored(kind))).toBeUndefined();
+  });
 });
 
 describe('the host\'s own rows read as the host\'s, by kind', () => {
