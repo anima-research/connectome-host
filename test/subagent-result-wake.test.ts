@@ -104,3 +104,39 @@ describe("an async subagent's failure by its message route", () => {
     } finally { await h.cleanup(); }
   }, 20_000);
 });
+
+describe("a synchronous subagent's failure after it was detached from its caller", () => {
+  test('reaches an idle launcher once, from the run, with no wake of the host\'s own', async () => {
+    const { h, subagent } = await boot();
+    try {
+      let fail!: () => void;
+      const failing = new Promise<void>((resolve) => { fail = resolve; });
+      const stream = h.adapter.stream.bind(h.adapter);
+      h.adapter.stream = async (req, cb) => {
+        if (req.model === modelOf('sub')) {
+          await failing;
+          throw new Error('the provider refused the request');
+        }
+        return stream(req, cb);
+      };
+      const wakes = wakesWeighed(h);
+      const launched = await subagent.handleToolCall({
+        id: 'call-scout', name: 'spawn', callerAgentName: 'parent',
+        input: { name: 'scout', systemPrompt: 'p', task: 'answer', sync: true, timeoutMs: 100 },
+      } as unknown as ToolCall);
+      expect(launched.success).toBe(true);
+      fail();
+      await until(() => h.rowWith('parent', "[Subagent 'scout' failed]") !== undefined, 'the failure stored for the launcher');
+      await atRest(h);
+      const run = h.framework.listAgents({ includeEnded: true }).find((record) => record.name.startsWith('spawn-scout-'))!;
+      expect(run.relationships.resultTo).toEqual({ to: 'parent', as: 'tool-result' });
+      const rows = h.framework.getAgent('parent')!.getContextManager().getAllMessages()
+        .filter((m) => m.content.some((b) => (b as { text?: string }).text?.startsWith("[Subagent 'scout' failed]")));
+      expect(rows).toHaveLength(1);
+      expect((rows[0]!.metadata as { hostNote?: string } | undefined)?.hostNote).toBeUndefined();
+      expect(wakes.filter((w) => w.source === 'subagent' && !w.readsRow)).toEqual([]);
+      expect(h.adapter.callsFor('parent')).toBe(1);
+      expect(h.adapter.wireOf('parent')[0]).toContain("[Subagent 'scout' failed]");
+    } finally { await h.cleanup(); }
+  }, 20_000);
+});
