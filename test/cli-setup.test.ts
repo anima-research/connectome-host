@@ -3001,3 +3001,32 @@ test('where setup\'s list of stored secrets can\'t be read, the exported-base-UR
   expect(shown).toContain('which leads to https://<MY_TOKEN>.gateway.example, not the one exported in this shell');
   expect(shown).not.toContain('tok-in-host');
 });
+
+test('the line saying where the key is checked shows a stored secret the base URL\'s host carries by its name', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'),
+    `ANTHROPIC_API_KEY=${KEY}\nDISCORD_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('one call at https://<DISCORD_TOKEN>.gateway.example to ');
+  expect(shown.toLowerCase()).not.toContain('tok-in-host');
+});
+
+test('the question for a key names the base URL\'s origin with a stored secret its host carries shown by its name', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n');
+  const labels: string[] = [];
+  const made = world(dir, { answers: ['no', ''] }, {
+    askHidden: async (label) => {
+      labels.push(label);
+      return '';
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(labels).toEqual(['An API key that https://<DISCORD_TOKEN>.gateway.example accepts, typed hidden (Enter alone stops setup)']);
+});

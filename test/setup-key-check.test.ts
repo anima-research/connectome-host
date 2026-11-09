@@ -635,3 +635,22 @@ describe('a 200 that isn\'t an event stream', () => {
     expect(cause(seq)).toContain('not with a message from Anthropic\'s Messages API');
   });
 });
+
+describe('another stored secret where ANTHROPIC_BASE_URL carries it', () => {
+  test('is shown by its name in the check\'s host, its origin and the words it quotes', async () => {
+    const hide = [{ name: 'DISCORD_TOKEN', value: 'Tok-In-Host' }];
+    const refused = await checkKey({
+      key: 'k', model: 'm', baseUrl: 'https://tok-in-host.gateway.test', hide,
+      fetch: (async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch,
+    });
+    expect(cause(refused)).toContain('The connection to <DISCORD_TOKEN>.gateway.test was refused');
+    const said = await checkKey({
+      key: 'k', model: 'm', baseUrl: 'https://tok-in-host.gateway.test', hide,
+      fetch: (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'TOK-IN-HOST may not' } },
+        { status: 403 })) as unknown as typeof fetch,
+    });
+    expect(cause(said)).toContain('It said: "<DISCORD_TOKEN> may not"');
+    expect(cause(said)).toContain('Ask whoever runs https://<DISCORD_TOKEN>.gateway.test');
+    for (const each of [refused, said]) expect(cause(each).toLowerCase()).not.toContain('tok-in-host');
+  });
+});
