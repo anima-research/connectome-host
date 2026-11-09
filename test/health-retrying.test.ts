@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
+import { createBranchState, handleCommand } from '../src/commands.js';
 import { agentActivity, waitText } from '../src/web/agent-activity';
 
 const inFor = (ms: number) => `${Math.ceil(ms / 1000)}s`;
@@ -86,5 +87,26 @@ describe('the countdown', () => {
     expect(waitText(3_569_000)).toBe('59m');
     expect(waitText(3_599_000)).toBe('1h 0m');
     expect(waitText(5_400_000)).toBe('1h 30m');
+  });
+});
+
+describe('/status', () => {
+  test("says what the health row says while a turn waits to retry, counted from the snapshot's time", () => {
+    const taken = Date.parse('2026-01-01T00:00:10.000Z');
+    const app = {
+      framework: {
+        getAllAgents: () => [{ name: 'main', model: 'claude-test', state: { status: 'idle' }, getContextManager: () => null }],
+        getAgent: () => undefined,
+        getAllModules: () => [],
+        getQueueDepth: () => 0,
+        healthSnapshot: () => ({
+          at: '2026-01-01T00:00:10.000Z',
+          agents: [{ name: 'main', status: 'idle', turnAlive: true, retrying: { nextTry: 2, maxTries: 5, until: taken + 30_000, retryClass: 'overloaded' } }],
+        }),
+      },
+      branchState: createBranchState(),
+    } as any;
+    const lines = handleCommand('/status', app).lines.map((l) => l.text);
+    expect(lines).toContain('  main: retrying · overloaded · try 2 of 5 · in 30s (claude-test)');
   });
 });
