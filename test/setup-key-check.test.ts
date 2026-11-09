@@ -21,13 +21,17 @@ const BLOCK = [
 ];
 const whole = (message: Record<string, unknown> = MESSAGE) => [started(message), ...BLOCK, ended(), { type: 'message_stop' }];
 const held = (text: string) => sse(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(text)); } }));
-const pieces = (text: string, size: number) => sse(new ReadableStream({
-  start(controller) {
-    const bytes = new TextEncoder().encode(text);
-    for (let at = 0; at < bytes.length; at += size) controller.enqueue(bytes.slice(at, at + size));
-    controller.close();
-  },
-}));
+const pieces = (text: string, size: number) => {
+  const bytes = new TextEncoder().encode(text);
+  let at = 0;
+  return sse(new ReadableStream({
+    async pull(controller) {
+      if (at >= bytes.length) return controller.close();
+      if (at > 0) await Bun.sleep(1);
+      controller.enqueue(bytes.slice(at, at += size));
+    },
+  }));
+};
 const READ: Record<string, () => Response> = {
   ok: () => sse(named(whole())),
   roleless: () => sse(named(whole({ content: [], usage: USAGE }))),
@@ -580,6 +584,18 @@ describe('the check and the agent\'s client', () => {
     const ours = (await Bun.file(join(import.meta.dir, '..', 'package.json')).json() as { dependencies: Record<string, string> }).dependencies['@anthropic-ai/sdk'];
     expect(theirs).toBeString();
     expect(ours).toBe(theirs);
+  });
+
+  test('the chunked stream reaches a client in more than one read', async () => {
+    const stubs = Bun.serve({ port: 0, fetch: () => READ.chunked!() });
+    try {
+      const reader = (await fetch(`http://127.0.0.1:${stubs.port}/`)).body!.getReader();
+      let reads = 0;
+      while (!(await reader.read()).done) reads += 1;
+      expect(reads).toBeGreaterThan(1);
+    } finally {
+      stubs.stop(true);
+    }
   });
 
   test('on each stream, the check and membrane\'s own Anthropic stream() give the same outcome within their 3 s and 4 s deadlines, and stream() reads exactly the readable ones; a stream other than the held-open CR one that misses a deadline fails the test, named', async () => {
