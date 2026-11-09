@@ -1,10 +1,3 @@
-/**
- * TimeModule — provides the agent with wall-clock awareness.
- *
- * On fresh session start, injects a message stating the session's start time.
- * Exposes `time:now` tool so the agent can check the current time on demand.
- */
-
 import type {
   Module,
   ModuleContext,
@@ -16,6 +9,7 @@ import type {
   ToolResult,
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
+import { hostNoteMetadata } from '../speaker.js';
 import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 
 interface TimeState {
@@ -58,7 +52,7 @@ export class TimeModule implements Module {
     const text =
       `The local time at the start of this session is ${now.local}.`;
 
-    ctx.addMessage('user', [{ type: 'text', text }]);
+    ctx.addMessage('user', [{ type: 'text', text }], hostNoteMetadata('session-start'));
     ctx.setState<TimeState>({ ...state, sessionStartAnnounced: true });
   }
 

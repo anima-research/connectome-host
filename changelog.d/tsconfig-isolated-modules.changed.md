@@ -1,3 +1,0 @@
-- **Contributors, and consumers who typecheck the source with the shipped `tsconfig.json`:** it now sets `isolatedModules`, so `tsc --noEmit` also rejects what can't be transpiled one module at a time, as bun runs the source: a type-only name re-exported without `export type` (TS1205), for one, which bun fails to load. The host's own source meets it.
-- **Contributors:** the web app's typecheck no longer checks `src/commands.ts` and the host modules it imports, with Node's types. The `Line` type it took from there moved to `src/output-line.ts`, and `src/commands.ts` still exports it.
-- **Unchanged:** what runs.

@@ -1,20 +1,11 @@
-/**
- * Phase 6 — no-subfleets invariant.
- *
- * A fleet child recipe may not itself declare a `modules.fleet` entry.
- * Validation happens before subprocess spawn so the failure surfaces as a
- * clean synchronous tool error.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule } from '../src/modules/fleet-module.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 interface ToolResultLike {
   success?: boolean;
@@ -24,46 +15,37 @@ interface ToolResultLike {
 
 describe('FleetModule — no-subfleets invariant', () => {
   let tmpDir: string;
-  // Tests 3 and 4 pass validation and actually spawn a (detached) bun child;
-  // without explicit cleanup the children orphan to PID 1.  Track every
-  // FleetModule we construct so afterAll can reap them.
   const activeFleets: FleetModule[] = [];
+  let launches = 0;
 
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-no-subfleets-'));
   });
 
   afterAll(async () => {
-    // Reap in parallel — production shutdown timeouts (graceful 10s + SIGTERM 5s
-    // + SIGKILL 2s ≈ 17s per fleet) would blow Bun's 5s hook budget if awaited
-    // serially. The constructor below also overrides those to snappy values.
-    await Promise.all(activeFleets.map((f) => f.stop().catch(() => { /* noop */ })));
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    await Promise.all(activeFleets.map((f) => f.stop().catch(() => { })));
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   }, 30_000);
 
   async function runLaunch(recipeBody: object): Promise<ToolResultLike> {
+    const name = `child-${++launches}`;
     const recipePath = join(tmpDir, `recipe-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     writeFileSync(recipePath, JSON.stringify(recipeBody), 'utf-8');
 
     const fleet = new FleetModule({
       childRuntimePath: 'bun',
-      childIndexPath: INDEX_PATH,
-      // Snappy shutdown so afterAll reaping stays within the hook budget
-      // even if a spawned child is uncooperative (no API key, etc.).
+      childIndexPath: join(TEST_DIR, 'mock-headless-child.ts'),
       gracefulShutdownMs: 1_000,
       sigtermEscalationMs: 500,
     });
     activeFleets.push(fleet);
-    // FleetModule.start() reads/writes Chronicle state; for a pure validation
-    // test we drive handleToolCall directly without start(). The launch path
-    // we exercise here checks the recipe before any subprocess spawn.
     const result = await fleet.handleToolCall({
       id: 'test-call',
       name: 'launch',
       input: {
-        name: 'subfleet-child',
+        name,
         recipe: recipePath,
-        dataDir: join(tmpDir, 'subfleet-child'),
+        dataDir: join(tmpDir, name),
       },
     }) as ToolResultLike;
 
@@ -106,7 +88,33 @@ describe('FleetModule — no-subfleets invariant', () => {
     expect(result.error).toContain('nested fleets are not supported');
   });
 
-  test('recipe without fleet module is accepted (passes validation, may fail later in spawn path)', async () => {
+  test('a recipe with a fleet module that fits its own model but not this host\'s MODEL is still rejected as a nested fleet', async () => {
+    const model = process.env.MODEL;
+    process.env.MODEL = 'claude-haiku-4-5';
+    try {
+      const result = await runLaunch({
+        name: 'NestedFleetUnfit',
+        agent: { name: 'inner', systemPrompt: 'x', model: 'claude-opus-4-6', maxTokens: 100_000 },
+        modules: { fleet: true, subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('nested fleets are not supported');
+    } finally {
+      if (model === undefined) delete process.env.MODEL; else process.env.MODEL = model;
+    }
+  });
+
+  test('a recipe with a fleet module whose system prompt can\'t be fetched is still rejected as a nested fleet', async () => {
+    const result = await runLaunch({
+      name: 'NestedFleetUnfetchable',
+      agent: { name: 'inner', systemPrompt: 'http://127.0.0.1:9/prompt.txt' },
+      modules: { fleet: true, subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('nested fleets are not supported');
+  });
+
+  test('recipe without fleet module is accepted and launched', async () => {
     const result = await runLaunch({
       name: 'PlainChild',
       agent: { name: 'inner', systemPrompt: 'x' },
@@ -118,16 +126,10 @@ describe('FleetModule — no-subfleets invariant', () => {
         workspace: false,
       },
     });
-    // We don't care if the spawn itself succeeds in this test environment —
-    // we care that the *invariant validation* doesn't reject it. Any rejection
-    // here would be from a different code path (spawn-time errors), not the
-    // no-subfleets check we just added.
-    if (result.success === false && result.error) {
-      expect(result.error).not.toContain('nested fleets');
-    }
+    expect(result.success).toBe(true);
   });
 
-  test('recipe with modules.fleet=false is accepted (explicit opt-out is fine)', async () => {
+  test('recipe with modules.fleet=false is accepted and launched (explicit opt-out is fine)', async () => {
     const result = await runLaunch({
       name: 'ExplicitlyDisabledFleet',
       agent: { name: 'inner', systemPrompt: 'x' },
@@ -140,8 +142,6 @@ describe('FleetModule — no-subfleets invariant', () => {
         workspace: false,
       },
     });
-    if (result.success === false && result.error) {
-      expect(result.error).not.toContain('nested fleets');
-    }
+    expect(result.success).toBe(true);
   });
 });

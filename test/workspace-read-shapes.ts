@@ -1,7 +1,7 @@
 /**
- * A workspace `read` result in the two shapes the file viewers must show:
- * today's, with the page's fields in `data`, and one that gives the model
- * the page as text, with the same fields in `structured` beside it.
+ * agent-framework's workspace `read` answers with the page as text blocks in
+ * `data` and its fields in `structured`; a result may also carry the fields in
+ * `data` itself.
  */
 export const READ_PAGE = '     1\tfirst line\n     2\tsecond, with "quotes"';
 

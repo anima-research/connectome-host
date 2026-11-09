@@ -1,12 +1,3 @@
-/**
- * `agent.provider: 'openai-compatible'` — membrane has shipped a generic
- * OpenAI chat-completions adapter (Ollama, vLLM, Together, Groq, local
- * servers...) that no host wired. The recipe must name the endpoint and the
- * model, and both must be checked at load time: a missing baseUrl would
- * otherwise surface as a fetch to `undefined/chat/completions` at first
- * inference, and a missing model as whatever the endpoint's default happens
- * to be.
- */
 import { describe, expect, test } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 
@@ -43,8 +34,10 @@ describe('recipe agent.provider openai-compatible', () => {
 
   test('rejects baseUrl with any other provider', () => {
     expect(() => validateRecipe(recipe({ provider: 'anthropic', baseUrl: 'http://x/v1' }))).toThrow(/only applies to agent\.provider 'openai-compatible'/);
+    expect(() => validateRecipe(recipe({ provider: 'openrouter', baseUrl: 'http://x/v1' }))).toThrow(/take their endpoint from .*OPENROUTER_BASE_URL/);
     expect(() => validateRecipe(recipe({ baseUrl: 'http://x/v1' }))).toThrow(/got provider "anthropic"/);
     expect(() => validateRecipe(recipe({ provider: 'openai-codex', baseUrl: 'http://x/v1' }))).toThrow(/got provider "openai-codex"/);
+    expect(() => validateRecipe(recipe({ provider: 'openai-codex', baseUrl: 'http://x/v1' }))).toThrow(/take their endpoint from .*CODEX_BASE_URL/);
   });
 
   test('other providers are untouched', () => {

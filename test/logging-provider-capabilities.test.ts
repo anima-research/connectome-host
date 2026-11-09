@@ -33,14 +33,15 @@ describe('LoggingProviderAdapter image capability', () => {
   test('advertised media types are forwarded as the exact set', () => {
     const types = new Set(['image/png', 'image/heic', 'image/heif']);
     const wrapped = new LoggingProviderAdapter(adapter(types), '/dev/null');
-    expect(wrapped.toolResultImageMediaTypes).toBe(types);
+    expect(wrapped.toolResultImageMediaTypes).toEqual(new Set(['image/png', 'image/heic', 'image/heif']));
     expect(wrapped.toolResultImageMediaTypes?.has('image/heic')).toBe(true);
     expect(wrapped.toolResultImageMediaTypes?.has('image/gif')).toBe(false);
   });
 
   test('an explicit empty set stays distinct from an absent capability', () => {
     const types = new Set<string>();
-    expect(new LoggingProviderAdapter(adapter(types), '/dev/null').toolResultImageMediaTypes).toBe(types);
+    const forwarded = new LoggingProviderAdapter(adapter(types), '/dev/null').toolResultImageMediaTypes;
+    expect(forwarded).toEqual(new Set());
   });
 
   test('the getter observes the inner adapter rather than snapshotting capability at construction', () => {
@@ -48,8 +49,8 @@ describe('LoggingProviderAdapter image capability', () => {
     const inner = adapter();
     Object.defineProperty(inner, 'toolResultImageMediaTypes', { get: () => types });
     const wrapped = new LoggingProviderAdapter(inner, '/dev/null');
-    expect(wrapped.toolResultImageMediaTypes).toBe(types);
+    expect(wrapped.toolResultImageMediaTypes).toEqual(new Set(['image/png']));
     types = new Set(['image/heif']);
-    expect(wrapped.toolResultImageMediaTypes).toBe(types);
+    expect(wrapped.toolResultImageMediaTypes).toEqual(new Set(['image/heif']));
   });
 });

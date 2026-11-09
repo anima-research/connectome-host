@@ -1,21 +1,3 @@
-/**
- * MCPL panel — two views of one scope's MCPL world:
- *
- *   live      what the scoped process actually LOADED (recipe opt-in +
- *             agent overlay), with connection status and tool counts. This
- *             is the per-scope truth: a conductor with zero MCPLs and a
- *             clerk with five share the same registry file.
- *   registry  the shared mcpl-servers.json (editable). Mutations are
- *             file-only — a restart applies them — and happen on the HOST
- *             scope: the file is one cwd-shared registry for the whole
- *             fleet, so the panel goes read-only on child scopes rather
- *             than pretending a "child-local" edit exists.
- *
- * Under the live list, the scoped process's tool classes: every tool it
- * offers with its effective MCPL class (RFC-008) and the source that decided
- * it — the same data as `/tools` and `GET /debug/tool-classes`.
- */
-
 import { createSignal, For, Show } from 'solid-js';
 
 export interface McplServerRow {
@@ -29,22 +11,20 @@ export interface McplServerRow {
   disabledFeatureSets?: string[];
 }
 
-/** A server the scoped process has actually loaded, with live status. */
 export interface McplLiveRow {
   id: string;
   connected: boolean;
   toolCount: number;
   toolPrefix?: string;
   target?: string;
+  closedTab?: boolean;
 }
 
 /** One tool's effective MCPL class (RFC-008) and where it came from. */
 export interface ToolClassRow {
   tool: string;
-  /** Empty for an unclassed tool. */
   class: string[];
   source: 'override' | 'host' | 'server' | 'none';
-  /** The providing MCPL server, for MCPL tools. */
   serverId?: string;
 }
 
@@ -73,14 +53,8 @@ export function McplPanel(props: {
   loaded: boolean;
   configPath: string;
   servers: McplServerRow[];
-  /** Servers the scoped process actually loaded, with connection status.
-   *  Empty array is meaningful ("this process runs no MCPLs"); undefined
-   *  means an older host that doesn't report it. */
   live?: McplLiveRow[];
-  /** Every tool the scoped process offers, with its effective class.
-   *  Undefined when the host/framework doesn't report classes. */
   toolClasses?: ToolClassRow[];
-  /** True on fleet-child scopes: registry edits stay on the host scope. */
   readOnly?: boolean;
   onRefresh(): void;
   onAdd(input: { id: string; command: string; args?: string[]; env?: Record<string, string>; toolPrefix?: string }): void;
@@ -119,7 +93,6 @@ export function McplPanel(props: {
       </Show>
 
       <Show when={props.loaded}>
-        {/* ---- live: what this process actually runs ---- */}
         <Show when={props.live !== undefined}>
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
             loaded by this process
@@ -132,10 +105,13 @@ export function McplPanel(props: {
           <div class="space-y-1 mb-3">
             <For each={props.live}>{(s) => (
               <div class="border border-neutral-800 rounded px-2 py-1 bg-neutral-950 flex items-baseline gap-2">
-                <span class={`inline-block w-2 h-2 rounded-full self-center shrink-0 ${s.connected ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                  title={s.connected ? 'connected' : 'disconnected'} />
+                <span class={`inline-block w-2 h-2 rounded-full self-center shrink-0 ${s.connected ? 'bg-emerald-500' : s.closedTab ? 'bg-neutral-500' : 'bg-rose-500'}`}
+                  title={s.connected ? 'connected' : s.closedTab ? 'closed tab: disconnected by choice, not by a failure' : 'disconnected'} />
                 <span class="font-mono text-cyan-300 truncate">{s.id}</span>
                 <span class="text-[10px] text-neutral-500 shrink-0">{s.toolCount} tools</span>
+                <Show when={s.closedTab}>
+                  <span class="text-[10px] text-neutral-400 shrink-0">closed tab</span>
+                </Show>
                 <Show when={s.toolPrefix}>
                   <span class="text-[10px] text-neutral-600 shrink-0">prefix={s.toolPrefix}</span>
                 </Show>
@@ -201,7 +177,6 @@ export function McplPanel(props: {
   );
 }
 
-/** Per-source counts, always visible; the per-tool list on demand. */
 function ToolClasses(props: { rows: ToolClassRow[] }) {
   const [open, setOpen] = createSignal(false);
   const counts = (): Array<[ToolClassRow['source'], number]> =>
@@ -235,9 +210,6 @@ function ToolClasses(props: { rows: ToolClassRow[] }) {
       <Show when={open()}>
         <div class="mt-1 border border-neutral-800 rounded bg-neutral-950 divide-y divide-neutral-900">
           <For each={props.rows}>{(r) => (
-            // Wraps instead of squeezing: when class + source don't fit
-            // beside the name they drop to a second line, so the tool name
-            // always keeps the row's width.
             <div class="px-2 py-0.5 flex flex-wrap items-baseline gap-x-2">
               <span class="font-mono text-neutral-200 truncate min-w-0 max-w-full" title={r.tool}>{r.tool}</span>
               <span class="ml-auto min-w-0 flex flex-wrap justify-end items-baseline gap-x-2 text-[10px]">
@@ -448,15 +420,10 @@ function Field(props: { label: string; value: string; onInput: (v: string) => vo
   );
 }
 
-/** Naive whitespace split — sufficient for the args field where shell-quoted
- *  values with spaces are uncommon. Operators editing complex commands can
- *  hand-edit mcpl-servers.json directly. */
 function splitArgs(raw: string): string[] {
   return raw.split(/\s+/).filter(s => s.length > 0);
 }
 
-/** Parse a KEY=VALUE-per-line block into an env object. Returns null if the
- *  block is empty (so the caller can omit the env field entirely). */
 function parseEnvBlock(raw: string): Record<string, string> | null {
   const out: Record<string, string> = {};
   for (const line of raw.split('\n')) {

@@ -1,39 +1,55 @@
-/**
- * Offline child for FleetModule lifecycle regressions. The recipe file contains
- * only fixture options; no framework or provider is started. Its stdout and
- * stderr are the startup.log the parent opened for it.
- */
 import { createServer, type Socket } from 'node:net';
 import {
   readFileSync, writeFileSync, unlinkSync, appendFileSync, existsSync, truncateSync, renameSync, writeSync, chmodSync, fstatSync,
+  closeSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { finished } from 'node:stream';
+import { waitToBeListed } from '../src/fleet-begin.js';
 
 const options = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
   ready?: boolean;
-  /** Report idle after ready, as a child that has finished its work does. */
   idle?: boolean;
   crashBeforeSocket?: boolean;
   noSocket?: boolean;
   crashOnFile?: string;
-  /** Written to stderr first, as a real child prints a startup error. */
   stderr?: string;
-  /** Empty startup.log first, as anything truncating it mid-launch would. */
   truncateStartupLog?: boolean;
-  /** Replace startup.log with a new file holding this text first. */
   replaceStartupLog?: string;
-  /** Replace startup.log with a FIFO first. */
   fifoStartupLog?: boolean;
-  /** Take every permission off startup.log after writing to it. */
   lockStartupLog?: boolean;
-  /** Make the data directory unsearchable as the child exits. */
   lockDataDir?: boolean;
-  /** Write to this path, first, whether stderr is a regular file. */
   reportStderr?: string;
-  /** Append a line to this path for each client that connects. */
   connections?: string;
+  helperPid?: string;
+  atGate?: string;
+  begun?: string;
+  closeStdinAtGate?: boolean;
+  stdinErrorAtGate?: boolean;
+  chunks?: string;
+  stdinDone?: string;
 };
+if (options.closeStdinAtGate) {
+  closeSync(0);
+  if (options.atGate !== undefined) writeFileSync(options.atGate, '');
+  setInterval(() => {}, 1_000);
+  await new Promise(() => {});
+}
+if (options.atGate !== undefined) writeFileSync(options.atGate, '');
+const listed = waitToBeListed();
+if (options.chunks !== undefined) {
+  const chunks = options.chunks;
+  process.stdin.on('data', (chunk: Buffer) => setImmediate(() => appendFileSync(chunks, `${chunk.length}\n`)));
+}
+if (options.stdinErrorAtGate) process.stdin.emit('error', new Error('a pipe that failed'));
+await listed;
+if (options.begun !== undefined) writeFileSync(options.begun, '');
+if (options.stdinDone !== undefined) {
+  const stdinDone = options.stdinDone;
+  process.stdin.resume();
+  finished(process.stdin, () => setImmediate(() => writeFileSync(stdinDone, '')));
+}
 const dataDir = process.env.DATA_DIR!;
 const socketPath = join(dataDir, 'ipc.sock');
 const pidPath = join(dataDir, 'headless.pid');
@@ -54,8 +70,15 @@ if (options.lockStartupLog) chmodSync(startupLog, 0o000);
 
 appendFileSync(join(dataDir, 'launches.jsonl'), JSON.stringify({
   pid: process.pid, sentinel: process.env.FLEET_TEST_SENTINEL ?? null,
+  installRoot: process.env.CONNECTOME_INSTALL_ROOT ?? null,
+  begin: process.env.CONNECTOME_FLEET_BEGIN ?? null,
 }) + '\n');
 
+if (options.helperPid !== undefined) {
+  const helper = spawn('sleep', ['60'], { stdio: 'ignore' });
+  writeFileSync(options.helperPid, String(helper.pid));
+  helper.unref();
+}
 if (options.lockDataDir) chmodSync(dataDir, 0o600);
 if (options.crashBeforeSocket) process.exit(1);
 if (options.noSocket) {
@@ -65,8 +88,8 @@ if (options.noSocket) {
 
 writeFileSync(pidPath, String(process.pid));
 process.on('exit', () => {
-  try { unlinkSync(socketPath); } catch { /* already removed */ }
-  try { unlinkSync(pidPath); } catch { /* already removed */ }
+  try { unlinkSync(socketPath); } catch { }
+  try { unlinkSync(pidPath); } catch { }
 });
 
 let client: Socket | null = null;
@@ -84,8 +107,17 @@ const server = createServer((socket) => {
       const command = JSON.parse(line);
       if (command.type === 'shutdown') process.exit(0);
       if (command.type === 'command' && command.command === '/crash') process.exit(1);
-      // Close the connection and keep running, as when another client connects.
       if (command.type === 'command' && command.command === '/drop') socket.destroy();
+      if (command.type === 'command' && command.command === '/drop-closed') {
+        setInterval(() => {}, 1_000);
+        server.close();
+        try { unlinkSync(socketPath); } catch { }
+        socket.destroy();
+      }
+      if (command.type === 'command' && command.command === '/exiting') {
+        setInterval(() => {}, 1_000);
+        socket.end(JSON.stringify({ type: 'lifecycle', phase: 'exiting', ts: Date.now() }) + '\n');
+      }
     }
   });
   if (options.ready !== false) {

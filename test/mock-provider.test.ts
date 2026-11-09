@@ -1,9 +1,3 @@
-/**
- * Recipe `agent.mock` → membrane MockAdapter. The timing knobs and the
- * response queue let an offline run reproduce delay-sensitive behavior; these
- * tests pin that each validated knob reaches the adapter the host builds and
- * does there what the recipe docs say.
- */
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -48,13 +42,11 @@ describe('mockAdapterConfig', () => {
     };
     const config = mockAdapterConfig(mock);
     expect(config).toEqual(mock);
-    // The adapter drains its queue; the recipe's copy must not change with it.
+    // membrane's MockAdapter drains its queue, so the recipe's copy must not change with it.
     expect(config.responseQueue).not.toBe(mock.responseQueue);
   });
 
   test('passes no key the recipe left out', () => {
-    // MockAdapter spreads its config over its defaults: an explicit
-    // `streamChunkSize: undefined` would stream an empty reply.
     const config = mockAdapterConfig({ streamChunkDelayMs: 0 });
     expect(Object.keys(config).sort()).toEqual(['echoMode', 'streamChunkDelayMs']);
   });
@@ -113,7 +105,6 @@ describe('the host builds its mock from agent.mock', () => {
       },
       modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
     }));
-    // cwd=dir keeps the developer's own mcpl-servers.json out of the run.
     const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
       cwd: dir,
       env: { ...process.env, DATA_DIR: join(dir, 'data') },
@@ -128,14 +119,12 @@ describe('the host builds its mock from agent.mock', () => {
     const done = new Promise<void>((r) => child.on('close', () => { closed = true; r(); }));
     child.stdin!.end('hello\n');
     try {
-      // Stop early if the host dies at startup, rather than waiting it out.
       const deadline = Date.now() + 30_000;
       while (!out.includes('Done.') && !closed && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 50));
       }
       const replied = out.includes('queued reply from the recipe');
       const echoed = out.includes('[Echo]');
-      // On failure the diff carries the host's own output, e.g. a startup error.
       const output = replied && !echoed ? '' : `stdout:\n${out}\nstderr (tail):\n${err.slice(-4000)}`;
       expect({ replied, echoed, output }).toEqual({ replied: true, echoed: false, output: '' });
     } finally {

@@ -50,7 +50,6 @@ describe('pickTopAlert', () => {
   test('priority kinds beat recency', () => {
     expect(pickTopAlert(['refusal-streak', 'compression-quarantine'])).toBe('compression-quarantine');
     expect(pickTopAlert(['inference-exhausted', 'refusal-streak'])).toBe('inference-exhausted');
-    // quarantine outranks hard-down
     expect(pickTopAlert(['inference-exhausted', 'compression-quarantine'])).toBe('compression-quarantine');
   });
 
@@ -68,19 +67,19 @@ describe('sliceViewport', () => {
   test('cursor at top: no top marker row, one extra body line', () => {
     const { start, end } = sliceViewport(100, 0, 20);
     expect(start).toBe(0);
-    expect(end).toBe(19); // 19 body rows + 1 bottom-marker row = 20
+    expect(end).toBe(19);
   });
 
   test('cursor at bottom: no bottom marker row', () => {
     const { start, end } = sliceViewport(100, 99, 20);
     expect(end).toBe(100);
-    expect(start).toBe(81); // 1 top-marker row + 19 body rows = 20
+    expect(start).toBe(81);
     expect(99).toBeGreaterThanOrEqual(start);
   });
 
   test('cursor mid-list: centered window with both markers budgeted', () => {
     const { start, end } = sliceViewport(100, 50, 20);
-    expect(end - start).toBe(18); // 18 body + 2 marker rows = 20
+    expect(end - start).toBe(18);
     expect(50).toBeGreaterThanOrEqual(start);
     expect(50).toBeLessThan(end);
   });
@@ -90,7 +89,6 @@ describe('sliceViewport', () => {
       const { start, end } = sliceViewport(60, cursor, 12);
       expect(cursor).toBeGreaterThanOrEqual(start);
       expect(cursor).toBeLessThan(end);
-      // rendered rows (body + markers actually shown) never exceed avail
       const rows = (end - start) + (start > 0 ? 1 : 0) + (end < 60 ? 1 : 0);
       expect(rows).toBeLessThanOrEqual(12);
     }
@@ -110,9 +108,6 @@ describe('fleetNoticeLine', () => {
     expect(fleetNoticeLine('stop leaf failed: unknown')).toBe('  ⚠ stop leaf failed: unknown');
   });
 
-  // The fleet view budgets one row per header line, so a notice of several
-  // lines, or one long enough to wrap, would push the tree's last rows below
-  // the fold while it shows.
   test('a notice of several lines shows its whole first line, then " …"', () => {
     const notice = 'restart leaf failed: subscribe failed: closed\n' +
       "The child's output during this launch, from /data/leaf/startup.log:\n  Missing ANTHROPIC_API_KEY.";
@@ -127,8 +122,6 @@ describe('fleetNoticeLine', () => {
       .toBe(`  ⚠ ${notice.slice(0, 67)}…`);
     expect(fleetNoticeLine('x'.repeat(70))).toBe(`  ⚠ ${'x'.repeat(70)}`);
     expect(fleetNoticeLine('x'.repeat(71))).toBe(`  ⚠ ${'x'.repeat(67)}…`);
-    // The mark counts toward the 70, so a first line of 68 is the longest
-    // that a notice of several lines shows whole.
     expect(fleetNoticeLine(`${'x'.repeat(68)}\nmore`)).toBe(`  ⚠ ${'x'.repeat(68)} …`);
     expect(fleetNoticeLine(`${'x'.repeat(69)}\nmore`)).toBe(`  ⚠ ${'x'.repeat(67)}…`);
   });

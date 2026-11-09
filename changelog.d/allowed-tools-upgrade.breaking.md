@@ -1,5 +1,0 @@
-- **Recipe authors whose recipes set `agent.allowedTools` to a list:** the list now decides which tools the resident is offered, and the subagents it spawns or forks get the same list or a narrower one, plus `subagent--return`. Earlier versions ignored the field with a startup warning, so the resident and its subagents had every tool.
-  - Before upgrading, check that the list names every tool the resident and its subagents use, framework tools such as `think` and `prose_help` included, with `utils` and each utility's own name (`module--name`) for the utilities they run. Or remove the field to keep every tool.
-  - A value other than `"all"` or an array of tool names now stops the recipe from loading.
-  - With Agent Framework 0.22.1, naming `utils` still lets the resident run every registered utility, and a call to a tool the list leaves out still runs. The Framework release from https://github.com/anima-research/agent-framework/pull/220 checks each utility's own name and refuses calls to tools the list leaves out.
-  - Unchanged: a recipe without `agent.allowedTools`, or with `"all"`, keeps every tool.

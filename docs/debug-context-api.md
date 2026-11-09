@@ -74,17 +74,18 @@ GET /debug/context
 
 This is the important part. By default the endpoint:
 
-- runs **no inference** (spends no tokens),
+- runs **no inference** of its own,
 - writes **no messages** to Chronicle,
 - contacts **no** external MCPL server.
 
-It compiles the context, assembles the system prompt and filters tools. That
-compile is the one the agent's next turn would run, so it is not strictly
-read-only: it can persist the strategy's fold-resolution state, queue
-summaries its fold plan demands (the background compression then produces
-them, as it would after a real turn), and settle a pending context-budget
-transition — the same kinds of change the agent's own compile makes on every
-turn.
+It compiles the context, assembles the system prompt and filters tools, as
+the agent's next turn would, but dry: agent-framework's preview compiles with
+`dryRun`, so it persists no fold resolutions, queues no summaries, settles no
+context-budget transition, and leaves the render stats the Context page shows
+as the last live compile left them. The
+one exception: like any compile, it releases a compression hold whose
+deadline has passed. context-manager ends a hold at its deadline whoever
+looks, and releases it at any compile or hold query.
 
 The trade-off is fidelity: the default response **omits the dynamically
 gathered injections** (lessons, retrieval results, MCPL `beforeInference`
@@ -94,11 +95,23 @@ context), because gathering those is *not* free or transparent:
   latency;
 - MCPL `beforeInference` hooks are arbitrary RPCs to external servers with
   side effects, and a preview never sends the paired `afterInference`, which
-  can leave a stateful server half-open.
+  can leave a stateful server half-open;
+- the retrieval module keeps one result per turn for the agent's later
+  starts, in this process, and a preview's gather counts as a start: a
+  preview that overlaps a live start's retrieval leaves its own result as the
+  turn's, or none when its own keeps nothing, as when its model call fails,
+  and then the turn's next start runs the calls again. Like any start, it
+  also counts as a use of the agent's entry among the 64 the module keeps,
+  so a preview that runs the calls can push out the least recently used
+  agent's kept result.
 
-To opt into a byte-faithful preview that includes those injections, pass
-`?injections=1` and accept the side effects. The response's `"transparent"`
-field tells you which mode actually ran.
+To opt into a preview that includes those injections, pass
+`?injections=1` and accept the side effects. An `afterUser` injection that a
+start would store as a message (context-manager #155 part 5) is shown where
+the start would put it, but isn't capped, sharded or weighed against the
+budget as the stored message would be, so where the strategy would do those,
+the start's request differs from the preview. The response's
+`"transparent"` field tells you which mode actually ran.
 
 ## Examples
 
@@ -116,7 +129,7 @@ curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
   'https://admin.example.internal/debug/context?agent=researcher-3&pretty=1'
 ```
 
-Full-fidelity preview (spends tokens, fires MCPL hooks):
+Preview with the gathered injections (spends tokens, fires MCPL hooks):
 
 ```sh
 curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
@@ -145,8 +158,12 @@ curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.request.messages[].participant'
 # Read the assembled system prompt
 curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.request.system'
 
-# List the tools this agent may call
+# List the tools this agent is offered
 curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.request.tools[].name'
+
+# With tool presentation on (docs/tool-presentation.md), a hidden tool isn't
+# offered but can still be called: list every tool it may call
+curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.toolPresentation.available[].name'
 
 # Just the model + token config
 curl -fsS "${AUTH[@]}" "$BASE" | jq '.request.config'
@@ -179,7 +196,8 @@ curl -fsS "${AUTH[@]}" "$BASE" | jq '.request.config'
     ],
     "promptCaching": true,
     "assistantParticipant": "agent"
-  }
+  },
+  "toolPresentation": null    // the request's tool-presentation snapshot, or null without one
 }
 ```
 
@@ -195,7 +213,14 @@ fields that matter for debugging:
   injections appended (only when `injections=1`).
 - **`config`** — model, `maxTokens`, and `temperature` (omitted when unset).
 - **`tools`** — only the tools this agent is *allowed* to use (after
-  `canUseTool` filtering), or absent if it has none.
+  `canUseTool` filtering), or absent if it has none. With tool presentation
+  on, only the ones the agent hasn't hidden.
+
+`toolPresentation` is the snapshot agent-framework captured for this request
+when the agent has a tool presentation (docs/tool-presentation.md), and `null`
+otherwise: `available` holds every tool the agent may call, `advertised` the
+ones its request offers, and `entries` each tool's visibility and where its
+description came from.
 
 ## What it does (and doesn't) mirror
 
@@ -204,9 +229,13 @@ The preview reuses the exact request-builder the live activation path uses
 config are identical to a real turn.
 
 With `?injections=1` it additionally mirrors the real activation's injection
-gathering (module `gatherContext` + MCPL `beforeInference`), making it
-byte-faithful. The one thing it never does — by design — is run the inference
-itself, so there is no model output in the response.
+gathering (module `gatherContext` + MCPL `beforeInference`), so its injected
+context is the real activation's, except that an injection the start would
+store as a message isn't shaped or budgeted as the stored message would be,
+and that a preview of the subconscious leaves out the standing dispositions
+its start adds. It never runs the agent's own inference, by design, so there
+is no model output in the response, though a module's gather can make model
+calls of its own, as above.
 
 ## Sibling endpoints
 
@@ -214,7 +243,7 @@ Same server and auth; `agent` defaults to the recipe's root agent.
 
 | Endpoint | Returns |
 |---|---|
-| `/debug/context/makeup` | Segment breakdown of the compiled context (head, raw middle, summaries by level, verbatim tail) from the strategy's render stats, plus `exactTotalTokens` from Anthropic's `count_tokens` for the agent's own model (`COUNT_TOKENS_MODEL` overrides; non-Claude models get `countSource: "count_tokens_unsupported_model"` and a null total) and `lastBilledInputTokens`. Same compile as the default preview, plus one `count_tokens` call. |
+| `/debug/context/makeup` | `stats`: the segment breakdown of the agent's last live compile, the one a turn makes (head, raw middle, summaries by level, verbatim tail), its render stats, or `null` until one has run since the agent's context was loaded (the host's start, a session or branch switch), and for good where its strategy keeps none, which `statsKept: false` says. `exactTotalTokens`: the next request as the default preview builds it, without what modules add at each turn, counted by Anthropic's `count_tokens` for the agent's own model (`COUNT_TOKENS_MODEL` overrides; non-Claude models get `countSource: "count_tokens_unsupported_model"` and a null total). The preview is a dry compile, which leaves `stats` as the last live compile left them. And `lastBilledInputTokens`. At most one `count_tokens` call. |
 | `/debug/context/coverage` | Summary-tree coverage and queued compression work — counts only, no message or summary text. |
 | `/debug/context/curve` | One record per compiled entry: kind (raw / L1…Ln), rendered tokens, raw-history tokens covered, date span, text. `/curve` is its HTML visualization. |
 | `/debug/context/preview?budget=<tokens>[&tail=<tokens>][&render=1]` | The fold plan at a *hypothetical* budget (and tail window), without applying it — commits nothing. Each run is a full compile that briefly blocks the agent, so runs are serialized process-wide with a 3 s cooldown (`429`). `400` for a bad `budget`/`tail`; `501` when this framework/strategy can't dry-run. |
@@ -222,8 +251,9 @@ Same server and auth; `agent` defaults to the recipe's root agent.
 
 `?scope=<child>` on any of these (and on `/debug/context`) forwards the request
 to that fleet child over the fleet IPC and returns its JSON: `404` if no fleet
-module is loaded or the child is unknown, `502` if the child isn't running or
-the send fails, `504` if it doesn't answer within 30 s.
+module is loaded or the child is unknown, `502` if the child isn't running,
+the send fails, or its connection closes before it answers (when the request
+may or may not have taken effect), `504` if it doesn't answer within 30 s.
 
 ## Troubleshooting
 
@@ -236,5 +266,7 @@ the send fails, `504` if it doesn't answer within 30 s.
 - **`"transparent": false` when you didn't expect it** — you passed an
   `injections` value other than `0`/`false` (even an empty `injections=`).
   Drop it for a transparent call.
-- **The response seems to be costing tokens** — only the `injections=1` path
-  spends tokens. The default never does.
+- **The response seems to be costing tokens** — the `injections=1` path
+  spends tokens on what it gathers. The default spends none of its own,
+  though like any compile it releases a compression hold whose deadline has
+  passed (see "Transparent by default").

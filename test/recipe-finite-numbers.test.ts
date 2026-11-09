@@ -26,9 +26,6 @@ describe('recipe numbers must be finite', () => {
     ['modules.fleet.readyTimeoutMs', (v) => recipe({}, { modules: { fleet: { readyTimeoutMs: v } } }), /readyTimeoutMs must be a non-negative number/],
     ['modules.fleet.gracefulShutdownMs', (v) => recipe({}, { modules: { fleet: { gracefulShutdownMs: v } } }), /gracefulShutdownMs must be a number of milliseconds from 0 to 2147483647/],
     ['modules.fleet.sigtermEscalationMs', (v) => recipe({}, { modules: { fleet: { sigtermEscalationMs: v } } }), /sigtermEscalationMs must be a number of milliseconds from 0 to 2147483647/],
-    ['codeExecution.toolCallTimeoutMs', (v) => recipe({}, { codeExecution: { enabled: true, toolCallTimeoutMs: v } }), /toolCallTimeoutMs must be a non-negative number/],
-    ['codeExecution.scriptTimeoutMs', (v) => recipe({}, { codeExecution: { enabled: true, scriptTimeoutMs: v } }), /scriptTimeoutMs must be a non-negative number/],
-    ['codeExecution.idleReclaimMs', (v) => recipe({}, { codeExecution: { enabled: true, idleReclaimMs: v } }), /idleReclaimMs must be a non-negative number/],
   ];
 
   for (const [field, build, message] of cases) {

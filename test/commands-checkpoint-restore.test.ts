@@ -1,12 +1,16 @@
 import { describe, test, expect } from 'bun:test';
 import { handleCommand, createBranchState } from '../src/commands.js';
 
-// Regression tests for /checkpoint + /restore POSITION semantics. The
-// original bug: checkpoints stored only a branch name, so /restore switched
-// to the branch HEAD — including everything after the checkpoint — rolling
-// back nothing, silently. These tests run over a stub ContextManager that
-// mimics Chronicle's contract: branchAt resolves ids against the CURRENT
-// branch's view of the log and throws for unreachable ids.
+// The stub ContextManager mimics context-manager's branchAt: it resolves an id
+// against the current branch's messages and throws for an id that branch
+// can't reach.
+//
+// Since agent-framework #291 /restore goes through the framework: its
+// rollbackToMessage (branchAt and a switch, with every agent sharing the
+// store idle), whose 'unknown-message' refusal sends it to the checkpoint's
+// branch head through the framework's switchBranch. The stub framework below
+// does what those two do over the stub ContextManager; commands-branch-
+// framework.test.ts runs them on a real framework.
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
@@ -14,6 +18,19 @@ function makeStubWorld() {
   const messagesByBranch = new Map<string, StubMessage[]>([['main', []]]);
   let currentName = 'main';
   let msgCounter = 0;
+
+  // The store the context reads. agent-framework's switchBranch moves it,
+  // past every context on it (each live one then follows the move), where a
+  // context's own switchBranch also initializes that context's strategy
+  // again, as a rollback's switch does for its agent. The stub framework's
+  // switchBranch moved the store through the context's, so it modelled a
+  // switch that re-initialized the strategy, which the real one didn't (J-H9).
+  const store = {
+    switchBranch: (name: string): void => {
+      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
+      currentName = name;
+    },
+  };
 
   const cm = {
     currentBranch: () => ({ id: currentName, name: currentName, head: messagesByBranch.get(currentName)!.length }),
@@ -26,10 +43,7 @@ function makeStubWorld() {
       messagesByBranch.set(newName, msgs.slice(0, idx + 1));
       return newName;
     },
-    switchBranch: async (name: string): Promise<void> => {
-      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
-      currentName = name;
-    },
+    switchBranch: async (name: string): Promise<void> => store.switchBranch(name),
   };
 
   const addMessage = (participant = 'user'): StubMessage => {
@@ -41,8 +55,20 @@ function makeStubWorld() {
   const app = {
     framework: {
       getAgent: () => undefined,
-      getAllAgents: () => [{ getContextManager: () => cm }],
+      getAllAgents: () => [{ name: 'stub-agent', getContextManager: () => cm }],
       getAllModules: () => [],
+      // switchStore reads the store's branch before and after the switch, to
+      // tell a refusal from a move whose `_config` refresh failed (#264).
+      getStore: () => ({ currentBranch: () => cm.currentBranch() }),
+      switchBranch: async (name: string) => store.switchBranch(name),
+      rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
+        if (!messagesByBranch.get(currentName)!.some(m => m.id === opts.messageId)) {
+          throw Object.assign(new Error(`Message ${opts.messageId} is not on the active branch`), { code: 'unknown-message' });
+        }
+        const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
+        await cm.switchBranch(targetBranch);
+        return { targetBranch, tailMessageId: opts.messageId };
+      },
     },
     branchState: createBranchState(),
     userMessageCount: 0,
@@ -68,7 +94,7 @@ describe('/checkpoint + /restore position semantics', () => {
     const cpMsg = addMessage('agent');
     handleCommand('/checkpoint cp', app);
     addMessage();
-    addMessage('agent'); // work after the checkpoint that must be rolled back
+    addMessage('agent');
 
     const result = handleCommand('/restore cp', app);
     const outcome = await result.asyncWork!;
@@ -89,10 +115,6 @@ describe('/checkpoint + /restore position semantics', () => {
     await handleCommand('/restore cp', app).asyncWork!;
     const branchesAfterFirst = branchCount();
 
-    // Second restore at the same position: the guard must hold even though
-    // we're now on restore-cp-… rather than the original branch (the guard
-    // used to compare branch names and died after the first restore,
-    // minting a sibling branch per repeat).
     const second = handleCommand('/restore cp', app);
     expect(second.asyncWork).toBeUndefined();
     expect(second.lines[0]!.text).toContain('Already at checkpoint');
@@ -105,8 +127,6 @@ describe('/checkpoint + /restore position semantics', () => {
     addMessage('agent');
     handleCommand('/checkpoint cp', app);
 
-    // Simulate /undo: branch truncated BEFORE the checkpoint message, so the
-    // checkpoint id is unreachable from the current branch's view.
     const undoBranch = cm.branchAt(early.id, 'undo-1');
     await cm.switchBranch(undoBranch);
 
