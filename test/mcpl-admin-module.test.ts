@@ -685,18 +685,15 @@ describe('mcpl_deploy', () => {
       'The home node\'s directory publishes wss://eidoverse.example/mcpl for the access grant "eidoverse": leave `url` out, and the deploy dials that.',
     );
     const unpublished = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'orrery' });
-    expectSays(
-      unpublished.error, 'the credential of its access grant "orrery" would go to 10.0.0.7 over unencrypted ws://',
-      'Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory, which a deploy with `access` and no `url` then dials.',
-    );
-    expect(String(unpublished.error)).not.toContain('leave `url` out');
-    expect(String(published.error)).not.toContain('Or ask the service');
+    expect(unpublished.error).toStartWith('Nothing was deployed: the credential of its access grant "orrery" would go to 10.0.0.7 over unencrypted ws://');
+    expect(unpublished.error).toEndWith('ask your operator to add the server to the recipe.');
+    expect(String(unpublished.error)).not.toContain('directory');
     expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
     const tokenOver = await call(mod, 'mcpl_deploy', { id: 'tools', url: 'ws://tools.example:3101/mcpl', token: 't' });
     expect(tokenOver.success).toBe(false);
     expect(tokenOver.error).toStartWith('Nothing was deployed: its token would go to tools.example:3101 over unencrypted ws://');
     expect(String(tokenOver.error)).not.toContain('leave `url` out');
-    expect(String(tokenOver.error)).not.toContain('Or ask the service');
+    expect(String(tokenOver.error)).not.toContain('directory');
     for (const url of ['ws://tools.example/mcpl?token=abc', 'ws://user:pass@tools.example/mcpl']) {
       const byUrl = await call(mod, 'mcpl_deploy', { id: 'pasted', url });
       expect(byUrl.error).toStartWith('Nothing was deployed: the user, password or token parameter in its url would go to tools.example over unencrypted ws://');
@@ -705,31 +702,18 @@ describe('mcpl_deploy', () => {
     expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ unreadable: 'status 503.' }) });
     const unreadable = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
-    expectSays(
-      unreadable.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://',
-      'The home node\'s directory of MCPL endpoints couldn\'t be read, so it isn\'t known whether it ' +
-        'publishes one for the access grant "eidoverse": a deploy with `access` and no `url`, called again later, ' +
-        'dials the endpoint it publishes, if it publishes one.',
-    );
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('DIRECTORY_MARKER: home node unreachable'); } });
     const throwing = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
-    expectSays(
-      throwing.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://',
-      'The home node\'s directory of MCPL endpoints couldn\'t be read, so it isn\'t known whether it publishes one',
-    );
-    for (const refused of [unreadable, throwing]) {
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
+    const empty = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
+    for (const refused of [unreadable, throwing, empty]) {
+      expect(refused.success).toBe(false);
+      expect(refused.error).toStartWith('Nothing was deployed: the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://');
+      expect(refused.error).toEndWith('ask your operator to add the server to the recipe.');
+      expect(String(refused.error)).not.toContain('directory');
       expect(String(refused.error)).not.toContain('status 503');
       expect(String(refused.error)).not.toContain('DIRECTORY_MARKER');
     }
-    for (const refused of [unreadable, throwing]) {
-      expect(refused.success).toBe(false);
-      expect(String(refused.error)).not.toContain('leave `url` out');
-      expect(String(refused.error)).not.toContain('Or ask the service');
-    }
-    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
-    const empty = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
-    expectSays(empty.error, 'Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory');
-    expect(String(empty.error)).not.toContain('leave `url` out');
     expectMalformed((await call(mod, 'mcpl_deploy', { id: 'odd', url: 'ws://tools.example', access: 5 })).error, "its access isn't text");
     expect(calls).toEqual([]);
     expect(readAgentOverlay(overlayPath)).toEqual({});
