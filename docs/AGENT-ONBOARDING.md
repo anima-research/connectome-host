@@ -519,7 +519,8 @@ dollar figures. The host's standard block matches them to what the provider bill
 - **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
   models, and `1` on Codex, whose credit billing has no cache-write charge;
 - **OpenAI reads:** the model's cached-input ratio, the same on the API and in Codex: `0.1`
-  on most models, `0.05` on GPT-6.1 Sol and GPT-6.1 Terra, and `1` on the pro models,
+  on most models, `0.05` on GPT-6.1 Sol and GPT-6.1 Terra, `0.25` on the gpt-4.1 family,
+  o3 and o4-mini, `0.5` on the gpt-4o family, o1 and o3-mini, and `1` on the pro models,
   which the pricing page gives no cached-input price.
 
 Write the block yourself only to change the policy, and then set the prices to match.

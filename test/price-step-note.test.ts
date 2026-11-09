@@ -5,28 +5,45 @@ import { priceStepNote } from '../src/recipe-fit.js';
 
 const recipe = (agent: Record<string, unknown>) => validateRecipe({ name: 'step', agent: { systemPrompt: '', ...agent } });
 const onApi = (agent: Record<string, unknown> = {}) => recipe({ provider: 'openai-responses', model: 'gpt-6.1-sol', ...agent });
+const n = (value: number) => value.toLocaleString('en-US');
+// The host's default agent.maxTokens, and context-manager's default overBudgetGraceRatio: a compile sends at most
+// floor((budget - maxTokens) x (1 + grace)) of conversation, then the system prompt and the 32,000 the fit keeps for tools.
+const REPLY = 16_384;
+const reach = (budget: number, system: number, reply = REPLY, grace = 0.02) => Math.max(0, Math.floor((budget - reply) * (1 + grace))) + system + 32_000;
+function largest(system: number, reply = REPLY, grace = 0.02): number {
+  let lo = 0, hi = 1_000_000;
+  while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (reach(mid, system, reply, grace) <= 272_000) lo = mid; else hi = mid - 1; }
+  return lo;
+}
 
 describe("the start note on OpenAI's 272,000-token price step", () => {
-  test('a budget whose requests can pass the step on the API gets a note naming the step, the budget under it and both sides\' rates', () => {
+  test('a budget whose requests can pass the step on the API gets a note naming the step, the input it can reach, the budget under it and both sides\' rates', () => {
     const note = priceStepNote(onApi(), 'gpt-6.1-sol')!;
     expect(note).toContain('gpt-6.1-sol');
     expect(note).toContain('272,000');
     expect(note).toContain('300,000');
-    expect(note).toContain('240,000');
+    expect(note).toContain(n(reach(300_000, 0)));
+    expect(note).toContain(`${n(largest(0))} or less`);
     expect(note).toContain('standard');
     expect(note).toContain('$4.00 input, $0.20 cached input and $15.00 output');
     expect(note).toContain('$2.00, $0.10 and $10.00');
   });
 
-  test('the line counts the budget, the system prompt and 32,000 for tools: at it no note, one token over a note', () => {
-    expect(priceStepNote(onApi({ contextBudgetTokens: 240_000 }), 'gpt-6.1-sol')).toBeUndefined();
-    expect(priceStepNote(onApi({ contextBudgetTokens: 240_001 }), 'gpt-6.1-sol')).toContain('240,001');
+  test('the line is input alone, as the compile sends it: the budget less agent.maxTokens, 2% over, the system prompt and 32,000 for tools', () => {
+    expect(priceStepNote(onApi({ contextBudgetTokens: largest(0) }), 'gpt-6.1-sol')).toBeUndefined();
+    expect(priceStepNote(onApi({ contextBudgetTokens: largest(0) + 1 }), 'gpt-6.1-sol')).toContain(`${n(largest(0))} or less`);
     const systemPrompt = 'a fixture sentence of the resident\'s own. '.repeat(400);
     const system = defaultTokenEstimator(systemPrompt);
     expect(system).toBeGreaterThan(1_000);
-    expect(priceStepNote(onApi({ systemPrompt, contextBudgetTokens: 240_000 - system }), 'gpt-6.1-sol')).toBeUndefined();
-    const over = priceStepNote(onApi({ systemPrompt, contextBudgetTokens: 240_000 }), 'gpt-6.1-sol')!;
-    expect(over).toContain((240_000 - system).toLocaleString('en-US'));
+    expect(priceStepNote(onApi({ systemPrompt, contextBudgetTokens: largest(system) }), 'gpt-6.1-sol')).toBeUndefined();
+    expect(priceStepNote(onApi({ systemPrompt, contextBudgetTokens: largest(system) + 1 }), 'gpt-6.1-sol')).toContain(`${n(largest(system))} or less`);
+    expect(priceStepNote(onApi({ systemPrompt: 'You are a resident.', contextBudgetTokens: 250_000 }), 'gpt-6.1-sol')).toBeUndefined();
+    const reply = 32_000;
+    expect(priceStepNote(onApi({ maxTokens: reply, contextBudgetTokens: largest(0, reply) }), 'gpt-6.1-sol')).toBeUndefined();
+    expect(priceStepNote(onApi({ maxTokens: reply, contextBudgetTokens: largest(0, reply) + 1 }), 'gpt-6.1-sol')).toContain(`${n(largest(0, reply))} or less`);
+    const exact = { strategy: { overBudgetGraceRatio: 0 } };
+    expect(priceStepNote(onApi({ ...exact, contextBudgetTokens: largest(0, REPLY, 0) }), 'gpt-6.1-sol')).toBeUndefined();
+    expect(priceStepNote(onApi({ ...exact, contextBudgetTokens: largest(0, REPLY, 0) + 1 }), 'gpt-6.1-sol')).toContain(`${n(largest(0, REPLY, 0))} or less`);
   });
 
   test("the rates are the recipe's tier's: flex's for flex, Fast mode's for priority", () => {

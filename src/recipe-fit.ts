@@ -406,9 +406,12 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
   const step = openaiLongContextStep(model, recipe.agent.responses?.serviceTier);
   if (!step) return undefined;
   const budget = effectiveContextBudgetTokens(recipe, model);
-  if (!isTokenSize(budget)) return undefined;
+  const x = readNumbers(recipe);
+  if (!isTokenSize(budget) || typeof x === 'string') return undefined;
   const system = systemPromptTokens(recipe);
-  if (budget + system + TOOLS_ROOM_TOKENS <= step.tokens) return undefined;
+  const fixed = system + TOOLS_ROOM_TOKENS;
+  const input = (b: number) => Math.max(0, limitOf(x, b - x.reply)) + fixed;
+  if (input(budget) <= step.tokens) return undefined;
   const { long, short } = step;
   const kinds = (['input', 'cached', 'output'] as const).filter((k) => long?.[k] !== undefined && short[k] !== undefined);
   const name = { input: 'input', cached: 'cached input', output: 'output' };
@@ -418,9 +421,13 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
     : `at long-context rates for the whole request, which the pricing page doesn't list for this tier`;
   const said = recipe.agent.contextBudgetTokens === undefined || recipe.agent.contextBudgetTokens === null
     ? `The budget the host gives this recipe, ${n(budget)},`
-    : `Recipe agent.contextBudgetTokens (${n(budget)}),`;
-  const under = step.tokens - system - TOOLS_ROOM_TOKENS;
+    : `Recipe agent.contextBudgetTokens (${n(budget)})`;
+  let under = x.reply + Math.floor((step.tokens - fixed) / (1 + x.grace));
+  while (input(under + 1) <= step.tokens) under++;
+  while (under > 0 && input(under) > step.tokens) under--;
+  const grace = x.grace > 0 ? `, and up to ${+(x.grace * 100).toFixed(2)}% over that` : '';
   return `[price] ${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens ${rates}. ` +
-    `${said} with the system prompt (about ${n(system)} tokens) and ${n(TOOLS_ROOM_TOKENS)} for tools, can take a request past that line. ` +
-    (under > 0 ? `A budget of ${n(under)} or less keeps one under it.` : `No budget keeps one under it, since the system prompt and the tools' room fill it.`);
+    `${said} lets a request's input reach about ${n(input(budget))} tokens by the host's own count: the conversation it compiles to the budget ` +
+    `less agent.maxTokens (${n(x.reply)})${grace}, the system prompt (about ${n(system)}) and ${n(TOOLS_ROOM_TOKENS)} kept for tools. ` +
+    (under > 0 ? `A budget of ${n(under)} or less keeps a request under the step.` : `No budget keeps a request under it, since the system prompt and the tools' room fill it.`);
 }
