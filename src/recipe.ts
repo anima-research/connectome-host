@@ -2581,8 +2581,8 @@ export function validateRecipe(raw: unknown): Recipe {
       refreshAfterMinutes?: unknown;
     };
     if (refreshAfterMinutes !== undefined) {
-      if (typeof refreshAfterMinutes !== 'number' || !Number.isFinite(refreshAfterMinutes) || !(refreshAfterMinutes > 0)) {
-        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number (finite), got ${shown(refreshAfterMinutes)}.`);
+      if (typeof refreshAfterMinutes !== 'number' || !(refreshAfterMinutes > 0)) {
+        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${shown(refreshAfterMinutes)}.`);
       }
       const ttlMinutes = agent.cacheTtl === '1h' ? 60 : 5;
       if (refreshAfterMinutes >= ttlMinutes) {
