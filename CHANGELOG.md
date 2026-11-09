@@ -28,13 +28,16 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   both models, and on the release notes, which say it offers the same
   capabilities.
   - **Cache:** `agent_settings`' `reasoning_display` description no longer
-    names models. It is part of the `agent_settings` tool, and tools come
-    first in a request, so where a request carries that tool in its tool
-    list, whatever its model, on any provider whose prompt cache covers the
-    tools, the first such request after upgrading writes its whole cached
-    prompt again, once. An agent already on Fable 5.2 or Mythos 5.2 with
-    kv-unified's standard block can pick another layout once after the
-    upgrade, which rewrites its prompt cache once.
+    names models. An agent that may call `toolsets--open` and
+    `toolsets--act` finds `agent_settings`, if it may call it, in the
+    built-in `settings` toolset, outside its tool list, so the new
+    description doesn't rewrite its prompt cache. An agent that may not call
+    both has no such toolset. Where such an agent has `agent_settings` in its
+    tool list, tools come first in a request, so its first request after
+    upgrading writes its whole cached prompt again, once, whatever its model,
+    on any provider whose prompt cache covers the tools. An agent already on
+    Fable 5.2 or Mythos 5.2 with kv-unified's standard block can pick another
+    layout once after the upgrade, which rewrites its prompt cache once.
 
 ### Changed
 
