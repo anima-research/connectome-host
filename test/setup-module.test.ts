@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
-import { EnvFormError, envForm, readEnvFile, storedSecretRedactor, writeEnvValue } from '../src/setup/secrets.js';
+import { EnvFormError, envForm, readEnvFile, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
 import { processEnded, waitForEnd } from './process-ended.js';
 import { bracketedPaste } from '../src/readline-paste.js';
@@ -888,7 +888,6 @@ describe('setup--run', () => {
       expect(result.isError, damaged).toBe(true);
       expect(result.error, damaged).toContain(join(dir, '.setup', 'stored-secrets.json'));
       expect(existsSync(join(dir, 'ran')), damaged).toBe(false);
-      expect(() => storedSecretRedactor(dir, {}), damaged).toThrow(join(dir, '.setup', 'stored-secrets.json'));
     }
   });
 
@@ -1747,29 +1746,6 @@ describe('setup--ask_secret', () => {
     const stored = readEnvFile(join(dir, '.env'));
     expect(stored.get('FIRST_TOKEN')).toBe('value-of-FIRST_TOKEN');
     expect(stored.get('SECOND_TOKEN')).toBe('value-of-SECOND_TOKEN');
-  });
-});
-
-describe("doctor's redactor", () => {
-  test('replaces the stored secrets, as the list and .env hold them, and the provider credentials, and refuses a damaged list', async () => {
-    const { dir, module } = install({ asker: { ask: async () => 'the stored #token' } });
-    expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);
-    const redact = storedSecretRedactor(dir, { OPENAI_API_KEY: 'openai-key-value' });
-    const env = readFileSync(join(dir, '.env'), 'utf-8');
-    expect(redact(`${env}token the stored #token, key openai-key-value`)).toEqual({
-      text: 'DISCORD_TOKEN="<DISCORD_TOKEN>"\ntoken <DISCORD_TOKEN>, key <OPENAI_API_KEY>',
-      replaced: ['DISCORD_TOKEN', 'OPENAI_API_KEY'],
-      guessed: [],
-    });
-    writeFileSync(join(dir, '.env'), `${env}MY_SERVER_TOKEN="custom-token-value"\n`);
-    rmSync(join(dir, '.setup', 'stored-secrets.json'));
-    expect(storedSecretRedactor(dir, {})('token the stored #token, custom-token-value')).toEqual({
-      text: 'token <DISCORD_TOKEN>, <MY_SERVER_TOKEN>',
-      replaced: ['DISCORD_TOKEN', 'MY_SERVER_TOKEN'],
-      guessed: ['MY_SERVER_TOKEN'],
-    });
-    writeFileSync(join(dir, '.setup', 'stored-secrets.json'), 'not a list');
-    expect(() => storedSecretRedactor(dir, {})).toThrow(join(dir, '.setup', 'stored-secrets.json'));
   });
 });
 

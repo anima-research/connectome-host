@@ -4,7 +4,7 @@ import {
   statSync, writeFileSync,
 } from 'node:fs';
 import { constants, tmpdir, userInfo } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { Database } from 'bun:sqlite';
 import { bunBelowFloor } from '../bun-floor.js';
@@ -20,20 +20,17 @@ import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readJournal, readRecord, releaseDir,
-  unfinishedTrial, writeJsonAtomic, writeTextAtomic, type InstallRecord,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
+  writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
-import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
-import {
-  MOVE_ASIDE_BY_HAND, MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, movesPlaces, movingAside,
-  unfinishedTrialWords, type Binding, type Place,
-} from '../update/rebind.js';
+import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, installCommandOf, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
-export { SETUP_RECIPE };
+/** The setup agent's recipe, in a release. */
+export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own setup agent, in the directory that ' +
   'holds the install (from bunx, the directory it runs in). ' +
   'Run again, it goes on where it stopped. Unlike the other commands, it runs this package\'s own setup unless ' +
@@ -464,19 +461,10 @@ async function installAndStart(
     }
     return 1;
   }
-  let recorded: { record: InstallRecord; binding: Binding } | null = null;
-  if (record !== null) {
-    if (typeof record.dataDir !== 'string' || record.dataDir === '') {
-      err(`The install record at ${join(root, 'install.json')} names no data directory, so setup can't tell which ` +
-        `data the install serves. ${WRITE_RECORD_AGAIN}`);
-      return 1;
-    }
-    try {
-      recorded = { record, binding: bindingOf(root, record) };
-    } catch (error) {
-      bindingStopped(root, (error as Error).message, err);
-      return 1;
-    }
+  if (record !== null && (typeof record.dataDir !== 'string' || record.dataDir === '')) {
+    err(`The install record at ${join(root, 'install.json')} names no data directory, so setup can't tell which ` +
+      `data the install serves. ${WRITE_RECORD_AGAIN}`);
+    return 1;
   }
 
   const trusted = await defaultTrusted(async (_manager, args, cwd) => {
@@ -563,23 +551,20 @@ async function installAndStart(
     }
   }
 
-  const settingUp = recorded === null;
+  const settingUp = record === null;
   let dataDir: string;
-  let placeArgs: string[] = [];
-  if (recorded === null) {
+  if (record === null) {
     dataDir = join(dir, 'data');
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   } else {
-    const bound = await bindingAnswers(world, root, recorded.record, recorded.binding, { out, err });
-    if (typeof bound === 'number') return bound === -1 ? stopped() : bound;
-    ({ dataDir, placeArgs } = bound);
+    dataDir = record.dataDir;
   }
   const copySetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(settingUp
     ? `Making ${root} an install that can take newer releases. Its first release is a copy of what's installed here. ` +
       'Making it can take a minute or more.'
     : `Checking the install at ${root}.`);
-  const made = await world.run([world.bun.path, '--no-env-file', copySetup, '--root', root, ...placeArgs], {
+  const made = await world.run([world.bun.path, '--no-env-file', copySetup, '--root', root], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
   });
   if (made.status !== 0) {
@@ -827,95 +812,6 @@ async function installAndStart(
   if (why !== '') out(`The places outside the data directory that an update copies aren't listed here: ${why}.`);
   else if (printed.length > 0) for (const line of keptOutside) out(line);
   return agentStatus;
-}
-
-function bindingStopped(root: string, why: string, err: Io['err']): void {
-  err(`Binding the install at ${root} stopped, with nothing in it changed:`);
-  for (const line of why.split('\n')) err(`  ${line}`);
-}
-
-async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, binding: Binding,
-  { out, err }: Io): Promise<{ dataDir: string; placeArgs: string[] } | number> {
-  if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
-  const { from, to, ask } = binding;
-  let asking = binding;
-  const answer = ask.length === 0 ? '' : ' Press Enter where a place is this install\'s, or type the path of this ' +
-    'install\'s own, as after a copy.';
-  out(from === null
-    ? 'This install\'s record is from a release that didn\'t record which directory an install is in. Setup binds it ' +
-      `here: each place under ${to}, other than inside another install's directory, stays as it is.` +
-      (ask.length === 0 ? '' : ' It asks about each place outside it, or inside another install\'s directory ' +
-        'within it, since it can\'t tell whether that came with the install, as after a move, or is still another ' +
-        `install's, as after a copy. A place inside another goes with it.${answer}`)
-    : `This install's record is bound to ${from}, and the install is in ${to}, so it was moved or copied here. Setup ` +
-      `binds it here: each place under ${from} becomes the same place under ${to}.` +
-      (ask.length === 0 ? '' : ` It asks about each place outside ${from}, since it can't tell whether that came ` +
-        `with the install, as after a move, or is still the other install's, as after a copy. A place inside another ` +
-        `goes with it.${answer}`));
-  const places: Array<{ from: string; to: string }> = [];
-  for (let place: Place | undefined = ask[0]; place !== undefined;
-    place = asking.ask.find((one) => !places.some((given) => given.from === one.path))) {
-    const what = place.data ? 'its data directory' : place.extra ? 'state kept outside its data directory'
-      : 'a place its updates copy';
-    for (;;) {
-      const typed = await world.ask(`${place.path} (${what}${existsSync(place.path) ? '' : ', not there now'}): `);
-      if (typed === null) return -1;
-      const path = typed.trim();
-      const home = homeDirectory(world.env.HOME);
-      const given = path === '' ? place.path
-        : resolve(dirname(root), home !== null && (path === '~' || path.startsWith('~/')) ? join(home, path.slice(1)) : path);
-      if (place.data) {
-        const data = mapPath(record.dataDir, { from: null, to, places: [{ from: place.path, to: given }] })!;
-        if (!existsSync(data) || !statSync(data).isDirectory()) {
-          out(`${data} isn't a directory, and the data directory has to be one that's there: type where this ` +
-            'install\'s data is, or put it there first.');
-          continue;
-        }
-      }
-      places.push({ from: place.path, to: given });
-      break;
-    }
-    if (place.data) {
-      let again: Binding;
-      try {
-        again = bindingOf(root, record, places);
-      } catch (error) {
-        bindingStopped(root, (error as Error).message, err);
-        return 1;
-      }
-      if (again.kind === 'bind') {
-        asking = again;
-        for (const given of places.filter((one) => !again.places.some((place) => place.path === one.from))) {
-          const holder = again.places.find((place) => isUnder(given.from, place.path))?.path;
-          if (holder !== undefined) {
-            out(`${holder} holds ${given.from}, so the answer for ${holder} decides where ${given.from} is, in place ` +
-              'of the one given for it.');
-          }
-        }
-        places.splice(0, places.length, ...places.filter((given) => again.places.some((one) => one.path === given.from)));
-      }
-    }
-  }
-  const placeArgs = places.flatMap((place) => ['--place', place.from, place.to]);
-  const kept = movesPlaces(asking, places) ? keptInRoot(root) : null;
-  if (kept !== null && kept.found.length > 0) {
-    const account = keptAccount(root, from, kept);
-    const trial = unfinishedTrial(readJournal(root), readCurrent(root));
-    if (trial !== null) {
-      bindingStopped(root, `${account}\n${unfinishedTrialWords(trial)}`, err);
-      return 1;
-    }
-    out(`${account}\nMoving them aside ${movingAside(root, to)}. ${MOVED_ASIDE_AFTERWARDS}`);
-    const yes = await yesNo(world, 'Move them aside now? (yes/no) ');
-    if (yes === null) return -1;
-    if (!yes) {
-      err('Setup stops here, and the install is as it was. Run setup again and answer yes, or move them out ' +
-        `yourself: ${MOVE_ASIDE_BY_HAND}, and run setup again.`);
-      return 1;
-    }
-    placeArgs.push('--move-aside');
-  }
-  return { dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...asking.kept] })!, placeArgs };
 }
 
 function takeSetupLock(file: string): { release(): void } | null {

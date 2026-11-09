@@ -532,14 +532,14 @@ describe('removing releases nothing needs', () => {
     expect(said).toEqual([`[update] No older release is removed this time: ${installPaths(root).current} isn't there.`]);
   });
 
-  test("with no copy's label where the journal records a copy taken, says the label was lost or moved aside", async () => {
+  test("with no copy's label where the journal records a copy taken, says the label was lost", async () => {
     release('0.9.0');
     rmSync(installPaths(root).copy, { recursive: true });
     appendJournal(root, { v: 1, at: new Date().toISOString(), step: 'copy', from: '0.10.2', to: '0.11.0', outcome: 'ok', mark: 'm1' });
     await installRelease(here(), '0.12.0', manager());
     expect(installed()).toEqual(['0.11.0', '0.12.0', '0.9.0']);
     expect(said).toEqual(["[update] No older release is removed this time: the copy's label isn't there, though the " +
-      'journal records a copy taken, so it was lost or moved aside, and nothing says which release a Go back needs.']);
+      'journal records a copy taken, so it was lost and nothing says which release a Go back needs.']);
   });
 
   test('a mark that can\'t be read leaves current\'s and the copy\'s names kept', async () => {
