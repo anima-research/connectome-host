@@ -23,9 +23,9 @@ afterEach(async () => {
 });
 
 async function until(check: () => boolean, ms: number, label: string): Promise<void> {
-  const deadline = Date.now() + ms;
+  const deadline = performance.now() + ms;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
+    if (performance.now() > deadline) throw new Error(`Timed out: ${label}`);
     await Bun.sleep(25);
   }
 }
@@ -327,8 +327,8 @@ linux('setup\'s host speaks first, on a message that says it\'s setup\'s, shows 
       return reply(`msg_${bodies.length}`, 'end_turn', { type: 'text', text: '' }, { type: 'text_delta', text: 'Hello from setup.' });
     };
     const first = startHost(dir, { setup: true }, runs, ['setup--run']);
-    await until(() => first.seen.output.includes('Hello from setup.'), 60_000,
-      `setup's first words (requests: ${first.bodies.length}; output: ${first.seen.output.slice(-1500)})`);
+    await until(() => promptAfterLast(first.seen.output, 'Hello from setup.'), 60_000,
+      `setup's first words and the prompt after its turn (requests: ${first.bodies.length}; output: ${first.seen.output.slice(-1500)})`);
     const opening = lastFromPerson(first.bodies[0]!);
     expect(carries(opening, 'From setup, not the person: they\'ve started setup, and this conversation holds nothing yet: what setup did before, if it ran here, stays on disk.'), opening).toBe(true);
     expect(JSON.stringify(first.bodies[0]!.messages)).not.toContain('started setup again');
