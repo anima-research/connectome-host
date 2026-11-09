@@ -129,7 +129,7 @@ export class SettingsModule implements Module {
             "is recorded alongside the signature) or 'omitted' (signature only, slightly faster " +
             'first token; no readable summary is recorded). Either way, when a thinking block is ' +
             'sent back to you, you get your full reasoning, not the summary: this changes only what ' +
-            'is recorded as readable text. On Fable 5/5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5, the ' +
+            'is recorded as readable text. On Fable 5/5.1/5.2, Mythos 5.1/5.2, Opus 5.5 and Sonnet 5.5, the ' +
             "notes you write between tool calls come back as thinking blocks, so 'omitted' is sent " +
             "as 'updates' there: your reasoning stays unrecorded, and those notes are kept as text.",
         },
