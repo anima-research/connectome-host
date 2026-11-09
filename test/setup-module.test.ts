@@ -1368,6 +1368,14 @@ describe('checkProviderKey', () => {
     expect(result).toEqual({ kind: 'answered', status: 400, said: 'no route for <MY_TOKEN> or <MY_TOKEN>' });
   });
 
+  test('a short stored secret isn\'t found again inside the name that took a longer one\'s place in what the provider says', async () => {
+    const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
+      hide: [{ name: 'MY_TOKEN', value: 'AbCd1234' }, { name: 'SHORT', value: 't' }],
+      fetch: (async () => Response.json({ error: { message: 'no abcd1234' } }, { status: 400 })) as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ kind: 'answered', status: 400, said: 'no <MY_TOKEN>' });
+  });
+
   test('another stored secret is hidden in what the provider says, in its trimmed form as well as whole', async () => {
     const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
       hide: [{ name: 'MY_TOKEN', value: '  abc123  ' }],
