@@ -120,7 +120,6 @@ export function dotenvNames(dir: string): string[] {
 
 const READ_LIMIT_MS = 10_000;
 
-/** Bun's read of the dotenv files ran past READ_LIMIT_MS: a slow disk passes, a file that never ends doesn't. */
 export class DotenvTimeoutError extends Error {}
 
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
