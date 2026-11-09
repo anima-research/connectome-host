@@ -398,8 +398,13 @@ function priceOpenAI(call: PriceCallInput): CallPrice | undefined {
   };
 }
 
+/** Whether one of `prefixes` names `model`: the model is the prefix, or goes
+ *  on from it with anything but a digit, unless the prefix itself ends in
+ *  `-`. So 'claude-fable-5' names 'claude-fable-5-20260301', and
+ *  'claude-fable-5-2' doesn't. */
 function starts(model: string, ...prefixes: string[]): boolean {
-  return prefixes.some((prefix) => model.startsWith(prefix));
+  return prefixes.some((prefix) =>
+    model.startsWith(prefix) && (prefix.endsWith('-') || !/^\d/.test(model.slice(prefix.length))));
 }
 
 function rate(
