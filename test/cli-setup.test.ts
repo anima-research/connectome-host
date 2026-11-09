@@ -56,6 +56,7 @@ interface Script {
   trusted?: Ran;
   pty?: Ran[];
   atPtyCheck?: (cwd: string) => void;
+  ptyCheck?: (cwd: string) => Ran;
   installed?: Ran;
   atInstall?: (cwd: string) => void;
   atAdd?: (cwd: string) => void;
@@ -85,6 +86,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
     seen.options.push(options);
     if (argv[0] === 'node' && argv[1] === '-e') {
       script.atPtyCheck?.(options.cwd);
+      if (script.ptyCheck) return script.ptyCheck(options.cwd);
       return script.pty?.shift() ?? { status: 0, stdout: '', stderr: '' };
     }
     if (argv[0] === 'node') {
@@ -741,19 +743,31 @@ test('a package a bun add that failed partway left in node_modules, never declar
   expect(args(added)).toContain('term-sessions-mcp');
 });
 
-test('with a shell, a node-pty that opens no pty is installed again, and setup goes on once it does', async () => {
+test('with a shell, a node-pty that opens no pty is installed again, and setup goes on with the copy the install made once it works', async () => {
   const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const built = (cwd: string) => join(cwd, 'node_modules', 'node-pty', 'pty.node');
   let leftAtInstall: boolean | null = null;
   const made = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' }],
-    atAdd: (cwd) => { mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true }); },
-    atInstall: (cwd) => { leftAtInstall = existsSync(join(cwd, 'node_modules', 'node-pty')); },
+    answers: ['yes', '2'], secrets: [KEY],
+    ptyCheck: (cwd) => existsSync(built(cwd)) && readFileSync(built(cwd), 'utf-8') === 'built by the install'
+      ? { status: 0, stdout: '', stderr: '' } : broken,
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(built(cwd), 'the copy setup found');
+    },
+    atInstall: (cwd) => {
+      leftAtInstall = existsSync(join(cwd, 'node_modules', 'node-pty'));
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(built(cwd), 'built by the install');
+    },
   });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(leftAtInstall).toBe(false);
   expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(true);
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+  expect(readFileSync(built(dir), 'utf-8')).toBe('built by the install');
   expect(made.seen.launched).not.toBeNull();
 });
 
