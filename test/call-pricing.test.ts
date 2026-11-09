@@ -263,13 +263,18 @@ describe('priceCall', () => {
     expect(priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'default' }))).toEqual(none);
   });
 
-  test('prices flex at Flex rates and priority at Fast rates', () => {
+  test('prices flex at Flex rates, fast or priority at Fast rates, and ultrafast at Ultrafast rates', () => {
     const flex = priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'flex' }))!;
-    const fast = priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'priority' }))!;
+    const fast = priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'fast' }))!;
+    const ultrafast = priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'ultrafast' }))!;
     expect(flex).toMatchObject({ tier: 'flex' });
     expect(flex.total).toBeCloseTo(0.205, 12);
     expect(fast).toMatchObject({ tier: 'fast' });
     expect(fast.total).toBeCloseTo(0.82, 12);
+    expect(priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'priority' }))).toEqual(fast);
+    expect(ultrafast).toMatchObject({ tier: 'ultrafast' });
+    expect(ultrafast.total).toBeCloseTo(2.46, 12);
+    expect(priceCall(call('openai-responses', 'gpt-6-sol', { ...sol, serviceTier: 'ultrafast' }))).toBeUndefined();
   });
 
   test('prices a request over 272,000 input tokens at long-context rates, cached and written tokens counted', () => {

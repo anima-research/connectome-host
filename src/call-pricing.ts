@@ -180,6 +180,8 @@ function openaiCacheReadMultiplier(model: string): number {
   return DEFAULT_CACHE_READ_MULTIPLIER;
 }
 
+/** A call's usage, its `inputTokens` the uncached input alone: an OpenAI
+ *  usage's `input_tokens` less its cached and written tokens. */
 export interface PriceCallInput extends PriceableCallUsage {
   provider: string;
   model: string;
@@ -253,11 +255,13 @@ type OpenAIRow = { short: OpenAIRates; long?: OpenAIRates } | { flat: OpenAIRate
  * "Short context: ≤272K input tokens. Long context: >272K input tokens."
  * A model the page prices in its short and long columns has `short` and,
  * where the page gives one, `long`; a model it prices in one column has
- * `flat`. A rate the page shows as "-" is left out. "Priority processing was
- * renamed Fast mode on July 30, 2026", and "GPT-5.6 Sol’s promotional
- * pricing is available until November 30, 2026".
+ * `flat`. A rate the page shows as "-" is left out, and so is its legal
+ * model configuration, gpt-6-astra-law. "Priority processing was renamed
+ * Fast mode on July 30, 2026", and a call names it `fast` or `priority`
+ * (https://developers.openai.com/api/docs/guides/fast-mode). "GPT-5.6 Sol’s
+ * promotional pricing is available until November 30, 2026".
  */
-const OPENAI_RATES: Record<'standard' | 'flex' | 'fast', Record<string, OpenAIRow>> = {
+const OPENAI_RATES: Record<'standard' | 'flex' | 'fast' | 'ultrafast', Record<string, OpenAIRow>> = {
   standard: {
     'gpt-6-astra': { short: { input: 10, output: 50, cached: 1, write30m: 12.5, write12h: 25 }, long: { input: 20, output: 75, cached: 2, write30m: 25, write12h: 50 } },
     'gpt-6.1-sol': { short: { input: 2, output: 10, cached: 0.1, write30m: 2.5, write12h: 5 }, long: { input: 4, output: 15, cached: 0.2, write30m: 5, write12h: 10 } },
@@ -337,13 +341,18 @@ const OPENAI_RATES: Record<'standard' | 'flex' | 'fast', Record<string, OpenAIRo
     'gpt-4o-mini': { flat: { input: 0.25, output: 1, cached: 0.125 } },
     'o3': { flat: { input: 3.5, output: 14, cached: 0.875 } },
   },
+  ultrafast: {
+    'gpt-6-astra': { short: { input: 60, output: 300, cached: 6, write30m: 75, write12h: 150 }, long: { input: 120, output: 450, cached: 12, write30m: 150, write12h: 300 } },
+    'gpt-6.1-sol': { short: { input: 12, output: 60, cached: 0.6, write30m: 15, write12h: 30 }, long: { input: 24, output: 90, cached: 1.2, write30m: 30, write12h: 60 } },
+  },
 };
 
 function openaiTier(serviceTier: string | undefined): keyof typeof OPENAI_RATES | undefined {
   const tier = serviceTier?.toLowerCase();
   if (tier === undefined || tier === 'default') return 'standard';
   if (tier === 'flex') return 'flex';
-  if (tier === 'priority') return 'fast';
+  if (tier === 'fast' || tier === 'priority') return 'fast';
+  if (tier === 'ultrafast') return 'ultrafast';
   return undefined;
 }
 
