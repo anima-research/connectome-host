@@ -1401,9 +1401,6 @@ describe('the first request a fork actually sends', () => {
     }
   });
 
-  // A spawn that may call neither or only one of toolsets--open and
-  // toolsets--act keeps the settings toolset's tools in its request, and its
-  // orientation names exactly the tools that request carries.
   for (const [tools, sends] of [
     [['agent_settings'], ['agent_settings', 'subagent--return']],
     [['toolsets--open', 'agent_settings'], ['agent_settings', 'subagent--return', 'toolsets--open']],
