@@ -6,6 +6,112 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.24.0 — 2026-11-09
+
+### Added
+
+- The Web UI's context panel names queued compression that waits on the host,
+  such as for the agent's tool definitions, under Queue, in context-manager's
+  words (`getWaitingWork()`), and the panel's snapshot carries it as
+  `queue.waiting`.
+
+- `OPENROUTER_BASE_URL` routes an `openrouter` recipe's calls through a
+  gateway, as `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `BEDROCK_BASE_URL`
+  do for their providers. Unset, calls go to `https://openrouter.ai/api/v1` as
+  before. The hint after a network failure or timeout names it, and the recipe
+  refusal of `agent.baseUrl` beside another provider lists it, along with
+  `CODEX_BASE_URL`, which that refusal had left out.
+
+- `src/call-pricing.ts` exports `priceCall`, a call's list price on `anthropic` or `openai-responses`. Anthropic's is `priceAnthropicCall`'s, except that a Claude Sonnet 5.5 call that reads from the cache gets none, since that table reads Sonnet 5.5's cache at 0.1x where the page gives 0.05x. OpenAI's comes from its pricing page as of November 9, 2026, at the tier the call reports (`default`, or none, as Standard; `flex` as Flex; `fast` or `priority` as Fast; `ultrafast` as Ultrafast), and at the long-context rates for a request over 272,000 input tokens. It gives no price on `openai-codex`, `openrouter`, `openai-compatible` or `bedrock`, nor for a tier, model or part of a call the page gives no rate for. The operator ledger and kv-unified's cache prices are unchanged.
+
+- Recipes accept `toolResultInlineMaxChars` at the top level: the
+  residence's inline cap for tool results, in characters, passed to
+  agent-framework's `FrameworkConfig.toolResultInlineMaxChars`. Left out,
+  agent-framework's default stands, and a resident's own `agent_settings`
+  value `tool_result_inline_max_chars` wins over it for that agent. A value
+  that isn't a finite number of at least 1000, agent-framework's own
+  minimum, stops the load, naming it. The default, what becomes of a result
+  over the cap and how the cap in effect is reached are in that option's doc
+  in agent-framework's types.
+
+### Changed
+
+- A subagent's orientation now calls agent-framework's `presentedTools` directly to list the tools its first request carries, instead of feature-detecting it, since agent-framework ^0.33.0 is required and always has it.
+
+- **`agent.strategy.identityReminderSilent` is retired.** context-manager
+  #129 leaves the option out. A reminder the summarizer should follow
+  without quoting it ends with its own sentence asking for that, such as
+  #129's example: "Apply this guidance silently. Do not quote, restate, or
+  recite it in the memory. Begin with the substantive record." Where a
+  recipe set the key to true, its author ends each nonblank reminder it
+  sets, `identityReminder` and `witnessedIdentityReminder`, with such a
+  sentence instead. A blank reminder stays as it is, since a blank
+  `witnessedIdentityReminder` counts as unset and wholly inherited targets
+  then take `identityReminder`. The host no longer passes the key to the
+  built-in strategies, and a recipe for one of them that still sets it
+  loads with a warning naming what replaced it. An extension strategy still
+  gets the whole strategy config, the key included. No released
+  context-manager reads the key, so a recipe on a released version loses
+  nothing.
+
+### Fixed
+
+- A headless host no longer writes its agent's thinking into
+  `inference:speech`. With thinking on, the frame carried the thinking
+  glued to the front of the reply, so `connectome send` printed it, and
+  `fleet--relay` handed it to another child. The frame now carries the
+  round's text alone, and what `connectome send` prints and what
+  `fleet--relay` hands on change the same way.
+- A headless host now sends `inference:speech` for every inference round
+  that ends without tool calls outside a silent heartbeat (below), with `""`
+  for one that had no text, where it
+  sent nothing for such a round. So `fleet--relay` no longer hands on a
+  child's earlier reply as its latest when its latest round said nothing:
+  it relays nothing and says the latest round it saw had no text.
+  `connectome send` prints nothing for such a round, where with thinking
+  on it printed the thinking, and says on stderr that the agent's turn
+  ended without saying anything. A turn that ends on a tool, such as
+  `skip_reply`, still sends no frame.
+- With refusal retries on, a headless host's `inference:speech` no longer
+  carries a refused attempt's text. agent-framework discards a refused
+  attempt with an empty text token, which the host skipped, so a refused
+  "No" and its retried "Yes" went out as "NoYes". The frame now carries the
+  retried attempt's text alone, and so do what `connectome send` prints and
+  what `fleet--relay` hands on.
+- A headless host no longer sends `inference:speech` for a silent
+  heartbeat's turn, which agent-framework marks `silent` as a wake that
+  must not surface prose. `fleet--relay` handed that text to another
+  child as the child's latest reply; the child's latest reply now stays
+  its last one that wasn't silent, until this host connects to it again.
+- A child a fleet parent adopted from an earlier release keeps that
+  release's frame until it restarts, so `fleet--relay` hands on from it as
+  before.
+
+- An async subagent's result or failure that reaches its parent by its
+  message route no longer asks for a second wake. agent-framework's delivery
+  already wakes the parent, and the host's own wake, which named no message,
+  started a turn of its own after a turn that had already read the result,
+  such as at a tool boundary, or when another event was queued ahead of it:
+  one more model call, whose request brought nothing new. A failure whose
+  recipient is the live primary now takes its message route too, where it
+  was a line in the primary's context with that wake of the host's own. A
+  run that failed before its agent was created has no route, and is still
+  told to its launcher as a line in its context, with a wake.
+  `recipes/clerk.json`'s system prompt now says a fork's result or failure
+  arrives as a message from the fork that wakes the resident, and one that
+  couldn't be created, or whose message can't be delivered, as an
+  `inference-request` scope event.
+
+- `scripts/warmup-session.ts` no longer prints "Converged." over work it
+  didn't do. It declares no tool definitions, so the first chunk whose
+  compression request carries a tool call or result waits for them, with
+  each later chunk whose request carries that one too, and on a Fable-
+  or Mythos-family compression model every chunk and merge waits: it printed
+  "Converged." with such work uncompressed, and its progress line counted it
+  done. It now says "Not converged:", names the waiting work as
+  context-manager describes it, and says why and when the host compresses
+  it. Its progress line counts that work as waiting, not done.
+
 ## 0.23.0 — 2026-11-07
 
 ### Breaking
