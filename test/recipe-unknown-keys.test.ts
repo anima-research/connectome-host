@@ -1,13 +1,7 @@
-/**
- * Unknown recipe keys (#167): a misspelled key used to load without a word and
- * simply not happen. Keys the host never reads at the top level, under `agent`
- * and under `modules` are now named in a warning (with the key they were
- * probably meant to be), and the recipe still loads; the shipped recipes carry
- * none.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
-import { takeRecipeWarnings, unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { takeRecipeWarnings } from '../src/recipe-warnings.js';
 
 const base = (extra: Record<string, unknown> = {}, agent: Record<string, unknown> = {}) => ({
   name: 'Test',
@@ -44,13 +38,47 @@ describe('unknownRecipeKeys', () => {
       streamChunkSize: 1, responseQueue: ['x'],
     };
     expect(unknownRecipeKeys(base({}, { mock: known }))).toEqual([]);
-    // A mock that is not an object is the validator's to reject, not this walk's.
     expect(unknownRecipeKeys(base({}, { mock: 'echo' }))).toEqual([]);
     expect(unknownRecipeKeys({ name: 'T', agent: ['mock'] })).toEqual([]);
   });
 
+  test('names unknown keys under agent.strategy.kvUnified and its policy', () => {
+    const kvUnified = {
+      policy: { alpha: 0.7, ageBandStep: 4, bogusPolicyKey: 1 },
+      tokenBucketSize: 1, engine: 'dag', latentDemandMod: 'individual', hysteresisCertificate: true,
+    };
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', kvUnified } }))).toEqual([
+      'agent.strategy.kvUnified.latentDemandMod (did you mean agent.strategy.kvUnified.latentDemandMode?)',
+      'agent.strategy.kvUnified.policy.ageBandStep (did you mean agent.strategy.kvUnified.policy.ageBandSteps?)',
+      'agent.strategy.kvUnified.policy.bogusPolicyKey',
+    ]);
+    const known = {
+      policy: { alpha: 0.7, ageBandSteps: 0 }, labelCeiling: 1, engine: 'auto', latentDemandMode: 'joint',
+    };
+    expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: known } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: 'standard' } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: { policy: [1] } } }))).toEqual([]);
+  });
+
   test('says what replaced a retired key', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
+  });
+
+  test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
+    const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
+      'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+      'if it was true; if it was false, nothing)';
+    for (const type of ['autobiographical', 'frontdesk', 'passthrough']) {
+      const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
+      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired]);
+    }
+    expect(unknownRecipeKeys(base({}, { strategy: { identityReminderSilent: false } }))).toEqual([retired]);
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: 'autobiographical' }))).toEqual([]);
+  });
+
+  test('names no strategy key for an extension strategy, whose factory gets the whole strategy config', () => {
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'custom', identityReminderSilent: true } }))).toEqual([]);
   });
 
   test('a key named like an inherited property gets no false replacement', () => {
@@ -103,7 +131,6 @@ describe('validateRecipe and unknown keys', () => {
   });
 
   test('keeps the warning for the runtime log, taken once', () => {
-    // The TUI and headless redirect stderr after the recipe is validated: they write these into their logs.
     warn = spyOn(console, 'warn').mockImplementation(() => {});
     takeRecipeWarnings();
     validateRecipe(base({ mcplServers: {} }));

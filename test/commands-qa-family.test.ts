@@ -2,24 +2,33 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { handleCommand, createBranchState } from '../src/commands.js';
 import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
+import { clearAccountBindings, recordAccountBinding } from '../src/logging-adapter.js';
 
-// Regression tests for the QA-reported command family:
-// - first-token argument parsing truncated multi-word names on
-//   /checkpoint, /restore, /checkout, /session switch, /session delete
-//   (while /session rename accepted them — making renamed sessions
-//   unreachable by name);
-// - /session delete executed irreversibly with no confirmation;
-// - /mcp add on an existing server silently wiped its env vars;
-// - head-moving commands ran while a generation was in flight, letting
-//   the streaming reply commit onto the wrong branch (orphaned nodes);
-// - /budget displayed small values as "0k" (50 → "0k") while rejecting 0.
+// Since agent-framework #291 /undo and /redo are the framework's undo and
+// redo on the agent's window, and /checkout, /restore and /branchto its
+// switchBranch and rollbackToMessage. The stub framework below answers them
+// over the stub ContextManager; commands-branch-framework.test.ts runs them
+// on a real framework.
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
-function makeStubWorld(agentStatus: string | undefined = 'idle') {
+function makeStubWorld(agentStatus: string | null = 'idle') {
   const messagesByBranch = new Map<string, StubMessage[]>([['main', []]]);
   let currentName = 'main';
   let msgCounter = 0;
+
+  // The store the context reads. agent-framework's switchBranch moves it,
+  // past every context on it (each live one then follows the move), where a
+  // context's own switchBranch also initializes that context's strategy
+  // again, as a rollback's switch does for its agent. The stub framework's
+  // switchBranch moved the store through the context's, so it modelled a
+  // switch that re-initialized the strategy, which the real one didn't (J-H9).
+  const store = {
+    switchBranch: (name: string): void => {
+      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
+      currentName = name;
+    },
+  };
 
   const cm = {
     currentBranch: () => ({ id: currentName, name: currentName, head: messagesByBranch.get(currentName)!.length }),
@@ -32,15 +41,12 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
       messagesByBranch.set(newName, msgs.slice(0, idx + 1));
       return newName;
     },
-    switchBranch: async (name: string): Promise<void> => {
-      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
-      currentName = name;
-    },
+    switchBranch: async (name: string): Promise<void> => store.switchBranch(name),
   };
 
   const agent = {
     name: 'stub-agent',
-    ...(agentStatus !== undefined ? { state: { status: agentStatus } } : {}),
+    ...(agentStatus !== null ? { state: { status: agentStatus } } : {}),
     getContextManager: () => cm,
   };
 
@@ -50,11 +56,23 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
     { id: 'bbbb2222', name: 'other', manuallyNamed: true, createdAt: 't', lastAccessedAt: 't', messageCount: 1 },
   ];
 
+  const undone: string[] = [];
   const app = {
     framework: {
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
+      undoLastTurn: (name: string) => { undone.push(name); return { undone: true, turnIndex: 0, window: { retracted: 2, represented: 0 } }; },
+      redo: () => ({ redone: false }),
+      // switchStore reads the store's branch before and after the switch, to
+      // tell a refusal from a move whose `_config` refresh failed (#264).
+      getStore: () => ({ currentBranch: () => cm.currentBranch() }),
+      switchBranch: async (name: string) => store.switchBranch(name),
+      rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
+        const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
+        await cm.switchBranch(targetBranch);
+        return { targetBranch, tailMessageId: opts.messageId };
+      },
     },
     sessionManager: {
       listSessions: () => sessions,
@@ -74,7 +92,7 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
 
   const text = (r: { lines: Array<{ text: string }> }) => r.lines.map(l => l.text).join('\n');
 
-  return { cm, app, addMessage, deleted, text, currentName: () => currentName };
+  return { cm, app, addMessage, deleted, undone, text, currentName: () => currentName };
 }
 
 describe('multi-word names: rest-of-line parsing', () => {
@@ -145,17 +163,19 @@ describe('in-flight guard on head-moving commands', () => {
   }
 
   test('/undo proceeds when idle', () => {
-    const { app, addMessage, text } = makeStubWorld('idle');
+    const { app, addMessage, undone, text } = makeStubWorld('idle');
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain("Undone: stub-agent's last turn left its window (2 rows from its start: the turn's own, and any other, which its next turn shows again).");
+    expect(undone).toEqual(['stub-agent']);
   });
 
   test('agents without state (stubs) are treated as idle', () => {
-    const { app, addMessage, text } = makeStubWorld(undefined);
+    const { app, addMessage, undone, text } = makeStubWorld(null);
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain('Undone');
+    expect(undone).toEqual(['stub-agent']);
   });
 });
 
@@ -202,11 +222,55 @@ describe('/budget honest display', () => {
     const r = handleCommand('/budget', app);
     expect(r.lines.map(l => l.text).join('\n')).toContain('a: 50 (last: 12');
   });
+
+  test("an agent whose thinking binds and whose window is set is told apart: the budget doesn't break its stream", () => {
+    const agent = (name: string, model: string, physicalWindowTokens?: number) => ({
+      name, model, physicalWindowTokens, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
+    });
+    const app = {
+      framework: {
+        getAgent: () => undefined,
+        getAllAgents: () => [
+          agent('bound', 'claude-opus-5-5', 1_000_000),
+          agent('unbound', 'claude-opus-4-8', 1_000_000),
+          agent('nowindow', 'claude-opus-5-5'),
+        ],
+        getAllModules: () => [],
+      },
+      branchState: createBranchState(),
+    } as any;
+    const listed = handleCommand('/budget', app).lines.map(l => l.text);
+    expect(listed.find(l => l.startsWith('  bound:'))).toContain("its stream doesn't break at this budget mid-turn: for its size, only before a request its 1.0M window can't hold");
+    for (const name of ['unbound', 'nowindow']) {
+      expect(listed.find(l => l.startsWith(`  ${name}:`))).not.toContain("doesn't break");
+    }
+    const set = handleCommand('/budget 200k', app).lines.map(l => l.text);
+    expect(set[0]).toBe('Stream budget set to 200.0k tokens for all agents.');
+    expect(set[1]).toContain("doesn't break the stream mid-turn for bound, whose thinking binds and whose window is set");
+    expect(set).toHaveLength(2);
+  });
+  test("on an account found to show thinking whose earlier conversation changed, the budget breaks a binding model's stream as any other", () => {
+    recordAccountBinding('claude-opus-5-5', 'shows');
+    try {
+      const app = {
+        framework: {
+          getAgent: () => undefined,
+          getAllAgents: () => [{
+            name: 'bound', model: 'claude-opus-5-5', physicalWindowTokens: 1_000_000, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
+          }],
+          getAllModules: () => [],
+        },
+        branchState: createBranchState(),
+      } as any;
+      expect(handleCommand('/budget', app).lines.map(l => l.text).find(l => l.startsWith('  bound:'))).not.toContain("doesn't break");
+      expect(handleCommand('/budget 200k', app).lines.map(l => l.text)).toEqual(['Stream budget set to 200.0k tokens for all agents.']);
+    } finally {
+      clearAccountBindings();
+    }
+  });
 });
 
 describe('/mcp add preserves env on overwrite', () => {
-  // handleMcp* read/write DEFAULT_CONFIG_PATH (cwd/mcpl-servers.json, which
-  // is gitignored). Skip rather than clobber if a real config exists.
   const hadFile = existsSync(DEFAULT_CONFIG_PATH);
   const original = hadFile ? readFileSync(DEFAULT_CONFIG_PATH, 'utf-8') : null;
 
@@ -235,5 +299,74 @@ describe('/mcp add preserves env on overwrite', () => {
     const saved = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8')).mcplServers;
     expect(saved.argtest.command).toBe('ls');
     expect(saved.argtest.args).toBeUndefined();
+  });
+});
+
+describe('/newtopic cut short by a stop', () => {
+  const CROSSED = 'Transition summary crossed a branch generation; reinitialize before retrying';
+  // Given its text, /newtopic stores it with resetHeadWindow; bare, it first
+  // writes the summary with context-manager's generateTransitionSummary(),
+  // which stores nothing (HOST-1), and that is where the refusal comes from.
+  test('a reset that fails while the host is stopping says so and gives what the reset said; one that fails otherwise gives the failure', async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        resetHeadWindow: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const follow = await handleCommand('/newtopic Moving on.', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${CROSSED}`
+        : `Topic reset failed: ${CROSSED}`);
+    }
+  });
+
+  test("a bare one whose summary can't be written while the host is stopping says so and gives what the summary said; one that fails otherwise gives the failure", async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        windowMode: () => 'presented',
+        indexLength: () => 0,
+        getPresentedMessages: () => [],
+        generateTransitionSummary: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const said = `the transition summary couldn't be written (${CROSSED}); nothing was stored`;
+      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${said}`
+        : `Topic reset failed: ${said}`);
+    }
+  });
+
+  // The refusal already names the stop, so it is passed on as it is, and
+  // the summary is given back for after the restart (#485 bot review 5,
+  // finding 17).
+  test('a bare one whose summary was written as the host began to stop says so once, and gives the summary back for after the restart', async () => {
+    for (const lineByLine of [false, true]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        windowMode: () => 'presented',
+        indexLength: () => 0,
+        getPresentedMessages: () => [],
+        generateTransitionSummary: async () => {
+          app.stopping = true;
+          return 'Done: the ledger.\nNext: the release.';
+        },
+      });
+      const follow = await handleCommand('/newtopic', app, { lineByLine }).asyncWork!;
+      expect(text(follow)).toBe(
+        'Topic reset stopped: the host is stopping while the transition summary was written; nothing was stored. ' +
+          (lineByLine
+            ? 'To store it after the restart, run this one-line command:\n/newtopic Done: the ledger. Next: the release.'
+            : 'To store it after the restart, run /newtopic with it as the text:\nDone: the ledger.\nNext: the release.'),
+      );
+    }
   });
 });

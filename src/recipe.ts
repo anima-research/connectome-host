@@ -13,48 +13,51 @@
 
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import type { MountConfig } from '@animalabs/agent-framework';
+import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { parseHandWrittenJson } from './hand-written-json.js';
+import { noteRecipeWarning } from './recipe-warnings.js';
+import { isBuiltinStrategyType } from './extensions.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
+import { recipeFit, type RecipeFit } from './recipe-fit.js';
+import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from './server-presentation.js';
 
 export interface RecipeStrategy {
   /** Built-in strategy name, or a custom type registered by a
-   *  `kind: "strategy"` extension (see `Recipe.extensions`). The
-   *  `string & {}` arm keeps literal autocompletion while admitting
-   *  extension-registered names. */
+   *  `kind: "strategy"` extension (see `Recipe.extensions`). */
   type: 'autobiographical' | 'passthrough' | 'frontdesk' | (string & {});
-  // Core window/compression sizing
   headWindowTokens?: number;
-  /** Verbatim tail. When unset, 40% of the compile budget (120k of 300k). */
+  /** Verbatim tail. When unset, 40% of the compile budget (120k of a 300k
+   *  budget), or 40% of the budget less agent.maxTokens where the head and
+   *  that tail wouldn't fit beside agent.maxTokens with overBudgetGraceRatio's
+   *  grace. */
   recentWindowTokens?: number;
   compressionModel?: string;
   /** Cap compression `max_tokens` at the compression model's OUTPUT ceiling.
    *  Required for pre-4.x models (Claude 3 Opus caps at 4096) — without it the
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
+  /**
+   * Opt-in compatibility for a non-reasoning model that authors the complete
+   * compression result inside one closed literal `<thinking>…</thinking>`
+   * text wrapper. Recovers only that exact whole-response shape as prose.
+   */
+  recoverLiteralThinkingWrappedCompression?: boolean;
   maxMessageTokens?: number;
-  /** Maximum live image count, newest-first (default 6). Zero disables the count limit. */
+  /** Maximum live image count, newest-first (default 6). Zero means up to
+   * context-manager's image ceiling, 500, and a larger value is held to it. */
   maxLiveImages?: number;
   /** Token depth from the tail beyond which images become placeholders (default 30000).
    * Zero disables depth-based stripping; surrounding text stays verbatim. */
   imageStripDepthTokens?: number;
   /** Cumulative base64 byte budget for live images (default 20 MiB).
-   * Zero disables the byte limit. Count and depth limits still apply. */
+   * Zero means up to context-manager's byte ceiling, 24 MiB, and a larger
+   * value is held to it. Count and depth limits still apply. */
   maxLiveImageBytes?: number;
   overBudgetGraceRatio?: number;
-  // Compression/merge tuning passed through to the underlying
-  // autobiographical strategy (and frontdesk, which extends it).
-  // Declared here so a typo in a recipe (e.g. `l1BudgetTokes`) fails
-  // at recipe validation rather than silently defaulting at strategy
-  // construction. Keep in sync with `AutobiographicalConfig` in
-  // @animalabs/context-manager; this interface is the source of truth
-  // for what the recipe loader accepts under `agent.strategy`.
   enforceBudget?: boolean;
   maxSpeculativeL1s?: number;
   /** Number of coverage-equivalent recall curves to try after the canonical
@@ -104,14 +107,14 @@ export interface RecipeStrategy {
   recallHeaderTemplate?: string;
   /**
    * Where a summary's signed reasoning carriers (the compressor's own
-   * thinking blocks, `responseContent`) are replayed (context-manager #81).
-   * `'full'` (default): unchanged — carriers ride both the live window and
-   * mint/merge recall pairs. `'live-strip'`: carriers are omitted from the
-   * LIVE window only (whole blocks dropped, never mutated — signatures only
-   * verify byte-identical) — the agent's own compiled context renders
-   * recall pairs text-only, while compression/merge requests still carry
-   * the full signed content unconditionally (measured load-bearing there:
-   * some providers refuse a compress request without it). Useful when a
+   * thinking blocks, `responseContent`) are replayed. `'full'` (default):
+   * unchanged — carriers ride both the live window and mint/merge recall
+   * pairs. `'live-strip'`: carriers are omitted from the LIVE window only
+   * (whole blocks dropped, never mutated — signatures only verify
+   * byte-identical) — the agent's own compiled context renders recall
+   * pairs text-only, while compression/merge requests still carry the full
+   * signed content unconditionally (measured load-bearing there: some
+   * providers refuse a compress request without it). Useful when a
    * provider's classifier treats a replayed foreign-request signature
    * inside the LIVE window as reasoning extraction.
    */
@@ -130,9 +133,10 @@ export interface RecipeStrategy {
   toolResultMaxLastN?: number;
   toolUseInputMaxTokens?: number;
   // Adaptive resolution (document-based gradual compression). For the
-  // 'autobiographical' strategy type this defaults ON (see index.ts); set
-  // `adaptiveResolution: false` to opt back to the count-based hierarchical
-  // renderer. The remaining knobs only apply when adaptiveResolution is true.
+  // 'autobiographical' strategy type this defaults ON; set
+  // `adaptiveResolution: false` to opt back to the count-based
+  // hierarchical renderer. The remaining knobs only apply when
+  // adaptiveResolution is true.
   adaptiveResolution?: boolean;
   /** kv-stable: trust region P on per-turn perturbation (tokens re-read).
    *  See context-manager adaptive-resolution-design.md §13. */
@@ -155,13 +159,19 @@ export interface RecipeStrategy {
    *  speculative compression queue (default 1); demand still overrides. */
   l1HoldbackChunks?: number;
   // Self-voice / compression framing. The host defaults summaryParticipant to
-  // `agent.name` (buildFrameworkStrategy), so self-recollections speak as the
-  // agent itself. Set explicitly only to voice summaries as someone else —
-  // a mismatched participant surfaces in the compiled prompt as another voice
-  // speaking in first person about the agent.
+  // the agent's name (`agent.name`, or the name it runs under when that's
+  // unset), so self-recollections speak as the agent itself. Set
+  // explicitly only to voice summaries as someone else — a mismatched
+  // participant surfaces in the compiled prompt as another voice speaking in
+  // first person about the agent.
   summaryParticipant?: string;
   summarySystemPrompt?: string;
   summaryUserPrompt?: string;
+  /** The `Context Manager` turn before a summary in the compiled context,
+   *  under adaptive resolution (the default) or `positionedRecallPairs:
+   *  false`. The host defaults it to a sentence saying that a summary
+   *  follows, standing in for earlier conversation, tool calls and results
+   *  included, and that the exact text it replaces isn't shown. */
   summaryContextLabel?: string;
   /** As-of perspective pin: chunks wholly below this message sequence are
    *  compressed as inherited/witnessed record, not first-person memory.
@@ -180,8 +190,6 @@ export interface RecipeStrategy {
    *  mixed targets keep identityReminder (context-manager
    *  witnessedIdentityReminder). */
   witnessedIdentityReminder?: string;
-  /** Follow the reminder with an instruction to apply it silently. */
-  identityReminderSilent?: boolean;
 }
 
 export interface RecipeKvUnifiedConfig {
@@ -201,6 +209,10 @@ export interface RecipeKvUnifiedConfig {
     continuityRecencyFloor: number;
     continuityStableHalfLife: number;
     continuityStableFloor: number;
+    /** Age bands per doubling for fidelity and continuity ages
+     * (context-manager ≥ 0.17): an integer from 0 to 64, 0 prices exact ages.
+     * Optional; a strategy built from a recipe takes 4 unless set. */
+    ageBandSteps?: number;
   };
   tokenBucketSize: number;
   continuityBucketSize: number;
@@ -212,11 +224,28 @@ export interface RecipeKvUnifiedConfig {
    * with treeifyNonContiguousSummaries; both flags must be explicit. */
   preserveGapBearingSummaries: boolean;
   /** Skip the full Pareto pass when the previously accepted layout is provably
-   * still selected (context-manager ≥ 0.14). Optional; off unless set. */
+   * still selected (context-manager ≥ 0.14). Optional; from context-manager
+   * 0.15 a strategy built from a recipe takes it on unless set to `false`. */
   hysteresisCertificate?: boolean;
+  /** Which engine solves the forest (context-manager ≥ 0.17): `auto` (absent)
+   * runs the subtree engine and falls back to the packed DAG engine past the
+   * label ceiling; `subtree` and `dag` pin one. */
+  engine?: 'auto' | 'subtree' | 'dag';
+  /** How producible merges are measured against the live cut
+   * (context-manager ≥ 0.17): `joint` unless set to `individual`. */
+  latentDemandMode?: 'individual' | 'joint';
+}
+
+/** `agent.autoContinue` as an object: agent-framework's `AutoContinueConfig`. */
+export interface RecipeAutoContinue {
+  /** Continuations in a row before the agent waits for the next event: a
+   *  whole number, 1 to 20. Default 3. */
+  maxConsecutive?: number;
 }
 
 export interface RecipeAgent {
+  /** Opt-in presentation; absolute local JSON path and reserved generated workspace path. */
+  toolPresentation?: { path: string; cataloguePath: string; defaults?: { source: string; path: string }[] };
   name?: string;
   model?: string;
   /** IANA zone used when rendering wall-clock times to the agent. */
@@ -243,14 +272,21 @@ export interface RecipeAgent {
    * prompting structure intact. */
   formatter?: 'native' | 'anthropic-xml';
   /**
-   * Membrane retry policy for this agent's provider calls. Membrane's default
-   * retries generic retryable errors ZERO times — only `529`/`overloaded_error`
-   * gets its dedicated patient schedule — so a transient 5xx from a
-   * non-Anthropic gateway (a 502 "Service temporarily unavailable") kills the
-   * turn on first failure. `{ "maxRetries": 4 }` rides out such blips with
-   * exponential backoff (retryDelayMs 1000, x2, capped at maxRetryDelayMs
-   * 30000 by default). Passed to Membrane verbatim; see membrane's
-   * `RetryConfigInput` for every field.
+   * Retry settings for framework turns AND other provider calls (compression
+   * and merging, retrieval, session naming and the TUI status line).
+   * A non-empty object installs a framework-wide DefaultErrorPolicy, completing
+   * partial fields from the framework's turn defaults;
+   * absent or {} leaves the turn policy untouched. It covers the resident,
+   * forks and subagents in that instance; separate fleet hosts use their own
+   * recipes. maxRetries counts total sends including the first: 4 means 4
+   * sends / 3 waits for ordinary retryable failures. Rate limits get at least
+   * 5 sends per policy cycle. Turn policies keep 13 overloaded sends per cycle
+   * unless overloaded.maxRetries is specified, with equal-jitter backoff,
+   * at-least-10-minute stated-wait ceilings
+   * for subagents, and one fresh call after a deadline cut;
+   * overloaded.maxRetries:0 uses the base schedule instead. Other calls keep
+   * hostMembraneRetry's existing default
+   * (overloaded schedule off), with recipe overrides. See RetryConfigInput.
    */
   retry?: import('@animalabs/membrane').MembraneConfig['retry'];
   /** Prefill scaffold user message appended after the conversation (e.g.
@@ -260,18 +296,31 @@ export interface RecipeAgent {
   /** Agent Framework exact-name tool allowlist. Omitted preserves its 'all' default.
    * This configures tool visibility; dispatch enforcement belongs to the framework. */
   allowedTools?: 'all' | string[];
+  /** The reply's max_tokens; 16,384 when unset. On a model the host knows a
+   *  window for (on Anthropic's API, recipe-fit.ts), a load that resolves
+   *  the system prompt refuses one over the model's maximum output. */
   maxTokens?: number;
   /**
    * Per-agent stream token budget — the accumulated-input ceiling at which the
    * framework breaks the stream and lets the strategy compress. Mirrors the
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
-   * budget is unset too (320k), else 150k — a recipe that sets its own budget
-   * may be on a 200k-window model.
+   * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
+   * which with prompt caching on are only those after the last cache marker.
+   * On a model whose thinking binds and whose window the host passes (Fable
+   * 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 through the Anthropic API), the
+   * framework doesn't break a turn's stream at it; the window still does.
    */
   maxStreamTokens?: number;
-  /** Per-agent context compile budget (input tokens). When unset, 300k —
-   *  sized for 1M-window models; set it lower on a smaller window
-   *  (budget + maxTokens must fit). */
+  /** Per-agent context compile budget (input tokens), which holds
+   *  maxTokens for the reply. When unset: on a model the host knows a window
+   *  for (on Anthropic's API, recipe-fit.ts), with a maxTokens that is unset
+   *  or a positive number, the smaller of 300k and the window less the system
+   *  prompt and 32k for the tools; otherwise 300k. Where the host knows the
+   *  window, a load that resolves the system prompt refuses a budget that
+   *  leaves too little room for the head and the verbatim tail once
+   *  maxTokens is kept for the reply, or one whose prompt (the budget less
+   *  maxTokens, or the head and tail where they come to more, plus the
+   *  system prompt) is over the window. */
   contextBudgetTokens?: number;
   /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Defaults to
    *  '1h'; set '5m' explicitly for high-frequency, sub-5-minute workloads.
@@ -280,14 +329,13 @@ export interface RecipeAgent {
   cacheTtl?: '5m' | '1h';
   /**
    * Prompt-cache keepalive. With `cacheTtl: '1h'`, an idle agent's cached
-   * prefix expires after an hour and its next wake pays a 2x cache write over
-   * the whole context. Reading an entry refreshes its TTL at 0.1x, so a
-   * periodic `max_tokens: 0` replay holds it warm for pennies.
+   * prefix expires after an hour and its next wake pays a 2x cache write
+   * over the whole context. Reading an entry refreshes its TTL at the
+   * cache-read price (0.1x for most models), so a periodic `max_tokens: 0`
+   * replay holds it warm for pennies.
    *
-   * On by default for the anthropic provider (ignored elsewhere — bedrock has
-   * no 1h cache). Measured on fable-cm 2026-08-11..22: 49.7M tokens of cache
-   * writes followed a >1h idle gap, ~$944 of write premium at fable-5 rates
-   * that this converts to ~$308 of reads.
+   * On by default for the anthropic provider (ignored elsewhere — bedrock
+   * has no 1h cache).
    *
    * Cost is proportional to actual idleness, not to `maxIdleHours` — a busy
    * agent never fires one, because its own traffic already refreshes the TTL.
@@ -319,16 +367,55 @@ export interface RecipeAgent {
    * prose bounces to a clipboard instead of auto-routing.
    * 'hybrid' = unprefixed prose keeps the current locus while an exact leading
    * `>>>destination` envelope routes through the authorized channel registry.
+   * 'locked' = plain text goes to one destination the agent chose, on every
+   * turn; only its `prose_locus` tool moves it, to a channel or to drafts
+   * (agent-framework docs/locked-prose-routing.md). An `allowedTools` list
+   * must name `prose_locus` for the agent to move it, and `drafts` for it to
+   * resend drafts; without a `proseLock`, a list that doesn't name
+   * `prose_locus` is refused. Refused beside `conversations`, whose forks
+   * speak in their home channel.
    * Default 'locus'.
    */
-  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+  /**
+   * Locked routing's destination until the agent chooses one with
+   * `prose_locus`: "#channel", "@person", a channel id or "drafts". Left out,
+   * plain text is held as drafts until the agent chooses. Refused under any
+   * other mode, which would ignore it.
+   */
+  proseLock?: string;
   /** Default-off containment of whole-response prose wrappers for known tools. */
   toolWrapperProseGuard?: boolean;
   /**
+   * Continue until skip_reply (agent-framework `AgentConfig.autoContinue`,
+   * agent-framework's docs/auto-continue.md; off when omitted): a turn the
+   * model ends itself, with prose or with nothing, is followed by another
+   * turn straight away, until the agent calls skip_reply (or another tool
+   * that ends the turn), ends on a `>>skip_reply` / `>>>skip_reply`
+   * envelope, or reaches `maxConsecutive` continuations in a row (default
+   * 3, 1 to 20). Each next turn reads a short system row saying so, which
+   * names skip_reply as the way to stop.
+   * `true` is `{}`. An agent-framework release without it ignores it.
+   */
+  autoContinue?: boolean | RecipeAutoContinue;
+  /**
+   * Clock rows (agent-framework `AgentConfig.clock`): every 10 minutes when
+   * omitted (`DEFAULT_RECIPE_CLOCK`), `false` for none, or e.g.
+   * `{ "intervalMinutes": 30 }`, or `{ "intervalSeconds": 15 }` for clocks
+   * finer than a minute, with optional `"precision": "minutes" | "seconds"`.
+   * When a boundary of the interval on the agent's local wall clock (in
+   * `timezone`) has passed, the window takes one `Clock: 10:50 Europe/Berlin
+   * (UTC+02:00)` row before the next event or turn start, or mid-turn after
+   * a tool round's results (not on the `anthropic-xml` formatter's XML
+   * prefill path); on some models that mid-turn row drops the loop's earlier
+   * thinking, at most once an interval. Subagent streams take none; see the
+   * README.
+   */
+  clock?: ClockConfig | false;
+  /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
-   * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
-   * models where it is opt-in, like claude-sonnet-4-5). Merged with any
-   * transport-required betas (OAuth). Anthropic provider only.
+   * request. Merged with any transport-required betas (OAuth). Anthropic
+   * provider only.
    */
   anthropicBetas?: string[];
   strategy?: RecipeStrategy;
@@ -345,11 +432,25 @@ export interface RecipeAgent {
     type?: 'enabled' | 'adaptive';
     /** 'summarized' returns readable reasoning summaries in `thinking`;
      * 'omitted' returns empty text + signature only. Models 4.7+ default
-     * to 'omitted' server-side. */
+     * to 'omitted' server-side. Through the Anthropic adapter, with
+     * reasoning_enabled on, a config carrying agent_settings'
+     * reasoning_display goes in place of this block's whole thinking
+     * config, binding controls included, on a model that takes adaptive
+     * thinking; on a streamed call to a model the host sends the drop
+     * control to, the control is then added to that config
+     * (LoggingAnthropicAdapter.withBinding). On a streamed call through it to a model
+     * modelReturnsNotesInThinking lists, a request that would go with
+     * display 'omitted', or with no thinking config, goes with 'updates'
+     * instead, so the notes between tool calls come back as text
+     * (LoggingAnthropicAdapter.withProgressNotes). So there, with
+     * reasoning_enabled off, a 'summarized' goes as 'updates' too wherever
+     * membrane builds no config from this block, as for a display alone on
+     * Fable and Mythos. */
     display?: 'summarized' | 'omitted';
     /** Anthropic streaming effort baseline, independent of enabled. Explicit agent
-     * settings override it until reset; compression calls are unaffected. Other
-     * providers ignore this field; OpenAI uses responses.reasoningEffort. */
+     * settings override it until reset, from the point where they were set;
+     * compression calls are unaffected. Other providers ignore this field;
+     * OpenAI uses responses.reasoningEffort. */
     effort?: ReasoningEffort;
   };
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
@@ -372,8 +473,8 @@ export interface RecipeAgent {
   mock?: RecipeMockConfig;
   /**
    * Content-refusal handling, handed whole to agent-framework's
-   * AgentConfig.refusalHandling (framework-agent-config.ts), where
-   * agent-framework documents `retries`, `autoRewind` and `maxRewinds`.
+   * AgentConfig.refusalHandling, where agent-framework
+   * documents `retries`, `autoRewind` and `maxRewinds`.
    */
   refusalHandling?: {
     retries?: number;
@@ -420,7 +521,8 @@ export interface RecipeMockConfig {
 }
 
 export interface RecipeMcpServer {
-  /** Command to spawn (stdio transport). Mutually exclusive with url. */
+  /** Command to spawn (stdio transport). With a url too, `transport` says which
+   *  to use. */
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -436,7 +538,8 @@ export interface RecipeMcpServer {
    * searches); `0` disables the timeout.
    */
   requestTimeoutMs?: number;
-  /** WebSocket URL (WebSocket transport). Mutually exclusive with command. */
+  /** WebSocket URL (WebSocket transport). With a command too, `transport` says
+   *  which to use. */
   url?: string;
   transport?: 'stdio' | 'websocket';
   /** Bearer token for WebSocket auth (appended as ?token= query param). */
@@ -460,6 +563,27 @@ export interface RecipeMcpServer {
   enabledFeatureSets?: string[];
   /** Feature-set deny-list; wins over enabledFeatureSets on overlap. */
   disabledFeatureSets?: string[];
+  /**
+   * MCPL RFC-014: whether this host advertises `toolHints` to the
+   * server, so it lists every tool with its hints (static or dynamic,
+   * visible or not, which toolset) and its toolsets can be opened and
+   * closed, instead of tailoring its list to a host that reads no hints.
+   * Hints confer no authority. Passed through to agent-framework; omitted,
+   * the framework's default applies (on, from agent-framework 0.29.0).
+   */
+  toolHints?: boolean;
+  /**
+   * How agents are shown this server at first (agent-framework's host
+   * toolsets): `'full'` (the default) puts its tools in the tool list;
+   * `'tab'` keeps it connected, its events still arriving, with its tools
+   * starting out of the list: `toolsets--open {server}` lists them for
+   * `toolsets--act`, and `toolsets--open {server, full: true}` puts them back
+   * in the list; `'closed-tab'` is a tab that also starts out disconnected.
+   * Each agent can change how it's shown the server later, which this doesn't
+   * decide. An agent without both `toolsets--open` and `toolsets--act` isn't
+   * shown tabs. Passed through to agent-framework.
+   */
+  presentation?: 'full' | 'tab' | 'closed-tab';
   /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
    * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
@@ -506,8 +630,8 @@ export interface RecipeMcpServer {
    * observe the agent's OTHER tool calls (`observe`) and their requested
    * argument fields (`inputs`), each with an optional narrowing. Both are
    * denied by default; stating a block is the operator's grant. `inputs`
-   * needs a `tools` or `classes` term to deliver anything, and never carries
-   * `comms` or unclassed arguments. See src/tool-lifecycle-config.ts.
+   * needs a `tools` or `classes` term to deliver anything, and never
+   * carries `comms` or unclassed arguments.
    */
   toolLifecycle?: RecipeToolLifecycle;
 }
@@ -664,16 +788,48 @@ export interface RecipeCredentialFileField {
 
 /**
  * A recipe's workspace mount: every key of agent-framework's MountConfig,
- * passed to the framework as given but for `path`, which is resolved
- * (workspace-mounts.ts), with `mode` and `watch` optional because the host
- * defaults them. The maximum file size is
- * operator-configurable because binary service artifacts may legitimately
- * exceed the conservative framework default.
+ * passed to the framework as given but for `path`, which is resolved,
+ * with `mode` and `watch` optional because the host defaults them. The
+ * maximum file size is operator-configurable because binary service
+ * artifacts may legitimately exceed the conservative framework default.
  */
 export interface RecipeWorkspaceMount {
   name: string;
   path: string;
+  /**
+   * Left out, the host makes a mount read-write. A direct mount
+   * (`backend: 'direct'`) must say its mode; one that doesn't stops the
+   * recipe loading (validateRecipe).
+   */
   mode?: 'read-write' | 'read-only';
+  /**
+   * Where the mount's tools get what they read, as agent-framework's
+   * `MountConfig.backend` says (its default is 'chronicle'). 'direct' reads
+   * disk's own copy as it is, keeps none of the mount's files in the store,
+   * and runs no scan or watcher, so a writable one's writes have no undo. A
+   * direct mount says its mode, and the framework
+   * refuses one with a setting that would never act there, such as a watch
+   * other than 'never', a wake on change or auto-materialize, which stops
+   * the recipe loading (validateRecipe). A mount configured direct whose
+   * store holds changes disk lacks, left from when it ran as 'chronicle' (a
+   * draft, a deletion or a conflict), runs as 'chronicle' until a start
+   * after they're settled, and the framework says at start how to settle
+   * them. A direct mount that names no `ignore` passes over node_modules,
+   * .git, dist, build, coverage, target, __pycache__ and .venv; one that
+   * names any passes over only what it names.
+   */
+  backend?: 'chronicle' | 'direct';
+  /**
+   * What the mount holds, as agent-framework's `MountConfig.include` says:
+   * a non-empty list of names, `*.ext` globs and `dir/**` globs. A file the
+   * list doesn't cover is refused by reads and writes and left out of
+   * listings and searches, and a pattern the framework can't read stops the
+   * recipe loading (validateRecipe). agent-framework keeps its own files
+   * (spilled tool results, saved payloads, fetched references) only in the
+   * first read-write mount with no include that isn't configured direct: a
+   * recipe with no such mount keeps none of them in a file.
+   */
+  include?: string[];
   watch?: 'always' | 'on-agent-action' | 'never';
   ignore?: string[];
   /** Maximum file size in bytes (defaults to the framework's 5 MiB limit). */
@@ -706,7 +862,8 @@ export interface RecipeWorkspaceMount {
   /**
    * Persist every write/edit/delete to disk immediately. Required for mounts
    * shared across agents as a communication channel (tickets, reports, etc.)
-   * so other agents' chokidar watchers actually see the change.
+   * so other agents' chokidar watchers actually see the change. A direct
+   * mount refuses it: its writes are on disk when they answer.
    */
   autoMaterialize?: boolean;
   /** With `watch: 'always'`, how long changes are gathered before the workspace looks at them, in ms (the framework's default is 300). */
@@ -724,12 +881,95 @@ export interface RecipeWorkspaceMount {
   followSymlinks?: boolean;
 }
 
+/** `modules.wake` as an object: starting rules, and the reply judge. */
+export interface RecipeWake extends Partial<import('@animalabs/agent-framework').GateConfig> {
+  /**
+   * The reply judge: the small model a `judge` wake rule asks whether now is a
+   * good time for the agent to reply, before it wakes the agent
+   * (agent-framework's `GateOptions.judge`). Every key is optional, and
+   * agent-framework's defaults apply where one is left out: Claude Haiku 5.5
+   * on this host's provider, 90,000 input tokens, low effort, a 20 s timeout,
+   * and a wake when the judge fails.
+   */
+  judge?: RecipeReplyJudge;
+}
+
+/** `modules.wake.judge`, as agent-framework's `ReplyJudgeOptions` takes it. */
+export interface RecipeReplyJudge {
+  /** False leaves the judge unwired: `judge` rules then wake as debounces. */
+  enabled?: boolean;
+  /** The judge's model id as this host's provider names it (e.g. an
+   *  `anthropic.`/`anthropic/` prefix on Bedrock/OpenRouter). */
+  model?: string;
+  /** The most input tokens one judge request may carry (4000 or more; default 90000). */
+  maxInputTokens?: number;
+  /** How long a judge request may take, in ms. */
+  timeoutMs?: number;
+  /** What a failed judge does: wake the agent (default) or not. */
+  onError?: 'wake' | 'skip';
+  /** The judge's effort; `none` sends none, for a provider without Anthropic's `output_config`. */
+  effort?: 'low' | 'medium' | 'high' | 'none';
+  /** The prompt cache's lifetime for the judge's context document. */
+  cacheTtl?: '5m' | '1h';
+}
+
+/** `modules.heartbeat` as an object. */
+export interface RecipeHeartbeat {
+  /** The state file; relative to the install directory. Default `{dataDir}/heartbeat.json`: the
+   *  install's, so every session reads the same schedule, as heartbeat-mcpl's state was. */
+  statePath?: string;
+  /** The schedule a first start writes when there's nothing to import. */
+  defaults?: RecipeHeartbeatDefaults;
+  /** heartbeat-mcpl's files (its HEARTBEAT_CONFIG_FILE and HEARTBEAT_REMINDERS_FILE),
+   *  read once by a start that finds no state file; relative to the install directory. */
+  importFrom?: { configPath?: string; remindersPath?: string };
+}
+
+/** `modules.heartbeat.defaults`. */
+export interface RecipeHeartbeatDefaults {
+  /** 60 or more. */
+  intervalSeconds?: number;
+  paused?: boolean;
+  message?: string;
+  deliveryMode?: 'message' | 'silent';
+}
+
+const RECIPE_HEARTBEAT_KEYS = ['statePath', 'defaults', 'importFrom'] as const;
+const RECIPE_HEARTBEAT_DEFAULTS_KEYS = ['intervalSeconds', 'paused', 'message', 'deliveryMode'] as const;
+const RECIPE_HEARTBEAT_IMPORT_KEYS = ['configPath', 'remindersPath'] as const;
+
+/** `modules.wake.judge`'s keys, kept in step with RecipeReplyJudge (recipeKeyListsInStep). */
+const RECIPE_REPLY_JUDGE_KEYS = ['enabled', 'model', 'maxInputTokens', 'timeoutMs', 'onError', 'effort', 'cacheTtl'] as const;
+
 export interface RecipeModules {
   /**
    * Subagent forking (spawn/fork parallel agents). OPT-IN — defaults to off
    * and is not part of the standard recipe.
    */
-  subagents?: boolean | { defaultModel?: string; defaultMaxTokens?: number };
+  subagents?: boolean | {
+    defaultModel?: string;
+    defaultMaxTokens?: number;
+    /**
+     * What a forked or spawned stream is told at its start. `'full'`
+     * (default) describes the launch and the stream's place in it, and
+     * gives a fork the "two parallel streams of you" framing; `'none'` hands
+     * a spawn its task alone; a fork with a parent agent its task after
+     * saying it is the forked stream and, where its prose routing isn't its
+     * parent's (a locked parent's fork runs disabled), what that routing is;
+     * and a fork with no parent agent its task after saying to return its
+     * findings with subagent--return. What a stream is told is the
+     * deployment's to decide, not the host's.
+     */
+    orientation?: 'full' | 'none';
+    /**
+     * How far the lifecycle tools (list, stop, message, adopt, resume)
+     * reach. `'subtree'` (default): a caller sees and acts on the subagents
+     * it started and theirs, as `peek` is scoped; `'all'`: every subagent
+     * the host knows, though an orphan is still adopted only by an agent it
+     * was offered to or in whose tree it hung.
+     */
+    lifecycleReach?: 'subtree' | 'all';
+  };
   /**
    * Lesson library (persistent knowledge store + lesson tools). OPT-IN —
    * defaults to off and is not part of the standard recipe.
@@ -751,7 +991,35 @@ export interface RecipeModules {
      */
     reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   };
-  wake?: boolean | import('@animalabs/agent-framework').GateConfig;
+  /**
+   * The gate (wake rules). `true` or left out: on, with the rules the agent
+   * keeps in its gate.json. `false`: off. An object: on, with `policies` and
+   * `default` as the host's starting rules (agent-framework's GateConfig),
+   * and `judge` configuring the reply judge that `judge` wake rules ask.
+   */
+  wake?: boolean | RecipeWake;
+  /**
+   * The heartbeat, kept by agent-framework (its `FrameworkConfig.heartbeat`):
+   * the agent's own periodic check-in and reminders, with the tools
+   * `heartbeat--heartbeat_status`, `--heartbeat_configure`, `--heartbeat_trigger`,
+   * `--reminder_add`, `--reminder_list` and `--reminder_cancel`. OPT-IN: off
+   * by default. It replaces the heartbeat-mcpl server, so a recipe that turns
+   * it on can't also name an `mcpServers.heartbeat`. `importFrom` brings that
+   * server's schedule and reminders along on the first start.
+   */
+  heartbeat?: boolean | RecipeHeartbeat;
+  /**
+   * The workspace's mounts. `configMount: true` adds `_config`, the
+   * session's config directory, holding only files named `gate.json`,
+   * `gate.js` or `gate.recipe.json`, the names of the gate's files, at any
+   * depth (its include), with history in Chronicle; it isn't materialized
+   * on agent writes (buildWorkspaceMounts). Since it has an include,
+   * agent-framework keeps none of its own files there: a recipe whose other
+   * mounts are each read-only, have an include, or are configured direct
+   * keeps no over-cap tool result, saved payload or fetched reference in a
+   * file. No mount of the recipe's own is named `_config`, and no two of
+   * them share a name, compared exactly.
+   */
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
   /**
    * Shared operating instructions. OPT-IN — off by default. Reads a living
@@ -764,16 +1032,17 @@ export interface RecipeModules {
    * Requires `workspace` (the path below is a workspace mount path);
    * enabling this alongside `workspace: false` fails validation. The mount
    * named by the path is cross-checked at load time in every configuration
-   * (explicit mounts and the implicit "input"+"products" default alike), so
-   * a path naming a nonexistent mount is a load error, never a silent
-   * no-injection. A read-write instructions mount must also set
-   * `autoMaterialize: true`: workspace writes are Chronicle-first and the
-   * injection reads disk, so without materialization an agent's own
-   * curation edits would never reach the injection. A read-only mount is
-   * the alternative when the file is maintained outside the agent (edits
-   * then propagate to the injection but not to `workspace--read`, which
-   * serves Chronicle). A missing FILE remains fail-open at runtime: no
-   * injection, with a log line and an `instructions-unavailable` ops alert.
+   * (explicit mounts and the implicit "input"+"products" default alike),
+   * so a path naming a nonexistent mount is a load error, never a silent
+   * no-injection. A read-write instructions mount that isn't configured
+   * direct must also set `autoMaterialize: true`: its writes are
+   * Chronicle-first and the injection reads disk, so without
+   * materialization an agent's own curation edits would never reach the
+   * injection. A direct mount's write is on disk when it answers, and in a
+   * session it runs as 'chronicle' its writes are refused. A read-only
+   * mount is the alternative when the file is maintained outside the
+   * agent. A missing FILE remains fail-open at runtime: no injection, with
+   * a log line and an `instructions-unavailable` ops alert.
    *
    * Cache economics: with position 'system' the injected block sits in the
    * prompt-cache prefix of every agent, so each EDIT to the file is a
@@ -793,8 +1062,7 @@ export interface RecipeModules {
      * Truncate content beyond this many bytes, appending a
      * "[truncated: first N of M bytes]" marker (N may sit up to 3 bytes
      * under the cap when a multibyte character straddles it). Reads ask for
-     * no more than this, which agent-framework 0.22.2 exceeds only for a
-     * file that grows while it's read. Default 32768.
+     * no more than this. Default 32768.
      */
     maxBytes?: number;
     /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
@@ -839,28 +1107,31 @@ export interface RecipeModules {
    * MCPL self-administration. Off by default. When enabled, the agent gets
    * `mcpl_list` / `mcpl_deploy` / `mcpl_restart` / `mcpl_unload` tools to
    * hot-manage its own MCPL servers without a host restart. Deployments
-   * persist to `mcpl-servers.agent.json` (the agent overlay), merged over the
+   * persist to `mcpl-servers.agent.json` (the agent overlay, in the working
+   * directory; a fleet child's is `mcpl-servers.agent.child.json` in its data
+   * directory), merged over the
    * recipe/file server list at startup.
    *
    * SECURITY: `mcpl_deploy` spawns arbitrary commands as the host user —
    * enabling this module means trusting the agent with code execution.
    *
-   * `{ surface: 'utilities' }` keeps the module but parks its four tools
-   * behind the framework's single `utils` meta-tool (mcpl management is
-   * rare; it needn't cost four schemas on every inference). `true` keeps
-   * the historical first-class surface.
+   * Its four tools live in agent-framework's built-in toolset ("settings"):
+   * out of the tool list, opened with `toolsets--open {toolset:"settings"}`
+   * and called with `toolsets--act`, for an agent that may call both; for
+   * one that may not, they stay in its tool list.
+   * `surface` is no longer read; it's accepted so older recipes still load.
    */
   mcplAdmin?: boolean | { surface?: 'tools' | 'utilities' };
 
   /**
-   * Agent-facing history browsing (HistoryModule, agent-framework#158). OPT-IN
-   * — off by default. Adds `history--stats` / `history--extract` /
-   * `history--search` / `history--overview` tools for querying the agent's
-   * own uncompressed chronicle (native secondary indexes: stats, time/channel
-   * extraction, regex search) and for browsing already-compressed spans via
-   * existing summaries (no new LLM calls). Channel-filter arguments on all
-   * four tools accept a live or historical channel label/address, not just
-   * the raw internal channel id, when MCPL is configured (resolved via the
+   * Agent-facing history browsing (HistoryModule). OPT-IN — off by default.
+   * Adds `history--stats` / `history--extract` / `history--search` /
+   * `history--overview` tools for querying the agent's own uncompressed
+   * chronicle (native secondary indexes: stats, time/channel extraction,
+   * regex search) and for browsing already-compressed spans via existing
+   * summaries (no new LLM calls). Channel-filter arguments on all four tools
+   * accept a live or historical channel label/address, not just the raw
+   * internal channel id, when MCPL is configured (resolved via the
    * framework's `ChannelRegistry`).
    *
    * Object form adds `history--semantic_search`: meaning-based search over the
@@ -878,9 +1149,6 @@ export interface RecipeModules {
    * the session id: give the copy a different `namespace` prefix, or no
    * token, or it will write into the original's index.
    *
-   * Requires @animalabs/agent-framework >= 0.20.0; startup fails if the
-   * installed HistoryModule does not offer semantic_search.
-   *
    * Transport: sync ships raw message text and the token. `url` must be https,
    * or plain http to loopback / the tailnet (100.64.0.0/10, *.ts.net), where
    * WireGuard is the encryption; any other http needs `allowInsecureHttp: true`.
@@ -888,7 +1156,7 @@ export interface RecipeModules {
    * What the remote index holds: with `includePrivateTools` at the
    * framework default (true), the agent's think/journal/skip_reply prose is
    * indexed too. Search hits are checked against the CURRENT branch, so
-   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * /branchto, /checkout etc. hide rolled-back turns from results, but the remote
    * copy stays; `/session delete` removes only the local store, not the
    * remote namespace (the client has no namespace delete).
    */
@@ -910,17 +1178,19 @@ export interface RecipeModules {
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
    * an ed25519 keypair in the data dir, enrolled at the home node via an
    * operator invite, exchanged for fresh aid1 audience tokens on demand.
-   * Utilities-only (`utils run identity--status/enroll/token`) — costs no
-   * tool slots. `home` defaults to id.animalabs.ai; `audience` is the
+   * Its tools are utilities, in agent-framework's built-in toolset
+   * ("settings": `toolsets--open {toolset:"settings"}`, then
+   * `toolsets--act {tool:"identity--status"}`, or by its own name for an
+   * agent that may not call both) — costs no tool slots. `home` defaults to id.animalabs.ai; `audience` is the
    * default for `token` calls.
    */
   identity?: boolean | { home?: string; audience?: string };
   /**
-   * Cross-process child fleet.  When true (shorthand), FleetModule is attached
-   * with no pre-configured children.  When an object, declares children the
-   * conductor supervises (auto-started by default on framework start) and
-   * optionally an allowlist of recipe paths the conductor may spawn at will.
-   * Recipes outside the allowlist require user approval.
+   * Cross-process child fleet. When true (shorthand), FleetModule is
+   * attached with no pre-configured children. When an object, declares
+   * children the conductor supervises (auto-started by default on framework
+   * start) and optionally an allowlist of recipe paths the conductor may
+   * spawn at will.
    *
    * Recipe path resolution: relative paths in `children[].recipe` are resolved
    * at load time against the directory of the parent recipe file (or URL
@@ -947,14 +1217,30 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
-   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
-   * the host mirrors the agent's streaming generation — chunks, block
-   * boundaries, activation start/end, tagged with the turn's channel — to the
-   * relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak it.
-   * Also handles the relay's `interruption` events: the just-posted Discord
-   * message is edited down to the words actually voiced, and a note lands in
-   * the agent's context. Pure trace-bus tap — no effect on the agent loop.
-   * `token` should be `${VAR}`-substituted from .env, never literal.
+   * TTS relay tap (melodeus-tts-relay). Off by default. When set, the host
+   * sends the agent's turns (activation start/end, on the turn's channel)
+   * and each message its prose publishes on the server `editServerId` names
+   * (one text block, on the channel it was published to; a message that's
+   * only whitespace isn't sent) to the relay's `/bot` WebSocket, where
+   * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
+   * its thinking, tool calls and tool results, and messages sent by a tool
+   * call aren't sent, and nothing is sent while the host isn't connected to
+   * the relay, so a message published then isn't matched to an
+   * interruption. Also handles the relay's `interruption` events: the host
+   * edits at most one message it recently published in the interruption's
+   * channel, one the heard words match, to the text the client reports as
+   * voiced, and, with `notifyOnInterruption` on (its default), puts a note
+   * in the context of the agent voiced, when one agent can be named.
+   * Nothing is edited when no message matches, and no note is written when
+   * the messages that match are by more than one agent. What an agent wrote
+   * and didn't publish isn't voiced, so it holds back no edit. Messages are
+   * matched among each channel's latest 32, in the 32 channels published in
+   * last. A channel keeps the names of the agents voiced there, and of
+   * those whose messages it let go, a channel past those 32 or a message
+   * past its latest 32: until its next interruption, a message kept there
+   * is edited, and its author told, only when no other agent's messages
+   * were let go there. `token` should be `${VAR}`-substituted from .env,
+   * never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
@@ -963,14 +1249,17 @@ export interface RecipeModules {
    * channel, the host counts ambient (non-mention, non-DM) characters since the
    * agent's last activation; when a channel crosses its limit before the next
    * activation, it's auto-unsubscribed (delivery stops, and the surface starts
-   * tracking what's then missed). Counters reset on every activation — the
-   * agent sees all subscribed channels in context, compressed if large — and
-   * persist across restarts. The agent can override the per-channel limit at
-   * runtime via `agent_settings` (field `channel_idle_limits`).
+   * tracking what's then missed). A channel the agent opened itself stays open
+   * unless a limit is configured for it, and a tuned-out channel is left alone.
+   * Counters reset on every activation — the agent sees all subscribed channels
+   * in context, compressed if large — and persist across restarts. The agent
+   * can override the per-channel limit at runtime via `agent_settings` (field
+   * `channel_idle_limits`).
    *
    * `false` disables entirely. `defaultLimitChars` sets the global default
-   * (20000 if omitted). `serverId`/`toolPrefix` target the MCPL surface that
-   * owns subscriptions (defaults: `discord` / `mcpl--discord`).
+   * (20000 if omitted). `serverId` names the MCPL server that owns
+   * subscriptions (default `discord`); `toolPrefix` is deprecated and read by
+   * nothing.
    */
   subscriptionGc?:
     | boolean
@@ -982,36 +1271,76 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. `serverId`/`toolPrefix` target the MCPL surface that owns
-   * subscriptions (defaults: `discord` / `mcpl--discord`); `defaultDebounceMs`
-   * sets the debounced-mode quiet window (180000 if omitted).
+   * `false` disables. `serverId` names the MCPL server that owns subscriptions
+   * (default `discord`); `toolPrefix` is deprecated and read by nothing.
+   * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
+   * omitted).
    */
   channelMode?:
     | boolean
     | { serverId?: string; toolPrefix?: string; gcModuleName?: string; defaultDebounceMs?: number };
+
+  /**
+   * Self-restart (`lifecycle--restart`). Off by default. The agent can ask
+   * its own host to restart: to pick up an edited recipe or rebuilt code, or
+   * to get out of a wedged state. The restart waits for the asking turn to
+   * end and nothing to be in flight (every agent idle, no turn, subagent run
+   * or background script alive), then the host exits with code 75 and its
+   * supervisor must start it again — launchd `KeepAlive`, systemd
+   * `Restart=on-failure` or `always`, or a fleet parent's `autoRestart`. A
+   * fleet parent restarts a child only when the child's entry sets
+   * `autoRestart`, and counts each restart toward its cap of 3 in 60 s, so
+   * `cooldownMinutes: 0` can leave a fast-restarting child down; a child the
+   * parent adopted has no exit it sees, and stays down. A fleet parent's own
+   * self-restart stops its children as any shutdown does, and the restarted
+   * parent starts again only its `autoStart` children. Only
+   * headless mode arms it; elsewhere the tool refuses. After the restart one
+   * context line says which agent asked, when, why, and when the host came
+   * back.
+   *
+   * `cooldownMinutes` (default 10) is the least time from one completed
+   * self-restart to the next request; 0 turns the cooldown off. The request
+   * and the last completed restart live in `DATA_DIR` as `self-restart.json`
+   * and `self-restart.last.json`.
+   *
+   * Enable it only where a supervisor really restarts the host: without one,
+   * the agent stays down after its own request.
+   */
+  selfRestart?: boolean | { cooldownMinutes?: number };
 }
 
 export interface RecipeWebUi {
   port?: number;
   host?: string;
   /**
-   * Where the observer grant tools (observers--get/grant/revoke) surface:
-   * 'tools' (default, historical) or 'utilities' (behind the `utils`
-   * meta-tool — grant edits are rare). Consent semantics unchanged: the
-   * agent holds the pen either way.
+   * No longer read: the observer grant tools (observers--get/grant/revoke)
+   * live in agent-framework's built-in toolset ("settings"), out of the tool
+   * list, opened with `toolsets--open {toolset:"settings"}` and called with
+   * `toolsets--act`, for an agent that may call both (for one that may not,
+   * they stay in its tool list). It's accepted so older recipes still load.
+   * Consent semantics unchanged: the agent holds the pen.
    */
   observersSurface?: 'tools' | 'utilities';
   /**
    * Basic-Auth credentials. Required whenever the bind host is non-loopback
-   * (which is the default). `${VAR}`-substitutable from .env.
+   * (which is the default). `${VAR}`-substitutable from .env. When set, both
+   * must be non-empty strings: the host refuses anything else at start. A
+   * null or other falsy basicAuth reads as none.
    */
   basicAuth?: { username: string; password: string };
   /**
    * Override the default Origin allowlist for the WebSocket upgrade. Default
-   * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Add
-   * your reverse-proxy origin (e.g. `https://admin.example.com`) here when
-   * fronted by Caddy/nginx. Pass `[]` to disable the Origin check entirely
-   * — only sensible when something else upstream is enforcing it.
+   * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Write
+   * each entry as an `http` or `https` URL the way a browser sends its
+   * Origin (scheme, host and any non-default port, with no path or trailing
+   * slash); without `basicAuth`, only on 127.0.0.1, localhost or [::1], any
+   * port. With `basicAuth`, add your reverse proxy's origin (e.g.
+   * `https://admin.example.com`) if it rewrites `Host`. The host refuses at
+   * start an empty list, a value that isn't a list, and an entry that isn't
+   * an `http` or `https` URL (without `basicAuth`, one on those three
+   * names); a null list reads as absent. Beyond that it doesn't check how an
+   * entry is written, so one with, say, a path, a trailing slash, a default
+   * port or capital letters starts and never matches.
    */
   allowedOrigins?: string[];
 }
@@ -1028,10 +1357,11 @@ export interface RecipeTtsRelay {
   userId?: string;
   /** Display name stamped on stream events. Defaults to the agent's name. */
   username?: string;
-  /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
+  /** MCPL server whose channels the relay voices, and which owns `edit_message` for interruption trims. Default 'discord'.
+   *  A message published on another server isn't voiced; the host logs a line naming that server at the first such message from it. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption trims a posted message. Default true. */
+  /** Whether an interruption puts a note in the context of the agent voiced, when one agent can be named, saying what was voiced and whether the posted message was trimmed. Default true. */
   notifyOnInterruption?: boolean;
 }
 
@@ -1039,10 +1369,11 @@ export interface RecipeFleet {
   /** Children to manage. autoStart children launch when the framework starts. */
   children?: RecipeFleetChild[];
   /**
-   * Allowlist for `fleet--launch`.  If omitted, the list is implicitly the
-   * set of recipe paths named in `children`.  A launch call targeting a
-   * recipe outside the allowlist fails with an error the agent should
-   * relay to the user (who can then approve and re-issue).
+   * Allowlist for `fleet--launch`. With neither this nor a recipe in
+   * `children` there is no allowlist; otherwise it holds these patterns
+   * and every recipe path named in `children`. A launch call targeting a
+   * recipe outside the allowlist fails with an error telling the agent to
+   * ask the user to extend `allowedRecipes`.
    *
    * Pattern syntax (intentionally minimal to keep matcher and intent aligned):
    *   - Literal exact match: `"recipes/miner.json"`
@@ -1089,7 +1420,7 @@ export interface RecipeFleetChild {
   subscription?: string[];
   /** Launch this child on framework start. Default: true. */
   autoStart?: boolean;
-  /** Respawn on crash (Phase 5 honours this; schema accepts it now). */
+  /** Respawn on crash. */
   autoRestart?: boolean;
 }
 
@@ -1119,49 +1450,88 @@ export interface RecipeExtension {
 }
 
 /**
- * Client-side programmatic tool calling (af `code_execution` tool, af ≥0.7.2).
+ * Client-side programmatic tool calling (af `code_execution` tool), passed to
+ * the framework as written, so it is the framework's own config type.
  *
- * SECURITY: like mcpl_deploy, enabling this means trusting the agent with
- * code execution — model-authored python runs as the host user with the
- * agent's full tool surface injected. It is a robustness boundary (deadline,
- * kill, respawn), not a sandbox. The agents we host already have shells;
- * enable deliberately all the same.
+ * SECURITY: model-authored JavaScript runs in a QuickJS WebAssembly
+ * engine, in a child process of the host, and reaches nothing but its
+ * agent's tools: no network, files or environment. The framework claims no
+ * containment beyond its engine and glue: the child runs as the host's
+ * user, with no operating-system sandbox around it. Enable deliberately.
  */
-export interface RecipeCodeExecution {
-  enabled: boolean;
-  /** Python interpreter (default: python3 from PATH; needs ≥3.8). */
-  pythonPath?: string;
-  /** Per-inner-tool-call timeout, ms (default 270_000). */
-  toolCallTimeoutMs?: number;
-  /** Whole-script deadline, ms (default 600_000). */
-  scriptTimeoutMs?: number;
-  /** Idle interpreter reclaim, ms (default 300_000; 0 disables). */
-  idleReclaimMs?: number;
-}
+export type RecipeCodeExecution = CodeExecutionConfig;
 
 /**
- * The subconscious resident (agent-framework FrameworkConfig.subconscious,
- * issue agent-framework#77 — tune-out): a persistent same-model side-agent
- * that receives traffic from channels the resident has tuned out and
- * reports to them in its own voice. Passed through verbatim; the framework
- * owns the defaults (name `Subconscious`, model = the resident's).
+ * The Python runner's settings agent-framework's JavaScript runner refuses,
+ * with what to do instead: its isolateSettings' table, which the package
+ * doesn't export.
  */
-export interface RecipeSubconscious {
-  /** Master switch. Without it the `tune_out` tool is not offered. */
-  enabled: boolean;
-  /** Registry + participant name (default 'Subconscious'). */
-  name?: string;
-  /** Model id (default: the resident's model — same-model side-process). */
-  model?: string;
-  /** The voice/criteria mode block: report-shaped, second person toward the
-   *  resident. Co-authored with the resident; canary before fleet use. */
-  systemPrompt: string;
-  /** Allow `speak_in_channel` (default false until the voice block has
-   *  passed its canary). */
-  allowChannelSpeech?: boolean;
-  /** WindowedPassthroughStrategy re-anchor fraction in (0, 1] (default 0.5). */
-  reAnchorFraction?: number;
-}
+const RETIRED_CODE_EXECUTION_KEYS: Readonly<Record<string, string>> = {
+  pythonPath: 'scripts are JavaScript now, run by an engine built into agent-framework, so there is no interpreter to name; leave it out',
+  idleReclaimMs: 'each script starts fresh and keeps nothing after it ends, so there is nothing to reclaim; leave it out',
+  env: "a script's world holds only your agent's tools, with no environment; leave it out",
+  inheritEnv: "a script's world holds only your agent's tools, with no environment; leave it out",
+  scriptTimeoutMs: 'a script now yields at its bound and keeps running: set yieldMs for the bound',
+  maxScriptTimeoutMs: 'set maxYieldMs, the most an agent may ask a run or a wait to wait',
+  backgroundMaxLifetimeMs: 'every script now has one limit: set scriptLifetimeMs',
+  maxBackgroundScripts: 'set maxRunningScripts, how many scripts an agent may have running at once, yielded ones included',
+};
+const CODE_EXECUTION_NUMBER_KEYS = [
+  'yieldMs', 'maxYieldMs', 'scriptLifetimeMs', 'maxRunningScripts', 'maxScriptChildren',
+  'toolCallTimeoutMs', 'wakeMinIntervalMs', 'maxWakesPerScript', 'memoryMaxBytes',
+] as const;
+
+/**
+ * The tune-out reader (agent-framework FrameworkConfig.subconscious, issues
+ * agent-framework#77 and #232): who reads the channels the resident has
+ * tuned out and reports to them. Two readers exist:
+ *
+ * - `reader: 'persistent'` (the default): a persistent side-agent with its
+ *   own window, reading the shared slot through a merged view. Passed
+ *   through verbatim; the framework owns the defaults (name
+ *   `Subconscious`, model = the resident's).
+ * - `reader: 'forks'` (Dendrite): a succession of forks of the resident
+ *   itself, each derived at the resident's head for one look and ended.
+ *   The fork shares the resident's provider prefix. `model` says whose
+ *   weights run the fork and is never defaulted — the resident's own model
+ *   for a copy of the resident, or another by name. `voice` is the reader's
+ *   voice block, delivered to each fork after the fork point with the held
+ *   traffic, never a system prompt. Two of the framework's fields are
+ *   function-valued, so a recipe cannot state them: the host supplies
+ *   `strategyFactory`, a fresh instance of the recipe's strategy per fork
+ *   (the same pattern as `conversations`; see buildSubconsciousConfig), and
+ *   `framing`, how the fork is prompted, stays the framework's default.
+ *
+ * The types are the framework's own, minus those two fields;
+ * agent-framework's src/tune-out/tools.ts documents each field.
+ */
+export type RecipeSubconscious = RecipePersistentReader | RecipeForkReader;
+export type RecipePersistentReader = PersistentReaderConfig;
+export type RecipeForkReader = Omit<ForkReaderConfig, 'strategyFactory' | 'framing'>;
+
+/**
+ * Where a turn's plain prose lands when nothing names a destination
+ * (agent-framework FrameworkConfig.speech). `'delivery'` (the framework's
+ * default): only the delivery that woke the turn, a fork's home channel or a
+ * channel the agent opened this turn sets the locus; incoming traffic never
+ * moves it, and a turn without one keeps its prose private.
+ * `'latest-inbound'`: the previous rule, with the most recent delivered
+ * inbound message as a global fallback locus.
+ */
+export type RecipeSpeech = NonNullable<FrameworkConfig['speech']>;
+
+/**
+ * Tune-out settings (agent-framework FrameworkConfig.tuneOut): `announce`
+ * only. The resident is offered `tune_out` / `focus` only with a reader
+ * (`subconscious`); there is no silent hold. `enabled`, which offered them
+ * without a reader, was removed in agent-framework 0.33.0: validateRecipe
+ * refuses `enabled: true`, as the framework's `create` does, and lets
+ * `enabled: false` load, which the framework accepts and ignores.
+ */
+export type RecipeTuneOut = NonNullable<FrameworkConfig['tuneOut']>;
+
+/** Dendrite lifecycle options (agent-framework FrameworkConfig.dendrite). */
+export type RecipeDendrite = NonNullable<FrameworkConfig['dendrite']>;
 
 /**
  * Per-channel conversation routing (agent-framework ConversationRouter):
@@ -1208,11 +1578,19 @@ export interface RecipeConversations {
   agentPrefix?: string;
 }
 
-/**
- * Deprecation notices for a recipe's `conversations` block, one
- * human-readable line each (empty when it is absent). Pure — the host prints
- * these at startup with a `[deprecated]` prefix.
- */
+export function deprecatedSurfaceNotices(modules: RecipeModules | undefined): string[] {
+  const notices: string[] = [];
+  if (typeof modules?.mcplAdmin === 'object' && modules.mcplAdmin.surface !== undefined) {
+    notices.push('modules.mcplAdmin.surface is no longer read: mcpl-admin\'s tools are in agent-framework\'s built-in ' +
+      '"settings" toolset, or in the tool list of an agent that may not call both toolsets--open and toolsets--act.');
+  }
+  if (typeof modules?.webui === 'object' && modules.webui.observersSurface !== undefined) {
+    notices.push('modules.webui.observersSurface is no longer read: the observer tools are in agent-framework\'s built-in ' +
+      '"settings" toolset, or in the tool list of an agent that may not call both toolsets--open and toolsets--act.');
+  }
+  return notices;
+}
+
 export function deprecatedConversationsNotices(conversations: RecipeConversations | undefined): string[] {
   if (!conversations) return [];
   return [
@@ -1244,8 +1622,17 @@ export interface Recipe {
    * at startup when it is set.
    */
   conversations?: RecipeConversations;
-  /** Tune-out's subconscious resident (agent-framework#77). */
+  /** Tune-out's reader: the persistent subconscious or reader forks (agent-framework#77, #232). */
   subconscious?: RecipeSubconscious;
+  /** Where plain prose lands when nothing names a destination (agent-framework `speech`). */
+  speech?: RecipeSpeech;
+  /** Tune-out settings (agent-framework `tuneOut`): `announce`. `tune_out` itself comes with `subconscious`. */
+  tuneOut?: RecipeTuneOut;
+  /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
+   *  `derivationNotice`, so an agent isn't told of a derivation and
+   *  `collapseDerivationNoticesAfter`, which only spaces those lines out, has no
+   *  effect here. */
+  dendrite?: RecipeDendrite;
   /**
    * MCPL RFC-008 operator class overrides: tool-name pattern → classes. The
    * highest-precedence source of a tool's class, and the way to class
@@ -1257,11 +1644,35 @@ export interface Recipe {
    * entry sets `toolPrefix`.
    */
   toolClassOverrides?: Record<string, string[]>;
+  /**
+   * How often agent-framework's context maintenance pass runs, in
+   * milliseconds: a whole number from 0 to 2147483647, where 0 turns the
+   * timer off. Left out, the framework's own interval (5000 ms) stands.
+   */
+  maintenanceIntervalMs?: number;
+  /**
+   * How long agent-framework lets a model call go without progress
+   * (FrameworkConfig.inferenceBounds), passed to it as written: `false` for
+   * none of its bounds, or an object with `progressBounds`, any of
+   * `beforeContentMs`, `betweenEventsMs` and `thinkTokensPerSecond`, and
+   * `flatMinimumMs` beside it. Left out, agent-framework's defaults stand:
+   * the "Inference bounds" section of the README its package ships gives them.
+   */
+  inferenceBounds?: FrameworkConfig['inferenceBounds'];
 }
 
-// ---------------------------------------------------------------------------
-// Default recipe
-// ---------------------------------------------------------------------------
+export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
+
+export function resolveProvider(recipe: Recipe): RecipeProvider {
+  return recipe.agent.provider ?? 'anthropic';
+}
+
+/** The model a recipe's agent runs: `envModel`, the environment's `MODEL`,
+ *  when it's set, else the recipe's own, else its provider's default. */
+export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
+  return envModel || recipe.agent.model ||
+    (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
+}
 
 export const DEFAULT_RECIPE: Recipe = {
   name: 'Agent',
@@ -1269,40 +1680,25 @@ export const DEFAULT_RECIPE: Recipe = {
   agent: {
     name: 'agent',
     cacheTtl: '1h',
-    // Empty on purpose: identity comes from what the agent lives through,
-    // and the tools describe themselves (docs/AGENT-ONBOARDING.md §5).
     systemPrompt: '',
-    // No strategy: the host defaults (buildFrameworkStrategy) give
-    // autobiographical + adaptive resolution + kv-unified with the standard
-    // block, a 300k budget and a 120k verbatim tail.
   },
   modules: {
-    // subagents + lessons + retrieval deliberately omitted — all opt-in only
-    // (retrieval additionally adds per-turn context churn + retrieval-model costs);
-    // see the RecipeModules field docs.
     wake: true,
     workspace: true,
   },
 };
 
-// ---------------------------------------------------------------------------
-// Environment variable substitution
-// ---------------------------------------------------------------------------
-
-/** A `${VAR}` or `${VAR:-default}` reference, as substituteEnvVars reads one. */
 const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`;
 
-/** Whether text holds a `${VAR}` reference: the form a recipe substitutes
- *  from the environment. An agent overlay entry passes it on as written. */
 export function namesEnvReference(text: string): boolean {
   return new RegExp(ENV_REFERENCE).test(text);
 }
 
 /**
  * Walk a parsed-JSON value tree and substitute `${VAR_NAME}` patterns in
- * string values with `process.env.VAR_NAME`.  Applied at recipe-load time,
- * before schema validation, so secrets can live in `.env` (gitignored) while
- * the recipe itself stays commit-safe.
+ * string values with `process.env.VAR_NAME`. Applied at recipe-load time,
+ * before schema validation, so secrets can live in `.env` (gitignored)
+ * while the recipe itself stays commit-safe.
  *
  * Patterns:
  *   - `${FOO}` — required.  Throws if FOO is unset (empty string OK).
@@ -1316,8 +1712,8 @@ export function namesEnvReference(text: string): boolean {
  *   - Non-string values (numbers, booleans, nulls) pass through unchanged.
  *   - Arrays and objects are walked recursively.
  *
- * No escape syntax yet — a literal `${...}` in recipe JSON is not a supported
- * case.  If that becomes needed, add `$$` → `$` unwrapping as a pre-pass.
+ * No escape syntax yet — a literal `${...}` in recipe JSON is not a
+ * supported case.
  */
 export function substituteEnvVars(value: unknown, source: string): unknown {
   if (typeof value === 'string') {
@@ -1326,10 +1722,8 @@ export function substituteEnvVars(value: unknown, source: string): unknown {
       (_match, name: string, defaultValue: string | undefined) => {
         const v = process.env[name];
         if (defaultValue !== undefined) {
-          // ${VAR:-default} — use VAR if set + non-empty, else default.
           return v !== undefined && v !== '' ? v : defaultValue;
         }
-        // ${VAR} — required; empty string is allowed if explicitly set.
         if (v === undefined) {
           throw new Error(
             `Recipe "${source}" references environment variable \${${name}} which is not set. ` +
@@ -1355,96 +1749,59 @@ export function substituteEnvVars(value: unknown, source: string): unknown {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// Loading
-// ---------------------------------------------------------------------------
-
-/**
- * Base for resolving recipe-relative paths (currently: `children[].recipe`).
- * `file` sources use the recipe file's directory; `url` sources use the URL
- * base so a child like `"child.json"` on an `https://example.com/parent.json`
- * load resolves to `https://example.com/child.json`.
- */
 type RecipeSourceBase = { kind: 'file'; dir: string } | { kind: 'url'; base: string };
 
-/**
- * A loaded recipe plus the form of it that is safe to persist.
- *
- * `recipe` is fully resolved: `${VAR}` env references substituted, relative
- * child/extension paths made absolute, URL systemPrompt fetched. It is what
- * the running host consumes — and it can contain secrets (API tokens pulled
- * from the environment), so it must never be written to disk.
- *
- * `persistable` is the raw pre-substitution recipe JSON with only the
- * source-relative paths (`modules.fleet.children[].recipe`,
- * `extensions[*].path`) resolved to their final absolute form — those need
- * the original source base, which a resumed session no longer has. Every
- * `${VAR}` reference and any URL systemPrompt stay unresolved, so the file
- * `saveRecipe` writes carries no secret material and re-resolves against the
- * *current* environment on resume.
- */
 export interface LoadedRecipe {
   recipe: Recipe;
   persistable: Record<string, unknown>;
 }
 
-/**
- * Load a recipe from a URL or local file path.
- * If the systemPrompt value is an HTTP(S) URL, fetches the text.
- * Recipe string values containing `${VAR}` patterns are substituted against
- * `process.env` before validation — see substituteEnvVars().
- * Relative `modules.fleet.children[].recipe` paths are resolved against the
- * parent recipe's directory (or URL base) so sibling recipes are portable.
- */
 export async function loadRecipe(source: string): Promise<Recipe> {
   return (await loadRecipeDetailed(source)).recipe;
 }
 
-/**
- * Like loadRecipe, but also returns the persistable (unresolved) form —
- * see LoadedRecipe. Callers that snapshot the recipe to disk (index.ts's
- * resolveRecipe) must save `persistable`, never `recipe`.
- */
-export async function loadRecipeDetailed(source: string): Promise<LoadedRecipe> {
+export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
   let raw: unknown;
   let sourceBase: RecipeSourceBase;
 
   if (source.startsWith('http://') || source.startsWith('https://')) {
     const res = await fetch(source);
     if (!res.ok) throw new Error(`Failed to fetch recipe from ${source}: ${res.status} ${res.statusText}`);
-    raw = await res.json();
+    try {
+      raw = await res.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new SyntaxError(`the recipe at ${source} isn't valid JSON`);
+      throw error;
+    }
     sourceBase = { kind: 'url', base: source };
   } else {
     const path = resolve(source);
     if (!existsSync(path)) throw new Error(`Recipe file not found: ${path}`);
-    raw = JSON.parse(readFileSync(path, 'utf-8'));
+    const text = readFileSync(path, 'utf-8');
+    // A response's json() already skips a leading byte order mark, as
+    // UTF-8 decoding does; a file read as text keeps it.
+    try {
+      raw = parseHandWrittenJson(text);
+    } catch (error) {
+      // The parser's message can quote the file's text, and a recipe can
+      // hold a key inline, so it isn't passed on.
+      if (error instanceof SyntaxError) throw new SyntaxError(`${path} isn't valid JSON`);
+      throw error;
+    }
     sourceBase = { kind: 'file', dir: dirname(path) };
   }
 
-  // Snapshot the pre-substitution form before substituteEnvVars walks the
-  // object — this is what gets persisted, so resolved secrets never do.
   const persistable = structuredClone(raw) as Record<string, unknown>;
 
   raw = substituteEnvVars(raw, source);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
   resolveExtensionPaths(recipe, sourceBase);
-  const resolved = await resolveSystemPrompt(recipe);
+  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
   copyResolvedPathsIntoRaw(persistable, resolved);
   return { recipe: resolved, persistable };
 }
 
-/**
- * Copy the resolved `modules.fleet.children[].recipe` and
- * `extensions[*].path` values from the resolved recipe into the raw
- * pre-substitution snapshot. Those fields are resolved against the recipe's
- * original source base (its directory or URL), which is gone by resume time
- * — so the persisted form must carry them already-absolute. Substitution
- * never changes object shape (it is a per-string replacement), so the two
- * trees align index-for-index and key-for-key. Paths are not treated as
- * secret: an env value that was interpolated into a child-recipe or
- * extension path IS persisted in resolved form.
- */
 function copyResolvedPathsIntoRaw(raw: Record<string, unknown>, recipe: Recipe): void {
   const fleet = recipe.modules?.fleet;
   const resolvedChildren = (typeof fleet === 'object' && fleet !== null) ? fleet.children : undefined;
@@ -1471,15 +1828,10 @@ function copyResolvedPathsIntoRaw(raw: Record<string, unknown>, recipe: Recipe):
   }
 }
 
-/**
- * Resolve a single `children[].recipe` value against the parent recipe's
- * source base.  Returns unchanged if absolute or http(s) URL.
- */
 export function resolveRecipeRelative(child: string, base: RecipeSourceBase): string {
   if (child.startsWith('http://') || child.startsWith('https://')) return child;
   if (isAbsolute(child)) return child;
   if (base.kind === 'file') return resolve(base.dir, child);
-  // URL base: resolve the child against the parent URL.
   return new URL(child, base.base).href;
 }
 
@@ -1492,12 +1844,6 @@ function resolveChildRecipePaths(recipe: Recipe, base: RecipeSourceBase): void {
   }
 }
 
-/**
- * Resolve relative `extensions[].path` values against the recipe file's
- * directory. URL-loaded recipes cannot carry relative extension paths — the
- * host never fetches code over the network, so there is nothing local to
- * resolve them against.
- */
 function resolveExtensionPaths(recipe: Recipe, base: RecipeSourceBase): void {
   for (const [name, ext] of Object.entries(recipe.extensions ?? {})) {
     if (isAbsolute(ext.path)) continue;
@@ -1511,10 +1857,6 @@ function resolveExtensionPaths(recipe: Recipe, base: RecipeSourceBase): void {
   }
 }
 
-/**
- * If systemPrompt is an HTTP(S) URL, fetch its contents as plain text.
- * Only treated as a URL if it looks like a single URL (no spaces/newlines).
- */
 async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
   const prompt = recipe.agent.systemPrompt;
   const isUrl = (prompt.startsWith('http://') || prompt.startsWith('https://'))
@@ -1530,10 +1872,25 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
   return recipe;
 }
 
+export function runningFit(recipe: Recipe, envModel: string | undefined): RecipeFit {
+  const fit = recipeFit(recipe, recipeModel(recipe, envModel));
+  const own = recipeModel(recipe, undefined);
+  if (!envModel || envModel === own || !fit.checked || fit.fits) return fit;
+  const replaced = recipe.agent.model ? 'agent.model' : `its default, ${own}`;
+  return {
+    ...fit,
+    refusal: `${fit.refusal} ${envModel} is MODEL in the environment, which the host runs in place of ${replaced}.`,
+  };
+}
+
+function refuseUnfit(recipe: Recipe): Recipe {
+  const fit = runningFit(recipe, process.env.MODEL || undefined);
+  if (fit.checked && !fit.fits) throw new Error(fit.refusal);
+  return recipe;
+}
+
 function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   const type = strategy.type ?? 'autobiographical';
-  // An omitted foldingStrategy is kv-unified under adaptive resolution
-  // (buildFrameworkStrategy), so a kvUnified block there is in use.
   const selected = strategy.foldingStrategy === 'kv-unified' || (
     strategy.foldingStrategy === undefined &&
     strategy.adaptiveResolution !== false &&
@@ -1546,7 +1903,6 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
     }
     return;
   }
-  // Omitted: the host supplies its standard block (standardKvUnifiedConfig).
   if (raw === undefined) return;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(
@@ -1598,6 +1954,13 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
       throw new Error(`Recipe agent.strategy.kvUnified.policy.${key} must be in [0, 1].`);
     }
   }
+  // Mirrors context-manager's MAX_AGE_BAND_STEPS (src/adaptive/kv-unified-policy.ts).
+  if (
+    policy.ageBandSteps !== undefined &&
+    (!Number.isInteger(policy.ageBandSteps) || (policy.ageBandSteps as number) < 0 || (policy.ageBandSteps as number) > 64)
+  ) {
+    throw new Error('Recipe agent.strategy.kvUnified.policy.ageBandSteps must be an integer from 0 to 64 when present.');
+  }
   for (const key of [
     'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
   ] as const) {
@@ -1613,7 +1976,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   ) {
     throw new Error('Recipe agent.strategy.kvUnified.adoptEpsilon must be a finite non-negative number.');
   }
-  // Mirror context-manager 0.11.0: src/adaptive/strategies/kv-unified.ts validateExplicitOptions.
+  // Mirrors context-manager's validateExplicitOptions (src/adaptive/strategies/kv-unified.ts).
   for (const key of ['treeifyNonContiguousSummaries', 'preserveGapBearingSummaries'] as const) {
     if (typeof config[key] !== 'boolean') {
       throw new Error(`Recipe agent.strategy.kvUnified.${key} must be an explicit boolean.`);
@@ -1627,30 +1990,68 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   if (config.hysteresisCertificate !== undefined && typeof config.hysteresisCertificate !== 'boolean') {
     throw new Error('Recipe agent.strategy.kvUnified.hysteresisCertificate must be a boolean when present.');
   }
+  if (config.engine !== undefined && !['auto', 'subtree', 'dag'].includes(config.engine as string)) {
+    throw new Error('Recipe agent.strategy.kvUnified.engine must be "auto", "subtree" or "dag" when present.');
+  }
+  if (config.latentDemandMode !== undefined && !['individual', 'joint'].includes(config.latentDemandMode as string)) {
+    throw new Error('Recipe agent.strategy.kvUnified.latentDemandMode must be "individual" or "joint" when present.');
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Unknown keys (#167)
-// ---------------------------------------------------------------------------
-
-/**
- * The keys each recipe level reads. The type check below keeps these lists in
- * step with Recipe, RecipeAgent, RecipeModules and RecipeMockConfig: a key
- * added to an interface and not here (or listed here and gone from the
- * interface) fails to compile.
- */
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
-  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'toolClassOverrides',
+  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
+  'maintenanceIntervalMs', 'inferenceBounds',
 ] as const;
 const RECIPE_AGENT_KEYS = [
-  'allowedTools',
+  'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
-  'toolWrapperProseGuard', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
-  'refusalHandling',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
+  'toolWrapperProseGuard', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'refusalHandling', 'clock',
 ] as const;
+export const DEFAULT_RECIPE_CLOCK: ClockConfig = Object.freeze({ intervalMinutes: 10 }) as ClockConfig;
+
+const RECIPE_AGENT_AUTO_CONTINUE_KEYS = ['maxConsecutive'] as const;
+/** agent-framework's bounds for `agent.autoContinue.maxConsecutive` (resolveAutoContinue). */
+const AUTO_CONTINUE_MIN = 1;
+const AUTO_CONTINUE_MAX = 20;
+
+function rejectUnknownKeys(path: string, value: object, known: readonly string[]): void {
+  const unknown = Object.keys(value).filter((k) => !known.includes(k));
+  if (unknown.length === 0) return;
+  const takes = known.length === 1 ? known[0] : `${known.slice(0, -1).join(', ')} and ${known[known.length - 1]}`;
+  throw new Error(`Recipe ${path} has unknown key${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => JSON.stringify(k)).join(', ')}; it takes ${takes}.`);
+}
+const INFERENCE_BOUNDS_KEYS = ['progressBounds', 'flatMinimumMs'] as const;
+const PROGRESS_BOUNDS_KEYS = ['beforeContentMs', 'betweenEventsMs', 'thinkTokensPerSecond'] as const;
+
+/** Refuses at load what agent-framework's start would refuse, so a saved
+ *  recipe never holds it, and a key the framework and membrane ignore, such
+ *  as a misspelt bound, which would leave the default in force unseen. */
+function validateInferenceBounds(value: unknown): void {
+  if (value === false) return;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Recipe inferenceBounds must be false or an object, got ${JSON.stringify(value)}.`);
+  }
+  rejectUnknownKeys('inferenceBounds', value, INFERENCE_BOUNDS_KEYS);
+  const { progressBounds, flatMinimumMs } = value as Record<string, unknown>;
+  const aboveZero = (path: string, v: unknown): void => {
+    if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v > 0)) {
+      throw new Error(`Recipe ${path} must be a finite number above 0, got ${typeof v === 'number' ? String(v) : JSON.stringify(v)}.`);
+    }
+  };
+  if (progressBounds !== undefined) {
+    if (typeof progressBounds !== 'object' || progressBounds === null || Array.isArray(progressBounds)) {
+      throw new Error(`Recipe inferenceBounds.progressBounds must be an object, got ${JSON.stringify(progressBounds)}.`);
+    }
+    rejectUnknownKeys('inferenceBounds.progressBounds', progressBounds, PROGRESS_BOUNDS_KEYS);
+    for (const key of PROGRESS_BOUNDS_KEYS) aboveZero(`inferenceBounds.progressBounds.${key}`, (progressBounds as Record<string, unknown>)[key]);
+  }
+  aboveZero('inferenceBounds.flatMinimumMs', flatMinimumMs);
+}
+const RECIPE_AGENT_CLOCK_KEYS = ['intervalMinutes', 'intervalSeconds', 'precision'] as const;
 const RECIPE_AGENT_MOCK_KEYS = [
   'echoMode', 'defaultResponse', 'completeDelayMs', 'streamChunkDelayMs', 'streamChunkSize',
   'responseQueue',
@@ -1658,67 +2059,71 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode',
+  'channelMode', 'selfRestart', 'heartbeat',
+] as const;
+const RECIPE_KV_UNIFIED_KEYS = [
+  'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
+  'adoptEpsilon', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
+  'hysteresisCertificate', 'engine', 'latentDemandMode',
+] as const;
+const RECIPE_KV_UNIFIED_POLICY_KEYS = [
+  'alpha', 'budgetLowRatio', 'budgetHighRatio', 'budgetUnderLambda', 'budgetOverLambda',
+  'cacheLambda', 'cacheScale', 'cacheReadPrice', 'cacheWritePrice', 'continuityLambda',
+  'continuityScale', 'continuityRecencyHalfLifeTokens', 'continuityRecencyFloor',
+  'continuityStableHalfLife', 'continuityStableFloor', 'ageBandSteps',
 ] as const;
 type ListsExactly<K extends string, L extends readonly string[]> =
   [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
-// "Type 'true' is not assignable to type 'false'" here means a key was added
-// to (or removed from) one of the interfaces without the list above following.
 const recipeKeyListsInStep: [
   ListsExactly<keyof Recipe & string, typeof RECIPE_KEYS>,
   ListsExactly<keyof RecipeAgent & string, typeof RECIPE_AGENT_KEYS>,
   ListsExactly<keyof RecipeModules & string, typeof RECIPE_MODULE_KEYS>,
   ListsExactly<keyof RecipeMockConfig & string, typeof RECIPE_AGENT_MOCK_KEYS>,
-] = [true, true, true, true];
+  ListsExactly<keyof RecipeKvUnifiedConfig & string, typeof RECIPE_KV_UNIFIED_KEYS>,
+  ListsExactly<keyof RecipeKvUnifiedConfig['policy'] & string, typeof RECIPE_KV_UNIFIED_POLICY_KEYS>,
+  ListsExactly<keyof ClockConfig & string, typeof RECIPE_AGENT_CLOCK_KEYS>,
+  ListsExactly<keyof RecipeAutoContinue & string, typeof RECIPE_AGENT_AUTO_CONTINUE_KEYS>,
+  ListsExactly<keyof RecipeReplyJudge & string, typeof RECIPE_REPLY_JUDGE_KEYS>,
+  ListsExactly<keyof RecipeHeartbeat & string, typeof RECIPE_HEARTBEAT_KEYS>,
+  ListsExactly<keyof RecipeHeartbeatDefaults & string, typeof RECIPE_HEARTBEAT_DEFAULTS_KEYS>,
+] = [true, true, true, true, true, true, true, true, true, true, true];
 void recipeKeyListsInStep;
 
 const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount'] as const;
 const MOUNT_MODES = ['read-write', 'read-only'] as const;
+const MOUNT_BACKENDS = ['chronicle', 'direct'] as const;
 const MOUNT_WATCH_VALUES = ['always', 'on-agent-action', 'never'] as const;
 const MOUNT_WAKE_OPS = ['created', 'modified', 'deleted'] as const;
 /** The longest delay a timer keeps: Bun's and Node's run a longer or negative one at once. */
 const TIMER_MS_MAX = 2147483647;
 
-/** Values in a sentence: `"a" or "b"`, `"a", "b" or "c"`. */
 function listed(values: readonly string[]): string {
   const quoted = values.map((v) => `"${v}"`);
   return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} or ${quoted[quoted.length - 1]}` : quoted.join('');
 }
 
-/** What a value must be, for the refusal's words, or null when it is that. */
 type MountValueCheck = (value: unknown) => string | null;
 const oneOf = (values: readonly string[]): MountValueCheck => (v) => values.includes(v as string) ? null : listed(values);
 const nonEmptyText: MountValueCheck = (v) => typeof v === 'string' && v !== '' ? null : 'a non-empty string';
 const trueOrFalse: MountValueCheck = (v) => typeof v === 'boolean' ? null : 'true or false';
-/**
- * A whole number of milliseconds from `min` to the longest delay a timer
- * keeps. A timer truncates a fraction, so a fraction isn't the delay that runs.
- */
 const timerMs = (min: number): MountValueCheck => (v) =>
   typeof v === 'number' && Number.isInteger(v) && v >= min && v <= TIMER_MS_MAX ? null
     : `a whole number of milliseconds from ${min} to ${TIMER_MS_MAX}`;
 
-/**
- * Each workspace mount key, with what its value must be: what the framework
- * reads as the recipe means it. It's typed by the framework's `MountConfig`,
- * so a framework release that adds a mount key fails this typecheck until the
- * key has a check here, and the mount builder then passes it on unchanged
- * (workspace-mounts.ts). A key it doesn't name stops the recipe loading (#275).
- */
 const MOUNT_KEY_CHECKS: { readonly [K in keyof MountConfig]-?: MountValueCheck } = {
   name: nonEmptyText,
   path: nonEmptyText,
   mode: oneOf(MOUNT_MODES),
+  backend: oneOf(MOUNT_BACKENDS),
   watch: oneOf(MOUNT_WATCH_VALUES),
-  // 0 is no wait, which the framework runs as that.
   watchDebounceMs: timerMs(0),
   // A poll of 0 runs as often as one of 1: the framework has no "off" for it.
   watchRootPollMs: timerMs(1),
   ignore: (v) => Array.isArray(v) && v.every((p) => typeof p === 'string') ? null : 'an array of strings',
+  include: (v) => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === 'string') ? null : 'a non-empty list of strings',
   followSymlinks: trueOrFalse,
   // A cap of 0 refuses every file that isn't empty: the framework has no "no limit".
   maxFileSize: (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1 ? null : 'a whole number of bytes, 1 or more',
-  // The framework refuses anything else when the workspace is built.
   walkCap: (v) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 ? null
     : `a whole number of entries from 1 to ${Number.MAX_SAFE_INTEGER}`,
   wakeOnChange: (v) => typeof v === 'boolean' || (Array.isArray(v) && v.every((op) => (MOUNT_WAKE_OPS as readonly unknown[]).includes(op)))
@@ -1726,42 +2131,40 @@ const MOUNT_KEY_CHECKS: { readonly [K in keyof MountConfig]-?: MountValueCheck }
   autoMaterialize: trueOrFalse,
 };
 const RECIPE_MOUNT_KEYS = Object.keys(MOUNT_KEY_CHECKS) as Array<keyof MountConfig & string>;
-/** The keys a recipe's mount must give; the builder supplies `mode` and `watch`. */
 const REQUIRED_MOUNT_KEYS: readonly string[] = ['name', 'path'];
 
 type IsNever<T> = [T] extends [never] ? true : false;
-// "Type 'true' is not assignable to type 'false'" here means agent-framework's
-// MountConfig gained or lost a key or a value the host's types and checks
-// don't follow yet.
 const mountListsInStep: [
   ListsExactly<keyof Extract<RecipeModules['workspace'], object> & string, typeof RECIPE_WORKSPACE_KEYS>,
   ListsExactly<keyof RecipeWorkspaceMount & string, Array<keyof MountConfig & string>>,
   ListsExactly<MountConfig['mode'], typeof MOUNT_MODES>,
+  ListsExactly<Exclude<MountConfig['backend'], undefined>, typeof MOUNT_BACKENDS>,
   ListsExactly<Exclude<MountConfig['watch'], undefined>, typeof MOUNT_WATCH_VALUES>,
   ListsExactly<Extract<Exclude<MountConfig['wakeOnChange'], undefined>, readonly unknown[]>[number], typeof MOUNT_WAKE_OPS>,
   IsNever<Exclude<MountConfig['wakeOnChange'], undefined | boolean | readonly unknown[]>>,
-] = [true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true];
 void mountListsInStep;
+const codeExecutionKeysInStep: ListsExactly<
+  Exclude<keyof CodeExecutionConfig, 'enabled'> & string, typeof CODE_EXECUTION_NUMBER_KEYS
+> = true;
+void codeExecutionKeysInStep;
 
-/**
- * A key a section doesn't have, refused with what to write instead, when the
- * key is a known mistake, or else the nearest key it does have, when there is
- * one.
- */
 function unknownKeyError(where: string, key: string, known: readonly string[], instead?: string): Error {
   const near = instead === undefined ? nearestRecipeKey(key, known) : null;
   const hint = instead !== undefined ? ` (${instead})` : near ? ` (did you mean "${near}"?)` : '';
   return new Error(`${where} has unknown key ${JSON.stringify(key)}${hint}; known: ${known.join(', ')}`);
 }
 
-/** A mount key recipes have used that the host never read, with what says it. */
 const MOUNT_KEY_INSTEAD: Record<string, string> = {
   readOnly: 'mode: "read-only" makes a mount read-only, and a mount is read-write without it',
 };
 
-/** Keys that were renamed or removed, with what replaced them. */
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
+  'agent.strategy.identityReminderSilent':
+    'a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
+    'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+    'if it was true; if it was false, nothing',
 };
 
 function editDistance(a: string, b: string): number {
@@ -1778,7 +2181,6 @@ function editDistance(a: string, b: string): number {
   return prev[b.length]!;
 }
 
-/** The known key a typo most likely meant, when one is close enough to suggest. */
 function nearestRecipeKey(key: string, known: readonly string[]): string | null {
   let best: string | null = null;
   let bestDistance = Infinity;
@@ -1789,13 +2191,6 @@ function nearestRecipeKey(key: string, known: readonly string[]): string | null 
   return best !== null && bestDistance <= Math.max(2, Math.floor(key.length / 3)) ? best : null;
 }
 
-/**
- * The keys a recipe carries that the host never reads — at the top level,
- * under `agent`, `agent.mock` and `modules` — each with what it was probably
- * meant to be. A misspelled key doesn't fail, it just doesn't happen (#167);
- * for now they are warned about, not rejected, so recipes carrying leftovers
- * keep loading (the strict schema is #91's direction).
- */
 export function unknownRecipeKeys(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
   const obj = raw as Record<string, unknown>;
@@ -1805,7 +2200,6 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     for (const key of Object.keys(value)) {
       if (known.includes(key)) continue;
       const path = `${prefix}${key}`;
-      // Own properties only: `constructor` or `__proto__` must not find Object's.
       const retired = Object.hasOwn(RETIRED_RECIPE_KEYS, path) ? RETIRED_RECIPE_KEYS[path] : undefined;
       const near = retired ? null : nearestRecipeKey(key, known);
       found.push(retired ? `${path} (replaced by ${retired})` : near ? `${path} (did you mean ${prefix}${near}?)` : path);
@@ -1813,30 +2207,109 @@ export function unknownRecipeKeys(raw: unknown): string[] {
   };
   check('', obj, RECIPE_KEYS);
   check('agent.', obj.agent, RECIPE_AGENT_KEYS);
-  if (obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)) {
-    check('agent.mock.', (obj.agent as Record<string, unknown>).mock, RECIPE_AGENT_MOCK_KEYS);
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value);
+  if (isObject(obj.agent)) {
+    check('agent.mock.', obj.agent.mock, RECIPE_AGENT_MOCK_KEYS);
+    const kvUnified = isObject(obj.agent.strategy) ? obj.agent.strategy.kvUnified : undefined;
+    check('agent.strategy.kvUnified.', kvUnified, RECIPE_KV_UNIFIED_KEYS);
+    if (isObject(kvUnified)) {
+      check('agent.strategy.kvUnified.policy.', kvUnified.policy, RECIPE_KV_UNIFIED_POLICY_KEYS);
+    }
+    const strategy = obj.agent.strategy;
+    if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
+      for (const key of Object.keys(strategy)) {
+        const path = `agent.strategy.${key}`;
+        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+      }
+    }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
   return found;
 }
 
 /**
- * Warnings from recipe validation, kept for the runtime that takes stderr over
- * later (the TUI's tui-error.log, headless.log): the recipe is validated before
- * either redirect, so the console line alone would never reach those logs.
- * Bounded, for a long-running host that keeps loading recipes (fleet, WebUI).
+ * `modules.heartbeat`: true, false, or an object of the keys agent-framework
+ * reads, each checked. On, it can't stand beside an `mcpServers.heartbeat`
+ * (heartbeat-mcpl): agent-framework refuses both at create, and saying so at
+ * load names the fix.
  */
-const pendingRecipeWarnings: string[] = [];
-const MAX_PENDING_RECIPE_WARNINGS = 50;
-
-/** The recipe warnings not yet taken, oldest first; taking them clears them. */
-export function takeRecipeWarnings(): string[] {
-  return pendingRecipeWarnings.splice(0);
+function validateRecipeHeartbeat(heartbeat: unknown, servers: unknown): void {
+  if (heartbeat === undefined || heartbeat === false) return;
+  if (heartbeat !== true) {
+    if (heartbeat === null || typeof heartbeat !== 'object' || Array.isArray(heartbeat)) {
+      throw new Error('Recipe modules.heartbeat must be true, false or an object, such as {"defaults": {"intervalSeconds": 14400}}.');
+    }
+    const h = heartbeat as Record<string, unknown>;
+    rejectUnknownKeys('modules.heartbeat', h, RECIPE_HEARTBEAT_KEYS);
+    if (h.statePath !== undefined && nonEmptyText(h.statePath)) {
+      throw new Error(`Recipe modules.heartbeat.statePath is ${JSON.stringify(h.statePath)}; it must be ${nonEmptyText(h.statePath)}.`);
+    }
+    for (const [key, keys] of [['defaults', RECIPE_HEARTBEAT_DEFAULTS_KEYS], ['importFrom', RECIPE_HEARTBEAT_IMPORT_KEYS]] as const) {
+      const value = h[key];
+      if (value === undefined) continue;
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`Recipe modules.heartbeat.${key} must be an object.`);
+      }
+      rejectUnknownKeys(`modules.heartbeat.${key}`, value, keys);
+    }
+    const defaults = (h.defaults ?? {}) as Record<string, unknown>;
+    const checks: { readonly [K in keyof RecipeHeartbeatDefaults]-?: MountValueCheck } = {
+      intervalSeconds: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 60 ? null : 'a number of seconds, 60 or more',
+      paused: trueOrFalse,
+      message: nonEmptyText,
+      deliveryMode: oneOf(['message', 'silent']),
+    };
+    for (const key of RECIPE_HEARTBEAT_DEFAULTS_KEYS) {
+      if (defaults[key] === undefined) continue;
+      const must = checks[key](defaults[key]);
+      if (must) throw new Error(`Recipe modules.heartbeat.defaults.${key} is ${JSON.stringify(defaults[key])}; it must be ${must}.`);
+    }
+    const from = (h.importFrom ?? {}) as Record<string, unknown>;
+    for (const key of RECIPE_HEARTBEAT_IMPORT_KEYS) {
+      if (from[key] === undefined) continue;
+      const must = nonEmptyText(from[key]);
+      if (must) throw new Error(`Recipe modules.heartbeat.importFrom.${key} is ${JSON.stringify(from[key])}; it must be ${must}.`);
+    }
+  }
+  if (servers !== null && typeof servers === 'object' && Object.hasOwn(servers, 'heartbeat')) {
+    throw new Error(
+      'Recipe turns modules.heartbeat on and names mcpServers.heartbeat (heartbeat-mcpl): both would wake the agent, and '
+      + 'their tools share the names heartbeat--…. Remove mcpServers.heartbeat to use the framework\'s heartbeat '
+      + '(modules.heartbeat.importFrom can bring that server\'s schedule and reminders along: its HEARTBEAT_CONFIG_FILE '
+      + 'and HEARTBEAT_REMINDERS_FILE), or turn modules.heartbeat off to keep the server.',
+    );
+  }
 }
 
-/**
- * Validate raw JSON and fill defaults.
- */
+/** `modules.wake.judge`, refused with the key and what it must be where it isn't. */
+function validateRecipeReplyJudge(wake: unknown): void {
+  // Only an object can hold a judge; other shapes load as they did before.
+  if (wake === null || typeof wake !== 'object' || Array.isArray(wake)) return;
+  const judge = (wake as Record<string, unknown>).judge;
+  if (judge === undefined) return;
+  if (judge === null || typeof judge !== 'object' || Array.isArray(judge)) {
+    throw new Error('Recipe modules.wake.judge must be an object, such as {"model": "claude-haiku-5-5"}.');
+  }
+  rejectUnknownKeys('modules.wake.judge', judge, RECIPE_REPLY_JUDGE_KEYS);
+  const checks: { readonly [K in keyof RecipeReplyJudge]-?: MountValueCheck } = {
+    enabled: trueOrFalse,
+    model: nonEmptyText,
+    // agent-framework reads a budget under 4000 as 4000.
+    maxInputTokens: (v) => typeof v === 'number' && Number.isInteger(v) && v >= 4000 ? null : 'a whole number of tokens, 4000 or more',
+    timeoutMs: timerMs(1),
+    onError: oneOf(['wake', 'skip']),
+    effort: oneOf(['low', 'medium', 'high', 'none']),
+    cacheTtl: oneOf(['5m', '1h']),
+  };
+  for (const key of RECIPE_REPLY_JUDGE_KEYS) {
+    const value = (judge as Record<string, unknown>)[key];
+    if (value === undefined) continue;
+    const must = checks[key](value);
+    if (must) throw new Error(`Recipe modules.wake.judge.${key} is ${JSON.stringify(value)}; it must be ${must}.`);
+  }
+}
+
 export function validateRecipe(raw: unknown): Recipe {
   if (!raw || typeof raw !== 'object') throw new Error('Recipe must be a JSON object');
   const obj = raw as Record<string, unknown>;
@@ -1848,19 +2321,15 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe must have an "agent" object');
   }
 
-  // Nothing below reads an unknown key: say so, and what it was probably meant to be.
   const unknownKeys = unknownRecipeKeys(obj);
   if (unknownKeys.length > 0) {
     const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
     console.warn(warning);
-    pendingRecipeWarnings.push(warning);
-    if (pendingRecipeWarnings.length > MAX_PENDING_RECIPE_WARNINGS) pendingRecipeWarnings.shift();
+    noteRecipeWarning(warning);
   }
 
   const agent = obj.agent as Record<string, unknown>;
-  // Absent or empty systemPrompt is a valid configuration: '' is dropped at
-  // the provider boundary (membrane omits falsy `system`), so the wire
-  // request carries no system block at all.
+  // '' is dropped at the provider boundary: membrane omits a falsy `system`.
   if (agent.systemPrompt === undefined || agent.systemPrompt === null) {
     agent.systemPrompt = '';
   } else if (typeof agent.systemPrompt !== 'string') {
@@ -1892,13 +2361,64 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.proseRouting !== 'locus' &&
     agent.proseRouting !== 'explicit' &&
     agent.proseRouting !== 'hybrid' &&
-    agent.proseRouting !== 'disabled'
+    agent.proseRouting !== 'disabled' &&
+    agent.proseRouting !== 'locked'
   ) {
-    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
+    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got ${JSON.stringify(agent.proseRouting)}.`);
+  }
+
+  if (agent.proseLock !== undefined && (typeof agent.proseLock !== 'string' || !agent.proseLock.trim())) {
+    throw new Error(
+      `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${JSON.stringify(agent.proseLock)}.`,
+    );
+  }
+  // Only locked routing reads it: under any other mode the lock would never
+  // apply, and nothing would say so.
+  if (agent.proseLock !== undefined && agent.proseRouting !== 'locked') {
+    throw new Error(
+      `Recipe agent.proseLock requires agent.proseRouting "locked", got ${agent.proseRouting === undefined ? 'no proseRouting (locus)' : JSON.stringify(agent.proseRouting)}.`,
+    );
+  }
+  if (
+    agent.proseRouting === 'locked' &&
+    agent.proseLock === undefined &&
+    Array.isArray(agent.allowedTools) &&
+    !agent.allowedTools.includes('prose_locus')
+  ) {
+    throw new Error(
+      'Recipe agent.proseRouting "locked" without agent.proseLock needs agent.allowedTools to name "prose_locus": ' +
+        "otherwise the agent can't move its prose lock, so its plain text stays held as drafts, or where it chose before, on every turn. " +
+        'Add "prose_locus" to allowedTools (and "drafts", to resend drafts), or, for an agent that hasn\'t chosen yet, set agent.proseLock ' +
+        '("drafts" to hold plain text on purpose); a choice it has made stays until prose_locus moves it.',
+    );
   }
 
   if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
     throw new Error(`Recipe agent.toolWrapperProseGuard must be a boolean, got ${JSON.stringify(agent.toolWrapperProseGuard)}.`);
+  }
+
+  if (agent.autoContinue !== undefined && typeof agent.autoContinue !== 'boolean') {
+    const value: unknown = agent.autoContinue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`Recipe agent.autoContinue must be true, false, or an object such as { "maxConsecutive": 3 }, got ${JSON.stringify(value)}.`);
+    }
+    rejectUnknownKeys('agent.autoContinue', value, RECIPE_AGENT_AUTO_CONTINUE_KEYS);
+    const max = (value as RecipeAutoContinue).maxConsecutive;
+    if (max !== undefined && (typeof max !== 'number' || !Number.isInteger(max) || max < AUTO_CONTINUE_MIN || max > AUTO_CONTINUE_MAX)) {
+      throw new Error(`Recipe agent.autoContinue.maxConsecutive must be a whole number from ${AUTO_CONTINUE_MIN} to ${AUTO_CONTINUE_MAX}, got ${JSON.stringify(max)}.`);
+    }
+  }
+
+  if (agent.clock !== undefined && agent.clock !== false) {
+    if (!agent.clock || typeof agent.clock !== 'object' || Array.isArray(agent.clock)) {
+      throw new Error(`Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got ${JSON.stringify(agent.clock)}.`);
+    }
+    rejectUnknownKeys('agent.clock', agent.clock, RECIPE_AGENT_CLOCK_KEYS);
+    try {
+      resolveClockConfig('recipe', agent.clock);
+    } catch (err) {
+      throw new Error((err as Error).message.replace('Agent "recipe" clock', 'Recipe agent.clock'));
+    }
   }
 
   if (agent.timezone !== undefined) {
@@ -1983,8 +2503,8 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
   }
 
-  // Recipes are runtime JSON; a typo'd TTL ("1hr", "60m") would otherwise
-  // surface as a 400 from Anthropic at the agent's first inference.
+  // Anthropic answers a TTL it doesn't know ("1hr", "60m") with a 400 at the
+  // agent's first inference.
   if (agent.cacheTtl !== undefined && agent.cacheTtl !== '5m' && agent.cacheTtl !== '1h') {
     throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
   }
@@ -1996,10 +2516,7 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error(`Recipe agent.retry must be an object, got ${JSON.stringify(agent.retry)}.`);
     }
     const RETRY_KEYS = ['maxRetries', 'retryDelayMs', 'backoffMultiplier', 'maxRetryDelayMs'] as const;
-    // Reject unknown keys: `{ maxRetires: 4 }` would otherwise validate clean,
-    // Membrane would ignore it, and the agent would sit at zero retries —
-    // exactly the hard-down mode this knob exists to close, wearing a config
-    // that looks like it fixed it.
+    // Membrane ignores a retry key it doesn't know, such as `maxRetires`.
     for (const key of Object.keys(retry)) {
       if (!(RETRY_KEYS as readonly string[]).includes(key) && key !== 'overloaded') {
         throw new Error(`Recipe agent.retry has unknown key ${JSON.stringify(key)} (known: ${RETRY_KEYS.join(', ')}, overloaded).`);
@@ -2028,9 +2545,6 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  // openai-compatible: an endpoint the host knows nothing about, so the recipe
-  // must say where it is and which model to ask for. Fail at load time, not as
-  // a fetch to 'undefined/chat/completions' at first inference.
   if (agent.provider === 'openai-compatible') {
     if (typeof agent.baseUrl !== 'string' || !agent.baseUrl.trim()) {
       throw new Error("Recipe agent.baseUrl is required when agent.provider is 'openai-compatible' (e.g. \"http://localhost:11434/v1\").");
@@ -2050,15 +2564,12 @@ export function validateRecipe(raw: unknown): Recipe {
   } else if (agent.baseUrl !== undefined) {
     throw new Error(
       `Recipe agent.baseUrl only applies to agent.provider 'openai-compatible' (got provider ${JSON.stringify(agent.provider ?? 'anthropic')}); ` +
-      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL.',
+      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL / CODEX_BASE_URL / OPENROUTER_BASE_URL.',
     );
   }
 
-  // A keepalive that fires AFTER the entry has already expired is the worst of
-  // both worlds: it pays a full 2x cache write on every poke, forever, and
-  // reports success while doing it. Refuse the config rather than discover it
-  // in a bill. (The runtime also self-checks — see membrane cache-keepalive —
-  // but a typo'd recipe should never get that far.)
+  // A keepalive that fires after the entry has expired pays a full cache
+  // write on every poke, and reports success while doing it.
   const keepalive = agent.cacheKeepalive;
   if (keepalive !== undefined) {
     if (typeof keepalive !== 'object' || keepalive === null) {
@@ -2101,9 +2612,7 @@ export function validateRecipe(raw: unknown): Recipe {
     );
   }
 
-  // Validate agent.thinking if present. Catches typos and constraint
-  // violations (notably max_tokens > budget_tokens) at recipe-load time
-  // rather than as a 400 from Anthropic at first inference.
+  // Anthropic refuses, with a 400, a thinking budget that isn't below max_tokens.
   if (agent.thinking !== undefined) {
     if (!agent.thinking || typeof agent.thinking !== 'object' || Array.isArray(agent.thinking)) {
       throw new Error('Recipe agent.thinking must be an object with "enabled" and optional "budgetTokens".');
@@ -2136,8 +2645,6 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  // Validate the extensions block if present (before the strategy check,
-  // which consults it to admit custom strategy types).
   let hasStrategyExtension = false;
   if (obj.extensions !== undefined) {
     if (!obj.extensions || typeof obj.extensions !== 'object' || Array.isArray(obj.extensions)) {
@@ -2167,7 +2674,6 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  // Validate strategy type if present
   if (agent.strategy) {
     const strategy = agent.strategy as Record<string, unknown>;
     if (
@@ -2197,10 +2703,8 @@ export function validateRecipe(raw: unknown): Recipe {
     if (strategy.foldingStrategy === 'kv-unified' && strategy.type === 'passthrough') {
       throw new Error('Recipe foldingStrategy "kv-unified" requires an autobiographical or frontdesk strategy.');
     }
-    // Recipes are runtime JSON: the interface's union is not a check. Context
-    // Manager treats every value other than the exact string 'live-strip' as
-    // 'full', so a typo would silently keep replaying the reasoning carriers
-    // this key exists to strip. Fail at load, like foldingStrategy.
+    // context-manager treats every carrierPolicy other than the exact string
+    // 'live-strip' as 'full'.
     if (
       strategy.carrierPolicy !== undefined &&
       strategy.carrierPolicy !== 'full' &&
@@ -2212,11 +2716,8 @@ export function validateRecipe(raw: unknown): Recipe {
       );
     }
     validateKvUnifiedConfig(strategy);
-    // These controls belong to the built-in memory strategies. Extensions
-    // receive their own config verbatim and may use different conventions.
     const strategyType = strategy.type ?? 'autobiographical';
     if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
-      // Context Manager uses zero to disable each image limit independently.
       for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
         const value = strategy[key];
         if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
@@ -2251,14 +2752,14 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionMergeSourceOnlyFallback',
       'compressionSplitFallback',
       'compressionSplitPlaceholder',
+      'recoverLiteralThinkingWrappedCompression',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
       }
     }
     if (strategy.compressionToolProseFallback !== undefined) {
-      // Fail loudly: CM silently treats a malformed value as "rung off", which
-      // on a resident whose compressions are refusing is an outage, not a default.
+      // context-manager reads a malformed compressionToolProseFallback as the rung off.
       const hoist = strategy.compressionToolProseFallback as Record<string, unknown> | null;
       const where = 'Recipe agent.strategy.compressionToolProseFallback';
       if (!hoist || typeof hoist !== 'object' || Array.isArray(hoist)) {
@@ -2308,22 +2809,33 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  const refusalHandling = agent.refusalHandling as Record<string, unknown> | undefined;
-  if (refusalHandling && Object.hasOwn(refusalHandling, 'primarySummaryFallback')) {
-    throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+  // agent-framework's create() refuses a refusalHandling that isn't an
+  // object other than an array, null or false, and an autoRewind that isn't
+  // a boolean or null (assertAgentSwitches), which stops the boot after the
+  // recipe has loaded.
+  const refusalHandling: unknown = agent.refusalHandling;
+  if (refusalHandling) {
+    if (typeof refusalHandling !== 'object' || Array.isArray(refusalHandling)) {
+      throw new Error(
+        `Recipe agent.refusalHandling must be an object, such as {"autoRewind": true}, or left out, got ${JSON.stringify(refusalHandling)}.`,
+      );
+    }
+    const settings = refusalHandling as Record<string, unknown>;
+    if (Object.hasOwn(settings, 'primarySummaryFallback')) {
+      throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+    }
+    const { autoRewind } = settings;
+    if (autoRewind !== undefined && autoRewind !== null && typeof autoRewind !== 'boolean') {
+      throw new Error(`Recipe agent.refusalHandling.autoRewind must be a boolean, got ${JSON.stringify(autoRewind)}.`);
+    }
   }
 
-  // Validate mcpServers entries if present
   if (obj.mcpServers && typeof obj.mcpServers === 'object') {
     for (const [id, entry] of Object.entries(obj.mcpServers as Record<string, unknown>)) {
       if (!entry || typeof entry !== 'object') {
         throw new Error(`mcpServers.${id} must be an object`);
       }
       const server = entry as Record<string, unknown>;
-      // An entry with neither command nor url names a server defined in
-      // mcpl-servers.json and sets only policy fields on it; it is resolved
-      // (or rejected, if the file has no such id) at startup by
-      // mergeRecipeServers. When present, each must be a non-empty string.
       if (server.command !== undefined && !(typeof server.command === 'string' && server.command)) {
         throw new Error(`mcpServers.${id}.command must be a non-empty string`);
       }
@@ -2335,6 +2847,12 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
         throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
+      }
+      if (server.toolHints !== undefined && typeof server.toolHints !== 'boolean') {
+        throw new Error(`mcpServers.${id}.toolHints must be true or false`);
+      }
+      if (server.presentation !== undefined && !isServerPresentation(server.presentation)) {
+        throw new Error(`mcpServers.${id}.presentation must be ${SERVER_PRESENTATIONS_TEXT}`);
       }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
@@ -2383,9 +2901,8 @@ export function validateRecipe(raw: unknown): Recipe {
         }
         if (src.systemPackages !== undefined) {
           // The regex bounds these to Debian package names — build tooling
-          // pastes them into an `apt-get install` line, so an unbounded string
-          // is a command-injection vector. Kept in sync with cook's vendored
-          // copy (connectome-cook src/vendor/recipe.ts).
+          // pastes them into an `apt-get install` line, so an unbounded
+          // string is a command-injection vector.
           if (!Array.isArray(src.systemPackages)
             || !(src.systemPackages as unknown[]).every(
               (p) => typeof p === 'string' && /^[a-z0-9][a-z0-9+.\-]+$/.test(p),
@@ -2470,28 +2987,18 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  // A `modules` that isn't an object would read every module setting as
-  // absent and build the default mounts, read-write `products` included.
-  // `null` is refused too, as for `extensions`.
   if (obj.modules !== undefined && (typeof obj.modules !== 'object' || obj.modules === null || Array.isArray(obj.modules))) {
     throw new Error('modules must be an object of module settings, not null or a list');
   }
 
-  // Validate workspace mounts if present
   if (obj.modules && typeof obj.modules === 'object') {
     const mods = obj.modules as Record<string, unknown>;
-    // Anything else would build the default mounts, read-write `products`
-    // included (a string such as "off"), or crash the mount builder (null).
     if (mods.workspace !== undefined && typeof mods.workspace !== 'boolean'
         && (typeof mods.workspace !== 'object' || mods.workspace === null || Array.isArray(mods.workspace))) {
       throw new Error('modules.workspace must be true, false or an object of settings, not null or a list');
     }
     if (mods.workspace && typeof mods.workspace === 'object') {
       const ws = mods.workspace as Record<string, unknown>;
-      // A key the host doesn't read stops the load: a mount's keys decide
-      // what an agent can read and write, and a misspelt one would otherwise
-      // leave the mount as it would be without it (`readOnly: true` left a
-      // mount read-write).
       for (const key of Object.keys(ws)) {
         if (!(RECIPE_WORKSPACE_KEYS as readonly string[]).includes(key)) throw unknownKeyError('workspace', key, RECIPE_WORKSPACE_KEYS);
       }
@@ -2501,29 +3008,51 @@ export function validateRecipe(raw: unknown): Recipe {
       if (!Array.isArray(ws.mounts) || ws.mounts.length === 0) {
         throw new Error('workspace.mounts must be a non-empty array');
       }
+      const firstIndexByName = new Map<string, number>();
       for (let i = 0; i < ws.mounts.length; i++) {
         const m = ws.mounts[i] as Record<string, unknown>;
         const where = `workspace.mounts[${i}]`;
         if (!m || typeof m !== 'object') {
           throw new Error(`${where} must be an object`);
         }
+        if (m.name === '_config') {
+          throw new Error(`${where} is named "_config", the name of the host's own mount of the session's config directory, which configMount: true adds. Give this mount another name.`);
+        }
         for (const key of Object.keys(m)) {
           if (Object.hasOwn(MOUNT_KEY_CHECKS, key)) continue;
           throw unknownKeyError(where, key, RECIPE_MOUNT_KEYS, Object.hasOwn(MOUNT_KEY_INSTEAD, key) ? MOUNT_KEY_INSTEAD[key] : undefined);
         }
-        // Each key it gives, and the two it must have. `null` is no value of
-        // any key's kind, so it's refused like any other.
         for (const key of RECIPE_MOUNT_KEYS) {
           if (m[key] === undefined && !REQUIRED_MOUNT_KEYS.includes(key)) continue;
           const mustBe = MOUNT_KEY_CHECKS[key](m[key]);
           if (mustBe) throw new Error(`${where}.${key} must be ${mustBe}`);
         }
+        const name = m.name as string;
+        const first = firstIndexByName.get(name);
+        if (first !== undefined) {
+          throw new Error(`${where} is named ${JSON.stringify(name)}, as workspace.mounts[${first}] is: a workspace takes each mount name once, since its tools and the instructions find a mount by its name. Give one of them another name.`);
+        }
+        firstIndexByName.set(name, i);
+        if (m.backend === 'direct' && m.mode === undefined) {
+          throw new Error(`${where} is direct, so it must say its mode: add "mode": "read-only", or "read-write" for one the agent writes on disk directly, with no undo`);
+        }
+      }
+      // agent-framework's WorkspaceModule constructor checks each mount and does
+      // nothing else: it reads no file, opens no store and starts no timer. It
+      // also warns on stderr of a mount nested in another, from paths resolved
+      // against this process's working directory, which may not be where the
+      // recipe runs.
+      const warn = console.warn;
+      console.warn = () => {};
+      try {
+        new WorkspaceModule({ mounts: buildWorkspaceMounts(ws as RecipeModules['workspace'], '.')! });
+      } catch (err) {
+        throw new Error(`modules.workspace: ${(err instanceof Error ? err.message : String(err)).replace(/^\[workspace\] /, '')}`);
+      } finally {
+        console.warn = warn;
       }
     }
 
-    // Validate instructions if present. It reads through a workspace mount,
-    // so pairing it with `workspace: false` is a config contradiction — fail
-    // at load, not with a silent no-injection at runtime.
     if (mods.instructions !== undefined && mods.instructions !== false) {
       if (mods.instructions !== true
           && (typeof mods.instructions !== 'object' || Array.isArray(mods.instructions))) {
@@ -2574,31 +3103,13 @@ export function validateRecipe(raw: unknown): Recipe {
         }
       }
 
-      // The mount the instructions path names is knowable at load time in
-      // EVERY configuration — explicit mounts from the declaration, the
-      // implicit default workspace from the fixed input/products pair the
-      // host builds — so a typo, the default "instructions/…" path with no
-      // matching mount, or `instructions: true` on the implicit workspace
-      // (whose mount set can never contain "instructions") all fail here
-      // instead of as a silent no-injection at runtime.
-      //
-      // A read-write instructions mount additionally requires
-      // autoMaterialize: workspace write/edit are Chronicle-first and reach
-      // disk only when the mount materializes, while this module reads disk
-      // — without it, an agent's own curation edits would never appear in
-      // the injection (and its workspace read would show the new content,
-      // hiding the drift entirely). Read-only mounts are exempt: disk is
-      // their only write path.
       {
         const effectivePath =
           typeof mods.instructions === 'object'
               && typeof (mods.instructions as { path?: unknown }).path === 'string'
             ? (mods.instructions as { path: string }).path
-            : 'instructions/AGENTS.md'; // keep in sync with DEFAULT_INSTRUCTIONS_PATH
+            : DEFAULT_INSTRUCTIONS_PATH;
         const mountName = effectivePath.slice(0, effectivePath.indexOf('/'));
-        // Reason over the SAME mount construction the runtime uses — one
-        // builder, no validator-vs-host drift (the storePath placeholder is
-        // irrelevant here; only names/modes/flags are consulted).
         const declaredExplicitly =
           !!mods.workspace && typeof mods.workspace === 'object' &&
           !!(mods.workspace as { mounts?: unknown }).mounts;
@@ -2623,23 +3134,32 @@ export function validateRecipe(raw: unknown): Recipe {
             `instructions mount instead.`,
           );
         }
-        if (match.mode !== 'read-only' && match.autoMaterialize !== true) {
+        if (match.mode !== 'read-only' && match.backend !== 'direct' && match.autoMaterialize !== true) {
           throw new Error(
             `modules.instructions.path ${JSON.stringify(effectivePath)} uses read-write mount ` +
-            `${JSON.stringify(mountName)} without autoMaterialize. Workspace writes are ` +
+            `${JSON.stringify(mountName)} without autoMaterialize. Its writes are ` +
             `Chronicle-first and reach disk only when the mount materializes, while the ` +
             `instructions injection reads disk — agent edits to the file would silently never ` +
-            `take effect. Set autoMaterialize: true on the mount` +
-            `${declaredExplicitly ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
+            `take effect. Set autoMaterialize: true on the mount, or configure it ` +
+            `"backend": "direct" with "mode": "read-write" so edits reach disk at once, with no undo` +
+            `${declaredExplicitly ? '' : ' (the implicit default workspace can do neither; declare explicit mounts)'}, ` +
             `or make the mount read-only if the file is maintained outside the agent.`,
           );
         }
       }
     }
 
-    // History: boolean, or { semantic: { url, ... } } for embedding search.
-    // Unknown keys are rejected at both levels: `{ sematic: … }` or
-    // `syncIntervalMS` would otherwise validate clean and silently do nothing.
+    const subagents = mods.subagents;
+    if (subagents && typeof subagents === 'object' && !Array.isArray(subagents)) {
+      const options = subagents as Record<string, unknown>;
+      if (options.orientation !== undefined && options.orientation !== 'full' && options.orientation !== 'none') {
+        throw new Error(`Recipe modules.subagents.orientation is ${JSON.stringify(options.orientation)}; it must be "full" or "none".`);
+      }
+      if (options.lifecycleReach !== undefined && options.lifecycleReach !== 'subtree' && options.lifecycleReach !== 'all') {
+        throw new Error(`Recipe modules.subagents.lifecycleReach is ${JSON.stringify(options.lifecycleReach)}; it must be "subtree" or "all".`);
+      }
+    }
+
     const history = mods.history;
     if (history !== undefined && typeof history !== 'boolean') {
       if (!history || typeof history !== 'object' || Array.isArray(history)) {
@@ -2666,9 +3186,9 @@ export function validateRecipe(raw: unknown): Recipe {
         if (semCfg.allowInsecureHttp !== undefined && typeof semCfg.allowInsecureHttp !== 'boolean') {
           throw new Error('modules.history.semantic.allowInsecureHttp must be a boolean when set.');
         }
-        // Parse, don't regex: `http://` has no host (the client would build
-        // `http:///v1/…`, which WHATWG reads as host `v1`), and a query or
-        // fragment in the base swallows the appended API path.
+        // `http://` has no host (the client would build `http:///v1/…`,
+        // which WHATWG reads as host `v1`), and a query or fragment in the
+        // base swallows the appended API path.
         let parsed: URL | null = null;
         if (typeof semCfg.url === 'string') { try { parsed = new URL(semCfg.url); } catch { parsed = null; } }
         if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname
@@ -2678,10 +3198,6 @@ export function validateRecipe(raw: unknown): Recipe {
         if (parsed.username || parsed.password || parsed.search || parsed.hash || semCfg.url.includes('?') || semCfg.url.includes('#')) {
           throw new Error('modules.history.semantic.url must not carry credentials, a query or a fragment (use `token` for auth).');
         }
-        // Sync ships raw messages (incl. private notes by default) and the
-        // bearer token. Plain http is fine where the network is the
-        // encryption (loopback, the tailnet's WireGuard); anywhere else it
-        // takes an explicit opt-in.
         if (parsed.protocol === 'http:' && !isLoopbackOrTailnetHost(parsed.hostname) && semCfg.allowInsecureHttp !== true) {
           throw new Error(
             `modules.history.semantic.url ${JSON.stringify(semCfg.url)} is plaintext http to a host that is neither loopback nor tailnet ` +
@@ -2699,8 +3215,6 @@ export function validateRecipe(raw: unknown): Recipe {
             throw new Error(`modules.history.semantic.${k} must be an integer >= 1 when set.`);
           }
         }
-        // 0 = no background sync (search still catches up); otherwise a floor,
-        // so a typo can't become a 1 ms setInterval against a shared service.
         const si = semCfg.syncIntervalMs;
         if (si !== undefined && (!Number.isInteger(si) || ((si as number) !== 0 && (si as number) < 5000))) {
           throw new Error('modules.history.semantic.syncIntervalMs must be 0 (no background sync) or an integer >= 5000 when set.');
@@ -2711,7 +3225,12 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
-    // Validate retrieval provider reasoning when configured.
+    // Validate the reply judge when configured: the host hands it to
+    // agent-framework as written, and agent-framework reads a value it can't
+    // use as its default, so a typo would load as no setting at all.
+    validateRecipeReplyJudge(mods.wake);
+    validateRecipeHeartbeat(mods.heartbeat, (raw as { mcpServers?: unknown }).mcpServers);
+
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {
       if (!retrieval || typeof retrieval !== 'object' || Array.isArray(retrieval)) {
@@ -2748,8 +3267,6 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
-    // Validate notices if present: channel ids and tiers are the whole
-    // contract, and a typo here means an outage nobody is told about.
     if (mods.notices !== undefined && mods.notices !== false && mods.notices !== true) {
       if (mods.notices === null || typeof mods.notices !== 'object' || Array.isArray(mods.notices)) {
         throw new Error('modules.notices must be a boolean or object');
@@ -2796,9 +3313,22 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
-    // Validate ttsRelay if present — url + token are load-bearing, and a
-    // recipe that names the module but can't reach a relay should fail at
-    // load, not silently stream nowhere.
+    if (mods.selfRestart !== undefined && mods.selfRestart !== false && mods.selfRestart !== true) {
+      if (mods.selfRestart === null || typeof mods.selfRestart !== 'object' || Array.isArray(mods.selfRestart)) {
+        throw new Error('modules.selfRestart must be true, false or an object ({ cooldownMinutes? })');
+      }
+      const sr = mods.selfRestart as Record<string, unknown>;
+      for (const key of Object.keys(sr)) {
+        if (key !== 'cooldownMinutes') {
+          throw new Error(`modules.selfRestart has unknown field ${JSON.stringify(key)}`);
+        }
+      }
+      const cd = sr.cooldownMinutes;
+      if (cd !== undefined && (typeof cd !== 'number' || !Number.isFinite(cd) || cd < 0)) {
+        throw new Error('modules.selfRestart.cooldownMinutes must be a non-negative number of minutes');
+      }
+    }
+
     if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {
       if (typeof mods.ttsRelay !== 'object' || mods.ttsRelay === null) {
         throw new Error('modules.ttsRelay must be an object ({ url, token, ... })');
@@ -2810,9 +3340,11 @@ export function validateRecipe(raw: unknown): Recipe {
       if (typeof tr.token !== 'string' || !tr.token) {
         throw new Error('modules.ttsRelay.token must be a non-empty string (use ${VAR} substitution)');
       }
+      if (tr.editServerId !== undefined && (typeof tr.editServerId !== 'string' || !tr.editServerId)) {
+        throw new Error("modules.ttsRelay.editServerId must be a non-empty string, the key of the server the relay voices (leave it out for 'discord')");
+      }
     }
 
-    // Validate fleet if present (object form only — boolean is trivially valid).
     if (mods.fleet && typeof mods.fleet === 'object') {
       const fleet = mods.fleet as Record<string, unknown>;
       if (fleet.children !== undefined) {
@@ -2847,8 +3379,6 @@ export function validateRecipe(raw: unknown): Recipe {
         if (!Array.isArray(fleet.allowedRecipes) || !fleet.allowedRecipes.every((r) => typeof r === 'string')) {
           throw new Error('fleet.allowedRecipes must be an array of strings');
         }
-        // Prefix-match-only: reject mid-string `*` so the pattern can't look
-        // like a glob while silently behaving as a literal.
         for (const pattern of fleet.allowedRecipes as string[]) {
           if (pattern === '*' || !pattern.includes('*')) continue;
           if (pattern.indexOf('*') !== pattern.length - 1) {
@@ -2880,12 +3410,17 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof ce.enabled !== 'boolean') {
       throw new Error('Recipe codeExecution.enabled must be a boolean.');
     }
-    if (ce.pythonPath !== undefined && (typeof ce.pythonPath !== 'string' || !ce.pythonPath.trim())) {
-      throw new Error('Recipe codeExecution.pythonPath must be a non-empty string.');
-    }
-    for (const k of ['toolCallTimeoutMs', 'scriptTimeoutMs', 'idleReclaimMs'] as const) {
-      if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
-        throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
+    // agent-framework reads nothing else from a code-execution block that isn't on.
+    if (ce.enabled) {
+      for (const [key, instead] of Object.entries(RETIRED_CODE_EXECUTION_KEYS)) {
+        if (ce[key] !== undefined && ce[key] !== null) {
+          throw new Error(`Recipe codeExecution.${key} is no longer read (agent-framework 0.24): ${instead}.`);
+        }
+      }
+      for (const k of CODE_EXECUTION_NUMBER_KEYS) {
+        if (ce[k] !== undefined && (typeof ce[k] !== 'number' || !Number.isSafeInteger(ce[k]) || (ce[k] as number) < 0)) {
+          throw new Error(`Recipe codeExecution.${k} must be a whole number of 0 or more.`);
+        }
       }
     }
   }
@@ -2894,43 +3429,145 @@ export function validateRecipe(raw: unknown): Recipe {
     validateToolClassTable(obj.toolClassOverrides, 'Recipe toolClassOverrides');
   }
 
+  if (obj.maintenanceIntervalMs !== undefined) {
+    const must = timerMs(0)(obj.maintenanceIntervalMs);
+    if (must) throw new Error(`Recipe maintenanceIntervalMs is ${JSON.stringify(obj.maintenanceIntervalMs)}; it must be ${must}.`);
+  }
+
+  if (obj.inferenceBounds !== undefined) validateInferenceBounds(obj.inferenceBounds);
+
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {
       throw new Error('Recipe subconscious must be an object.');
     }
     const sub = obj.subconscious as Record<string, unknown>;
-    const allowedSubconsciousKeys = new Set([
-      'enabled', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction',
-    ]);
+    if (sub.reader !== undefined && sub.reader !== 'persistent' && sub.reader !== 'forks') {
+      throw new Error('Recipe subconscious.reader must be "persistent" or "forks".');
+    }
+    const forks = sub.reader === 'forks';
+    const reader = forks ? 'forks' : 'persistent';
+    const other = forks ? 'persistent' : 'forks';
+    const keysFor = {
+      forks: ['enabled', 'reader', 'model', 'voice', 'allowChannelSpeech', 'forkIdleTimeoutMs'],
+      persistent: ['enabled', 'reader', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction'],
+    };
+    const allowedSubconsciousKeys = new Set(keysFor[reader]);
+    const onlyFor = (r: 'forks' | 'persistent') => keysFor[r].filter((key) => !keysFor[r === 'forks' ? 'persistent' : 'forks'].includes(key));
+    const otherReadersKeys = new Set(onlyFor(other));
     for (const key of Object.keys(sub)) {
+      if (otherReadersKeys.has(key)) {
+        const misplaced = Object.keys(sub).filter((k) => otherReadersKeys.has(k));
+        const alsoRemove = onlyFor(reader).filter((own) => Object.hasOwn(sub, own));
+        throw new Error(
+          `Recipe ${misplaced.map((k) => `subconscious.${k}`).join(' and ')} ${misplaced.length > 1 ? 'are' : 'is'} for reader "${other}", and this recipe's reader is "${reader}". ` +
+          `Remove ${misplaced.join(' and ')}, or set subconscious.reader to "${other}"` +
+          `${alsoRemove.length > 0 ? ` and remove ${alsoRemove.join(' and ')}, which only reader "${reader}" takes` : ''}.`,
+        );
+      }
       if (!allowedSubconsciousKeys.has(key)) {
         throw new Error(
           `Recipe subconscious has unknown field ${JSON.stringify(key)} ` +
-          `(expected one of: ${[...allowedSubconsciousKeys].join(', ')}).`,
+          `(expected one of: ${[...allowedSubconsciousKeys].join(', ')}` +
+          `${forks ? ' for reader "forks"' : ''}).`,
         );
       }
     }
     if (typeof sub.enabled !== 'boolean') {
       throw new Error('Recipe subconscious.enabled must be a boolean.');
     }
-    // The mode block is the subconscious's whole character; an enabled
-    // subconscious without one would run on an empty system prompt.
-    if (typeof sub.systemPrompt !== 'string' || !sub.systemPrompt.trim()) {
-      throw new Error('Recipe subconscious.systemPrompt must be a non-empty string.');
-    }
-    for (const k of ['name', 'model'] as const) {
-      if (sub[k] !== undefined && (typeof sub[k] !== 'string' || !(sub[k] as string).trim())) {
-        throw new Error(`Recipe subconscious.${k} must be a non-empty string.`);
+    if (forks) {
+      // A reader fork holds the resident's whole prefix: whose weights run
+      // it is stated, never defaulted; the framework refuses the omission too.
+      if (typeof sub.model !== 'string' || !sub.model.trim()) {
+        throw new Error('Recipe subconscious.model is required for reader "forks": say whose weights run the fork (the agent\'s own model for a copy of the resident, or another by name).');
+      }
+      if (typeof sub.voice !== 'string' || !sub.voice.trim()) {
+        throw new Error('Recipe subconscious.voice must be a non-empty string for reader "forks".');
+      }
+      // Finite: JSON `1e309` parses to Infinity, which saveRecipe() would
+      // write back as null and the next load would refuse.
+      const idle = sub.forkIdleTimeoutMs;
+      if (idle !== undefined && (typeof idle !== 'number' || !Number.isFinite(idle) || !(idle > 0))) {
+        throw new Error('Recipe subconscious.forkIdleTimeoutMs must be a positive finite number of milliseconds.');
+      }
+    } else {
+      if (typeof sub.systemPrompt !== 'string' || !sub.systemPrompt.trim()) {
+        throw new Error('Recipe subconscious.systemPrompt must be a non-empty string.');
+      }
+      for (const k of ['name', 'model'] as const) {
+        if (sub[k] !== undefined && (typeof sub[k] !== 'string' || !(sub[k] as string).trim())) {
+          throw new Error(`Recipe subconscious.${k} must be a non-empty string.`);
+        }
+      }
+      if (sub.reAnchorFraction !== undefined) {
+        const f = sub.reAnchorFraction;
+        if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
+          throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
+        }
       }
     }
     if (sub.allowChannelSpeech !== undefined && typeof sub.allowChannelSpeech !== 'boolean') {
       throw new Error('Recipe subconscious.allowChannelSpeech must be a boolean.');
     }
-    if (sub.reAnchorFraction !== undefined) {
-      const f = sub.reAnchorFraction;
-      if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
-        throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
+  }
+
+  if (obj.speech !== undefined) {
+    if (!obj.speech || typeof obj.speech !== 'object' || Array.isArray(obj.speech)) {
+      throw new Error('Recipe speech must be an object.');
+    }
+    const speech = obj.speech as Record<string, unknown>;
+    for (const key of Object.keys(speech)) {
+      if (key !== 'locus') throw new Error(`Recipe speech has unknown field ${JSON.stringify(key)} (expected: locus).`);
+    }
+    if (speech.locus !== undefined && speech.locus !== 'delivery' && speech.locus !== 'latest-inbound') {
+      throw new Error('Recipe speech.locus must be "delivery" or "latest-inbound".');
+    }
+  }
+
+  if (obj.tuneOut !== undefined) {
+    if (!obj.tuneOut || typeof obj.tuneOut !== 'object' || Array.isArray(obj.tuneOut)) {
+      throw new Error('Recipe tuneOut must be an object.');
+    }
+    const tuneOut = obj.tuneOut as Record<string, unknown>;
+    // `enabled` is still read, only to refuse true: agent-framework 0.33.0
+    // removed it (agent-framework#959) and refuses `enabled: true` at
+    // create, so a recipe stating it fails here instead of loading and
+    // exiting at create. `false` the framework still accepts and ignores,
+    // so it loads here too.
+    for (const key of Object.keys(tuneOut)) {
+      if (key !== 'enabled' && key !== 'announce') {
+        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: announce).`);
       }
+    }
+    for (const key of ['enabled', 'announce'] as const) {
+      if (tuneOut[key] !== undefined && typeof tuneOut[key] !== 'boolean') {
+        throw new Error(`Recipe tuneOut.${key} must be a boolean.`);
+      }
+    }
+    if (tuneOut.enabled === true) {
+      throw new Error(
+        'Recipe tuneOut.enabled was removed in agent-framework 0.33.0 (tune-out without a reader): ' +
+          'remove tuneOut.enabled; to keep tune_out, configure a subconscious as well.',
+      );
+    }
+  }
+
+  if (obj.dendrite !== undefined) {
+    if (!obj.dendrite || typeof obj.dendrite !== 'object' || Array.isArray(obj.dendrite)) {
+      throw new Error('Recipe dendrite must be an object.');
+    }
+    const dendrite = obj.dendrite as Record<string, unknown>;
+    for (const key of Object.keys(dendrite)) {
+      if (key !== 'announceOrphans' && key !== 'collapseDerivationNoticesAfter') {
+        throw new Error(`Recipe dendrite has unknown field ${JSON.stringify(key)} (expected: announceOrphans, collapseDerivationNoticesAfter).`);
+      }
+    }
+    if (dendrite.announceOrphans !== undefined && typeof dendrite.announceOrphans !== 'boolean') {
+      throw new Error('Recipe dendrite.announceOrphans must be a boolean.');
+    }
+    const after = dendrite.collapseDerivationNoticesAfter;
+    if (after !== undefined && !(typeof after === 'number' && Number.isInteger(after) && after >= 0)) {
+      throw new Error('Recipe dendrite.collapseDerivationNoticesAfter must be a non-negative integer.');
     }
   }
 
@@ -2988,68 +3625,68 @@ export function validateRecipe(raw: unknown): Recipe {
         '(it names fork agents and their Chronicle namespaces).',
       );
     }
+    if (agent.proseRouting === 'locked') {
+      throw new Error(
+        'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
+          'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
+          'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.',
+      );
+    }
   }
 
+  if (agent.toolPresentation !== undefined) {
+    const tp = agent.toolPresentation as Record<string, unknown>;
+    if (!tp || typeof tp !== 'object' || Array.isArray(tp)
+      || Object.keys(tp).some(k => !['path','cataloguePath','defaults'].includes(k))
+      || typeof tp.path !== 'string' || !isAbsolute(tp.path)
+      || typeof tp.cataloguePath !== 'string' || !/^[^/]+\/[^/]+(?:\/[^/]+)*$/.test(tp.cataloguePath)
+      || tp.cataloguePath.split('/').some(p => p === '.' || p === '..')) {
+      throw new Error('agent.toolPresentation requires absolute path and mount-prefixed cataloguePath');
+    }
+    if (tp.defaults !== undefined && (!Array.isArray(tp.defaults)
+      || tp.defaults.some((d: any) => !d || typeof d !== 'object' || Array.isArray(d)
+        || Object.keys(d).some(k => !['source','path'].includes(k))
+        || typeof d.source !== 'string' || !d.source.trim()
+        || typeof d.path !== 'string' || !isAbsolute(d.path))
+      || new Set(tp.defaults.map((d: any) => d.source)).size !== tp.defaults.length)) {
+      throw new Error('toolPresentation defaults require unique component sources and absolute paths');
+    }
+    const mounts = buildWorkspaceMounts((obj.modules as RecipeModules | undefined)?.workspace, '/unused');
+    if (!mounts?.some(m => m.name === (tp.cataloguePath as string).split('/')[0])) {
+      throw new Error('toolPresentation cataloguePath requires an existing workspace mount');
+    }
+  }
   return obj as unknown as Recipe;
 }
-
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
 
 export function savedRecipePath(dataDir: string): string {
   return resolve(dataDir, '.recipe.json');
 }
 
 /**
- * Marker key stamped into saved `.recipe.json` snapshots that were written in
- * unresolved form (post-fix). Its presence tells loadSavedRecipe to run the
- * full substitute-and-validate pipeline on read; its absence means a legacy
- * snapshot saved fully resolved, which must be loaded verbatim — running
- * substitution over legacy content could hard-fail on a literal `${...}`
- * that survived in prose (e.g. a systemPrompt documenting env-var syntax).
+ * Marker key stamped into saved `.recipe.json` snapshots that were written
+ * in unresolved form. Its presence tells loadSavedRecipe to run the full
+ * substitute-and-validate pipeline on read; its absence means a legacy
+ * snapshot saved fully resolved, which must be loaded verbatim.
  */
 export const SAVED_RECIPE_UNRESOLVED_KEY = '$unresolved';
 
-/**
- * Snapshot a recipe to `$DATA_DIR/.recipe.json` so a later run without a
- * recipe argument resumes the same configuration.
- *
- * Pass the `persistable` half of loadRecipeDetailed(), NOT the resolved
- * recipe: `$DATA_DIR` is typically host-mounted and backed up, so the file
- * must never contain substituted secrets. The snapshot keeps `${VAR}`
- * references (and any URL systemPrompt) unresolved; loadSavedRecipe
- * re-resolves them against the environment current at resume time.
- *
- * The file is written 0600 and chmod'd to 0600 even when it already exists,
- * as defense in depth for legacy resolved snapshots being overwritten.
- */
-export function saveRecipe(dataDir: string, persistable: Record<string, unknown>): void {
+export function saveRecipe(dataDir: string, unresolvedRecipe: Record<string, unknown>): void {
   mkdirSync(dataDir, { recursive: true });
   const path = savedRecipePath(dataDir);
-  const withMarker = { [SAVED_RECIPE_UNRESOLVED_KEY]: true, ...persistable };
+  const withMarker = { [SAVED_RECIPE_UNRESOLVED_KEY]: true, ...unresolvedRecipe };
   writeFileSync(path, JSON.stringify(withMarker, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
   // writeFileSync's mode only applies on creation — enforce on overwrite too.
   chmodSync(path, 0o600);
 }
 
 /**
- * A directory at the saved recipe's path, itself or through a link, such as
- * one a Docker bind mount makes for a recipe file the host didn't have yet.
- * It was never a saved recipe. Moving or removing it is the fix that works
- * for both kinds, since a recipe file can't be written over a directory, even
- * through a link, and --no-recipe leaves a directory itself in place. So
- * startup says that in place of its usual ways out.
+ * A Docker bind mount makes a directory at a source path that doesn't exist
+ * yet, such as a recipe file the host didn't have.
  */
 export class SavedRecipeDirectoryError extends Error {}
 
-/**
- * "it's a directory" or "it's a link to a directory" when a directory sits at
- * the saved recipe's path, itself or through a link; null for anything else,
- * and where that can't be told, as under a directory that can't be searched.
- * It reads what's there, whatever a failed read or write said about it: a
- * directory the host can't read fails a read with EACCES, not EISDIR.
- */
+/** A directory the host can't read fails a read with EACCES, not EISDIR. */
 export function savedRecipeDirectory(dataDir: string): string | null {
   const path = savedRecipePath(dataDir);
   try {
@@ -3057,31 +3694,11 @@ export function savedRecipeDirectory(dataDir: string): string | null {
     if (entry?.isDirectory()) return "it's a directory";
     if (entry?.isSymbolicLink() && statSync(path, { throwIfNoEntry: false })?.isDirectory()) return "it's a link to a directory";
   } catch {
-    // Nothing that can be looked at, such as a link to itself.
   }
   return null;
 }
 
-/**
- * Load the `.recipe.json` snapshot for a resumed session, or null when there
- * is none. A snapshot that's there but can't be used THROWS, saying why: one
- * that can't be read, isn't JSON, isn't a JSON object, or doesn't validate, in
- * either format. Returning null would start the default recipe in the resumed
- * agent's place, without a word.
- *
- * Snapshots carrying SAVED_RECIPE_UNRESOLVED_KEY are re-resolved through the
- * same pipeline loadRecipe uses — env substitution (so rotated secrets take
- * effect on restart), validation, and URL systemPrompt fetch. A missing
- * required `${VAR}` THROWS rather than returning null: silently falling back
- * to the default recipe would start a misconfigured agent, and the loud
- * failure names the variable to restore. A failed systemPrompt fetch throws
- * for the same reason.
- *
- * Legacy snapshots (no marker — saved fully resolved by older versions) are
- * validated and returned verbatim: no substitution, so a literal `${...}`
- * that survived resolution in prose cannot fail the load.
- */
-export async function loadSavedRecipe(dataDir: string): Promise<Recipe | null> {
+export async function loadSavedRecipe(dataDir: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<Recipe | null> {
   const path = savedRecipePath(dataDir);
   let text: string;
   try {
@@ -3099,8 +3716,8 @@ export async function loadSavedRecipe(dataDir: string): Promise<Recipe | null> {
   try {
     raw = JSON.parse(text);
   } catch {
-    // The parser's message can quote the file's text, and a snapshot from
-    // before 0.8.0 can hold a key inline, so it isn't passed on.
+    // The parser's message can quote the file's text, and a snapshot can
+    // hold a key inline, so it isn't passed on.
     throw new Error("it isn't JSON");
   }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -3109,36 +3726,28 @@ export async function loadSavedRecipe(dataDir: string): Promise<Recipe | null> {
   }
 
   if (!(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
-    // Legacy resolved snapshot: load verbatim (no substitution).
-    return validateRecipe(raw);
+    const legacy = validateRecipe(raw);
+    return options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy);
   }
 
   const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
-  // Deliberately outside a try/catch: substitution and validation errors on
-  // a snapshot we wrote ourselves are actionable operator errors (a rotated
-  // secret removed from the environment), not corruption to shrug off.
   const substituted = substituteEnvVars(unresolved, path);
   const recipe = validateRecipe(substituted);
-  return resolveSystemPrompt(recipe);
+  return options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
 }
 
 /**
- * Remove whatever is at the saved recipe's path, so the next start without a
- * recipe argument starts the default: a file, or a link, one to nothing
- * included, and never a link's target. A directory there was never a saved
- * recipe, so it's left in place: rmSync refuses it, naming the path.
+ * rmSync removes a link, one to nothing included, never its target, and
+ * refuses a directory, naming the path.
  */
 export function clearSavedRecipe(dataDir: string): void {
   rmSync(savedRecipePath(dataDir), { force: true });
 }
 
-// ---------------------------------------------------------------------------
-// CLI helpers
-// ---------------------------------------------------------------------------
-
 /**
- * Parse argv to find a recipe source. Returns null if none provided.
- * Skips known flags (--no-tui, --no-recipe).
+ * Parse argv to find a recipe source: the first argument after argv's first
+ * two that doesn't start with `--`, or a `source` of null when there is none.
+ * `noRecipe` says whether `--no-recipe` was given.
  */
 export function parseRecipeArg(argv: string[]): { source: string | null; noRecipe: boolean } {
   const noRecipe = argv.includes('--no-recipe');
@@ -3146,7 +3755,6 @@ export function parseRecipeArg(argv: string[]): { source: string | null; noRecip
 
   for (const arg of argv.slice(2)) {
     if (arg.startsWith('--')) continue;
-    // First positional arg is the recipe source
     source = arg;
     break;
   }

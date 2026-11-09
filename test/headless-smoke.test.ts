@@ -1,18 +1,6 @@
-/**
- * Phase 1 smoke test for headless daemon mode.
- *
- * Spawns `bun src/index.ts <recipe> --headless` as a subprocess in a
- * temp dir, then exercises the JSONL-over-Unix-socket protocol:
- *   - lifecycle:ready emitted on connect
- *   - subscribe filter applied
- *   - /help command produces command-output events (offline-safe path)
- *   - client disconnect does NOT kill the child
- *   - reconnecting yields a fresh lifecycle:ready
- *   - shutdown command exits cleanly with socket + pid file removed
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, lstatSync, chmodSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
@@ -23,9 +11,6 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
 const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
-// Recipe with all optional modules disabled — no MCP servers, no workspace
-// mounts, no lessons/retrieval, no wake gate.  TimeModule + TuiModule are
-// always-on in createFramework() but neither needs external resources.
 const MINIMAL_RECIPE = {
   name: 'Smoke Test',
   agent: {
@@ -41,8 +26,6 @@ const MINIMAL_RECIPE = {
   },
 };
 
-// --- helpers -------------------------------------------------------------
-
 function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; stop: () => void } {
   const events: Array<Record<string, unknown>> = [];
   socket.setEncoding('utf8');
@@ -54,7 +37,7 @@ function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; s
       const line = buf.slice(0, i).trim();
       buf = buf.slice(i + 1);
       if (!line) continue;
-      try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* ignore malformed */ }
+      try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { }
     }
   };
   socket.on('data', handler);
@@ -69,8 +52,6 @@ async function waitFor(check: () => boolean, timeoutMs: number, label: string): 
   }
   throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
 }
-
-// --- test ----------------------------------------------------------------
 
 describe('headless daemon — Phase 1', () => {
   let tmpDir: string;
@@ -92,8 +73,6 @@ describe('headless daemon — Phase 1', () => {
       'bun',
       [INDEX_PATH, recipePath, '--headless'],
       {
-        // cwd=tmpDir so DEFAULT_CONFIG_PATH (cwd/mcpl-servers.json) doesn't
-        // accidentally pick up the dev's real MCPL config.
         cwd: tmpDir,
         env: {
           ...process.env,
@@ -108,12 +87,11 @@ describe('headless daemon — Phase 1', () => {
   });
 
   afterAll(() => {
-    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('protocol: ready → subscribe → command → reconnect → shutdown', async () => {
-    // -- Connect 1: receive ready, run /help --
     const sock1 = await connectWhenAccepting(socketPath);
     const r1 = lineReader(sock1);
 
@@ -123,11 +101,9 @@ describe('headless daemon — Phase 1', () => {
       'first lifecycle:ready',
     );
 
-    // Narrow subscription so we can assert the filter is applied.
     sock1.write(JSON.stringify({ type: 'subscribe', events: ['lifecycle', 'command-output'] }) + '\n');
     await new Promise((r) => setTimeout(r, 100));
 
-    // /help is offline-safe — no LLM call.
     sock1.write(JSON.stringify({ type: 'command', command: '/help' }) + '\n');
     await waitFor(
       () => r1.events.filter((e) => e.type === 'command-output').length >= 5,
@@ -135,13 +111,11 @@ describe('headless daemon — Phase 1', () => {
       'command-output lines from /help',
     );
 
-    // -- Disconnect; verify child stays up --
     r1.stop();
     sock1.destroy();
     await new Promise((r) => setTimeout(r, 200));
     expect(child.exitCode).toBeNull();
 
-    // -- Connect 2: fresh ready event --
     const sock2 = await connectWhenAccepting(socketPath);
     const r2 = lineReader(sock2);
 
@@ -151,7 +125,6 @@ describe('headless daemon — Phase 1', () => {
       'second lifecycle:ready (after reconnect)',
     );
 
-    // -- Shutdown; verify exit + cleanup --
     sock2.write(JSON.stringify({ type: 'shutdown' }) + '\n');
 
     await waitFor(
@@ -170,13 +143,92 @@ describe('headless daemon — Phase 1', () => {
 
     expect(exitCode).toBe(0);
 
-    // Give OS a beat for unlink to propagate
     await new Promise((r) => setTimeout(r, 100));
     expect(existsSync(socketPath)).toBe(false);
     expect(existsSync(pidPath)).toBe(false);
     expect(existsSync(logPath)).toBe(true);
     expect(readFileSync(logPath, 'utf-8').length).toBeGreaterThan(0);
   }, 60_000);
+});
+
+describe('headless daemon: its data directory', () => {
+  test('a host creates its data directory, and a directory above it, readable by its owner alone', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-datadir-'));
+    const dataDir = join(dir, 'agent', 'data');
+    try {
+      await startUntilItsSocketFails(dir, dataDir);
+      expect(lstatSync(join(dir, 'agent')).mode & 0o777).toBe(0o700);
+      expect(lstatSync(dataDir).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('a host leaves a data directory that is already there its mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-datadir-'));
+    const dataDir = join(dir, 'data');
+    try {
+      mkdirSync(dataDir);
+      chmodSync(dataDir, 0o755);
+      await startUntilItsSocketFails(dir, dataDir);
+      expect(lstatSync(dataDir).mode & 0o777).toBe(0o755);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("a host whose data directory can't be made stops, naming it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-datadir-'));
+    const dataDir = join(realpathSync(dir), 'data');
+    let child: ChildProcess | undefined;
+    try {
+      writeFileSync(dataDir, 'a file where the data directory goes\n');
+      const recipe = join(dir, 'recipe.json');
+      writeFileSync(recipe, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+      child = spawn('bun', [INDEX_PATH, recipe, '--headless', '--socket-path', join(dir, 'ipc.sock')], {
+        cwd: dir,
+        env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-headless-datadir', DATA_DIR: 'data' },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = child;
+      const code = await new Promise<number | null>((resolveExit) => exited.once('close', (c) => resolveExit(c)));
+      expect(code).toBe(1);
+      expect(stderr).toContain(`The host can't make its data directory ${dataDir}, so it stops: `);
+      expect(stderr).toMatch(/, so it stops: E[A-Z]+: /);
+      expect(stderr).toContain('Set DATA_DIR to a path where this user has or can make a directory');
+      expect(stderr).not.toContain('Fatal error');
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  async function startUntilItsSocketFails(dir: string, dataDir: string): Promise<void> {
+    let child: ChildProcess | undefined;
+    const umask = process.umask(0o022);
+    try {
+      const recipe = join(dir, 'recipe.json');
+      writeFileSync(recipe, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+      const socketPath = join(dir, 'ipc.sock');
+      mkdirSync(join(socketPath, 'taken'), { recursive: true });
+      child = spawn('bun', [INDEX_PATH, recipe, '--headless', '--socket-path', socketPath], {
+        cwd: dir,
+        env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-headless-datadir', DATA_DIR: dataDir },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = child;
+      const code = await new Promise<number | null>((resolveExit) => exited.once('exit', (c) => resolveExit(c)));
+      if (code !== 1) throw new Error(`the host exited ${code}, not 1; its stderr: ${stderr}`);
+      expect(readFileSync(join(dataDir, 'headless.log'), 'utf-8')).toContain('server error:');
+    } finally {
+      process.umask(umask);
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  }
 });
 
 describe('headless daemon: a fatal error', () => {
@@ -186,10 +238,7 @@ describe('headless daemon: a fatal error', () => {
     try {
       const recipe = join(dir, 'recipe.json');
       writeFileSync(recipe, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
-      // A directory holds the socket's path, so listening fails once the log
-      // is open: the server's error is logged, then the start fails. Each
-      // write to headless.log lands 100 ms late, so an exit that doesn't
-      // wait for the log loses that line every time.
+      // A directory at the socket's path makes listening fail.
       mkdirSync(join(dir, 'ipc.sock', 'taken'), { recursive: true });
       child = spawn('bun', ['--preload', join(TEST_DIR, 'slow-log-writes.ts'), INDEX_PATH, recipe, '--headless'], {
         cwd: dir,

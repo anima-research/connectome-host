@@ -1,9 +1,3 @@
-/**
- * Both file viewers show a workspace `read` result's page, whether its fields
- * come in `data` (today's shape) or in `structured`, beside the page as text
- * blocks in `data`. The web UI's viewer runs in-process; a fleet child's runs
- * in a real headless child behind its socket.
- */
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { type Socket } from 'node:net';
@@ -82,7 +76,6 @@ describe("a fleet child's file viewer", () => {
         socket.write(JSON.stringify({ type: 'subscribe', events: [] }) + '\n');
         socket.write(JSON.stringify({ type: 'request-workspace-file', path: READ_FIELDS.path, corrId: 'read-1' }) + '\n');
         await until(() => events.some((event) => event.type === 'workspace-file-snapshot'), 'snapshot');
-        // The child's emit() adds the time it wrote the event.
         const { ts, ...snapshot } = events.find((event) => event.type === 'workspace-file-snapshot')!;
         expect(typeof ts).toBe('number');
         expect(snapshot).toEqual({

@@ -1,1 +1,0 @@
-- The example recipes in the onboarding and Claude Code ingest guides no longer set `agent.refusalHandling.announceHumanTurns`, and the recipe type marks it deprecated. No agent-framework release has read it, so on any release it changes nothing, and a recipe that still sets it loads and runs as before. The type now lists `retries`, which both guides already set.

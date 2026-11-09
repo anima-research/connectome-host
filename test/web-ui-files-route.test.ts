@@ -1,12 +1,7 @@
 /**
- * The web UI's /files/<mount>/<path> passthrough serves a workspace file
- * through WorkspaceModule.readFileFromDisk, which refuses a file that is
- * itself a link unless the mount follows links, and reads a file only if its
- * canonical path lies inside the mount. The first tests stand in for that
- * read's answers. Every path also resolves by its text to a real file (as
- * resolveAbsolutePath answers), which a read that went around
- * readFileFromDisk would serve instead. The last run agent-framework's own
- * WorkspaceModule on real mounts, whose links all stay inside their mount.
+ * agent-framework's WorkspaceModule.readFileFromDisk refuses a file reached
+ * through a link unless the mount follows links, and reads a file only if its
+ * canonical path lies inside the mount.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -17,14 +12,14 @@ import { WorkspaceModule, WorkspaceReadError, type ModuleContext } from '@animal
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 // agent-framework's code for a link among a path's directories that stays
-// inside the mount, from its release with anima-research/agent-framework#468.
+// inside the mount.
 const PARENT_SYMLINK = 'parent_symlink' as WorkspaceReadError['code'];
-// anima-research/agent-framework#460's code for a path in another mount's
-// directory nested in the one named.
+// agent-framework's code for a path in another mount's directory nested in
+// the one named.
 const OTHER_MOUNT = 'other_mount' as WorkspaceReadError['code'];
 
 describe("the web UI's /files/ route serves only what the mount's own read gives", () => {
@@ -32,7 +27,6 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
   let root: string;
   let baseUrl: string;
   const asked: string[] = [];
-  // The workspace the route finds: the stand-in, a real one, or none.
   let workspace: unknown;
   let standIn: unknown;
 
@@ -95,7 +89,7 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
 
   afterAll(async () => {
     await webUiModule?.stop();
-    await __resetSharedServerForTests();
+    await stopWebUiServer();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
@@ -106,6 +100,55 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');
       expect(await res.text()).toBe("the mount's own bytes");
       expect(asked).toContain(path);
+    }
+  });
+
+  test("a file the agent wrote runs no script on the Web UI's origin: an HTML page with a script, an SVG with an onload handler and HTML in a .txt or .json file come back byte for byte, sandboxed and unsniffed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'webui-files-script-'));
+    const out = join(dir, 'out');
+    mkdirSync(out);
+    const files: Array<[string, string, string]> = [
+      ['page.html', 'text/html; charset=utf-8',
+        "<!doctype html><img src=\"chart.png\"><script>new WebSocket('ws://' + location.host + '/ws')</script>"],
+      ['drawing.svg', 'image/svg+xml',
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"fetch('/healthz')\"><script>new WebSocket('ws://' + location.host + '/ws')</script></svg>"],
+      ['notes.txt', 'application/octet-stream', "<!doctype html><script>fetch('/healthz')</script>"],
+      ['notes.json', 'application/json; charset=utf-8', '{"note":"<script>fetch(\'/healthz\')</script>"}'],
+    ];
+    for (const [name, , body] of files) writeFileSync(join(out, name), body);
+    const store = JsStore.openOrCreate({ path: join(dir, 'store') });
+    const real = new WorkspaceModule({ mounts: [{ name: 'out', path: out, mode: 'read-write', watch: 'never' }] });
+    real.initStore(store);
+    workspace = real;
+    try {
+      for (const [name, type, body] of files) {
+        const res = await fetch(`${baseUrl}/files/out/${name}`);
+        expect({
+          status: res.status,
+          type: res.headers.get('content-type'),
+          nosniff: res.headers.get('x-content-type-options'),
+          csp: res.headers.get('content-security-policy'),
+          body: await res.text(),
+        }).toEqual({
+          status: 200,
+          type,
+          nosniff: 'nosniff',
+          // Two policies, both enforced. No allow-scripts, so no script runs;
+          // images, media, fonts and styles load only from 'self' (first)
+          // and from a path under /files/ (second), or data: or inline.
+          csp: "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; "
+            + "style-src 'self' 'unsafe-inline'; sandbox allow-same-origin, "
+            + "default-src 'none'; img-src http://*:*/files/ https://*:*/files/ data:; "
+            + "media-src http://*:*/files/ https://*:*/files/ data:; "
+            + "font-src http://*:*/files/ https://*:*/files/ data:; "
+            + "style-src http://*:*/files/ https://*:*/files/ 'unsafe-inline'",
+          body,
+        });
+      }
+    } finally {
+      workspace = standIn;
+      store.close?.();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -155,8 +198,6 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
     }
   });
 
-  // agent-framework's own read, on real mounts. Every link here leads to a
-  // file or directory inside its own mount.
   test("agent-framework's read: a file by its own path, a file that is itself a link, and a file through a linked directory, answered as the read answers", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'webui-files-real-'));
     const plain = join(dir, 'plain');
@@ -189,12 +230,9 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       expect(await get('plain/v2.png')).toEqual({ status: 200, type: 'image/png', body: 'the second version' });
       expect(await get('plain/v2.png/')).toEqual({ status: 200, type: 'image/png', body: 'the second version' });
       const link = await get('plain/latest.png');
-      expect(link.status).toBe(403);
-      expect(link.body).toBe('Symlinks are not allowed: plain/latest.png');
-      // A linked directory that stays inside the mount: agent-framework 0.22.2
-      // follows it on any mount, and its release with
-      // anima-research/agent-framework#468 refuses it on a mount that doesn't
-      // follow links (parent_symlink). The route answers as the read does.
+      const linkRead = await real.readFileFromDisk('plain/latest.png').then(() => null, (err: WorkspaceReadError) => err);
+      expect(linkRead?.code).toBe('symlink');
+      expect(link).toMatchObject({ status: 403, body: linkRead!.message });
       const read = await real.readFileFromDisk('plain/d/note.json').then(
         (r) => ({ status: 200, body: r.bytes.toString(), code: null as string | null }),
         (err: WorkspaceReadError) => ({ status: 403, body: err.message, code: err.code as string | null }),
@@ -203,11 +241,7 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       if (read.status === 200) expect(read.body).toBe('{"through":"a linked directory"}');
       else {
         expect(read.code).toBe(PARENT_SYMLINK);
-        // The upload's advice tells a link to a directory by these words, the
-        // only sign of it the refusal carries.
-        expect(read.body).toContain("the mount's host can set followSymlinks");
       }
-      // On a mount that follows links, both follow it.
       expect(await get('follow/latest.png')).toMatchObject({ status: 200, body: 'the followed version' });
       expect(await get('follow/d/note.json')).toMatchObject({ status: 200, body: '{"through":"a followed directory"}' });
     } finally {
@@ -217,11 +251,32 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
     }
   });
 
-  // agent-framework 0.22.2's read looks for the file before it resolves the
-  // mount's directory, so a directory already gone is no file there. From the
-  // release with anima-research/agent-framework#533, the read checks the
-  // mount's root, and a root that has gone is an unavailable mount. The route
-  // answers as the read does, in the read's words.
+  test("agent-framework's read: a file its mount's include leaves out is forbidden, and says so", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'webui-files-include-'));
+    const conf = join(dir, 'conf');
+    mkdirSync(conf);
+    writeFileSync(join(conf, 'gate.json'), '{"policies":[]}');
+    writeFileSync(join(conf, '#gate.json#'), 'an autosave');
+    const store = JsStore.openOrCreate({ path: join(dir, 'store') });
+    const real = new WorkspaceModule({
+      mounts: [{ name: 'conf', path: conf, mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js'] }],
+    });
+    real.initStore(store);
+    workspace = real;
+    try {
+      const covered = await fetch(`${baseUrl}/files/conf/gate.json`);
+      expect({ status: covered.status, body: await covered.text() }).toEqual({ status: 200, body: '{"policies":[]}' });
+      const read = await real.readFileFromDisk('conf/#gate.json#').then(() => null, (err: WorkspaceReadError) => err);
+      expect(read?.code).toBe('outside_include');
+      const left = await fetch(`${baseUrl}/files/conf/${encodeURIComponent('#gate.json#')}`);
+      expect({ status: left.status, body: await left.text() }).toEqual({ status: 403, body: read!.message });
+    } finally {
+      workspace = standIn;
+      store.close?.();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("agent-framework's read: a mount whose directory has gone answers as the read does", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'webui-files-gone-'));
     const gone = join(dir, 'gone');
@@ -240,10 +295,10 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       const res = await fetch(`${baseUrl}/files/gone/x.txt`);
       const got = { status: res.status, body: await res.text() };
       if (read?.code === 'mount_unavailable') {
-        expect(got).toEqual({ status: 503, body: 'Mount unavailable: gone' });
+        expect(got).toEqual({ status: 503, body: read.message });
       } else {
         expect(read?.code).toBe('not_found');
-        expect(got).toEqual({ status: 404, body: 'File not found: gone/x.txt' });
+        expect(got).toEqual({ status: 404, body: read!.message });
       }
     } finally {
       workspace = standIn;

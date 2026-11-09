@@ -39,18 +39,12 @@ for (const mode of ['healthy', 'failure', 'delayed-failure', 'ready-window', 'sl
         timer = setTimeout(() => reject(new Error('No ready event')), 3000);
       });
       clearTimeout(timer);
-      // Duplicated commands must not call framework.stop twice.
       socket.write('{"type":"shutdown"}\n{"type":"shutdown"}\n');
       timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
       const result = await closed;
       clearTimeout(timer);
       expect(result.signal).toBeNull();
-      // A log that never finishes still lets the process exit, within the
-      // 10 s the timer above allows, and the host says on its stderr that it
-      // went without its last lines.
       expect(result.code).toBe(mode === 'healthy' || mode === 'ready-window' || mode === 'stuck-log' ? 0 : 1);
-      // Only a log that never finishes holds the exit to the limit; every
-      // other exit comes at the log's finish.
       if (mode === 'stuck-log') expect(stderr).toContain("headless.log hadn't taken its last lines after 2 s");
       else expect(stderr).not.toContain("headless.log hadn't taken its last lines");
       expect(JSON.parse(readFileSync(join(dir, 'stop-calls.json'), 'utf8'))).toEqual({ stopCalls: 1 });
@@ -61,10 +55,6 @@ for (const mode of ['healthy', 'failure', 'delayed-failure', 'ready-window', 'sl
       }
       expect(existsSync(socketPath)).toBe(false);
       expect(existsSync(join(dir, 'headless.pid'))).toBe(false);
-      // On a slow disk too, the exit waits for the log to take its last line.
-      // A line written after the log ended goes to the host's stderr, not to
-      // the ended stream, where it would have failed the log's last lines and
-      // never printed; each write's callback is answered, with no error.
       if (mode.endsWith('failure')) expect(readFileSync(join(dir, 'headless.log'), 'utf8')).toContain('injected framework stop failure');
       if (mode === 'late-write-failure') {
         const log = readFileSync(join(dir, 'headless.log'), 'utf8');
@@ -75,10 +65,7 @@ for (const mode of ['healthy', 'failure', 'delayed-failure', 'ready-window', 'sl
         expect(log).toContain('a stderr line written before the log ended');
         expect(stderr).toContain('a stderr line written after the log ended');
         expect(log).not.toContain('written after the log ended');
-        // The host's own log line for a client's line after the end.
         expect(stderr).toMatch(/malformed JSON line dropped \(.*\): a client line after the log ended/);
-        // Each callback is answered with no error, and one of a write made
-        // before the end only once headless.log holds its line.
         for (const when of ['before', 'after']) {
           for (const form of ['second', 'undefined', 'utf8', 'stderr']) {
             const file = `callback-${when}-${form}.json`;

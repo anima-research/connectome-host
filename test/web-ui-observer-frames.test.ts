@@ -1,0 +1,1071 @@
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
+import { continuesBody, type BodyShard } from '@animalabs/context-manager';
+import { OperatorActionError } from '@animalabs/agent-framework';
+import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
+import { applyUndoneMarksTo, type MarkableRow } from '../web/src/undone-marks';
+
+describe('what each client is sent', () => {
+  let host: ObservedHost;
+  let branch = { id: 'b1', name: 'main' };
+  let stored: Record<string, unknown> | null = null;
+  let hostStatus: Record<string, unknown> = { quiesced: false };
+  let ledgerUpdate: ((ledger: unknown) => void) | undefined;
+  let transcript: Record<string, unknown>[] = [];
+  let appended: ((event: { type: string; message?: unknown }) => void) | undefined;
+  let ledgerNow: unknown;
+  const TEXT = {
+    call: 'overloaded_error: the provider is overloaded',
+    cooldown: 'cooling down after overloaded_error',
+    wait: 'the provider asked for a wait of 30s',
+    lastError: 'the last turn failed: overloaded_error',
+    debt: 'The compression report failed.\nCause: the store said no.',
+    read: 'the store refused the read',
+    quota: 'the usage endpoint answered 500',
+    credential: 'anthropic rejected the credential (invalid x-api-key)',
+    action: 'refresh failed: the token endpoint answered 400',
+  };
+  const login = { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' };
+  const credentialState = {
+    kind: 'auth-rejected', provider: 'anthropic', message: TEXT.credential, since: 1, rotatable: true,
+    actions: [{ id: 'refresh', label: 'Refresh' }], login, lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
+  };
+  let onRead: ((offset: number, limit: number) => void) | undefined;
+  // A read of the whole record (getAllMessages), which the undone-marks
+  // frame makes and a welcome doesn't (it reads getMessageWindow).
+  let onRecordRead: (() => void) | undefined;
+  // The rows an undo took out of the agent's window (agent-framework #291's windowStatusOf).
+  let undone = new Set<string>();
+  const cm = {
+    getMessageCount: () => transcript.length,
+    getMessageWindow: (offset: number, limit: number, opts?: { alignToBodyGroups?: boolean }) => {
+      onRead?.(offset, limit);
+      // As context-manager's store does with alignToBodyGroups, a window that
+      // begins inside a sharded body begins at its first shard.
+      let start = offset;
+      while (opts?.alignToBodyGroups && start > 0 && continuesBody(transcript[start - 1] as BodyShard, transcript[start] as BodyShard)) start--;
+      return { messages: transcript.slice(start, offset + limit), startIndex: start, totalCount: transcript.length };
+    },
+    onMessage: (listener: (event: { type: string; message?: unknown }) => void) => {
+      appended = listener;
+      return () => { if (appended === listener) appended = undefined; };
+    },
+    getAllMessages: () => {
+      onRead?.(0, transcript.length);
+      onRecordRead?.();
+      return transcript;
+    },
+    currentBranch: () => branch,
+    windowStatusOf: (id: string) => (undone.has(id) ? 'undone' : transcript.some((m) => m.id === id) ? 'in' : 'absent'),
+    ordinalOf: (id: string) => {
+      const at = transcript.findIndex((m) => m.id === id);
+      return at === -1 || undone.has(id) ? undefined : at;
+    },
+    getMessage: (id: string) => transcript.find((m) => m.id === id) ?? stored,
+    getStrategy: () => ({
+      getCompressionQuarantineStatus: () => ({
+        count: 1,
+        keys: ['q1'],
+        spans: [{ chunkSourceHash: 'h1', firstMessageId: 'm1', lastMessageId: 'm2', closedAgeMs: 1, quarantinedAt: 1, records: 1, answeredAttempts: 1, latestOutcome: 'refusal' }],
+      }),
+      getCompressionDebt: () => ({ state: 'unknown', error: TEXT.debt, failure: 'report', pendingChunks: null }),
+    }),
+    getRenderStats: () => {
+      throw new Error(TEXT.read);
+    },
+  };
+  const agent = { name: 'main', model: 'a-model', getContextManager: () => cm };
+  let agents = [agent];
+  const panels: Record<string, unknown> = {
+    'pin-add': { agent: 'main', pins: [], pinsSupported: true, levelHonored: false, candidates: [{ id: 'm1', index: 0, participant: 'user', text: 'a pinned line' }] },
+    'settings-update': { agent: 'main', settings: { contextBudgetTokens: 1000, transition: 'stable' }, overrides: [], hotKeys: [], hotConfigurable: true, previewAvailable: false },
+    'credential-action': { subscription: false },
+    media: { mediaType: 'image/png', base64: 'CCCC' },
+  };
+  const fleet = {
+    name: 'fleet',
+    getChildren: () => new Map(),
+    autoStartLaunching: () => new Set(),
+    onChildEvent: () => () => {},
+    requestPanel: async (_child: string, op: string) => ({ ok: true, data: panels[op] }),
+  };
+  const open: Connection[] = [];
+  /** What the framework's rollbackToMessage does, for the Surgery panel's rollback. */
+  let rollback: () => Promise<unknown> = async () => { throw new Error('no rollback in this test'); };
+
+  beforeAll(async () => {
+    host = await startObservedHost({
+      grants: {
+        dashboard: ['health'],
+        watch: ['health', 'ops'],
+        reader: ['messages'],
+        interior: ['messages', 'thinking', 'tools'],
+        everything: ['health', 'ops', 'messages', 'thinking', 'tools'],
+      },
+      framework: {
+        getAllAgents: () => agents,
+        getAllModules: () => [fleet],
+        getAgent: (name: string) => (name === 'main' ? agent : undefined),
+        getHostModeStatus: () => hostStatus,
+        rollbackToMessage: () => rollback(),
+        getModule: () => undefined,
+        getAgentRuntimeSettings: () => ({ contextBudgetTokens: 1000, transition: 'stable' }),
+        healthSnapshot: () => ({
+          at: '2026-10-22T06:00:00.000Z',
+          uptimeSec: 5,
+          gate: { inferring: ['main'], bufferedEvents: 0, droppedBufferedEvents: 0, sleepUntil: 0 },
+          pendingRequests: 0,
+          activeStreams: ['main'],
+          agents: [{
+            name: 'main',
+            status: 'inferring',
+            consecutiveInferenceFailures: 1,
+            providerAdmission: {
+              primaryActive: true,
+              cooldownUntil: 2,
+              cooldownReason: TEXT.cooldown,
+              hostHold: false,
+              lastRecovery: null,
+              providerWaits: [{ model: 'a-model', until: '2026-10-22T06:05:00.000Z', reason: TEXT.wait, setAt: '2026-10-22T06:00:00.000Z' }],
+            },
+            lastInference: { startedAt: 1, failedAt: 2, lastError: TEXT.lastError },
+            refusalStats: { total: 1, byCategory: { policy: 1 }, lastAt: 3, lastCategory: 'policy' },
+            upcomingWakes: [{ at: 9, kind: 'heartbeat', certain: true, note: TEXT.wait }],
+          }],
+        }),
+      },
+      frameworkSessionId: 's1',
+      sessionManager: { findSession: (id: string) => (id === 's1' ? { id: 's1', name: 'Debugging the bridge', manuallyNamed: false } : null) },
+      config: {
+        callLedger: {
+          snapshot: () => ledgerNow,
+          onUpdate: (update: (ledger: unknown) => void) => {
+            ledgerUpdate = update;
+            return () => {};
+          },
+        },
+        credentials: { snapshot: () => credentialState, runAction: async () => credentialState },
+        quotaMeter: {
+          provider: 'anthropic',
+          refresh: async () => ({ provider: 'anthropic', windows: [], fetchedAt: 1, error: TEXT.quota }),
+          blockedUntil: () => null,
+        },
+      },
+    });
+  });
+
+  afterAll(async () => {
+    for (const c of open) c.ws.close();
+    await host.stop();
+  });
+
+  /** The undone-marks frames a client was sent after its welcomes (#485 bot
+   *  review 5, finding 20), and the ones an undo, a redo or a shed sent: a
+   *  socket keeps its frames in order, and the server sends the first kind
+   *  right after the welcome. */
+  const marksAfterWelcome = (conn: Connection) => conn.frames.filter((f, i) => f.type === 'undone-marks' && conn.frames[i - 1]?.type === 'welcome');
+  const tracedMarks = (conn: Connection) => conn.frames.filter((f, i) => f.type === 'undone-marks' && conn.frames[i - 1]?.type !== 'welcome');
+
+  async function everyone() {
+    const clients = {
+      operator: await host.operator(),
+      dashboard: await host.observer('dashboard'),
+      reader: await host.observer('reader'),
+      interior: await host.observer('interior'),
+      everything: await host.observer('everything'),
+    };
+    open.push(...Object.values(clients));
+    return clients;
+  }
+
+  test("a child's events reach an observer only as its scopes cover what each carries, whole, and an operator's command output and kinds no scope names reach full clients alone", async () => {
+    const c = await everyone();
+    const events = [
+      { type: 'message:added', messageId: 'm1', source: 'mcpl:channel-incoming' },
+      { type: 'inference:tokens', blockType: 'thinking', content: 'private' },
+      { type: 'inference:speech', agentName: 'kid', content: 'thought, then said' },
+      { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/data/kid' },
+      { type: 'snapshot', asOfTs: 1, child: { name: 'kid', pid: 1, startedAt: 1 }, tree: { nodes: [{ secret: true }], callIdIndex: {} } },
+      { type: 'command-output', text: 'status of kid', style: null },
+      { type: 'a-kind-added-later' },
+      { type: 'private:new-kind', detail: 'its own' },
+      { type: 'inference:failed', agentName: 'kid', error: 'provider said no' },
+      { type: 'usage:updated', totals: { inputTokens: 1, outputTokens: 1 } },
+    ];
+    const ended = { type: 'stream-ended', agentName: 'kid' };
+    const fleetEvents = host.module as unknown as { handleFleetEvent(name: string, event: unknown): void };
+    for (const event of events) fleetEvents.handleFleetEvent('kid', event);
+    await host.fence(Object.values(c));
+    const kinds = (conn: Connection) => conn.framesOf('child-event').map((f) => (f.event as { type: string }).type);
+    expect(c.operator.framesOf('child-event')).toEqual(events.map((event) => ({ type: 'child-event', childName: 'kid', event })));
+    expect(kinds(c.dashboard)).toEqual(['lifecycle', 'usage:updated']);
+    expect(kinds(c.reader)).toEqual(['message:added', 'stream-ended']);
+    expect(kinds(c.interior)).toEqual(['message:added', 'inference:tokens', 'inference:speech', 'stream-ended']);
+    for (const conn of [c.reader, c.interior]) {
+      expect(conn.framesOf('child-event').at(-1)).toEqual({ type: 'child-event', childName: 'kid', event: ended });
+    }
+    expect(kinds(c.everything)).toEqual([
+      'message:added', 'inference:tokens', 'inference:speech', 'lifecycle', 'snapshot', 'inference:failed', 'usage:updated',
+    ]);
+    for (const conn of Object.values(c)) expect(conn.framesOf('stream-ended')).toEqual([]);
+    for (const conn of [c.operator, c.dashboard, c.everything]) expect(conn.framesOf('usage').length).toBe(1);
+    for (const conn of [c.reader, c.interior]) expect(conn.framesOf('usage')).toEqual([]);
+  });
+
+  test("a child's answers to the fleet's own requests, a panel's or a switch's, reach no client, where the event sent after them does", async () => {
+    const c = await everyone();
+    const fleetEvents = host.module as unknown as { handleFleetEvent(name: string, event: unknown): void };
+    fleetEvents.handleFleetEvent('kid', { type: 'panel-response', corrId: 'panel-health-1', op: 'health', ok: true, data: {} });
+    fleetEvents.handleFleetEvent('kid', { type: 'update-response', corrId: 'update-quiesce-2', ok: true, data: { drained: false, activeTurnAgents: ['kid'] } });
+    fleetEvents.handleFleetEvent('kid', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/data/kid' });
+    await host.fence(Object.values(c));
+    for (const conn of Object.values(c)) {
+      expect(conn.framesOf('child-event').map((f) => (f.event as { type: string }).type)).not.toContain('update-response');
+      expect(conn.framesOf('child-event').map((f) => (f.event as { type: string }).type)).not.toContain('panel-response');
+    }
+    expect(c.operator.framesOf('child-event').at(-1)).toEqual({ type: 'child-event', childName: 'kid', event: { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/data/kid' } });
+  });
+
+  test("the host's own traces reach an observer only as its scopes cover what each carries", async () => {
+    const c = await everyone();
+    const traces = [
+      { type: 'tool:started', module: 'shell', tool: 'run', callId: 't1', input: { cmd: 'ls' } },
+      { type: 'inference:failed', agentName: 'main', error: 'provider said no' },
+      { type: 'host:quiesce', drained: true, activeTurns: 0 },
+      { type: 'a-trace-added-later' },
+      { type: 'usage:updated', totals: { inputTokens: 2, outputTokens: 2 } },
+    ];
+    for (const trace of traces) host.emitTrace(trace);
+    await host.fence(Object.values(c));
+    const kinds = (conn: Connection) => conn.framesOf('trace').map((f) => (f.event as { type: string }).type);
+    expect(kinds(c.operator)).toEqual(traces.map((t) => t.type));
+    expect(kinds(c.dashboard)).toEqual(['host:quiesce', 'usage:updated']);
+    expect(kinds(c.reader)).toEqual([]);
+    expect(kinds(c.interior)).toEqual(['tool:started']);
+    expect(kinds(c.everything)).toEqual(['tool:started', 'inference:failed', 'host:quiesce', 'usage:updated']);
+    for (const conn of [c.operator, c.dashboard, c.everything]) expect(conn.framesOf('usage').length).toBe(1);
+    for (const conn of [c.reader, c.interior]) expect(conn.framesOf('usage')).toEqual([]);
+  });
+
+  test("a client that holds messages but may not have a stream-end trace gets a stream-ended frame in its place, naming only the agent", async () => {
+    const c = await everyone();
+    host.emitTrace({ type: 'inference:failed', agentName: 'main', error: 'provider said no', stack: 'at somewhere' });
+    host.emitTrace({ type: 'inference:completed', agentName: 'main', tokenUsage: { input: 1, output: 1 } });
+    host.emitTrace({ type: 'inference:aborted', agentName: 'main', reason: 'interrupted from the Web UI' });
+    await host.fence(Object.values(c));
+    const ends = (conn: Connection) => conn.frames
+      .filter((f) => f.type === 'trace' || f.type === 'stream-ended')
+      .map((f) => (f.type === 'trace' ? (f.event as { type: string }).type : f));
+    for (const conn of [c.operator, c.everything]) {
+      expect(ends(conn)).toEqual(['inference:failed', 'inference:completed', 'inference:aborted']);
+    }
+    for (const conn of [c.reader, c.interior]) {
+      expect(ends(conn)).toEqual([
+        { type: 'stream-ended', agentName: 'main' },
+        { type: 'stream-ended', agentName: 'main' },
+        { type: 'stream-ended', agentName: 'main' },
+      ]);
+    }
+    expect(ends(c.dashboard)).toEqual([]);
+  });
+
+  test("an incoming message's excerpt reaches only clients that hold messages", async () => {
+    const c = await everyone();
+    stored = { participant: 'user', content: [{ type: 'text', text: 'hello from zulip' }], metadata: {}, timestamp: new Date() };
+    host.emitTrace({ type: 'message:added', messageId: 'm1', source: 'mcpl:channel-incoming' });
+    await host.fence(Object.values(c));
+    for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+      expect(conn.framesOf('inbound-trigger').map((f) => f.text)).toEqual(['hello from zulip']);
+    }
+    expect(c.dashboard.framesOf('inbound-trigger')).toEqual([]);
+  });
+
+  test("an image a tool returned reaches only clients that hold tools, in the welcome, a history page, a live message and at /media, a child's too, and an image in a message reaches every client that holds messages", async () => {
+    const png = (data: string) => ({ type: 'image', source: { type: 'base64', mediaType: 'image/png', data } });
+    transcript = [
+      { id: 'm1', participant: 'assistant', content: [{ type: 'text', text: 'looking' }, { type: 'tool_use', id: 't1', name: 'camera', input: {} }] },
+      { id: 'm2', participant: 'user', content: [
+        { type: 'tool_result', toolUseId: 't1', content: [{ type: 'text', text: 'a frame' }, png('AAAA')] },
+        { type: 'text', text: 'and this' },
+        png('BBBB'),
+      ] },
+    ];
+    try {
+      const c = await everyone();
+      type Entry = { blocks: { kind: string }[] };
+      const media = (entries: Entry[]) => entries.flatMap((m) => m.blocks).filter((b) => b.kind === 'media');
+      const ofTool = { kind: 'media', mediaType: 'image/png', ref: 'm2/0.1', toolUseId: 't1' };
+      const ofMessage = { kind: 'media', mediaType: 'image/png', ref: 'm2/2' };
+      const welcomed = (conn: Connection) => media(conn.framesOf('welcome')[0]!.messages as Entry[]);
+      expect(welcomed(c.reader)).toEqual([ofMessage]);
+      expect(welcomed(c.interior)).toEqual([ofTool, ofMessage]);
+      expect(welcomed(c.operator)).toEqual([ofTool, ofMessage]);
+
+      const paged = async (conn: Connection, corrId: string) => {
+        conn.ws.send(JSON.stringify({ type: 'request-history', corrId, beforeIndex: 2 }));
+        return media((await conn.until('history-page', (f) => f.corrId === corrId)).entries as Entry[]);
+      };
+      expect(await paged(c.reader, 'h-reader')).toEqual([ofMessage]);
+      expect(await paged(c.interior, 'h-interior')).toEqual([ofTool, ofMessage]);
+
+      const m3 = { id: 'm3', participant: 'user', content: [
+        { type: 'tool_result', toolUseId: 't2', content: [png('CCCC')] },
+        { type: 'text', text: 'and another' },
+      ] };
+      transcript.push(m3);
+      appended!({ type: 'add', message: m3 });
+      await host.fence(Object.values(c));
+      const live = (conn: Connection) => conn.framesOf('message-appended').map((f) => f.entry as Entry);
+      expect(live(c.reader).map((e) => e.blocks)).toEqual([[{ kind: 'text', text: 'and another' }]]);
+      expect(media(live(c.interior))).toEqual([{ kind: 'media', mediaType: 'image/png', ref: 'm3/0.0', toolUseId: 't2' }]);
+
+      const get = async (conn: Connection, path: string) => {
+        const res = await fetch(`http://127.0.0.1:${host.port}${path}`, {
+          headers: { cookie: `fkm_obs=${conn.framesOf('observer-ack')[0]!.sessionToken as string}` },
+        });
+        return res.status === 200 ? Buffer.from(await res.arrayBuffer()).toString('base64') : res.status;
+      };
+      expect(await get(c.reader, '/media/m2/2')).toBe('BBBB');
+      expect(await get(c.reader, '/media/m2/0.1')).toBe(401);
+      expect(await get(c.reader, '/media/m2/0%2E1')).toBe(401);
+      expect(await get(c.reader, '/media/m2/0.1?scope=kid')).toBe(401);
+      expect(await get(c.interior, '/media/m2/0.1')).toBe('AAAA');
+      expect(await get(c.interior, '/media/m2/0.1?scope=kid')).toBe('CCCC');
+      expect(await get(c.dashboard, '/media/m2/2')).toBe(401);
+    } finally {
+      transcript = [];
+    }
+  });
+
+  describe('a message whose every block its scopes remove', () => {
+    type Entry = { id?: string };
+    const ids = (entries: unknown) => (entries as Entry[]).map((e) => e.id);
+    const say = (id: string, participant: string, content: unknown[], body?: { bodyGroupId: string; shardIndex: number }) =>
+      ({ id, participant, content, ...body });
+    const toolUse = (id: string, call: string) => say(id, 'assistant', [{ type: 'tool_use', id: call, name: 'shell', input: {} }]);
+    const toolResult = (id: string, call: string, body?: { bodyGroupId: string; shardIndex: number }) =>
+      say(id, 'user', [{ type: 'tool_result', toolUseId: call, content: [{ type: 'text', text: 'out' }] }], body);
+    const page = async (conn: Connection, corrId: string, beforeIndex: number, limit = 2) => {
+      conn.ws.send(JSON.stringify({ type: 'request-history', corrId, beforeIndex, limit }));
+      const f = await conn.until('history-page', (p) => p.corrId === corrId);
+      return { ids: ids(f.entries), startIndex: f.startIndex, totalCount: f.totalCount };
+    };
+    const recordReads = () => {
+      const reads: [number, number][] = [];
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      return reads;
+    };
+
+    test("doesn't reach a client in its welcome, live, or in a page, which reads back past such messages to one the client may see, or to the start", async () => {
+      transcript = [
+        toolUse('m0', 't0'),
+        toolResult('m1', 't0'),
+        say('m2', 'user', [{ type: 'text', text: 'a word' }]),
+        toolUse('m3', 't1'),
+        toolResult('m4', 't1'),
+        say('m5', 'assistant', [{ type: 'thinking', thinking: 'mulling' }]),
+        toolUse('m6', 't2'),
+      ];
+      try {
+        const c = await everyone();
+        expect(ids(c.reader.framesOf('welcome')[0]!.messages)).toEqual(['m2']);
+        expect(ids(c.interior.framesOf('welcome')[0]!.messages)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6']);
+        expect(await page(c.reader, 'r-back', 7)).toEqual({ ids: ['m2'], startIndex: 1, totalCount: 7 });
+        const backPage = c.reader.framesOf('history-page').find((f) => f.corrId === 'r-back')!;
+        expect((backPage.entries as { index: number }[])[0]!.index).toBe(2);
+        const reads = recordReads();
+        expect(await page(c.reader, 'r-start', 2, 1)).toEqual({ ids: [], startIndex: 0, totalCount: 7 });
+        expect(reads).toEqual([[1, 1], [0, 1]]);
+        onRead = undefined;
+        expect(await page(c.interior, 'i-back', 7)).toEqual({ ids: ['m5', 'm6'], startIndex: 5, totalCount: 7 });
+        expect(await page(c.operator, 'o-back', 7)).toEqual({ ids: ['m5', 'm6'], startIndex: 5, totalCount: 7 });
+
+        for (const m of [toolUse('m7', 't3'), say('m8', 'assistant', [{ type: 'text', text: 'done' }])]) {
+          transcript.push(m);
+          appended!({ type: 'add', message: m });
+        }
+        await host.fence(Object.values(c));
+        const live = (conn: Connection) => ids(conn.framesOf('message-appended').map((f) => f.entry));
+        expect(live(c.reader)).toEqual(['m8']);
+        expect(live(c.interior)).toEqual(['m7', 'm8']);
+      } finally {
+        onRead = undefined;
+        transcript = [];
+      }
+    });
+
+    test('a page reads back from where the store began each window, a sharded body\'s first shard included', async () => {
+      const body = (shardIndex: number) => ({ bodyGroupId: 'bg-out', shardIndex });
+      transcript = [
+        say('m0', 'user', [{ type: 'text', text: 'a word' }]),
+        toolUse('m1', 't0'),
+        toolResult('m2', 't0', body(0)),
+        toolResult('m3', 't0', body(1)),
+        toolResult('m4', 't0', body(2)),
+        toolUse('m5', 't1'),
+      ];
+      try {
+        const c = await everyone();
+        const reads = recordReads();
+        expect(await page(c.reader, 'r-body', 6)).toEqual({ ids: ['m0'], startIndex: 0, totalCount: 6 });
+        expect(reads).toEqual([[4, 2], [0, 2]]);
+        expect(await page(c.interior, 'i-body', 6)).toEqual({ ids: ['m2', 'm5'], startIndex: 2, totalCount: 6 });
+      } finally {
+        onRead = undefined;
+        transcript = [];
+      }
+    });
+
+    test('a welcome whose tail such messages fill reads back too, on connecting and when a refresh welcomes the client again, and comes empty past ten windows of 200 before its tail, from where the reading stopped', async () => {
+      transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 250 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
+      try {
+        const c = await everyone();
+        const welcomed = (conn: Connection) => {
+          const w = conn.framesOf('welcome').at(-1)!;
+          return { ids: ids(w.messages), history: w.history };
+        };
+        const tail = Array.from({ length: 200 }, (_, i) => `m${i + 51}`);
+        expect(welcomed(c.reader)).toEqual({ ids: ['m0'], history: { startIndex: 0, totalCount: 251 } });
+        expect(welcomed(c.interior)).toEqual({ ids: tail, history: { startIndex: 51, totalCount: 251 } });
+        expect(welcomed(c.dashboard)).toEqual({ ids: [], history: { startIndex: 251, totalCount: 251 } });
+        await host.fence([c.reader, c.interior]);
+        expect(c.reader.framesOf('welcome').length).toBe(2);
+        expect(welcomed(c.reader)).toEqual({ ids: ['m0'], history: { startIndex: 0, totalCount: 251 } });
+        expect(welcomed(c.interior)).toEqual({ ids: tail, history: { startIndex: 51, totalCount: 251 } });
+        transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 2300 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
+        await host.fence([c.reader, c.interior]);
+        expect(welcomed(c.reader)).toEqual({ ids: [], history: { startIndex: 101, totalCount: 2301 } });
+        expect(welcomed(c.interior).history).toEqual({ startIndex: 2101, totalCount: 2301 });
+      } finally {
+        transcript = [];
+      }
+    });
+
+    test("an observer's welcome still comes when the host has no agent store to read back from", async () => {
+      const c = await everyone();
+      agents = [];
+      try {
+        await host.fence([c.reader]);
+        expect(c.reader.framesOf('welcome').at(-1)!.messages).toEqual([]);
+      } finally {
+        agents = [agent];
+      }
+    });
+
+    test('a page reads back at most ten windows of its own size, then answers empty from where it stopped, and the next page reads on from there', async () => {
+      transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 25 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
+      try {
+        const c = await everyone();
+        const reads = recordReads();
+        expect(await page(c.reader, 'r-ten', 26)).toEqual({ ids: [], startIndex: 6, totalCount: 26 });
+        expect(reads).toEqual([24, 22, 20, 18, 16, 14, 12, 10, 8, 6].map((offset) => [offset, 2]));
+        expect(await page(c.reader, 'r-on', 6)).toEqual({ ids: ['m0'], startIndex: 0, totalCount: 26 });
+      } finally {
+        onRead = undefined;
+        transcript = [];
+      }
+    });
+  });
+
+  test('the serving state and the agents\' models reach clients that hold health in the welcome, the serving state live too, and provider calls live', async () => {
+    hostStatus = { quiesced: false };
+    const c = await everyone();
+    const first = (conn: Connection) => conn.framesOf('welcome')[0]!;
+    expect(first(c.dashboard).hostMode).toMatchObject({ mode: 'serving' });
+    expect(first(c.dashboard).agents).toEqual([{ name: 'main', model: 'a-model' }]);
+    expect(first(c.reader).hostMode).toBeUndefined();
+    expect(first(c.reader).agents).toEqual([{ name: 'main', model: '' }]);
+    hostStatus = { quiesced: true, drained: true };
+    (host.module as unknown as { broadcastHostMode(): void }).broadcastHostMode();
+    ledgerUpdate!({ calls: [{ model: 'a-model', costUsd: 0.01 }] });
+    await host.fence(Object.values(c));
+    for (const conn of [c.operator, c.dashboard, c.everything]) {
+      expect(conn.framesOf('host-mode').map((f) => (f.hostMode as { mode: string }).mode)).toEqual(['quiesced']);
+      expect(conn.framesOf('call-ledger').length).toBe(1);
+    }
+    for (const conn of [c.reader, c.interior]) {
+      expect(conn.framesOf('host-mode')).toEqual([]);
+      expect(conn.framesOf('call-ledger')).toEqual([]);
+    }
+  });
+
+  test('a phase reaches whoever holds health, live, in the welcome and from /healthz, and no one else', async () => {
+    host.rebind();
+    const c = await everyone();
+    const channelId = 'a-channel-only-messages-may-read';
+    const steps = [
+      { agentName: 'main', phase: 'sending', since: 5 },
+      { agentName: 'main', phase: 'streaming', since: 6 },
+      { agentName: 'main', phase: 'invoking', since: 7 },
+    ];
+    host.emitTrace({ type: 'inference:started', agentName: 'main', timestamp: 5, channelId });
+    host.emitTrace({ type: 'inference:tokens', agentName: 'main', timestamp: 6, blockType: 'text', content: 'words' });
+    // What a call's input names is no agent: it isn't reported, or a health client could read it.
+    const named = 'a-name-the-agent-wrote-in-a-tool-call';
+    host.emitTrace({ type: 'inference:tool_calls_yielded', agentName: 'main', timestamp: 7, calls: [{ id: 'c1', name: 'subagent--spawn', input: { name: named } }] });
+    await host.fence(Object.values(c));
+    const expected = steps.map((step) => ({ type: 'agent-phase', ...step }));
+    const now = { main: { phase: 'invoking', since: 7 } };
+    for (const conn of [c.operator, c.dashboard, c.everything]) {
+      expect(conn.framesOf('agent-phase')).toEqual(expected);
+      expect(conn.framesOf('welcome').at(-1)!.agentPhases).toEqual(now);
+    }
+    for (const conn of [c.reader, c.interior]) {
+      expect(conn.framesOf('agent-phase')).toEqual([]);
+      expect(conn.framesOf('welcome').at(-1)!.agentPhases).toBeUndefined();
+    }
+    expect(JSON.stringify(c.dashboard.framesOf('agent-phase'))).not.toContain(channelId);
+    expect(JSON.stringify(c.dashboard.frames.filter((f) => f.type === 'agent-phase' || f.type === 'welcome'))).not.toContain(named);
+    const token = (c.dashboard.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+    const res = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { cookie: `fkm_obs=${token}` } });
+    expect(((await res.json()) as { agentPhases: unknown }).agentPhases).toEqual(now);
+    // A new binding starts over, and each client's next welcome says so.
+    host.rebind();
+    await host.fence(Object.values(c));
+    expect((c.dashboard.framesOf('welcome').at(-1)!.agentPhases as { main: { phase: string } }).main.phase).toBe('idle');
+    const after = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { authorization: BASIC } });
+    expect(((await after.json()) as { agentPhases: { main: { phase: string } } }).agentPhases.main.phase).toBe('idle');
+  });
+
+  test("a health observer keeps an upcoming wake's kind, with its failure text gone", async () => {
+    const c = await everyone();
+    const token = (c.dashboard.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+    const res = await fetch(`http://127.0.0.1:${host.port}/healthz`, { headers: { cookie: `fkm_obs=${token}` } });
+    const body = (await res.json()) as { agents: Array<{ upcomingWakes: unknown }> };
+    expect(body.agents[0]!.upcomingWakes).toEqual([{ at: 9, kind: 'heartbeat', certain: true, note: '' }]);
+    expect(JSON.stringify(body)).not.toContain(TEXT.lastError);
+  });
+
+  test("a client that holds health and not ops gets health without failure text: the call ledger live and in the welcome, and /healthz and /quota, the host's and a child's", async () => {
+    const c = await everyone();
+    const row = { timestamp: '2026-10-22T06:00:00.000Z', kind: 'stream', originEstimate: 'turn~', model: 'a-model', messages: 3, durationMs: 10, cache: { ttls: ['5m'], effectiveTtl: '5m' } };
+    const ledger = {
+      rows: [
+        { ...row, id: 'c1', tokens: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, verdict: 'ERROR', cause: TEXT.call, error: TEXT.call },
+        { ...row, id: 'c2', tokens: { input: 1, output: 1, cacheRead: 9, cacheWrite: 0 }, verdict: 'HIT', cause: '90% from cache', stopReason: 'end_turn' },
+      ],
+      summary: { calls: 2, input: 2, output: 1, cacheRead: 9, cacheWrite: 0, cacheHitRatio: 0.9, byVerdict: { ERROR: 1, HIT: 1 } },
+    };
+    const ledgerWithoutText = { ...ledger, rows: [{ ...ledger.rows[0]!, cause: '', error: '' }, ledger.rows[1]!] };
+    ledgerNow = ledger;
+    ledgerUpdate!(ledger);
+    await host.fence(Object.values(c));
+    const lastLedger = (conn: Connection) => conn.framesOf('call-ledger').at(-1)!.ledger;
+    const welcomeLedger = (conn: Connection) => conn.framesOf('welcome').at(-1)!.callLedger;
+    for (const conn of [c.operator, c.everything]) {
+      expect(lastLedger(conn)).toEqual(ledger);
+      expect(welcomeLedger(conn)).toEqual(ledger);
+    }
+    expect(lastLedger(c.dashboard)).toEqual(ledgerWithoutText);
+    expect(welcomeLedger(c.dashboard)).toEqual(ledgerWithoutText);
+
+    const get = async (path: string, who: Connection | null): Promise<Record<string, any>> => {
+      const token = who && (who.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+      const res = await fetch(`http://127.0.0.1:${host.port}${path}`, { headers: token ? { cookie: `fkm_obs=${token}` } : { authorization: BASIC } });
+      expect(res.status).toBe(200);
+      return (await res.json()) as Record<string, any>;
+    };
+    const texts = (body: unknown) => Object.entries(TEXT)
+      .filter(([, text]) => JSON.stringify(body).includes(JSON.stringify(text).slice(1, -1)))
+      .map(([place]) => place);
+    panels.health = await get('/healthz', null);
+    panels.quota = await get('/quota', null);
+    for (const path of ['/healthz', '/healthz?scope=kid']) {
+      for (const who of [null, c.everything]) {
+        expect(texts(await get(path, who))).toEqual(['call', 'cooldown', 'wait', 'lastError', 'debt', 'read', 'credential', 'action']);
+      }
+      const health = await get(path, c.dashboard);
+      expect(texts(health)).toEqual([]);
+      const main = health.agents[0];
+      expect(main).toMatchObject({ name: 'main', status: 'inferring', consecutiveInferenceFailures: 1, refusalStats: { lastCategory: 'policy', byCategory: { policy: 1 } } });
+      expect(main.providerAdmission).toMatchObject({ cooldownUntil: 2, cooldownReason: '' });
+      expect(main.providerAdmission.providerWaits).toEqual([{ model: 'a-model', until: '2026-10-22T06:05:00.000Z', reason: '', setAt: '2026-10-22T06:00:00.000Z' }]);
+      expect(main.lastInference).toEqual({ startedAt: 1, failedAt: 2, lastError: '' });
+      expect(health.gate.inferring).toEqual(['main']);
+      expect(health.compressionDebt.main).toEqual({ state: 'unknown', error: '', failure: 'report', pendingChunks: null });
+      expect(health.compressionQuarantine.main.spans).toEqual([{ chunkSourceHash: 'h1', firstMessageId: 'm1', lastMessageId: 'm2', closedAgeMs: 1, quarantinedAt: 1, records: 1, answeredAttempts: 1, latestOutcome: 'refusal' }]);
+      expect(health.readFailures).toEqual({ main: { contextComposition: '' } });
+      expect(health.runtimeSettings.main).toEqual({ contextBudgetTokens: 1000, transition: 'stable' });
+      expect(health.callLedger).toEqual(ledgerWithoutText);
+      expect(health.credential).toMatchObject({ kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
+    }
+    for (const path of ['/quota', '/quota?scope=kid']) {
+      for (const who of [null, c.everything]) expect((await get(path, who)).error).toBe(TEXT.quota);
+      expect(await get(path, c.dashboard)).toMatchObject({ subscription: true, provider: 'anthropic', windows: [], fetchedAt: 1, error: '' });
+    }
+
+    panels.credential = await get('/credential', null);
+    for (const path of ['/credential', '/credential?scope=kid']) {
+      for (const who of [null, c.everything]) expect(texts(await get(path, who))).toEqual(['credential', 'action']);
+      expect(await get(path, c.dashboard)).toMatchObject({ subscription: true, kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
+    }
+    for (const conn of [c.dashboard, c.everything]) {
+      for (const scope of ['local', 'kid']) conn.ws.send(JSON.stringify({ type: 'request-credential', scope }));
+    }
+    c.operator.ws.send(JSON.stringify({ type: 'credential-action', scope: 'local', action: 'refresh' }));
+    const credentialFrames = async (conn: Connection) => {
+      const deadline = performance.now() + 5000;
+      while (conn.framesOf('credential-state').length < 3) {
+        if (performance.now() >= deadline) throw new Error('timed out waiting for credential-state');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return conn.framesOf('credential-state');
+    };
+    for (const frame of await credentialFrames(c.everything)) expect(texts(frame)).toEqual(['credential', 'action']);
+    const bare = await credentialFrames(c.dashboard);
+    expect(bare.map((f) => f.scope).sort()).toEqual(['kid', 'local', 'local']);
+    for (const frame of bare) {
+      expect(texts(frame)).toEqual([]);
+      expect(frame).toMatchObject({ kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
+    }
+  });
+
+  test("a health read that fails whole still says it failed to a client that holds health and not ops, without what the failure said", async () => {
+    const c = await everyone();
+    const app = (host.module as unknown as { panelApp(): { framework: { healthSnapshot: () => unknown } } }).panelApp();
+    const own = app.framework.healthSnapshot;
+    const request = fleet.requestPanel;
+    const answer = async (path: string, who: Connection | null) => {
+      const token = who && (who.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+      const res = await fetch(`http://127.0.0.1:${host.port}${path}`, { headers: token ? { cookie: `fkm_obs=${token}` } : { authorization: BASIC } });
+      return { status: res.status, body: await res.json() };
+    };
+    try {
+      app.framework.healthSnapshot = () => { throw new Error(TEXT.read); };
+      (fleet as { requestPanel: unknown }).requestPanel = async () => ({ ok: false, status: 500, error: TEXT.read });
+      for (const path of ['/healthz', '/healthz?scope=kid', '/quota?scope=kid', '/credential?scope=kid']) {
+        for (const who of [null, c.everything]) expect(await answer(path, who)).toEqual({ status: 500, body: { error: TEXT.read } });
+        expect(await answer(path, c.dashboard)).toEqual({ status: 500, body: { error: '' } });
+      }
+      for (const conn of [c.dashboard, c.everything]) conn.ws.send(JSON.stringify({ type: 'request-credential', scope: 'kid' }));
+      for (const conn of [c.dashboard, c.everything]) await conn.until('error');
+      expect(c.everything.framesOf('error').map((f) => f.message)).toEqual([`credential on 'kid' failed: ${TEXT.read}`]);
+      expect(c.dashboard.framesOf('error').map((f) => f.message)).toEqual(["credential on 'kid' failed"]);
+    } finally {
+      app.framework.healthSnapshot = own;
+      (fleet as { requestPanel: unknown }).requestPanel = request;
+    }
+  });
+
+  test("after a branch switch, branch-changed reaches clients that hold messages, and a health observer's refreshed welcome has the new branch's id and no names", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const c = await everyone();
+    branch = { id: 'b2', name: 'experiment' };
+    (host.module as unknown as { broadcastBranchChanged(): void }).broadcastBranchChanged();
+    await host.fence(Object.values(c));
+    for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+      expect(conn.framesOf('branch-changed').map((f) => f.branch)).toEqual([{ id: 'b2', name: 'experiment' }]);
+    }
+    expect(c.dashboard.framesOf('branch-changed')).toEqual([]);
+    const refreshed = c.dashboard.framesOf('welcome').at(-1)!;
+    expect(refreshed.branch).toEqual({ id: 'b2', name: '' });
+    expect(refreshed.session).toEqual({ id: 's1', name: '', autoNamed: true });
+    const read = c.reader.framesOf('welcome').at(-1)!;
+    expect(read.branch).toEqual({ id: 'b2', name: 'experiment' });
+    expect(read.session).toEqual({ id: 's1', name: 'Debugging the bridge', autoNamed: true });
+  });
+
+  // HOST-1: a Surgery rollback whose switch failed once chronicle had moved,
+  // and whose putting the store back failed too, left the store on the new
+  // branch while every client went on showing the old one.
+  test("a rollback that failed and left the store on its new branch takes the clients there, and one that moved nothing doesn't", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const c = await everyone();
+    rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while mira is busy'); };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+    expect((await c.operator.until('surgery-result', (f) => f.corrId === 'r-busy')).ok).toBe(false);
+    rollback = async () => {
+      branch = { id: 'b2', name: 'rollback/main/1' };
+      throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1');
+    };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+    const stuck = await c.operator.until('surgery-result', (f) => f.corrId === 'r-stuck');
+    expect(stuck).toMatchObject({ ok: false, code: 'failed', error: 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1' });
+    await host.fence([c.operator, c.reader]);
+    for (const conn of [c.operator, c.reader]) {
+      expect(conn.framesOf('branch-changed').map((f) => f.branch)).toEqual([{ id: 'b2', name: 'rollback/main/1' }]);
+      expect(conn.framesOf('welcome').at(-1)!.branch).toEqual({ id: 'b2', name: 'rollback/main/1' });
+    }
+    rollback = async () => { throw new Error('no rollback in this test'); };
+    branch = { id: 'b1', name: 'main' };
+  });
+
+  // Host #485 bot review wave 6, finding 7: the Web UI refreshed the
+  // _config mount after it had sent a surgery's answer, and dropped the
+  // refresh's failure, so the dialog said Done with the gate's files stale,
+  // and a failed rollback that left the store on its new branch never said
+  // whether the refresh wrote them.
+  test("a surgery's answer comes once the Web UI has refreshed the _config mount, and says when that failed", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const conn = await host.operator();
+    open.push(conn);
+    const fw = (host.module as unknown as { panelApp(): { framework: Record<string, unknown> } }).panelApp().framework;
+    const ownModule = fw.getModule;
+    let refreshes = 0;
+    fw.getModule = (name: string) => (name === 'workspace'
+      ? { materializeMount: async () => { refreshes++; throw new Error('EACCES: _config/gate.json'); } }
+      : undefined);
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      rollback = async () => {
+        branch = { id: 'b2', name: 'rollback/main/1' };
+        return { sourceBranch: 'main', targetBranch: 'rollback/main/1', messagesRemoved: 1, lastVisible: null };
+      };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-landed', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      expect(await conn.until('surgery-result', (f) => f.corrId === 'r-landed')).toMatchObject({ ok: true, mountError: 'EACCES: _config/gate.json' });
+      expect(refreshes).toBe(1);
+
+      branch = { id: 'b1', name: 'main' };
+      rollback = async () => {
+        branch = { id: 'b3', name: 'rollback/main/2' };
+        throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/2');
+      };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck-mount', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      expect(await conn.until('surgery-result', (f) => f.corrId === 'r-stuck-mount')).toMatchObject({ ok: false, code: 'failed', mountError: 'EACCES: _config/gate.json' });
+      expect(refreshes).toBe(2);
+
+      // One that moved nothing refreshes nothing, and says nothing of the mount.
+      rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while main is busy'); };
+      conn.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy-mount', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+      const busy = await conn.until('surgery-result', (f) => f.corrId === 'r-busy-mount');
+      expect(busy.ok).toBe(false);
+      expect(busy.mountError).toBeUndefined();
+      expect(refreshes).toBe(2);
+      expect(quiet.mock.calls.map((c) => String(c[0]))).toContain('[webui] _config refresh failed: EACCES: _config/gate.json');
+    } finally {
+      quiet.mockRestore();
+      fw.getModule = ownModule;
+      rollback = async () => { throw new Error('no rollback in this test'); };
+      branch = { id: 'b1', name: 'main' };
+    }
+  });
+
+  // The same finding: a command's answer that says the _config mount wasn't
+  // written (a move whose mount write failed, a failed rollback that left
+  // the store on its new branch) is true in the TUI, whose redraw writes no
+  // mount, but the Web UI writes it after sending that answer.
+  test("a command's answer that says the _config mount wasn't written is followed by what the Web UI's refresh of it did, and another answer by nothing", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const conn = await host.operator();
+    open.push(conn);
+    const fw = (host.module as unknown as { panelApp(): { framework: Record<string, unknown> } }).panelApp().framework;
+    const own = { getModule: fw.getModule, getStore: fw.getStore, switchBranch: fw.switchBranch };
+    const ownCm = { listBranches: (cm as Record<string, unknown>).listBranches, queryMessages: (cm as Record<string, unknown>).queryMessages };
+    let refresh: () => Promise<void> = async () => {};
+    fw.getModule = (name: string) => (name === 'workspace' ? { materializeMount: () => refresh() } : undefined);
+    fw.getStore = () => ({ currentBranch: () => ({ name: branch.name }) });
+    Object.assign(cm, {
+      listBranches: () => [{ id: 'b1', name: 'main' }, { id: 'b4', name: 'experiment' }],
+      queryMessages: () => ({ messages: [{ id: 'm1', participant: 'user', content: [] }] }),
+    });
+    const answers = async (corrId: string, n: number) => {
+      const deadline = performance.now() + 5000;
+      for (;;) {
+        const got = conn.framesOf('command-result').filter((f) => f.corrId === corrId);
+        if (got.length >= n) return got.map((f) => (f.lines as Array<{ text: string }>).map((l) => l.text));
+        if (performance.now() >= deadline) throw new Error(`timed out waiting for ${n} answers to ${corrId}`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A /checkout whose move landed and whose mount write failed.
+      fw.switchBranch = async (target: string) => {
+        branch = { id: 'b4', name: target };
+        throw new Error('EIO writing _config');
+      };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-written' }));
+      const written = await answers('co-written', 3);
+      expect(written[1]![0]).toBe('Switched to branch experiment. Refreshing the _config mount from it failed: EIO writing _config');
+      expect(written[2]).toEqual(['The Web UI has since written the _config mount from experiment.']);
+
+      branch = { id: 'b1', name: 'main' };
+      refresh = async () => { throw new Error('ENOSPC'); };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-failed' }));
+      expect((await answers('co-failed', 3))[2]).toEqual(["The Web UI's refresh of the _config mount failed too: ENOSPC"]);
+
+      // A /branchto whose switch failed and whose putting the store back failed too.
+      branch = { id: 'b1', name: 'main' };
+      refresh = async () => {};
+      rollback = async () => {
+        branch = { id: 'b5', name: 'rollback-at-m1' };
+        throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback-at-m1');
+      };
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/branchto m1', corrId: 'bt-stuck' }));
+      const stuck = await answers('bt-stuck', 3);
+      expect(stuck[1]![1]).toBe("  The _config mount wasn't written from rollback-at-m1: the gate's files may still be the previous branch's. /checkout rollback-at-m1 writes them.");
+      expect(stuck[2]).toEqual(['The Web UI has since written the _config mount from rollback-at-m1.']);
+
+      // A move that landed whole: its answer is followed by nothing, as the
+      // branch-changed frame sent after the refresh shows.
+      branch = { id: 'b1', name: 'main' };
+      fw.switchBranch = async (target: string) => { branch = { id: 'b4', name: target }; };
+      const moves = conn.framesOf('branch-changed').length;
+      conn.ws.send(JSON.stringify({ type: 'command', command: '/checkout experiment', corrId: 'co-landed' }));
+      await answers('co-landed', 2);
+      const deadline = performance.now() + 5000;
+      while (conn.framesOf('branch-changed').length <= moves) {
+        if (performance.now() >= deadline) throw new Error('timed out waiting for branch-changed');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(await answers('co-landed', 2)).toHaveLength(2);
+    } finally {
+      quiet.mockRestore();
+      Object.assign(fw, own);
+      Object.assign(cm, ownCm);
+      rollback = async () => { throw new Error('no rollback in this test'); };
+      branch = { id: 'b1', name: 'main' };
+    }
+  });
+
+  // DQ-4: the transcript shows the record, which keeps an undone turn's rows,
+  // and marks them as out of the agent's window.
+  test("an undo or a redo on the transcript agent's window marks its rows again for clients that hold messages, and a welcome and a history page carry the marks", async () => {
+    transcript = [
+      { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
+      { id: 'a1', participant: 'assistant', content: [{ type: 'text', text: 'three' }] },
+    ];
+    undone = new Set(['a1']);
+    try {
+      const c = await everyone();
+      const marks = (entries: unknown) => (entries as Array<{ id?: string; undone?: boolean }>).map((e) => [e.id, e.undone ?? false]);
+      for (const conn of [c.operator, c.reader]) expect(marks(conn.framesOf('welcome').at(-1)!.messages)).toEqual([['u1', false], ['a1', true]]);
+
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      // Another agent's window is not the transcript's.
+      host.emitTrace({ type: 'window:undone', agentName: 'someone-else', retracted: 1 });
+      await host.fence(Object.values(c));
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        expect(tracedMarks(conn)).toEqual([
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        ]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+
+      undone = new Set(['u1']);
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-undone', beforeIndex: 2, limit: 10 }));
+      const page = await c.operator.until('history-page', (f) => f.corrId === 'h-undone');
+      expect(marks(page.entries)).toEqual([['u1', true], ['a1', false]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // Host #485 bot review wave 3, finding 16: the transcript joined every
+  // run of rows with one bodyGroupId, so two ingestions of one text were one
+  // entry, by the first one's first part, and an undo of the second marked
+  // nothing, or of the first both.
+  test('two ingestions of one text, each stored in parts, are two entries, and an undo of the second marks it alone', async () => {
+    const part = (id: string, text: string, shardIndex: number) =>
+      ({ id, participant: 'user', content: [{ type: 'text', text }], bodyGroupId: 'g1', shardIndex });
+    transcript = [
+      part('p0', 'The ferry leaves ', 0), part('p1', 'at noon.', 1),
+      part('q0', 'The ferry leaves ', 0), part('q1', 'at noon.', 1),
+    ];
+    undone = new Set(['q0', 'q1']);
+    try {
+      const c = await everyone();
+      type Entry = { id?: string; index?: number; text?: string; undone?: boolean };
+      const welcome = c.operator.framesOf('welcome').at(-1)!.messages as Entry[];
+      expect(welcome.map((e) => [e.id, e.index, e.text, e.undone ?? false])).toEqual([
+        ['p0', 0, 'The ferry leaves at noon.', false],
+        ['q0', 2, 'The ferry leaves at noon.', true],
+      ]);
+      // The marks frame names q's parts; the page marks the entry q0 carries.
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 2 });
+      await host.fence([c.operator]);
+      const rows: MarkableRow[] = welcome.map((e) => ({ storeId: e.id, index: e.index }));
+      applyUndoneMarksTo(rows, c.operator.framesOf('undone-marks').at(-1) as never);
+      expect(rows.map((r) => [r.storeId, r.undone ?? false])).toEqual([['p0', false], ['q0', true]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // HOST-1: the frame named undone rows only in the welcome's tail (the
+  // record's last 200 rows), and a page leaves a row before `fromIndex` as
+  // it was. The agent's reply with 200 rows of others' traffic stored after
+  // it stayed shown as in its context after an undo, and a row a redo put
+  // back after it left the tail kept its undone label.
+  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, and so do a shed's", async () => {
+    const say = (id: string, participant: string, text: string) => ({ id, participant, content: [{ type: 'text', text }] });
+    transcript = [
+      say('u1', 'user', 'count the ledgers'),
+      say('a1', 'assistant', 'three'),
+      ...Array.from({ length: 250 }, (_, i) => say(`x${i}`, 'user', `traffic ${i}`)),
+    ];
+    try {
+      const c = await everyone();
+      const welcome = c.operator.framesOf('welcome').at(-1)!;
+      expect((welcome.history as { startIndex: number }).startIndex).toBe(52);
+      // The page reads back to the start, so it holds the reply.
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-back', beforeIndex: 52, limit: 100 }));
+      const back = await c.operator.until('history-page', (f) => f.corrId === 'h-back');
+      type Entry = { id?: string; index?: number; undone?: boolean };
+      const rows: MarkableRow[] = [...(back.entries as Entry[]), ...(welcome.messages as Entry[])]
+        .map((e) => ({ storeId: e.id, index: e.index, ...(e.undone ? { undone: true } : {}) }));
+      expect(rows.length).toBe(252);
+      const marked = () => rows.filter((r) => r.undone).map((r) => r.storeId);
+      const frames = () => tracedMarks(c.operator);
+
+      undone = new Set(['a1']);
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['a1']);
+
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual([]);
+
+      // A shed takes rows out of the window as an undone turn's.
+      undone = new Set(['x3']);
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x3'], reason: 'shed' });
+      // Neither another reason nor another agent's window marks anything.
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x4'], reason: 'hide' });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'someone-else', messageIds: ['x5'], reason: 'shed' });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['x3']);
+      expect(frames()).toEqual([
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
+      ]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // A welcome to the same session and branch keeps a page's rows older than
+  // its tail, marks and all, and marks only its tail; an undo or a redo
+  // while the page was disconnected moves no branch, so the page reads the
+  // marks of every row it holds from the frame after each welcome (#485 bot
+  // review 5, finding 20).
+  test('each welcome to a client that holds messages is followed by the record\'s undone marks, from index 0', async () => {
+    const say = (id: string, text: string) => ({ id, participant: 'user', content: [{ type: 'text', text }] });
+    transcript = Array.from({ length: 250 }, (_, i) => say(`w${i}`, `row ${i}`));
+    undone = new Set(['w3']);
+    try {
+      const c = await everyone();
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        await conn.until('undone-marks');
+        expect(marksAfterWelcome(conn)).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['w3'] }]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+      // A redo while a page is away, then its welcome again: the row before
+      // the welcome's tail is named no longer.
+      undone = new Set();
+      await host.fence([c.operator, c.dashboard]);
+      await c.operator.until('undone-marks', (f) => (f.undone as string[]).length === 0);
+      expect(marksAfterWelcome(c.operator).at(-1)).toEqual({ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] });
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // Host #485 bot review finding 17: the frame read the whole record at each
+  // undo, redo and shed while any client was connected, a health or an ops
+  // observer that is never sent it as well.
+  test("an undo, a redo or a shed reads no record while no connected client holds messages", async () => {
+    const say = (id: string, text: string) => ({ id, participant: 'user', content: [{ type: 'text', text }] });
+    transcript = Array.from({ length: 5 }, (_, i) => say(`r${i}`, `row ${i}`));
+    undone = new Set(['r4']);
+    const reads: [number, number][] = [];
+    let recordReads = 0;
+    try {
+      // Only observers without messages stay connected.
+      const closed = open.splice(0).map((c) => new Promise<void>((resolve) => {
+        if (c.ws.readyState === WebSocket.CLOSED) return resolve();
+        c.ws.addEventListener('close', () => resolve());
+        c.ws.close();
+      }));
+      await Promise.all(closed);
+      const dashboard = await host.observer('dashboard');
+      const watch = await host.observer('watch');
+      open.push(dashboard, watch);
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      onRecordRead = () => { recordReads++; };
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['r4'], reason: 'shed' });
+      // Reads of any kind are watched past the traces' microtasks and a
+      // timer's turn (host #485 bot review wave 3, finding 29), and the
+      // record's whole listing, the marks frame's read, on through the fence
+      // and the next client's connection, so one deferred longer is seen too
+      // (wave 4, finding 20). The fence and a connection welcome a client,
+      // which reads the record's tail (getMessageWindow), so that read is
+      // watched only up to them.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      onRead = undefined;
+      expect(reads).toEqual([]);
+      await host.fence([dashboard, watch]);
+      for (const conn of [dashboard, watch]) expect(conn.framesOf('undone-marks')).toEqual([]);
+
+      // A client that holds messages connects: the record is read again.
+      const reader = await host.observer('reader');
+      open.push(reader);
+      await host.fence([reader]);
+      onRecordRead = undefined;
+      // Each of the reader's two welcomes, its connection's and the fence's,
+      // reads the record once, for the marks frame after it (#485 bot review
+      // 5, finding 20); a read the traces deferred would make a third.
+      expect(recordReads).toBe(2);
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      onRead = undefined;
+      expect(reads).toEqual([[0, 5]]);
+      await host.fence([reader]);
+      expect(tracedMarks(reader)).toEqual([{ type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['r4'] }]);
+    } finally {
+      onRead = undefined;
+      onRecordRead = undefined;
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  test("pins and context settings reach full clients alone, a child's as well as the host's, and credential state, the host's and a child's, reaches clients that hold health", async () => {
+    const c = await everyone();
+    const panelsHere = host.module as unknown as { broadcastPinsList(agent: string): void; broadcastSettingsState(agent: string): void };
+    panelsHere.broadcastPinsList('main');
+    panelsHere.broadcastSettingsState('main');
+    c.operator.ws.send(JSON.stringify({ type: 'pin-add', scope: 'kid', firstMessageId: 'm1' }));
+    c.operator.ws.send(JSON.stringify({ type: 'settings-update', scope: 'kid', contextBudgetTokens: 1000 }));
+    c.operator.ws.send(JSON.stringify({ type: 'credential-action', scope: 'kid', action: 'recheck' }));
+    c.operator.ws.send(JSON.stringify({ type: 'credential-action', scope: 'local', action: 'recheck' }));
+    await c.operator.until('credential-state', (f) => f.scope === 'kid');
+    await c.operator.until('credential-state', (f) => f.scope === 'local');
+    await c.operator.until('pins-list', (f) => f.scope === 'kid');
+    await c.operator.until('settings-state', (f) => f.scope === 'kid');
+    await host.fence(Object.values(c));
+    expect(c.operator.framesOf('pins-list').map((f) => f.scope)).toEqual(['local', 'kid']);
+    expect(c.operator.framesOf('settings-state').map((f) => f.scope)).toEqual(['local', 'kid']);
+    for (const conn of [c.dashboard, c.reader, c.interior, c.everything]) {
+      expect(conn.framesOf('pins-list')).toEqual([]);
+      expect(conn.framesOf('settings-state')).toEqual([]);
+    }
+    for (const conn of [c.dashboard, c.everything]) expect(conn.framesOf('credential-state').map((f) => f.scope).sort()).toEqual(['kid', 'local']);
+    for (const conn of [c.reader, c.interior]) expect(conn.framesOf('credential-state')).toEqual([]);
+  });
+
+  test('a connection gets no live frame between a bind and its new welcome', async () => {
+    const c = await host.operator();
+    open.push(c);
+    host.rebind();
+    host.emitTrace({ type: 'message:added', messageId: 'before', source: 'agent' });
+    await host.fence([c]);
+    host.emitTrace({ type: 'message:added', messageId: 'after', source: 'agent' });
+    await host.fence([c]);
+    expect(c.framesOf('trace').map((f) => (f.event as { messageId: string }).messageId)).toEqual(['after']);
+  });
+});

@@ -1,8 +1,3 @@
-/**
- * Reading observers.json: a file that parses is read grant by grant, what
- * the registry and the tools are told about a file of any shape, without a
- * throw, and what the registry admits and logs as the file changes.
- */
 import { describe, expect, test, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, utimesSync } from 'node:fs';
@@ -16,8 +11,6 @@ const key = (c: string) => `ed25519:${c.repeat(42)}A`;
 const SCOPES = '(the scopes are health, ops, messages, tools, thinking, debug)';
 const realReadFileSync = fs.readFileSync;
 
-// A file an operator set up and then broke by hand: a grant with a scope
-// that doesn't exist.
 const BAD_SCOPE = JSON.stringify({
   observers: [
     { key: key('A'), label: 'baseline', scopes: ['health'], protected: true },
@@ -95,17 +88,13 @@ describe('reading the grants file', () => {
     expect(read).toEqual({ kind: 'unreadable', problem: 'can\'t be checked (boom)' });
   });
 
-  // Each of the two reads checks a value nested 100,000 deep until the stack
-  // overflows. That takes seconds, and on a busy machine it has run past the
-  // default 5 s limit, so the case has a limit of its own. The time is the
-  // overflow's, not the depth's: 50,000 deep takes about as long. The depth
-  // stays, since a shallower value might not overflow the check on another
-  // platform.
+  // A value this deep overflows the stack as it's checked; a shallower one might
+  // not on another platform.
   test('a value too deep to check gives no grants, not a throw', () => {
     const deep = '['.repeat(100_000) + ']'.repeat(100_000);
     writeFileSync(path, `{"observers": [{"key": "${key('A')}", "label": "x", "scopes": [${deep}]}]}`);
-    // Bun 1.4.3 and 1.3.14 both parse this and overflow checking it, with
-    // this text, so a check that threw anything else would fail the case.
+    // Bun's message for a stack overflow, so a check that threw anything else
+    // would fail the case.
     const read = readObserversFile(path) as { kind: string; problem?: string };
     expect(read.kind).toBe('unreadable');
     expect(read.problem).toBe('can\'t be checked (Maximum call stack size exceeded.)');
@@ -138,10 +127,6 @@ describe('the registry', () => {
     reads = 0;
     readAs = null;
     spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.join(' ')); });
-    // The registry reads the file with readFileSync. This counts its reads of
-    // the file and, while `readAs` is set, stands in for what a read finds (a
-    // read that fails, or a save half-written) while the file and its stat
-    // stay as they are. A stand-in can end itself after one read.
     readSpy = spyOn(fs, 'readFileSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
       if (file === path) {
         reads++;
@@ -158,21 +143,16 @@ describe('the registry', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** For a case that runs the registry's checks itself, to count them: a
-   *  registry whose own timer doesn't check within the case. */
   const checkedByHand = () => {
     registry = new ObserverRegistry(path, 60_000);
   };
-  /** Run one of the registry's checks now, as its timer would. */
   const check = () => (registry as unknown as { check(): void }).check();
 
-  /** Write the file with an mtime of its own, or the one given. */
   const write = (body: string, mtime = new Date(Date.now() + ++bump * 2_000)) => {
     writeFileSync(path, body);
     utimesSync(path, mtime, mtime);
     return mtime;
   };
-  /** Wait for what a check should bring about, rather than for a set time. */
   const until = async (done: () => boolean, ms = 3_000) => {
     const end = Date.now() + ms;
     while (!done() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
@@ -211,9 +191,7 @@ describe('the registry', () => {
     registry.start();
     write('{"observers": [');
     for (let i = 0; i < 4; i++) check();
-    // Start's read, then one at each check: it's read again while it doesn't
-    // parse, and said once.
-    expect(reads).toBe(5);
+    expect(reads).toBe(1 + 4);
     expect(admitted()).toEqual(['x']);
     expect(lines).toHaveLength(1);
     expect(lines.filter(keeping)).toHaveLength(1);
@@ -226,8 +204,6 @@ describe('the registry', () => {
     checkedByHand();
     write(file(X));
     registry.start();
-    // The next read finds the save half-written. The file itself is whole and
-    // stays as it is, its stat included.
     const whole = file(Z);
     readAs = () => {
       readAs = null;
@@ -239,7 +215,6 @@ describe('the registry', () => {
     expect(lines.filter(keeping)).toHaveLength(1);
     check();
     expect(admitted()).toEqual(['z']);
-    // Read whole, it isn't read again until it changes.
     check();
     expect(reads).toBe(3);
   });
@@ -263,8 +238,7 @@ describe('the registry', () => {
     write('{"observers": [');
     registry.start();
     for (let i = 0; i < 3; i++) check();
-    // Read again at each check, and said once: it had no grants to keep.
-    expect(reads).toBe(4);
+    expect(reads).toBe(1 + 3);
     expect(admitted()).toEqual([]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toEndWith('— admitting no grants until it parses');
@@ -286,12 +260,10 @@ describe('the registry', () => {
     checkedByHand();
     write(file(X));
     registry.start();
-    // Every read fails while this stands. The file and its stat stay as they
-    // are, so only a read tried again finds its grants.
     readAs = tooManyOpen;
     write(file(Z));
     for (let i = 0; i < 4; i++) check();
-    expect(reads).toBe(5); // start's read, then one at each check
+    expect(reads).toBe(1 + 4);
     expect(admitted()).toEqual([]);
     expect(lines).toEqual([`[webui-observers] ${path} can't be read (EMFILE: too many open files, open) — admitting no grants from it`]);
     readAs = null;
@@ -313,9 +285,6 @@ describe('the registry', () => {
   test('a file gone between the stat and the read at start is read again at the next check', () => {
     checkedByHand();
     write(file(X));
-    // The stat at start finds the file and the read then doesn't, as when a
-    // save removes the file before writing it. Here the file and its stat stay
-    // as they are, so only a read tried again finds its grants.
     readAs = () => {
       readAs = null;
       throw Object.assign(new Error('ENOENT: no such file or directory, open'), { code: 'ENOENT' });

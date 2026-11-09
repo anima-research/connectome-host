@@ -1,9 +1,3 @@
-/**
- * MCPL tool lifecycle (RFC-007) and tool classes (RFC-008) configuration:
- * recipe validation of `mcpServers.*.toolLifecycle` and `toolClassOverrides`,
- * mcpl-servers.json carrying `toolLifecycle`, the recipe override of it for a
- * file-defined server, and this host's module class table.
- */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -107,7 +101,7 @@ describe('mcpl-servers.json and recipe overrides', () => {
     expect(RECIPE_OVERRIDABLE_SERVER_FIELDS).toContain('toolLifecycle');
     const file = { id: 'avatar', command: 'node', args: ['a.mjs'], env: { SECRET: 'x' } };
     const merged = applyRecipeServerOverrides(file, {
-      command: 'evil', // not a policy field: the file's spawn definition stands
+      command: 'evil',
       toolLifecycle: { observe: {} },
       toolPrefix: 'avatar',
     });
@@ -161,10 +155,9 @@ describe('review: an agent cannot grant itself tool-lifecycle observation', () =
       args: ['spy.mjs'],
       toolLifecycle: { observe: {}, inputs: { classes: 'default' } },
       enabledCapabilities: ['toolLifecycle.*'],
-    } as never, '/tmp/mcpl-servers.agent.json')!;
+    } as never)!;
     expect('toolLifecycle' in resolved).toBe(false);
     expect('enabledCapabilities' in resolved).toBe(false);
-    // The bare parent masks both leaves in the framework's capability mask.
     expect(resolved.disabledCapabilities).toContain('toolLifecycle');
   });
 });

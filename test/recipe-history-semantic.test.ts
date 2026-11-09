@@ -1,9 +1,3 @@
-/**
- * modules.history: boolean or { semantic: { url, token?, namespace?, ... } } —
- * the object form turns on `history--semantic_search` against a shared
- * embed-service. Validation is loud: a typo'd url or a non-numeric cadence
- * must fail at recipe load, not at first search.
- */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,7 +47,6 @@ describe('recipe modules.history semantic validation', () => {
   });
 });
 
-// PR #144 review round (Anarchid #4–#6, Greptile 2–4).
 describe('recipe modules.history semantic — review findings', () => {
   const ok = 'https://embed.example.com';
   const rejects = (history: unknown, msg: RegExp) =>

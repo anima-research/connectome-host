@@ -1,11 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { resolveAgentName } from '../src/agent-name.js';
 
-// The whole point of this helper is to prevent the priority chain from
-// silently drifting (e.g. someone refactors "sidecar wins over CLI"
-// because the sidecar is "the source of truth"). Spell every case out so
-// any reversal lights up here, not in a six-month-later autobiography hole.
-
 describe('resolveAgentName', () => {
   test('explicit wins over sidecar and default', () => {
     const r = resolveAgentName({ explicit: 'CLI', sidecar: 'Sidecar', default: 'D' });
@@ -38,10 +33,6 @@ describe('resolveAgentName', () => {
   });
 
   test('mismatch reported when explicit and sidecar disagree', () => {
-    // Operator override still wins — but the mismatch is surfaced so the
-    // caller can log a warning. A previous warmup writing summaries under
-    // the sidecar name leaves them orphaned when the live agent runs
-    // under the explicit override; the user should know.
     const r = resolveAgentName({ explicit: 'CLI', sidecar: 'OldImport', default: 'D' });
     expect(r.name).toBe('CLI');
     expect(r.source).toBe('explicit');

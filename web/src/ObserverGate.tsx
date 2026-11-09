@@ -1,11 +1,3 @@
-/**
- * Full-screen gate shown when this device's observer key is not granted on
- * this agent ('denied') or WebCrypto is unavailable ('unavailable' —
- * insecure context). Shows the device fingerprint to hand to the agent /
- * operator, and offers password sign-in as the fallback (navigating to
- * /auth/basic triggers the browser's basic-auth prompt; with cached
- * credentials the subsequent WS upgrade authenticates as a full client).
- */
 import { createResource, Show } from 'solid-js';
 import { deviceFingerprint } from './observer-identity';
 

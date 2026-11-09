@@ -1,48 +1,87 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
+import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
+import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
+import { leavesOutChangedThinking, modelThinking } from './logging-adapter.js';
+import { getDefaultModelLimits } from './model-limits.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
 
-/** Compile budget for a recipe that omits `agent.contextBudgetTokens`. Sized
- *  for the 1M-window models; a recipe on a smaller window must set its own
- *  (budget + maxTokens has to fit under the window). */
-export const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
-
-/** The compile budget the recipe configures: its own, else the default. A
- *  runtime override (agent settings) can still move the live budget. */
-export function effectiveContextBudgetTokens(recipe: Recipe): number {
-  return recipe.agent.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS;
+/**
+ * An agent-framework that predates `agent.autoContinue` (agent-framework#744)
+ * passes the key through and builds the agent without it, so turns end as
+ * before with no other sign. One that supports it gives the built agent
+ * (framework.getAgent) `autoContinue`, resolved.
+ */
+export function autoContinueSupportWarning(recipe: Recipe, agent: object | undefined): string | undefined {
+  if (!recipe.agent.autoContinue || !agent) return undefined;
+  if ((agent as { autoContinue?: unknown }).autoContinue !== undefined) return undefined;
+  return '[agent-settings] agent.autoContinue is set, but the installed agent-framework predates it ' +
+    '(agent-framework#744): turns end as before, without continuing, until it is upgraded.';
 }
 
 export type FrameworkAgentConfig = AgentConfig & {
-  // Forward recipe fields that newer Agent Framework releases understand
-  // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  autoContinue?: Recipe['agent']['autoContinue'];
+  thinkingBinding?: { binds?: boolean; dropBlock?: boolean };
 };
 
+/** The drop control and the window go only on the Anthropic route, the one
+ *  they were tried on (anima-research/context-manager#155). Where the start-up
+ *  probe found the account still shows the model a block whose earlier
+ *  conversation changed, neither the binding nor the control goes: the
+ *  thinking is the model's to read, and the control would have it dropped. */
+export function thinkingBindingSettings(model: string, provider: string | undefined): {
+  thinkingBinding?: { binds: true; dropBlock: boolean };
+  physicalWindowTokens?: number;
+} {
+  const facts = modelThinking(model);
+  if (!facts.binds) return {};
+  const direct = provider === 'anthropic';
+  const window = direct && facts.windowShownByRefusal ? getDefaultModelLimits(model)?.maxContextTokens : undefined;
+  return {
+    ...(leavesOutChangedThinking(model) ? { thinkingBinding: { binds: true as const, dropBlock: direct && facts.dropBlock } } : {}),
+    ...(window !== undefined ? { physicalWindowTokens: window } : {}),
+  };
+}
+
+/** The paragraph hosts 0.16.0 to 0.20.x appended to a binding model's system
+ *  prompt about folds taking an agent's earlier reasoning. The host no longer
+ *  adds it: an agent isn't told about the mechanics of its own memory or
+ *  reasoning in standing text. */
+const LEGACY_FOLD_LINE =
+  'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
+  'so a reply of yours that shows no reasoning may still have had some.';
+
+/** The system prompt an agent is given: the recipe's (or a launch's), with the
+ *  legacy fold paragraph taken off where a prompt still carries it, such as a
+ *  fork's copy of a parent's prompt from a host that added it. */
+export function systemPromptFor(systemPrompt: string): string {
+  if (systemPrompt === LEGACY_FOLD_LINE) return '';
+  return systemPrompt.endsWith(`\n\n${LEGACY_FOLD_LINE}`)
+    ? systemPrompt.slice(0, -(LEGACY_FOLD_LINE.length + 2))
+    : systemPrompt;
+}
+
 /**
- * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7
- * Sonnet, and Claude 4+ — but NOT for 3.5 Sonnet (either version). 1022
- * ("3.6") was in the Dec 2024 preview and was dropped at GA — that
- * account-level "your request did not allow prompt caching" is the error
- * observed here 2026-07-21 (antra's diagnosis, confirmed against the AWS
- * docs 2026-07-31; as of the same day's live probe every 3.5-era model
- * is EOL on Bedrock anyway). So the gate denies the pre-GA FAMILIES —
- * Claude v2/instant, Claude 3, 3.5 Sonnet — at the family boundary, so
- * dated ids, bare aliases, -latest, and inference-profile forms
- * (us.anthropic.claude-...) all resolve the same; 3.5 Haiku and 3.7
- * Sonnet stay distinct and on. Non-Claude Bedrock ids (Nova etc.) are
- * out of scope for this gate and conservatively off — membrane's
- * BedrockAdapter only accepts Claude ids today. recipe.agent.
- * promptCaching overrides in either direction for accounts/regions
- * whose entitlements differ from the GA table. (Connectome issue #35.)
+ * agent-framework's `codeExecution` option as `AgentFramework.create` takes it:
+ * the recipe's block when it has one, and nothing otherwise, so an agent-framework without the option reads nothing it
+ * doesn't know.
+ */
+export function codeExecutionOption(recipe: Recipe): { codeExecution?: NonNullable<Recipe['codeExecution']> } {
+  return recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {};
+}
+
+/**
+ * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7 Sonnet,
+ * and Claude 4+, but not for 3.5 Sonnet (either version): 1022 ("3.6") was
+ * in the Dec 2024 preview and was dropped at GA, and Bedrock refuses it with
+ * an account-level "your request did not allow prompt caching".
  */
 export function bedrockModelSupportsPromptCaching(model: string): boolean {
   const id = model.toLowerCase();
   if (!id.includes('claude')) return false;
-  // (?![a-z0-9]) = family boundary: end of id, or a separator (-, ., :)
-  // before a date/qualifier — matches the whole family, not one spelling.
   return !/claude-(v2|instant|3-(opus|sonnet|haiku)|3-5-sonnet)(?![a-z0-9])/.test(id);
 }
 
@@ -53,12 +92,10 @@ export function resolvePromptCaching(recipe: Recipe, model: string): boolean | u
 }
 
 /**
- * Membrane-level counterpart of resolvePromptCaching, spread into the
- * Membrane constructor config. The per-agent flag only governs agent
- * inference; internal callers (autobio compression, executeMerge) read
- * Membrane's defaultPromptCaching — so an explicit recipe override must
- * land at BOTH layers, on every provider, or `promptCaching: false` on
- * an Anthropic recipe would silently keep caching on for internal calls.
+ * Callers inside the agent's strategy, such as context-manager's
+ * autobiographical compression and merge, send requests that don't set
+ * promptCaching, which membrane's defaultPromptCaching then decides, so a
+ * recipe's override is set at both layers.
  */
 export function membraneCachingOverride(
   recipe: Recipe,
@@ -75,6 +112,7 @@ export function buildFrameworkAgentConfig(
   strategy: FrameworkAgentConfig['strategy'],
 ): FrameworkAgentConfig {
   const promptCaching = resolvePromptCaching(recipe, model);
+  const contextBudgetTokens = effectiveContextBudgetTokens(recipe, model);
   let thinking: FrameworkAgentConfig['thinking'];
   if (recipe.agent.thinking) {
     // Effort is a host setting sent as output_config.effort, never as thinking.effort.
@@ -83,32 +121,21 @@ export function buildFrameworkAgentConfig(
   }
   return {
     name: agentName,
+    ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
-    systemPrompt: recipe.agent.systemPrompt,
+    systemPrompt: systemPromptFor(recipe.agent.systemPrompt),
     ...(recipe.agent.allowedTools !== undefined
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),
-    maxTokens: recipe.agent.maxTokens ?? 16384,
-    // An omitted maxStreamTokens follows the budget (+20k) only when the
-    // budget is the host default too. A recipe that sets its own budget may be
-    // on a 200k-window model, where budget + 20k would let a stream grow past
-    // the window; it keeps the framework's historical 150k.
+    maxTokens: effectiveMaxTokens(recipe),
     maxStreamTokens: recipe.agent.maxStreamTokens
-      ?? (recipe.agent.contextBudgetTokens === undefined ? DEFAULT_CONTEXT_BUDGET_TOKENS + 20_000 : 150_000),
-    contextBudgetTokens: effectiveContextBudgetTokens(recipe),
-    // cacheTtl is withheld at the HOST layer on bedrock: the transport
-    // only has the default 5m cache, and older membrane releases forward
-    // the ttl field Bedrock rejects. Note this is not the whole story —
-    // Agent Framework still supplies its own default ('1h') downstream
-    // when the host omits the field, and membrane ≥0.5.77 strips it at
-    // the provider boundary before wire dispatch. Requests are safe, but
-    // pre-adapter config is NOT cache-TTL telemetry; the wire truth lives
-    // at the adapter.
+      ?? (recipe.agent.contextBudgetTokens === undefined ? contextBudgetTokens + 20_000 : 150_000),
+    contextBudgetTokens,
+    // Bedrock offers only the default 5m cache, so cacheTtl isn't forwarded
+    // there. agent-framework sends its own default ('1h') when the host omits it.
     ...(recipe.agent.cacheTtl && recipe.agent.provider !== 'bedrock'
       && { cacheTtl: recipe.agent.cacheTtl }),
     ...(promptCaching !== undefined && { promptCaching }),
-    // Prefill scaffold (anthropic-xml formatter), e.g. chapterx CLI-sim's
-    // '<cmd>cat untitled.txt</cmd>' — part of migrating prefill-era bots.
     ...(recipe.agent.prefillUserMessage && { prefillUserMessage: recipe.agent.prefillUserMessage }),
     ...((recipe.agent.provider === 'openai-responses' || recipe.agent.provider === 'openai-codex') && {
       providerParams: {
@@ -131,6 +158,7 @@ export function buildFrameworkAgentConfig(
     }),
     strategy,
     ...(thinking && { thinking }),
+    ...thinkingBindingSettings(model, resolveProvider(recipe)),
     ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
@@ -138,8 +166,15 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.proseRouting !== undefined
       ? { proseRouting: recipe.agent.proseRouting }
       : {}),
+    ...(recipe.agent.proseLock !== undefined
+      ? { proseLock: recipe.agent.proseLock }
+      : {}),
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
       : {}),
+    ...(recipe.agent.autoContinue !== undefined
+      ? { autoContinue: recipe.agent.autoContinue }
+      : {}),
+    ...(recipe.agent.clock === false ? {} : { clock: recipe.agent.clock ?? { ...DEFAULT_RECIPE_CLOCK } }),
   };
 }

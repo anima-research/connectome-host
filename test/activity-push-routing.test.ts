@@ -1,9 +1,3 @@
-/**
- * ActivityModule's routing hints: typing in a channel echoes the newest
- * message's metadata back to its server. A message addressed to the agent
- * from a channel it hasn't opened arrives as an `mcpl:push-event`, and its
- * origin carries the hints, such as zulip_mcp's topic.
- */
 import { expect, test } from 'bun:test';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
 import { ActivityModule } from '../src/modules/activity-module.js';
@@ -47,8 +41,6 @@ test("a push that isn't a person's message addressed to the agent leaves the hin
     { source: 'zulip', mcplChannelId: 'zulip:general', stream: 'general', topic: 'standup', isMention: true },
     ['chat:mention', 'chat:from-human', 'chat:addressed'],
   );
-  // A person's ambient message, zulip_mcp's catch-up summary of missed
-  // messages (no topic, no sender tag), and a bot's mention.
   await push({ source: 'zulip', mcplChannelId: 'zulip:general', topic: 'chatter' }, ['chat:ambient', 'chat:from-human']);
   await push({ source: 'zulip', mcplChannelId: 'zulip:general', missed: true }, ['zulip:missed', 'chat:mention', 'chat:addressed']);
   await push({ source: 'zulip', mcplChannelId: 'zulip:general', topic: 'bots', isMention: true }, ['chat:mention', 'chat:from-bot', 'chat:addressed']);

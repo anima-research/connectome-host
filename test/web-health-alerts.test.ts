@@ -1,16 +1,9 @@
-/**
- * WebUI alert strip, /healthz reconciliation (web/src/health-alerts.ts):
- * a compression-quarantine or inference-exhausted row clears once its agent
- * leaves the snapshot's agents list, as an ephemeral subagent does when it is
- * torn down (#149), whatever raised the row. Rows of other kinds stay.
- */
 import { test, expect } from 'bun:test';
 import { planHealthAlerts } from '../web/src/health-alerts';
 import type { HealthSnapshot } from '../web/src/Health';
 
 type Alerts = Map<string, { message: string }>;
 
-/** Apply a plan as App.tsx does: its removals, then its upserts. */
 function apply(h: HealthSnapshot, alerts: Alerts): void {
   const plan = planHealthAlerts(h, alerts);
   for (const key of plan.remove) alerts.delete(key);
@@ -39,7 +32,6 @@ test('a subagent quarantine row clears when the subagent leaves the snapshot', (
   }, alerts);
   expect(alerts.has(`${SUB}:compression-quarantine`)).toBe(true);
 
-  // Torn down: gone from the agent list and from the quarantine map.
   apply({ agents: [{ name: 'main' }], compressionQuarantine: { main: { count: 0 } } }, alerts);
   expect(alerts.has(`${SUB}:compression-quarantine`)).toBe(false);
 });
@@ -87,7 +79,6 @@ test("a streak row comes at three failures, and is rewritten when its count chan
   apply({ agents: [{ name: 'main', consecutiveInferenceFailures: 3 }] }, alerts);
   expect(alerts.get('main:inference-exhausted')?.message).toBe('3 consecutive inference failures — agent is down.');
 
-  // The count alone changes, with a last inference that names no error.
   apply({ agents: [{ name: 'main', consecutiveInferenceFailures: 5, lastInference: {} }] }, alerts);
   expect(alerts.get('main:inference-exhausted')?.message).toBe('5 consecutive inference failures — agent is down.');
 
@@ -114,7 +105,6 @@ test('present agents keep the existing behaviour', () => {
   const down = { agents: [{ name: 'main', consecutiveInferenceFailures: 3 }], compressionQuarantine: { main: { count: 2 } } };
   apply(down, alerts);
   expect([...alerts.keys()].sort()).toEqual(['main:compression-quarantine', 'main:inference-exhausted']);
-  // An unchanged condition is not rewritten.
   expect(planHealthAlerts(down, alerts).upsert).toEqual([]);
   apply({ agents: [{ name: 'main' }], compressionQuarantine: { main: { count: 0 } } }, alerts);
   expect(alerts.size).toBe(0);

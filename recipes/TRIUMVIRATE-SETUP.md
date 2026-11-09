@@ -21,7 +21,7 @@ You watch it all from one terminal.
 
 | Tool / resource | Why | Install / obtain |
 |---|---|---|
-| [Node.js](https://nodejs.org/) 22.12+ | Builds connectome-host's Web UI when it installs, and runs the Zulip MCP server | `nvm install 22` or download from nodejs.org |
+| [Node.js](https://nodejs.org/) 22.12+ | Builds connectome-host's Web UI (`bun run build:web`), and runs the Zulip MCP server | `nvm install 22` or download from nodejs.org |
 | [Bun](https://bun.sh/) 1.4.3+ | Runs connectome-host itself | `curl -fsSL https://bun.sh/install \| bash` |
 | [Anthropic API key](https://console.anthropic.com/) | LLM access for all four agents | Sign up at console.anthropic.com — note that four agents run concurrently, so expect proportionally higher API spend |
 | A Zulip account with admin access | Needed to create a bot and a dedicated channel | Your organization's Zulip |
@@ -35,6 +35,7 @@ The triumvirate is currently supported on **Linux / macOS / WSL2**. Windows supp
 git clone https://github.com/anima-research/connectome-host.git
 cd connectome-host
 bun install
+bun run build:web     # the Web UI
 ```
 
 Verify it works in isolation before adding any agents:
@@ -275,7 +276,7 @@ and set `GEMINI_API_KEY=...` in `.env`.
 
 You can also edit the recipe files if you want to:
 
-- **Rename the clerk's channel** — change `ZULIP_CHANNEL` in `.env`. `recipes/clerk.json` uses it everywhere the channel appears: `ZULIP_SUBSCRIBE`, the `channelSubscription` allow-list, the typing-indicator channel and the `tracker-channel` wake policy. An existing clerk session keeps the `tracker-channel` policy it was first seeded with (restarts only add policies that are missing by name), so ask the clerk (`@clerk …`) to update that policy with its `wake_add_rule` tool.
+- **Rename the clerk's channel** — change `ZULIP_CHANNEL` in `.env`. `recipes/clerk.json` uses it everywhere the channel appears: `ZULIP_SUBSCRIBE`, the `channelSubscription` allow-list, the typing-indicator channel and the `tracker-channel` wake policy. An existing clerk session keeps the `tracker-channel` policy it was first seeded with (restarts only add policies that are missing by name), so ask the clerk (`@clerk …`) to update that policy with `wake_add_rule`, in its built-in `settings` toolset (or its tool list, if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`).
 - **Swap a model** — the conductor and clerk pin `"model": "claude-opus-4-6"`, the reviewer `claude-sonnet-4-6`; change the field in the relevant recipe. `recipes/knowledge-miner.json` has no `model` field, so the miner runs `claude-opus-4-6` until you add one. Setting `MODEL` in `.env` overrides the model of every agent — the children inherit the conductor's environment.
 - **Adjust autoStart** — in `recipes/triumvirate.json`, set `"autoStart": false` on any child if you want to leave them inactive until you (or the conductor) explicitly launch them.
 
