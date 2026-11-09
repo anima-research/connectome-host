@@ -490,8 +490,8 @@ describe('a failure that isn\'t the host\'s own reaches the parent as fixed word
   }
 
   /** agent-framework's companion change rejects with a bounded copy of membrane's error as the cause. */
-  const typed = (type: string, httpStatus?: number) => new Error('the model call failed', {
-    cause: Object.assign(new Error(SENTINEL), { name: 'MembraneError', type, retryable: false, ...(httpStatus !== undefined ? { httpStatus } : {}) }),
+  const typed = (type: string, httpStatus?: number, providerWords = SENTINEL) => new Error('the model call failed', {
+    cause: Object.assign(new Error(providerWords), { name: 'MembraneError', type, retryable: false, ...(httpStatus !== undefined ? { httpStatus } : {}) }),
   });
   const types: Array<[cause: () => Error, why: string]> = [
     [() => typed('invalid_request', 404), 'the model call failed (invalid_request, HTTP 404)'],
@@ -500,14 +500,16 @@ describe('a failure that isn\'t the host\'s own reaches the parent as fixed word
     [() => typed('unsupported'), 'the model call failed (unsupported)'],
     [() => typed('rate_limit', 429), 'the model call failed (rate_limit, HTTP 429)'],
     [() => typed('server', 503), 'the model call failed (server, HTTP 503)'],
-    [() => typed('unknown'), 'the model call failed (unknown)'],
+    [() => typed('unknown'), 'the turn failed'],
+    [() => typed('unknown', undefined, `the upstream is overloaded: ${SENTINEL}`), 'the model call failed (timeout, network or server)'],
+    [() => typed('server', undefined, `upstream overloaded_error: ${SENTINEL}`), 'the model call failed (timeout, network or server)'],
     [() => typed('timeout'), 'the model call timed out'],
     [() => typed('timeout', 408), 'the model call timed out (HTTP 408)'],
     [() => typed('safety', 400), "the request couldn't be completed"],
     [() => typed('a-type-of-its-own', 400), 'the turn failed'],
   ];
   for (const [cause, why] of types) {
-    test(`a cause membrane typed reads as its type, as agent-framework words it: ${why}`, async () => {
+    test(`a cause membrane typed by its fields reads as its type, else as its class: ${why}`, async () => {
       const h = await harness({ maxRetries: 0 }, async () => { throw cause(); });
       try {
         expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(stopped(why));

@@ -2758,9 +2758,11 @@ export class SubagentModule implements Module {
         return `the provider asked to wait ${asked}, which a subagent's run doesn't sleep`;
       }
       // A type from membrane's own set and a number are membrane's words, not
-      // the provider's, so they're shown as agent-framework words them.
+      // the provider's, so they're shown in agent-framework's form for a
+      // membrane error. Where the fields don't decide the class, the class
+      // words below say what the host decided instead.
       const cause = this.membraneCause(err);
-      if (cause && MEMBRANE_TYPES.has(cause.type)) {
+      if (cause && MEMBRANE_TYPES.has(cause.type) && this.fieldsDecide(cause)) {
         const status = cause.httpStatus !== undefined ? `HTTP ${cause.httpStatus}` : undefined;
         if (cause.type === 'safety') return "the request couldn't be completed";
         if (cause.type === 'timeout') return `the model call timed out${status ? ` (${status})` : ''}`;
