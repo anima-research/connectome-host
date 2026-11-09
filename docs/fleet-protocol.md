@@ -266,7 +266,7 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--status` | `name?` | Detailed record (shows the *requested* subscription, before the forced union below). |
 | `fleet--send` | `name, content` | Send a `text` command. |
 | `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). |
-| `fleet--peek` | `name, lines?=50` | Last N raw events from the child's 500-event ring buffer. |
+| `fleet--peek` | `name, lines?=50` | Last N raw events from the child's 500-event ring buffer, leaving out its thinking tokens (`inference:tokens` with `blockType: 'thinking'`). |
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
 | `fleet--relay` | `from, to, prefix?` | Send to `to` the last `inference:speech` this host has had from `from` since its connection to `from` last opened. Refused when that frame is `""`, a round with no text, and while this host has no connection to a `from` that may be running (below). |

@@ -8,3 +8,9 @@
   a subagent opens on that text too, and the live tail beside it still shows
   the thinking as it streams. A round that has only thought so far still
   counts as streaming, so it isn't reclaimed as a zombie or listed as idle.
+- `fleet--peek` leaves out a child's thinking tokens (`inference:tokens`
+  with `blockType: 'thinking'`), and its `lines` counts the events it
+  gives. Only the tool changes: the child's buffer still holds them, and
+  the TUI and Web UI still get every event. A child adopted from a release
+  before 0.24.0 still sends `inference:speech` with its thinking in it,
+  which `fleet--peek` gives as it came, until that child restarts.
