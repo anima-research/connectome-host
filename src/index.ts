@@ -39,6 +39,7 @@ import {
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
+import { priceStepNote } from './recipe-fit.js';
 import { gateOptionsFor } from './gate-options.js';
 import { heartbeatOptionsFor, withoutHeartbeatMcpl } from './heartbeat-options.js';
 import { CredentialMonitor } from './credential-state.js';
@@ -868,6 +869,8 @@ async function main() {
   const provider = resolveProvider(recipe);
   const fit = runningFit(recipe, config.model);
   if (!fit.checked) console.log(fit.line);
+  const priceStep = priceStepNote(recipe, recipeModel(recipe, config.model));
+  if (priceStep) console.log(priceStep);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');

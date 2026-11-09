@@ -1,5 +1,6 @@
 import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG, defaultTokenEstimator } from '@animalabs/context-manager';
 import { getDefaultModelLimits, type ModelLimits } from './model-limits.js';
+import { openaiLongContextStep } from './call-pricing.js';
 import { resolveProvider, type Recipe } from './recipe.js';
 
 const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
@@ -387,4 +388,39 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
       ? sentence(ways) + (atAnEnd ? ` ${AT_AN_END}` : '')
       : `No budget, no lower ${lowerList}, and no shorter system prompt fits it alone.`),
   };
+}
+
+const usd = (rate: number) => `$${rate.toFixed(Math.max(2, (String(rate).split('.')[1] ?? '').length))}`;
+
+function listed(parts: string[]): string {
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0] ?? '';
+}
+
+/** The note the host prints once at start where a recipe on OpenAI's API can
+ *  send requests past its model's long-context step, by the fit's own
+ *  reckoning: the budget, the system prompt and the room kept for the tools
+ *  over the step. Undefined on any other provider, for a model the pricing
+ *  table doesn't step, and for a budget whose requests stay under it. */
+export function priceStepNote(recipe: Recipe, model: string): string | undefined {
+  if (resolveProvider(recipe) !== 'openai-responses' || typeof model !== 'string') return undefined;
+  const step = openaiLongContextStep(model, recipe.agent.responses?.serviceTier);
+  if (!step) return undefined;
+  const budget = effectiveContextBudgetTokens(recipe, model);
+  if (!isTokenSize(budget)) return undefined;
+  const system = systemPromptTokens(recipe);
+  if (budget + system + TOOLS_ROOM_TOKENS <= step.tokens) return undefined;
+  const { long, short } = step;
+  const kinds = (['input', 'cached', 'output'] as const).filter((k) => long?.[k] !== undefined && short[k] !== undefined);
+  const name = { input: 'input', cached: 'cached input', output: 'output' };
+  const rates = long
+    ? `at its long-context rates for the whole request: ${listed(kinds.map((k) => `${usd(long[k]!)} ${name[k]}`))} per million tokens, ` +
+      `against ${listed(kinds.map((k) => usd(short[k]!)))} under it`
+    : `at long-context rates for the whole request, which the pricing page doesn't list for this tier`;
+  const said = recipe.agent.contextBudgetTokens === undefined || recipe.agent.contextBudgetTokens === null
+    ? `The budget the host gives this recipe, ${n(budget)},`
+    : `Recipe agent.contextBudgetTokens (${n(budget)}),`;
+  const under = step.tokens - system - TOOLS_ROOM_TOKENS;
+  return `[price] ${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens ${rates}. ` +
+    `${said} with the system prompt (about ${n(system)} tokens) and ${n(TOOLS_ROOM_TOKENS)} for tools, can take a request past that line. ` +
+    (under > 0 ? `A budget of ${n(under)} or less keeps one under it.` : `No budget keeps one under it, since the system prompt and the tools' room fill it.`);
 }

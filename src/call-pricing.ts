@@ -9,15 +9,14 @@
  * Anthropic bills cache READS at 0.1x input on every model but four: Claude
  * Fable 5.1 and Claude Mythos 5.1 read at 0.025x ($0.25/MTok), a quarter of
  * the 5 pair's rate, and Claude Opus 5.5 and Claude Sonnet 5.5 at 0.05x
- * ($0.20 and $0.10/MTok). This table gives the first three their rates, and
- * Sonnet 5.5 0.1x: see the Sonnet 5 entry.
+ * ($0.20 and $0.10/MTok).
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
  */
 
 import type { CallCostBreakdown } from './web/protocol.js';
 
-export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-19';
+export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-11-09';
 
 const DEFAULT_CACHE_READ_MULTIPLIER = 0.1;
 
@@ -110,16 +109,12 @@ function anthropicBaseRate(model: string, promptTokens: number): BaseRate | unde
     'claude-opus-4-5',
   )) return rate(5, 25);
 
+  // Sonnet 5.5 before the Sonnet 5 group, whose 'claude-sonnet-5' prefix also
+  // matches it: $2/$10, cache reads $0.10 (0.05x).
+  if (starts(model, 'claude-sonnet-5-5')) return rate(2, 10, 0.05);
+
   // Sonnet 5 is $2/$10: "The $2/$10 per million input/output token pricing for
   // Claude Sonnet 5 ... is now the standard price." (pricing page)
-  //
-  // Sonnet 5.5 matches this prefix too, so it's priced at $2/$10 with 0.1x
-  // reads, where the pricing page gives its cache reads 0.05x ($0.10/MTok),
-  // and the ledger overstates them twofold. The same multiple is the
-  // kv-unified solver's cache-read price (anthropicCacheReadMultiplier, read
-  // by standardKvUnifiedConfig), so giving Sonnet 5.5 0.05x here also changes
-  // what the solver weighs for a Sonnet 5.5 agent, which can change the layout
-  // it picks and rewrite that agent's prompt cache.
   if (starts(model, 'claude-sonnet-5')) return rate(2, 10);
 
   if (starts(model,
@@ -150,15 +145,18 @@ export function anthropicCacheReadMultiplier(model: string): number {
 }
 
 /**
- * OpenAI cache prices as multiples of a model's uncached input.
+ * OpenAI cache prices as multiples of a model's uncached input, the same for
+ * reads on the API and in Codex credits. Codex credit billing has no
+ * cache-write charge on any model.
  *
- * - Writes: the API bills them at 1.25x for the GPT-5.6 and GPT-6 families
- *   (the models its pricing table gives a cache-write price) and charges
- *   nothing extra for the rest. Codex credit billing has no cache-write
- *   charge on any model.
- * - Reads: the cached-input rate, the same ratio on the API and in Codex
- *   credits: 0.05x GPT-6.1 Sol, 0.25x gpt-4.1 / o3 / o4-mini, 0.5x gpt-4o /
- *   o1 / o3-mini, 0.1x everything else.
+ * - A model `OPENAI_RATES` lists takes its standard row's short (or only)
+ *   rates: reads at its cached-input rate, or 1 where the pricing page gives
+ *   none, as for the pro models, and writes on the API at its 30-minute write
+ *   rate, or 1 where the page gives none.
+ * - A name it doesn't list takes its prefix's: writes on the API at 1.25x for
+ *   the GPT-5.6 and GPT-6 families and 1 for the rest, and reads at 0.05x
+ *   GPT-6.1 Sol, 0.25x gpt-4.1 / o3 / o4-mini, 0.5x gpt-4o / o1 / o3-mini,
+ *   0.1x everything else.
  *
  * Sources: https://developers.openai.com/api/docs/pricing and
  * https://learn.chatgpt.com/docs/pricing.
@@ -168,6 +166,12 @@ export function openaiCacheMultipliers(
   transport: 'api' | 'codex',
 ): { read: number; write: number } {
   const bare = model.replace(/^openai\//, '');
+  const row = Object.hasOwn(OPENAI_RATES.standard, bare) ? OPENAI_RATES.standard[bare] : undefined;
+  if (row) {
+    const rates = 'flat' in row ? row.flat : row.short;
+    const multiple = (rate: number | undefined) => (rate === undefined ? 1 : Math.round((rate / rates.input) * 1e6) / 1e6);
+    return { read: multiple(rates.cached), write: transport === 'api' ? multiple(rates.write30m) : 1 };
+  }
   const writePremium = transport === 'api' && starts(bare, 'gpt-6', 'gpt-5.6');
   return { read: openaiCacheReadMultiplier(bare), write: writePremium ? 1.25 : 1 };
 }
@@ -208,10 +212,8 @@ export interface CallPrice {
  * where its provider, model, tier or usage has no list price: `openai-codex`
  * bills in credits, `openrouter` and `openai-compatible` carry a third
  * party's prices, and `bedrock` AWS's. Anthropic's is `priceAnthropicCall`'s,
- * its two cache writes summed, but a Claude Sonnet 5.5 call that reads from
- * the cache gets none, since that table's read rate for it isn't the page's.
- * OpenAI's 10% uplift for regional-processing and FedRAMP endpoints isn't
- * priced.
+ * its two cache writes summed. OpenAI's 10% uplift for regional-processing
+ * and FedRAMP endpoints isn't priced.
  */
 export function priceCall(call: PriceCallInput): CallPrice | undefined {
   if (call.provider === 'anthropic') return priceAnthropic(call);
@@ -221,9 +223,6 @@ export function priceCall(call: PriceCallInput): CallPrice | undefined {
 
 function priceAnthropic(call: PriceCallInput): CallPrice | undefined {
   if (call.cacheWrite30mTokens > 0 || call.cacheWrite12hTokens > 0) return undefined;
-  // The table reads Claude Sonnet 5.5's cache at 0.1x where the pricing page
-  // gives 0.05x (see its Sonnet 5 entry), so those reads have no list price here.
-  if (starts(call.model, 'claude-sonnet-5-5') && call.cacheReadTokens > 0) return undefined;
   const cost = priceAnthropicCall(call.model, '', call);
   if (!cost) return undefined;
   const context = anthropicBaseRate(call.model, anthropicPromptTokens(call))?.context;
@@ -244,7 +243,7 @@ export const OPENAI_PRICING_VERSION = 'openai-public-2026-11-09';
 
 const OPENAI_LONG_CONTEXT_TOKENS = 272_000;
 
-interface OpenAIRates {
+export interface OpenAIRates {
   input: number;
   output: number;
   cached?: number;
@@ -359,6 +358,21 @@ function openaiTier(serviceTier: string | undefined): keyof typeof OPENAI_RATES 
   if (tier === 'fast' || tier === 'priority') return 'fast';
   if (tier === 'ultrafast') return 'ultrafast';
   return undefined;
+}
+
+/** OpenAI's long-context step for a model on the API at a service tier
+ *  (`auto` read as standard): the step's input tokens and the tier's short
+ *  and long rates, `long` absent where the pricing page lists none.
+ *  Undefined for a name or tier the table doesn't price, and for a model it
+ *  prices in one column. */
+export function openaiLongContextStep(model: string, serviceTier: string | undefined):
+  { tier: keyof typeof OPENAI_RATES; tokens: number; short: OpenAIRates; long?: OpenAIRates } | undefined {
+  const tier = serviceTier === 'auto' ? 'standard' : openaiTier(serviceTier);
+  if (!tier) return undefined;
+  const name = model.replace(/^openai\//, '');
+  const row = Object.hasOwn(OPENAI_RATES[tier], name) ? OPENAI_RATES[tier][name] : undefined;
+  if (!row || 'flat' in row) return undefined;
+  return { tier, tokens: OPENAI_LONG_CONTEXT_TOKENS, short: row.short, ...(row.long ? { long: row.long } : {}) };
 }
 
 function priceOpenAI(call: PriceCallInput): CallPrice | undefined {
