@@ -17,6 +17,7 @@ import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecuti
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
+import { isBuiltinStrategyType } from './extensions.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
@@ -189,8 +190,6 @@ export interface RecipeStrategy {
    *  mixed targets keep identityReminder (context-manager
    *  witnessedIdentityReminder). */
   witnessedIdentityReminder?: string;
-  /** Follow the reminder with an instruction to apply it silently. */
-  identityReminderSilent?: boolean;
 }
 
 export interface RecipeKvUnifiedConfig {
@@ -2164,6 +2163,10 @@ const MOUNT_KEY_INSTEAD: Record<string, string> = {
 
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
+  'agent.strategy.identityReminderSilent':
+    'a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
+    'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+    'if it was true; if it was false, nothing',
 };
 
 function editDistance(a: string, b: string): number {
@@ -2214,6 +2217,13 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     check('agent.strategy.kvUnified.', kvUnified, RECIPE_KV_UNIFIED_KEYS);
     if (isObject(kvUnified)) {
       check('agent.strategy.kvUnified.policy.', kvUnified.policy, RECIPE_KV_UNIFIED_POLICY_KEYS);
+    }
+    const strategy = obj.agent.strategy;
+    if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
+      for (const key of Object.keys(strategy)) {
+        const path = `agent.strategy.${key}`;
+        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+      }
     }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);

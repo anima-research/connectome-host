@@ -9,11 +9,11 @@
   for one that had no text, where it
   sent nothing for such a round. So `fleet--relay` no longer hands on a
   child's earlier reply as its latest when its latest round said nothing:
-  it relays nothing and says the latest round it saw had no text. `connectome
-  send` prints nothing for such a round, where with thinking on it printed
-  the thinking, and now says on stderr that the agent's turn ended without
-  saying anything, as it already did with thinking off. A turn that ends on
-  a tool, such as `skip_reply`, still sends no frame.
+  it relays nothing and says the latest round it saw had no text.
+  `connectome send` prints nothing for such a round, where with thinking
+  on it printed the thinking, and says on stderr that the agent's turn
+  ended without saying anything. A turn that ends on a tool, such as
+  `skip_reply`, still sends no frame.
 - With refusal retries on, a headless host's `inference:speech` no longer
   carries a refused attempt's text. agent-framework discards a refused
   attempt with an empty text token, which the host skipped, so a refused
@@ -25,8 +25,6 @@
   must not surface prose. `fleet--relay` handed that text to another
   child as the child's latest reply; the child's latest reply now stays
   its last one that wasn't silent, until this host connects to it again.
-- A child a fleet parent adopted from an earlier release, still running,
-  keeps sending that release's frame until it's restarted: thinking
-  included, a silent heartbeat's text included, and none for a round that
-  streamed nothing. So what `fleet--relay` hands on from such a child is as
+- A child a fleet parent adopted from an earlier release keeps that
+  release's frame until it restarts, so `fleet--relay` hands on from it as
   before.
