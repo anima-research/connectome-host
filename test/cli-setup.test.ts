@@ -2959,3 +2959,16 @@ test('the line saying where the key is checked hides the key in any letter case 
   expect(shown).toContain('one call at https://<ANTHROPIC_API_KEY>.gateway.example to ');
   expect(shown.toLowerCase()).not.toContain(KEY);
 });
+
+test('the line saying setup uses the .env ANTHROPIC_BASE_URL over the exported one hides a stored secret its host carries, in any letter case', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\nANTHROPIC_BASE_URL=https://${KEY.toUpperCase()}.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] },
+    { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://elsewhere.example' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('which leads to https://<ANTHROPIC_API_KEY>.gateway.example, not the one exported in this shell');
+  expect(shown.toLowerCase()).not.toContain(KEY);
+});

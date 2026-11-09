@@ -11,6 +11,7 @@ import {
   batchWebUiNotice,
   batchEchoLine,
   BATCH_MCPL_LOG_NOTE,
+  BATCH_UNANSWERED_NOTICE,
 } from '../src/batch-mode.js';
 import { PIPED_TURN_CAP_MS } from '../src/piped-turns.js';
 
@@ -24,6 +25,11 @@ describe('batch-mode notices', () => {
     expect(line).toContain('stdin is not a TTY');
     expect(line).toContain('MCPL servers stop');
     expect(line).toContain('--headless');
+  });
+
+  test('the unanswered notice holds for a turn still running and for a line whose turn hasn\'t started', () => {
+    expect(BATCH_UNANSWERED_NOTICE).toBe('[batch] a line hasn\'t been answered yet, and batch mode stops the agent now, so its ' +
+      'answer won\'t print here');
   });
 
   test('the teardown notice counts and names the servers it closes', () => {
