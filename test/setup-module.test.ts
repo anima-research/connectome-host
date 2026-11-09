@@ -74,7 +74,6 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
   return module.handleToolCall({ id: 'c2', name: 'ask_secret', input } as ToolCall);
 }
 
-// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
 // Work held behind an open question waits on the module's asking with await, which calls a thenable's then.
 function heldAt(module: SetupModule): Promise<void> {
   const held = module as unknown as { asking: PromiseLike<unknown> };
@@ -84,6 +83,7 @@ function heldAt(module: SetupModule): Promise<void> {
   });
 }
 
+// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
 const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
 
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);

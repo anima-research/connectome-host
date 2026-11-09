@@ -113,7 +113,7 @@ test('the process exiting turns bracketed paste off', async () => {
   rl.close();
 });
 
-test('a SIGTERM turns bracketed paste off, then dies of the signal when nothing else in the process handles it', async () => {
+test('a SIGTERM turns bracketed paste off, takes its listeners off, and sends the process the signal again when nothing else handles it', async () => {
   const { signals, rl, settle, shown } = terminal();
   signals.emit('SIGTERM');
   await settle();
@@ -123,7 +123,7 @@ test('a SIGTERM turns bracketed paste off, then dies of the signal when nothing 
   rl.close();
 });
 
-test('a SIGINT or a SIGHUP sent to the host turns bracketed paste off too, then dies of its signal when nothing else handles it', async () => {
+test('a SIGINT or a SIGHUP turns bracketed paste off too, takes every listener of paste\'s off, and sends the process the signal again when nothing else handles it', async () => {
   for (const signal of ['SIGINT', 'SIGHUP']) {
     const { signals, rl, settle, shown } = terminal();
     signals.emit(signal);
