@@ -1270,3 +1270,25 @@ describe('what a run that ends without a result says, and to whom', () => {
     } finally { await h.cleanup(); }
   }, 30_000);
 });
+
+describe('a failed subagent\'s error stays with the operator', () => {
+  test('its status message keeps the error, and neither list nor peek shows it to a parent', async () => {
+    const SENTINEL = 'sentinel-6e2a provider said: invalid x-api-key';
+    const h = await harness({
+      responseGenerator: (r) => {
+        if (r.model === 'mock-refused') throw new Error(SENTINEL);
+        return 'ok';
+      },
+    });
+    try {
+      expect((await h.call('spawn', { name: 'scout', systemPrompt: 'p', task: 'answer', model: 'mock-refused', sync: true })).success).toBe(false);
+      const active = (h.subagent as unknown as { activeSubagents: Map<string, { status: string; statusMessage?: string }> }).activeSubagents;
+      expect(active.get('spawn-scout')?.status).toBe('failed');
+      expect(active.get('spawn-scout')?.statusMessage).toContain(SENTINEL);
+      const listed = await h.call('list', {});
+      expect(JSON.stringify(listed)).toContain('"name":"scout"');
+      const views = [listed, await h.call('peek', {}), await h.call('peek', { name: 'scout' })];
+      for (const view of views) expect(JSON.stringify(view)).not.toContain('sentinel-6e2a');
+    } finally { await h.cleanup(); }
+  }, 20_000);
+});
