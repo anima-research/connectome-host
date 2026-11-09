@@ -1,17 +1,19 @@
 // BedrockAdapter wrapper that appends each LLM call's request summary, stop
 // reason, and any error to the same `llm-calls.<iso>.jsonl` file the
-// Anthropic path uses. Purpose-built during the Aria bring-up (2026-07-21)
-// when a 0-token assistant turn proved undiagnosable: the bedrock transport
-// had no wire visibility at all.
-//
-// Kept deliberately lighter than LoggingAnthropicAdapter: request summaries
-// always include tool NAMES (were tools attached at all? — the question that
-// motivated this file), message/system sizes, and the stop sequences; the
-// full raw request is retained only on errors. Responses log stop_reason,
-// usage, and content-block shape (type + size per block) on every call.
+// Anthropic path uses. Request summaries always include tool NAMES,
+// message/system sizes, and the stop sequences; the full raw request is
+// retained only on errors. Responses log stop_reason, usage, and
+// content-block shape (type + size per block) on every call.
 //
 // Each line: { type: 'call'|'error', kind: 'complete'|'stream', timestamp,
-//   durationMs, requestSummary, response?, rawRequest?, error? }
+//   durationMs, requestSummary, response?, rawRequest?, error?, errorType?,
+//   httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
+// A failure's `error` is { name, message } with its text bounded, or a
+// non-Error's text. A record whose request or response couldn't be
+// summarized keeps only the head fields and, for a failure, the error
+// (summaryUnavailable: true). Every line, newline included, stays within the
+// shared 16 MiB UTF-8 cap: an oversized or unserializable record drops the
+// raw request first, then its summaries (`truncated` says what was dropped).
 
 import { BedrockAdapter } from '@animalabs/membrane';
 import type {
@@ -21,6 +23,8 @@ import type {
   StreamCallbacks,
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
+import { describeErrorObject } from './logging-error-fields.js';
+import { serializeRecord } from './logging-record.js';
 
 type BedrockConfig = ConstructorParameters<typeof BedrockAdapter>[0];
 
@@ -74,9 +78,35 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
 
   private log(record: Record<string, unknown>): void {
     try {
-      appendFileSync(this.logPath, JSON.stringify(record) + '\n');
+      appendFileSync(this.logPath, serializeRecord(record));
     } catch {
-      // Logging must never break inference.
+    }
+  }
+
+  private recordCall(
+    kind: 'complete' | 'stream',
+    request: ProviderRequest,
+    started: number,
+    rawRequest: unknown,
+    outcome: { response: ProviderResponse } | { error: unknown },
+  ): void {
+    try {
+      const errorFields = 'error' in outcome ? describeErrorObject(outcome.error, false) : undefined;
+      const head = {
+        type: errorFields ? 'error' : 'call', kind,
+        timestamp: new Date(started).toISOString(),
+        durationMs: Date.now() - started,
+      };
+      let record: Record<string, unknown>;
+      try {
+        record = 'response' in outcome
+          ? { ...head, requestSummary: summarizeRequest(request), response: summarizeResponse(outcome.response) }
+          : { ...head, requestSummary: summarizeRequest(request), rawRequest, ...errorFields };
+      } catch {
+        record = { ...head, summaryUnavailable: true, ...errorFields };
+      }
+      this.log(record);
+    } catch {
     }
   }
 
@@ -90,25 +120,15 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
       ...options,
       onRequest: (req) => { rawRequest = req; options?.onRequest?.(req); },
     };
+    let response: ProviderResponse;
     try {
-      const response = await super.complete(request, opts);
-      this.log({
-        type: 'call', kind: 'complete', timestamp: new Date(started).toISOString(),
-        durationMs: Date.now() - started,
-        requestSummary: summarizeRequest(request),
-        response: summarizeResponse(response),
-      });
-      return response;
+      response = await super.complete(request, opts);
     } catch (error) {
-      this.log({
-        type: 'error', kind: 'complete', timestamp: new Date(started).toISOString(),
-        durationMs: Date.now() - started,
-        requestSummary: summarizeRequest(request),
-        rawRequest,
-        error: error instanceof Error ? { message: error.message, name: error.name } : String(error),
-      });
+      this.recordCall('complete', request, started, rawRequest, { error });
       throw error;
     }
+    this.recordCall('complete', request, started, rawRequest, { response });
+    return response;
   }
 
   override async stream(
@@ -122,24 +142,14 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
       ...options,
       onRequest: (req) => { rawRequest = req; options?.onRequest?.(req); },
     };
+    let response: ProviderResponse;
     try {
-      const response = await super.stream(request, callbacks, opts);
-      this.log({
-        type: 'call', kind: 'stream', timestamp: new Date(started).toISOString(),
-        durationMs: Date.now() - started,
-        requestSummary: summarizeRequest(request),
-        response: summarizeResponse(response),
-      });
-      return response;
+      response = await super.stream(request, callbacks, opts);
     } catch (error) {
-      this.log({
-        type: 'error', kind: 'stream', timestamp: new Date(started).toISOString(),
-        durationMs: Date.now() - started,
-        requestSummary: summarizeRequest(request),
-        rawRequest,
-        error: error instanceof Error ? { message: error.message, name: error.name } : String(error),
-      });
+      this.recordCall('stream', request, started, rawRequest, { error });
       throw error;
     }
+    this.recordCall('stream', request, started, rawRequest, { response });
+    return response;
   }
 }

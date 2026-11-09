@@ -1,24 +1,10 @@
-/**
- * Device observer identity (docs/observability.md §3, browser side).
- *
- * On first use the SPA generates a NON-EXTRACTABLE Ed25519 keypair via
- * WebCrypto and persists the CryptoKey objects in IndexedDB — the private
- * key never exists as bytes the page (or an XSS) could read. The public
- * fingerprint (`ed25519:<base64url raw>`) is what a human shows to the
- * agent/operator to be granted (`observers--grant`).
- *
- * Requires a secure context (https or localhost) — WebCrypto is absent on
- * plain-http non-localhost origins. Callers get `null` and should offer
- * password sign-in instead.
- */
-
 const DB_NAME = 'fkm-observer';
 const STORE = 'keys';
 const KEY_ID = 'device-key';
+const PRIVATE_KEY_EXTRACTABLE = false;
 
 interface DeviceKey {
   keyPair: CryptoKeyPair;
-  /** `ed25519:<base64url raw 32-byte public key>` */
   id: string;
 }
 
@@ -58,13 +44,11 @@ async function fingerprintOf(publicKey: CryptoKey): Promise<string> {
   return `ed25519:${b64url(raw)}`;
 }
 
-/** Ed25519 support probe — false on insecure contexts and old browsers. */
+/** crypto.subtle is absent outside a secure context (https or localhost). */
 export function observerCryptoAvailable(): boolean {
   return typeof crypto !== 'undefined' && !!crypto.subtle && typeof indexedDB !== 'undefined';
 }
 
-/** Load (or create on first use) this device's observer key. Null when the
- *  environment can't do WebCrypto Ed25519. */
 export async function ensureDeviceKey(): Promise<DeviceKey | null> {
   if (!observerCryptoAvailable()) return null;
   try {
@@ -75,7 +59,7 @@ export async function ensureDeviceKey(): Promise<DeviceKey | null> {
     }
     const keyPair = (await crypto.subtle.generateKey(
       { name: 'Ed25519' } as AlgorithmIdentifier,
-      false, // non-extractable — the private key never leaves the browser
+      PRIVATE_KEY_EXTRACTABLE,
       ['sign', 'verify'],
     )) as CryptoKeyPair;
     await idbPut(db, KEY_ID, keyPair);
@@ -86,8 +70,6 @@ export async function ensureDeviceKey(): Promise<DeviceKey | null> {
   }
 }
 
-/** Build the signed observer-hello identity envelope for `host` (the value
- *  the server sent in observer-auth-required — its own Host header). */
 export async function buildHelloIdentity(host: string): Promise<{
   scheme: 'ed25519'; id: string; proof: string; timestamp: string;
 } | null> {
@@ -103,7 +85,6 @@ export async function buildHelloIdentity(host: string): Promise<{
   return { scheme: 'ed25519', id: key.id, proof: b64url(sig), timestamp };
 }
 
-/** Current device fingerprint for display (creates the key if absent). */
 export async function deviceFingerprint(): Promise<string | null> {
   const key = await ensureDeviceKey();
   return key?.id ?? null;

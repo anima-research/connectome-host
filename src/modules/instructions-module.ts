@@ -4,42 +4,11 @@
  * injected blocks are per-compile overlays, re-anchored on every compile,
  * that break prompt-cache prefixes across activations. Put stable instructions in agent.systemPrompt.
  *
- * InstructionsModule — injects a shared, living instructions document into
- * every agent's context on every turn.
- *
- * The document is a CLAUDE.md analogue maintained in a workspace mount:
- * operators (or the agents themselves, on a read-write mount) edit one file,
- * and the current content reaches the resident agent AND every ephemeral
- * subagent via the framework's gatherContext hook before each inference.
- * Nothing is persisted to Chronicle — position 'system' injections are
- * per-turn overlays, so edits take effect on the next turn and stale copies
- * never accumulate in history.
- *
- * Fail-open by design: a missing mount, missing file, or any read error
- * yields no injection (never a blocked inference), with a warning logged
- * once per distinct error rather than every turn.
- *
- * Requires the workspace module: the configured path is a mount-prefixed
- * workspace path ("<mountName>/<relativePath>") resolved through
- * WorkspaceModule.resolveAbsolutePath, so mount scoping and the
- * path-traversal guard apply. validateRecipe enforces the pairing.
- *
- * Symlink policy: resolveAbsolutePath's traversal guard is lexical, and a
- * symlink inside the mount pointing outside it would otherwise smuggle
- * arbitrary host-readable files into the trusted instructions block. Before
- * reading, both the mount root and the resolved file are realpath'd and the
- * file must remain inside the root — the same guard WorkspaceModule applies
- * to its own image reads. (The right long-term home for this is a safe-read
- * API on WorkspaceModule itself; agent-framework is a separately released
- * package, so this module enforces the policy locally until one exists.)
- *
- * Reads are bounded: at most maxBytes is ever loaded (the file is read
- * through a handle, not readFile), so an oversized or growing mounted file
- * cannot balloon memory past the configured cap.
+ * readFileFromDisk takes no signal, so a stop can't cancel a read: the
+ * module lets go of one under way. It keeps at most maxBytes, for a file
+ * that grows while it's read too.
  */
 
-import { promises as fs } from 'node:fs';
-import { sep } from 'node:path';
 import type {
   Module,
   ModuleContext,
@@ -49,27 +18,30 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
+  ModuleContextInjection,
 } from '@animalabs/agent-framework';
-import type { ContextInjection } from '@animalabs/context-manager';
+import { unknownToolResult } from './unknown-tool.js';
 
-/**
- * The slice of WorkspaceModule this module depends on. Structural so tests
- * can substitute a stub resolver; production wiring passes the real
- * WorkspaceModule (which satisfies this shape).
- */
-export interface WorkspacePathResolver {
-  resolveAbsolutePath(mountPrefixedPath: string): string | null;
+export interface WorkspaceDiskReader {
+  readFileFromDisk(
+    mountPrefixedPath: string,
+    options: { maxBytes: number },
+  ): Promise<DiskRead>;
+}
+
+type DiskRead = { bytes: Buffer; size: number; truncated: boolean };
+
+interface PendingRead {
+  outcome: Promise<{ read: DiskRead } | { error: unknown }>;
+  deadline: number;
 }
 
 export interface InstructionsModuleConfig {
-  /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
   path?: string;
-  /** Heading line prepended to the injected block. */
   header?: string;
-  /** Truncate content beyond this many bytes (with an explicit marker). Default 32768. */
   maxBytes?: number;
-  /** Where the block lands in the compiled context. Default 'system'. */
   position?: 'system' | 'beforeUser' | 'afterUser';
+  agentName: string;
 }
 
 export const DEFAULT_INSTRUCTIONS_PATH = 'instructions/AGENTS.md';
@@ -80,191 +52,211 @@ export const DEFAULT_INSTRUCTIONS_MAX_BYTES = 32768;
 export class InstructionsModule implements Module {
   readonly name = 'instructions';
 
-  // gatherContext is a stat + (on change) one file read — well under 2s.
-  // A modest explicit budget keeps a wedged filesystem from eating the
-  // registry-wide 15s default before inference proceeds without us.
-  readonly contextTimeoutMs = 2000;
+  // agent-framework's registry skips a module whose gatherContext answers
+  // after its budget, 15 s unless the module declares one. The read's own
+  // budget is three quarters of this one (readBudgetMs), so a read that hangs
+  // raises the alert before the registry gives up on the turn.
+  readonly contextTimeoutMs: number = 2000;
 
   private readonly path: string;
   private readonly header: string;
   private readonly maxBytes: number;
   private readonly position: 'system' | 'beforeUser' | 'afterUser';
+  private readonly agentName: string;
 
-  private workspace: WorkspacePathResolver | null = null;
+  private workspace: WorkspaceDiskReader | null = null;
+  private ctx: ModuleContext | null = null;
 
-  /** Cache keyed by (realpath, mtimeMs, size) — reread only when the file
-   *  changes. The realpath in the key covers a symlink retargeted between
-   *  turns to a different in-mount file with identical stat numbers. */
-  private cached: {
-    realFile: string;
-    mtimeMs: number;
-    size: number;
-    injections: ContextInjection[];
-  } | null = null;
-
-  /** Error messages already warned about — fail-open must not spam per turn. */
   private warned = new Set<string>();
+  private alerted = false;
+  private pending: PendingRead | null = null;
+  private generation = 0;
 
-  constructor(config: InstructionsModuleConfig = {}) {
+  constructor(config: InstructionsModuleConfig) {
     this.path = config.path ?? DEFAULT_INSTRUCTIONS_PATH;
     this.header = config.header ?? DEFAULT_INSTRUCTIONS_HEADER;
     this.maxBytes = config.maxBytes ?? DEFAULT_INSTRUCTIONS_MAX_BYTES;
     this.position = config.position ?? 'system';
+    this.agentName = config.agentName;
   }
 
-  /** Peer injection (same pattern as setFramework/setIdentity elsewhere). */
-  setWorkspace(workspace: WorkspacePathResolver): void {
+  setWorkspace(workspace: WorkspaceDiskReader): void {
     this.workspace = workspace;
   }
 
-  async start(_ctx: ModuleContext): Promise<void> {}
+  async start(ctx: ModuleContext): Promise<void> {
+    this.ctx = ctx;
+  }
 
   async stop(): Promise<void> {
-    this.cached = null;
+    this.generation++;
+    this.pending = null;
+    this.workspace = null;
     this.warned.clear();
+    this.ctx = null;
   }
 
   getTools(): ToolDefinition[] {
-    // Passive module — no tools, only gatherContext. The file itself is
-    // read/edited through the workspace module's own tools.
     return [];
   }
 
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
-    return {
-      success: false,
-      error: `InstructionsModule has no tool "${call.name}"`,
-      isError: true,
-    };
+    const heading = this.header.trim();
+    return unknownToolResult(
+      this,
+      call.name,
+      `Your instructions are read from the workspace file ${this.path} each turn and put in your context` +
+      (heading ? ` under the heading ${JSON.stringify(heading)}` : '') +
+      ', so the text there is the current one. If ' +
+      (heading ? 'that heading is' : 'they are') +
+      " missing from your context, the file couldn't be read, and whoever runs this host can see why in " +
+      "its log. workspace--read shows the workspace's stored copy, which on a read-only mount can be older than the file; " +
+      'on a mount running direct it reads the file itself. workspace--edit changes the file where its mount allows writing.',
+    );
   }
 
   async onProcess(_event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
     return {};
   }
 
-  /**
-   * Same injection for every agent — resident and ephemeral subagents alike
-   * share the one living document (that is the point of the module).
-   */
-  async gatherContext(_agentName: string): Promise<ContextInjection[]> {
-    if (!this.workspace) {
-      this.warnOnce('workspace module not wired — no instructions injected');
+  async gatherContext(_agentName: string): Promise<ModuleContextInjection[]> {
+    if (!this.ctx) return [];
+    const workspace = this.workspace;
+    if (!workspace) {
+      this.unavailable('the workspace module isn\'t wired, so no instructions can be read');
       return [];
     }
-
-    const absPath = this.workspace.resolveAbsolutePath(this.path);
-    if (!absPath) {
-      this.warnOnce(
-        `cannot resolve "${this.path}" — unknown mount or path escapes it; no instructions injected`,
+    const generation = this.generation;
+    const pending = this.pending ?? this.startRead(workspace);
+    const outcome = await this.within(pending);
+    if (this.generation !== generation) return [];
+    if (outcome === 'late') {
+      this.unavailable(
+        `reading "${this.path}" hasn't finished after ${this.readBudgetMs / 1000} s, and no other read ` +
+        'starts until it finishes, the session is switched or the host restarts',
       );
       return [];
     }
-    // Mount root, via the same resolver (a bare mount name resolves to the
-    // root). Needed for the realpath containment check below.
-    const mountName = this.path.slice(0, this.path.indexOf('/'));
-    const mountRoot = this.workspace.resolveAbsolutePath(mountName);
-    if (!mountRoot) {
-      this.warnOnce(
-        `cannot resolve mount "${mountName}" root; no instructions injected`,
-      );
+    if ('error' in outcome) {
+      this.unavailable(this.reasonFor(outcome.error));
       return [];
     }
+    const { bytes, size, truncated: over } = outcome.read;
 
+    let content: string;
+    if (over) {
+      // Back the cut up to a UTF-8 sequence boundary so a multibyte
+      // character split at the cap never decodes to U+FFFD right before
+      // the marker. The bytes past the cap aren't kept, so detect a
+      // straddle from the kept tail alone: find the last lead byte and
+      // drop the sequence iff it declares more bytes than were kept.
+      let cut = bytes.length;
+      let lead = bytes.length - 1;
+      let trailing = 0;
+      while (lead >= 0 && (bytes[lead]! & 0xc0) === 0x80) {
+        lead--;
+        trailing++;
+      }
+      if (lead >= 0) {
+        const b = bytes[lead]!;
+        const expected =
+          (b & 0x80) === 0 ? 1
+          : (b & 0xe0) === 0xc0 ? 2
+          : (b & 0xf0) === 0xe0 ? 3
+          : (b & 0xf8) === 0xf0 ? 4
+          : 1;
+        if (expected > trailing + 1) cut = lead;
+      }
+      content =
+        bytes.subarray(0, cut).toString('utf-8') +
+        `\n\n[truncated: first ${cut} of ${size} bytes]`;
+    } else {
+      content = bytes.toString('utf-8');
+    }
+
+    this.warned.clear();
+    if (this.alerted) {
+      this.alerted = false;
+      this.notifyOps('instructions-unavailable-clear', `"${this.path}" loaded again; agents have their instructions`);
+    }
+    const injection: ModuleContextInjection = {
+      namespace: 'instructions',
+      position: this.position,
+      content: [{ type: 'text', text: `${this.header}\n\n${content}` }],
+    };
+    if (this.position !== 'system') injection.placedEachCompile = true;
+    return [injection];
+  }
+
+  private get readBudgetMs(): number {
+    return this.contextTimeoutMs * 0.75;
+  }
+
+  private startRead(workspace: WorkspaceDiskReader): PendingRead {
+    const pending: PendingRead = {
+      outcome: workspace.readFileFromDisk(this.path, { maxBytes: this.maxBytes }).then(
+        (read) => ({ read }),
+        (error: unknown) => ({ error }),
+      ),
+      deadline: performance.now() + this.readBudgetMs,
+    };
+    void pending.outcome.then(() => {
+      if (this.pending === pending) this.pending = null;
+    });
+    this.pending = pending;
+    return pending;
+  }
+
+  private async within(pending: PendingRead): Promise<{ read: DiskRead } | { error: unknown } | 'late'> {
+    const left = pending.deadline - performance.now();
+    if (left <= 0) return 'late';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<'late'>((resolve) => {
+      timer = setTimeout(() => resolve('late'), left);
+    });
     try {
-      // Symlink guard: resolveAbsolutePath's containment is lexical only, so
-      // realpath both ends and require the real file to still live under the
-      // real mount root. Runs before the cache consult — a symlink swapped
-      // since last turn must never serve (or seed) cached content.
-      const realRoot = await fs.realpath(mountRoot);
-      const realFile = await fs.realpath(absPath);
-      if (realFile !== realRoot && !realFile.startsWith(realRoot + sep)) {
-        this.cached = null;
-        this.warnOnce(
-          `"${this.path}" resolves outside its mount after following symlinks; no instructions injected`,
-        );
-        return [];
-      }
-
-      // Handle-based read: stat and read against one open descriptor (no
-      // stat-then-read race), loading at most maxBytes regardless of file
-      // size — readFile would buffer the whole file first.
-      const handle = await fs.open(realFile, 'r');
-      try {
-        const stat = await handle.stat();
-        if (
-          this.cached &&
-          this.cached.realFile === realFile &&
-          this.cached.mtimeMs === stat.mtimeMs &&
-          this.cached.size === stat.size
-        ) {
-          return this.cached.injections;
-        }
-
-        const readLen = Math.min(stat.size, this.maxBytes);
-        const buf = Buffer.alloc(readLen);
-        let filled = 0;
-        while (filled < readLen) {
-          const { bytesRead } = await handle.read(buf, filled, readLen - filled, filled);
-          if (bytesRead === 0) break; // file shrank mid-read; keep what we have
-          filled += bytesRead;
-        }
-
-        let content: string;
-        if (stat.size > this.maxBytes) {
-          // Back the cut up to a UTF-8 sequence boundary so a multibyte
-          // character split at the cap never decodes to U+FFFD right before
-          // the marker. The bytes past the cap were never read, so detect a
-          // straddle from the kept tail alone: find the last lead byte and
-          // drop the sequence iff it declares more bytes than were kept.
-          let cut = filled;
-          let lead = filled - 1;
-          let trailing = 0;
-          while (lead >= 0 && (buf[lead]! & 0xc0) === 0x80) {
-            lead--;
-            trailing++;
-          }
-          if (lead >= 0) {
-            const b = buf[lead]!;
-            const expected =
-              (b & 0x80) === 0 ? 1
-              : (b & 0xe0) === 0xc0 ? 2
-              : (b & 0xf0) === 0xe0 ? 3
-              : (b & 0xf8) === 0xf0 ? 4
-              : 1; // invalid lead — leave it; decoding was lossy anyway
-            if (expected > trailing + 1) cut = lead;
-          }
-          content =
-            buf.subarray(0, cut).toString('utf-8') +
-            `\n\n[truncated: first ${cut} of ${stat.size} bytes]`;
-        } else {
-          content = buf.subarray(0, filled).toString('utf-8');
-        }
-
-        const injections: ContextInjection[] = [
-          {
-            namespace: 'instructions',
-            position: this.position,
-            content: [{ type: 'text', text: `${this.header}\n\n${content}` }],
-          },
-        ];
-        this.cached = { realFile, mtimeMs: stat.mtimeMs, size: stat.size, injections };
-        // Recovered — let a future recurrence of a previous error warn again.
-        this.warned.clear();
-        return injections;
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      // Fail open: missing file or any read error never blocks inference.
-      this.cached = null;
-      this.warnOnce(error instanceof Error ? error.message : String(error));
-      return [];
+      return await Promise.race([pending.outcome, late]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  private warnOnce(message: string): void {
-    if (this.warned.has(message)) return;
-    this.warned.add(message);
-    console.error(`InstructionsModule: ${message}`);
+  private reasonFor(error: unknown): string {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === 'symlink') return `"${this.path}" is a link, which its mount doesn't follow: put the file itself at that path`;
+    // On a mount that doesn't follow links, a recipe's default, the read
+    // refuses a file that is itself a link before it checks where the file
+    // lies, so an escape comes from a linked directory on the path. On one
+    // that follows them (`followSymlinks`), the file itself can be the link
+    // that leads out. Either way a file put "at that path" would still go
+    // through the link, so the remedy is to move it.
+    if (code === 'escape') {
+      return `"${this.path}" leads outside its mount through a link, the file itself or a directory on its path: ` +
+        'move the file into the mount, so that neither it nor a directory on its path is a link that leads out';
+    }
+    // Any other code is given in the read's own words, which name the path or,
+    // for a mount that's unavailable, the mount. That includes
+    // `parent_symlink`, for a link among the path's directories that leads
+    // neither out of the mount nor into a nested mount's directory: its message
+    // names the link and, where it leads somewhere, its target, and for a
+    // linked directory the mount's followSymlinks setting, so a remedy of the
+    // host's own would be wrong for some of them. It includes `other_mount`
+    // too, for a path in, or reached through a link into, a nested mount's
+    // directory, whose message names that mount and the path to use there.
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private unavailable(reason: string): void {
+    if (this.warned.has(reason)) return;
+    this.warned.add(reason);
+    console.error(`InstructionsModule: no instructions injected: ${reason}`);
+    this.alerted = true;
+    this.notifyOps('instructions-unavailable', `no instructions injected: ${reason}`);
+  }
+
+  /** Called on the context object: the real ModuleContext's notifyOps reads
+   *  `this`. */
+  private notifyOps(kind: string, message: string): void {
+    this.ctx?.notifyOps?.(kind, this.agentName, message);
   }
 }

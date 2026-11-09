@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { validateRecipe } from '../src/recipe.js';
+import { resolveProvider, validateRecipe } from '../src/recipe.js';
 
 function recipe(agent: Record<string, unknown> = {}) {
   return { name: 'provider-test', agent: { systemPrompt: 'sys', ...agent } };
@@ -12,6 +12,8 @@ describe('recipe provider validation', () => {
       .toBe('openai-responses');
     expect(validateRecipe(recipe({ provider: 'openai-codex' })).agent.provider)
       .toBe('openai-codex');
+    expect(resolveProvider(validateRecipe(recipe()))).toBe('anthropic');
+    expect(resolveProvider(validateRecipe(recipe({ provider: 'openai-codex' })))).toBe('openai-codex');
   });
 
   test('accepts the mock provider and its settings', () => {
@@ -26,6 +28,39 @@ describe('recipe provider validation', () => {
     expect(() => validateRecipe(recipe({ mock: 'echo' }))).toThrow(/agent.mock/);
     expect(() => validateRecipe(recipe({ mock: { echoMode: 'yes' } }))).toThrow(/echoMode/);
     expect(() => validateRecipe(recipe({ mock: { defaultResponse: '' } }))).toThrow(/defaultResponse/);
+  });
+
+  test('accepts the mock timing knobs and a response queue', () => {
+    const mock = {
+      completeDelayMs: 0,
+      streamChunkDelayMs: 250.5,
+      streamChunkSize: 1,
+      responseQueue: ['first', 'second'],
+    };
+    expect(validateRecipe(recipe({ provider: 'mock', mock })).agent.mock).toEqual(mock);
+  });
+
+  test('rejects malformed mock timing knobs', () => {
+    for (const key of ['completeDelayMs', 'streamChunkDelayMs']) {
+      // JSON can carry Infinity: 1e999 parses to it.
+      for (const bad of [-1, Number.NaN, JSON.parse('1e999'), '100', null]) {
+        expect(() => validateRecipe(recipe({ mock: { [key]: bad } })))
+          .toThrow(new RegExp(`agent.mock.${key} must be a non-negative finite number`));
+      }
+    }
+    // 0 never advances MockAdapter's chunk loop; a fraction makes uneven or empty chunks.
+    for (const bad of [0, -3, 2.5, Number.NaN, '10', null]) {
+      expect(() => validateRecipe(recipe({ mock: { streamChunkSize: bad } })))
+        .toThrow(/agent.mock.streamChunkSize must be a positive integer/);
+    }
+  });
+
+  test('rejects a response queue that is not a list of non-empty strings', () => {
+    for (const bad of ['first', { 0: 'first' }, [1], ['ok', null], ['ok', ''], ['  '], [{ text: 'x' }]]) {
+      expect(() => validateRecipe(recipe({ mock: { responseQueue: bad } })))
+        .toThrow(/agent.mock.responseQueue must be an array of non-empty strings/);
+    }
+    expect(validateRecipe(recipe({ mock: { responseQueue: [] } })).agent.mock).toEqual({ responseQueue: [] });
   });
 
   test('accepts Codex subscription settings', () => {

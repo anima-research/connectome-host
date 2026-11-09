@@ -1,19 +1,7 @@
 /**
- * MCPL tool lifecycle (RFC-007) and tool classes (RFC-008): recipe and
- * mcpl-servers.json policy, validated here and handed to the framework.
- *
- * - `toolLifecycle` on a server entry is the operator's grant and narrowing
- *   for that server's `toolLifecycle.observe` / `.inputs` paths (both are
- *   denied by default in the framework; stating a block is the grant).
- * - `toolClassOverrides` (recipe top level) re-classes tools by name — the
- *   way to class third-party MCP servers that will never declare
- *   `_meta["mcpl/class"]` themselves (RFC-008 §5.1 source 1).
- * - HOST_TOOL_CLASSES is this host's own knowledge of the tools its modules
- *   expose (RFC-008 §5.1 source 2). agent-framework classes its own built-in
- *   tools; this table covers connectome-host's modules on top.
- *
- * The vocabulary is mirrored rather than imported so recipe validation does
- * not depend on the framework version installed (older ones lack it).
+ * MCPL tool lifecycle (RFC-007) and tool classes (RFC-008). agent-framework
+ * denies a server's `toolLifecycle.observe` and `.inputs` paths by default;
+ * stating a block is the grant.
  */
 
 /** RFC-008 §4. Amended only by MCPL spec change, never per deployment. */
@@ -25,22 +13,12 @@ export type ToolClass = (typeof TOOL_CLASSES)[number];
 const CLASS_SET: ReadonlySet<string> = new Set(TOOL_CLASSES);
 
 /**
- * Classes of connectome-host's module tools (`<module>--<tool>`, patterns in
- * the RFC-007 §6.2 grammar). A tool not matched here, not overridden by the
- * recipe and not declared by its server is UNCLASSED — the restrictive
- * answer (observers may see that it ran, never its arguments). So when in
- * doubt, a tool is left out rather than guessed.
- *
- * Not listed, on purpose:
- * - `identity--request` calls an arbitrary private service API (it can post
- *   as well as read), so no single class describes it.
- * - modules with no agent tools (webui, retrieval, instructions, tts-relay,
- *   tui, settings, subscription-gc).
+ * Patterns in the RFC-007 §6.2 grammar. A tool not matched here, not
+ * overridden by the recipe and not declared by its server is unclassed,
+ * which agent-framework handles as the most restrictive class (RFC-008 §5.2).
  */
 export const HOST_TOOL_CLASSES: Readonly<Record<string, readonly ToolClass[]>> = {
-  // Presence: the typing/composition indicator policy.
   'activity--*': ['body'],
-  // Routing and settings.
   'channel-mode--*': ['control'],
   'observers--*': ['control'],
   'time--*': ['control'],
@@ -48,13 +26,10 @@ export const HOST_TOOL_CLASSES: Readonly<Record<string, readonly ToolClass[]>> =
   'subagent--*': ['control'],
   'identity--status': ['control'],
   'identity--accept_invite': ['control'],
-  // Fleet: messages to and from other agents are other parties' words;
-  // the rest is process control.
   'fleet--send': ['comms'],
   'fleet--relay': ['comms'],
   'fleet--peek': ['comms'],
   'fleet--*': ['control'],
-  // The agent's own learned notes, recalled into context.
   'lessons--*': ['memory'],
 };
 
@@ -72,10 +47,8 @@ const NARROWING_KEYS = new Set(['tools', 'classes', 'conversations']);
 const LIFECYCLE_KEYS = new Set(['observe', 'inputs', 'maxInputBytes']);
 
 /**
- * Validate a server's `toolLifecycle` block. Throws with a message naming
- * `where` on anything malformed: these are grants, and the framework treats a
- * malformed narrowing as admitting nothing, so a typo would silently turn an
- * intended grant off — better to fail at load.
+ * agent-framework reads a narrowing of the wrong shape as admitting nothing,
+ * so a malformed block would turn an intended grant off without a word.
  */
 export function validateToolLifecycle(value: unknown, where: string): void {
   if (!isPlainObject(value)) throw new Error(`${where} must be an object`);
@@ -116,7 +89,6 @@ export function validateToolLifecycle(value: unknown, where: string): void {
   }
 }
 
-/** Validate a pattern → classes table (recipe `toolClassOverrides`). */
 export function validateToolClassTable(value: unknown, where: string): void {
   if (!isPlainObject(value)) throw new Error(`${where} must be an object of pattern → classes`);
   for (const [pattern, classes] of Object.entries(value)) {
@@ -129,11 +101,6 @@ export function validateToolClassTable(value: unknown, where: string): void {
   }
 }
 
-/**
- * The FrameworkConfig fields for tool classes: this host's module table
- * (as `hostToolClasses`, consulted before the framework's built-ins) and the
- * recipe's `toolClassOverrides`. Returned as a plain object for spreading.
- */
 export function toolClassConfig(recipe: { toolClassOverrides?: Record<string, string[]> }): {
   hostToolClasses: Record<string, string[]>;
   toolClassOverrides?: Record<string, string[]>;
@@ -144,4 +111,58 @@ export function toolClassConfig(recipe: { toolClassOverrides?: Record<string, st
     hostToolClasses,
     ...(recipe.toolClassOverrides ? { toolClassOverrides: recipe.toolClassOverrides } : {}),
   };
+}
+
+export type ToolClassSource = 'override' | 'host' | 'server' | 'none';
+
+export interface ToolClassRow {
+  tool: string;
+  class: string[];
+  source: ToolClassSource;
+  serverId?: string;
+}
+
+export const TOOL_CLASS_SOURCE_LABELS: Readonly<Record<ToolClassSource, string>> = {
+  override: 'operator override',
+  host: 'host table',
+  server: 'server _meta',
+  none: 'unclassed',
+};
+
+export function readToolClasses(framework: unknown, agentName?: string): ToolClassRow[] | null {
+  const fw = framework as { listToolClasses?: (agent?: string) => ToolClassRow[] } | null;
+  if (typeof fw?.listToolClasses !== 'function') return null;
+  const rows = agentName === undefined ? fw.listToolClasses() : fw.listToolClasses(agentName);
+  return rows
+    .map((r) => ({
+      tool: r.tool,
+      class: [...r.class],
+      source: r.source,
+      ...(r.serverId !== undefined ? { serverId: r.serverId } : {}),
+    }))
+    .sort((a, b) => (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0));
+}
+
+export function countToolClassSources(rows: readonly ToolClassRow[]): Record<ToolClassSource, number> {
+  const counts: Record<ToolClassSource, number> = { override: 0, host: 0, server: 0, none: 0 };
+  for (const r of rows) counts[r.source] = (counts[r.source] ?? 0) + 1;
+  return counts;
+}
+
+export function formatToolClassRows(rows: readonly ToolClassRow[]): string[] {
+  const counts = countToolClassSources(rows);
+  const summary = (Object.keys(TOOL_CLASS_SOURCE_LABELS) as ToolClassSource[])
+    .filter((source) => counts[source] > 0)
+    .map((source) => `${counts[source]} ${TOOL_CLASS_SOURCE_LABELS[source]}`)
+    .join(' · ');
+  const classText = (r: ToolClassRow): string => (r.class.length > 0 ? r.class.join(',') : '-');
+  const toolWidth = Math.min(48, Math.max(0, ...rows.map((r) => r.tool.length)));
+  const classWidth = Math.max(0, ...rows.map((r) => classText(r).length));
+  const lines = [summary];
+  for (const r of rows) {
+    const source = TOOL_CLASS_SOURCE_LABELS[r.source] ?? r.source;
+    const server = r.serverId !== undefined ? ` (${r.serverId})` : '';
+    lines.push(`${r.tool.padEnd(toolWidth)}  ${classText(r).padEnd(classWidth)}  ${source}${server}`);
+  }
+  return lines;
 }

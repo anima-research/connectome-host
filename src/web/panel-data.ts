@@ -1,49 +1,37 @@
-/**
- * Panel data layer — process-agnostic builders and mutation appliers behind
- * every operator inspection surface (MCPL, settings, pins, health, context
- * debug). Extracted from web-ui-module.ts so the SAME code answers a panel
- * query whether the process is the WebUI host itself or a headless fleet
- * child asked over the fleet IPC:
- *
- *   WebUiModule (scope 'local')  ──┐
- *                                  ├──> runPanelOp(app, op, params)
- *   headless.ts ('panel-request') ─┘
- *
- * Everything here operates on a minimal `PanelAppRef` (framework + recipe +
- * optional call ledger), NOT on the full AppContext — keeps the layer free of
- * import cycles and callable from both runtimes.
- *
- * Results are wire-shaped JSON. Errors carry an optional HTTP-ish `status`
- * so the WebUI's HTTP proxy routes can answer faithfully (404 unknown agent,
- * 429 preview cooldown, 501 unsupported build).
- */
-
-import type { AgentFramework } from '@animalabs/agent-framework';
-import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
-import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs/membrane';
-import type { Recipe } from '../recipe.js';
+import { audienceOf, residentViewFilter, type AgentFramework } from '@animalabs/agent-framework';
+import { continuesBody, type BodyShard } from '@animalabs/context-manager';
+import { NativeFormatter } from '@animalabs/membrane';
+import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
+import { recipeModel, resolveProvider, type Recipe } from '../recipe.js';
+import { anthropicXmlFormatter, xmlToolsInSystem } from '../recipe-formatter.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
+import type { CredentialMonitor, CredentialActionId } from '../credential-state.js';
 import {
   readMcplServersFile,
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
+import {
+  countToolClassSources,
+  readToolClasses,
+  type ToolClassRow,
+  type ToolClassSource,
+} from '../tool-lifecycle-config.js';
+import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
+import { hostUpdate } from '../update/update.js';
 
-/** Minimal slice of AppContext the panel layer needs. Both the WebUI host
- *  and the headless child runtime satisfy this structurally. */
 export interface PanelAppRef {
   framework: AgentFramework;
   recipe: Recipe;
-  /** Content-free recent provider-call ledger, when the host wired one. */
   callLedger?: CallLedger | null;
-  /** Subscription quota windows, when the host runs on a subscription. */
   quotaMeter?: QuotaMeter | null;
+  credentials?: CredentialMonitor | null;
+  subscriptionUnmetered?: boolean;
 }
 
-/** Panel operations servable by any conhost process. Kept as a const list so
- *  fleet-types.ts and tests can enumerate without importing the handlers. */
 export const PANEL_OPS = [
   'mcpl',
+  'tool-classes',
   'settings',
   'settings-update',
   'settings-reset',
@@ -60,6 +48,8 @@ export const PANEL_OPS = [
   'debug-context',
   'media',
   'quota',
+  'credential',
+  'credential-action',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -67,22 +57,12 @@ export type PanelResult =
   | { ok: true; data: unknown }
   | { ok: false; error: string; status?: number };
 
-/** Error carrying an HTTP-ish status through the shared layer. */
 export class PanelError extends Error {
   constructor(message: string, readonly status: number = 500) {
     super(message);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
-/**
- * Run one panel op. Never throws — all failures come back as
- * `{ok:false, error, status}` so both callers (WS handler, IPC handler)
- * forward them without their own try/catch choreography.
- */
 export async function runPanelOp(
   app: PanelAppRef,
   op: string,
@@ -92,6 +72,14 @@ export async function runPanelOp(
     switch (op as PanelOp) {
       case 'mcpl':
         return { ok: true, data: buildMcplSnapshot(app) };
+      case 'tool-classes':
+        return {
+          ok: true,
+          data: buildToolClassesSnapshot(
+            app,
+            typeof params.agent === 'string' && params.agent.length > 0 ? params.agent : undefined,
+          ),
+        };
       case 'settings':
         return { ok: true, data: requireSettingsState(app, resolveAgent(app, params.agent)) };
       case 'settings-update': {
@@ -127,7 +115,6 @@ export async function runPanelOp(
         const agent = resolveAgent(app, params.agent);
         const removed = applyPinRemove(app, agent, String(params.pinId ?? ''));
         const data = buildPinsSnapshot(app, agent, { withCandidates: params.withCandidates === true }) as unknown as Record<string, unknown>;
-        // A stale panel can ask twice; report it without failing the refresh.
         if (!removed) data.warning = `no such pin: ${String(params.pinId ?? '')}`;
         return { ok: true, data };
       }
@@ -135,6 +122,10 @@ export async function runPanelOp(
         return { ok: true, data: buildHealthSnapshot(app) };
       case 'quota':
         return { ok: true, data: await buildQuotaSnapshot(app) };
+      case 'credential':
+        return { ok: true, data: buildCredentialSnapshot(app) };
+      case 'credential-action':
+        return { ok: true, data: await applyCredentialAction(app, params) };
       case 'context-makeup':
         return { ok: true, data: await buildContextMakeup(app, resolveAgent(app, params.agent)) };
       case 'context-coverage':
@@ -158,7 +149,6 @@ export async function runPanelOp(
   }
 }
 
-/** Default to the recipe's primary agent when the caller omits a name. */
 export function resolveAgent(app: PanelAppRef, name?: unknown): string {
   if (typeof name === 'string' && name.length > 0) return name;
   return app.recipe.agent.name ?? app.framework.getAllAgents()[0]?.name ?? 'agent';
@@ -169,10 +159,6 @@ function requireAgent(app: PanelAppRef, agentName: string): NonNullable<ReturnTy
   if (!agent) throw new PanelError(`Agent not found: ${agentName}`, 404);
   return agent;
 }
-
-// ---------------------------------------------------------------------------
-// Media — one inline image block, served lazily
-// ---------------------------------------------------------------------------
 
 interface MediaReadableCm {
   getMessage(id: never): { content?: ReadonlyArray<unknown> } | null;
@@ -186,10 +172,6 @@ interface MediaReadableCm {
 
 const MEDIA_SCAN_WINDOW = 500;
 
-/** The message's content with blobs inflated. `getMessage` normally resolves
- *  blobs; if a facade hands back `blob_ref` placeholders, fall back to a
- *  windowed read of just that slot (tail-first scan — media requests are
- *  almost always for recent messages). */
 function readInflatedContent(cm: MediaReadableCm, messageId: string): ReadonlyArray<unknown> | null {
   const direct = cm.getMessage(messageId as never);
   if (!direct) return null;
@@ -208,13 +190,6 @@ function readInflatedContent(cm: MediaReadableCm, messageId: string): ReadonlyAr
   return content;
 }
 
-/**
- * Resolve one inline image block by store message id + block path
- * (`<blockIndex>` or `<blockIndex>.<innerIndex>` for an image nested in a
- * tool_result). Returns the raw base64 + media type; the HTTP layer turns it
- * into bytes. Only `image/*` is served — documents/audio are not viewer
- * content.
- */
 export function buildMediaBlock(
   app: PanelAppRef,
   agentName: string,
@@ -247,38 +222,26 @@ export function buildMediaBlock(
   return { mediaType: src.mediaType, base64: src.data };
 }
 
-// ---------------------------------------------------------------------------
-// MCPL
-// ---------------------------------------------------------------------------
-
-/** Live MCPL server state as this process's framework sees it. */
 export interface McplLiveServer {
   id: string;
   connected: boolean;
   toolCount: number;
   toolPrefix?: string;
-  /** command or url — whatever the transport targets. */
   target?: string;
+  closedTab?: boolean;
 }
 
-/**
- * MCPL snapshot: the shared file registry (what the panel can edit) PLUS the
- * live servers this process actually loaded (recipe opt-in + agent overlay),
- * with connection status. The live list is what a fleet child meaningfully
- * differs on — the file is shared cwd-wide, but each recipe opts into its
- * own subset.
- */
 export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
   let servers: ReturnType<typeof readMcplServersFile> = {};
   try { servers = readMcplServersFile(DEFAULT_CONFIG_PATH); }
-  catch { /* missing or malformed file → empty list */ }
+  catch { }
 
   let live: McplLiveServer[] = [];
   try {
     const fw = app.framework as unknown as {
       listMcplServers?: () => Array<{
         id: string; connected?: boolean; toolCount?: number; toolPrefix?: string;
-        command?: string; url?: string;
+        command?: string; url?: string; closedTab?: boolean;
       }>;
     };
     if (typeof fw.listMcplServers === 'function') {
@@ -288,9 +251,14 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
         toolCount: s.toolCount ?? 0,
         ...(s.toolPrefix ? { toolPrefix: s.toolPrefix } : {}),
         ...(s.command || s.url ? { target: s.command ?? s.url } : {}),
+        ...(s.closedTab ? { closedTab: true } : {}),
       }));
     }
-  } catch { /* live view is best-effort; the file registry still renders */ }
+  } catch { }
+
+  let toolClasses: ToolClassRow[] | null = null;
+  try { toolClasses = readToolClasses(app.framework); }
+  catch { }
 
   return {
     configPath: DEFAULT_CONFIG_PATH,
@@ -305,12 +273,33 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
       ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
     })),
     live,
+    ...(toolClasses ? { toolClasses } : {}),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
+export interface ToolClassesSnapshot {
+  /** The agent whose surface this is, or null for every tool offered. */
+  agent: string | null;
+  /** Rows per source: override / host / server / none (unclassed). */
+  counts: Record<ToolClassSource, number>;
+  /** Sorted by tool name. */
+  tools: ToolClassRow[];
+}
+
+/**
+ * Each tool with its effective class and the source that decided it. Unlike
+ * the agent-scoped panels, omitting `agent` does not default to the primary
+ * agent: it lists every tool the framework offers to anyone (the shared
+ * board plus agent-only surfaces such as the subconscious's).
+ */
+export function buildToolClassesSnapshot(app: PanelAppRef, agent?: string): ToolClassesSnapshot {
+  if (agent !== undefined) requireAgent(app, agent);
+  const tools = readToolClasses(app.framework, agent);
+  if (tools === null) {
+    throw new PanelError('this agent-framework build does not report tool classes', 501);
+  }
+  return { agent: agent ?? null, counts: countToolClassSources(tools), tools };
+}
 
 export interface SettingsStateData {
   agent: string;
@@ -321,11 +310,6 @@ export interface SettingsStateData {
   previewAvailable: boolean;
 }
 
-/**
- * Build the settings snapshot. Returns null when the framework build has no
- * runtime-settings surface at all: that is a legitimate state for the panel
- * to render read-only, not an error to surface.
- */
 export function buildSettingsState(app: PanelAppRef, agentName: string): SettingsStateData | null {
   const fw = app.framework as unknown as {
     getAgentRuntimeSettings?: (n: string) => Record<string, unknown>;
@@ -339,8 +323,8 @@ export function buildSettingsState(app: PanelAppRef, agentName: string): Setting
     return null;
   }
 
-  // Which knobs this build can apply live, probed rather than assumed: the
-  // hot set is a property of the ACTIVE strategy, not of the host version.
+  // context-manager answers getHotContextSettings() with null for a
+  // strategy without hot settings: the hot set is the active strategy's.
   let hotConfigurable = false;
   let previewAvailable = false;
   try {
@@ -352,7 +336,7 @@ export function buildSettingsState(app: PanelAppRef, agentName: string): Setting
     hotConfigurable = !!cm && typeof cm.getHotContextSettings === 'function'
       && cm.getHotContextSettings() !== null;
     previewAvailable = !!cm && typeof cm.previewContext === 'function';
-  } catch { /* leave both false — read-only panel */ }
+  } catch { }
 
   const overrides: string[] = [];
   try {
@@ -361,15 +345,14 @@ export function buildSettingsState(app: PanelAppRef, agentName: string): Setting
     } | undefined;
     const ov = agent?.getRuntimeSettingsOverrides?.() ?? {};
     for (const [k, val] of Object.entries(ov)) if (val !== undefined) overrides.push(k);
-  } catch { /* informational only */ }
+  } catch { }
 
   return {
     agent: agentName,
     settings,
     overrides,
-    // contextBudgetTokens is applied by the Agent itself; the other three are
-    // forwarded into the strategy's hot-settings channel, so they need a
-    // hot-configurable strategy to mean anything.
+    // agent-framework applies contextBudgetTokens itself, and passes
+    // tailTokens and transitionPaceTokens to the strategy's hot settings.
     hotKeys: hotConfigurable
       ? ['contextBudgetTokens', 'tailTokens', 'transitionPaceTokens', 'sameRoundThinkTextPolicy']
       : ['contextBudgetTokens'],
@@ -384,8 +367,6 @@ function requireSettingsState(app: PanelAppRef, agentName: string): SettingsStat
   return state;
 }
 
-/** Apply a live settings patch. Throws with the framework's own message on
- *  rejection (budget ≤ max response tokens, non-hot strategy, ...). */
 export function applySettingsUpdate(
   app: PanelAppRef,
   agentName: string,
@@ -431,11 +412,11 @@ export function applySettingsCancelTransition(app: PanelAppRef, agentName: strin
 }
 
 /**
- * Opt-in push notice to the agent that an operator changed its context
- * settings. OFF by default at the protocol level, because this injects text
- * into the very context being tuned: it invalidates the KV prefix and is
- * itself classifier-visible. The zero-cost alternative the agent always has
- * is to PULL via its `agent_settings` tool.
+ * The operator's settings notice is written through the settings module's
+ * context for the agent (SettingsModule.noteForAgent), so it is stamped for
+ * that agent and enters its window at the agent's presentation points
+ * (agent-framework #291); a host without the module (SettingsModule is in
+ * every host this one builds) gets no notice.
  */
 export function notifyAgentOfSettingsChange(
   app: PanelAppRef,
@@ -453,17 +434,14 @@ export function notifyAgentOfSettingsChange(
         + (budget !== undefined ? ` — budget ${budget}` : '')
         + (tail !== undefined ? `, tail ${tail}` : '')
         + (transition === 'converging' ? ' (converging gradually)' : '');
-    const cm = app.framework.getAgent(agentName)?.getContextManager();
-    cm?.addMessage('Context Manager', [{ type: 'text', text }], { system: true });
+    const settings = app.framework.getModule('settings') as { noteForAgent?: (agent: string, text: string) => boolean } | null;
+    if (typeof settings?.noteForAgent !== 'function' || !settings.noteForAgent(agentName, text)) {
+      console.warn(`[settings] notify skipped (change still applied): no started settings module to write ${agentName}'s notice through`);
+    }
   } catch (err) {
-    // A failed notice must never fail the apply that already succeeded.
     console.warn('[settings] notify failed (change still applied):', err);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Pins
-// ---------------------------------------------------------------------------
 
 export interface PinsSnapshotData {
   agent: string;
@@ -480,14 +458,11 @@ export interface PinsSnapshotData {
   pinsSupported: boolean;
   levelHonored: boolean;
   deepestLevel?: number;
-  /** Recent pinnable messages (real store ids), when requested. Lets a
-   *  remote panel offer its picker without holding this process's
-   *  conversation window. */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
-/** Duck-typed pin surface. Throws with a clear reason rather than returning a
- *  half-usable object, so callers can report it to the operator verbatim. */
 function pinnableCm(app: PanelAppRef, agentName: string): {
   pinRange?: (a: string, b: string, o?: unknown) => string;
   markDocument?: (a: string, o?: unknown) => string;
@@ -507,18 +482,9 @@ function pinnableCm(app: PanelAppRef, agentName: string): {
   return cm;
 }
 
-/** How many recent messages a pins snapshot ships as picker candidates. */
 const PIN_CANDIDATE_LIMIT = 200;
 const PIN_CANDIDATE_TEXT_CAP = 160;
 
-/**
- * Pin snapshot. Never throws for an unsupported strategy — that's a
- * legitimate read-only state for the panel, not an error.
- *
- * `levelHonored` matters: pin-AT-level is implemented only by the kv-stable
- * controller. Elsewhere it degrades to raw, which is a safe superset but not
- * what the operator asked for, so the UI needs to be able to say so.
- */
 export function buildPinsSnapshot(
   app: PanelAppRef,
   agentName: string,
@@ -540,7 +506,6 @@ export function buildPinsSnapshot(
     }));
     supported = true;
   } catch (err) {
-    // Unknown agent is a real error; unsupported strategy is a state.
     if (err instanceof PanelError && err.status === 404) throw err;
     supported = false;
   }
@@ -562,7 +527,7 @@ export function buildPinsSnapshot(
         deepestLevel = s.level;
       }
     }
-  } catch { /* informational only */ }
+  } catch { }
 
   return {
     agent: agentName,
@@ -570,54 +535,91 @@ export function buildPinsSnapshot(
     pinsSupported: supported,
     levelHonored,
     ...(deepestLevel !== undefined ? { deepestLevel } : {}),
-    ...(opts.withCandidates ? { candidates: buildPinCandidates(app, agentName) } : {}),
+    ...(opts.withCandidates ? buildPinCandidates(app, agentName) : {}),
   };
 }
 
 /**
- * Recent pinnable messages with REAL store ids. Mirrors the client-side
- * candidate list the local panel builds from its own message window — a
- * remote (fleet-child) panel has no such window, so the snapshot carries one.
+ * A row an undo took out of the agent's window (agent-framework #291,
+ * windowStatusOf 'undone') isn't a pin candidate: the fold plan a pin
+ * constrains is the window's, so a pin on it would hold nothing. Nor is a
+ * row whose audience stamp leaves the agent out (another resident's row on
+ * a shared store, or one a tune-out held from every resident), which never
+ * enters that window. A legacy window (windowMode 'legacy') is the record
+ * through the resident's view, which reads no stamp: there a row is a
+ * candidate when that view keeps it (residentViewFilter: not held traffic,
+ * a suppressed row or another agent's stored injection), another
+ * resident's row included. A row with no stamp (stored before it existed) and a
+ * stored arrival the agent's window doesn't hold yet (status 'out'), which
+ * enters it at the agent's next turn, are candidates. A message stored in
+ * parts (context-manager's shards of one body) is one candidate, as it is one
+ * row in the transcript: its first part's id, with the parts' text joined,
+ * the first part included when the last 200 rows start after it. A pin on
+ * any part of it covers the whole message. A read that fails gives its
+ * reason, not an empty list, so the picker doesn't say there are none.
  */
 function buildPinCandidates(
   app: PanelAppRef,
   agentName: string,
-): Array<{ id: string; index: number; participant: string; text: string }> {
+): Pick<PinsSnapshotData, 'candidates' | 'candidatesError'> {
   try {
     const agent = app.framework.getAgent(agentName);
     const cm = agent?.getContextManager() as unknown as {
       getMessageCount?: () => number;
       getMessageWindow?: (
-        offset: number, limit: number, opts?: { resolveBlobs?: boolean },
-      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown }>; startIndex: number };
+        offset: number, limit: number, opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
+      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown } & BodyShard>; startIndex: number };
+      windowStatusOf?: (id: string) => string;
+      windowMode?: () => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
-      return [];
+      return { candidates: [] };
     }
+    const legacyView = cm.windowMode?.() === 'legacy' ? residentViewFilter(agentName) : undefined;
     const total = cm.getMessageCount();
     const start = Math.max(0, total - PIN_CANDIDATE_LIMIT);
-    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false });
+    // Rows that start inside a message stored in parts reach back to its
+    // first part, as the transcript's pages do.
+    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false, alignToBodyGroups: true });
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
-    win.messages.forEach((m, i) => {
-      if (!m.id) return;
+    const textOf = (content: unknown): string => {
+      if (typeof content === 'string') return content;
       let text = '';
-      if (Array.isArray(m.content)) {
-        for (const b of m.content as Array<Record<string, unknown>>) {
+      if (Array.isArray(content)) {
+        for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type === 'text') text += String(b.text ?? '');
         }
-      } else if (typeof m.content === 'string') {
-        text = m.content;
+      }
+      return text;
+    };
+    for (let i = 0; i < win.messages.length; i++) {
+      const m = win.messages[i]!;
+      const first = i;
+      // A message stored in parts: they join back with no separator.
+      let text = textOf(m.content);
+      while (i + 1 < win.messages.length && continuesBody(win.messages[i], win.messages[i + 1])) {
+        i++;
+        text += textOf(win.messages[i]!.content);
+      }
+      if (!m.id) continue;
+      if (cm.windowStatusOf?.(String(m.id)) === 'undone') continue;
+      if (legacyView) {
+        if (!legacyView(m as unknown as Parameters<typeof legacyView>[0])) continue;
+      } else {
+        const stamp = audienceOf(m.metadata);
+        if (stamp && !stamp.audience.includes(agentName)) continue;
       }
       out.push({
         id: String(m.id),
-        index: win.startIndex + i,
+        index: win.startIndex + first,
         participant: String(m.participant ?? '?'),
         text: text.slice(0, PIN_CANDIDATE_TEXT_CAP),
       });
-    });
-    return out;
-  } catch {
-    return [];
+    }
+    return { candidates: out };
+  } catch (err) {
+    console.warn(`[pins] couldn't read ${agentName}'s pin candidates:`, err);
+    return { candidatesError: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -632,37 +634,16 @@ export function applyPinAdd(app: PanelAppRef, agentName: string, params: Record<
   if (params.kind === 'document') {
     cm.markDocument!(firstMessageId, opts);
   } else {
-    // A single-message pin is a range of one; the strategy takes both ends.
     cm.pinRange!(firstMessageId, String(params.lastMessageId ?? firstMessageId), opts);
   }
 }
 
-/** Returns false when no such pin existed (stale panel double-click). */
 export function applyPinRemove(app: PanelAppRef, agentName: string, pinId: string): boolean {
   const cm = pinnableCm(app, agentName);
   if (!pinId) throw new PanelError('pinId required', 400);
   return cm.unpin!(pinId);
 }
 
-// ---------------------------------------------------------------------------
-// Health
-// ---------------------------------------------------------------------------
-
-/**
- * Liveness/health snapshot — the /healthz assembly. framework.healthSnapshot
- * plus compression quarantine, rendered context composition, per-agent
- * runtime settings, and (when a ledger is wired) recent provider calls.
- * Everything is read-only and cheap: no compile, no count_tokens.
- */
-/**
- * Subscription quota windows. The request IS the poll: a client asks only
- * while its page is visible, and the meter's refresh floor keeps any number
- * of viewers down to one provider read per interval. `subscription: false`
- * tells the client to keep showing dollars.
- */
-/** Whether the framework is actually holding an agent on a host verdict. A
- *  spent window alone parks nothing: the hold arms on a 429, and only on a
- *  framework that has the `providerHold` hook. null = framework cannot say. */
 function hostHoldActive(app: PanelAppRef): boolean | null {
   const fw = app.framework as unknown as { healthSnapshot?: () => { agents?: unknown } };
   if (typeof fw.healthSnapshot !== 'function') return null;
@@ -678,113 +659,177 @@ function hostHoldActive(app: PanelAppRef): boolean | null {
 }
 
 export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<string, unknown>> {
-  if (!app.quotaMeter) return { subscription: false, windows: [] };
+  if (!app.quotaMeter) return { subscription: app.subscriptionUnmetered === true, windows: [] };
   const snapshot = await app.quotaMeter.refresh();
   return {
     subscription: true,
     provider: app.quotaMeter.provider,
     windows: snapshot?.windows ?? [],
     fetchedAt: snapshot?.fetchedAt ?? 0,
-    ...(snapshot?.error ? { error: snapshot.error } : {}),
+    ...(snapshot?.error !== undefined ? { error: snapshot.error } : {}),
     blockedUntil: app.quotaMeter.blockedUntil(app.recipe.agent.model) ?? null,
     parked: hostHoldActive(app),
   };
 }
 
+export function buildCredentialSnapshot(app: PanelAppRef): Record<string, unknown> {
+  if (!app.credentials) return { subscription: false };
+  return { subscription: true, agent: resolveAgent(app), ...app.credentials.snapshot() };
+}
+
+const CREDENTIAL_ACTIONS: ReadonlySet<string> = new Set(['refresh', 'login', 'set-token', 'recheck']);
+
+export async function applyCredentialAction(app: PanelAppRef, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!app.credentials) throw new PanelError('this host runs on an API key; no credential actions', 404);
+  const action = typeof params.action === 'string' ? params.action : '';
+  if (!CREDENTIAL_ACTIONS.has(action)) throw new PanelError(`unknown credential action: ${action || '(none)'}`, 400);
+  const token = typeof params.token === 'string' ? params.token : undefined;
+  if (action === 'set-token' && !token?.trim()) throw new PanelError('set-token needs a token', 400);
+  const state = await app.credentials.runAction(action as CredentialActionId, token !== undefined ? { token } : {});
+  return { subscription: true, agent: resolveAgent(app), ...state };
+}
+
+type FrameworkAgent = ReturnType<AgentFramework['getAllAgents']>[number];
+
+const READ_FAILURE_MAX_CHARS = 300;
+const READ_FAILURE_UNDESCRIBED = "the read failed, and its error couldn't be described";
+
+function describeReadFailure(error: unknown): string {
+  try {
+    const message = typeof error === 'object' && error !== null
+      ? (error as { message?: unknown }).message
+      : String(error);
+    if (typeof message === 'string' && message.length > 0) {
+      let kept = '';
+      let count = 0;
+      for (const codePoint of message) {
+        if (count++ === READ_FAILURE_MAX_CHARS) break;
+        kept += codePoint;
+      }
+      return kept;
+    }
+  } catch {
+  }
+  return READ_FAILURE_UNDESCRIBED;
+}
+
+function perAgentHealth(
+  app: PanelAppRef,
+  section: string,
+  failures: Record<string, Record<string, string>>,
+  read: (agent: FrameworkAgent, name: string) => unknown,
+): Record<string, unknown> {
+  const entries: Record<string, unknown> = Object.create(null);
+  for (const agent of app.framework.getAllAgents()) {
+    const name = (agent as unknown as { name: string }).name;
+    try {
+      const value = read(agent, name);
+      if (value) entries[name] = value;
+    } catch (error) {
+      (failures[name] ??= {})[section] = describeReadFailure(error);
+    }
+  }
+  return entries;
+}
+
+/**
+ * The /healthz answer: agent-framework's healthSnapshot, with `credential`
+ * on a host with a credential monitor; by agent, compressionQuarantine,
+ * compressionDebt, loadRepair, contextComposition and runtimeSettings, and
+ * readFailures naming the reads that threw; `callLedger` when a ledger is
+ * wired; and `update`. Every read is cheap: no compile, no count_tokens.
+ */
 export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   const fw = app.framework as unknown as { healthSnapshot?: () => Record<string, unknown> };
   if (typeof fw.healthSnapshot !== 'function') {
     throw new PanelError('framework lacks healthSnapshot()', 501);
   }
   const snapshot = fw.healthSnapshot();
-  // Compression quarantine is a guaranteed-eventual-outage state (raw
-  // spans accumulate until the picker cannot fit the window). Surface it
-  // here so the fleet hub and connectome-doctor can alarm on it — it
-  // must never be observable only in agent.log.
+  // readFailures, when a read threw: by agent, then by section, what it threw
+  // (its message cut to 300 code points, or a fixed text when it has none).
+  // That agent is left out of the section, as one with nothing to report is.
+  const readFailures: Record<string, Record<string, string>> = Object.create(null);
+  // credential: the monitor's CredentialState, which holds no token, with
+  // `agent`, the name the host's alerts carry.
   try {
-    const quarantine: Record<string, unknown> = {};
-    for (const agent of app.framework.getAllAgents()) {
-      const strategy = (agent.getContextManager() as unknown as {
+    if (app.credentials) {
+      (snapshot as Record<string, unknown>).credential = { agent: resolveAgent(app), ...app.credentials.snapshot() };
+    }
+  } catch {
+  }
+  // compressionQuarantine: each agent's compression quarantine, as its
+  // strategy reports it.
+  try {
+    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) =>
+      (agent.getContextManager() as unknown as {
         getStrategy?: () => { getCompressionQuarantineStatus?: () => unknown };
-      }).getStrategy?.();
-      const status = strategy?.getCompressionQuarantineStatus?.();
-      if (status) quarantine[(agent as unknown as { name: string }).name] = status;
-    }
-    (snapshot as Record<string, unknown>).compressionQuarantine = quarantine;
+      }).getStrategy?.()?.getCompressionQuarantineStatus?.());
   } catch {
-    // Health reads never throw.
   }
-  // Compression DEBT per agent — the single-authority reduction from cm
-  // (healthy / degraded / critical + the numbers behind it). Every wedge of
-  // the 2026-08-06 five-resident day was weeks of silently-failing
-  // compression surfacing as a sudden budget crisis; this block is what
-  // lets fleet-watch (and later the resident notice, af #99) catch the
-  // debt while it is still cheap.
+  // compressionDebt: each agent's compression debt as context-manager
+  // reduces it, healthy, degraded, critical or unknown, with the numbers
+  // behind it.
   try {
-    const debt: Record<string, unknown> = {};
-    for (const agent of app.framework.getAllAgents()) {
-      const strategy = (agent.getContextManager() as unknown as {
+    (snapshot as Record<string, unknown>).compressionDebt = perAgentHealth(app, 'compressionDebt', readFailures, (agent) =>
+      (agent.getContextManager() as unknown as {
         getStrategy?: () => { getCompressionDebt?: () => unknown };
-      }).getStrategy?.();
-      const d = strategy?.getCompressionDebt?.();
-      if (d) debt[(agent as unknown as { name: string }).name] = d;
-    }
-    (snapshot as Record<string, unknown>).compressionDebt = debt;
+      }).getStrategy?.()?.getCompressionDebt?.());
   } catch {
-    // Health reads never throw.
   }
-  // Rendered context COMPOSITION per agent — head / raw middle / summaries
-  // by level / tail, as actually emitted by the last compile. Sourced from
-  // the strategy's own render stats (already computed in-process), so it is
-  // safe on the 15s /healthz poll.
+  // loadRepair: each agent's newest load-repair report, which its strategy
+  // keeps for its life, so a session switch starts it fresh; absent while
+  // it has made none.
   try {
-    const composition: Record<string, unknown> = {};
-    for (const agent of app.framework.getAllAgents()) {
-      const name = (agent as unknown as { name: string }).name;
-      const cm = agent.getContextManager() as unknown as {
-        getRenderStats?: () => unknown;
-      };
-      const rs = cm.getRenderStats?.();
-      if (rs) composition[name] = rs;
-    }
-    (snapshot as Record<string, unknown>).contextComposition = composition;
+    (snapshot as Record<string, unknown>).loadRepair = perAgentHealth(app, 'loadRepair', readFailures, (agent) =>
+      (agent.getContextManager() as unknown as {
+        getStrategy?: () => { getLatestLoadRepairReport?: () => unknown };
+      }).getStrategy?.()?.getLatestLoadRepairReport?.());
   } catch {
-    // Health reads never throw.
   }
-  // Per-agent runtime settings (context budget, tail, transition pace +
-  // convergence state) — the same numbers `agent_settings get` returns,
-  // exposed externally so the fleet hub / connectome-doctor can watch
-  // budget convergence without an agent turn.
+  // contextComposition: each agent's render stats from its last live
+  // compile. An agent with none is left out, and contextCompositionNotKept,
+  // left out when empty, names those whose strategy keeps none.
+  try {
+    const notKept: string[] = [];
+    (snapshot as Record<string, unknown>).contextComposition = perAgentHealth(app, 'contextComposition', readFailures, (agent, name) => {
+      const cm = agent.getContextManager() as unknown as { getRenderStats?: () => unknown };
+      const stats = cm.getRenderStats?.();
+      if (stats == null && !keepsRenderStats(cm)) notKept.push(name);
+      return stats;
+    });
+    if (notKept.length > 0) (snapshot as Record<string, unknown>).contextCompositionNotKept = notKept;
+  } catch {
+  }
+  // runtimeSettings: each agent's runtime settings, the core of what
+  // `agent_settings get` returns.
   try {
     const fw2 = app.framework as unknown as {
       getAgentRuntimeSettings?: (name: string) => unknown;
     };
-    if (typeof fw2.getAgentRuntimeSettings === 'function') {
-      const settings: Record<string, unknown> = {};
-      for (const agent of app.framework.getAllAgents()) {
-        const name = (agent as unknown as { name: string }).name;
-        settings[name] = fw2.getAgentRuntimeSettings(name);
-      }
-      (snapshot as Record<string, unknown>).runtimeSettings = settings;
+    const getSettings = fw2.getAgentRuntimeSettings;
+    if (typeof getSettings === 'function') {
+      (snapshot as Record<string, unknown>).runtimeSettings = perAgentHealth(app, 'runtimeSettings', readFailures, (agent) =>
+        getSettings.call(app.framework, (agent as unknown as { name: string }).name));
     }
   } catch {
-    // Health reads never throw.
   }
-  // Recent provider calls. The WebUI host streams these over its own WS;
-  // for a fleet child this snapshot is the only path, so ship them here.
+  if (Object.keys(readFailures).length > 0) {
+    (snapshot as Record<string, unknown>).readFailures = readFailures;
+  }
+  // callLedger: recent provider calls, when the host wired a ledger.
   try {
     const ledger = app.callLedger?.snapshot();
     if (ledger) (snapshot as Record<string, unknown>).callLedger = ledger;
   } catch {
-    // Health reads never throw.
+  }
+  // update: the host's update status, absent before main() sets it up.
+  try {
+    (snapshot as Record<string, unknown>).update = hostUpdate.status();
+  } catch {
   }
   return snapshot;
 }
 
-/**
- * Counts-only state and bounded history for periodic context maintenance.
- * The framework snapshot deliberately contains no message or summary text.
- */
 export function buildContextMaintenance(app: PanelAppRef): Record<string, unknown> {
   const framework = app.framework as unknown as {
     getContextMaintenanceSnapshot?: () => Record<string, unknown>;
@@ -794,10 +839,6 @@ export function buildContextMaintenance(app: PanelAppRef): Record<string, unknow
   }
   return framework.getContextMaintenanceSnapshot();
 }
-
-// ---------------------------------------------------------------------------
-// Context debug (makeup / coverage / curve / preview / raw request)
-// ---------------------------------------------------------------------------
 
 interface CoverageSummary {
   id: string;
@@ -859,18 +900,19 @@ export interface ContextCoverageSnapshot {
   queue: {
     inFlight: boolean;
     pending: string | null;
+    waiting: string | null;
     l1: number[];
     merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
   };
 }
 
-/** Build a text-free projection of the autobiographical summary pyramid. */
 export function buildContextCoverageSnapshot(
   agentName: string,
   cm: {
     currentBranch: () => { name: string };
     getStrategy: () => unknown;
     getPendingWork?: () => { description?: string } | null;
+    getWaitingWork?: () => { description?: string } | null;
   },
 ): ContextCoverageSnapshot {
   const strategy = cm.getStrategy() as CoverageStrategy;
@@ -925,6 +967,7 @@ export function buildContextCoverageSnapshot(
   });
   const covered = projectedChunks.filter(chunk => chunk.maxLevel > 0);
   const pending = cm.getPendingWork?.()?.description ?? null;
+  const waiting = cm.getWaitingWork?.()?.description ?? null;
 
   return {
     agent: agentName,
@@ -943,6 +986,7 @@ export function buildContextCoverageSnapshot(
     queue: {
       inFlight: strategy.pendingCompression != null,
       pending,
+      waiting,
       l1: [...compressionQueue],
       merges: mergeQueue.map(merge => ({
         targetLevel: merge.level,
@@ -954,49 +998,28 @@ export function buildContextCoverageSnapshot(
   };
 }
 
-/** What the exact count needs from a previewed activation: the same
- *  normalized request membrane formats for inference. */
 export interface CountablePreview {
   system?: string | ContentBlock[];
   messages?: NormalizedMessage[];
   tools?: ToolDefinition[];
   config?: { thinking?: { enabled: boolean; budgetTokens?: number } };
+  prefillUserMessage?: NormalizedRequest['prefillUserMessage'];
 }
 
-/** Anthropic count_tokens payload (everything but `model`). */
 export interface CountTokensPayload {
   system?: unknown;
   messages: unknown[];
   tools?: unknown[];
 }
 
-/** The formatter surface the count needs; both prefill formatters implement it. */
 export type CountFormatter = Pick<NativeFormatter, 'buildMessages'>;
 
-/**
- * Build the count_tokens payload by running the previewed activation through
- * the SAME formatter path inference uses (`buildMessages`, multiuser, the
- * agent as assistant, native tools): participant prefixes land per text block
- * exactly as on the wire, non-text-only messages get no name block, tool
- * pairs are normalized and same-role runs merged by the formatter itself, and
- * every block the provider will be sent — signed `thinking` /
- * `redacted_thinking`, `tool_use`, `tool_result`, images — is counted.
- *
- * The previous version flattened each message to its text blocks and sent no
- * tool definitions: on a keep-all model (Opus >= 4.5, Sonnet >= 4.6, Fable)
- * the replayed hidden thinking is most of the prompt, so the "exact" number
- * read up to ~10x below what the provider bills. A hand-rolled mirror of the
- * formatter (one standalone "Name: " block per message) still differed in
- * prefix bytes and block framing — hence the formatter itself.
- *
- * `promptCaching: false` keeps cache_control markers out of the payload; they
- * do not change the count and this request never warms a cache.
- */
 export function buildCountTokensPayload(
   preview: CountablePreview,
   agentName: string,
   formatter: CountFormatter = new NativeFormatter(),
   toolMode: 'native' | 'xml' = 'native',
+  anthropicServerBlocks = false,
 ): CountTokensPayload {
   const built = formatter.buildMessages(preview.messages ?? [], {
     participantMode: 'multiuser',
@@ -1005,27 +1028,26 @@ export function buildCountTokensPayload(
     toolMode,
     thinking: preview.config?.thinking,
     systemPrompt: preview.system,
+    // Inference passes the agent's prefill message to the formatter, which
+    // for anthropic-xml sends it first, in place of its default opener,
+    // whenever the request would otherwise open with the assistant's turn;
+    // without it the count would have that default in its place.
+    ...(preview.prefillUserMessage ? { prefillUserMessage: preview.prefillUserMessage } : {}),
     promptCaching: false,
     cacheMarkers: 'membrane-system',
+    anthropicServerBlocks,
   });
   const tools = Array.isArray(built.nativeTools) ? built.nativeTools : undefined;
+  const system = built.systemContent;
   return {
-    ...(built.systemContent !== undefined && built.systemContent !== null && built.systemContent !== ''
-      ? { system: built.systemContent }
+    ...(system !== undefined && system !== null && system !== '' && !(Array.isArray(system) && system.length === 0)
+      ? { system }
       : {}),
     messages: built.messages as unknown[],
     ...(tools && tools.length > 0 ? { tools } : {}),
   };
 }
 
-/**
- * Best-effort mapping from an agent's configured model string to a bare
- * Anthropic API model id for /v1/messages/count_tokens. Handles membrane /
- * OpenRouter provider prefixes ("anthropic/claude-…", "…/anthropic/claude-…")
- * and Bedrock ids ("us.anthropic.claude-…-v1:0"). Returns null for
- * non-Anthropic models — exact counting is unsupported there, and reporting
- * that honestly beats 404ing against a wrong tokenizer.
- */
 export function anthropicCountModel(agentModel: string | undefined): string | null {
   if (!agentModel) return null;
   let m = agentModel;
@@ -1041,55 +1063,66 @@ export function buildContextCoverage(app: PanelAppRef, agentName: string): Conte
   return buildContextCoverageSnapshot(agentName, agent.getContextManager());
 }
 
+/** Whether a context manager's strategy keeps render stats, as
+ *  context-manager's isRenderStatsCapable asks (its root doesn't export
+ *  it): one without getRenderStats, such as PassthroughStrategy, has
+ *  getRenderStats() null for good. */
+function keepsRenderStats(cm: unknown): boolean {
+  const strategy = (cm as { getStrategy?: () => unknown }).getStrategy?.();
+  return typeof (strategy as { getRenderStats?: unknown } | undefined)?.getRenderStats === 'function';
+}
+
 /**
- * Context makeup: the segment breakdown of the agent's current compiled
- * context — head window, raw middle, summaries by level (L1/L2/L3), and the
- * recent verbatim tail — from the strategy's RenderStats, plus an exact
- * total token count via the model's count_tokens endpoint. Transparent:
- * previewActivation + count_tokens only; no inference, no Chronicle writes.
+ * The /debug/context/makeup answer: `stats`, the render stats of the
+ * agent's last live compile (head, raw middle, summaries by level, tail),
+ * and an exact count of the next request as the default preview builds it,
+ * without what modules add at each turn. The preview's compile is a dry
+ * run, which leaves the render stats as they were, so `stats` is null
+ * until a live compile has run since the strategy loaded its branch, and
+ * for good where the strategy keeps none, which `statsKept` tells apart.
  */
 export async function buildContextMakeup(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   const agent = requireAgent(app, agentName);
-  // Populates the strategy's render stats as a side-effect of compiling.
   const request = await app.framework.previewActivation(agentName);
   const cm = (agent as unknown as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
   const stats = cm.getRenderStats();
+  const statsKept = keepsRenderStats(cm);
 
-  // Count through the formatter the agent actually runs on (prefill agents
-  // render the XML scaffold; everyone else the native shape).
   const xml = app.recipe.agent.formatter === 'anthropic-xml';
+  const primaryAgentModel = () => requireAgent(app, resolveAgent(app)).model;
   const payload = buildCountTokensPayload(
     request as unknown as CountablePreview,
     agentName,
-    xml ? new AnthropicXmlFormatter() : new NativeFormatter(),
+    xml ? anthropicXmlFormatter({ toolsInSystem: xmlToolsInSystem(app.recipe, primaryAgentModel()) }) : new NativeFormatter(),
     xml ? 'xml' : 'native',
+    // membrane replays an assistant turn's server-tool blocks only through an
+    // adapter that declares replaysAnthropicServerBlocks, which of its
+    // adapters only AnthropicAdapter does: the host's for provider anthropic.
+    resolveProvider(app.recipe) === 'anthropic',
   );
-  // What the provider actually billed for the last call (fresh + cache read +
-  // cache creation): exact, free, and independent of the count below — the
-  // two disagree only when the context changed since that call.
+  // lastBilledInputTokens: what the provider billed for the input of the
+  // latest call on the agent's stream that reported one (fresh + cache read
+  // + cache creation); null from a stream's start until a call reports one.
   const lastBilledInputTokens =
     (agent as { lastStreamRealInputTokens?: number }).lastStreamRealInputTokens || null;
 
   let exactTotalTokens: number | null = null;
-  // Count against the model the agent actually runs, not a hardcoded id:
-  // a stale/foreign id 404s and exact counts silently degrade to null on
-  // every install. COUNT_TOKENS_MODEL stays as an explicit operator override.
+  // COUNT_TOKENS_MODEL, when set, is the model counted against in place of
+  // the agent's own.
   const countModel = process.env.COUNT_TOKENS_MODEL
     || anthropicCountModel((agent as { model?: string }).model);
   let countSource = 'count_tokens';
   if (!countModel) {
-    return { agent: agentName, stats, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
+    return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
   try {
     const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
     const res = await fetch(base + '/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
-        // Mirror the main adapter's auth: OAuth Bearer (subscription) when
-        // ANTHROPIC_AUTH_TOKEN is set, x-api-key otherwise.
-        ...(process.env.ANTHROPIC_AUTH_TOKEN
+        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
           ? {
-              authorization: `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`,
+              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
               'anthropic-beta': 'oauth-2025-04-20',
             }
           : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),
@@ -1109,43 +1142,119 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     countSource = 'count_tokens_error';
   }
 
-  return { agent: agentName, stats, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
+  return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
 }
 
 /**
- * Context curve: compile the agent's window and return one record per
- * compiled entry with its provenance — kind (raw / L1..Ln summary), rendered
- * token estimate, the raw-history tokens it covers (leaf messages,
- * recursively through the summary tree), date span, and full text.
+ * A feasibility preview's accounting, against the budget asked for.
+ * context-manager's `budgetTokens` is the hard budget a compile throws
+ * past, its over-budget grace included, and its `fits` means under that,
+ * not under the budget asked for.
+ */
+function previewAccounting(result: unknown, budget: number, reserve: number) {
+  const r = result as { finalTokens?: number; budgetTokens?: number; exhausted?: boolean };
+  const effectiveBudget = Math.max(0, budget - reserve);
+  const finalTokens = typeof r.finalTokens === 'number' ? r.finalTokens : NaN;
+  const fitsRequested = Number.isFinite(finalTokens) && finalTokens <= effectiveBudget;
+  const withinGrace = Number.isFinite(finalTokens) && typeof r.budgetTokens === 'number'
+    ? finalTokens <= r.budgetTokens
+    : undefined;
+  return {
+    requestedBudgetTokens: budget,
+    reserveForResponseTokens: reserve,
+    /** The picker's planned total, when the preview reports one. */
+    plannedTokens: Number.isFinite(finalTokens) ? finalTokens : null,
+    /** What the picker actually targets. */
+    effectiveBudgetTokens: effectiveBudget,
+    /** Hard-fail ceiling — requested minus reserve, plus grace. */
+    rejectionBudgetTokens: r.budgetTokens,
+    /** Fits the budget the operator asked for. */
+    fitsRequested,
+    /** Within the hard budget, so no compile throws for its size: true as
+     *  well when it fits the request. */
+    withinGrace,
+    /** Exhausted AND over the request => this budget is UNREACHABLE. */
+    unreachable: r.exhausted === true && !fitsRequested,
+  };
+}
+
+/**
+ * Whether the curve's plan fits, from the framework's feasibility preview,
+ * with the settings panel's accounting; null when the preview is
+ * unavailable (no previewContextSettings, or a strategy without a fold
+ * plan) or throws. During a paced budget descent (`transition` other than
+ * `stable`) the curve and its verdict are at the descent's target, while
+ * compiles run at the live budget: `atDescentTarget` says so.
+ */
+function curveVerdict(
+  app: PanelAppRef,
+  agentName: string,
+  maxTokens: number,
+  reserveForResponse: number,
+  transition: string | undefined,
+): Record<string, unknown> | null {
+  try {
+    const fw = app.framework as unknown as {
+      previewContextSettings?: (name: string, budget: number) => unknown;
+    };
+    const r = fw.previewContextSettings?.(agentName, maxTokens);
+    if (!r) return null;
+    const { plannedTokens, effectiveBudgetTokens, rejectionBudgetTokens, fitsRequested, withinGrace, unreachable } =
+      previewAccounting(r, maxTokens, reserveForResponse);
+    return {
+      plannedTokens,
+      effectiveBudgetTokens,
+      rejectionBudgetTokens: rejectionBudgetTokens ?? null,
+      fitsRequested,
+      withinGrace,
+      unreachable,
+      atDescentTarget: transition !== undefined && transition !== 'stable',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The /debug/context/curve answer: one record per compiled entry with its
+ * provenance: kind (raw, or an L1..Ln summary), rendered token estimate,
+ * the raw-history tokens it covers (leaf messages, through the summary
+ * tree), date span and full text. The budget is the agent's context budget
+ * from its runtime settings (else the recipe's), with the recipe's
+ * response reserve.
  *
- * Same side-effect class as previewActivation / makeup: the compile may
- * commit resolution updates, exactly as the agent's own next turn would.
- * No inference, no message writes.
+ * A render runs two dry selects, the curve's compile and the verdict's
+ * preview, each pausing the agent while it runs; the settings preview's
+ * cooldown isn't applied. A dry run commits no fold resolutions, queues no
+ * compression, and leaves the hot settings, calibration and render stats
+ * as the last committing compile left them; as any compile does, it
+ * releases a compression hold whose deadline has passed. It skips only
+ * context-manager's post-pick check, so a plan over budget there is
+ * plotted beside the verdict, while a budget the context can't fit at all
+ * still throws. No inference of its own, no message writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
   const agent = app.framework.getAgent(agentName)!;
   const cm = (agent as unknown as { getContextManager: () => any }).getContextManager();
-  // Use the LIVE budget, not the recipe's. Runtime overrides persist in the
-  // `framework/state` Chronicle slot and win over the recipe, so reading
-  // app.recipe here plotted the wrong curve on any agent whose budget had
-  // ever been changed at runtime. Fall back to the recipe only if the live
-  // read is unavailable.
-  let maxTokens = app.recipe.agent.contextBudgetTokens ?? 200_000;
+  let maxTokens = effectiveContextBudgetTokens(app.recipe, recipeModel(app.recipe, process.env.MODEL));
+  let transition: string | undefined;
   try {
-    const live = (app.framework as unknown as {
-      getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number };
-    }).getAgentRuntimeSettings?.(agentName)?.contextBudgetTokens;
+    const settings = (app.framework as unknown as {
+      getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number; transition?: string };
+    }).getAgentRuntimeSettings?.(agentName);
+    const live = settings?.contextBudgetTokens;
     if (typeof live === 'number' && live > 0) maxTokens = live;
-  } catch { /* keep the recipe fallback */ }
-  const reserveForResponse = app.recipe.agent.maxTokens ?? 16_384;
-  const compiled = await cm.compile({ maxTokens, reserveForResponse });
+    transition = settings?.transition;
+  } catch { }
+  const reserveForResponse = effectiveMaxTokens(app.recipe);
+  // A dry run: a committing compile on every render would persist its fold
+  // resolutions and queue compression from its plan, mid-stream included.
+  const compiled = await cm.compile({ maxTokens, reserveForResponse }, undefined, { dryRun: true });
+  const verdict = curveVerdict(app, agentName, maxTokens, reserveForResponse, transition);
 
-  // Curve inspection only needs text and source metadata. Resolving every
-  // historical blob here re-inlines all base64 media and can expand a
-  // few-hundred-MB Chronicle into several GB of JS heap. Use the windowed
-  // reader with blob resolution disabled so production diagnostics stay
-  // bounded by text history rather than the media archive.
+  // The curve needs only text and metadata, and context-manager's reads
+  // re-inline blob media unless told resolveBlobs: false.
   const messageCount = cm.getMessageCount();
   const messages: Array<{ id: string; timestamp?: unknown; content?: unknown[] }> =
     cm.getMessageWindow(0, messageCount, { resolveBlobs: false }).messages;
@@ -1193,11 +1302,18 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     if (sum) {
       const leafIds = leaves(sum).filter((id) => msgById.has(id));
       const rawCovered = leafIds.reduce((a, id) => a + estimate(msgById.get(id)!), 0);
-      const dates = leafIds.map((id) => msgById.get(id)!.timestamp).filter(Boolean).sort();
+      // The store gives each timestamp as a Date, which sort's default orders
+      // by its text, weekday first.
+      const times = leafIds.map((id) => msgById.get(id)!.timestamp)
+        .filter((t) => t !== undefined && t !== null)
+        .map((t) => new Date(t as Date | string | number).getTime())
+        .filter((t) => Number.isFinite(t))
+        .sort((a, b) => a - b);
       entries.push({
         i: i++, kind: `L${sum.level}`, id: sum.id, participant: e.participant,
         rendered, rawCovered, msgCount: leafIds.length, nImages,
-        dateFirst: dates[0] ?? null, dateLast: dates[dates.length - 1] ?? null, text,
+        dateFirst: times.length > 0 ? new Date(times[0]) : null,
+        dateLast: times.length > 0 ? new Date(times[times.length - 1]) : null, text,
       });
     } else {
       const src = e.sourceMessageId ? msgById.get(e.sourceMessageId) : null;
@@ -1213,6 +1329,7 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     generatedAt: new Date().toISOString(),
     branch: cm.currentBranch().name,
     budget: { maxTokens, reserveForResponse },
+    verdict,
     totals: {
       entries: entries.length,
       rendered: entries.reduce((a, e) => a + e.rendered, 0),
@@ -1222,33 +1339,13 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
   };
 }
 
-/**
- * Single-flight + cooldown for preview, PER PROCESS.
- *
- * A preview is a real compile: ~8s on a large store, and `select()` is
- * synchronous so it BLOCKS the agent's event loop for that whole time (no
- * heartbeat, no Discord, no MCPL). Overlapping or rapid-fire previews
- * therefore don't just queue — they stack agent stalls. Reject instead.
- * Module-level state on purpose: the guard protects this process's agent,
- * regardless of which surface (HTTP handler, fleet IPC) asked.
- */
 let previewInFlight = false;
 let previewLastAt = 0;
 const PREVIEW_COOLDOWN_MS = 3_000;
 
-/**
- * Replace the dry run's full rendered entries with a compact display
- * projection.
- *
- * Shipping the entries verbatim cost ~110s of BLOCKED AGENT on Mythos (353
- * entries, megabytes of content plus any inlined media) against ~8s for the
- * numbers-only path — and select() builds those entries either way, so the
- * extra ~100s was pure serialization of data the UI never shows in full: the
- * pane truncates every body past 600 chars anyway.
- *
- * So: keep identity, size and a bounded text preview; drop content blocks and
- * never inline media.
- */
+/** With render=1, the dry run's entries come back as a compact projection:
+ *  identity, size and a bounded text preview, with no content blocks or
+ *  inline media. */
 function projectDryEntries(result: unknown): unknown {
   const r = result as { entries?: unknown[] } & Record<string, unknown>;
   if (!Array.isArray(r.entries)) return result;
@@ -1281,11 +1378,9 @@ function projectDryEntries(result: unknown): unknown {
 }
 
 /**
- * Preview the fold plan at a HYPOTHETICAL budget / tail, without applying it.
- * Commits nothing — no fold resolutions persisted, no compression enqueued,
- * no transition bookkeeping advanced. An infeasible budget is reported as
- * diagnostics, NOT as an error: learning that a budget can't work is the
- * reason to preview instead of applying and taking the outage.
+ * The /debug/context/preview answer: the fold plan at a hypothetical budget
+ * and tail, committing nothing. A budget that can't work is reported in the
+ * diagnostics, not as an error.
  *
  * params: { budget: number; tail?: number; render?: boolean }
  */
@@ -1306,7 +1401,6 @@ export function runContextPreview(
     if (!Number.isSafeInteger(tail) || tail < 0) {
       throw new PanelError('tail must be a non-negative integer', 400);
     }
-    // The strategy knob behind "tail" is recentWindowTokens.
     overrides.recentWindowTokens = tail;
   }
   const wantRender = params.render === true || params.render === '1' || params.render === 1;
@@ -1349,37 +1443,14 @@ export function runContextPreview(
           + 'or the active strategy has no fold plan (non-adaptive)', 501,
       );
     }
-    // Honest budget accounting. context-manager's `budgetTokens` is the
-    // REJECTION budget: (requested - reserve) * (1 + overBudgetGraceRatio),
-    // i.e. the threshold above which a compile throws. Its `fits` therefore
-    // means "would not hard-fail", NOT "fits the budget you asked for".
-    const r = result as { finalTokens?: number; budgetTokens?: number; exhausted?: boolean };
-    const reserve = app.recipe.agent.maxTokens ?? 16_384;
-    const effectiveBudget = Math.max(0, budget - reserve);
-    const finalTokens = typeof r.finalTokens === 'number' ? r.finalTokens : NaN;
-    const fitsRequested = Number.isFinite(finalTokens) && finalTokens <= effectiveBudget;
-    const withinGrace = Number.isFinite(finalTokens) && typeof r.budgetTokens === 'number'
-      ? finalTokens <= r.budgetTokens
-      : undefined;
+    const reserve = effectiveMaxTokens(app.recipe);
     return {
       agent: agentName,
       budget,
       ...(overrides as object),
-      accounting: {
-        requestedBudgetTokens: budget,
-        reserveForResponseTokens: reserve,
-        /** What the picker actually targets. */
-        effectiveBudgetTokens: effectiveBudget,
-        /** Hard-fail ceiling — requested minus reserve, plus grace. */
-        rejectionBudgetTokens: r.budgetTokens,
-        /** Fits the budget the operator asked for. */
-        fitsRequested,
-        /** Merely tolerated by the grace margin — over budget, but no throw. */
-        withinGrace,
-        /** Exhausted AND over the request => this budget is UNREACHABLE. */
-        unreachable: r.exhausted === true && !fitsRequested,
-      },
-      /** How long the agent was blocked, so the operator sees the real cost. */
+      accounting: previewAccounting(result, budget, reserve),
+      /** How long the preview's compile took; the agent is paused at least
+       *  this long. */
       elapsedMs: Date.now() - startedAt,
       preview: wantRender ? projectDryEntries(result) : result,
     };
@@ -1389,15 +1460,6 @@ export function runContextPreview(
   }
 }
 
-/**
- * The membrane-normalized request the framework would hand to the model if
- * the agent were activated right now. Delegates to `framework.previewActivation`.
- *
- * Transparent by default: no inference, no Chronicle writes, no external
- * MCPL calls. Pass `injections: true` to gather dynamic injections
- * (lessons/retrieval/MCPL context) for full fidelity, which is NOT
- * transparent: it can run inference and fire MCPL `beforeInference` hooks.
- */
 export async function buildDebugContext(
   app: PanelAppRef,
   agentName: string,
@@ -1406,5 +1468,7 @@ export async function buildDebugContext(
   requireAgent(app, agentName);
   const injections = params.injections === true;
   const request = await app.framework.previewActivation(agentName, { injections });
-  return { agent: agentName, injections, transparent: !injections, request };
+  // The presentation captured with this request, or null for an agent without one.
+  return { agent: agentName, injections, transparent: !injections, request,
+    toolPresentation: app.framework.getRequestToolPresentation(request) };
 }

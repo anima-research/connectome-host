@@ -1,31 +1,65 @@
 /**
  * WebUI wire protocol — JSON-over-WebSocket envelope for the web admin client.
  *
- * Both ends import these types so the messages stay in lockstep. The shape
- * deliberately mirrors the fleet IPC (`fleet-types.ts`) so a future external
- * aggregator can reuse the same parsers.
+ * Versioning: v4. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
+ * mismatch the Web UI page shows a banner saying what to do and keeps the
+ * welcome, session and messages it had: `applyWelcome` returns before taking
+ * any of them. The welcome's other readers still read it, among them the
+ * usage, costs, call ledger and host mode, and the agent trees when they're
+ * shown; later frames still apply, and its socket stays open.
  *
- * Versioning: v1. Breaking changes bump `WEB_PROTOCOL_VERSION` and clients
- * refuse to connect on mismatch.
+ * v2: an observer gets only the frames its grant's scopes cover, live as well
+ * as in its welcome, and a `stream-ended` frame in place of a stream-end trace
+ * its scopes don't cover, which a page has to handle to end a streamed turn.
  *
- * v1 (2026-07): windowed history (welcome carries only a tail window plus
- * `history` metadata; older pages via request-history/history-page), ordered
- * `blocks` on message entries (thinking / tool_use / tool_result / media
- * surface in full), and `message-appended` live pushes of stored messages.
+ * v3: the eight messages whose target the operator chose from a session's data
+ * (`rollback`, `suppress`, `pin-add`, `pin-remove`, `settings-update`,
+ * `settings-reset`, `settings-cancel-transition` and `cancel-subagent`) carry
+ * `sessionId`, the session whose data the operator chose the change from, and
+ * the server refuses one chosen in a session other than the one whose
+ * framework is open. Rollback and suppress always carry it. A pin or settings
+ * change carries it unless its `scope` names a fleet child, and a
+ * `cancel-subagent` unless its `childName` does, since the page doesn't know a
+ * child's session, and then carries none. The data they're chosen from says
+ * whose it is: the welcome's `session`, and `sessionId` on a `history-page`,
+ * on this process's `pins-list` and `settings-state`, and on the
+ * `/debug/context` answer, each the session whose framework produced it. A
+ * push such as `message-appended` carries no stamp: it goes only to a client
+ * welcomed for the framework that sent it, so it belongs to the welcome before
+ * it. The one exception is a switch whose new framework fails to start: the
+ * clients keep the welcome of the framework before it, and a frame the server
+ * sends from the new one in answer to an action, such as the `branch-changed`
+ * after a command, reaches them before their next welcome. The new framework's
+ * traces and stored messages don't, since the server follows a framework's
+ * events only once it has started.
+ *
+ * v4: an undo and a redo leave the branch alone (agent-framework #291). The
+ * page learns of them from the `window:undone` trace and the `undone-marks`
+ * frame, and transcript entries carry `undone`, where a v3 host moved the
+ * branch and sent `branch-changed` and a fresh welcome. The local
+ * `pins-list` carries `candidates`, which the pin picker lists, where a v3
+ * page listed the transcript's loaded rows. A v3 page on a v4 host would show
+ * an undone turn as still in context, and a v4 page on a v3 host an empty
+ * picker, so each shows the mismatch banner instead.
  */
 
-import type { Line } from '../commands.js';
+import type { Line } from '../output-line.js';
+import type { AgentPhaseState } from '../state/agent-phases.js';
+import type { AgentPhase } from '../state/agent-tree-reducer.js';
 
-export const WEB_PROTOCOL_VERSION = 1;
+export const WEB_PROTOCOL_VERSION = 4;
 
-// ---------------------------------------------------------------------------
-// Server → Client
-// ---------------------------------------------------------------------------
+/** What an observer needs to be sent the agent trees, and so what a page
+ *  needs to build and show them: every scope but 'debug'. A tree's nodes
+ *  carry a subagent's task, each run's phase and how it ended, failures
+ *  included, its counters and its token counts. */
+export const AGENT_TREE_SCOPES = ['messages', 'thinking', 'tools', 'health', 'ops'] as const;
 
 /**
- * Cold-start payload sent immediately after a client connects. Contains
- * everything needed to render a usable view without any further roundtrips.
- * Subsequent live updates arrive as `trace` / `child-event` / etc.
+ * Cold-start payload, sent once a client connects (an observer, once its
+ * `observer-hello` verifies). Contains everything needed to render a usable
+ * view without any further roundtrips. Subsequent live updates arrive as
+ * `trace` / `child-event` / etc.
  */
 export interface WelcomeMessage {
   type: 'welcome';
@@ -49,18 +83,20 @@ export interface WelcomeMessage {
    *  Clients fold live `trace` / `message-appended` events on top and page
    *  older messages via `request-history`. */
   messages: WelcomeMessageEntry[];
-  /** Paging metadata for `messages`. `startIndex` is the store slot index of
-   *  the first entry (== the number of older messages not shipped);
-   *  `totalCount` is the store size at snapshot time. */
+  /** Paging metadata for `messages`. `startIndex` is the store slot index
+   *  the tail window begins at (== the number of older messages not
+   *  shipped); an observer's first entry can come after it, past messages
+   *  its scopes empty. When its scopes empty the whole tail, an observer's
+   *  welcome reads back as a `history-page` does, and `startIndex` is where
+   *  that reading stopped. `totalCount` is the store size at snapshot
+   *  time. */
   history: {
     startIndex: number;
     totalCount: number;
   };
   /**
    * Parent-local agent tree snapshot. Shape matches AgentTreeSnapshot from
-   * `state/agent-tree-reducer.ts` — kept structurally typed here to avoid
-   * a cross-package import cycle and to let the client embed the same
-   * reducer with no transitive dependency on framework internals.
+   * `state/agent-tree-reducer.ts`.
    */
   localTree: {
     asOfTs: number;
@@ -78,9 +114,8 @@ export interface WelcomeMessage {
     nodes: Array<Record<string, unknown>>;
     callIdIndex: Record<string, string>;
     /** Recipe summary for the child, parsed from its recipe file at fleet
-     *  registration. Undefined when the recipe couldn't be loaded (e.g. URL
-     *  recipe not yet fetched, or read error); SPA falls back to showing
-     *  the child name only. */
+     *  registration. Undefined when the recipe couldn't be loaded (e.g.
+     *  URL recipe not yet fetched, or read error). */
     recipe?: {
       name: string;
       description?: string;
@@ -96,6 +131,8 @@ export interface WelcomeMessage {
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
   hostMode?: HostModeSnapshot;
+  /** Each of this process's agents' phase now, by name (see AgentPhaseMessage). Left out for a client without `health`. */
+  agentPhases?: Record<string, AgentPhaseState>;
   /** Cumulative session-wide token usage at connect time. */
   usage: TokenUsage;
   /** Per-agent cost breakdown for the parent process, present when the
@@ -122,8 +159,9 @@ export type MessageBlock =
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
   /** Image/document/audio/video or un-inflated blob_ref placeholder. `ref`
    *  is present for images the host can serve lazily at `/media/<ref>` —
-   *  bytes never ride the WebSocket. */
-  | { kind: 'media'; mediaType: string; ref?: string };
+   *  bytes never ride the WebSocket. `toolUseId` names the tool call whose
+   *  result the image came in, so it goes only where tool results go. */
+  | { kind: 'media'; mediaType: string; ref?: string; toolUseId?: string };
 
 export interface WelcomeMessageEntry {
   /** Stable id from the message store; clients can use this for keys. */
@@ -132,13 +170,24 @@ export interface WelcomeMessageEntry {
    *  the first shard's index. */
   index: number;
   participant: 'user' | 'assistant' | 'system' | 'tool';
+  /** Who a `user` entry reads as: `you` only for what came in as the host's
+   *  own input, else the host by kind, a channel message's author with its
+   *  channel, a push's author or else its server, or `user`. */
+  speaker?: string;
   /** Ordered content blocks — the full internal life of the message. */
   blocks: MessageBlock[];
-  /** Flattened text content (text blocks only), kept as a convenience and
-   *  for degraded rendering by stale clients. */
+  /** Flattened text content (text blocks only). */
   text: string;
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
+  /** The row is out of the conversation agent's window as an undone
+   *  turn's (agent-framework #291): an undo (which /redo can reverse until
+   *  the agent's next turn, a branch move or a restart, as agent-framework
+   *  keeps the redo in memory only) or a shed after a refusal or failed
+   *  inference (which it can't). Its next request is built without it,
+   *  and the record, which the transcript shows, keeps it. Absent
+   *  otherwise. */
+  undone?: true;
 }
 
 /** Verbatim framework TraceEvent. Clients typically pipe these into the
@@ -199,10 +248,10 @@ export type CallLedgerVerdict =
 export interface CallLedgerRow {
   id: string;
   timestamp: string;
-  kind: 'complete' | 'stream';
+  kind: 'complete' | 'stream' | 'keepalive';
   /** Honest call-class estimate; `~` means the trigger plumbing did not
-   *  provide a definitive origin. */
-  originEstimate: 'turn~' | 'aux~';
+   *  provide a definitive origin. Keepalive receipts identify their origin exactly. */
+  originEstimate: 'turn~' | 'aux~' | 'keepalive';
   model: string;
   messages: number;
   durationMs: number;
@@ -215,8 +264,12 @@ export interface CallLedgerRow {
     effectiveTtl: '5m' | '1h';
   };
   verdict: CallLedgerVerdict;
+  /** Why the call got its verdict. A failed call's (`ERROR`) is its error's
+   *  text, which an observer without 'ops' gets empty. */
   cause: string;
   stopReason?: string;
+  /** Present exactly when the call failed: its error's text, which an
+   *  observer without 'ops' gets empty. */
   error?: string;
 }
 
@@ -289,6 +342,8 @@ export interface QuotaSnapshotData {
     advisory?: boolean;
   }>;
   fetchedAt?: number;
+  /** Present when the last read failed: what it said, which an observer
+   *  without 'ops' gets empty. */
   error?: string;
   /** Epoch ms at which the last spent window resets, else null. A spent
    *  window is not by itself a parked agent — see `parked`. */
@@ -298,21 +353,48 @@ export interface QuotaSnapshotData {
   parked?: boolean | null;
 }
 
-/** Per-agent cost slice used by the WebUI usage panel to label rows. Only
- *  surfaces parent-process agents — fleet-child agents track their own
- *  usage in their own UsageTracker and aren't aggregated cross-process. */
+/** Per-agent cost slice used by the WebUI usage panel to label rows.
+ *  Only surfaces parent-process agents. */
 export interface PerAgentCost {
   name: string;
   cost: { total: number; currency: string };
   inferenceCount: number;
 }
 
-/** Sent when the active branch changes (undo/redo/checkout). Clients should
- *  re-fetch their conversation by reconnecting or treating subsequent traces
- *  as authoritative. */
+/** Sent when the active branch changes (checkout, restore, branchto, a
+ *  rollback). A fresh `welcome` with the new branch's messages follows it. */
 export interface BranchChangedMessage {
   type: 'branch-changed';
   branch: { id: string; name: string };
+}
+
+/** After an undo or a redo on the conversation agent's window
+ *  (agent-framework #291, the `window:undone` trace), or a shed from it
+ *  (`presentation:retracted`, reason `shed`), and right after each welcome:
+ *  which of the transcript's rows from `fromIndex` on are out of that window
+ *  as undone (`WelcomeMessageEntry.undone`), by store id. A row from there
+ *  that isn't named isn't undone. This host sends `fromIndex` 0, every row
+ *  of the record, so a page marks each row it holds, however far back its
+ *  history reaches, the rows older than a welcome's tail that the page keeps
+ *  across a reconnect included. A row before `fromIndex` would keep its
+ *  mark. The one after a welcome moved no window, so the page reads its
+ *  panels again at neither. */
+export interface UndoneMarksMessage {
+  type: 'undone-marks';
+  agent: string;
+  fromIndex: number;
+  undone: string[];
+}
+
+/** That an agent's stream ended, with nothing of how or why: sent in place
+ *  of a stream-end trace (STREAM_END_TRACES, state/turn-trace.ts) to a client
+ *  whose scopes hold 'messages' but not what that trace carries, such as
+ *  `inference:failed`'s error to an observer without 'ops'. A client ends
+ *  the agent's streamed turn on it, as on the trace. */
+export interface StreamEndedMessage {
+  type: 'stream-ended';
+  /** The agent whose stream ended, as the trace named it. */
+  agentName?: string;
 }
 
 /** One Chronicle branch with its lineage. `parentId`/`branchPoint` are
@@ -340,13 +422,14 @@ export interface BranchesListMessage {
   currentId: string;
 }
 
-/** Sent when the active session changes. Clients should soft-reconnect. */
+/** Not sent by this host: a session switch re-welcomes every client instead,
+ *  with the new session. */
 export interface SessionChangedMessage {
   type: 'session-changed';
   session: { id: string; name: string };
 }
 
-/** Live peek stream for one subagent (Phase 5). Multiplexed by `scope`. */
+/** Live peek stream for one subagent. Multiplexed by `scope`. */
 export interface PeekMessage {
   type: 'peek';
   scope: string;
@@ -358,9 +441,8 @@ export interface PeekMessage {
  *  surface a "module not loaded" hint rather than appearing broken. */
 export interface LessonsListMessage {
   type: 'lessons-list';
-  /** Which process this snapshot describes: 'local' or a fleet-child name.
-   *  Lets the SPA drop stale replies after a scope switch instead of
-   *  rendering child A's data under child B's header. */
+  /** Which process this snapshot describes: 'local' or a fleet-child
+   *  name. */
   scope?: string;
   loaded: boolean;
   lessons: Array<{
@@ -417,8 +499,7 @@ export interface WorkspaceFileMessage {
 }
 
 /** MCPL server config snapshot — response to request-mcpl, mcpl-add, etc.
- *  Sent only to the requesting client; mutations don't broadcast since
- *  changes are file-only and require restart anyway. */
+ *  Sent only to the requesting client; mutations don't broadcast. */
 export interface McplListMessage {
   type: 'mcpl-list';
   /** Process whose MCPL view this is ('local' or fleet-child name). The
@@ -440,8 +521,7 @@ export interface McplListMessage {
   }>;
   /** Servers the scoped process actually LOADED (recipe opt-in + agent
    *  overlay), with live connection status from its framework. Absent on
-   *  older hosts. This is the per-scope truth the file registry can't give:
-   *  a conductor with zero MCPLs and a clerk with five share one file. */
+   *  older hosts. */
   live?: Array<{
     id: string;
     connected: boolean;
@@ -449,19 +529,36 @@ export interface McplListMessage {
     toolPrefix?: string;
     /** command or url — whatever the transport targets. */
     target?: string;
+    closedTab?: boolean;
+  }>;
+  /** Every tool the scoped process offers, with its effective MCPL class
+   *  (RFC-008) and the source that decided it: `override` (recipe
+   *  toolClassOverrides), `host` (this host's or the framework's own table),
+   *  `server` (the MCPL server's `_meta`), `none` (unclassed). Sorted by tool
+   *  name. Absent on hosts or frameworks that don't report classes. */
+  toolClasses?: Array<{
+    tool: string;
+    /** Empty for an unclassed tool. */
+    class: string[];
+    source: 'override' | 'host' | 'server' | 'none';
+    /** The providing MCPL server, for MCPL tools. */
+    serverId?: string;
   }>;
 }
 
 /**
  * Protected ranges (pins / documents) for one agent.
  *
- * BROADCAST on change: pins alter what the next compile folds, so two operators
- * must not hold divergent views of them.
+ * BROADCAST to full clients on change. No observer gets them, as none may
+ * request them.
  */
 export interface PinsListMessage {
   type: 'pins-list';
   /** Process these pins live in ('local' or fleet-child name). */
   scope?: string;
+  /** The session whose framework answered, on this process's list; absent
+   *  on a fleet child's. */
+  sessionId?: string;
   agent: string;
   pins: Array<{
     id: string;
@@ -477,28 +574,63 @@ export interface PinsListMessage {
   }>;
   /** False when the active strategy has no pin support — panel goes read-only. */
   pinsSupported: boolean;
-  /** False when `level` would silently degrade to raw (non-kv-stable folding). */
+  /** False when `level` would silently degrade to raw. */
   levelHonored: boolean;
   /** Deepest fold level currently present, so the UI can bound level inputs. */
   deepestLevel?: number;
-  /** Recent pinnable messages (REAL store ids) from the scoped process.
-   *  Shipped for fleet-child scopes, where the SPA has no message window of
-   *  its own to build a picker from; local scope keeps using the client-side
-   *  candidate list. */
+  /** Recent pinnable messages (REAL store ids) from the scoped process, the
+   *  local one's as well as a fleet child's: the record's last 200 rows,
+   *  less a row out of the agent's window as undone and a row whose audience
+   *  stamp leaves the agent out (another resident's on a shared store), or,
+   *  on a legacy window, which reads no stamp, the rows the resident's view
+   *  leaves out instead (held traffic, suppressed rows, another agent's
+   *  stored injections). */
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
+}
+
+/** Credential state of one process. Every field but `type`, `scope` and
+ *  `subscription` is absent on an API-key host (`subscription: false`). */
+export interface CredentialStateMessage {
+  type: 'credential-state';
+  scope?: string;
+  subscription: boolean;
+  /** Agent name the host's credential alerts are keyed on. */
+  agent?: string;
+  kind?: string;
+  provider?: string;
+  /** The state's alert text, which can hold the provider's rejection detail
+   *  or a quota read's error: an observer without 'ops' gets it empty. */
+  message?: string;
+  since?: number;
+  until?: number;
+  windows?: string[];
+  rotatable?: boolean;
+  expiresAt?: number;
+  actions?: Array<{ id: string; label: string; hint?: string }>;
+  login?: { verificationUrl: string; userCode: string };
+  /** The last operator action. Its `message`, which holds a failed action's
+   *  reason, an observer without 'ops' gets empty. */
+  lastAction?: { id: string; at: number; ok: boolean; message: string };
+  /** While the last write of the credential to its file failed: the alert's
+   *  text, which an observer without 'ops' gets empty. */
+  unsaved?: string;
 }
 
 /**
  * Runtime context-settings snapshot.
  *
- * BROADCAST to every welcomed client on change — unlike `mcpl-list`, these are
- * live process state, not a config file, so two operators must not see
- * divergent values.
+ * BROADCAST to every full client on change. No observer gets them, as none
+ * may request them.
  */
 export interface SettingsStateMessage {
   type: 'settings-state';
   /** Process these settings belong to ('local' or fleet-child name). */
   scope?: string;
+  /** The session whose framework answered, on this process's state; absent
+   *  on a fleet child's. */
+  sessionId?: string;
   agent: string;
   /** Live values. `transition` is 'converging' while a paced descent runs. */
   settings: {
@@ -511,7 +643,7 @@ export interface SettingsStateMessage {
     /** Why a descent is stuck: pace below floor, or protected context too big. */
     transitionReason?: string;
   };
-  /** Keys currently overridden away from the recipe (i.e. persisted). */
+  /** Keys currently overridden away from the recipe, persisted or not. */
   overrides: string[];
   /** Which keys this build can apply live. Everything else needs a restart —
    *  the UI must show that split rather than implying all knobs are hot. */
@@ -526,14 +658,22 @@ export interface SettingsStateMessage {
 }
 
 /** A page of older history — response to `request-history`, routed only to
- *  the requesting client and correlated by `corrId`. */
+ *  the requesting client and correlated by `corrId`. An observer's page
+ *  leaves out the entries its scopes empty (an entry that had no blocks to
+ *  begin with stays), and reads back past windows that leave it none, for
+ *  at most ten windows of the request's size. So it comes back empty at the
+ *  start of history, or where those ten windows ran out. */
 export interface HistoryPageMessage {
   type: 'history-page';
   corrId: string;
+  /** The session whose framework answered. */
+  sessionId: string;
   /** Entries in store order (oldest first), ending just before the
-   *  requested `beforeIndex`. */
+   *  requested `beforeIndex`, or, for an observer, before the messages
+   *  after them that its scopes empty. */
   entries: WelcomeMessageEntry[];
-  /** Slot index of the first entry — the next page's `beforeIndex`. */
+  /** Slot index where the reading stopped — the next page's `beforeIndex`.
+   *  An observer's first entry can come after it. */
   startIndex: number;
   /** Store size at read time. */
   totalCount: number;
@@ -548,7 +688,9 @@ export interface MessageAppendedMessage {
   entry: WelcomeMessageEntry;
 }
 
-/** Server-side error response. Non-fatal; the client stays connected. */
+/** Server-side error response. Non-fatal; the client stays connected,
+ *  except after a failed `observer-hello`, when the server closes the
+ *  connection. */
 export interface ErrorMessage {
   type: 'error';
   /** corrId echo if the error was triggered by a specific request. */
@@ -569,9 +711,7 @@ export interface QuitConfirmRequiredMessage {
 
 /**
  * An external message just landed in the agent's context — e.g. an MCPL push
- * (zulip notification, etc.) or channel incoming. The TUI quietly switches to
- * "thinking" when this happens; the WebUI surfaces it as a labeled box so the
- * operator can see *why* the agent is suddenly active.
+ * (zulip notification, etc.) or channel incoming.
  *
  * Not emitted for inputs typed in the WebUI itself (those are already
  * optimistically rendered as a user message).
@@ -593,15 +733,11 @@ export interface InboundTriggerMessage {
   timestamp: number;
 }
 
-// ---------------------------------------------------------------------------
-// Live operator surgery (rollback / suppress), host quiesce, operator log.
-// ---------------------------------------------------------------------------
-
 /** Host serving state, projected from the framework's host-mode status. */
 export interface HostModeSnapshot {
   /** 'serving' | 'quiescing' | 'quiesced' — or whatever the framework reports. */
   mode: string;
-  /** Epoch millis when the current mode was entered, if known. */
+  /** Epoch millis the quiesce began, while quiescing or quiesced, if known. */
   since?: number;
   /** Operator-supplied reason for a quiesce, if any. */
   reason?: string;
@@ -611,6 +747,21 @@ export interface HostModeSnapshot {
   detail?: Record<string, unknown>;
 }
 
+/**
+ * An agent's phase changed: the tree's word for what it's doing, and when it
+ * began, with no content. `sending` runs from a turn's start, through its hooks
+ * and context compile, until its first token or a failed attempt. `health`'s, so
+ * that a dashboard can show it without being granted the traces it comes from.
+ * An agent that ends leaves the snapshots after it, with a last frame if ending
+ * changed its phase. Covers this process's agents, not a fleet child's.
+ */
+export interface AgentPhaseMessage {
+  type: 'agent-phase';
+  agentName: string;
+  phase: AgentPhase;
+  since: number;
+}
+
 export interface HostModeMessage {
   type: 'host-mode';
   corrId?: string;
@@ -618,8 +769,9 @@ export interface HostModeMessage {
 }
 
 /** Outcome of a `rollback` / `suppress` request. On success the server also
- *  broadcasts `branch-changed` and re-welcomes every client with the new
- *  branch's messages. */
+ *  sends `branch-changed` to every client whose scopes hold 'messages' and
+ *  re-welcomes every client with the new branch's messages, as its scopes
+ *  allow. */
 export interface SurgeryResultMessage {
   type: 'surgery-result';
   corrId?: string;
@@ -627,13 +779,32 @@ export interface SurgeryResultMessage {
   ok: boolean;
   error?: string;
   /** Framework refusal code when `ok` is false: 'agent-busy' means quiesce
-   *  (or wait for idle) and retry; others are input problems. */
+   *  (or wait for idle) and retry; 'failed' is an operational failure, which
+   *  `error` describes; others are input problems. */
   code?: string;
   agent?: string;
   sourceBranch?: string;
   targetBranch?: string;
   messagesRemoved?: number;
   lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+  /** A rollback on a presented window (agent-framework #291): the rows after
+   *  the target that stay in the record, out of the agent's window until its
+   *  next turn starts, which presents them, or until a restart of the host
+   *  before then, whose pass over every agent at rest does
+   *  (rollbackToMessage's `returnedToArrivals`). Absent when there are none. */
+  returnedToArrivals?: number;
+  /** A rollback on a presented window: the rows after the target that one
+   *  write presented with it, which stay in the agent's window, since a branch
+   *  cut can't separate them; a suppression or a hide takes them out
+   *  (rollbackToMessage's `keptInWindowAfterTarget`). Absent when there are
+   *  none. */
+  keptInWindowAfterTarget?: number;
+  /** Why the Web UI's write of the `_config` mount, from the branch the
+   *  store is on, failed, so the gate's files may still be the previous
+   *  branch's. The answer comes once that write has run: after a surgery
+   *  that landed, and after one that failed and left the store on the
+   *  branch it made. Absent when it was written, or not tried. */
+  mountError?: string;
 }
 
 /** One durable operator-log record (mirrors the framework's OperatorLogEntry). */
@@ -659,11 +830,13 @@ export interface OperatorLogMessage {
 export type WebUiServerMessage =
   | WelcomeMessage
   | TraceMessage
+  | StreamEndedMessage
   | ChildEventMessage
   | CommandResultMessage
   | UsageMessage
   | CallLedgerMessage
   | BranchChangedMessage
+  | UndoneMarksMessage
   | BranchesListMessage
   | SessionChangedMessage
   | PeekMessage
@@ -672,6 +845,7 @@ export type WebUiServerMessage =
   | LessonsListMessage
   | McplListMessage
   | SettingsStateMessage
+  | CredentialStateMessage
   | PinsListMessage
   | WorkspaceMountsMessage
   | WorkspaceTreeMessage
@@ -681,20 +855,16 @@ export type WebUiServerMessage =
   | ObserverAuthRequiredMessage
   | ObserverAckMessage
   | HostModeMessage
+  | AgentPhaseMessage
   | SurgeryResultMessage
   | OperatorLogMessage
   | ErrorMessage;
 
-// ---------------------------------------------------------------------------
-// Observer identity (docs/observability.md M2) — additive to protocol v1.
-// Basic-auth clients never see these frames; key-authenticated observers
-// authenticate in-band over the WS before any data flows.
-// ---------------------------------------------------------------------------
-
-/** Sent to a connection that upgraded without basic auth (allowed only when
- *  observer grants exist): the client must reply with observer-hello before
- *  anything else is sent. `host` is what the server will verify the signed
- *  statement against — the Host header of the upgrade request. */
+/** Sent to a connection that upgraded without full authority (basic auth or
+ *  a full session cookie), which is allowed only when observer grants exist:
+ *  the client must reply with observer-hello before anything else is sent.
+ *  `host` is what the server will verify the signed statement against — the
+ *  Host header of the upgrade request. */
 export interface ObserverAuthRequiredMessage {
   type: 'observer-auth-required';
   host: string;
@@ -710,18 +880,14 @@ export interface ObserverAckMessage {
   label: string;
 }
 
-// ---------------------------------------------------------------------------
-// Client → Server
-// ---------------------------------------------------------------------------
-
 /** Plain user message; equivalent to typing in the TUI. Triggers inference. */
 export interface UserMessageMessage {
   type: 'user-message';
   content: string;
 }
 
-/** Slash command. Server runs `handleCommand()` and replies with a
- *  `command-result` carrying the same `corrId`. */
+/** Slash command. The server replies with a `command-result`
+ *  carrying the same `corrId`. */
 export interface CommandMessage {
   type: 'command';
   command: string;
@@ -742,14 +908,15 @@ export interface InterruptMessage {
 
 /** Cancel one specific in-process subagent by display name. If `childName`
  *  is set, the cancel is forwarded to that fleet child's headless runtime;
- *  otherwise the conductor's local SubagentModule is used. Required for
- *  subagents that live inside a fleet child (e.g. Clerk-spawned subagents) —
- *  the conductor typically has no SubagentModule loaded, so a non-routed
- *  cancel would hit "subagent module not loaded". */
+ *  otherwise the conductor's local SubagentModule is used. */
 export interface CancelSubagentMessage {
   type: 'cancel-subagent';
   name: string;
   childName?: string;
+  /** The session shown when the operator chose this cancel, whose subagents
+   *  the page's tree showed. Required unless `childName` is set, and then
+   *  absent. */
+  sessionId?: string;
 }
 
 /** Stop a fleet child gracefully. */
@@ -838,9 +1005,9 @@ export interface McplSetEnvMessage {
   env: Record<string, string>;
 }
 
-/** Pull the agent's protected ranges. Response is a `pins-list` envelope.
- *  With a fleet-child `scope` the child also ships picker `candidates`
- *  (recent real store ids) since the SPA has no window into its store. */
+/** Pull the agent's protected ranges. Response is a `pins-list` envelope,
+ *  with picker `candidates` (recent real store ids) for the local scope and
+ *  a fleet-child `scope` alike. */
 export interface RequestPinsMessage {
   type: 'request-pins';
   /** Fleet child name, or 'local'/undefined for the parent process. */
@@ -860,14 +1027,19 @@ export interface RequestPinsMessage {
  * `kind: 'document'` marks a single message as a document instead of pinning a
  * range, and ignores `lastMessageId`.
  *
- * NOTE: `level` is honored only by `foldingStrategy: 'kv-stable'`. Other
- * strategies degrade it to raw — a safe superset, but not what was asked for.
- * `pins-list.levelHonored` reports which case the live agent is in.
+ * NOTE: context-manager honors `level` under `foldingStrategy` 'kv-stable' or
+ * 'kv-unified' with adaptive resolution. Elsewhere it degrades to raw: a safe
+ * superset, but not what was asked for. `pins-list.levelHonored` reports which
+ * case the live agent is in.
  */
 export interface PinAddMessage {
   type: 'pin-add';
   /** Fleet child name, or 'local'/undefined for the parent process. */
   scope?: string;
+  /** The session of the data the operator chose this from, as the server
+   *  stamped it on that data. Required unless `scope` names a fleet child,
+   *  and then absent. */
+  sessionId?: string;
   agent?: string;
   kind?: 'pin' | 'document';
   firstMessageId: string;
@@ -882,6 +1054,10 @@ export interface PinRemoveMessage {
   type: 'pin-remove';
   /** Fleet child name, or 'local'/undefined for the parent process. */
   scope?: string;
+  /** The session of the data the operator chose this from, as the server
+   *  stamped it on that data. Required unless `scope` names a fleet child,
+   *  and then absent. */
+  sessionId?: string;
   agent?: string;
   pinId: string;
 }
@@ -918,6 +1094,10 @@ export interface SettingsUpdateMessage {
   type: 'settings-update';
   /** Fleet child name, or 'local'/undefined for the parent process. */
   scope?: string;
+  /** The session of the data the operator chose this from, as the server
+   *  stamped it on that data. Required unless `scope` names a fleet child,
+   *  and then absent. */
+  sessionId?: string;
   agent?: string;
   contextBudgetTokens?: number;
   tailTokens?: number;
@@ -930,11 +1110,37 @@ export interface SettingsUpdateMessage {
   notify?: boolean;
 }
 
+/** Ask for the credential state (subscription hosts). Answered with
+ *  `credential-state`; an API-key host answers `subscription: false`. */
+export interface RequestCredentialMessage {
+  type: 'request-credential';
+  scope?: string;
+}
+
+/**
+ * Run one operator credential action — the buttons on a `quota-spent` /
+ * `auth-expired` / `auth-login-required` alert row, or the Health panel.
+ * `token` is only read for `set-token`; it is applied in memory (and to the
+ * credentials file when the host loaded one), never logged or echoed. The
+ * answer is a `credential-state` broadcast: credentials are process state,
+ * every operator sees the same outcome.
+ */
+export interface CredentialActionMessage {
+  type: 'credential-action';
+  scope?: string;
+  action: 'refresh' | 'login' | 'set-token' | 'recheck';
+  token?: string;
+}
+
 /** Revert named settings to their recipe values (all four when omitted). */
 export interface SettingsResetMessage {
   type: 'settings-reset';
   /** Fleet child name, or 'local'/undefined for the parent process. */
   scope?: string;
+  /** The session of the data the operator chose this from, as the server
+   *  stamped it on that data. Required unless `scope` names a fleet child,
+   *  and then absent. */
+  sessionId?: string;
   agent?: string;
   keys?: string[];
   persist?: boolean;
@@ -946,6 +1152,10 @@ export interface SettingsCancelTransitionMessage {
   type: 'settings-cancel-transition';
   /** Fleet child name, or 'local'/undefined for the parent process. */
   scope?: string;
+  /** The session of the data the operator chose this from, as the server
+   *  stamped it on that data. Required unless `scope` names a fleet child,
+   *  and then absent. */
+  sessionId?: string;
   agent?: string;
   persist?: boolean;
 }
@@ -977,8 +1187,8 @@ export interface RequestWorkspaceFileMessage {
 
 /** Page older conversation history. Response is a `history-page` with the
  *  same `corrId` (or an `error`). Entries returned end just before
- *  `beforeIndex`; pass the previous page's `startIndex` to keep walking
- *  backward. */
+ *  `beforeIndex`, or, for an observer, before the messages its scopes
+ *  empty; pass the previous page's `startIndex` to keep walking backward. */
 export interface RequestHistoryMessage {
   type: 'request-history';
   corrId: string;
@@ -988,9 +1198,8 @@ export interface RequestHistoryMessage {
   limit?: number;
 }
 
-/** In-band observer authentication (docs/observability.md §3): the client
- *  signs `connectome-observer|v1|<host>|<timestamp>` with its ed25519 key.
- *  Challenge-less — the Host binding + freshness window replace a nonce. */
+/** In-band observer authentication: the client signs
+ *  `connectome-observer|v1|<host>|<timestamp>` with its ed25519 key. */
 export interface ObserverHelloMessage {
   type: 'observer-hello';
   identity: {
@@ -1010,6 +1219,9 @@ export interface ObserverHelloMessage {
 export interface RollbackMessage {
   type: 'rollback';
   messageId: string;
+  /** The session of the messages the operator chose this from, as the
+   *  server stamped it on them. */
+  sessionId: string;
   /** Agent name; defaults to the recipe's primary agent. */
   agent?: string;
   /** Free-text reason, recorded in the operator log. */
@@ -1022,6 +1234,9 @@ export interface RollbackMessage {
 export interface SuppressMessage {
   type: 'suppress';
   messageIds: string[];
+  /** The session of the messages the operator chose this from, as the
+   *  server stamped it on them. */
+  sessionId: string;
   agent?: string;
   note?: string;
   corrId?: string;
@@ -1083,22 +1298,13 @@ export type WebUiClientMessage =
   | SettingsUpdateMessage
   | SettingsResetMessage
   | SettingsCancelTransitionMessage
+  | RequestCredentialMessage
+  | CredentialActionMessage
   | RequestWorkspaceMountsMessage
   | RequestWorkspaceTreeMessage
   | RequestWorkspaceFileMessage
   | PingMessage;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Type guard for narrowing parsed JSON to a known client message. Per-variant
- * payload validation lives here so handlers downstream can trust field
- * shapes — without this, a malformed payload like `{type:'mcpl-add', id: 42,
- * command: null}` would slip through and propagate into disk writes / file
- * paths / spawn() args, where the eventual failure is far from the cause.
- */
 export function isClientMessage(value: unknown): value is WebUiClientMessage {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -1110,12 +1316,14 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
       return true;
     case 'rollback':
       return isNonEmptyString(v.messageId)
+        && isNonEmptyString(v.sessionId)
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'suppress':
       return Array.isArray(v.messageIds) && v.messageIds.length > 0
         && v.messageIds.every((id) => isNonEmptyString(id))
+        && isNonEmptyString(v.sessionId)
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.corrId === undefined || typeof v.corrId === 'string');
@@ -1146,7 +1354,9 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
       return isNonEmptyString(v.childName) && typeof v.content === 'string';
     case 'cancel-subagent':
       return isNonEmptyString(v.name)
-        && (v.childName === undefined || isNonEmptyString(v.childName));
+        && (v.childName === undefined
+          ? isNonEmptyString(v.sessionId)
+          : isNonEmptyString(v.childName) && v.sessionId === undefined);
     case 'fleet-stop':
     case 'fleet-restart':
       return isNonEmptyString(v.name);
@@ -1169,51 +1379,56 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'request-pins':
       return isOptionalScope(v.scope) && isOptionalNonEmptyString(v.agent);
     case 'pin-add': {
-      if (!isOptionalScope(v.scope)) return false;
+      if (!isOptionalScope(v.scope) || !sessionFitsScope(v)) return false;
       if (!isOptionalNonEmptyString(v.agent)) return false;
       if (!isNonEmptyString(v.firstMessageId)) return false;
       if (v.lastMessageId !== undefined && !isNonEmptyString(v.lastMessageId)) return false;
       if (v.kind !== undefined && v.kind !== 'pin' && v.kind !== 'document') return false;
       if (v.name !== undefined && !isNonEmptyString(v.name)) return false;
-      // Fold levels are small non-negative integers (0 = raw). Reject strings
-      // and fractions before they reach the strategy's pin normalizer.
       for (const k of ['level', 'maxLevel']) {
         const x = v[k];
         if (x === undefined) continue;
         if (typeof x !== 'number' || !Number.isSafeInteger(x) || x < 0 || x > 32) return false;
       }
-      // level and maxLevel are different semantics; asking for both is ambiguous.
       if (v.level !== undefined && v.maxLevel !== undefined) return false;
       return true;
     }
     case 'pin-remove':
-      return isOptionalScope(v.scope) && isOptionalNonEmptyString(v.agent) && isNonEmptyString(v.pinId);
+      return isOptionalScope(v.scope) && sessionFitsScope(v)
+        && isOptionalNonEmptyString(v.agent) && isNonEmptyString(v.pinId);
     case 'request-settings':
       return isOptionalScope(v.scope) && isOptionalNonEmptyString(v.agent);
     case 'settings-update': {
-      if (!isOptionalScope(v.scope)) return false;
+      if (!isOptionalScope(v.scope) || !sessionFitsScope(v)) return false;
       if (!isOptionalNonEmptyString(v.agent)) return false;
       if (!isOptionalBool(v.persist) || !isOptionalBool(v.notify) || !isOptionalBool(v.immediate)) return false;
-      // Positive-integer-or-absent for each knob. The semantic gate (budget must
-      // exceed max response tokens; tail/pace need a hot-configurable strategy)
-      // lives in Agent.validateRuntimeSettingsPatch — this only guarantees the
-      // shape so that gate gets numbers instead of strings.
       for (const k of ['contextBudgetTokens', 'tailTokens', 'transitionPaceTokens']) {
         if (!isOptionalPositiveInt(v[k])) return false;
       }
-      // Require at least one actual knob: an empty patch would throw downstream.
       return v.contextBudgetTokens !== undefined
         || v.tailTokens !== undefined
         || v.transitionPaceTokens !== undefined;
     }
     case 'settings-reset':
       return isOptionalScope(v.scope)
+        && sessionFitsScope(v)
         && isOptionalNonEmptyString(v.agent)
         && isOptionalBool(v.persist)
         && isOptionalBool(v.notify)
         && isOptionalStringArray(v.keys);
     case 'settings-cancel-transition':
-      return isOptionalScope(v.scope) && isOptionalNonEmptyString(v.agent) && isOptionalBool(v.persist);
+      return isOptionalScope(v.scope) && sessionFitsScope(v)
+        && isOptionalNonEmptyString(v.agent) && isOptionalBool(v.persist);
+    case 'request-credential':
+      return isOptionalScope(v.scope);
+    case 'credential-action': {
+      if (!isOptionalScope(v.scope)) return false;
+      if (v.action !== 'refresh' && v.action !== 'login' && v.action !== 'set-token' && v.action !== 'recheck') return false;
+      if (v.action === 'set-token') {
+        return typeof v.token === 'string' && v.token.trim().length > 0 && v.token.length <= 8192;
+      }
+      return v.token === undefined;
+    }
     case 'request-workspace-mounts':
       return v.scope === undefined || typeof v.scope === 'string';
     case 'request-workspace-tree':
@@ -1236,14 +1451,9 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
-/** MCPL config keys end up as filesystem-adjacent identifiers (the spec
- *  treats them as opaque strings, but they're surfaced in error paths and
- *  may flow into other tooling). Reject path separators, control bytes, and
- *  anything that looks like it would escape JSON-key territory. */
 function isValidMcplId(v: unknown): v is string {
   if (typeof v !== 'string' || v.length === 0 || v.length > 128) return false;
   if (v.includes('/') || v.includes('\\') || v.includes('\0')) return false;
-  // Control chars are a robustness hole — reject 0x00-0x1f and 0x7f.
   for (let i = 0; i < v.length; i++) {
     const c = v.charCodeAt(i);
     if (c < 0x20 || c === 0x7f) return false;
@@ -1273,19 +1483,24 @@ function isOptionalNonEmptyString(v: unknown): v is string | undefined {
   return v === undefined || isNonEmptyString(v);
 }
 
-/** Scope fields: 'local' or a fleet-child name. Same lax shape the existing
- *  lessons/workspace requests use — the server resolves unknown children to
- *  a clean error rather than the validator guessing the fleet roster. */
 function isOptionalScope(v: unknown): v is string | undefined {
   return v === undefined || typeof v === 'string';
+}
+
+export function isChildScope(scope: string | undefined): scope is string {
+  return scope !== undefined && scope !== '' && scope !== 'local';
+}
+
+function sessionFitsScope(v: Record<string, unknown>): boolean {
+  return isChildScope(v.scope as string | undefined)
+    ? v.sessionId === undefined
+    : isNonEmptyString(v.sessionId);
 }
 
 function isOptionalBool(v: unknown): v is boolean | undefined {
   return v === undefined || typeof v === 'boolean';
 }
 
-/** Token counts: safe positive integers only. Rejects strings, NaN, Infinity,
- *  fractions and negatives before they reach the settings validator. */
 function isOptionalPositiveInt(v: unknown): v is number | undefined {
   return v === undefined || (typeof v === 'number' && Number.isSafeInteger(v) && v > 0);
 }

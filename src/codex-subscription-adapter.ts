@@ -1,10 +1,7 @@
 /**
- * ChatGPT-subscription-backed OpenAI Responses adapter.
- *
- * Authentication is deliberately delegated to `codex app-server`: it owns
- * ChatGPT OAuth, refresh-token rotation, and the device-code login ceremony.
- * The resulting access token and account id are read from CODEX_HOME/auth.json
- * and used only for the Codex subscription Responses transport.
+ * `codex app-server` owns ChatGPT OAuth, refresh-token rotation and the
+ * device-code login. The access token and account id are read from
+ * CODEX_HOME/auth.json.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -13,6 +10,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
 import { OpenAIResponsesAPIAdapter, type CredentialResolver } from '@animalabs/membrane';
+import type { CredentialSource } from './credential-state.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -42,6 +40,9 @@ export interface CodexAuthProvider {
   getAccessToken(forceRefresh?: boolean): Promise<string>;
   getAccountId?(): string | undefined;
   readRateLimits?(): Promise<unknown>;
+  logout?(): Promise<void>;
+  cancelLogin?(): Promise<boolean>;
+  gateway?: { baseURL: string };
   dispose?(): void;
 }
 
@@ -53,8 +54,7 @@ export interface CodexAppServerAuthConfig {
 }
 
 /**
- * Minimal JSON-RPC client for the documented Codex app-server auth surface.
- * It forces file credential storage because the inference adapter needs to
+ * Forces file credential storage, because the inference adapter needs to
  * read the refreshed access token; permissions on auth.json remain Codex's.
  */
 export class CodexAppServerAuth implements CodexAuthProvider {
@@ -72,6 +72,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private authIsRefresh = false;
   private stderrTail = '';
   private accountId: string | undefined;
+  private pendingLogin: { loginId: string; abort: (error: Error) => void } | null = null;
 
   constructor(config: CodexAppServerAuthConfig = {}) {
     this.codexBinary = config.codexBinary ?? process.env.CODEX_BINARY ?? 'codex';
@@ -86,8 +87,6 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   async getAccessToken(forceRefresh = false): Promise<string> {
     if (this.authPromise) {
       if (!forceRefresh || this.authIsRefresh) return this.authPromise;
-      // A 401 refresh cannot be satisfied by an unrelated stale disk read.
-      // Wait for it, then coalesce concurrent refresh callers onto one refresh.
       await this.authPromise.catch(() => {});
       return this.getAccessToken(true);
     }
@@ -102,11 +101,27 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     return this.accountId;
   }
 
-  /** Raw `account/rateLimits/read` result — the subscription's utilization
-   *  windows. Costs no inference; parsed by the quota meter. */
   async readRateLimits(): Promise<JsonObject> {
     await this.ensureStarted();
     return this.request('account/rateLimits/read', {});
+  }
+
+  async logout(): Promise<void> {
+    await this.ensureStarted();
+    await this.request('account/logout', {});
+  }
+
+  async cancelLogin(): Promise<boolean> {
+    const pending = this.pendingLogin;
+    if (!pending) return false;
+    this.pendingLogin = null;
+    try {
+      await this.request('account/login/cancel', { loginId: pending.loginId });
+    } catch (err) {
+      console.error('[openai-codex] account/login/cancel failed; abandoning the wait anyway:', err instanceof Error ? err.message : err);
+    }
+    pending.abort(new Error('OpenAI Codex login cancelled by the operator (restart requested)'));
+    return true;
   }
 
   dispose(): void {
@@ -141,11 +156,14 @@ export class CodexAppServerAuth implements CodexAuthProvider {
       }
 
       this.onLoginRequired({ verificationUrl, userCode });
-      const completed = await this.waitForNotification(
-        'account/login/completed',
-        (params) => params.loginId === loginId,
-        this.loginTimeoutMs,
-      );
+      const wait = this.makeWaiter('account/login/completed', (params) => params.loginId === loginId, this.loginTimeoutMs);
+      this.pendingLogin = { loginId, abort: wait.reject };
+      let completed: JsonObject;
+      try {
+        completed = await wait.promise;
+      } finally {
+        if (this.pendingLogin?.loginId === loginId) this.pendingLogin = null;
+      }
       if (completed.success !== true) {
         throw new Error(`OpenAI Codex login failed: ${asString(completed.error) || 'unknown error'}`);
       }
@@ -168,15 +186,23 @@ export class CodexAppServerAuth implements CodexAuthProvider {
 
   private async readAccessToken(): Promise<string> {
     const path = join(this.codexHome, 'auth.json');
-    let parsed: unknown;
+    let text: string;
     try {
-      parsed = JSON.parse(await readFile(path, 'utf8'));
+      text = await readFile(path, 'utf8');
     } catch (error) {
       throw new Error(
         `Codex login succeeded but ${path} could not be read. ` +
         `Ensure cli_auth_credentials_store is set to \"file\".`,
         { cause: error },
       );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // The parser's message can quote the file's text, so it isn't passed
+      // on, as a cause either: a cause is printed with its error.
+      throw new Error(`Codex login succeeded but ${path} isn't valid JSON.`);
     }
     const root = parsed as { tokens?: { access_token?: unknown; account_id?: unknown } };
     const token = root?.tokens?.access_token;
@@ -258,7 +284,16 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     predicate?: (params: JsonObject) => boolean,
     timeoutMs = 30_000,
   ): Promise<JsonObject> {
-    return new Promise<JsonObject>((resolve, reject) => {
+    return this.makeWaiter(method, predicate, timeoutMs).promise;
+  }
+
+  private makeWaiter(
+    method: string,
+    predicate: ((params: JsonObject) => boolean) | undefined,
+    timeoutMs: number,
+  ): { promise: Promise<JsonObject>; reject: (error: Error) => void } {
+    let waiterRef!: NotificationWaiter;
+    const promise = new Promise<JsonObject>((resolve, reject) => {
       const waiter: NotificationWaiter = {
         method,
         predicate,
@@ -277,8 +312,14 @@ export class CodexAppServerAuth implements CodexAuthProvider {
           reject(new Error(`Timed out waiting for Codex app-server notification: ${method}`));
         }, timeoutMs),
       };
+      waiterRef = waiter;
       this.waiters.add(waiter);
     });
+    return { promise, reject: (error) => waiterRef.reject(error) };
+  }
+
+  get waiterCount(): number {
+    return this.waiters.size;
   }
 
   private handleLine(line: string): void {
@@ -327,13 +368,31 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   }
 }
 
+/**
+ * `CODEX_GATE_TOKEN`: the ChatGPT logins live in an inference gate (the
+ * gate's `/codex` leg holds, refreshes and picks them), so this host runs
+ * no Codex CLI and holds no login — it authenticates to the gate with a
+ * static gate token. `CODEX_BASE_URL` must name that gate: a gate token
+ * must never travel to the ChatGPT backend.
+ */
+export function codexGateAuth(env: NodeJS.ProcessEnv = process.env): CodexAuthProvider | undefined {
+  const token = env.CODEX_GATE_TOKEN?.trim();
+  if (!token) return undefined;
+  if (!env.CODEX_BASE_URL?.trim()) {
+    throw new Error(
+      'CODEX_GATE_TOKEN is set but CODEX_BASE_URL is not: refusing to send a gate token to the ChatGPT backend. ' +
+      'Point CODEX_BASE_URL at the gate\'s codex leg (e.g. https://gate.animalabs.ai/codex).',
+    );
+  }
+  return { getAccessToken: async () => token, gateway: { baseURL: env.CODEX_BASE_URL.trim() } };
+}
+
 export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig {
   authProvider?: CodexAuthProvider;
   baseURL?: string;
   fastMode?: boolean;
 }
 
-/** Host-owned login and disposal; all Responses transport behavior lives in Membrane. */
 export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
   override readonly name = 'openai-codex';
   private readonly auth: CodexAuthProvider;
@@ -358,10 +417,39 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
     this.auth = auth;
   }
 
-  /** Subscription utilization windows, or null when the auth provider has no
-   *  such surface (tests inject bare token providers). */
   async readRateLimits(): Promise<unknown> {
     return this.auth.readRateLimits ? this.auth.readRateLimits() : null;
+  }
+
+  async refreshCredentials(): Promise<void> {
+    await this.auth.getAccessToken(true);
+  }
+
+  async login(): Promise<void> {
+    if (this.auth.logout) {
+      try {
+        await this.auth.logout();
+      } catch (err) {
+        console.error('[openai-codex] logout before re-login failed; continuing:', err instanceof Error ? err.message : err);
+      }
+    }
+    await this.auth.getAccessToken(true);
+  }
+
+  credentialSource(): CredentialSource {
+    if (this.auth.gateway) {
+      return {
+        provider: `${this.name} via ${this.auth.gateway.baseURL}`,
+        canRefresh: () => false,
+      };
+    }
+    return {
+      provider: this.name,
+      canRefresh: () => true,
+      refresh: () => this.refreshCredentials(),
+      login: () => this.login(),
+      ...(this.auth.cancelLogin ? { cancelLogin: () => this.auth.cancelLogin!() } : {}),
+    };
   }
 
   dispose(): void {

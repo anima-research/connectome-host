@@ -1,6 +1,3 @@
-/**
- * Unit tests for the @childname direct-routing parser used by the TUI.
- */
 import { describe, test, expect } from 'bun:test';
 import { parseFleetRoute } from '../src/modules/fleet-types.js';
 

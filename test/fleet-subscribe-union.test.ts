@@ -1,12 +1,3 @@
-/**
- * Verifies FleetModule's reducer-required event union.
- *
- * Recipe authors can specify a narrow per-child subscription (to keep the
- * wire lean), but the unified-tree rendering needs a specific set of events
- * to avoid drifting. The framework forces those into every subscribe sent
- * to a child — recipes can extend the set, never narrow it below rendering's
- * floor.
- */
 import { describe, test, expect } from 'bun:test';
 import { unionWithReducerRequired } from '../src/modules/fleet-module.js';
 import { REDUCER_REQUIRED_EVENTS } from '../src/state/agent-tree-reducer.js';
@@ -18,6 +9,18 @@ describe('unionWithReducerRequired', () => {
     for (const required of REDUCER_REQUIRED_EVENTS) {
       expect(result.has(required)).toBe(true);
     }
+  });
+
+  // The Web UI reads a child's panels again at its window:undone and its
+  // shed (presentation:retracted), so a subscription narrower than `*` gets
+  // both (#485 bot review 5, finding 18).
+  test("adds the events a child's panels read again at, unless a glob already covers them", () => {
+    const narrow = new Set(unionWithReducerRequired(['lifecycle', 'inference:speech']));
+    expect(narrow.has('window:undone')).toBe(true);
+    expect(narrow.has('presentation:retracted')).toBe(true);
+    const globbed = unionWithReducerRequired(['lifecycle', 'presentation:*', 'window:*']);
+    expect(globbed).not.toContain('window:undone');
+    expect(globbed).not.toContain('presentation:retracted');
   });
 
   test('leaves subscription unchanged when * is already present', () => {
@@ -41,7 +44,6 @@ describe('unionWithReducerRequired', () => {
     expect(result).not.toContain('tool:started');
     expect(result).not.toContain('tool:completed');
     expect(result).not.toContain('tool:failed');
-    // But inference:* events still need to be added
     expect(result).toContain('inference:tool_calls_yielded');
   });
 
@@ -49,12 +51,10 @@ describe('unionWithReducerRequired', () => {
     const result = unionWithReducerRequired(['inference:*', 'lifecycle']);
     expect(result).not.toContain('inference:tool_calls_yielded');
     expect(result).not.toContain('inference:tokens');
-    // tool:* still needed
     expect(result).toContain('tool:started');
   });
 
   test('the postmortem-broken triumvirate subscription gets the missing events back', () => {
-    // Exact subscription from triumvirate.json that caused the rendering gap.
     const recipeSubscription = [
       'lifecycle',
       'inference:completed',
@@ -64,10 +64,8 @@ describe('unionWithReducerRequired', () => {
       'inference:failed',
     ];
     const result = new Set(unionWithReducerRequired(recipeSubscription));
-    // Recipe-specified events still present:
     expect(result.has('lifecycle')).toBe(true);
     expect(result.has('inference:speech')).toBe(true);
-    // Reducer-required events that were missing get added:
     expect(result.has('inference:tool_calls_yielded')).toBe(true);
     expect(result.has('inference:started')).toBe(true);
     expect(result.has('inference:tokens')).toBe(true);
@@ -78,7 +76,6 @@ describe('unionWithReducerRequired', () => {
   test('returns a fresh array (caller can mutate without affecting input)', () => {
     const input = ['lifecycle'];
     const result = unionWithReducerRequired(input);
-    expect(result).not.toBe(input);
     result.push('extra');
     expect(input).toEqual(['lifecycle']);
   });

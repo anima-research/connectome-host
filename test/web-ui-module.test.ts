@@ -1,22 +1,3 @@
-/**
- * Smoke tests for the WebUiModule HTTP / WS surface.
- *
- * Coverage focus:
- *   - Origin allowlist on `/ws`: cross-origin attempts get 403, same-origin
- *     succeeds. (Pre-fix this was undefended — see QA emergency #2.)
- *   - Basic-auth: 401 without/with-wrong creds, 200/upgrade with right creds.
- *   - serveStatic path containment: a `/..` request for a sibling-prefixed
- *     directory (`<root>-evil`) doesn't escape staticRoot. (Pre-fix the
- *     startsWith check missed this; see QA #13.)
- *   - WS round-trip: client sends `{type:'ping'}` → server holds the
- *     connection (no reply, but no disconnect either).
- *   - WS rejects invalid JSON / unknown shapes with an error envelope.
- *
- * The module uses a process-level singleton (HTTP server outlives any
- * single framework lifetime), so we boot once per file and share across
- * tests. Bun test runs each test file in its own process, which keeps the
- * singleton scope tight.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,7 +6,7 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 interface ServerHandle {
@@ -51,15 +32,11 @@ beforeAll(async () => {
   writeFileSync(join(staticRoot, 'index.html'), '<!doctype html><title>t</title>');
   writeFileSync(join(staticRoot, 'app.js'), 'console.log("hi")');
 
-  // Sibling directory used by the path-containment escape test. The pre-fix
-  // `startsWith(root)` check would let `<root>-evil` slip through; the
-  // current `startsWith(root + sep)` does not.
   const sibling = `${staticRoot}-evil`;
   mkdirSync(sibling, { recursive: true });
   writeFileSync(join(sibling, 'secret.txt'), 'pwned');
 
-  // Bun.serve supports port=0 → OS picks a free port; we read it back from
-  // the server. Avoids collisions when the test harness retries.
+  // Port 0 has the OS pick a free port, which is read back from the server.
   webUiModule = new WebUiModule({
     port: 0,
     host: '127.0.0.1',
@@ -76,7 +53,7 @@ beforeAll(async () => {
     staticRoot,
     cleanup: async () => {
       await webUiModule.stop();
-      await __resetSharedServerForTests();
+      await stopWebUiServer();
       rmSync(tmp, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
     },
@@ -176,7 +153,20 @@ describe('WebUiModule HTTP', () => {
     expect(sessionViewer.headers.get('cache-control')).toBe('no-store');
   });
 
-  test('bound retrieval JSON is no-store, redacted by default, and inputs require exact 1', async () => {
+  test('setApp follows the newest framework alone: it unsubscribes from the one it followed before', () => {
+    const log: string[] = [];
+    const frameworkNamed = (name: string) => ({
+      getAllAgents: () => [],
+      getAllModules: () => [],
+      getSessionUsage: () => { throw new Error('no usage in HTTP harness'); },
+      onTrace: () => { log.push(`follow ${name}`); return () => { log.push(`unfollow ${name}`); }; },
+    });
+    webUiModule.setApp({ framework: frameworkNamed('old') } as never);
+    webUiModule.setApp({ framework: frameworkNamed('new') } as never);
+    expect(log.slice(-3)).toEqual(['follow old', 'unfollow old', 'follow new']);
+  });
+
+  test('bound retrieval JSON is no-store, redacted by default, and inputs require exact 1, and its viewer inlines no trace data', async () => {
     let observedOptions: { limit?: number; includeInputs?: boolean } | undefined;
     const malicious = '</script><img src=x onerror="globalThis.pwned=true">';
     const retrieval = {
@@ -240,7 +230,6 @@ describe('WebUiModule HTTP', () => {
         `http://127.0.0.1:${handle.port}/debug/retrieval/view`, { headers },
       );
       const viewerHtml = await viewerRes.text();
-      // Static viewer markup does not inline trace data; dynamic values use text sinks.
       expect(viewerHtml).not.toContain(malicious);
       expect(viewerHtml).toContain('textContent');
       expect(viewerHtml).not.toContain('.innerHTML');
@@ -311,29 +300,67 @@ describe('WebUiModule HTTP', () => {
     }
   });
 
-  // Path containment: a request for /../<sibling-of-staticRoot>/secret.txt
-  // would, pre-fix, slip past the `startsWith(root)` check because the
-  // sibling directory's path begins with `<staticRoot>-evil`. The new check
-  // requires either an exact match or `<root>+pathSep`. We can't easily
-  // express the relative `..` traversal in a URL because the router
-  // normalizes `/`-relative requests to staticRoot — but we *can* assert
-  // that the SPA fallback (returns index.html) kicks in for unknown paths
-  // rather than serving the sibling directory's file.
+  test('GET /debug/tool-classes: effective classes and sources, ?agent=, 404, 501', async () => {
+    const rows = [
+      { tool: 'shell--run', class: ['shell'], source: 'host' },
+      { tool: 'chat--say', class: ['comms'], source: 'server', serverId: 'chat' },
+      { tool: 'cua--click', class: [], source: 'none', serverId: 'cua' },
+    ];
+    const asked: Array<string | undefined> = [];
+    const framework = {
+      getAllAgents: () => [],
+      getAllModules: () => [],
+      getAgent: (name: string) => (name === 'resident' ? { name } : undefined),
+      listToolClasses: (agent?: string) => { asked.push(agent); return agent ? rows.slice(0, 1) : rows; },
+      onTrace: () => {},
+    };
+    const url = (q = ''): string => `http://127.0.0.1:${handle.port}/debug/tool-classes${q}`;
+    const headers = { authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) };
+
+    expect((await fetch(url())).status).toBe(401);
+
+    webUiModule.setApp({ framework, recipe: { name: 't', agent: { name: 'resident' } } } as never);
+    try {
+      const all = await fetch(url(), { headers });
+      expect(all.status).toBe(200);
+      expect(await all.json()).toEqual({
+        agent: null,
+        counts: { override: 0, host: 1, server: 1, none: 1 },
+        tools: [
+          { tool: 'chat--say', class: ['comms'], source: 'server', serverId: 'chat' },
+          { tool: 'cua--click', class: [], source: 'none', serverId: 'cua' },
+          { tool: 'shell--run', class: ['shell'], source: 'host' },
+        ],
+      });
+
+      const scoped = await fetch(url('?agent=resident'), { headers });
+      expect(scoped.status).toBe(200);
+      expect((await scoped.json() as { agent: string; tools: unknown[] })).toMatchObject({ agent: 'resident', tools: [rows[0]] });
+      expect(asked).toEqual([undefined, 'resident']);
+
+      expect((await fetch(url('?agent=nobody'), { headers })).status).toBe(404);
+    } finally {
+      await webUiModule.stop();
+    }
+
+    webUiModule.setApp({ framework: { ...framework, listToolClasses: undefined }, recipe: { name: 't', agent: {} } } as never);
+    try {
+      const res = await fetch(url(), { headers });
+      expect(res.status).toBe(501);
+      expect(((await res.json()) as { error: string }).error).toContain('tool classes');
+    } finally {
+      await webUiModule.stop();
+    }
+  });
+
   test('unknown / out-of-tree paths fall through to SPA shell, never to siblings', async () => {
     const res = await fetch(
       `http://127.0.0.1:${handle.port}/../web-bundle-evil/secret.txt`,
       { headers: { authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) } },
     );
-    // URL normalization in fetch + the server resolves under staticRoot.
-    // The body must NOT be the secret file, regardless of which fallback
-    // path the server takes (404, SPA shell, or 403).
     const body = res.status < 500 ? await res.text() : '';
     expect(body).not.toContain('pwned');
   });
-
-  // Honest-error regression set: unknown API routes and missing bundle
-  // assets used to fall through to the SPA shell with a 200, and wrong
-  // methods executed the GET handlers.
 
   test('unknown /debug/* route returns a JSON 404, not the SPA shell', async () => {
     for (const path of ['/debug/context/', '/debug/CONTEXT', '/debug/nonexistent']) {
@@ -375,9 +402,8 @@ describe('WebUiModule HTTP', () => {
 
 describe('WebUiModule WebSocket', () => {
   test('upgrade rejects mismatched Origin with 403', async () => {
-    // Browsers always send Origin on WS upgrades; an attacker page would
-    // send its own origin, not the host's. With creds present (so we hit
-    // the actual Origin check) the server must reply 403 before auth runs.
+    // A browser sends its page's Origin on a WebSocket upgrade, so a page
+    // elsewhere sends its own.
     const res = await fetch(`http://127.0.0.1:${handle.port}/ws`, {
       headers: {
         authorization: basicAuthHeader(BASIC_USER, BASIC_PASS),
@@ -406,9 +432,8 @@ describe('WebUiModule WebSocket', () => {
 
   test('round-trips a ping with same-origin creds', async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${handle.port}/ws`, {
-      // Bun's WebSocket constructor takes a `headers` option in the second
-      // arg as an object; emulate the browser by sending Origin from
-      // 127.0.0.1:<port> and tacking on Authorization.
+      // Bun's WebSocket takes a headers option, which stands in for the browser's
+      // Origin here.
       headers: {
         origin: `http://127.0.0.1:${handle.port}`,
         authorization: basicAuthHeader(BASIC_USER, BASIC_PASS),
@@ -421,16 +446,11 @@ describe('WebUiModule WebSocket', () => {
       ws.addEventListener('error', (e) => { clearTimeout(t); reject(e as unknown as Error); });
     });
 
-    // No app is bound to this module instance, so any non-ping message gets
-    // an immediate `host not ready` error envelope. ping is the one variant
-    // that doesn't require app state — it's the canary.
     const errored = new Promise<unknown>((resolve) => {
       ws.addEventListener('message', (ev) => resolve(JSON.parse(String(ev.data))));
     });
     ws.send(JSON.stringify({ type: 'mcpl-add', id: 'x', command: '/x' }));
     const reply = (await errored) as { type?: string; message?: string };
-    // Without setApp(), the server short-circuits with `host not ready`.
-    // Either way, it must be an `error` envelope — never a silent success.
     expect(reply.type).toBe('error');
     expect(typeof reply.message).toBe('string');
 

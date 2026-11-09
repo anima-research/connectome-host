@@ -1,7 +1,8 @@
 # WebUI Deployment
 
 The `webui` module is a plain HTTP + WebSocket server. It owns no
-TLS, no outer authentication, no certificate management. Those are the
+TLS, no certificate management, and no auth beyond its own app-level
+checks ([Authentication](#authentication)). The rest is the
 reverse proxy's job. This is intentional — it keeps the host code small
 and lets the deployer pick whatever auth and cert mechanism the org
 already uses.
@@ -27,10 +28,39 @@ In your recipe:
 The defaults are `0.0.0.0:7340` — connectome deployments are remote, not
 local, so the module binds all interfaces by default. Because that is a
 non-loopback bind, the module **refuses to start unless `basicAuth` is
-configured**: any recipe that enables webui must supply credentials. There
+configured**: any recipe that enables webui must supply credentials, so
+`"webui": true` on its own fails at startup. There
 is no unauthenticated escape hatch — even behind a reverse proxy, app-level
-Basic-Auth is required. Set `host: "127.0.0.1"` to bind loopback-only for
-local development, which skips the auth requirement.
+Basic-Auth is required. Set `host: "127.0.0.1"` (or `::1` / `localhost`) to
+bind loopback-only for local development, which skips the auth requirement.
+Without `basicAuth`, such a bind answers only a request whose `Host` names
+loopback (`127.0.0.1`, `localhost` or `[::1]`, with or without a port), and
+refuses a request under any other name with a 403, so a page under another
+name that resolves to `127.0.0.1` is refused.
+
+Other keys in the `webui` block:
+
+- `allowedOrigins` — Origin allowlist for the `/ws` upgrade. The default
+  (`http(s)://127.0.0.1:<port>`, `http(s)://localhost:<port>`) is extended at
+  runtime by a same-origin rule: an upgrade whose `Origin` host equals the
+  request's `Host` header is accepted, as is one with no `Origin` (non-browser
+  clients). Behind a proxy that forwards `Host` unchanged (Caddy's
+  `reverse_proxy` does), with the `basicAuth` a proxy needs, you need
+  nothing; set it — e.g. `["https://admin.example.internal"]` — only if
+  the proxy rewrites `Host`.
+  With `basicAuth`, each entry is an `http` or `https` URL; without it, an
+  `http` or `https` URL on `127.0.0.1`, `localhost` or `[::1]`, any port. The
+  module refuses at start an empty list, a value that isn't a list (a null
+  one reads as absent) and an entry that isn't such a URL. Beyond that it
+  doesn't check how an entry is written, so write each entry as a browser
+  sends its `Origin`: scheme, host and any port that isn't the scheme's
+  default, with no path or trailing slash, since the upgrade compares them
+  exactly.
+- `observersSurface` — no longer read: from agent-framework 0.29.0 the
+  agent's observer-grant tools live in the built-in `settings` toolset
+  (`toolsets--open {"toolset": "settings"}`), or in the tool list of an agent
+  whose `allowedTools` doesn't permit both `toolsets--open` and
+  `toolsets--act`. Still accepted, with a startup line, so older recipes load.
 
 Front the module with a reverse proxy (Caddy/nginx) to terminate TLS; the
 proxy handles transport security while Basic-Auth gates the app layer.
@@ -54,6 +84,72 @@ Add Basic-Auth credentials sourced from `.env` (never literal in the recipe):
 `${VAR}` substitution happens at recipe-load time, so credentials live in
 your gitignored `.env` rather than committed to the recipe.
 
+## Authentication
+
+The module accepts three credentials:
+
+- **Basic-Auth** (`basicAuth`) — full access to every route and to `/ws`.
+- **Password sign-in cookie** — a top-level visit to `/auth/basic` raises the
+  browser's Basic prompt and, on success, sets a 12-hour full-access session
+  cookie. The SPA's "sign in with password" link uses it, because Chrome does
+  not send cached Basic credentials on WebSocket upgrades.
+- **Observer device keys** — Ed25519 grants in `$OBSERVERS_FILE` (default
+  `DATA_DIR/observers.json`, hot-reloaded; the agent edits it with its
+  `observers--get/grant/revoke` tools, in its built-in `settings` toolset, or
+  in its tool list if its `allowedTools` doesn't permit both `toolsets--open`
+  and `toolsets--act`). A grant the viewer can't use, such as
+  one with an unknown scope or an expiry that isn't a date, is left out and
+  named in its log, and the file's other grants still apply; a file that isn't
+  valid JSON leaves a running viewer's previous grants in force until it
+  parses, and a viewer that starts on one admits none until then. A key may be
+  written in either base64 alphabet, padded or not, and is the same key either
+  way. Once the file holds at least one usable grant, the static app shell is
+  served without auth and `/ws` accepts upgrades that must then present a
+  signed observer hello. Removing the file takes every grant in it away within
+  about 6 s, once two checks in a row, 3 s apart, find it gone, and the log
+  says so then: no hello is admitted from it, and the shell needs the password
+  again. Revoking or expiring a grant ends the sessions and open connections
+  it gave within about 3 s, and removing the file ends them when it takes the
+  grants away. An entry the viewer can't use counts as no grant. Narrowing a
+  grant in place narrows its sessions for good, ending one it leaves with
+  none of its scopes, and closes its connections, which connect again with
+  the narrower scopes: a grant widened or given again applies from the
+  observer's next hello. A file back by the second check, as after an editor's
+  save that removes it before writing it again, changes nothing, and a read of
+  the file that fails counts as a check that didn't find it, so a read error
+  that passes changes nothing either. One that lasts two checks ends every
+  observer's sessions and connections, since the viewer can't tell who is
+  granted, and viewers stay off until someone reloads them, even once the file
+  reads again. A file that parses but isn't a grants file, such as one whose
+  `observers` isn't a list, holds no grant the viewer can use: at the check
+  that reads it, every observer's sessions end and their connections close as
+  final, so viewers need reloading once the file is fixed. To cut every
+  observer off, remove the file. A file that doesn't parse at all leaves the
+  grants as they were, since an editor's save can be read half-written. Each
+  observer sees only its grant's scopes — `health`, `ops`, `messages`,
+  `tools`, `thinking`, `debug` — and isn't sent a message whose every part
+  its grant leaves out, such as a tool's call without `tools`. It gets a
+  session cookie for the matching
+  HTTP routes (`debug` for `/debug/*` and `/curve`, `health` for `/healthz`,
+  `/quota` and `/credential`, `messages` for `/media/…`, with `tools` as well
+  for an image a tool returned). An observer with `health` and without `ops`
+  gets health without the text of failures, which are `ops`'s: the words of
+  an error, a failed read or a provider's wait come empty, the credential's
+  message among them, while its numbers, times, names and codes stay, and so
+  does a pending device-code login. The host's mode and its quiesce traces
+  still carry the reason an operator gave for quiescing, an operator's own
+  words. Observers are read-only; `/files/…` and `/debug/retrieval*` stay
+  password-only. An observer page's context panels (makeup and coverage,
+  the compiled context, the pins), which `debug` opens, read the window
+  again at the frames its other scopes get: a local undo or redo at
+  `window:undone` and `undone-marks`, which need `messages`, and a fleet
+  child's shed at its `presentation:retracted`, which needs `ops`. With
+  `debug` and without those, a panel reads again when it is opened or
+  refreshed, and the coverage panel at its five-second poll. A page that
+  reconnects, an operator's or an observer's, reads its open panels once at
+  the new connection's welcome, since it missed the frames sent while it
+  was away.
+
 ## Caddy
 
 Front Caddy as a system service. The `Caddyfile` for a single recipe:
@@ -73,8 +169,16 @@ admin.example.internal {
 }
 ```
 
+The module enforces Basic-Auth itself, so the Caddy `basic_auth` layer is
+optional. If you keep it, give it the same username/password as the recipe's
+`basicAuth` — the browser holds one set of Basic credentials per origin, so
+both layers see the same `Authorization` header — and note that it locks out
+key-only observer devices, which never get past Caddy.
+
 If multiple recipes run on one VM, give each a distinct port and a
-distinct Caddy block (subdomain or path-based routing both work).
+distinct Caddy block **on its own subdomain**. Path-prefix routing does not
+work: the SPA is built with root-absolute URLs (`/assets/…`, `/ws`,
+`/debug/…`, `/media/…`), which escape any prefix.
 
 Caddy auto-issues TLS certificates for any public hostname. For
 **VPN-only DNS** (where Let's Encrypt can't reach the host), use a
@@ -124,13 +228,41 @@ If the VM is on Tailscale, MagicDNS gives you a stable name like
 `admin.tailnet-name.ts.net`. Caddy with `tls internal` works there
 directly. No DNS or firewall holes needed beyond the existing tailnet.
 
+## Routes
+
+Every HTTP route is `GET`/`HEAD` only (anything else gets `405`); mutations
+travel over the WebSocket.
+
+| Route | Serves |
+|---|---|
+| `/`, `/assets/…` | the SPA (other unknown paths fall back to `index.html`; missing assets 404) |
+| `/ws` | the WebSocket (Origin-checked) |
+| `/auth/basic` | password sign-in (above) |
+| `/healthz` | health JSON: gate state, queued work, per-agent status and last inference |
+| `/quota` | subscription quota windows (`{"subscription": false}` on API keys) |
+| `/media/<messageId>/<block>[?agent=]` | one inline transcript image |
+| `/files/<mount>/<path>` | a workspace file, with `X-Content-Type-Options: nosniff` and a sandboxing `Content-Security-Policy` under which an HTML or SVG file runs no script. Such a page shows its text and inline styles, stylesheets from the Web UI's `/files/`, and images, fonts, audio and video from its `/files/` or `data:` URLs. Its scripts, forms, frames that load a page, a link that opens a new window, and a download it starts stay off, and it loads nothing from another host, nor from a Web UI route other than `/files/` and the static app shell; a plain link in it still navigates the tab. A download from a file's own `/files/` URL isn't affected. `403` for: a path no mount holds or one leading out of its mount; one its mount's `include` doesn't cover; one in another mount's directory nested in it (refused from agent-framework's release with anima-research/agent-framework#460), or reached through a link into one (from the release with anima-research/agent-framework#468); a file that is itself a link, on a mount that doesn't follow links (its `followSymlinks`, off unless the recipe sets it), or one reached through such a link among its directories (refused from agent-framework's release with anima-research/agent-framework#468); and one whose canonical path leaves its mount. `404` for a file the read can't give, such as one in a mount whose directory has gone, until agent-framework's release with anima-research/agent-framework#533. `503` with no workspace, or for a mount the read refuses as unavailable, which from that release includes a mount whose directory has gone |
+| `/curve` | the context-curve page (reads `/debug/context/curve`) |
+| `/debug/context` and `/debug/context/{makeup,coverage,curve,preview,maintenance}` | context debugging — see [`debug-context-api.md`](./debug-context-api.md) |
+| `/debug/retrieval[/view]` | retrieval traces — see [`retrieval-traces.md`](./retrieval-traces.md) |
+| `/debug/tool-classes[?agent=]` | each tool's effective MCPL class (RFC-008) and its source: `override`, `host`, `server` or `none` (unclassed) |
+
+`/healthz`, `/quota`, `/media/…`, `/debug/tool-classes` and the `/debug/context*` routes accept
+`?scope=<child>` to answer for a fleet child instead (proxied over the fleet
+IPC). Unknown `/debug/*` paths get a JSON `404`.
+
+The SPA's files (`dist/web`, or the module's `staticDir`) are the Web UI's
+own code and are served without `/files/`'s sandbox, so keep them, and the
+host's checkout, out of any workspace mount an agent can write: an HTML file
+an agent wrote there would run with the operator's authority.
+
 ## Verifying the deployment
 
 After bringing the host up:
 
 ```sh
-# Health check — should return 200 and HTML.
-curl -fsSL https://admin.example.internal/
+# Health check — should return 200 and JSON (401 without credentials).
+curl -fsS -u "$WEBUI_USER:$WEBUI_PASS" https://admin.example.internal/healthz
 
 # WebSocket upgrade — open the URL in a browser. The connection-state
 # pill in the header should turn green within a second of page load.
@@ -149,19 +281,23 @@ emitted if the agent were activated right now** — the compiled messages,
 system prompt, model config, and filtered tool set. Useful for inspecting
 exactly what the model would see.
 
-**Transparent by default.** The endpoint is side-effect-free: it runs no
-inference, writes nothing to Chronicle, and contacts no external MCPL server.
-It leaves the system state untouched, so you can poll it freely. The cost is
-that it omits the *dynamically-gathered* injections (lessons / retrieval /
+**Transparent by default.** The endpoint runs no inference of its own, writes no
+messages to Chronicle, and contacts no external MCPL server. It compiles the
+context as the agent's next turn would, but dry, so it commits nothing of that
+compile's beyond releasing a compression hold whose deadline has passed
+(details in the reference below). The cost
+is that it omits the *dynamically-gathered* injections (lessons / retrieval /
 MCPL context), because gathering those is not transparent.
 
 Query params:
 
 - `agent=<name>` — defaults to the recipe's root agent
-- `injections=1` — opt into full fidelity: gather the dynamic injections too.
+- `injections=1` (any value but `0`/`false`) — gather the dynamic injections
+  too. One a start would store as a message isn't capped, sharded or weighed
+  against the budget in the preview as the stored message would be.
   **Not transparent** — this can run inference (e.g. the retrieval module's
-  configured model calls cost tokens) and fires MCPL `beforeInference` hooks
-  (whose paired
+  configured model calls cost tokens), counts as a start for retrieval's
+  per-turn result, and fires MCPL `beforeInference` hooks (whose paired
   `afterInference` is never sent, so a stateful server may be left half-open).
 - `pretty=1` — pretty-print the JSON
 
@@ -174,13 +310,14 @@ mode ran.
 curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
   'https://admin.example.internal/debug/context?pretty=1'
 
-# Full-fidelity preview (spends tokens, fires MCPL hooks):
+# Preview with the gathered injections (spends tokens, fires MCPL hooks):
 curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
   'https://admin.example.internal/debug/context?injections=1&pretty=1'
 ```
 
-It is gated by the same Basic-Auth as every other route — note the response
-contains the full system prompt and conversation, so treat it as sensitive.
+It is gated like the other debug routes (Basic-Auth, the password sign-in
+cookie, or an observer with the `debug` scope) — note the response contains
+the full system prompt and conversation, so treat it as sensitive.
 
 See [`debug-context-api.md`](./debug-context-api.md) for the full reference:
 response shape, `jq` recipes, and the transparency contract.
@@ -188,19 +325,18 @@ response shape, `jq` recipes, and the transparency contract.
 ## Multi-VM admin
 
 The module has no built-in cross-VM aggregation. For a fleet of admin
-hosts, the simplest pattern is a Caddy block per instance with a
-landing page or path prefix:
+hosts, the simplest pattern is a Caddy block per instance, one subdomain
+each (a path prefix breaks the SPA's root-absolute URLs — see above), plus
+a landing page if you want one:
 
 ```caddy
-admin.example.internal {
-    handle /vm-a/* {
-        reverse_proxy 10.0.0.10:7340
-    }
-    handle /vm-b/* {
-        reverse_proxy 10.0.0.11:7340
-    }
-    # ...
+vm-a.admin.example.internal {
+    reverse_proxy 10.0.0.10:7340
 }
+vm-b.admin.example.internal {
+    reverse_proxy 10.0.0.11:7340
+}
+# ...
 ```
 
 A future iteration may add a dedicated aggregator service that speaks
@@ -212,9 +348,32 @@ with that pattern.
 - **`refuses to bind ... without auth`**: the default bind is `0.0.0.0`,
   which requires `basicAuth`. Either add credentials, or switch `host` to
   `127.0.0.1` for a loopback-only (local-dev) bind.
-- **WebUI bundle not found at .../dist/web**: run `bun install` at the
-  package root; the `postinstall` script builds the SPA. For dev, run
-  `bun run build:web` from the package root.
+- **`refuses allowedOrigins: [] without basicAuth`**, or **`refuses the
+  allowedOrigins entry "…" without basicAuth`**, or the same for a value
+  that isn't a list: the host stops at start. Without `basicAuth`, each
+  entry is an `http` or `https` URL on a loopback name. Set `basicAuth` and
+  make `allowedOrigins` a non-empty list of `http` or `https` origins, or
+  remove `allowedOrigins` so the upgrade checks Origin against the default
+  list again.
+- **`refuses allowedOrigins: [] with basicAuth`**, or the same for an entry
+  or a value that isn't a list: the host stops at start. With `basicAuth`,
+  `allowedOrigins` is a non-empty list of `http` or `https` URLs. List
+  the origins to accept, or remove `allowedOrigins` so the upgrade checks
+  Origin against the default list.
+- **`refuses basicAuth whose username or password is empty, missing or not a
+  string`**: the host stops at start. Set both; a `${VAR}` that `.env` sets
+  to nothing gives an empty value.
+- **403 "without basicAuth this Web UI answers only loopback's own names"**:
+  a loopback bind without `basicAuth` was reached under another name, as
+  through a proxy, or by an HTTP/1.0 client that sent no `Host`. Set
+  `basicAuth`.
+- **`/ws` upgrade gets 403 behind a proxy**, with `basicAuth` set: the
+  Origin check rejected it. Forward the original `Host` header, or list the
+  public origin in `allowedOrigins`.
+- **WebUI bundle not found at .../dist/web**: in a clone, run
+  `bun run build:web` at the repository root, as the host's warning
+  says. The npm package carries the SPA built,
+  so an installed package without it needs reinstalling.
 - **Disconnect banner stuck**: the host process may have crashed. Check
   `journalctl -u connectome-host -n 100` (or the equivalent for your
   init system). The SPA reconnects automatically once the host is back.
