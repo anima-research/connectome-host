@@ -1045,11 +1045,19 @@ export interface RecipeModules {
    * agent. A missing FILE remains fail-open at runtime: no injection, with
    * a log line and an `instructions-unavailable` ops alert.
    *
-   * Cache economics: with position 'system' the injected block sits in the
-   * prompt-cache prefix of every agent, so each EDIT to the file is a
-   * fleet-wide cache cold start on the next turn (steady state between
-   * edits caches normally). Curate in batches rather than per-message;
-   * 'afterUser' is the cache-cheap, lower-salience alternative.
+   * Where the block lands, and what that costs:
+   * - 'system' (the default) puts it in every agent's system prompt. An edit
+   *   to the file misses the cache from the system prompt on, for every
+   *   agent, at its next turn, so curate in batches.
+   * - 'afterUser' places it after the newest user message at each start, so
+   *   it stays near the end. Unlike another module's 'afterUser' block, which
+   *   agent-framework stores where it lands, it isn't stored. It moves: a
+   *   request misses the cache from its old place on, and on a model that
+   *   binds a reply's thinking to everything before it, every reply after its
+   *   old place loses its thinking.
+   * - 'beforeUser' is deprecated (agent-framework#171). It's spliced in again
+   *   before the newest user message at every compile, so it moves, and it
+   *   can split a tool call from its result. Use 'afterUser' or 'system'.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1066,7 +1074,7 @@ export interface RecipeModules {
      * no more than this. Default 32768.
      */
     maxBytes?: number;
-    /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
+    /** Where the block lands: 'system' (default) | 'beforeUser' (deprecated) | 'afterUser'. */
     position?: 'system' | 'beforeUser' | 'afterUser';
   };
   /**
