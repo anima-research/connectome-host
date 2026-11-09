@@ -274,7 +274,7 @@ describe('identity module', () => {
     expect(fetches).toBe(2);
   });
 
-  it("mcplEndpointFor: a directory answer, or a services or mcpl in it, that isn't an object is unreadable, and the last good read's services stay", async () => {
+  it("mcplEndpointFor: a directory answer that isn't an object is unreadable, and a services or mcpl in it that isn't an object leaves the other read", async () => {
     const dir = tempDir('ident-');
     let answer: unknown = { home: 'id.test', services: { orrery: 'https://orrery.test' }, mcpl: { body: 'wss://body.test/' } };
     const mod = new IdentityModule({
@@ -286,20 +286,29 @@ describe('identity module', () => {
         if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
         if (u === 'https://id.test/services') return new Response(JSON.stringify(answer), { status: 200 });
         if (u === 'https://orrery.test/x') return new Response(JSON.stringify({ ok: 1 }), { status: 200 });
+        if (u === 'https://orrery2.test/x') return new Response(JSON.stringify({ ok: 2 }), { status: 200 });
         return new Response('{}', { status: 404 });
       }) as typeof fetch,
     });
+    const orrery = async (): Promise<unknown> => {
+      const res = await mod.handleToolCall(call('request', { service: 'orrery', path: '/x' }));
+      expect(res.success).toBe(true);
+      return (res.data as any).body;
+    };
     await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
     expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test/' });
-    for (const bad of [
-      [], { home: 'id.test', services: {}, mcpl: ['wss://body.test/'] }, { home: 'id.test', services: {}, mcpl: 'wss://body.test/' },
-      { home: 'id.test', services: [], mcpl: {} }, { home: 'id.test', services: 'https://orrery.test', mcpl: {} },
-    ]) {
-      answer = bad;
-      expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'not a directory' });
-      const orrery = await mod.handleToolCall(call('request', { service: 'orrery', path: '/x' }));
-      expect(orrery.success).toBe(true);
-      expect((orrery.data as any).body).toEqual({ ok: 1 });
+    answer = [];
+    expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'not a directory' });
+    expect(await orrery()).toEqual({ ok: 1 });
+    for (const mcpl of [['wss://body.test/'], 'wss://body.test/']) {
+      answer = { home: 'id.test', services: { orrery: 'https://orrery2.test' }, mcpl };
+      expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: "its mcpl isn't an object" });
+      expect(await orrery()).toEqual({ ok: 2 });
+    }
+    for (const services of [[], 'https://orrery.test']) {
+      answer = { home: 'id.test', services, mcpl: { body: 'wss://body2.test/' } };
+      expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body2.test/' });
+      expect(await orrery()).toEqual({ ok: 2 });
     }
   });
 
