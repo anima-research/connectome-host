@@ -89,6 +89,16 @@ test("a streak row comes at three failures, and is rewritten when its count chan
     .toBe('9 consecutive inference failures — agent is down. Last: HTTP 529 overloaded');
 });
 
+test("while a turn waits to retry, the streak row keeps its count and says the turn is retrying, not that the agent is down", () => {
+  const alerts: Alerts = new Map();
+  apply({ agents: [{ name: 'main', consecutiveInferenceFailures: 3, retrying: { nextTry: 2, until: 5_000 } }] }, alerts);
+  expect(alerts.get('main:inference-exhausted')?.message).toBe('3 consecutive inference failures — its current turn is retrying.');
+
+  apply({ agents: [{ name: 'main', consecutiveInferenceFailures: 4, retrying: null, lastInference: { lastError: 'HTTP 529 overloaded' } }] }, alerts);
+  expect(alerts.get('main:inference-exhausted')?.message)
+    .toBe('4 consecutive inference failures — agent is down. Last: HTTP 529 overloaded');
+});
+
 test('a snapshot without the sections (older host) clears nothing', () => {
   const alerts: Alerts = new Map();
   apply({

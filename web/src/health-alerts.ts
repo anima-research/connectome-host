@@ -46,7 +46,7 @@ export function planHealthAlerts(
     const key = `${a.name}:${EXHAUSTED}`;
     const streak = a.consecutiveInferenceFailures ?? 0;
     if (streak >= 3) {
-      const message = `${streak} consecutive inference failures — agent is down.`
+      const message = `${streak} consecutive inference failures — ${a.retrying ? 'its current turn is retrying' : 'agent is down'}.`
         + (a.lastInference?.lastError ? ` Last: ${a.lastInference.lastError}` : '');
       if (current.get(key)?.message !== message) {
         plan.upsert.push({ kind: EXHAUSTED, agent: a.name, message });
