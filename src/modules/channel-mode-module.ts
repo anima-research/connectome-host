@@ -38,7 +38,6 @@ export class ChannelModeModule implements Module {
   private ctx: ModuleContext | null = null;
   private framework: AgentFramework | null = null;
   private callSeq = 0;
-  private owners = new Map<string, string>();
   private pendingOwners = new Set<string>();
 
   private readonly fallbackServerId: string;
@@ -80,7 +79,6 @@ export class ChannelModeModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
-    this.owners = new Map(Object.entries(ctx.getState<ChannelModeState>()?.owners ?? {}));
   }
 
   async stop(): Promise<void> {
@@ -92,22 +90,18 @@ export class ChannelModeModule implements Module {
       {
         name: 'set_channel_mode',
         description:
-          'Set how a channel gets your attention, in one step. The owning MCPL server is resolved per channel; ' +
-          'debounced mode requires a connected owner; mentions mode always attempts local cleanup and closes even a disconnected known owner. Without a saved debounced owner, the same per-channel resolution as debounced mode selects the close owner; only unknown or ambiguous ownership skips the close. ' +
-          '`mode: "debounced"` = wake on EVERY message but batched: it opens ' +
-          'to the channel, adds a gate rule that debounces its ambient traffic ' +
-          '(one wake after the burst settles), and pins the channel so it is never ' +
-          'auto-closed for being chatty. `mode: "mentions"` reverts to ' +
-          'direct-address-only: it removes that gate rule, closes, and restores ' +
-          'the default auto-close limit. `debounceMs` (100–300000, default ' +
-          `${this.defaultDebounceMs}) sets the quiet window for debounced mode.`,
+          'Set channel attention: `debounced` opens the channel, batches ambient messages into one wake after ' +
+          'a quiet window, and pins it against auto-close. `mentions` removes the rule, closes, and unpins for ' +
+          'direct-address-only attention, even if the owner is disconnected. Debounced needs a connected owner. ' +
+          'Before changing owners, finish mentions cleanup on the saved owner. ' +
+          `Quiet window: 100–300000 ms, default ${this.defaultDebounceMs}.`,
         inputSchema: {
           type: 'object',
           properties: {
-            channelId: { type: 'string', description: 'Channel id EXACTLY as it appears in incoming events (GateEventInfo.channelId). Examples: zulip:backend, slack:<conversationId> (for example slack:C0123ABCD), or the Discord MCPL-namespaced id discord:<guildId>:<channelId>, not a raw channel snowflake. Unregistered bare ids (no colon) or ids in the fallback server namespace may use the legacy server fallback (default discord). Unknown namespaces are refused, not routed to a different fallback; a raw id does not match namespaced incoming events; copy their exact id for a working debounce rule.' },
-            serverId: { type: 'string', description: 'Optional owning MCPL server id; overrides inferred or saved ownership. Must name a known server or a registry owner. Use this when multiple servers register the same channelId.' },
+            channelId: { type: 'string', description: 'Copy the exact incoming-event id: zulip:backend, slack:<conversationId> (slack:C0123ABCD), or discord:<guildId>:<channelId>, not a raw platform id. Bare legacy ids (no colon) may use the configured fallback. Unknown namespaces are refused.' },
+            serverId: { type: 'string', description: 'Optional MCPL owner for shared ids; debounced must match a registered owner. If the saved owner no longer registers it, mentions clears its record after rule removal and unpin, even if its close is unconfirmed.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
-            debounceMs: { type: 'number', description: 'Quiet window in ms for debounced mode (100–300000). Checked whenever it is given, in either mode.' },
+            debounceMs: { type: 'number', description: 'Quiet window in ms (100–300000); validated in either mode.' },
           },
           required: ['channelId', 'mode'],
         },
@@ -173,10 +167,32 @@ export class ChannelModeModule implements Module {
       };
     }
 
-    const preferred = (serverId as string | undefined) ?? (mode === 'mentions' ? this.owners.get(channelId) : undefined);
-    // A saved owner remains authoritative even after removal: resolving it must
-    // fail rather than retarget a replacement. Without one, use normal inference.
-    const resolved = this.resolveServer(channelId, preferred);
+    // Module state follows the current Chronicle branch without restarting us.
+    const owners = this.readOwners();
+    const savedOwner = owners.get(channelId);
+    const explicit = serverId as string | undefined;
+    const registered = this.framework.channels?.listChannelsRaw()
+      .filter(entry => entry.descriptor.id === channelId) ?? [];
+    // Reuse the registry's refusal/hint, without running an open or any other step.
+    if (mode === 'debounced' && explicit !== undefined && registered.length > 0 &&
+        !registered.some(entry => entry.serverId === explicit)) {
+      const refusal = this.framework.channels!.resolveChannel(channelId, explicit);
+      if ('error' in refusal) return { success: false, isError: true, error: `Nothing changed: ${refusal.error}` };
+    }
+    const ownerGone = savedOwner !== undefined &&
+      !registered.some(entry => entry.serverId === savedOwner);
+    // Registration, not connection presence, defines a live binding. Mentions
+    // may abandon an unregistered owner, but still attempts its close (never
+    // the replacement's), even if the connection itself has been removed.
+    const releaseOrphan = mode === 'mentions' && ownerGone;
+    if (savedOwner !== undefined && explicit !== undefined && explicit !== savedOwner && !releaseOrphan) {
+      return { success: false, isError: true, error: `Nothing changed: channel ${channelId} is bound to saved owner ${savedOwner}. Complete mentions cleanup on that owner before selecting ${explicit}.` };
+    }
+    const resolved = releaseOrphan
+      ? { serverId: savedOwner!, connected: false }
+      : ownerGone
+        ? { error: `The saved owner ${savedOwner} no longer registers channel ${channelId} (deregistered or removed). Restore that server and its registration, or call mentions with or without serverId to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
+        : this.resolveServer(channelId, explicit ?? savedOwner);
     if (mode === 'debounced') {
       const error = 'error' in resolved ? resolved.error : !resolved.connected
         ? `MCPL server ${resolved.serverId} for channel ${channelId} is disconnected. Connect that server before retrying.`
@@ -184,13 +200,13 @@ export class ChannelModeModule implements Module {
       if (error) return { success: false, error: `Nothing changed: ${error}`, isError: true };
     }
     // Reserve capacity before the first await/effect, including concurrent opens.
-    const reserveOwner = mode === 'debounced' && !this.owners.has(channelId);
+    const reserveOwner = mode === 'debounced' && !owners.has(channelId);
     if (reserveOwner) {
       if (this.pendingOwners.has(channelId)) {
         return { success: false, isError: true, error: `Nothing changed: a debounced change for channel ${channelId} is in progress. Retry after it completes.` };
       }
-      if (this.owners.size + this.pendingOwners.size >= MAX_OWNERS) {
-        return { success: false, isError: true, error: `Nothing changed: channel-mode's ${MAX_OWNERS} live-owner capacity is full. Complete mentions cleanup for a tracked channel to free a slot (restore its server/registration first if removed).` };
+      if (owners.size + this.pendingOwners.size >= MAX_OWNERS) {
+        return { success: false, isError: true, error: `Nothing changed: channel-mode's ${MAX_OWNERS} live-owner capacity is full. Complete mentions cleanup for a tracked channel to free a slot (mentions can release deregistered or removed owners even if their close is unconfirmed).` };
       }
       this.pendingOwners.add(channelId);
     }
@@ -198,7 +214,7 @@ export class ChannelModeModule implements Module {
     try {
       steps = mode === 'debounced' && 'serverId' in resolved
         ? await this.applyDebounced(channelId, resolved.serverId, debounceMs)
-        : await this.applyMentions(channelId, resolved);
+        : await this.applyMentions(channelId, resolved, releaseOrphan);
     } finally {
       if (reserveOwner) this.pendingOwners.delete(channelId);
     }
@@ -211,9 +227,9 @@ export class ChannelModeModule implements Module {
         ? `${STEP_NAMES[s.step] ?? s.step} got no answer (${s.detail}), so it may or may not have taken effect`
         : `${STEP_NAMES[s.step] ?? s.step} failed (${s.detail})`)
       .join('; ');
-    // The registry's close answer owns retry guidance (a deferred close needs
-    // no retry), even if the transport dropped after ownership was resolved.
-    const retry = mode === 'mentions' && failed.some(s => s.step === 'close' && !s.unanswered) ? '' :
+    // Only a sole, answered close failure owns all retry guidance. Other
+    // failures still need retry advice, even alongside a deferred close.
+    const retry = mode === 'mentions' && failed.length === 1 && failed[0]!.step === 'close' && !failed[0]!.unanswered ? '' :
       'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId and ' +
       (mode === 'debounced' ? `mode, and debounceMs ${debounceMs},` : 'mode') +
       ' to retry; if it fails the same way, ask whoever runs this host.';
@@ -272,6 +288,10 @@ export class ChannelModeModule implements Module {
     return { serverId: serverId!, connected: server?.connected === true };
   }
 
+  private readOwners(): Map<string, string> {
+    return new Map(Object.entries(this.ctx?.getState<ChannelModeState>()?.owners ?? {}));
+  }
+
   private policyName(channelId: string): string {
     return `channel-mode:debounced:${channelId}`;
   }
@@ -295,8 +315,9 @@ export class ChannelModeModule implements Module {
           { position: 'prepend' },
         );
         if (steps[0]!.ok) {
-          this.owners.set(channelId, serverId);
-          this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(this.owners) });
+          const owners = this.readOwners();
+          owners.set(channelId, serverId);
+          this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
         }
         steps.push({ step: 'gate-policy', ok: true, detail: 'set' });
       } catch (err) {
@@ -314,7 +335,7 @@ export class ChannelModeModule implements Module {
     return steps;
   }
 
-  private async applyMentions(channelId: string, resolved: ServerResolution): Promise<StepResult[]> {
+  private async applyMentions(channelId: string, resolved: ServerResolution, releaseOrphan = false): Promise<StepResult[]> {
     const steps: StepResult[] = [];
 
     // agent-framework sends a removed rule's pending batch.
@@ -340,10 +361,25 @@ export class ChannelModeModule implements Module {
     // it. Consult its structured desired state, not error-message wording.
     const closed = 'serverId' in resolved && (steps[1]!.ok ||
       this.framework!.channels?.getDesiredState?.(resolved.serverId, channelId) === 'closed');
-    if (closed && steps[0]!.ok && steps[2]!.ok && 'serverId' in resolved &&
-        this.owners.get(channelId) === resolved.serverId && this.ctx) {
-      this.owners.delete(channelId);
-      this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(this.owners) });
+    // Live owners still need a close; a missing GC tool does not retain them.
+    // An unregistered owner's close may fail before recording desired state.
+    // Release that orphan after rule cleanup AND unpin (or confirmed GC
+    // absence), not a replacement close.
+    const owners = this.readOwners();
+    let released = false;
+    if (steps[0]!.ok && (releaseOrphan ? steps[2]!.ok : closed) &&
+        'serverId' in resolved && this.ctx && owners.get(channelId) === resolved.serverId) {
+      owners.delete(channelId);
+      this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
+      released = true;
+    }
+    if (releaseOrphan && !steps[1]!.ok && 'serverId' in resolved) {
+      const cleanup = [steps[0]!, steps[2]!].map(s => s.ok ? doneText(s) :
+        `${STEP_NAMES[s.step]} ${s.unanswered ? 'got no answer' : 'failed'} (${s.detail})`).join('; ');
+      steps[1]!.detail = `Old owner ${resolved.serverId}'s close could not be confirmed. ` +
+        `The saved owner record was ${released ? 'cleared' : 'retained'}. Cleanup: ${cleanup}. ` +
+        'This does not confirm a close. ' +
+        `Close attempt: ${steps[1]!.detail}`;
     }
 
     return steps;
@@ -357,6 +393,12 @@ export class ChannelModeModule implements Module {
     const ctx = this.ctx;
     if (!ctx) return { step, ok: false, detail: 'the channel-mode module stopped before this step' };
     try {
+      // GC is optional and may have been removed since debounced setup. Only
+      // confirmed module absence is a no-op; a present module's failure stays
+      // a failure, even if its error happens to say "Module not found".
+      if (step === 'gc-unpin' && ctx.getModule(this.gcModuleName) === null) {
+        return { step, ok: true, detail: `no ${this.gcModuleName} module; nothing to unpin` };
+      }
       const result = await ctx.callTool({ id: `chanmode-${this.callSeq++}`, name, input: toolInput });
       if (result && result.success) {
         return { step, ok: true, detail: name };
@@ -388,7 +430,7 @@ function doneText(s: StepResult): string {
         : s.detail === 'removed' ? 'its debounce rule was removed'
         : 'it had no debounce rule to remove';
     case 'gc-pin': return 'it is pinned open';
-    case 'gc-unpin': return "it isn't pinned";
+    case 'gc-unpin': return s.detail.endsWith('; nothing to unpin') ? s.detail : "it isn't pinned";
     default: return `${s.step} worked`;
   }
 }

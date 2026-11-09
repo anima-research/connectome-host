@@ -1272,24 +1272,23 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. The tool's optional `serverId` selects a known server or
-   * registry owner, disambiguating ids registered on multiple servers. Otherwise
-   * ownership comes from the registry, then a known server matching the id prefix
-   * (even if disconnected). This config's `serverId` is the legacy fallback
-   * (default `discord`) only for unregistered bare ids (no `:`) or its own
-   * namespace; unknown namespaces never use a different fallback server.
-   * Debounced mode refuses unknown, disconnected, or ambiguous ownership before
-   * changing anything. Mentions mode prefers the saved live debounced owner
-   * over a fresh lookup, unless the tool call supplies `serverId`; without a
-   * saved owner, the same registry/prefix/legacy fallback resolution applies.
-   * A removed saved owner is never retargeted to a replacement. It always attempts
-   * rule/pin cleanup and closes a known owner even when disconnected (recorded
-   * for re-registration). The framework's close answer owns retry guidance.
-   * Owners are saved only after open + rule install succeed, then deleted after
-   * completed mentions cleanup (including durably recorded closes). New ids
-   * are refused before effects at 1024 live owners, including in-flight opens;
-   * complete tracked mentions cleanup to free a slot, restoring a removed
-   * server/registration first if needed. Existing owners are never evicted.
+   * `false` disables. The tool's optional `serverId` disambiguates shared ids;
+   * debounced requires it to own a registered channel. Otherwise use saved
+   * ownership, then registry, known id prefix, or this config's legacy fallback
+   * (default `discord`, bare ids or its own namespace only). Unknown namespaces
+   * never use a different fallback. Debounced refuses invalid/disconnected
+   * ownership before effects. A saved owner binds both modes until mentions
+   * cleanup completes; it cannot be silently replaced. Mentions closes even
+   * disconnected known owners, recording the close for re-registration.
+   * If the owner no longer registers the channel, mentions (with or without
+   * serverId) attempts its close and releases the record after rule removal
+   * and unpin, even if close is unconfirmed. It never closes a replacement.
+   * Owners are saved after open + rule install. Still-registered owners are
+   * deleted after rule removal and close, independently of unpin failures
+   * (also with subscriptionGc off).
+   * New ids are refused before effects at 1024 live owners, including in-flight
+   * opens; complete mentions cleanup to free a slot. Owners are never evicted.
+   * See docs/ATTENTION-AND-GATING.md for resolution and cleanup details.
    * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).

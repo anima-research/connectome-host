@@ -32,7 +32,7 @@ describe('activity', () => {
 });
 
 describe('channel-mode', () => {
-  function wired(opts: { failing?: string[]; gateFails?: boolean; ruleExists?: boolean; config?: ConstructorParameters<typeof ChannelModeModule>[0] } = {}) {
+  function wired(opts: { failing?: string[]; gateFails?: boolean; removeFails?: boolean; ruleExists?: boolean; config?: ConstructorParameters<typeof ChannelModeModule>[0] } = {}) {
     const failing = opts.failing ?? ['channel_open'];
     const m = new ChannelModeModule(opts.config);
     const steps: string[] = [];
@@ -44,9 +44,9 @@ describe('channel-mode', () => {
         if (opts.gateFails) throw new Error('debounce rule refused');
         debounces.push(p.behavior.debounce);
       },
-      removeGatePolicy: () => { steps.push('removeGatePolicy'); return opts.ruleExists ?? true; },
+      removeGatePolicy: () => { steps.push('removeGatePolicy'); if (opts.removeFails) throw new Error('cannot remove'); return opts.ruleExists ?? true; },
     } as never);
-    void m.start({ getState: () => undefined, setState: () => {},
+    void m.start({ getModule: () => m, getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         steps.push(c.name);
         return failing.includes(c.name) ? { success: false, error: `${c.name} refused: Server not found: discord` } : { success: true };
@@ -143,6 +143,20 @@ describe('channel-mode', () => {
     expect(removed.error).not.toContain('to retry');
     const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
+  });
+
+  test('R2-5 mentions keeps retry advice when close and another step fail', async () => {
+    for (const opts of [
+      { failing: ['channel_close', 'subscription-gc--pin_channel_idle_limit'] },
+      { failing: ['channel_close'], removeFails: true },
+    ]) {
+      const { m } = wired(opts);
+      const result = await m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('closing the channel failed');
+      expect(result.error).toContain('Each step is safe to repeat');
+      expect(result.error).toContain('to retry');
+    }
   });
 
   test('when no step works, it says nothing changed', async () => {

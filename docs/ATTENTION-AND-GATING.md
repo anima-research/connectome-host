@@ -200,35 +200,61 @@ action.
   `slack:<conversationId>` such as `slack:C0123ABCD`, or
   `discord:<guildId>:<channelId>`), not a raw
   platform id. Open, gate source, and close use the owning MCPL server. An
-  optional tool-call `serverId` selects a known server or registry owner, even
-  when multiple servers register the same id; ambiguity errors name those
-  servers. Otherwise ownership comes from the channel registry. If the id is
-  not registered, a prefix before the first `:`
-  is used when it names a known server, even if disconnected;
-  `modules.channelMode.serverId` is the legacy fallback (default `discord`) only
-  for unregistered bare ids with no `:`, or ids whose prefix is that fallback
-  server itself. An unknown namespace such as `teams:x` is refused, never routed
-  to a different fallback server. Registry ownership still overrides any prefix.
-  Debounced mode refuses unknown, disconnected, or ambiguous ownership before
-  changing anything; a disconnected-owner error names the server to reconnect.
-  Mentions mode prefers the live debounced owner saved in module state (also
-  after restart or server removal), unless the call supplies `serverId`. Owners
-  are saved only after open and rule installation both succeed, and deleted
-  after rule/pin cleanup and a successful or durably recorded close. Without a
-  saved owner, mentions resolves ownership just like debounced mode: explicit
-  `serverId`, registry owner, known prefix, then the legacy fallback for bare or
-  own-namespace ids. A removed saved owner is never retargeted to a replacement.
-  Rule/pin cleanup is always attempted; only unknown or ambiguous ownership skips
-  the close. It sends the close to a known owner even when
-  disconnected: the framework records it for re-registration, and its answer
-  explains whether any retry is needed. Skipped or failed closes are reported
-  separately. One mode/rule is kept per exact channel id; an explicit `serverId`
-  selects which owner that mode targets.
+  optional tool-call `serverId` selects a known server or registry owner when
+  multiple servers register the same id; ambiguity errors name those servers.
+  Debounced mode refuses a named server that does not own a registered channel,
+  with the registry's hint, before changing the rule, pin, or lifecycle state.
+
+  Ownership resolution and cleanup:
+  1. Read module state from the current Chronicle branch on each call. A saved
+     live debounced owner binds **both modes**. Without an explicit `serverId`,
+     it takes precedence over fresh inference, including after restart.
+  2. Without a saved owner or explicit selection, prefer the channel registry.
+     For an unregistered id, use a prefix before the first `:` when it names a
+     known server, even if disconnected. `modules.channelMode.serverId` is the
+     legacy fallback (default `discord`) only for bare ids with no `:` or ids
+     in that fallback's own namespace. Unknown namespaces such as `teams:x`
+     never route to a different fallback. Registry ownership overrides prefixes.
+  3. Debounced mode refuses unknown, disconnected, ambiguous, or wrong explicit
+     ownership before any effects. Owners are saved only after open and rule
+     installation both succeed. While the saved owner still registers the
+     channel, a different explicit owner is refused in either mode until mentions
+     cleanup completes. One mode/rule is kept per exact channel id; switching
+     server is not an implicit migration.
+  4. Mentions removes the rule and unpins, even when ownership cannot be resolved.
+     It closes a known owner even when disconnected: the framework records the
+     close for re-registration. For a still-registered owner, a successful or
+     durably recorded close plus successful rule removal deletes the matching
+     owner record. Unpin failures are reported separately and do not retain that
+     record. If subscription GC
+     is absent (`modules.subscriptionGc: false`, or removed after a successful
+     debounced setup), unpin is a successful no-op, reported as
+     "no subscription-gc module; nothing to unpin", not an error. This does not
+     edit saved GC state: re-adding subscription GC later restores any pin
+     persisted earlier. With GC present again, call mentions to unpin if needed.
+     Only a sole
+     answered close failure suppresses the tool's generic retry advice; the
+     registry explains deferred closes. Skipped, failed, or unanswered steps are reported individually.
+  5. If the saved owner no longer registers the channel (deregistered via
+     `channels/changed` or removed entirely), **mentions**, plain or with an
+     explicit `serverId`, attempts close on that **old owner**, never the selected
+     replacement. Successful rule removal and unpin clear the saved record even
+     if close fails or gets no answer. No replacement is needed. The result
+     reports an unconfirmed old-owner close plainly, without claiming the channel
+     was closed; close failure still makes the overall result partial/failure.
+     An absent subscription-GC module counts as nothing to unpin here too;
+     a real unpin failure with the module present still retains the record for
+     retry, as does failed rule removal. Debounced calls remain refused until
+     cleanup, or restoration of the old registration.
+     This releases a stale binding, not the old registry's desired-open state:
+     if the old server/channel returns, it may reopen. Restore and close it if
+     that matters; abandonment does not guarantee a remote close.
+
   New distinct debounced ids are refused before effects at 1024 live owners
   (including in-flight opens). Complete mentions cleanup for a tracked channel
-  to free capacity; restore its server/registration first if removed. Existing
-  ids can still be reapplied. Owners are never evicted: legacy state already
-  above the limit must be drained through cleanup before adding ids.
+  to free capacity, using the unregistered-owner cleanup above if needed.
+  Existing ids can still be reapplied. Owners are never evicted: legacy state
+  already above the limit must be drained through cleanup before adding ids.
   Previously saved rules with the wrong source are replaced on the next debounced
   call or removed on the next mentions call; reapply the mode on affected channels.
   Each channel gets its own rule, so its own timer. This does not change the
