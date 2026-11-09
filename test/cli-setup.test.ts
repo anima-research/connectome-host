@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { SETUP_BUN_FLOOR, SETUP_RECIPE, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
 import { bunBelowFloor } from '../src/bun-floor.js';
+import { ANTHROPIC_PRICING_VERSION } from '../src/call-pricing.js';
 import { defaultTrusted } from '../src/setup/default-trusted.js';
 import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 import { lingerOf } from '../src/setup/linger.js';
@@ -603,7 +604,7 @@ test('with linger off and nobody to run its line, setup says the resident can\'t
 });
 
 test('the cost line gives the model\'s list prices and, for the model the test setups ran on, what five of them cost at them', () => {
-  expect(costLine('claude-opus-5-5', false)).toBe('Setup\'s agent runs on claude-opus-5-5, at Anthropic\'s list prices per million tokens: $4 input, $20 output, $8 written to the prompt cache, which keeps it an hour, and $0.20 read from it (anthropic-public-2026-10-19). In five test setups, with a tester playing the person, setup\'s agent cost between $0.45 and $2.70 each at these prices; the higher figure includes the new resident\'s first calls, which couldn\'t be told apart from setup\'s.');
+  expect(costLine('claude-opus-5-5', false)).toBe(`Setup's agent runs on claude-opus-5-5, at Anthropic's list prices per million tokens: $4 input, $20 output, $8 written to the prompt cache, which keeps it an hour, and $0.20 read from it (${ANTHROPIC_PRICING_VERSION}). In five test setups, with a tester playing the person, setup's agent cost between $0.45 and $2.70 each at these prices; the higher figure includes the new resident's first calls, which couldn't be told apart from setup's.`);
   expect(costLine('claude-sonnet-5', false)).toContain('How many turns a setup takes isn\'t measured yet, so neither is what one costs.');
   expect(costLine('claude-sonnet-5', false)).not.toContain('five test setups');
   expect(costLine('no-such-model', false)).toBe('Setup\'s agent runs on no-such-model, which this host has no prices for. How many turns a setup takes isn\'t measured yet, so neither is what one costs.');
