@@ -223,6 +223,15 @@ describe('/budget honest display', () => {
     expect(r.lines.map(l => l.text).join('\n')).toContain('a: 50 (last: 12');
   });
 
+  test('a count that overflows to Infinity is refused, and every agent keeps its budget', () => {
+    const agent = { name: 'a', maxStreamTokens: 1000, lastStreamInputTokens: 0, getContextManager: () => null };
+    const app = { ...makeBudgetApp(1000), framework: { getAgent: () => undefined, getAllAgents: () => [agent], getAllModules: () => [] } } as any;
+    for (const arg of ['1e309k', '1e306m']) {
+      expect(handleCommand(`/budget ${arg}`, app).lines[0]!.text).toBe(`Invalid token count: "${arg}". Examples: 150k, 1m, 200000`);
+    }
+    expect(agent.maxStreamTokens).toBe(1000);
+  });
+
   test("an agent whose thinking binds and whose window is set is told apart: the budget doesn't break its stream", () => {
     const agent = (name: string, model: string, physicalWindowTokens?: number) => ({
       name, model, physicalWindowTokens, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,

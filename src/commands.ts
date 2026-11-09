@@ -965,7 +965,7 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     tokens = parseInt(arg, 10);
   }
 
-  if (isNaN(tokens) || tokens <= 0) {
+  if (!Number.isFinite(tokens) || tokens <= 0) {
     return { lines: [{ text: `Invalid token count: "${arg}". Examples: 150k, 1m, 200000`, style: 'system' }] };
   }
 
