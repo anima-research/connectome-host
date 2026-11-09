@@ -804,6 +804,9 @@ export const HEALTH_STRINGS: KeptStrings = {
     },
     refusalStats: { lastCategory: true },
     upcomingWakes: { kind: true },
+    // A turn's wait for its next try: what the error policy retries it as
+    // (`overloaded`, `rate_limited`), a class name, never the failure's text.
+    retrying: { retryClass: true },
   },
   agentPhases: { '*': { phase: true } },
   credential: CREDENTIAL_STRINGS,

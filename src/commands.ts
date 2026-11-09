@@ -44,6 +44,7 @@ import { EXACT_VERSION } from './update/install.js';
 import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
+import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -904,12 +905,18 @@ function handleUsage(app: AppContext): CommandResult {
   return { lines };
 }
 
+type AgentHealth = { name: string; status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null };
+
 function handleStatus(framework: AgentFramework): CommandResult {
   const agents = framework.getAllAgents();
   const lines: Line[] = [{ text: '--- Status ---', style: 'system' }];
+  const snapshot = framework as unknown as { healthSnapshot?: () => { at?: string; agents?: AgentHealth[] } };
+  const health = typeof snapshot.healthSnapshot === 'function' ? snapshot.healthSnapshot() : undefined;
 
   for (const agent of agents) {
-    lines.push({ text: `  ${agent.name}: ${agent.state.status} (${agent.model})`, style: 'system' });
+    const entry = health?.agents?.find((a) => a.name === agent.name);
+    const { word, detail } = agentActivity(entry ?? { status: agent.state.status }, health?.at);
+    lines.push({ text: `  ${agent.name}: ${detail ? `${word} · ${detail}` : word} (${agent.model})`, style: 'system' });
   }
 
   const cm = getAgentCM(framework);
@@ -965,7 +972,7 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     tokens = parseInt(arg, 10);
   }
 
-  if (isNaN(tokens) || tokens <= 0) {
+  if (!Number.isFinite(tokens) || tokens <= 0) {
     return { lines: [{ text: `Invalid token count: "${arg}". Examples: 150k, 1m, 200000`, style: 'system' }] };
   }
 
