@@ -513,19 +513,21 @@ async function installAndStart(
       const ptyDir = nodePtyDir(dir);
       const aside = join(dir, '.setup', 'node-pty-aside');
       out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
-        `setup installs it again, keeping the copy it has at ${aside} until the new one has installed, and putting it ` +
+        `setup installs it again, keeping the copy it has at ${aside} until the new one works, and putting it ` +
         'back if it doesn\'t:');
       if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
       else if (existsSync(ptyDir)) renameSync(ptyDir, aside);
       const again = await world.run([world.bun.path, '--no-env-file', 'install'], { cwd: dir, env: programEnv, show: true });
-      if (again.status === 0) rmSync(aside, { recursive: true, force: true });
+      if (again.status === 0) {
+        helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
+        pty = await ptyWorks(world, dir, programEnv);
+      } else pty = `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
+      if (pty === null) rmSync(aside, { recursive: true, force: true });
       else if (existsSync(aside)) {
         rmSync(ptyDir, { recursive: true, force: true });
         renameSync(aside, ptyDir);
+        helper = makeSpawnHelperExecutable(ptyDir, world.platform);
       }
-      if (again.status === 0) helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
-      pty = again.status === 0 ? await ptyWorks(world, dir, programEnv)
-        : `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
     }
     if (pty !== null) {
       const noShell = `Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where ` +

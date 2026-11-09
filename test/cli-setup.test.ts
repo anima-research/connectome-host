@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import {
-  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
+  accessSync, chmodSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
   statSync, lstatSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,6 +33,25 @@ const DEFAULT_TRUSTED = ['node-pty', 'puppeteer'];
 afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+// Root, and a process with CAP_DAC_OVERRIDE, read and write through any file mode.
+const modesBind = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'setup-modes-'));
+  try {
+    const file = join(dir, 'shut');
+    writeFileSync(file, '');
+    chmodSync(file, 0o000);
+    try {
+      accessSync(file, constants.R_OK);
+      return false;
+    } catch {
+      return true;
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+const modeTest = test.skipIf(!modesBind);
 
 function directory(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'setup-')));
@@ -606,7 +625,7 @@ test('the cost line gives the model\'s list prices and, for the model the test s
   expect(costLine('no-such-model', false)).toBe('Setup\'s agent runs on no-such-model, which this host has no prices for. How many turns a setup takes isn\'t measured yet, so neither is what one costs.');
 });
 
-test('a key typed while .env became unreadable isn\'t checked, and setup says .env can\'t be read', async () => {
+modeTest('a key typed while .env became unreadable isn\'t checked, and setup says .env can\'t be read', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
@@ -750,7 +769,7 @@ test('with a shell, a node-pty that opens no pty is installed again, and setup g
   });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(leftAtInstall).toBe(false);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one has installed, and putting it back if it doesn't:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(true);
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
   expect(made.seen.launched).not.toBeNull();
@@ -770,6 +789,27 @@ test('with a shell, an install again of node-pty that fails stops setup before i
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(made.seen.launched).toBeNull();
   expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: `bun --no-env-file install` didn\'t finish (');
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+});
+
+test('with a shell, an install again of node-pty that finishes but leaves one that still doesn\'t work puts back the copy setup found', async () => {
+  const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const made = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken],
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy setup found');
+    },
+    atInstall: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that finished, and never built');
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.launched).toBeNull();
+  expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: Failed to load native module: pty.node, checked: build/Release.');
   expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
 });
@@ -891,7 +931,7 @@ test('on macOS, node-pty\'s prebuilt spawn-helper is made executable after every
   }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one has installed, and putting it back if it doesn't:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
 });
 
 test('on macOS, a spawn-helper already executable by its owner is left as it is', async () => {
@@ -929,13 +969,13 @@ test('on macOS, a pty stop names macOS, says setup makes spawn-helper executable
   expect(said).not.toContain('failed..');
 });
 
-test('on macOS, a spawn-helper setup can\'t make executable is named in the stop, with what to do', async () => {
+modeTest('on macOS, a spawn-helper setup can\'t make executable in the copy it leaves in place is named in the stop, with what to do', async () => {
   const dir = directory();
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
   let shut = '';
   const made = world(dir, {
-    answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], atAdd: shipNodePty,
-    atInstall: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
+    answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], atInstall: shipNodePty,
+    atAdd: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
   }, { platform: 'darwin' });
   try {
     expect(await runSetup(dir, ['discord'], made)).toBe(1);
@@ -2115,7 +2155,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
   }
 });
 
-test('a key that works but can\'t be kept in .env stops setup with no agent, saying so', async () => {
+modeTest('a key that works but can\'t be kept in .env stops setup with no agent, saying so', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { mode: 0o700 });
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
@@ -2205,7 +2245,7 @@ test('a .env with a line outside setup\'s form stops setup before it asks or run
   expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe(before);
 });
 
-test('a .env no one can read stops setup before it asks or runs anything, naming it, and changes it not', async () => {
+modeTest('a .env no one can read stops setup before it asks or runs anything, naming it, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
@@ -2696,6 +2736,23 @@ test('where the install\'s own setup fails, setup shows its lines and says to ru
   expect(text(made.seen.err)).toContain('Once what the lines above say is put right, run setup again.');
 });
 
+modeTest('an install record this user can\'t read is named, with why, and nothing more is done', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const record = join(dir, 'connectome-host', 'install.json');
+  chmodSync(record, 0o000);
+  try {
+    const closed = world(dir);
+    expect(await runSetup(dir, ['discord'], closed)).toBe(1);
+    expect(text(closed.seen.err)).toContain('EACCES');
+    expect(text(closed.seen.err)).toContain(record);
+    expect(text(closed.seen.err)).toContain(', so setup can\'t tell which data the install serves, and goes no further.');
+    expect(closed.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
+  } finally {
+    chmodSync(record, 0o600);
+  }
+});
+
 test('an install record that can\'t be read is named, one that isn\'t JSON or names no version with how to write it again, one naming another version as another release\'s, which setup won\'t write again since that would lose its fields, and nothing more is done', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
@@ -2751,18 +2808,6 @@ test('an install record that can\'t be read is named, one that isn\'t JSON or na
   expect(text(newer.seen.err)).not.toContain(WRITE_RECORD_AGAIN);
   expect(readFileSync(record, 'utf-8')).toBe(JSON.stringify({ v: 2, dataDir: join(dir, 'data'), extraState: [], kept: 'by a newer release' }));
   expect(newer.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
-  writeFileSync(record, JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  chmodSync(record, 0o000);
-  try {
-    const closed = world(dir);
-    expect(await runSetup(dir, ['discord'], closed)).toBe(1);
-    expect(text(closed.seen.err)).toContain('EACCES');
-    expect(text(closed.seen.err)).toContain(record);
-    expect(text(closed.seen.err)).toContain(', so setup can\'t tell which data the install serves, and goes no further.');
-    expect(closed.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
-  } finally {
-    chmodSync(record, 0o600);
-  }
   rmSync(record);
   mkdirSync(record);
   const folder = world(dir);
@@ -2783,7 +2828,7 @@ test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is
   expect(made.seen.asked.filter((question) => /\bkey\b/i.test(question))).toEqual([]);
 });
 
-test('a .setup this user can\'t write in is named, with what to do, and nothing is asked', async () => {
+modeTest('a .setup this user can\'t write in is named, with what to do, and nothing is asked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false }));
@@ -2814,7 +2859,7 @@ test('a setup.lock that isn\'t setup\'s lock is named, with what to do, and noth
 
 test('setup\'s runner stops a program still running at its limit, and says so', async () => {
   const dir = directory();
-  const started = Date.now();
+  const started = performance.now();
   const marker = `60.${process.pid}${Date.now() % 1000}`;
   const left = () => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && !processEnded(Number(pid)) && (() => {
     try {
@@ -2836,8 +2881,8 @@ test('setup\'s runner stops a program still running at its limit, and says so', 
   const ran = await pending;
   expect(ran.timedOut).toBe(true);
   expect(ran.status).toBeNull();
-  expect(Date.now() - started).toBeGreaterThanOrEqual(2_950);
-  expect(Date.now() - started).toBeLessThan(60_000);
+  expect(performance.now() - started).toBeGreaterThanOrEqual(2_950);
+  expect(performance.now() - started).toBeLessThan(60_000);
   expect(readFileSync(join(dir, 'started'), 'utf-8')).toBe('started\n');
   if (process.platform !== 'linux') return;
   expect(left()).toEqual([]);
