@@ -11,6 +11,7 @@ export interface SettingsSnapshot {
 }
 
 export interface SettingsState {
+  sessionId?: string;
   agent: string;
   settings: SettingsSnapshot;
   overrides: string[];

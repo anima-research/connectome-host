@@ -24,6 +24,7 @@ async function harness(fail: () => Error) {
   const membrane = new Membrane(new MockAdapter({ defaultResponse: 'ok' }), { formatter: new NativeFormatter() });
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', defaultMaxTokens: 256, maxRetries: 1 });
   (subagent as unknown as { rateLimitCooldownMs: number }).rateLimitCooldownMs = 0;
+  (subagent as unknown as { retryBackoffMs: number }).retryBackoffMs = 0;
   const framework = await AgentFramework.create({
     storePath: join(tmpDir, 'store'),
     membrane,

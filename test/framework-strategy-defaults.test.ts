@@ -249,13 +249,21 @@ describe('standard-recipe memory defaults', () => {
     expect(config.kvUnified).toBeUndefined();
   });
 
-  test("without an agent name the summary voice falls back to the library's 'Claude' default", () => {
-    const strategy = buildFrameworkStrategy(
-      recipe(),
-      'some-model',
-      'America/Los_Angeles',
-    );
-    expect(configView(strategy).summaryParticipant).toBe('Claude');
+  test("the host sets no summary label of its own, so context-manager's default stands; a recipe's label is passed through", () => {
+    const built = (agent: Record<string, unknown>) =>
+      configView(buildFrameworkStrategy(recipe(agent), 'some-model', 'America/Los_Angeles')).summaryContextLabel;
+    const libraryDefault = 'What do you remember from earlier?';
+    expect(built({ name: 'Mira' })).toBe(libraryDefault);
+    expect(built({})).toBe(libraryDefault);
+    expect(built({ name: 'Mira', strategy: { type: 'frontdesk' } })).toBe(libraryDefault);
+    expect(built({ name: 'Mira', strategy: { type: 'autobiographical', summaryContextLabel: 'Earlier:' } })).toBe('Earlier:');
+  });
+
+  test('without agent.name, summaries are voiced by the name the agent runs under, not the library\'s "Claude"', () => {
+    const strategy = buildFrameworkStrategy(recipe(), 'some-model', 'America/Los_Angeles', undefined, 'agent');
+    expect(configView(strategy).summaryParticipant).toBe('agent');
+    const named = buildFrameworkStrategy(recipe({ name: 'Mira' }), 'some-model', 'America/Los_Angeles', undefined, 'Mira');
+    expect(configView(named).summaryParticipant).toBe('Mira');
   });
 
   test('DEFAULT_RECIPE does not enable the opt-in modules', () => {

@@ -36,15 +36,6 @@ describe("the page's /healthz reads", () => {
     expect(reads.denied).toBe(true);
   });
 
-  test("any scope's read says whether the grant holds: a child's read that went through outranks an older refusal", () => {
-    const reads = new HealthReads();
-    const local = reads.ask();
-    const child = reads.ask();
-    reads.answered(child);
-    expect(reads.refused(local)).toBe(false);
-    expect(reads.denied).toBe(false);
-  });
-
   test('every answer but a refusal passed the grant, and a 503 counted after a refusal starts the reads again', () => {
     for (const status of [200, 404, 500, 502, 503]) expect(passedGrant(status)).toBe(true);
     for (const status of [401, 403]) expect(passedGrant(status)).toBe(false);

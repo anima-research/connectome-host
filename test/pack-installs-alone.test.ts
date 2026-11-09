@@ -250,11 +250,14 @@ test("@opentui/core must load in the installed tree, its native package with it"
     "node_modules/@opentui/core/index.js": body,
   });
   const pkg = { dependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
-  const loads = await check(standIn(pkg, HOST, opentui("export const ok = true;\n")));
+  const loads = await check(standIn(pkg, HOST, opentui("export function resolveRenderLib() {}\n")));
   assert.equal(loads.code, 0, loads.stderr);
   assert.match(loads.stdout, /src\/index\.ts's imports resolve, @opentui\/core loads, and the offline smoke run answered\.$/m);
   const missing = await check(standIn(pkg, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(missing.code, 1);
+  const unopened = await check(standIn(pkg, HOST, opentui(`export function resolveRenderLib() { throw new Error("Failed to initialize OpenTUI render library"); }\n`)));
+  assert.equal(unopened.code, 1);
+  assert.match(unopened.stderr, /pack-installs-alone: @opentui\/core doesn't load in the installed zz-host-1\.0\.0\.tgz/);
   const optional = { optionalDependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
   const optionalMissing = await check(standIn(optional, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(optionalMissing.code, 1);
@@ -264,6 +267,43 @@ test("@opentui/core must load in the installed tree, its native package with it"
     new RegExp(`pack-installs-alone: @opentui/core doesn't load in the installed zz-host-1\\.0\\.0\\.tgz \\(bun's output is above\\): its native package for this platform \\(${process.platform}-${process.arch}\\) is missing or doesn't load\\.\\n$`),
   );
 }, TIMEOUT_MS * 3);
+
+const AGENT_FRAMEWORK = {
+  "node_modules/@animalabs/agent-framework/package.json": JSON.stringify({ name: "@animalabs/agent-framework", version: "1.0.0", type: "module", main: "index.js" }),
+  "node_modules/@animalabs/agent-framework/index.js": "export {};\n",
+};
+
+test("discord.js resolving from the installed agent-framework, which loads it by require out of bun build's reach, is named", async () => {
+  const nested = {
+    "node_modules/@animalabs/agent-framework/package.json": JSON.stringify({ name: "@animalabs/agent-framework", version: "1.0.0", type: "module", main: "index.js", dependencies: { "discord.js": "1.0.0" } }),
+    "node_modules/@animalabs/agent-framework/index.js": "export {};\n",
+    "node_modules/@animalabs/agent-framework/node_modules/discord.js/package.json": JSON.stringify({ name: "discord.js", version: "1.0.0", main: "index.js" }),
+    "node_modules/@animalabs/agent-framework/node_modules/discord.js/index.js": "module.exports = {};\n",
+  };
+  const pkg = { dependencies: { "@animalabs/agent-framework": "1.0.0" }, bundleDependencies: ["@animalabs/agent-framework"] };
+  const result = await check(standIn(pkg, HOST, nested));
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /src\/index\.ts's imports resolve, discord\.js resolves from @animalabs\/agent-framework, and the offline smoke run answered\.$/m);
+}, TIMEOUT_MS);
+
+test("an install where discord.js doesn't resolve from agent-framework fails, though bun build doesn't reach it", async () => {
+  const pkg = { dependencies: { "@animalabs/agent-framework": "1.0.0" }, bundleDependencies: ["@animalabs/agent-framework"] };
+  const result = await check(standIn(pkg, HOST, AGENT_FRAMEWORK));
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^pack-installs-alone: discord\.js doesn't resolve from the installed @animalabs\/agent-framework in zz-host-1\.0\.0\.tgz: /m);
+}, TIMEOUT_MS);
+
+test("a discord.js that only a node_modules above the install holds doesn't count as installed", async () => {
+  const above = mkdtempSync(join(tmpdir(), "pack-installs-alone-above-"));
+  made.push(above);
+  mkdirSync(join(above, "node_modules", "discord.js"), { recursive: true });
+  writeFileSync(join(above, "node_modules", "discord.js", "package.json"), JSON.stringify({ name: "discord.js", version: "1.0.0", main: "index.js" }));
+  writeFileSync(join(above, "node_modules", "discord.js", "index.js"), "module.exports = {};\n");
+  const pkg = { dependencies: { "@animalabs/agent-framework": "1.0.0" }, bundleDependencies: ["@animalabs/agent-framework"] };
+  const result = await check(standIn(pkg, HOST, AGENT_FRAMEWORK), { TMPDIR: above });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^pack-installs-alone: discord\.js doesn't resolve from the installed @animalabs\/agent-framework in zz-host-1\.0\.0\.tgz without leaving the install: it resolves only to .*node_modules\/discord\.js\/index\.js: /m);
+}, TIMEOUT_MS);
 
 const DEAF = `process.on("SIGTERM", () => {});\nawait new Promise((resolve) => setTimeout(resolve, 90_000));\n`;
 
@@ -290,12 +330,15 @@ test("an install that fails once and then succeeds passes on its second attempt"
 }, TIMEOUT_MS * 2);
 
 test("an install that runs out of time, even one that ignores SIGTERM, fails at once, saying so, without another attempt", async () => {
-  const slow = npmShim(`if (args[0] === "install") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\nelse pass();`);
+  const slow = npmShim(
+    `if (args[0] === "install") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\n` +
+      `else if (args[0] === "pack") process.stdout.write('[{"filename":"zz-host-1.0.0.tgz","files":[]}]');\nelse pass();`,
+  );
   const start = Date.now();
-  const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "10000" });
+  const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "2000" });
   assert.ok(Date.now() - start < 60_000, `took ${Date.now() - start} ms`);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /pack-installs-alone: the install of zz-host-1\.0\.0\.tgz didn't finish within 10 s\.\n$/);
+  assert.match(result.stderr, /pack-installs-alone: the install of zz-host-1\.0\.0\.tgz didn't finish within 2 s\.\n$/);
   assert.doesNotMatch(result.stderr, /attempt 1 of 3/);
 }, TIMEOUT_MS * 2);
 

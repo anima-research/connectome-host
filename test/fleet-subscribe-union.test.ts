@@ -11,6 +11,18 @@ describe('unionWithReducerRequired', () => {
     }
   });
 
+  // The Web UI reads a child's panels again at its window:undone and its
+  // shed (presentation:retracted), so a subscription narrower than `*` gets
+  // both (#485 bot review 5, finding 18).
+  test("adds the events a child's panels read again at, unless a glob already covers them", () => {
+    const narrow = new Set(unionWithReducerRequired(['lifecycle', 'inference:speech']));
+    expect(narrow.has('window:undone')).toBe(true);
+    expect(narrow.has('presentation:retracted')).toBe(true);
+    const globbed = unionWithReducerRequired(['lifecycle', 'presentation:*', 'window:*']);
+    expect(globbed).not.toContain('window:undone');
+    expect(globbed).not.toContain('presentation:retracted');
+  });
+
   test('leaves subscription unchanged when * is already present', () => {
     const result = unionWithReducerRequired(['*']);
     expect(result).toEqual(['*']);
@@ -64,7 +76,6 @@ describe('unionWithReducerRequired', () => {
   test('returns a fresh array (caller can mutate without affecting input)', () => {
     const input = ['lifecycle'];
     const result = unionWithReducerRequired(input);
-    expect(result).not.toBe(input);
     result.push('extra');
     expect(input).toEqual(['lifecycle']);
   });

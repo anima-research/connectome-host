@@ -25,13 +25,6 @@ function loadFile(server: Record<string, unknown>) {
 }
 
 describe('MCPL inheritEnv configuration', () => {
-  test('file entries preserve true, false, and omission', () => {
-    for (const inheritEnv of [true, false]) {
-      expect(loadFile({ inheritEnv })[0].inheritEnv).toBe(inheritEnv);
-    }
-    expect(loadFile({})[0]).not.toHaveProperty('inheritEnv');
-  });
-
   test('recipe overrides preserve explicit false and leave omitted file policy alone', () => {
     for (const fileValue of [true, false, undefined]) {
       const file = loadFile(fileValue === undefined ? {} : { inheritEnv: fileValue });

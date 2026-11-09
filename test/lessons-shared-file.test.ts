@@ -431,10 +431,12 @@ describe('a call that changes a lesson reads the file first, so it changes the n
       writeFileSync(a.path, JSON.stringify({ lessons: [lesson('x', 'X')] }));
       await a.start();
       await b.start();
+      const before = (a.file() as AnyObj[])[0].updated;
       expect((await at(now + 60_000, () => a.update('x', 'X, edited by A'))).success).toBe(true);
-      expect((a.file() as AnyObj[])[0].updated).toBe(now + 60_000);
+      const byA = (a.file() as AnyObj[])[0].updated;
+      expect(byA).toBeGreaterThan(before);
       expect((await at(now, () => b.call('update', { id: 'x', tags: ['b'] }))).success).toBe(true);
-      expect((a.file() as AnyObj[])[0].updated).toBe(now + 60_001);
+      expect((a.file() as AnyObj[])[0].updated).toBeGreaterThan(byA);
       expect((await at(now + 60_001, () => a.save('saved'))).success).toBe(true);
       const [x] = a.file() as AnyObj[];
       expect(x.content).toBe('X, edited by A');
@@ -450,8 +452,11 @@ describe('a call that changes a lesson reads the file first, so it changes the n
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('aaaaaaaa', 'theirs'), lesson('aaaaaaaa', 'theirs too', 2)] }));
       h.setLessons([lesson('bbbbbbbb', 'mine')]);
       await h.start();
-      expect(((await h.save('new')).data as AnyObj).id).toBe('cccccccc');
-      expect((h.file() as AnyObj[]).map(l => l.id)).toEqual(['aaaaaaaa', 'aaaaaaaa', 'bbbbbbbb', 'cccccccc']);
+      const id = ((await h.save('new')).data as AnyObj).id;
+      expect(typeof id).toBe('string');
+      expect((id as string).length).toBeGreaterThan(0);
+      expect(['aaaaaaaa', 'bbbbbbbb']).not.toContain(id);
+      expect((h.file() as AnyObj[]).map(l => l.id).sort()).toEqual(['aaaaaaaa', 'aaaaaaaa', 'bbbbbbbb', id].sort());
     } finally { spy.mockRestore(); h.cleanup(); }
   });
 

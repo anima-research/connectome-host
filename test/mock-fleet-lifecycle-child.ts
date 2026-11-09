@@ -108,6 +108,16 @@ const server = createServer((socket) => {
       if (command.type === 'shutdown') process.exit(0);
       if (command.type === 'command' && command.command === '/crash') process.exit(1);
       if (command.type === 'command' && command.command === '/drop') socket.destroy();
+      if (command.type === 'command' && command.command === '/drop-closed') {
+        setInterval(() => {}, 1_000);
+        server.close();
+        try { unlinkSync(socketPath); } catch { }
+        socket.destroy();
+      }
+      if (command.type === 'command' && command.command === '/exiting') {
+        setInterval(() => {}, 1_000);
+        socket.end(JSON.stringify({ type: 'lifecycle', phase: 'exiting', ts: Date.now() }) + '\n');
+      }
     }
   });
   if (options.ready !== false) {

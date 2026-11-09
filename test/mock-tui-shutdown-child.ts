@@ -4,7 +4,10 @@ import { createTestRenderer } from '@opentui/core/testing';
 import { switchSessionSteps } from '../src/session-switch.js';
 
 const [mode, control] = process.argv.slice(2);
-const { renderer, mockInput } = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false });
+// The TUI's createCliRenderer captures console output while the renderer
+// lives ('console-overlay', its default), so a console.log made before the
+// destroy never reaches stdout, as in the CLI (#485 bot review 4, finding 19).
+const { renderer, mockInput } = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false, consoleMode: 'console-overlay' });
 mock.module('@opentui/core', () => ({ ...core, createCliRenderer: async () => renderer }));
 const { runTui } = await import('../src/tui.js');
 
@@ -33,6 +36,8 @@ let secondSignalSent!: () => void;
 const secondSent = new Promise<void>(resolve => { secondSignalSent = resolve; });
 let commandStarted!: () => void;
 const commandUnderWay = new Promise<void>(resolve => { commandStarted = resolve; });
+let errorEmitted!: () => void;
+const errorDuringStop = new Promise<void>(resolve => { errorEmitted = resolve; });
 
 function mockFramework(body: () => Promise<void>) {
   let stopping: Promise<void> | undefined;
@@ -66,7 +71,7 @@ const framework = mockFramework(async () => {
   detachedAtStop ??= traceDetached;
   stopStarted();
   if (mode === 'delayed-failure') await sleep(25);
-  if (mode === 'slow') await (control.startsWith('SIGTERM-then-') ? secondSent.then(() => sleep(2000)) : sleep(1000));
+  if (mode === 'slow') await (control.startsWith('SIGTERM-then-') ? secondSent.then(() => sleep(2000)) : errorDuringStop);
   if (mode === 'failure' || mode === 'delayed-failure') throw failure;
 });
 const switched = mockFramework(async () => {
@@ -82,7 +87,7 @@ let switchDone: Promise<unknown> = Promise.resolve();
 const app = {
   membrane: {},
   recipe: { name: 'tui-shutdown-test', agent: { name: 'agent' } },
-  branchState: { undoStack: [], redoStack: [], checkpoints: new Map() },
+  branchState: { checkpoints: new Map() },
   sessionManager: {
     getActiveSession: () => { if (stopSignalled) activeAfterStop++; return null; },
     findSession: (name: string) => (name === 'other' ? { id: 'other-id', name: 'other' } : undefined),
@@ -180,15 +185,23 @@ if (control === 'ctrl-c') {
   await switchUnderWay;
   stopSignalled = true;
   process.kill(process.pid, 'SIGTERM');
-} else if (control === 'late-command') {
+} else if (control === 'late-command' || control === 'late-command-quit') {
   await mockInput.typeText('/puppet late_tool');
   mockInput.pressEnter();
   await commandUnderWay;
-  process.kill(process.pid, 'SIGTERM');
+  // A stop signal has OpenTUI destroy the renderer before the TUI's stop
+  // runs; /quit runs the TUI's stop, which destroys it in its own order.
+  if (control === 'late-command') {
+    process.kill(process.pid, 'SIGTERM');
+  } else {
+    await mockInput.typeText('/quit');
+    mockInput.pressEnter();
+  }
 } else if (control === 'error-during-stop') {
   process.kill(process.pid, 'SIGTERM');
   await stopUnderWay;
   process.stdout.emit('error', Object.assign(new Error('write EIO'), { code: 'EIO' }));
+  errorEmitted();
 } else if (control.startsWith('SIGTERM-then-')) {
   process.kill(process.pid, 'SIGTERM');
   await stopUnderWay;

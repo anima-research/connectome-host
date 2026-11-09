@@ -6,19 +6,20 @@ import {
   symlinkSync, truncateSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, sep } from 'node:path';
-import { AgentFramework, resolveTimeZone } from '@animalabs/agent-framework';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { AgentFramework, resolveTimeZone, storeOwnRow, subconsciousContextOptions } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
-import { AutobiographicalStrategy, ContextManager } from '@animalabs/context-manager';
+import { AutobiographicalStrategy, ContextManager, type StoredMessage } from '@animalabs/context-manager';
 import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { recipeModel } from '../src/recipe.js';
-import { buildFrameworkStrategy, standardKvUnifiedConfig } from '../src/framework-strategy.js';
+import { buildFrameworkStrategy, standardKvUnifiedConfig, dendriteCreateOptions } from '../src/framework-strategy.js';
 import { loadExtensions } from '../src/extensions.js';
 import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
 import { SessionManager } from '../src/session-manager.js';
 import { startFramework } from '../src/start-framework.js';
-import { auditStores, fleetChildRepair, subconsciousView, type AuditOptions } from '../src/update/audit-stores.js';
+import { auditStores, childAuditLimitMs, fleetChildRepair, type AuditOptions } from '../src/update/audit-stores.js';
+import { StartRefusal } from '../src/update/host.js';
 import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../src/web/load-repair-alert.js';
 import * as contract from '../src/update/contract.js';
 import { makeRepairStore } from './load-repair-store.js';
@@ -38,6 +39,23 @@ const CONTEXT_MANAGER = ((): string => {
   while (!existsSync(join(dir, 'package.json')) && dirname(dir) !== dir) dir = dirname(dir);
   return join(dir, (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { main: string }).main);
 })();
+/** That agent-framework loads the host's copy of context-manager: the
+ *  parity tests record agent-framework's ContextManager.open calls through a
+ *  spy on the host's ContextManager, which sees them only then (a
+ *  deduplicated install, or an agent-framework linked from a sibling tree
+ *  whose context-manager is the host's). */
+async function expectFrameworkLoadsOurContextManager(): Promise<void> {
+  const ours = realpathSync(Bun.resolveSync('@animalabs/context-manager', import.meta.dir));
+  const framework = realpathSync(Bun.resolveSync('@animalabs/agent-framework', import.meta.dir));
+  const theirs = realpathSync(Bun.resolveSync('@animalabs/context-manager', dirname(framework)));
+  const loaded = (await import(theirs)) as { ContextManager?: unknown };
+  expect(
+    loaded.ContextManager === ContextManager,
+    `the host loads context-manager from ${ours}, and agent-framework (${framework}) loads it from ${theirs}: ` +
+      "a spy on the host's ContextManager.open doesn't see agent-framework's opens unless the two are one copy",
+  ).toBe(true);
+}
+
 const REMEDY = 'AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.';
 const MODEL_CALLED = 'its strategy called a model while opening it, and the audit gives a strategy none: only a start of this release can answer for this store';
 
@@ -264,7 +282,7 @@ function limitWhen(ready: () => boolean, limitMs = 5 * 60_000): { armed: () => n
     const timer = {};
     const poll = (): void => {
       if (cleared.has(timer)) return;
-      if (ready()) later(() => { if (!cleared.has(timer)) handler(); }, 1_000);
+      if (ready()) handler();
       else later(poll, 50);
     };
     later(poll, 0);
@@ -327,7 +345,7 @@ describe('the store audit', () => {
     try {
       const { lines, failed } = await audit([dir]);
       expect(failed).toEqual([`Couldn't audit ${stores[0]}: it opened, and closing it failed: store close failed`]);
-      expect(lines[1]).toStartWith(`${stores[0]} (agents/agent): agent's memory changed at load: `);
+      expect(lines.some((line) => line.startsWith(`${stores[0]} (agents/agent): agent's memory changed at load: `))).toBe(true);
     } finally {
       storeClose.mockRestore();
     }
@@ -391,7 +409,8 @@ describe('the store audit', () => {
   test("each store's answer is the one agent-framework's own open of it gives", async () => {
     const recipe = { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, strategy: { headWindowTokens: 500, recentWindowTokens: 1000 } } };
     const subconscious = { enabled: true, systemPrompt: 'attend to the agent' };
-    const cases: Record<string, { make: (store: string) => Promise<void>; subconscious?: true; off?: true }> = {
+    const forks = { enabled: true, reader: 'forks', model: 'claude-sonnet-4-5', voice: 'You are reading for the agent.' };
+    const cases: Record<string, { make: (store: string) => Promise<void>; subconscious?: true; off?: true; forks?: true }> = {
       crossed: { make: (store) => copyStore(store, 'agents/agent', true) },
       plain: { make: (store) => copyStore(store, 'agents/agent', false) },
       'unowned run inside a span': { make: (store) => makeSpanStore(store) },
@@ -401,13 +420,14 @@ describe('the store audit', () => {
       'a subconscious that opens': { make: (store) => copyStore(store, 'agents/agent', false), subconscious: true },
       "a subconscious whose context a start can't read": { make: makeBrokenSubconsciousStore, subconscious: true },
       'the same store, its subconscious off': { make: makeBrokenSubconsciousStore, off: true },
+      'the same store, its reader forks': { make: makeBrokenSubconsciousStore, forks: true },
     };
     const audited: Record<string, string> = {};
     const started: Record<string, string> = {};
     const said: Record<string, { audit: string; start: string }> = {};
-    for (const [index, [name, { make, subconscious: on, off }]] of Object.entries(cases).entries()) {
+    for (const [index, [name, { make, subconscious: on, off, forks: forked }]] of Object.entries(cases).entries()) {
       const { dir, stores } = await makeDataDirWith(`case-${index}`, [make]);
-      const caseRecipe = on ? { ...recipe, subconscious } : off ? { ...recipe, subconscious: { ...subconscious, enabled: false } } : recipe;
+      const caseRecipe = on ? { ...recipe, subconscious } : off ? { ...recipe, subconscious: { ...subconscious, enabled: false } } : forked ? { ...recipe, subconscious: forks } : recipe;
       saveRecipe(dir, caseRecipe);
       const copy = join(root, `case-${index}-framework`);
       cpSync(stores[0]!, copy, { recursive: true });
@@ -422,7 +442,7 @@ describe('the store audit', () => {
           membrane: new Membrane(new MockAdapter()),
           agents: [buildFrameworkAgentConfig(validated, 'agent', model, strategy)],
           modules: [],
-          ...(validated.subconscious ? { subconscious: validated.subconscious } : {}),
+          ...dendriteCreateOptions(validated, model, resolveTimeZone(validated.agent.timezone)),
         });
         await framework.stop();
         started[name] = 'opens';
@@ -442,6 +462,7 @@ describe('the store audit', () => {
       'a subconscious that opens': 'opens',
       "a subconscious whose context a start can't read": 'refused',
       'the same store, its subconscious off': 'opens',
+      'the same store, its reader forks': 'opens',
     });
     for (const [name, { audit: line, start }] of Object.entries(said)) {
       expect(line, name).toContain(start.replace(/\s*\n\s*/g, ' '));
@@ -449,8 +470,106 @@ describe('the store audit', () => {
     expect(said["a subconscious whose context a start can't read"]!.audit).toContain(' (subconscious/agent): refused: ');
   }, 90_000);
 
+  test("each namespace is opened with the options agent-framework's own opens use, and reads the window its agents left", async () => {
+    // Each agent's context follows its own window (agent-framework #291), and
+    // the audit's opens must read what the agents' compiles read: the same
+    // slots, view and window. agent-framework exports the options it opens a
+    // resident and the subconscious with (residentContextOptions,
+    // subconsciousContextOptions), and the audit opens with them. This
+    // records each ContextManager.open a start and the audit make, and the
+    // window each opened manager holds, over a store a start left presented.
+    await expectFrameworkLoadsOurContextManager();
+    // A re-anchor fraction and a message cap of their own, so an open that
+    // leaves either out opens another strategy than the start's (host #485
+    // bot review wave 4, finding 16).
+    const raw = {
+      ...DEFAULT_RECIPE,
+      agent: { ...DEFAULT_RECIPE.agent, strategy: { maxMessageTokens: 7000 } },
+      subconscious: { enabled: true, systemPrompt: 'attend to the agent', name: 'Muse', reAnchorFraction: 0.3 },
+    };
+    const recipe = validateRecipe(structuredClone(raw));
+    const opened: Array<{ config: Record<string, unknown>; window: string[]; mode: string }> = [];
+    const open = ContextManager.open.bind(ContextManager);
+    const spy = spyOn(ContextManager, 'open').mockImplementation((async (config: Parameters<typeof ContextManager.open>[0]) => {
+      const manager = await open(config);
+      opened.push({
+        config: config as unknown as Record<string, unknown>,
+        window: manager.getPresentedMessages().map((m) => m.id),
+        mode: manager.windowMode(),
+      });
+      return manager;
+    }) as typeof ContextManager.open);
+    const live: Record<string, string[]> = {};
+    try {
+      const { dir } = await makeDataDirWith('parity', [async (store) => {
+        const model = recipeModel(recipe, process.env.MODEL);
+        const strategy = buildFrameworkStrategy(recipe, model, resolveTimeZone(recipe.agent.timezone));
+        const framework = await AgentFramework.create({
+          storePath: store,
+          membrane: new Membrane(new MockAdapter()),
+          agents: [buildFrameworkAgentConfig(recipe, 'agent', model, strategy)],
+          modules: [],
+          subconscious: recipe.subconscious!,
+        });
+        const agent = framework.getAgent('agent')!;
+        // One row in the agent's window, and one stored past the framework, out of it.
+        storeOwnRow(agent, 'agent', [{ type: 'text', text: 'presented as it was written' }]);
+        agent.getContextManager().addMessage('user', [{ type: 'text', text: 'stored and not presented' }]);
+        live['agents/agent'] = agent.getContextManager().getPresentedMessages().map((m) => m.id);
+        live['subconscious/agent'] = framework.getAgent('Muse')!.getContextManager().getPresentedMessages().map((m) => m.id);
+        await framework.stop();
+      }]);
+      saveRecipe(dir, raw as never);
+      const started = opened.splice(0);
+      const { status, failed } = await audit([dir]);
+      expect({ status, failed }).toEqual({ status: 0, failed: [] });
+      const audited = opened.splice(0);
+
+      // What each open's view keeps of a plain row, a row a tune-out holds,
+      // and the stored context injections of the agent, the subconscious and
+      // another resident.
+      const injection = (agent: string) => ({ contextInjection: { agent, namespace: 'probe', contentHash: 'h', part: 0, parts: 1 } });
+      const samples = [{}, { tuneOut: { epochId: 'e' } }, injection('agent'), injection('Muse'), injection('other')]
+        .map((metadata, i) => ({ id: `s${i}`, participant: 'user', content: [], metadata, sequence: i, timestamp: 0 }) as unknown as StoredMessage);
+      const shape = (config: Record<string, unknown>) => ({
+        isolate: config.isolate,
+        auxiliaryMessageViews: config.auxiliaryMessageViews,
+        strategy: config.strategy === undefined ? undefined : {
+          name: (config.strategy as object).constructor.name,
+          reAnchorFraction: (config.strategy as { reAnchorFraction?: number }).reAnchorFraction,
+          maxMessageTokens: (config.strategy as { maxMessageTokens?: number }).maxMessageTokens,
+        },
+        view: samples.map((m) => (config.viewFilter as ((m: StoredMessage) => boolean) | undefined)?.(m) ?? true),
+      });
+      for (const namespace of ['agents/agent', 'subconscious/agent']) {
+        const start = started.find((o) => o.config.namespace === namespace);
+        const audit = audited.find((o) => o.config.namespace === namespace);
+        expect(start, namespace).toBeDefined();
+        expect(audit, namespace).toBeDefined();
+        const { strategy: _resident, ...auditShape } = shape(audit!.config);
+        const { strategy: _theirs, ...startShape } = shape(start!.config);
+        // The resident's strategy is the recipe's, built for each open; the subconscious's comes with its options.
+        expect(namespace === 'agents/agent' ? auditShape : shape(audit!.config), namespace)
+          .toEqual(namespace === 'agents/agent' ? startShape : shape(start!.config));
+        expect({ mode: audit!.mode, window: audit!.window }, namespace).toEqual({ mode: 'presented', window: live[namespace]! });
+      }
+      expect(shape(audited.find((o) => o.config.namespace === 'subconscious/agent')!.config).strategy)
+        .toEqual({ name: 'WindowedPassthroughStrategy', reAnchorFraction: 0.3, maxMessageTokens: 7000 });
+      expect(live['agents/agent']).toHaveLength(1);
+      // The resident's view leaves out held traffic and another agent's injections; the subconscious's only the latter.
+      expect(shape(audited.find((o) => o.config.namespace === 'agents/agent')!.config).view).toEqual([true, false, true, false, false]);
+      expect(shape(audited.find((o) => o.config.namespace === 'subconscious/agent')!.config).view).toEqual([true, true, false, true, false]);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 60_000);
+
   test("the subconscious's view leaves out other agents' stored injections", () => {
-    const view = subconsciousView('Subconscious');
+    // The audit opens the subconscious with agent-framework's own options
+    // (subconsciousContextOptions, #291) and keeps no copy of its view, so
+    // this reads the view those options give a recipe that names no
+    // subconscious.
+    const view = subconsciousContextOptions({ serves: 'agent' }).viewFilter as (message: never) => boolean;
     const row = (metadata?: Record<string, unknown>) => ({ id: 'm', participant: 'x', content: [], timestamp: 0, ...(metadata ? { metadata } : {}) }) as never;
     const injection = (agent: string) => ({ system: true, kind: 'context-injection', contextInjection: { agent, namespace: 'retrieval', contentHash: 'h', part: 0, parts: 1 } });
     expect(view(row(injection('agent')))).toBe(false);
@@ -483,17 +602,28 @@ describe('the store audit', () => {
   });
 
   test("the audit's subconscious view answers as the filter agent-framework opens a named subconscious with", async () => {
-    // agent-framework doesn't export createSubconsciousAgent's filter, so this
-    // takes the one it passes to ContextManager.open.
-    const { stores } = await makeDataDirWith('framework-subconscious', [(store) => copyStore(store, 'agents/agent', false)]);
+    // This takes the filter agent-framework's start passes to
+    // ContextManager.open for the subconscious, and the one the audit passes.
+    // The audit has no copy of the view: it opens with agent-framework's own
+    // options (subconsciousContextOptions, #291), so the two are read from
+    // the opens, not from an export of the audit's.
+    await expectFrameworkLoadsOurContextManager();
+    const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } };
+    const { dir, stores } = await makeDataDirWith('framework-subconscious', [(store) => copyStore(store, 'agents/agent', false)]);
+    saveRecipe(dir, raw as never);
     let frameworkView: ((message: never) => boolean) | undefined;
+    let ours: ((message: never) => boolean) | undefined;
+    let auditing = false;
     const open = ContextManager.open.bind(ContextManager);
     const spy = spyOn(ContextManager, 'open').mockImplementation(((options: { namespace?: string; viewFilter?: (message: never) => boolean }) => {
-      if (options.namespace === 'subconscious/agent') frameworkView = options.viewFilter;
+      if (options.namespace === 'subconscious/agent') {
+        if (auditing) ours = options.viewFilter;
+        else frameworkView = options.viewFilter;
+      }
       return open(options as never);
     }) as never);
     try {
-      const recipe = validateRecipe(structuredClone({ ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } }));
+      const recipe = validateRecipe(structuredClone(raw));
       const model = recipeModel(recipe, process.env.MODEL);
       const strategy = buildFrameworkStrategy(recipe, model, resolveTimeZone(recipe.agent.timezone));
       const framework = await AgentFramework.create({
@@ -504,16 +634,18 @@ describe('the store audit', () => {
         subconscious: recipe.subconscious!,
       });
       await framework.stop();
+      auditing = true;
+      expect((await audit([dir])).status).toBe(0);
     } finally {
       spy.mockRestore();
     }
     expect(frameworkView).toBeDefined();
-    const ours = subconsciousView('Muse');
+    expect(ours).toBeDefined();
     const injection = (agent: string) => ({ system: true, kind: 'context-injection', contextInjection: { agent, namespace: 'retrieval', contentHash: 'h', part: 0, parts: 1 } });
     const rows = [injection('agent'), injection('Muse'), injection('Subconscious'), { tuneOut: { channel: 'c' } }, undefined]
       .map((metadata) => ({ id: 'm', participant: 'x', content: [], timestamp: 0, ...(metadata ? { metadata } : {}) }) as never);
-    expect(rows.map((row) => ours(row))).toEqual(rows.map((row) => frameworkView!(row)));
-    expect(rows.map((row) => ours(row))).toEqual([false, true, false, true, true]);
+    expect(rows.map((row) => ours!(row))).toEqual(rows.map((row) => frameworkView!(row)));
+    expect(rows.map((row) => ours!(row))).toEqual([false, true, false, true, true]);
   });
 
   test("a crossed store opens under a resident's kv-unified block that keeps gap-bearing summaries, as at its start", async () => {
@@ -565,6 +697,93 @@ describe('the store audit', () => {
       expect(failed[0]).not.toContain('sk-live-secret');
     } finally {
       delete process.env.AUDIT_TEST_SET_SECRET;
+    }
+  });
+
+  // Host #485 bot review wave 3, finding 22: the refusal named the field to
+  // remove and not the file it is in, a hidden one for a saved recipe.
+  test("a saved recipe the audit refuses is named, the file to fix", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    saveRecipe(dir, { ...DEFAULT_RECIPE, tuneOut: { enabled: true } } as never);
+    const { status, failed } = await audit([dir]);
+    expect(status).toBe(1);
+    expect(failed).toEqual([expect.stringMatching(new RegExp(
+      `^Couldn't audit ${literally(dir)}: its saved recipe, ${literally(join(dir, '.recipe.json'))}, can't be loaded: Recipe tuneOut\\.enabled was removed`,
+    ))]);
+  });
+
+  // Host #485 bot review wave 4, finding 25: the refusal was taken as naming
+  // the file when the path was anywhere in its words, so `--recipe agent`
+  // went unnamed in "agent-framework".
+  test("a recipe file the audit refuses is named, though its path is a part of another word in the refusal", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    writeFileSync(join(root, 'agent'), JSON.stringify({ ...DEFAULT_RECIPE, tuneOut: { enabled: true } }));
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      const { status, failed } = await audit([dir], { recipe: 'agent' });
+      expect(status).toBe(1);
+      expect(failed).toEqual([expect.stringMatching(new RegExp(
+        `^Couldn't audit ${literally(dir)}: its recipe, agent, can't be loaded: Recipe tuneOut\\.enabled was removed in agent-framework`,
+      ))]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  // A bare relative path, with no directory and no extension, can be one of
+  // the refusal's own words, as `Recipe` is of "Recipe tuneOut.enabled was
+  // removed" (#485 bot review 5, finding 9).
+  test("a recipe file the audit refuses is named, though its path given is a bare word the refusal uses", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    writeFileSync(join(root, 'Recipe'), JSON.stringify({ ...DEFAULT_RECIPE, tuneOut: { enabled: true } }));
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      const { status, failed } = await audit([dir], { recipe: 'Recipe' });
+      expect(status).toBe(1);
+      expect(failed).toEqual([expect.stringMatching(new RegExp(
+        `^Couldn't audit ${literally(dir)}: its recipe, Recipe, can't be loaded: Recipe tuneOut\\.enabled was removed`,
+      ))]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  // A bare file name with a dot can be one of the refusal's own words too,
+  // as `tuneOut.enabled` is of "Recipe tuneOut.enabled was removed"
+  // (#485 bot review 6, finding 21), and one inside a longer word, as `0.33`
+  // is of "agent-framework 0.33.0" (finding 24): neither names the file.
+  for (const recipe of ['tuneOut.enabled', '0.33']) {
+    test(`a recipe file the audit refuses is named, though its path given, ${recipe}, is a dotted word the refusal holds`, async () => {
+      const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+      writeFileSync(join(root, recipe), JSON.stringify({ ...DEFAULT_RECIPE, tuneOut: { enabled: true } }));
+      const cwd = process.cwd();
+      process.chdir(root);
+      try {
+        const { status, failed } = await audit([dir], { recipe });
+        expect(status).toBe(1);
+        expect(failed).toEqual([expect.stringMatching(new RegExp(
+          `^Couldn't audit ${literally(dir)}: its recipe, ${literally(recipe)}, can't be loaded: Recipe tuneOut\\.enabled was removed in agent-framework 0\\.33\\.0`,
+        ))]);
+      } finally {
+        process.chdir(cwd);
+      }
+    });
+  }
+
+  test("a recipe file whose refusal names it, by the path given or the one it resolves to, isn't named again", async () => {
+    const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      writeFileSync(join(root, 'broken.json'), '{');
+      for (const recipe of ['broken.json', join(root, 'broken.json')]) {
+        const { failed } = await audit([dir], { recipe });
+        expect(failed, recipe).toEqual([`Couldn't audit ${dir}: ${resolve(recipe)} isn't valid JSON`]);
+      }
+    } finally {
+      process.chdir(cwd);
     }
   });
 
@@ -765,11 +984,18 @@ describe('the store audit', () => {
   });
 
   test('a system prompt the recipe gives as a URL is not fetched', async () => {
-    const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
-    saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, systemPrompt: 'http://127.0.0.1:1/prompt.md' } });
-    const { status, failed } = await audit([dir]);
-    expect(status).toBe(1);
-    expect(failed[0]).toStartWith(`${stores[0]} (agents/agent): refused: `);
+    const asked: string[] = [];
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) { asked.push(new URL(request.url).pathname); return new Response('a prompt'); } });
+    try {
+      const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+      saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, systemPrompt: `${server.url.href}prompt.md` } });
+      const { status, lines, failed } = await audit([dir]);
+      expect(asked).toEqual([]);
+      expect({ status, failed }).toEqual({ status: 0, failed: [] });
+      expect(lines).toContain(`${stores[0]} (agents/agent): opens`);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test("given the extensions a start loaded, the audit builds its strategy from them and runs no register() of its own", async () => {
@@ -948,7 +1174,7 @@ describe('the store audit', () => {
       const { failed } = await audit([dir]);
       expect(failed).toEqual([
         `Couldn't audit ${stores[0]}: it opened, and closing it failed: store close failed`,
-        expect.stringMatching(new RegExp(`^${literally(stores[1]!)} \\(agents/agent\\): refused: store topology rejected: [^;]*[^.;]; closing it failed: store close failed$`)),
+        expect.stringMatching(new RegExp(`^${literally(stores[1]!)} \\(agents/agent\\): refused: store topology rejected: .*[^.;]; closing it failed: store close failed$`)),
       ]);
       expect(storeClose).toHaveBeenCalledTimes(2);
       withStrategy(dir, 'calls', "export function register(api) { api.registerStrategy('calls', () => ({ initialize: async (ctx) => { await ctx.membrane.complete({}); } })); }\n");
@@ -991,7 +1217,7 @@ describe('the store audit', () => {
     const { status, failed } = await audit([unreadable, missing, file, badIndex, dir]);
     expect(status).toBe(1);
     expect(failed).toEqual([
-      `Couldn't audit ${unreadable}: it isn't JSON`,
+      `Couldn't audit ${unreadable}: its saved recipe, ${join(unreadable, '.recipe.json')}, can't be loaded: it isn't JSON`,
       `Couldn't audit ${missing}: it isn't there`,
       `Couldn't audit ${file}: it isn't a directory`,
       expect.stringMatching(new RegExp(`^Couldn't audit ${badIndex}: its session index, sessions\\.json, can't be read: `)),
@@ -1470,7 +1696,14 @@ describe("a fleet child's audit and what outlasts it", () => {
     expect(await waitForEnd(held, 10_000)).toBe(true);
   }, 60_000);
 
-  test("a child's audit has the minutes the audit's environment gives it, and 5 where it gives none it can use", async () => {
+  test("the minutes the audit's environment gives become a child audit's limit, at most a timer's longest, and 5 where they give none it can use", () => {
+    const limitFor = (minutes: string | undefined) => childAuditLimitMs(minutes === undefined ? {} : { CONNECTOME_FLEET_CHILD_AUDIT_MINUTES: minutes });
+    // A timer holds at most 2 ** 31 - 1 ms.
+    expect(['7.5', '0.5', '1e9', 'Infinity', '0', '-1', 'soon', '10m', undefined].map(limitFor))
+      .toEqual([7.5 * 60_000, 30_000, 2 ** 31 - 1, 2 ** 31 - 1, 5 * 60_000, 5 * 60_000, 5 * 60_000, 5 * 60_000, 5 * 60_000]);
+  });
+
+  test("a child's audit is armed with the limit its audit's environment gives, not its own entry's, the default included", async () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
     const timing = join(root, 'timing-strategy.ts');
@@ -1497,7 +1730,7 @@ describe("a fleet child's audit and what outlasts it", () => {
       return later(handler, ms, ...rest);
     }) as typeof setTimeout);
     try {
-      for (const minutes of ['7.5', '1e9', 'Infinity', '0', '-1', 'soon', undefined]) {
+      for (const minutes of [undefined, '7.5']) {
         if (minutes === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES;
         else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = minutes;
         const result = await audit([parent.dir]);
@@ -1508,8 +1741,7 @@ describe("a fleet child's audit and what outlasts it", () => {
       if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES;
       else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = before;
     }
-    // A timer holds at most 2 ** 31 - 1 ms.
-    expect(limits).toEqual([7.5 * 60_000, 2 ** 31 - 1, 2 ** 31 - 1, 5 * 60_000, 5 * 60_000, 5 * 60_000, 5 * 60_000]);
+    expect(limits).toEqual([5 * 60_000, 7.5 * 60_000]);
     expect(longTimersArmedOutsideTheAudit).toBeGreaterThan(0);
   }, 90_000);
 
@@ -1522,7 +1754,7 @@ describe("a fleet child's audit and what outlasts it", () => {
     writeFileSync(extension, [
       "import { writeFileSync } from 'node:fs';",
       `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-      'for (;;) { /* stuck */ }',
+      'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
       'export function register() {}',
     ].join('\n'));
     const recipe = childRecipe('stuck', { extensions: { stuck: { kind: 'module', path: extension } } });
@@ -2351,7 +2583,10 @@ describe('a host on trial, before its commit', () => {
     } finally {
       opening.mockRestore();
     }
-    return { ...counts, openedInThisProcess: opened, message: error === undefined ? undefined : error instanceof Error ? error.message : String(error) };
+    return {
+      ...counts, openedInThisProcess: opened, refused: error instanceof StartRefusal,
+      message: error === undefined ? undefined : error instanceof Error ? error.message : String(error),
+    };
   }
 
   test("audits every store it would open only after its commit under a place its fallback undoes, leaves its active session to its own start, and a store it can't open ends the start with `current` as it was", async () => {
@@ -2400,6 +2635,7 @@ describe('a host on trial, before its commit', () => {
     expect(logged).toContain(`[update] ${newLine}`);
     expect(existsSync(join(root, 'not-yet'))).toBe(false);
     const message = result.message!;
+    expect(result.refused).toBe(true);
     expect(message).toStartWith("This release couldn't open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.10.2:\n");
     expect(message).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${child.stores[0]} (agents/agent): refused: store topology rejected: `);
@@ -2427,6 +2663,7 @@ describe('a host on trial, before its commit', () => {
       expect(result.started).toBe(0);
       expect(result.stopped).toBe(1);
       expect(result.message).toBe(said);
+      expect(result.refused).toBe(true);
       expect(readCurrent(install)).toBe('0.10.2');
     }
   });
@@ -2577,6 +2814,7 @@ describe('a host on trial, before its commit', () => {
     expect(stderr).toContain("This release couldn't open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.10.2:\n");
     expect(stderr).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(readCurrent(install)).toBe('0.10.2');
+    expect(stderr).not.toContain('Fatal error');
   }, 90_000);
 
   test("through the host's entry, on a trial: the audit builds its strategies from the extensions the start loaded, so none registers twice", async () => {
@@ -2614,6 +2852,7 @@ describe('a host on trial, before its commit', () => {
     const { status, stderr } = await startOnTrial(dir);
     expect(status, stderr.slice(-3000)).toBe(1);
     expect(stderr).toContain("This release can't open its active session's store on its trial, so it opened no store, starts none of its agents, and the next start goes back to 0.10.2:\n");
+    expect(stderr).not.toContain('Fatal error');
     expect(stderr).toContain(linkLine(stores[0]!, join(stores[0]!, 'records.log'), TRIAL_PLACES, true));
     expect(statSync(out).size).toBe(size);
     expect(readCurrent(install)).toBe('0.10.2');
@@ -2628,6 +2867,7 @@ describe('a host on trial, before its commit', () => {
     const { status, stderr } = await startOnTrial(dir, { journal: false });
     expect(status, stderr.slice(-3000)).toBe(1);
     expect(stderr).toContain("No switch or Go back is under way by the install's journal, so this release opened no store and starts none of its agents: ");
+    expect(stderr).not.toContain('Fatal error');
     expect(statSync(log).size).toBe(size);
     expect(readCurrent(install)).toBe('0.10.2');
   }, 90_000);
@@ -2741,7 +2981,7 @@ describe('a host on trial, before its commit', () => {
       notifyOps: (kind: string) => { sent.push(kind); },
     } as never;
     await expect(startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places: () => [dir] }))
-      .rejects.toThrow("couldn't connect the MCPL server discord");
+      .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit");
     expect(readCurrent(install)).toBe('0.10.2');
     expect(sent).toEqual(['memory-load-repair']);
   }, 60_000);

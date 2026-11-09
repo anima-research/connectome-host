@@ -49,7 +49,7 @@ jobs:
         run: npm run build:web:ci
 
       - name: Test
-        run: npm test
+        run: bash scripts/test-on-tmpfs.sh
 
   pack-check:
     name: Packed release installs on its own

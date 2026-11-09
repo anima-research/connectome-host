@@ -29,6 +29,8 @@ class FakeFleet {
     return this.children.some(c => c.name === name);
   }
 
+  listening(name: string): number { return this.subscribers.get(name)?.size ?? 0; }
+
   emit(name: string, event: WireEvent): void {
     const subs = this.subscribers.get(name);
     if (!subs) return;
@@ -138,7 +140,7 @@ describe('FleetTreeAggregator', () => {
     expect(nodes.find(n => n.name === 'lazy-agent')).toBeDefined();
   });
 
-  test('describe is not re-requested while one is in flight', () => {
+  test('every ready asks for a snapshot, since a describe sent before it may have gone with the old connection', () => {
     const fake = new FakeFleet();
     fake.setChildren([{ name: 'miner', status: 'ready' }]);
     const agg = new FleetTreeAggregator(fake as never);
@@ -146,12 +148,12 @@ describe('FleetTreeAggregator', () => {
     expect(fake.describeRequests.length).toBe(1);
 
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp' } as WireEvent);
-    expect(fake.describeRequests.length).toBe(1);
+    expect(fake.describeRequests.length).toBe(2);
 
     fake.emit('miner', makeSnapshot(1000, []));
 
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp' } as WireEvent);
-    expect(fake.describeRequests.length).toBe(2);
+    expect(fake.describeRequests.length).toBe(3);
   });
 
   test('listeners fire on child tree changes', () => {
@@ -175,7 +177,9 @@ describe('FleetTreeAggregator', () => {
     fake.emit('miner', makeSnapshot(1000, [{ name: 'commander', toolCalls: 1 }]));
     expect(agg.getChildNodes('miner')[0]!.toolCallsCount).toBe(1);
 
+    expect(fake.listening('miner')).toBeGreaterThan(0);
     agg.unregisterChild('miner');
+    expect(fake.listening('miner')).toBe(0);
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp', ts: 9999 } as WireEvent);
     expect(agg.getChildNodes('miner')).toEqual([]);
   });
@@ -189,5 +193,6 @@ describe('FleetTreeAggregator', () => {
     expect(agg.getAllChildNames().sort()).toEqual(['a', 'b']);
     agg.dispose();
     expect(agg.getAllChildNames()).toEqual([]);
+    expect([fake.listening('a'), fake.listening('b')]).toEqual([0, 0]);
   });
 });

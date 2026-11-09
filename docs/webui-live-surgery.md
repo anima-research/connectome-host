@@ -5,7 +5,7 @@ restart. Everything here follows the idiom the offline surgeries use: fork
 first, mutate the fork, make the fork the live branch. The parent branch
 keeps everything, so "undo" is always `checkout <parent>`.
 
-The agent-framework this host depends on (^0.21.0) provides all of it. The
+Every agent-framework this host can install provides all of it. The
 SPA still feature-detects each affordance from `welcome.features`, so a
 bundle against a host without them simply shows none.
 
@@ -16,11 +16,27 @@ row, top-right). Context view: **⏪ roll back to here** on a raw (non-summary)
 box, faintly visible until hovered (boxes carry `sourceMessageId`; summaries
 do not, so they have no button).
 
-What happens (`framework.rollbackToMessage`): the chronicle is forked at that
-message's origin sequence (`branchAt`), the fork — `rollback/<agent>/<ts>` —
-becomes the current branch, `_config` is re-materialized, and Discord
-messages that left the context get the awareness marker through the durable
-outbox exactly as `/undo` does. Nothing is deleted.
+What happens (`framework.rollbackToMessage`): the chronicle is forked
+(`branchAt`) at that message's origin sequence, or, on a presented window, at
+the sequence of the presentation write that showed it (below). The fork,
+`rollback/<agent>/<ts>`, becomes the current branch, and `_config` is
+re-materialized. Nothing is deleted. Discord messages that left the context are not marked: agent-framework
+makes marking a separate, explicit choice (`rollbackToMessage`'s `marks`,
+default `none`), and the WebUI's rollback doesn't make it (an undo, which acts
+on the window only, marks none either).
+
+On a presented window (agent-framework #291) the cut is at the write that
+showed the agent the message, so some rows after it can stay, and the result
+says how many: rows that one write showed together with the message stay in
+the agent's context after it (`keptInWindowAfterTarget`; suppress them, or
+hide them by Discord message id), and rows stored before the message was
+shown and shown after it stay in the record, out of the context until the
+agent's next turn starts, or the host restarts before then
+(`returnedToArrivals`). Neither is counted in
+`messagesRemoved` or marked. A row another resident stored after the
+message and before that write stays on the new branch too, and is in
+neither count, since it isn't the agent's: the record holds every
+resident's rows, and the cut is by sequence.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
 queued. The dialog then offers **Quiesce, then retry**.
@@ -34,7 +50,10 @@ fork newest-to-oldest (a shard of a body group expands to the whole group —
 chronicle refuses to bisect one), and switches. If any removal fails the
 agent is put back on the untouched source branch.
 
-Not retroactive over derived state: a message already folded into an
+On a presented window (agent-framework #291) the removal reaches what every
+reader on the store folded: each agent's strategy drops each summary that
+folded a removed message, and folds the rows it keeps again. In legacy mode it
+is not retroactive over derived state: a message already folded into an
 autobiographical summary stays in that summary. Roll back to before it
 entered if that matters.
 
@@ -68,9 +87,14 @@ stripped-image placeholder text stays visible where the strategy dropped one.
 `<storePath>/operator-actions.jsonl` (`DATA_DIR/sessions/<id>/`) — one JSON
 line per operator mutation:
 `at, kind, agent, requester{via,name}, note, params, result | error`. Kinds:
-`rollback`, `suppress`, `hide`, `undo-turn`, `redo-turn`, `unstick`, `nudge`,
+`rollback`, `suppress`, `checkout` (a host's `/checkout`, `/restore` to a
+branch head, or a switch over the framework's API), `hide`, `undo-turn`,
+`redo-turn`, `unstick`, `nudge`,
 `settings-update`, `settings-reset`, `settings-cancel-transition`,
-`quiesce`, `resume`. Refusals are logged too (with `error`). The branch
+`quiesce`, `resume`. Refusals are logged too (with `error`), except a
+change refused before it reaches its handler: one sent during a session
+switch, or one chosen in a session other than the one whose framework is
+open. The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.
@@ -81,11 +105,40 @@ cannot mutate, so they only appear for read requests that fail).
 
 ## Wire additions
 
-Client → server: `rollback {messageId, agent?, note?}`, `suppress
-{messageIds, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
+Client → server: `rollback {messageId, sessionId, agent?, note?}`, `suppress
+{messageIds, sessionId, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
 `request-host-mode`, `request-operator-log {limit?}`.
-Server → client: `surgery-result`, `host-mode`, `operator-log`;
-`welcome.features`, `welcome.hostMode`. After a successful surgery the
-server does what `/checkout` does: `branch-changed` to every client whose
-scopes hold `messages`, and a fresh welcome for every client, as its scopes
-allow.
+Server → client: `surgery-result` (with `returnedToArrivals` and
+`keptInWindowAfterTarget` when a rollback kept rows), `host-mode`,
+`operator-log`, `undone-marks`; `welcome.features`, `welcome.hostMode`.
+`sessionId` is the session whose messages the operator chose from, as the
+server stamped it on them: the welcome's `session` for the transcript, and
+the `/debug/context` answer's `sessionId` for the Context view, each the
+session whose framework produced them. A rollback or suppress chosen in a
+session other than the one whose framework is open is answered `ok: false`,
+saying nothing changed. After a successful surgery the server does what
+`/checkout` does: `branch-changed` to every client whose scopes hold
+`messages`, and a fresh welcome for every client, as its scopes allow.
+
+An undo or a redo on the conversation agent's window (`/undo`, `/redo`, the
+`window:undone` trace) moves no branch, and the transcript still shows the
+record. A transcript entry whose row is out of the window as an undone
+turn's carries `undone: true` (the welcome, history pages): an undo (which
+`/redo` can put back until the agent's next turn, a branch move or a restart;
+agent-framework keeps the redo in memory only) or a shed
+after a refusal or failed inference (which it doesn't) takes rows out that
+way. After each `window:undone` trace, and
+each shed from that window (`presentation:retracted`, reason `shed`), the
+server sends `undone-marks` (scope `messages`) naming every undone row of
+the record, from index 0, which the page dims and labels wherever it holds
+them, clearing the label of each row it holds that the frame doesn't name.
+The page also reads the
+window's panels again (Context's makeup and coverage, the compiled context
+document, the pins). The server sends the frame right after each welcome
+too, since a welcome marks only its tail and a page keeps its older rows
+across a reconnect to the same branch; that one reads no panel. The pin
+picker lists the server's candidates, the record's last 200 rows less the
+undone ones and those whose audience stamp leaves the agent out (another
+resident's on a shared store), or, on a legacy window, which reads no
+stamp, less the rows the resident's view leaves out instead (held traffic,
+suppressed rows, another agent's stored injections).

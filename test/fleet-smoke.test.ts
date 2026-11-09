@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule, type AutoStartChild } from '../src/modules/fleet-module.js';
+import { socketRefusesConnection } from '../src/modules/fleet-socket-probe.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -246,8 +247,11 @@ describe('FleetModule — unresolved launch artifacts', () => {
             return typeof encoding === 'function'
               ? write.bind(this)(data, encoding) : write.bind(this)(data, encoding, cb);
           });
+          const fanned: string[] = [];
+          restored.onChildEvent('*', (_, event) => { fanned.push(String(event.type)); });
           const result = await restored.handleToolCall({ id: 'retry-send-error', name: 'launch',
             input: { name: 'guard', recipe: 'mock-recipe', dataDir, subscription: requested } });
+          expect(fanned).toEqual([]);
           expect(result.success).toBe(false);
           expect(result.isError).toBe(true);
           expect(failedSockets).toHaveLength(1);
@@ -297,9 +301,13 @@ describe('FleetModule — unresolved launch artifacts', () => {
         const wire = subscribes[0].events as string[];
         for (const event of expected) expect(wire).toContain(event);
         const mandatory = ['inference:started', 'inference:tokens', 'inference:tool_calls_yielded',
+          'dendrite:agent-created', 'dendrite:agent-orphaned', 'dendrite:agent-reparented',
+          'dendrite:agent-ended', 'dendrite:agent-interrupted',
           'inference:usage', 'inference:completed', 'inference:failed', 'inference:exhausted',
           'inference:aborted', 'inference:stream_resumed', 'inference:stream_restarted',
-          'inference:turn_ended', 'tool:started', 'tool:completed', 'tool:failed', 'usage:updated'];
+          'inference:turn_ended', 'tool:started', 'tool:completed', 'tool:failed', 'usage:updated',
+          // At which the Web UI reads the child's panels again (#485 bot review 5, finding 18).
+          'window:undone', 'presentation:retracted'];
         for (const event of mandatory) expect(wire).toContain(event);
         expect(wire).toHaveLength(expected.length + mandatory.length);
         expect(wire.includes('inference:speech')).toBe(expected.includes('inference:speech'));
@@ -497,25 +505,55 @@ describe('FleetModule — unresolved launch artifacts', () => {
   test('Node probe deadline fails closed and reaps a silent helper', async () => {
     const dir = mkdtempSync(join(tmpDir, 'silent-node-'));
     const executable = join(dir, 'node');
-    writeFileSync(executable, '#!/bin/sh\nexec /bin/sleep 30\n');chmodSync(executable, 0o700);
+    // The helper writes its own pid, which exec keeps through to sleep, so
+    // the test asks about that one process, whatever system it runs on.
+    // On some macOS hosts the first exec of a freshly written script outlasts
+    // the probe's deadline, so it's run once first with WARM set, which makes
+    // it exit at once.
+    const pidFile = join(dir, 'pid');
+    writeFileSync(executable, `#!/bin/sh\n[ -z "$WARM" ] || exit 0\necho $$ > '${pidFile}'\nexec /bin/sleep 30\n`);chmodSync(executable, 0o700);
+    execFileSync(executable, [], { env: { WARM: '1' } });
+    expect(existsSync(pidFile)).toBe(false);
     const fleet = makeFleet();const previous = process.env.PATH;
+    // A zombie still answers signal 0, so only ESRCH says it was reaped.
+    const alive = (pid: number): boolean => {
+      try { process.kill(pid, 0); return true; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+        throw error;
+      }
+    };
+    let pid: number | undefined;
     const start = Date.now();
     try {
       process.env.PATH = dir;
-      expect(await (fleet as any).socketRefusesConnection('/unused-test-socket')).toBe(false);
+      expect(await (fleet as any).socketRefusesConnection('/unused-test-socket', 200)).toBe(false);
+      expect(Date.now() - start).toBeGreaterThanOrEqual(198);
       expect(Date.now() - start).toBeLessThan(5_000);
-    } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; }
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, 'utf8'));
+      // An empty file, from a kill between the redirect and the write, reads
+      // as 0, and kill(0) would signal this whole process group.
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      expect(alive(pid)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous;
+      try { if (pid !== undefined && Number.isInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL'); } catch { }
+    }
   }, 6_000);
+
+  test('the fleet\'s socket probe is the one the exhaustion test below checks', () => {
+    expect((makeFleet() as any).socketRefusesConnection).toBe(socketRefusesConnection);
+  });
 
   test('resource exhaustion cannot turn a live Unix listener into stale evidence', async () => {
     const path = join(tmpDir, 'resource-probe.sock');
     const server = createServer(socket => socket.destroy());
     await new Promise<void>(resolve => server.listen(path, resolve));
     const script = `import {openSync,closeSync} from 'node:fs';
-      import {FleetModule} from ${JSON.stringify(join(REPO_ROOT, 'src/modules/fleet-module.ts'))};
-      const fleet=new FleetModule({});const fds=[];let exhausted=false;
+      import {socketRefusesConnection} from ${JSON.stringify(join(REPO_ROOT, 'src/modules/fleet-socket-probe.ts'))};
+      const fds=[];let exhausted=false;
       try{for(let i=0;i<512;i++)fds.push(openSync('/dev/null','r'));}catch(e){exhausted=e.code==='EMFILE';}
-      let refused;try{refused=await fleet.socketRefusesConnection(process.argv[2]);}
+      let refused;try{refused=await socketRefusesConnection(process.argv[2]);}
       finally{for(const fd of fds)closeSync(fd);}
       console.log(JSON.stringify({exhausted,refused}));process.exitCode=exhausted && refused===false?0:1;`;
     const file = join(tmpDir, 'resource-probe.ts');writeFileSync(file, script);
@@ -694,14 +732,18 @@ describe('FleetModule — unresolved launch artifacts', () => {
       const server = createServer(socket => {
         connections.add(socket);socket.on('close', () => connections.delete(socket));
         socket.on('error', () => {});
-        socket.write(JSON.stringify({ type: 'lifecycle', phase: 'ready', pid: old.pid }) + '\n');
+        socket.write(JSON.stringify({ type: 'lifecycle', phase: 'ready', pid: old.pid }) + '\n' +
+          JSON.stringify({ type: 'inference:speech', content: 'not from the recorded child' }) + '\n');
       });
       const restored = makeFleet();
       try {
         await new Promise<void>((ok, no) => { server.once('error', no); server.listen(old.socketPath, ok); });
         const inode = lstatSync(old.socketPath).ino;
         const restoredCtx = { ...ownerCtx, getState: () => persisted, setState: () => {} };
+        const fanned: string[] = [];
+        restored.onChildEvent('*', (_, event) => { fanned.push(String(event.type)); });
         await restored.start(restoredCtx);
+        expect(fanned).toEqual([]);
         expect(readFileSync(join(dataDir, 'headless.pid'), 'utf8')).toBe(pidFile);
         expect(lstatSync(old.socketPath).ino).toBe(inode);
         expect(restored.getChildren().get('guard')?.socket).toBeNull();
@@ -1252,10 +1294,9 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
 
     await fleet.handleToolCall({ id: 't-filt-cmd', name: 'command', input: { name: 'filt', command: '/help' } });
 
-    await new Promise((r) => setTimeout(r, 500));
+    await waitFor(() => allEvents.includes('command-output'), 10_000, "/help's output");
 
     expect(allEvents.some((t) => t === 'lifecycle')).toBe(true);
-    expect(allEvents.some((t) => t === 'command-output')).toBe(true);
     expect(filteredEvents.some((t) => t === 'lifecycle')).toBe(true);
     expect(filteredEvents.every((t) => t === 'lifecycle')).toBe(true);
 

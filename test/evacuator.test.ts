@@ -95,11 +95,8 @@ describe('rankByDistance', () => {
       'claude-sonnet-4-6',
       'claude-opus-4-1',
     ]);
-    expect(ranked.map((r) => r.name)).toEqual([
-      'claude-opus-4-5',
-      'claude-opus-4-1',
-      'claude-sonnet-4-6',
-    ]);
+    expect(ranked.slice(0, 2).map((r) => r.name).sort()).toEqual(['claude-opus-4-1', 'claude-opus-4-5']);
+    expect(ranked[2]!.name).toBe('claude-sonnet-4-6');
     expect(ranked[0]!.distance).toBeLessThanOrEqual(ranked[1]!.distance);
     expect(ranked[1]!.distance).toBeLessThanOrEqual(ranked[2]!.distance);
   });

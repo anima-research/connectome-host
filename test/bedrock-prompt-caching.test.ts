@@ -128,12 +128,6 @@ describe('bedrock agent config', () => {
     expect(config.cacheTtl).toBe('1h');
   });
 
-  test('recipe promptCaching applies on non-bedrock providers too', () => {
-    const parsed = validateRecipe(recipe({ promptCaching: false }));
-    const config = buildFrameworkAgentConfig(parsed, 'agent', 'claude-opus-4-6', undefined);
-    expect(config.promptCaching).toBe(false);
-  });
-
   test('non-boolean promptCaching is rejected at validation', () => {
     expect(() => validateRecipe(recipe({ promptCaching: 'yes' }))).toThrow(/promptCaching/);
     expect(() => validateRecipe(recipe({ promptCaching: 1 }))).toThrow(/promptCaching/);

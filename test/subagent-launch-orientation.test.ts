@@ -10,6 +10,10 @@ import type { Recipe } from '../src/recipe.js';
 import {
   SubagentModule, type SubagentModuleConfig, type SubagentLaunch, agentSettingsOf, describeSubagentStart, toolDifferences, undeliveredLaunchParts,
 } from '../src/modules/subagent-module.js';
+// The parent's context these tests seed is written straight into its context
+// manager, so each row is presented too (presentedRow): since agent-framework
+// #291 a fork inherits the parent's window, which holds only presented rows.
+import { presentedRow } from './presented-host.js';
 
 // bun's default test timeout is 5 s, and setDefaultTimeout sets this file's
 // alone.
@@ -24,6 +28,7 @@ interface Run {
   maxStreamTokens: number;
   maxMessageTokens: number | undefined;
   strategyConfig: { headWindowTokens?: number; recentWindowTokens?: number; compressionModel?: string; autoTickOnNewMessage?: boolean };
+  summaryVoice: unknown;
   allowedTools: 'all' | string[];
   launchAsStored: string;
   allText: string;
@@ -122,6 +127,7 @@ async function makeHarness(opts: {
         maxStreamTokens: a.maxStreamTokens,
         maxMessageTokens: (a.getContextManager().getStrategy() as { maxMessageTokens?: number }).maxMessageTokens,
         strategyConfig: strategyConfigOf(a.getContextManager().getStrategy()),
+        summaryVoice: (a.getContextManager().getStrategy() as { config?: Record<string, unknown> }).config?.summaryParticipant,
         allowedTools: a.allowedTools,
         launchAsStored: launchText(messages),
         allText: messages.map((m) => textOf(m.content)).join('\n'),
@@ -171,8 +177,8 @@ function call(name: 'fork' | 'spawn', id: string, input: Record<string, unknown>
 
 function seedForkCall(framework: AgentFramework, id: string, input: Record<string, unknown>, agent = 'parent'): void {
   const cm = framework.getAgent(agent)!.getContextManager();
-  cm.addMessage('user', [{ type: 'text', text: 'please look into it' }]);
-  cm.addMessage(agent, [{ type: 'tool_use', id, name: 'subagent--fork', input }] as never);
+  presentedRow(cm, 'user', [{ type: 'text', text: 'please look into it' }]);
+  presentedRow(cm, agent, [{ type: 'tool_use', id, name: 'subagent--fork', input }] as never);
 }
 
 const CUT_AT_EXCHANGE =
@@ -393,10 +399,26 @@ describe('fork orientation', () => {
     }
   });
 
+  test("a fork's orientation names the tools its first request carries: the settings toolset's stay out, the toolsets tools are in", async () => {
+    const h = await makeHarness({ parent: null });
+    try {
+      const res = await h.subagent.handleToolCall(call('fork', 'toolu_fork_present', { name: 'present', task: 'look around' }, null));
+      expect(res.success).toBe(true);
+      await h.asyncPromise('present');
+      const start = startSection(h.runs[0]!.launchAsStored);
+      const tools = start.split('\n').find((line) => line.startsWith('- Tools: '))!;
+      expect(tools).toContain('toolsets--open');
+      expect(tools).toContain('toolsets--act');
+      expect(tools).not.toContain('agent_settings');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test('a fork call with no id inherits the whole context, and says why', async () => {
     const h = await makeHarness({});
     try {
-      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
+      presentedRow(h.framework.getAgent('parent')!.getContextManager(), 'user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
       const input = { name: 'blind', task: 'look around' };
       const res = await h.subagent.handleToolCall({ name: 'fork', input, callerAgentName: 'parent' } as unknown as ToolCall);
       expect(res.success).toBe(true);
@@ -415,11 +437,15 @@ describe('fork orientation', () => {
     const h = await makeHarness({});
     try {
       const parentCm = h.framework.getAgent('parent')!.getContextManager();
-      parentCm.addMessage('user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
-      parentCm.addMessage('system_context:retrieval', [{ type: 'text', text: 'PARENT_LESSONS' }], {
+      // Each agent's context follows its own window (agent-framework #291),
+      // and a fork inherits its parent's compiled window, so the parent's rows
+      // are presented as they are stored, as the other fixtures here are
+      // (presentedRow); the stored injection is in the parent's window too.
+      presentedRow(parentCm, 'user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
+      parentCm.presentRows([parentCm.addMessage('system_context:retrieval', [{ type: 'text', text: 'PARENT_LESSONS' }], {
         system: true, kind: 'context-injection',
         contextInjection: { agent: 'parent', namespace: 'retrieval', contentHash: 'h1', part: 0, parts: 1 },
-      } as never);
+      } as never)]);
       const input = { name: 'blind', task: 'look around' };
       const res = await h.subagent.handleToolCall({ name: 'fork', input, callerAgentName: 'parent' } as unknown as ToolCall);
       expect(res.success).toBe(true);
@@ -503,6 +529,95 @@ describe('fork orientation', () => {
       }
     }
   });
+
+  test("a locked parent's fork runs disabled, said as its own mode rather than inherited, and listed as a difference", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' } });
+    try {
+      const input = { name: 'speaker-locked', task: 'say something' };
+      seedForkCall(h.framework, 'toolu_locked', input);
+      const res = await h.subagent.handleToolCall(call('fork', 'toolu_locked', input));
+      await h.asyncPromise(input.name);
+      const block = launchBlock(res.data as string);
+      expect(line(block, '- Prose routing:')).toBe(
+        `- Prose routing: disabled, since the parent's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
+      );
+      const against = line(block, '- Against the parent at the call')!;
+      expect(against).toMatch(/Differs in [^.]*prose routing\./);
+      expect(against).not.toMatch(/Same: [^.]*prose routing/);
+      const run = h.runs[0]!;
+      expect(run.proseRouting).toBe('disabled');
+      // The subagent reads the same words, and is told it lacks the parent's prose_locus.
+      expect(run.launchAsStored).toContain(block);
+      expect(run.surface).not.toContain('prose_locus');
+      expect(line(startSection(run.launchAsStored), '- Tools:')).toContain('prose_locus');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("a locked caller's spawn runs disabled too", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' } });
+    try {
+      const input = { name: 'probe-locked', systemPrompt: 'you are a probe', task: 'probe' };
+      const res = await h.subagent.handleToolCall(call('spawn', 'toolu_spawn_locked', input));
+      expect(res.success).toBe(true);
+      await h.asyncPromise(input.name);
+      const block = launchBlock(res.data as string);
+      expect(line(block, '- Prose routing:')).toBe(
+        `- Prose routing: disabled, since the caller's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
+      );
+      expect(h.runs[0]!.proseRouting).toBe('disabled');
+      expect(h.runs[0]!.launchAsStored).toContain(block);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("under orientation none, a locked parent's fork is still told its prose routing, the one thing its parent's context says otherwise, at the call and at the context's end", async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'locked' }, module: { orientation: 'none' } });
+    try {
+      const said = `- Prose routing: disabled, since the parent's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`;
+      const atCall = { name: 'none-at-call', task: 'say something' };
+      seedForkCall(h.framework, 'toolu_none_locked', atCall);
+      await h.subagent.handleToolCall(call('fork', 'toolu_none_locked', atCall));
+      await h.asyncPromise(atCall.name);
+      const atEnd = { name: 'none-at-end', task: 'say something else' };
+      await h.subagent.handleToolCall(call('fork', 'toolu_none_unseeded', atEnd));
+      await h.asyncPromise(atEnd.name);
+      expect(h.runs.map((r) => r.proseRouting)).toEqual(['disabled', 'disabled']);
+      for (const [run, task] of [[h.runs[0]!, atCall.task], [h.runs[1]!, atEnd.task]] as const) {
+        expect(run.launchAsStored).toContain(said);
+        expect(run.launchAsStored).toContain(task);
+        expect(run.launchAsStored).not.toContain('- Tools:');
+      }
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('under orientation none, a fork that runs as its parent does and a locked caller\'s spawn are told no prose routing', async () => {
+    const same = await makeHarness({ parent: { proseRouting: 'locus' }, module: { orientation: 'none' } });
+    try {
+      const input = { name: 'none-same', task: 'say something' };
+      seedForkCall(same.framework, 'toolu_none_same', input);
+      await same.subagent.handleToolCall(call('fork', 'toolu_none_same', input));
+      await same.asyncPromise(input.name);
+      expect(same.runs[0]!.proseRouting).toBe('locus');
+      expect(same.runs[0]!.allText).not.toContain('- Prose routing:');
+    } finally {
+      await same.cleanup();
+    }
+    const locked = await makeHarness({ parent: { proseRouting: 'locked' }, module: { orientation: 'none' } });
+    try {
+      const input = { name: 'none-spawn', systemPrompt: 'you are a probe', task: 'probe' };
+      await locked.subagent.handleToolCall(call('spawn', 'toolu_none_spawn', input));
+      await locked.asyncPromise(input.name);
+      expect(locked.runs[0]!.proseRouting).toBe('disabled');
+      expect(locked.runs[0]!.allText).not.toContain('- Prose routing:');
+    } finally {
+      await locked.cleanup();
+    }
+  });
 });
 
 describe('spawn orientation', () => {
@@ -528,6 +643,27 @@ describe('spawn orientation', () => {
       const start = startSection(run.launchAsStored);
       expect(start).toContain('- Inherited: nothing; a spawn starts from its task.');
       expect(start).toContain('- Tools: 1 available to this stream: subagent--return.');
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe("a stream's own summaries", () => {
+  test('a spawn and a fork each voice their summaries by the name they run under', async () => {
+    const h = await makeHarness({});
+    try {
+      const spawned = await h.subagent.handleToolCall(call('spawn', 'toolu_spawn_v', { name: 'probe', systemPrompt: 'you are a probe', task: 'probe the harness' }));
+      expect(spawned.success).toBe(true);
+      await h.asyncPromise('probe');
+      const forkInput = { name: 'scout', task: 'map the caves' };
+      seedForkCall(h.framework, 'toolu_fork_v', forkInput);
+      const forked = await h.subagent.handleToolCall(call('fork', 'toolu_fork_v', forkInput));
+      expect(forked.success).toBe(true);
+      await h.asyncPromise('scout');
+
+      expect(h.runs.length).toBe(2);
+      for (const run of h.runs) expect(run.summaryVoice).toBe(run.name);
     } finally {
       await h.cleanup();
     }
@@ -967,7 +1103,7 @@ describe('a queued launch', () => {
 
       h.framework.getAgent('parent')!.maxStreamTokens = 777_000;
       await h.framework.addModule(toolModule('gauge', 1));
-      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
+      presentedRow(h.framework.getAgent('parent')!.getContextManager(), 'user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
 
       h.releaseHeld();
       await h.asyncPromise('first');
@@ -991,18 +1127,18 @@ describe('a queued launch', () => {
     try {
       const input = { name: 'kept', task: 'check the boundary' };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
-      cm.addMessage('parent', [
+      presentedRow(cm, 'user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
+      presentedRow(cm, 'parent', [
         { type: 'tool_use', id: 'toolu_kept', name: 'subagent--fork', input },
         { type: 'tool_use', id: 'toolu_sibling', name: 'subagent--fork', input: { name: 'sibling', task: 'other' } },
         { type: 'text', text: 'BESIDE_THE_CALL' },
       ] as never);
-      cm.addMessage('user', [
+      presentedRow(cm, 'user', [
         { type: 'tool_result', toolUseId: 'toolu_kept', content: 'the receipt' },
         { type: 'tool_result', toolUseId: 'toolu_sibling', content: 'SIBLING_RESULT' },
         { type: 'text', text: 'BESIDE_THE_RESULT' },
       ] as never);
-      cm.addMessage('user', [{ type: 'text', text: 'AFTER_THE_EXCHANGE' }]);
+      presentedRow(cm, 'user', [{ type: 'text', text: 'AFTER_THE_EXCHANGE' }]);
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_kept', input));
       expect(res.success).toBe(true);
       await h.asyncPromise('kept');
@@ -1026,7 +1162,7 @@ describe('a queued launch', () => {
       const second = { name: 'second', task: 'queued fallback' };
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_second', second));
       const block = launchBlock(res.data as string);
-      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
+      presentedRow(h.framework.getAgent('parent')!.getContextManager(), 'user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
       h.releaseHeld();
       await h.asyncPromise('first');
       await h.asyncPromise('second');
@@ -1399,8 +1535,8 @@ describe('what a stream first reads is what its launch promises', () => {
     try {
       const input = { name: 'long-structural', task: LONG_TASK, model: 'mock-structural', sync: true };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-      cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
+      presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+      presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
       const result = await h.subagent.handleToolCall({ id: 'fork-point', name: 'fork', input, callerAgentName: 'parent' } as never);
       expect(result.success).toBe(true);
       const wire = JSON.stringify(h.requestFor('mock-structural')!.messages);
@@ -1466,8 +1602,8 @@ describe('what a stream first reads is what its launch promises', () => {
         const input = { name: `sized-idle-${kind}`, task: 'short', model: `mock-sized-idle-${kind}`, sync: true, ...(kind === 'spawn' ? { systemPrompt: 'p' } : {}) };
         if (kind === 'fork') {
           const cm = h.framework.getAgent('parent')!.getContextManager();
-          cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-          cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
+          presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+          presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
         }
         const result = await h.subagent.handleToolCall({ id: 'fork-point', name: kind, input, callerAgentName: 'parent' } as never);
         expect(result.success).toBe(false);
@@ -1485,8 +1621,8 @@ describe('what a stream first reads is what its launch promises', () => {
     try {
       const input = { name: 'sized-no-spawn', task: 'short', model: 'mock-sized-no-spawn', sync: true };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-      cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-no-spawn', name: 'subagent--fork', input }] as never);
+      presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+      presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-no-spawn', name: 'subagent--fork', input }] as never);
       const result = await h.subagent.handleToolCall({ id: 'fork-no-spawn', name: 'fork', input, callerAgentName: 'parent' } as never);
       expect(result.success).toBe(false);
       expect(String(result.error)).toMatch(new RegExp(
@@ -1505,8 +1641,8 @@ describe('what a stream first reads is what its launch promises', () => {
       try {
         const input = { name: `stale-${canSpawn}`, task: 'the task this call carries', model: `mock-stale-${canSpawn}`, sync: true };
         const cm = h.framework.getAgent('parent')!.getContextManager();
-        cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-        cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-stale', name: 'subagent--fork', input: { ...input, task: 'an earlier task' } }] as never);
+        presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+        presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-stale', name: 'subagent--fork', input: { ...input, task: 'an earlier task' } }] as never);
         const result = await h.subagent.handleToolCall({ id: 'fork-stale', name: 'fork', input, callerAgentName: 'parent' } as never);
         expect(result.success).toBe(false);
         expect(String(result.error)).toBe(
@@ -1529,7 +1665,7 @@ describe('what a stream first reads is what its launch promises', () => {
       try {
         const input = { name: `xml-${path}`, task: 'short', model: `mock-xml-${path}`, sync: true };
         const cm = h.framework.getAgent('parent')!.getContextManager();
-        cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
+        presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
         if (path === 'structural') {
           // As agent-framework stores an XML round: each call carries the round's raw
           // text, a sibling fork's included, and each result is named.
@@ -1537,12 +1673,12 @@ describe('what a stream first reads is what its launch promises', () => {
           const raw = '<function_calls>\n<invoke name="files--read">\n<parameter name="path">notes</parameter>\n</invoke>\n' +
             `<invoke name="subagent--fork">\n<parameter name="task">${sibling.task}</parameter>\n</invoke>\n` +
             `<invoke name="subagent--fork">\n<parameter name="task">${input.task}</parameter>\n</invoke>\n</function_calls>`;
-          cm.addMessage('parent', [
+          presentedRow(cm, 'parent', [
             { type: 'tool_use', id: 'read-x', name: 'files--read', input: { path: 'notes' }, rawXml: raw },
             { type: 'tool_use', id: 'fork-sibling', name: 'subagent--fork', input: sibling, rawXml: raw },
             { type: 'tool_use', id: 'fork-x', name: 'subagent--fork', input, rawXml: raw },
           ] as never);
-          cm.addMessage('user', [
+          presentedRow(cm, 'user', [
             { type: 'tool_result', toolUseId: 'read-x', toolName: 'files--read', content: 'NOTES' },
             { type: 'tool_result', toolUseId: 'fork-sibling', toolName: 'subagent--fork', content: 'accepted' },
             { type: 'tool_result', toolUseId: 'fork-x', toolName: 'subagent--fork', content: 'accepted' },
@@ -1610,12 +1746,12 @@ describe('what a stream first reads is what its launch promises', () => {
     try {
       const input = { name: 'after-a-read', task: 'short', model: 'mock-after-a-read', sync: true };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-      cm.addMessage('parent', [
+      presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+      presentedRow(cm, 'parent', [
         { type: 'tool_use', id: 'read-1', name: 'files--read', input: { path: 'big' } },
         { type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input },
       ] as never);
-      cm.addMessage('user', [
+      presentedRow(cm, 'user', [
         { type: 'tool_result', toolUseId: 'read-1', content: 'x'.repeat(45_000) },
         { type: 'tool_result', toolUseId: 'fork-point', content: 'forked' },
       ] as never);

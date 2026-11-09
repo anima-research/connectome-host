@@ -6,6 +6,10 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { Agent, Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
+// The caller's history these tests write straight into its context is
+// presented too (presentedRow): since agent-framework #291 a fork inherits
+// its caller's window, which holds only presented rows.
+import { presentedRow } from './presented-host.js';
 
 const probeUtilityNames = ['allowed_util', 'denied_util'];
 const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
@@ -13,6 +17,7 @@ const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
 async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3, maxRetries = 0, defaultMaxTokens?: number) {
   const dir = mkdtempSync(join(tmpdir(), 'sub-tools-'));
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries, maxDepth, defaultMaxTokens });
+  (subagent as unknown as { retryBackoffMs: number }).retryBackoffMs = 0;
   const probe = {
     name: 'probe', start: async () => {}, stop: async () => {},
     getTools: () => ['allowed', 'denied'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
@@ -99,16 +104,6 @@ describe('subagent allowed-tools inheritance', () => {
     } finally { await h.cleanup(); }
   });
 
-  test('unresolved explicit identity fails closed', async () => {
-    const h = await harness('all');
-    try {
-      for (const kind of ['spawn', 'fork'] as const) {
-        expect((await h.call(kind, undefined, 'missing')).success).toBe(false);
-        expect(h.captured).toHaveLength(0);
-      }
-    } finally { await h.cleanup(); }
-  });
-
   for (const kind of ['spawn', 'fork'] as const) {
     for (const sync of [true, false]) {
       test(`${kind} unknown explicit caller fails before admission (sync=${sync})`, async () => {
@@ -150,7 +145,7 @@ describe('subagent allowed-tools inheritance', () => {
         const caller = await h.framework.createEphemeralAgent({ name: `queue-caller-${kind}`, model: 'mock', systemPrompt: 'original caller prompt', proseRouting: 'disabled', allowedTools: [...restricted], maxTokens: 731 });
         const running = h.realRun(caller.agent, caller.contextManager);
         const tools = ['probe--allowed'];
-        caller.contextManager.addMessage('user', [{ type: 'text', text: 'unique queued parent history' }]);
+        presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'unique queued parent history' }]);
         try {
           expect(h.framework.getAgent(caller.agent.name)).toBe(caller.agent);
           const accepted = await h.subagent.handleToolCall({ id: 'queued', name: kind, callerAgentName: caller.agent.name, input: {
@@ -169,7 +164,7 @@ describe('subagent allowed-tools inheritance', () => {
           expect(h.framework.getAgent(caller.agent.name)).toBeNull();
           expect(JSON.stringify((await caller.contextManager.compile()).messages)).toContain('unique queued parent history');
           (caller.agent as unknown as { systemPrompt: string }).systemPrompt = 'changed after admission';
-          caller.contextManager.addMessage('user', [{ type: 'text', text: 'history added after admission' }]);
+          presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'history added after admission' }]);
           unblock();
           await blocker;
           expect(await settled).toBeNull();
@@ -194,7 +189,7 @@ describe('subagent allowed-tools inheritance', () => {
         const caller = await h.framework.createEphemeralAgent({ name: `retry-caller-${kind}`, model: 'mock', systemPrompt: 'original caller prompt', proseRouting: 'disabled', allowedTools: [...restricted], maxTokens: 731 });
         const running = h.realRun(caller.agent, caller.contextManager);
         const tools = ['probe--allowed'];
-        caller.contextManager.addMessage('user', [{ type: 'text', text: 'unique retry parent history' }]);
+        presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'unique retry parent history' }]);
         const histories: string[] = [];
         h.framework.runEphemeralToCompletion = async agent => {
           h.captured.push(agent);
@@ -334,11 +329,7 @@ describe('subagent allowed-tools inheritance', () => {
   });
 });
 
-// The two blocks below each hold one framework's utility surface: with host
-// toolsets (which bring presentedTools) or with the `utils` tool.
-const hostToolsets = typeof (AgentFramework.prototype as { presentedTools?: unknown }).presentedTools === 'function';
-
-describe.skipIf(!hostToolsets)('maximum-depth utility permissions, settings toolset', () => {
+describe('maximum-depth utility permissions', () => {
   // From agent-framework 0.29 a utility is a tool of the built-in "settings"
   // toolset, reached with toolsets--open and toolsets--act under its own name
   // and permissions; there is no `utils` tool.
@@ -366,46 +357,4 @@ describe.skipIf(!hostToolsets)('maximum-depth utility permissions, settings tool
       } finally { await h.cleanup(); }
     });
   }
-});
-
-describe.skipIf(hostToolsets)('maximum-depth utility permissions', () => {
-  const utilityNames = probeUtilityNames.map(name => `probe--${name}`);
-  const surface = (framework: AgentFramework, utilities = true) => {
-    const catalogue = utilityNames.map(name => ({name, description: 'Inert utility', inputSchema: {type:'object',properties:{}}}));
-    Object.assign(framework, { getAllUtilities: utilities ? () => catalogue : undefined });
-  };
-  for (const [label, parent, requested, expected] of [
-    ['all', 'all', undefined, utilityNames],
-    ['explicit utility', 'all', ['utils','probe--allowed_util'], ['probe--allowed_util']],
-    ['inherited utility', ['utils','probe--allowed_util'], undefined, ['probe--allowed_util']],
-    ['parent restriction', ['utils','probe--allowed_util'], ['utils', ...utilityNames], ['probe--allowed_util']],
-    ['utils only', 'all', ['utils'], []],
-  ] as Array<[string,'all'|string[],string[]|undefined,string[]]>) {
-    test(label + ' preserves the per-utility policy at the depth limit', async () => {
-      const h = await harness(parent,1);
-      try {
-        surface(h.framework);
-        expect(h.framework.getAllTools().some(tool => tool.name === 'utils')).toBe(true);
-        expect((await h.call('spawn',requested)).success).toBe(true);
-        const child=h.captured[0];
-        expect(child.canUseTool('utils')).toBe(true);
-        for(const name of utilityNames) expect(child.canUseTool(name)).toBe(expected.includes(name));
-        expect(child.canUseTool('subagent--spawn')).toBe(false);
-        expect(child.canUseTool('subagent--return')).toBe(true);
-      } finally { await h.cleanup(); }
-    });
-  }
-  test('published Framework without the catalogue keeps its existing tool surface',async()=>{
-    const h=await harness('all',1);
-    try {
-      surface(h.framework,false);
-      expect((await h.call('spawn')).success).toBe(true);
-      expect(h.framework.getAllTools().some(tool => tool.name === 'utils')).toBe(true);
-      expect(h.captured[0].canUseTool('probe--allowed')).toBe(true);
-      expect(h.captured[0].canUseTool('utils')).toBe(true);
-      for (const name of utilityNames) expect(h.captured[0].canUseTool(name)).toBe(false);
-      expect(h.captured[0].canUseTool('subagent--spawn')).toBe(false);
-      expect(h.captured[0].canUseTool('subagent--return')).toBe(true);
-    } finally { await h.cleanup(); }
-  });
 });

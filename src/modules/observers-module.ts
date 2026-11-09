@@ -24,7 +24,6 @@ import { unknownToolResult } from './unknown-tool.js';
 
 export interface ObserversModuleConfig {
   path: string;
-  surface?: 'tools' | 'utilities';
 }
 
 const EXPIRY_FORM = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)([Zz]|[+-]\d{2}:?\d{2})?)?$/;
@@ -66,11 +65,11 @@ export class ObserversModule implements Module {
   async stop(): Promise<void> {}
 
   getTools(): ToolDefinition[] {
-    return (this.config.surface ?? 'tools') === 'tools' ? this.definitions() : [];
+    return this.definitions();
   }
 
-  getUtilities(): ToolDefinition[] {
-    return this.config.surface === 'utilities' ? this.definitions() : [];
+  toolPlacement(_toolName: string): 'builtin' {
+    return 'builtin';
   }
 
   private definitions(): ToolDefinition[] {

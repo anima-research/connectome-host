@@ -4,6 +4,15 @@ This explains how the **gate** decides when an event wakes you for inference, an
 how to shape that yourself. It's fleet-wide; your exact rules live in your own
 `gate.json` (and optionally `gate.js`). Written to be honest about the mechanics.
 
+`wake_add_rule`, `wake_remove_rule`, `gate_status`, `event_tags`, and the
+framework heartbeat's `heartbeat--heartbeat_status` and
+`heartbeat--heartbeat_trigger` are placed in your built-in `settings` toolset:
+open it with
+`toolsets--open {"toolset": "settings"}` and call one with
+`toolsets--act {"tool": "wake_add_rule", "args": {...}}`. If your tool list
+lacks `toolsets--open` or `toolsets--act`, they're in your tool list: call them
+by name.
+
 ## The one thing to internalize
 
 The gate governs **whether an event triggers inference (a "wake")** — not whether
@@ -239,9 +248,10 @@ When declarative rules aren't enough, put a `gate.js` in the same directory as
 `gate.json` (on disk — write it with your shell, not through `_config/`). It
 exports a default function that receives the event and returns a behavior — or
 `null` to fall through to your `gate.json` policies. `_config/` versions
-`gate.js` itself but not files beside it that it imports or reads, so an
-undo or a branch switch takes back `gate.js` and leaves those as they are:
-keep `gate.js` self-contained, or put such files in a mount of their own.
+`gate.js` itself but not files beside it that it imports or reads, so a
+branch switch or a rollback takes back `gate.js` and leaves those as they are
+(an undo moves no branch, so it takes back nothing): keep `gate.js`
+self-contained, or put such files in a mount of their own.
 
 The event is `{ content, eventType, serverId, channelId, metadata, tags, mount,
 paths }`. `tags` can be absent on untagged events (so default it), and `mount` /
@@ -320,10 +330,15 @@ wake?" decision. Heavy logic belongs in your turn once you're up, not here.
   hears of as only a "maybe". On a host that still runs the heartbeat-mcpl
   server instead, the tools are the same (named `mcpl--heartbeat--…`), and the
   judge doesn't know its schedule.
-- **`tune_out`** (only when you have a subconscious) — hands a channel to your
-  subconscious: its traffic stops entering your context and waking you, your
-  subconscious summarizes it on a cadence and judges whether a mention merits
-  interrupting you, and cancelling delivers the backlog.
+- **`tune_out`** (when you have a subconscious) — holds a channel: its
+  traffic stops entering your context and waking you. Your subconscious
+  reads the held traffic, reports to you on a cadence and judges whether a
+  mention merits interrupting you. Cancelling, or the duration ending,
+  delivers the backlog. Without a subconscious you are not offered
+  `tune_out` or `focus`, and no hold is silent: agent-framework 0.33.0
+  removed the recipe's `tuneOut.enabled`, which offered them without a
+  reader. They stay listed without one only while a hold whose release
+  failed is still on record, for you to check or cancel.
 
 ## Debugging
 

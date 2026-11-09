@@ -1,8 +1,10 @@
 // AnthropicAdapter wrapper that appends each LLM call's RAW request, RAW
 // response, and any error to a JSONL log file. Successful calls keep a
 // compact request summary; the full raw request is retained only for
-// refusals, anomalous responses and errors, where forensic inspection
-// matters (a keepalive poke's only with full payloads: see below).
+// refusals, anomalous responses, and the first failing request of each kind
+// of error in a cache lineage's run of failures, within a budget per log,
+// where forensic inspection matters (a keepalive poke's only with full
+// payloads: see below).
 //
 // "Raw" means the actual Anthropic API payload (post-buildRequest,
 // including `thinking`, tool definitions in Anthropic shape, etc.) and the
@@ -18,8 +20,9 @@
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
 //   { type: 'call'|'error', kind: 'complete'|'stream'|'keepalive', timestamp, durationMs,
-//     messageId?, requestId?, requestSummary, rawRequest?, rawResponse, anomaly?,
-//     error?, errorType?, httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
+//     messageId?, requestId?, requestSummary, rawRequest?, requestSha256?, rawRequestOmitted?,
+//     rawResponse, anomaly?, error?, errorType?, httpStatus?, providerErrorCode?, retryable?,
+//     errorChars?, truncated? }
 // A failure's `error` is { name, message, stack } with its text bounded, or
 // a non-Error's text. The request summary leaves out only the parts it
 // can't read; a record whose response can't be read keeps only the head
@@ -56,10 +59,11 @@ import type {
   StreamCallbacks,
   KeepaliveCall,
 } from '@animalabs/membrane';
+import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
-import { serializeRecordOutcome, type RecordKept } from './logging-record.js';
+import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -89,7 +93,7 @@ export function modelAcceptsEffort(model: string, level: EffortLevel): boolean {
  *  older reject it with a 400 ("adaptive thinking is not supported on this
  *  model"). */
 export function modelAcceptsAdaptiveThinking(model: string): boolean {
-  return /claude-(fable|mythos)-|claude-opus-(4-[6-9]|[5-9])|claude-sonnet-(4-6|[5-9])/.test(model);
+  return /claude-(fable|mythos)-|claude-opus-(4-[6-9]|[5-9])|claude-sonnet-(4-6|[5-9])|claude-haiku-5-5(?!\d|-\d{1,2}(?!\d))/.test(model);
 }
 
 /** Whether `model` returns the notes it writes between tool calls ("found X,
@@ -107,6 +111,115 @@ export function modelAcceptsAdaptiveThinking(model: string): boolean {
 export function modelReturnsNotesInThinking(model: string): boolean {
   return /claude-(fable-5(-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?!\d|-\d{1,2}(?!\d))/.test(model);
 }
+
+/** What a model does with its signed thinking (anima-research/context-manager#155). */
+export interface ModelThinking {
+  /** A reply's thinking is bound to the request it was minted in: in a later
+   *  request whose earlier conversation or head (system text, tools, model)
+   *  differs, an enforcing account refuses the block, and others drop it. */
+  binds: boolean;
+  /** It takes `block_binding: { prefix_mismatch_behavior: 'drop_block' }`,
+   *  which has the provider drop such a block rather than refuse the request. */
+  dropBlock: boolean;
+  /** It thinks, minting signed thinking, when a request carries no thinking
+   *  config. */
+  thinksWithoutConfig: boolean;
+  /** The provider's own refusal of a longer prompt showed its context window. */
+  windowShownByRefusal?: true;
+}
+
+const BINDS_WITH_CONTROL: ModelThinking = { binds: true, dropBlock: true, thinksWithoutConfig: true, windowShownByRefusal: true };
+const BINDS_WITHOUT_CONTROL: ModelThinking = { binds: true, dropBlock: false, thinksWithoutConfig: true };
+const THINKS_UNBOUND: ModelThinking = { binds: false, dropBlock: false, thinksWithoutConfig: true };
+const NEITHER: ModelThinking = { binds: false, dropBlock: false, thinksWithoutConfig: false };
+const UNREACHED: ModelThinking = { binds: true, dropBlock: false, thinksWithoutConfig: false };
+
+const MODEL_THINKING: ReadonlyArray<readonly [string, ModelThinking]> = [
+  ['fable-5-1', BINDS_WITH_CONTROL],
+  ['opus-5-5', BINDS_WITH_CONTROL],
+  ['sonnet-5-5', BINDS_WITH_CONTROL],
+  ['haiku-5-5', BINDS_WITH_CONTROL],
+  // Membrane's changelog records the Mythos family refusing thinking configs
+  // with a 400, so it isn't sent the control untried.
+  ['mythos-5-1', BINDS_WITHOUT_CONTROL],
+  ['mythos-5', BINDS_WITHOUT_CONTROL],
+  ['mythos-preview', BINDS_WITHOUT_CONTROL],
+  ['fable-5', THINKS_UNBOUND],
+  ['opus-5', THINKS_UNBOUND],
+  ['sonnet-5', THINKS_UNBOUND],
+  ['opus-4-8', NEITHER],
+  ['opus-4-7', NEITHER],
+  ['opus-4-6', NEITHER],
+  ['opus-4-5', NEITHER],
+  ['sonnet-4-6', NEITHER],
+  ['sonnet-4-5', NEITHER],
+  ['haiku-4-5', NEITHER],
+  ['opus-4-1', NEITHER],
+  ['opus-4-0', NEITHER],
+  ['opus-4', NEITHER],
+  ['sonnet-4-0', NEITHER],
+  ['sonnet-4', NEITHER],
+];
+const MODEL_THINKING_PATTERNS = MODEL_THINKING.map(
+  ([name, facts]) => [new RegExp(`claude-${name}(?!\\d|-\\d{1,2}(?!\\d))`), facts] as const,
+);
+
+export function modelThinking(model: string): ModelThinking {
+  const id = model.toLowerCase().replace(/(\d)\.(\d)/g, '$1-$2');
+  if (!/(^|[/.:])claude-/.test(id)) return NEITHER;
+  // Before Claude 4, Anthropic's ids named the version before the family
+  // (claude-3-5-sonnet, claude-2-1, Bedrock's claude-v2), or were Instant.
+  if (/(^|[/.:])claude-([1-3]|v[12]|instant)(?!\d)/.test(id)) return NEITHER;
+  return MODEL_THINKING_PATTERNS.find(([pattern]) => pattern.test(id))?.[1] ?? UNREACHED;
+}
+
+/** What this process's account does with a signed thinking block whose
+ *  earlier conversation changed, as the start-up probe found it
+ *  (thinking-binding-probe.ts): refuses the request, drops the block on its
+ *  own, or still shows it to the model. */
+export type AccountBinding = 'refuses' | 'drops' | 'shows';
+
+const accountBindings = new Map<string, AccountBinding>();
+
+/** One key per row of the model record, so a dated snapshot, a routing prefix
+ *  or a [1m] suffix reads what was found for its model; a Claude model the
+ *  record doesn't list is its own key. */
+export function accountBindingKey(model: string): string {
+  const id = model.toLowerCase().replace(/(\d)\.(\d)/g, '$1-$2');
+  const row = MODEL_THINKING_PATTERNS.findIndex(([pattern]) => pattern.test(id));
+  return row >= 0 ? `row:${MODEL_THINKING[row]![0]}` : `id:${id.replace(/\[[^\]]*\]$/, '')}`;
+}
+
+export function recordAccountBinding(model: string, binding: AccountBinding): void {
+  accountBindings.set(accountBindingKey(model), binding);
+}
+
+/** What the probe found for `model` on this account; undefined when it wasn't probed or couldn't tell. */
+export function accountBinding(model: string): AccountBinding | undefined {
+  return accountBindings.get(accountBindingKey(model));
+}
+
+/** For tests. */
+export function clearAccountBindings(): void {
+  accountBindings.clear();
+}
+
+/** The provider's refusal of a signed thinking block minted for a different conversation. */
+export function isBindingRefusal(error: unknown): boolean {
+  const e = error as { httpStatus?: number; status?: number; rawError?: { status?: number } } | null;
+  const status = e?.httpStatus ?? e?.status ?? e?.rawError?.status;
+  const message = String((error as { message?: unknown } | null)?.message ?? error);
+  return status === 400 && /bound to a different conversation|invalid `?signature`? in `?thinking`? block/i.test(message);
+}
+
+/** Whether an agent on `model` leaves out thinking whose earlier conversation
+ *  changed: its thinking binds, and the account wasn't found to show such a
+ *  block anyway. */
+export function leavesOutChangedThinking(model: string): boolean {
+  return modelThinking(model).binds && accountBinding(model) !== 'shows';
+}
+
+const DROP_BLOCK = { prefix_mismatch_behavior: 'drop_block' } as const;
 export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 
 /** Exact first-system-block identity Anthropic requires on subscription
@@ -115,6 +228,28 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
  *  rate_limit_error; this block followed by arbitrary persona blocks is
  *  accepted (the mechanism the Agent SDK's system-prompt-append uses). */
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+const FAILING_RUNS_REMEMBERED = 256;
+
+const FAILED_REQUEST_COPY_BUDGET = 64 * 1024 * 1024;
+
+const FAILED_REQUEST_COPY_REFILL_MS = 24 * 60 * 60 * 1000;
+
+/** membrane's default retry delays are at most five minutes, so a call's
+ *  retries fall within one run. */
+const FAILING_RUN_GAP_MS = 60 * 60 * 1000;
+
+type Written = { lineage: string | undefined; kind: string; bytes: number; requestSha256: string };
+
+type FailingRun = { kinds: Map<string, string>; lastFailureAt: number };
+
+/** membrane types every 5xx as `server`, and a 500 can be an invalid request,
+ *  so the kind carries the HTTP status. */
+function failureKind(fields: Record<string, unknown> | undefined): string {
+  const name = (fields?.error as { name?: unknown } | undefined)?.name;
+  const type = typeof fields?.errorType === 'string' ? fields.errorType : `untyped ${typeof name === 'string' ? name : ''}`;
+  return typeof fields?.httpStatus === 'number' ? `${type} ${fields.httpStatus}` : type;
+}
 
 function guarded<T>(get: () => T): T | undefined {
   try { return get(); } catch { return undefined; }
@@ -378,6 +513,32 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     };
   }
 
+  /** Membrane applies request.extra after the config it builds, so the
+   *  reasoning setting's config replaces that one whole, control included:
+   *  this step runs after withReasoning. With no thinking config, a model that
+   *  thinks anyway is sent an adaptive 'omitted' config to carry the control:
+   *  membrane sends none there. Needs membrane >= 0.7.0, which adds the
+   *  `thinking-binding-controls-2026-08-01` beta whenever the body carries
+   *  the control. */
+  private withBinding(request: ProviderRequest): ProviderRequest {
+    const facts = modelThinking(request.model);
+    // An account that shows such a block is asked to drop it by the control.
+    if (!facts.binds || !facts.dropBlock || accountBinding(request.model) === 'shows') return request;
+    const extraThinking = (request.extra as { thinking?: unknown } | undefined)?.thinking;
+    const current = (extraThinking ?? request.thinking) as Record<string, unknown> | null | undefined;
+    let thinking: Record<string, unknown>;
+    if (current) {
+      const type = current.type ?? 'enabled';
+      if (type !== 'adaptive' && type !== 'enabled') return request;
+      if (current.block_binding !== undefined && current.block_binding !== null) return request;
+      thinking = { ...current, block_binding: DROP_BLOCK };
+    } else {
+      if (!facts.thinksWithoutConfig) return request;
+      thinking = { type: 'adaptive', display: 'omitted', block_binding: DROP_BLOCK };
+    }
+    return { ...request, extra: { ...request.extra, thinking } };
+  }
+
   /** Needs membrane >= 0.7.0, which adds the
    *  `thinking-display-updates-2026-08-18` beta whenever the body it sends asks
    *  for 'updates'; without the beta the API refuses the value. */
@@ -565,6 +726,118 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
+  /** Keyed by lineage, not request: agent-framework adds its failure marker
+   *  and new messages to each turn's request. */
+  private readonly failingRuns = new Map<string, FailingRun>();
+  private readonly failedCopyBudget = FAILED_REQUEST_COPY_BUDGET;
+  private failedCopyRoom: number | undefined;
+  private failedCopyRefilledAt = 0;
+  private budgetRefusalTold = false;
+
+  /** A rate-limit error's request is kept like any other's: Anthropic answers
+   *  an OAuth request whose first system block isn't OAUTH_SYSTEM_IDENTITY with
+   *  a masked 429. */
+  private errorRequestFields(rawRequest: unknown, lineage: string | undefined, kind: string, aborted: boolean): {
+    fields: Record<string, unknown>;
+    remember?: Written;
+  } {
+    if (rawRequest == null) return { fields: { rawRequest } };
+    let text: string | undefined;
+    try { text = JSON.stringify(rawRequest); } catch { }
+    if (typeof text !== 'string') return { fields: { rawRequest } };
+    const requestSha256 = createHash('sha256').update(text).digest('hex');
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (this.fullPayloads) return { fields: { rawRequest, requestSha256 } };
+    const omitted = (because: string) => ({
+      fields: {
+        requestSha256,
+        rawRequestOmitted: {
+          bytes,
+          reason: `${because}; LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, not for leaving on`,
+        },
+      },
+    });
+    if (aborted) return omitted('a cancelled call (membrane types it `abort`) is never the request\'s doing');
+    const run = lineage === undefined ? undefined : this.followRun(lineage);
+    const copySha256 = run?.kinds.get(kind);
+    if (copySha256 !== undefined) {
+      const note = omitted('this lineage has failed with this kind of error (its type, or for an untyped error its name, '
+        + 'with its HTTP status when it has one) since a call on it last succeeded, with no more than an hour between its '
+        + 'failures, and an earlier error record in this log, whose requestSha256 is copySha256, has in full the first '
+        + 'request of this kind that the log kept '
+        + `since it began following this run (it follows the runs of the ${FAILING_RUNS_REMEMBERED} lineages whose runs began `
+        + 'latest), unless the file was rotated, truncated or removed since');
+      return { fields: { ...note.fields, rawRequestOmitted: { ...note.fields.rawRequestOmitted, copySha256 } } };
+    }
+    if (bytes >= MAX_RECORD_BYTES) {
+      return omitted('the request alone is at or over the 16 MiB line bound, so no record of it can be written whole');
+    }
+    if (bytes > this.failedCopyRoomNow()) {
+      this.tellBudgetRefusal(bytes);
+      return omitted(`this log's budget for failing requests in full (${this.failedCopyBudget} bytes, refilled at that `
+        + 'much a day) has no room for this one now');
+    }
+    return { fields: { rawRequest, requestSha256 }, remember: { lineage, kind, bytes, requestSha256 } };
+  }
+
+  private followRun(lineage: string): FailingRun {
+    const now = Date.now();
+    const run = this.failingRuns.get(lineage);
+    if (run && now - run.lastFailureAt <= FAILING_RUN_GAP_MS) {
+      run.lastFailureAt = Math.max(run.lastFailureAt, now);
+      return run;
+    }
+    if (run) this.failingRuns.delete(lineage);
+    const started: FailingRun = { kinds: new Map(), lastFailureAt: now };
+    this.failingRuns.set(lineage, started);
+    if (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
+      for (const [other, otherRun] of this.failingRuns) {
+        if (now - otherRun.lastFailureAt > FAILING_RUN_GAP_MS) this.failingRuns.delete(other);
+      }
+      while (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
+        this.failingRuns.delete(this.failingRuns.keys().next().value as string);
+      }
+    }
+    return started;
+  }
+
+  private failedCopyRoomNow(): number {
+    const now = Date.now();
+    const room = this.failedCopyRoom === undefined
+      ? this.failedCopyBudget
+      : Math.min(this.failedCopyBudget,
+        this.failedCopyRoom + (Math.max(0, now - this.failedCopyRefilledAt) * this.failedCopyBudget) / FAILED_REQUEST_COPY_REFILL_MS);
+    this.failedCopyRoom = room;
+    this.failedCopyRefilledAt = Math.max(this.failedCopyRefilledAt, now);
+    return room;
+  }
+
+  private tellBudgetRefusal(bytes: number): void {
+    if (this.budgetRefusalTold) return;
+    this.budgetRefusalTold = true;
+    try {
+      console.error(`[llm-calls] ${new Date().toISOString()} the budget for failing requests in full `
+        + `(${this.failedCopyBudget} bytes, refilled at that much a day) has no room for one of ${bytes} bytes: `
+        + 'a failing request is kept in full only while the budget has room for its size, and is otherwise recorded '
+        + 'by size and hash. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request '
+        + "of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, "
+        + 'not for leaving on.');
+    } catch { }
+  }
+
+  private rememberFailedRequest({ lineage, kind, bytes, requestSha256 }: Written): void {
+    this.failedCopyRoom = this.failedCopyRoomNow() - bytes;
+    this.budgetRefusalTold = false;
+    if (lineage !== undefined) this.failingRuns.get(lineage)?.kinds.set(kind, requestSha256);
+  }
+
+  /** Not called for a keepalive poke: membrane's poke replays the lineage's
+   *  latest request the provider began answering, with max_tokens 0 and no
+   *  stream, so it can succeed while every new call fails. */
+  private endFailingRun(lineage: unknown): void {
+    if (typeof lineage === 'string') this.failingRuns.delete(lineage);
+  }
+
   private retainedRawRequest(
     response: ProviderResponse,
     rawRequest: unknown,
@@ -600,12 +873,19 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       const timestamp = new Date().toISOString();
       const durationMs = Date.now() - t0;
       const errorFields = 'error' in outcome ? describeErrorObject(outcome.error, true) : undefined;
+      // Membrane raises some errors, such as an unsupported prefill, before it
+      // calls onRequest, with the built request on the error itself.
+      if (rawRequest == null && 'error' in outcome) {
+        rawRequest = guarded(() => (outcome.error as { rawRequest?: unknown } | null)?.rawRequest) ?? null;
+      }
       const summary = this.requestSummary(request, rawRequest);
       const head = { type: errorFields ? 'error' : 'call', kind, timestamp, durationMs };
       const anomaly = 'response' in outcome ? responseAnomaly(outcome.response) : undefined;
       const errorId = 'error' in outcome ? errorRequestId(outcome.error) : undefined;
       const ids = 'response' in outcome ? responseIds(outcome.response) : errorId ? { requestId: errorId } : {};
       let record: Record<string, unknown>;
+      let remember: Written | undefined;
+      if ('response' in outcome) this.endFailingRun(summary.lineage);
       try {
         record = 'response' in outcome
           ? {
@@ -616,11 +896,17 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
               rawResponse: (outcome.response as { raw?: unknown }).raw ?? null,
               ...(anomaly ? { anomaly } : {}),
             }
-          : { ...head, ...ids, requestSummary: summary, rawRequest, ...errorFields };
+          : (() => {
+              const lineage = typeof summary.lineage === 'string' ? summary.lineage : undefined;
+              const kept = this.errorRequestFields(rawRequest, lineage, failureKind(errorFields), errorFields?.errorType === 'abort');
+              remember = kept.remember;
+              return { ...head, ...ids, requestSummary: summary, ...kept.fields, ...errorFields };
+            })();
       } catch {
         record = { ...head, ...ids, summaryUnavailable: true, ...errorFields };
       }
       const saved = this.log(record);
+      if (remember !== undefined && saved.written && saved.kept === 'whole') this.rememberFailedRequest(remember);
       if (anomaly) {
         try {
           const captured = rawRequest !== null && rawRequest !== undefined;
@@ -662,15 +948,40 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withReasoning(request))));
+    // What the request was shaped by: a refusal is answered from this, not from
+    // a verdict another agent's refusal changed while this one was out.
+    const sentWithoutControl = accountBinding(request.model) === 'shows';
+    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(request)))));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
+    let delivered = false;
+    const watched: StreamCallbacks = sentWithoutControl
+      ? {
+          ...callbacks,
+          onChunk: (chunk) => { delivered = true; callbacks.onChunk(chunk); },
+          ...(callbacks.onContentBlock ? { onContentBlock: (i: number, b: unknown) => { delivered = true; callbacks.onContentBlock!(i, b); } } : {}),
+          ...(callbacks.onThinkingSignature ? { onThinkingSignature: (i: number, s: string) => { delivered = true; callbacks.onThinkingSignature!(i, s); } } : {}),
+        }
+      : callbacks;
     let response: ProviderResponse;
     try {
-      response = await super.stream(effective, callbacks, wrapped);
+      response = await super.stream(effective, watched, wrapped);
     } catch (err) {
       this.recordCall('stream', request, t0, sink.rawRequest, { error: err });
-      throw err;
+      // Sent again only when nothing of it reached the caller, as membrane's own retries.
+      if (!sentWithoutControl || delivered || !isBindingRefusal(err)) throw err;
+      // The account was found at start to show such a block, and this one
+      // refused it: a gateway moved the agent to another account. From here on
+      // the control goes with every request (a 'shows' verdict is kept only
+      // for a model that takes it), so the provider drops such a block instead
+      // of refusing; the refusal came before anything streamed, so the request
+      // is sent again. A restart checks the account again.
+      recordAccountBinding(request.model, 'refuses');
+      console.error(
+        `[thinking-binding] ${request.model}: a signed thinking block whose earlier conversation changed was refused, ` +
+        'though the account was found at start to show such blocks; the drop control goes with every request from now on.',
+      );
+      return this.stream(request, callbacks, options);
     }
     this.recordCall('stream', request, t0, sink.rawRequest, { response });
     return response;

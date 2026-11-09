@@ -48,9 +48,6 @@ class TestFrontdesk extends FrontdeskStrategy {
   public pub_updateSalience(store: MessageStoreView) {
     this.updateSalience(store);
   }
-  public pub_isTopicBoundary(a: StoredMessage, b: StoredMessage) {
-    return this.isTopicBoundary(a, b);
-  }
   public pub_chunkBoundaryHint(a: StoredMessage, b: StoredMessage) {
     return this.chunkBoundaryHint(a, b);
   }
@@ -158,8 +155,8 @@ describe('provenance wrapping', () => {
       participant: 'User',
       content: [{ type: 'text', text: 'typed from tui' }],
     };
-    const wrapped = s.pub_wrapProvenance(entry, store);
-    expect(wrapped).toBe(entry);
+    const given = structuredClone(entry);
+    expect(s.pub_wrapProvenance(entry, store)).toEqual(given);
   });
 
   test('derived (summary) entries are not wrapped even if sourceMessageId matched', () => {
@@ -176,8 +173,8 @@ describe('provenance wrapping', () => {
       content: [{ type: 'text', text: '...summary...' }],
       sourceRelation: 'derived',
     };
-    const wrapped = s.pub_wrapProvenance(entry, store);
-    expect(wrapped).toBe(entry);
+    const given = structuredClone(entry);
+    expect(s.pub_wrapProvenance(entry, store)).toEqual(given);
   });
 });
 
@@ -275,37 +272,6 @@ describe('server-attributed messages (zulip-mcp `attributed` stamp)', () => {
   });
 });
 
-describe('topic boundary detection', () => {
-  test('returns true when adjacent messages have different topics in same channel', () => {
-    const s = makeStrategy();
-    const a = msg('User', 'a', { channelId: 'zulip:x', topic: 'T1' });
-    const b = msg('User', 'b', { channelId: 'zulip:x', topic: 'T2' });
-    expect(s.pub_isTopicBoundary(a, b)).toBe(true);
-  });
-
-  test('returns false when topics match', () => {
-    const s = makeStrategy();
-    const a = msg('User', 'a', { channelId: 'zulip:x', topic: 'T1' });
-    const b = msg('User', 'b', { channelId: 'zulip:x', topic: 'T1' });
-    expect(s.pub_isTopicBoundary(a, b)).toBe(false);
-  });
-
-  test('returns false when either side lacks topic metadata (graceful fallback)', () => {
-    const s = makeStrategy();
-    const a = msg('User', 'a', {});
-    const b = msg('User', 'b', { channelId: 'zulip:x', topic: 'T1' });
-    expect(s.pub_isTopicBoundary(a, b)).toBe(false);
-    expect(s.pub_isTopicBoundary(b, a)).toBe(false);
-  });
-
-  test('same topic name on different channels is NOT the same boundary', () => {
-    const s = makeStrategy();
-    const a = msg('User', 'a', { channelId: 'zulip:x', topic: 'general' });
-    const b = msg('User', 'b', { channelId: 'zulip:y', topic: 'general' });
-    expect(s.pub_isTopicBoundary(a, b)).toBe(true);
-  });
-});
-
 describe('question/mention salience', () => {
   test('marks a user question as salient when no assistant reply follows', () => {
     const s = makeStrategy();
@@ -384,10 +350,10 @@ describe('chunk boundary hint (topic-aware chunking via the base seam)', () => {
     expect(s.pub_chunkBoundaryHint(bare, a)).toBe(false);
   });
 
-  test('hint agrees with isTopicBoundary across channels (same topic name, different channel)', () => {
+  test('hints a close where the same topic name is on another channel', () => {
     const s = makeStrategy();
     const a = msg('User', 'x', { serverId: 'zulip', channelId: 'zulip:eng', topic: 'retries' });
     const b = msg('User', 'y', { serverId: 'zulip', channelId: 'zulip:ops', topic: 'retries' });
-    expect(s.pub_chunkBoundaryHint(a, b)).toBe(s.pub_isTopicBoundary(a, b));
+    expect(s.pub_chunkBoundaryHint(a, b)).toBe(true);
   });
 });

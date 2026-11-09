@@ -267,7 +267,7 @@ describe("a fleet child's agent overlay", () => {
       writeFileSync(join(home, OVERLAY), JSON.stringify({ mcplServers: { 'parent-notes': { command: 'node', args: ['./notes-server.js'] } } }));
       const script = `
         import { existsSync } from 'node:fs';
-        import { seedChildAgentOverlay } from ${JSON.stringify(join(TEST_DIR, '..', 'src', 'mcpl-config.ts'))};
+        import { seedChildAgentOverlay } from ${JSON.stringify(join(TEST_DIR, '..', 'src', 'child-agent-overlay.ts'))};
         const out = {};
         for (const [name, copy] of [['copied.json', true], ['empty.json', false]]) {
           try { seedChildAgentOverlay(name, ${JSON.stringify(OVERLAY)}, copy); out[name] = 'written'; } catch (e) { out[name] = e.code; }
@@ -289,7 +289,7 @@ describe("a fleet child's agent overlay", () => {
   });
 
   test('a seed leaves whatever is already at the child\'s path as it is, its own overlay where the copy\'s source fails, and a link someone made', async () => {
-    const { seedChildAgentOverlay } = await import('../src/mcpl-config.js');
+    const { seedChildAgentOverlay } = await import('../src/child-agent-overlay.js');
     const home = mkdtempSync(join(tmpdir(), 'fleet-child-overlay-kept-'));
     try {
       mkdirSync(join(home, 'source-dir'));
@@ -307,7 +307,7 @@ describe("a fleet child's agent overlay", () => {
   });
 
   test('a seed\'s copy is never wider than the original, and a source it can\'t read, a directory or a file it may not read, makes no file', async () => {
-    const { seedChildAgentOverlay } = await import('../src/mcpl-config.js');
+    const { seedChildAgentOverlay } = await import('../src/child-agent-overlay.js');
     const home = mkdtempSync(join(tmpdir(), 'fleet-child-overlay-mode-'));
     const umask = process.umask(0);
     try {

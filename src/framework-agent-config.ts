@@ -1,7 +1,9 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
-import { DEFAULT_RECIPE_CLOCK } from './recipe.js';
+import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
+import { leavesOutChangedThinking, modelThinking } from './logging-adapter.js';
+import { getDefaultModelLimits } from './model-limits.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
 
@@ -22,7 +24,54 @@ export type FrameworkAgentConfig = AgentConfig & {
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
   autoContinue?: Recipe['agent']['autoContinue'];
+  thinkingBinding?: { binds?: boolean; dropBlock?: boolean };
 };
+
+/** The drop control and the window go only on the Anthropic route, the one
+ *  they were tried on (anima-research/context-manager#155). Where the start-up
+ *  probe found the account still shows the model a block whose earlier
+ *  conversation changed, neither the binding nor the control goes: the
+ *  thinking is the model's to read, and the control would have it dropped. */
+export function thinkingBindingSettings(model: string, provider: string | undefined): {
+  thinkingBinding?: { binds: true; dropBlock: boolean };
+  physicalWindowTokens?: number;
+} {
+  const facts = modelThinking(model);
+  if (!facts.binds) return {};
+  const direct = provider === 'anthropic';
+  const window = direct && facts.windowShownByRefusal ? getDefaultModelLimits(model)?.maxContextTokens : undefined;
+  return {
+    ...(leavesOutChangedThinking(model) ? { thinkingBinding: { binds: true as const, dropBlock: direct && facts.dropBlock } } : {}),
+    ...(window !== undefined ? { physicalWindowTokens: window } : {}),
+  };
+}
+
+/** The paragraph hosts 0.16.0 to 0.20.x appended to a binding model's system
+ *  prompt about folds taking an agent's earlier reasoning. The host no longer
+ *  adds it: an agent isn't told about the mechanics of its own memory or
+ *  reasoning in standing text. */
+const LEGACY_FOLD_LINE =
+  'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
+  'so a reply of yours that shows no reasoning may still have had some.';
+
+/** The system prompt an agent is given: the recipe's (or a launch's), with the
+ *  legacy fold paragraph taken off where a prompt still carries it, such as a
+ *  fork's copy of a parent's prompt from a host that added it. */
+export function systemPromptFor(systemPrompt: string): string {
+  if (systemPrompt === LEGACY_FOLD_LINE) return '';
+  return systemPrompt.endsWith(`\n\n${LEGACY_FOLD_LINE}`)
+    ? systemPrompt.slice(0, -(LEGACY_FOLD_LINE.length + 2))
+    : systemPrompt;
+}
+
+/**
+ * agent-framework's `codeExecution` option as `AgentFramework.create` takes it:
+ * the recipe's block when it has one, and nothing otherwise, so an agent-framework without the option reads nothing it
+ * doesn't know.
+ */
+export function codeExecutionOption(recipe: Recipe): { codeExecution?: NonNullable<Recipe['codeExecution']> } {
+  return recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {};
+}
 
 /**
  * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7 Sonnet,
@@ -74,7 +123,7 @@ export function buildFrameworkAgentConfig(
     name: agentName,
     ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
-    systemPrompt: recipe.agent.systemPrompt,
+    systemPrompt: systemPromptFor(recipe.agent.systemPrompt),
     ...(recipe.agent.allowedTools !== undefined
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),
@@ -109,12 +158,16 @@ export function buildFrameworkAgentConfig(
     }),
     strategy,
     ...(thinking && { thinking }),
+    ...thinkingBindingSettings(model, resolveProvider(recipe)),
     ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),
     ...(recipe.agent.proseRouting !== undefined
       ? { proseRouting: recipe.agent.proseRouting }
+      : {}),
+    ...(recipe.agent.proseLock !== undefined
+      ? { proseLock: recipe.agent.proseLock }
       : {}),
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }

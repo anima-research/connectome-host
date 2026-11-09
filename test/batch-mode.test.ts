@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,11 +97,31 @@ afterAll(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
-function setup(webui: boolean): { dir: string; recipePath: string } {
+const HOLD_FIRST_STOP = `
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+let made = 0;
+export function register(api, config) {
+  api.registerModule(() => { const generation = ++made; return {
+    name: 'stop-hold',
+    getTools() { return []; },
+    async start() { writeFileSync(join(config.marks, 'started-' + generation), ''); },
+    async stop() {
+      writeFileSync(join(config.marks, 'stopping-' + generation), '');
+      while (generation === 1 && !existsSync(join(config.marks, 'stop-go'))) await new Promise((r) => setTimeout(r, 10));
+    },
+    async handleToolCall() { return { success: false, error: 'no tools' }; },
+    async onProcess() { return {}; },
+  }; });
+}
+`;
+
+function setup(webui: boolean, holdFirstStop = false): { dir: string; recipePath: string } {
   const dir = mkdtempSync(join(tmpdir(), 'chost-batch-'));
   tmpDirs.push(dir);
   const serverPath = join(dir, 'fake-mcpl.mjs');
   writeFileSync(serverPath, FAKE_SERVER);
+  if (holdFirstStop) writeFileSync(join(dir, 'stop-hold.ts'), HOLD_FIRST_STOP);
   const recipe = {
     name: 'Batch Test',
     agent: { name: 'agent', provider: 'mock', systemPrompt: 'batch test' },
@@ -110,6 +130,7 @@ function setup(webui: boolean): { dir: string; recipePath: string } {
       ...(webui ? { webui: { host: '127.0.0.1', port: 0 } } : {}),
     },
     mcpServers: { fake: { command: process.execPath, args: [serverPath] } },
+    ...(holdFirstStop ? { extensions: { hold: { kind: 'module', path: join(dir, 'stop-hold.ts'), config: { marks: dir } } } } : {}),
   };
   const recipePath = join(dir, 'recipe.json');
   writeFileSync(recipePath, JSON.stringify(recipe));
@@ -241,6 +262,43 @@ describe('batch mode end to end', () => {
     } finally {
       run.child.kill('SIGKILL');
       await run.exited;
+    }
+  }, 60_000);
+
+  test('a session switch the webui asked for, still stopping the old framework when the input ends, starts no framework, and the webui is told the switch didn\'t finish', async () => {
+    const { dir, recipePath } = setup(true, true);
+    const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
+      cwd: dir, env: { ...process.env, DATA_DIR: join(dir, 'data') }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf-8'); });
+    child.stderr!.on('data', () => { });
+    const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
+    try {
+      await waitFor(() => /\[webui\] listening on http/.test(stdout), 30_000, 'the webui');
+      const url = /\[webui\] listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(stdout)![1]!;
+      const ws = new WebSocket(`${url.replace(/^http/, 'ws')}/ws`);
+      const messages: Array<Record<string, unknown>> = [];
+      ws.onmessage = (event) => { messages.push(JSON.parse(String(event.data))); };
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => resolve();
+        ws.onerror = () => reject(new Error('the webui socket failed'));
+      });
+      await waitFor(() => messages.some((m) => m.type === 'welcome'), 30_000, 'the webui\'s welcome');
+      ws.send(JSON.stringify({ type: 'command', command: '/session new later', corrId: 'w1' }));
+      await waitFor(() => existsSync(join(dir, 'stopping-1')), 30_000, 'the switch\'s stop of the first framework');
+      child.stdin!.end('');
+      await waitFor(() => stdout.includes('Done.'), 30_000, 'the batch\'s end');
+      writeFileSync(join(dir, 'stop-go'), '');
+      const answered = (m: Record<string, unknown>) => m.type === 'error' && m.corrId === 'w1';
+      await waitFor(() => messages.some(answered) || existsSync(join(dir, 'started-2')), 30_000, 'the switch\'s answer or a second framework');
+      expect(existsSync(join(dir, 'started-2'))).toBe(false);
+      expect(String(messages.find(answered)!.message))
+        .toStartWith('The host began to stop during the session switch, so the switch didn\'t finish; the next start opens session later [');
+      ws.close();
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
     }
   }, 60_000);
 });

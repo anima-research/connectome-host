@@ -2,8 +2,9 @@
 
 A guide to taking a long-lived **Claude Code** conversation — the local
 `~/.claude/projects/<project>/<session-uuid>.jsonl` transcript — and continuing it
-verbatim as a persistent connectome agent: same model, same signed reasoning, same
-tool calls and results, no re-narration. "No seed, no seam": the conversation itself
+verbatim as a persistent connectome agent: same model, same signed reasoning (on a
+model whose thinking binds, see the table below), same tool calls and results, no
+re-narration. "No seed, no seam": the conversation itself
 becomes the chronicle.
 
 This complements [`claudeai-evacuation.md`](./claudeai-evacuation.md) (claude.ai web
@@ -17,7 +18,7 @@ specific to the Claude Code source; this document covers only what is.
 | Situation | Use this? |
 |---|---|
 | A Claude Code session has become *someone* and you want them to persist beyond the CLI | Yes |
-| You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim |
+| You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim, except on a model whose thinking binds (below) |
 | You want to change models | Possible, but thinking blocks must be dropped or wrapped as text (see §4.2); expect a different being |
 | You only want a static transcript | No — the `.jsonl` already is one |
 | The session is short (< ~50 messages) | Yes; skip the pre-compress step |
@@ -51,7 +52,7 @@ Three structural facts matter:
 | Block | Round-trips? | Notes |
 |---|---|---|
 | `text` | Yes | identity |
-| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account |
+| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound to the system text and tools it was minted under, so once the resident's differ from Claude Code's the provider sets it aside: the host sends the drop control on agent turns through the Anthropic API, and an account that enforces the binding refuses the request without it |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
 | `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
@@ -279,14 +280,99 @@ strategy config chunks its frontier under *that* config):
    human's.
 
 The host's `GET /debug/context` and `/debug/context/makeup` (basic-auth webui) give
-you 1–2 on a running instance; for a pre-boot check, run the host against a copy of
-the install dir with `--headless` and a mock or real key, then hit the endpoints.
+you 1–2 on a running instance. For a pre-boot check, run the host on copies that act on
+nothing outside themselves: they change none of the original's files, reach no one the
+resident speaks to, and get no answer from any service. A host started on a copy of the
+install dir as it is fails all three: from there it reads that directory's `.env`
+files and `mcpl-servers.json`, so its servers start with the resident's credentials,
+discord-mcpl among them signing in to Discord as the resident's bot, and the `.env`'s
+`DATA_DIR`, an absolute path as the onboarding runbook writes it, still names the
+original data directory. Instead:
+1. Copy the data directory the service gives the host (its `DATA_DIR`), wherever it is,
+   following links (`cp -RL`), so a link in it doesn't lead the copy back to the
+   original.
+2. Make stage 4's Claude-Code-specific choices in the recipe first, so the check
+   compiles what the resident will run. Then copy it, readable by you alone
+   (`chmod 600` on the copy before the password goes in), and in the copy leave out
+   `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath`,
+   `modules.ttsRelay` and `extensions`: the servers' `env` names files in the original
+   data directory, discord-mcpl would put the resident on Discord, a fleet child starts
+   on its own data directory under `<agent>-cm`, a heartbeat state path resolves from
+   there too, a TTS relay connects to the relay the recipe names and signs in as the
+   resident's bot, and an extension's code runs in the host's process. So a recipe whose
+   strategy comes from an extension gets no pre-boot check this way. Where
+   `agent.systemPrompt` is a URL, or a `${…}` whose value is one, put the text it gives
+   in its place, since the host fetches it as it loads the recipe. Then point every URL
+   the copy still gives the host to connect to at `http://127.0.0.1:9`, where nothing
+   answers, as `curl http://127.0.0.1:9/` failing to connect shows: an
+   `openai-compatible` recipe's `agent.baseUrl`, as `http://127.0.0.1:9/v1`, since its
+   own endpoint may answer with no key at all, and the `url` of
+   `modules.history.semantic`, whose sync sends the history's text, with the recipe's
+   token, to the index it names. Pointing that one away, rather than leaving the module
+   out, keeps its tool in what the check compiles. In place of any Web UI the recipe
+   has, give the copy one of its own under `modules`, with a password you make up for
+   the check:
+   `"webui": { "port": <port>, "host": "127.0.0.1", "basicAuth": { "username": "check", "password": "<password>" } }`.
+   Without `basicAuth`, every account on the machine could read the copy's
+   `/debug/context`, the resident's whole history, since loopback is open to all of
+   them. For `<port>`, take one nothing listens on, which
+   `curl http://127.0.0.1:<port>/` failing to connect shows before the boot: otherwise
+   a request meant for the copy could reach another host on the machine.
+3. From a new, empty directory, start the host's own `src/index.ts`, the one the service
+   runs, which where update setup has run is the release `current` names. Never start
+   the install's entry, `start.js`: it refuses a `DATA_DIR` other than the one the
+   install's record names, and a host it starts writes the install's own files. Start
+   it in an environment of its own:
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock CONNECTOME_UPDATE_CHECK=0 OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`,
+   with the path the service runs in place of that one where it differs.
+   The host gets only the variables the command names, and from that directory Bun loads
+   none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
+   key is a mock, and with `HOME` the new directory, Codex has no login.
+   `CONNECTOME_UPDATE_CHECK=0` keeps it from asking npm's registry for a newer release,
+   as the fleet does for each child it starts. Where the recipe's provider needs a key of
+   its own to start, give its name a mock value the same way: `OPENROUTER_API_KEY`,
+   `OPENAI_API_KEY`, or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for Bedrock. For
+   `openai-codex`, give `CODEX_GATE_TOKEN` a mock value and `CODEX_BASE_URL`
+   `http://127.0.0.1:9`: with both set no Codex login runs, where without them its first
+   turn asks OpenAI for a device-code login and waits for it. Where the resident's
+   environment sets `MODEL`, give it too, since it changes what's compiled, and where it
+   sets `COUNT_TOKENS_MODEL`, give that too, since `/debug/context/makeup` reports it as
+   the `countModel` you count against below. Give any other
+   variable the copy names as `${…}` too, since the host fills each from its environment
+   and won't load a recipe naming one it can't, with a mock value where it's a
+   credential, and, where it's a URL the host connects to, such as a provider's base URL
+   or the semantic index's, `http://127.0.0.1:9`, once
+   `curl http://127.0.0.1:9/` fails to connect. So every request the host makes is
+   refused, and a turn it starts on its own, such as for a heartbeat that fell due while
+   the resident was down, gets no reply and calls no tool. The `mock`
+   provider is the exception: it needs no key, and a turn on it gets the reply the
+   recipe's `agent.mock` gives, by default an echo of the turn.
+   On a model whose thinking binds, the check leaves the transcript's signed thinking out
+   where the resident may send it: the host decides that by asking the account at start,
+   which the mock key refuses, and falls back only on what an earlier start on the same
+   route recorded in the data directory, which a data directory no host has started on
+   doesn't hold. So the check's request, and a count made from it, can be short of those
+   blocks. The recipe's absolute workspace mounts are the resident's own
+   files, so run no tool in the check, as `/puppet` would. The observers variable names a
+   file in the new, empty directory, which doesn't exist, so no observer the resident
+   granted (`observers.json`) gets into the copy's Web UI without the check's password.
+   Where the host asks the
+   API for a count, the count fails, and where it asks for none, there's none live
+   either. The rest still compiles. Then hit the endpoints with the check's username and
+   password, such as `curl -u check http://127.0.0.1:<port>/debug/context`, which asks
+   for the password itself, so it stays out of the command line and the shell's
+   history, and stop it.
+
+The copy's request has none of the servers' tools, so its count is short by theirs,
+and a server's tool schema goes unchecked until the resident is live.
+
 `/debug/context/makeup` shows a count the API refused only by its status, such as
 `countSource: "count_tokens_failed_400"`, without the body. To read the body, send
 that request yourself: `buildContextMakeup` (`src/web/panel-data.ts`) builds it by
 formatting the same `request` that `/debug/context` returns, and posts it, with the
 `countModel` the route reports, to `/v1/messages/count_tokens` at
-`ANTHROPIC_BASE_URL` (or `https://api.anthropic.com`), with the host's credentials.
+`ANTHROPIC_BASE_URL` (or `https://api.anthropic.com`), with the host's credentials, or,
+for the pre-boot check, a key of your own.
 
 ### Stage 4 — Recipe, first boot, seam
 
@@ -378,7 +464,9 @@ a typo fails at boot rather than silently disabling the rung.
 
 1. **Same model, signatures intact.** Replaying the transcript's own signed thinking
    is *protective*, not risky: encrypted carriers alongside model-voiced text are what
-   the API expects from that model. Stripping them and leaving the text is worse.
+   the API expects from that model. Stripping them and leaving the text is worse. On a
+   model whose thinking binds, the provider sets those blocks aside once the resident's
+   system text or tools differ from Claude Code's, and their text stays.
 
 2. **Declared tools on every request.** Compression requests with no `tools` param
    are a deterministic input-block on some model families regardless of content.

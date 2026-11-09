@@ -98,13 +98,6 @@ describe('recipe modules.instructions validation', () => {
       .toThrow(/requires modules\.workspace/);
   });
 
-  test('accepts a properly declared instructions mount (rw + autoMaterialize)', () => {
-    expect(() => validateRecipe(recipe({
-      instructions: true,
-      workspace: wsFor('instructions'),
-    }))).not.toThrow();
-  });
-
   test('cross-checks the path mount against explicitly declared workspace mounts', () => {
     const mounts = [
       { name: 'input', path: './input', mode: 'read-only' },

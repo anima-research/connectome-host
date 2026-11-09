@@ -35,12 +35,12 @@ import {
 } from '../mcpl-config.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
+import { isServerPresentation, SERVER_PRESENTATIONS, SERVER_PRESENTATIONS_TEXT } from '../server-presentation.js';
 
 export interface McplAdminModuleConfig {
   timeZone?: string;
   overlayPath?: string;
   configPath?: string;
-  surface?: 'tools' | 'utilities';
 }
 
 function ok(text: string): ToolResult {
@@ -132,13 +132,10 @@ export class McplAdminModule implements Module {
   private configPath: string;
   private timeZone: string;
 
-  private surface: 'tools' | 'utilities';
-
   constructor(config?: McplAdminModuleConfig) {
     this.overlayPath = config?.overlayPath ?? DEFAULT_AGENT_OVERLAY_PATH;
     this.configPath = config?.configPath ?? DEFAULT_CONFIG_PATH;
     this.timeZone = resolveTimeZone(config?.timeZone);
-    this.surface = config?.surface ?? 'tools';
   }
 
   setFramework(framework: AgentFramework): void {
@@ -155,6 +152,14 @@ export class McplAdminModule implements Module {
   setOperatorServers(servers: ReadonlyArray<{ id: string } & Record<string, unknown>>): void {
     this.operatorDefinitions = [...servers];
     this.operatorServers = new Map(servers.map((server) => [server.id, serverProvisions(server)]));
+  }
+
+  private configuredPresentation(id: string, overlay: Record<string, AgentOverlayEntry> | null): string {
+    if (overlay === null) return 'unknown';
+    const own = entryOf(overlay, id);
+    if (own && overlayEntryReplaces(own)) return isServerPresentation(own.presentation) ? own.presentation : 'full';
+    const operator = this.operatorDefinitions.find((d) => d.id === id)?.presentation;
+    return isServerPresentation(operator) ? operator : 'full';
   }
 
   private replacement(id: string, overlay: Record<string, AgentOverlayEntry>): { lost: string | null } | null {
@@ -219,11 +224,11 @@ export class McplAdminModule implements Module {
   }
 
   getTools(): ToolDefinition[] {
-    return this.surface === 'tools' ? this.definitions() : [];
+    return this.definitions();
   }
 
-  getUtilities(): ToolDefinition[] {
-    return this.surface === 'utilities' ? this.definitions() : [];
+  toolPlacement(_toolName: string): 'builtin' {
+    return 'builtin';
   }
 
   private definitions(): ToolDefinition[] {
@@ -272,6 +277,16 @@ export class McplAdminModule implements Module {
             disabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set deny-list; wins over enabled.' },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard). Omit or pass [] for all offered.' },
             disabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool deny-list; wins over enabledTools.' },
+            presentation: {
+              type: 'string',
+              enum: [...SERVER_PRESENTATIONS],
+              description: 'How the server starts out. "full" (the default): its tools in the tool list. "tab": ' +
+                'connected and its events still arrive, but its tools start out of the tool list: ' +
+                'toolsets--open {"server": id} lists them for toolsets--act, and toolsets--open ' +
+                '{"server": id, "full": true} puts them back in the list. "closed-tab": a tab that also starts out ' +
+                'disconnected; the deploy itself connects it now. If your tool list lacks toolsets--open or ' +
+                'toolsets--act, you aren\'t shown tabs.',
+            },
           },
           required: ['id'],
         },
@@ -380,6 +395,8 @@ export class McplAdminModule implements Module {
           lastNegotiatedAt: number | null;
         };
         toolClasses?: ServerToolClass[];
+        /** agent-framework 0.29: kept disconnected as a closed tab until it's opened. */
+        closedTab?: boolean;
       }
     >;
     const notes: string[] = [];
@@ -418,7 +435,9 @@ export class McplAdminModule implements Module {
         source = fileServers === null ? 'unknown' : Object.hasOwn(fileServers, s.id) ? 'file/recipe' : 'recipe';
       }
       const target = s.command ?? s.url ?? '?';
-      const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
+      const connectionState = s.closedTab
+        ? `CLOSED TAB (disconnected until it's opened: toolsets--open {"server": "${s.id}"}, or ${RESTART} connects it)`
+        : s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
       const policyState = s.policyEstablished === undefined
         ? 'unknown'
         : s.policyEstablished ? 'established' : 'not-established';
@@ -433,6 +452,7 @@ export class McplAdminModule implements Module {
         `hostCommands=${hostCommands}, ` +
         `manifest=${formatManifestState(s.manifestState)}; ${s.toolCount} tools, ` +
         `classes=${formatServerToolClasses(s.toolClasses)}, ` +
+        `presentation=${this.configuredPresentation(s.id, overlay)}, ` +
         `prefix=${s.toolPrefix}, source=${source}, ${target}`,
       );
     }
@@ -457,6 +477,9 @@ export class McplAdminModule implements Module {
       }
     }
 
+    if (live.length > 0) {
+      notes.unshift('Each presentation= is as configured, which isn\'t necessarily how that server is shown to you now.');
+    }
     const closing = notes.map((n) => `\n${n}`).join('');
     if (lines.length === 0) {
       return ok(`No MCPL servers are loaded.${overlay ? ` Use ${DEPLOY} to add one.` : ''}${closing}`);
@@ -562,6 +585,15 @@ export class McplAdminModule implements Module {
     for (const k of ['enabledFeatureSets', 'disabledFeatureSets', 'enabledTools', 'disabledTools']) {
       if (givenList(input[k])) fields[k] = list(input[k]);
     }
+    if (givenText(input.presentation)) {
+      if (isServerPresentation(input.presentation)) fields.presentation = input.presentation;
+      else {
+        problems.push(
+          `\`presentation\` is ${JSON.stringify(input.presentation)}, which isn't ${SERVER_PRESENTATIONS_TEXT}: leave it out ` +
+          'for "full", the default.',
+        );
+      }
+    }
 
     const problem = overlayEntryProblem(fields, { strict: true });
     const malformed = problem !== null && problem !== NAMES_NOTHING;
@@ -652,9 +684,13 @@ export class McplAdminModule implements Module {
         `${CONNECT_REMEDY}${note}`,
       );
     }
+    const tab = fields.presentation === 'tab' || fields.presentation === 'closed-tab'
+      ? ` It's saved as a ${fields.presentation}, whose tools start out of the tool list of an agent that may call ` +
+        `toolsets--open and toolsets--act: toolsets--open {"server": "${id}"} lists them for toolsets--act.`
+      : '';
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
-      `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
+      `${status.toolCount} tools under prefix ${status.toolPrefix}.${tab} ` +
       `Persisted to your agent overlay (survives host restarts).${note}`,
     );
   }

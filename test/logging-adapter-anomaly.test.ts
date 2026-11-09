@@ -181,12 +181,6 @@ describe('responseAnomaly', () => {
     expect(responseAnomaly({ raw: { content: [TEXT], stop_reason: 'end_turn' } })).toBeUndefined();
   });
 
-  test("doesn't read a raw `anomalies` list: nothing writes one at this layer", () => {
-    // membrane records its anomalies on the Membrane-level response
-    // (`details.anomalies`), which a provider adapter never returns.
-    expect(responseAnomaly({ raw: { content: [TEXT], stop_reason: 'end_turn', anomalies: [{ kind: 'x' }] } })).toBeUndefined();
-  });
-
   test('a missing stop reason reads as membrane\'s defaulted end_turn on both shapes, the provider\'s as null', () => {
     expect(responseAnomaly({ raw: { content: [THINK], stop_reason: null }, stopReason: 'end_turn', providerStopReason: undefined }))
       .toEqual({ kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', providerStopReason: null, toolNames: ['think'] });

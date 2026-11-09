@@ -55,6 +55,7 @@ export interface ObservedHost {
 export async function startObservedHost(options: {
   grants: Record<string, ObserverScope[]>;
   framework?: Record<string, unknown>;
+  frameworkSessionId?: string;
   sessionManager?: Record<string, unknown>;
   config?: Record<string, unknown>;
 }): Promise<ObservedHost> {
@@ -86,8 +87,9 @@ export async function startObservedHost(options: {
       pushEvent: () => {},
       ...options.framework,
     },
+    frameworkSessionId: options.frameworkSessionId ?? 's',
     sessionManager: {
-      getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }),
+      findSession: (id: string) => (id === 's' ? { id: 's', name: 's', manuallyNamed: true } : null),
       ...options.sessionManager,
     },
     recipe: { name: 'recipe', agent: {} },

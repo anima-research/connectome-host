@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { handleCommand } from '../src/commands.js';
-import type { CredentialActionId, CredentialState } from '../src/credential-state.js';
+import { CredentialMonitor, type CredentialActionId, type CredentialState } from '../src/credential-state.js';
 
 function state(over: Partial<CredentialState> = {}): CredentialState {
   return {
@@ -64,6 +64,37 @@ describe('/auth', () => {
     const done = await result.asyncWork!;
     expect(ran).toEqual([['set-token', { token: 'sk-ant-oat01-secret' }]]);
     expect(JSON.stringify([result.lines, done.lines])).not.toContain('secret');
+  });
+
+  test('status says the credential may not be in its file while that stands, and how to write it again', () => {
+    const monitor = new CredentialMonitor({ source: { provider: 'anthropic', canRefresh: () => true }, alert: () => {} });
+    monitor.observeWriteBack('/x/creds.json', 'EACCES: permission denied');
+    const unsaved = handleCommand('/auth status', app(monitor)).lines.map((l) => l.text).join('\n');
+    expect(unsaved).toContain(`WARNING: ${monitor.snapshot().unsaved}`);
+    expect(unsaved).toContain('/auth recheck');
+    monitor.observeWriteBack('/x/creds.json');
+    expect(handleCommand('/auth status', app(monitor)).lines.map((l) => l.text).join('\n')).not.toContain('WARNING');
+    monitor.dispose();
+  });
+
+  test('an action whose write to the file fails says so once in its answer, and an answer after a write that succeeds doesn\'t', async () => {
+    let writable = false;
+    let monitor!: CredentialMonitor;
+    const write = () => monitor.observeWriteBack('/x/creds.json', writable ? undefined : 'EACCES: permission denied');
+    monitor = new CredentialMonitor({
+      source: { provider: 'anthropic', canRefresh: () => true, refresh: async () => { write(); }, writeBack: write, probe: async () => {} },
+      alert: () => {},
+    });
+    const answer = async (line: string) => (await handleCommand(line, app(monitor)).asyncWork!).lines.map((l) => l.text).join('\n');
+    const refreshed = await answer('/auth refresh');
+    const unsaved = monitor.snapshot().unsaved!;
+    expect(unsaved).toContain('/x/creds.json');
+    expect(refreshed.split(unsaved).length - 1).toBe(1);
+    writable = true;
+    const recovered = await answer('/auth recheck');
+    expect(recovered).not.toContain(unsaved);
+    expect(recovered).not.toContain('WARNING');
+    monitor.dispose();
   });
 
   test('rejects unknown subcommands and a bare token', () => {

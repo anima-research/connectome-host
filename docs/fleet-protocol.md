@@ -49,19 +49,44 @@ the recipe.
 | `mcpl-servers.agent.child.json` | A fleet child's own agent overlay: the servers it deployed and unloaded for itself with `modules.mcplAdmin`. The parent writes it at a launch that finds none there, before the child's start reads it, and names it in `MCPL_AGENT_OVERLAY_FILE`. Its name is never the working directory's overlay's, `mcpl-servers.agent.json`, so it's the child's own whatever its data dir is, the working directory included. A child launched into its data dir before, whose `startup.log` is there, starts from a copy of the overlay in the working directory as it stands at that launch, which every child read as its own before children had their own, tombstones included; a new child starts from an empty one, even in a data dir made for it ahead of time, `.` included, and so does a child from before this version whose `startup.log` is gone. It's made its owner's alone, never wider than 0600, and a copy never wider than the original, since it can hold the tokens its deploys carry. From then on the file is the child's, and the parent's own deployments no longer reach it: empty it (`{"mcplServers": {}}`) to start the child with none of them, since a launch that finds the file gone copies the working directory's again, where the child's `startup.log` is there. Relative `./` args in it resolve against the working directory, which the child shares with the parent. A link someone makes at a child's own overlay file is kept as made. |
 
 **Connection model.** One client at a time; a new connection closes the
-previous one. On every connection the subscription resets to `['*']` and the
+previous one. A fleet child's parent takes its connection back (§4.2). On every connection the subscription resets to `['*']` and the
 child emits `lifecycle:ready`. A client disconnecting does not stop the child.
-Events emitted while no client is connected are dropped, not buffered.
+A client must keep reading. The child sees only its own queue for a client:
+once a write to the client is refused, the child gives it five minutes to
+empty that queue, and a client whose queue it still holds then is closed,
+with the child's log saying how much was left unsent. What has gone into the
+socket's buffers is beyond the child's sight, so a client that stops reading
+with no more than that unread isn't closed for it. A client that keeps up is
+never closed; one that reads but can't keep up with the events is. A client
+the child writes nothing more to, because it was superseded or because it
+ended its own side, is watched only while a deadline it already had runs: one
+that stops reading with no deadline running stays open until it closes
+itself, holding no more than its socket's buffers and the child's queue below
+the point where writes are refused.
+Framework events from before the first client ever connected — the boot,
+including what `create()` replays about a restart (a resumed tune-out epoch,
+a fork a stop cut off) — are kept, the first 1,000 of them, and sent to that
+first client after its `ready`, each with `replay: true`; if more were
+emitted, the replay ends with `lifecycle` `replay-truncated` saying how many
+were cut. After that, events emitted while no client is connected are
+dropped, not buffered: a later client sends `describe` for a `snapshot`.
 
 **Shutdown.** Triggered by `{"type":"shutdown"}`, by `/quit` sent as a
 `command`, by SIGTERM or SIGINT, by `--exit-when-idle`, or by an agent's
 armed self-restart (`modules.selfRestart`), which goes once the host has said
 `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a
 running background script included. The child emits
-`lifecycle:exiting`, waits ~50 ms for it to flush, calls `framework.stop()`
+`lifecycle:exiting`; from then on it starts no session switch, and one under
+way that hasn't installed its new framework stops at its next step, stopping a
+framework it has made rather than starting it (one already installing
+finishes). It waits ~50 ms for the line to flush, and for a switch under way
+to settle, logging that it waits if the switch is still running then, for as
+long as the switch takes: connecting each server is bounded, but an
+extension's `register()`, or an MCPL server's tool listing under
+`requestTimeoutMs: 0`, isn't. Then it calls `framework.stop()`
 (which cancels in-flight streams rather than letting them finish), closes the
 server, unlinks the socket and pid file, and exits once `headless.log` has
-taken its last lines: 0 (75 for a self-restart), or 1 if `framework.stop()` failed. It waits at
+taken its last lines: 0 (75 for a self-restart), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
 most 2 s, then exits anyway with a line on its stderr. What it writes
 through `process.stdout.write` and `process.stderr.write` once the log has
 ended goes to its stderr too; Bun's `console.*` writes to its stdout and
@@ -77,7 +102,9 @@ JSON Lines in both directions, one object per `\n`-terminated line.
 - The child logs and drops malformed lines. Unknown `type`s and invalid fields
   are logged and **get no reply**, except that a `panel-request` for an op the
   child doesn't know or with params it can't read, and an `update-request` it
-  can't read, are answered `ok: false` with why.
+  can't read, are answered `ok: false` with why, and a `command` with a
+  `corrId` whose `command` isn't a string is answered with its `command-done`,
+  with `error`.
 - Lines are dispatched as they arrive, without waiting for the previous one to
   finish: correlate replies by `corrId`, not by order.
 - Every outgoing object is stamped with `ts: Date.now()` (overwriting any `ts`
@@ -90,8 +117,8 @@ Types live in `IncomingCommand` (`src/modules/fleet-types.ts`).
 | `type` | Fields | Behavior / reply |
 |---|---|---|
 | `subscribe` | `events: string[]` | **Replaces** the filter (not additive; `[]` blocks every non-exempt event). No reply. |
-| `text` | `content` | Pushes an `external-message` with `source: 'headless'`, which requests inference; a recipe's wake gate may decline it, and then no turn starts. The agent is told the message has no channel locus, so a plain-prose reply won't reach a chat surface. A received text counts as activity, and stays in flight until a framework has processed it: the next `lifecycle:idle` covers it (its `texts`). In a session switch, a text the replaced framework hadn't taken from its queue, and one the stopped framework refuses, goes to the new session's framework when the host follows the switch. If the switch fails, no framework runs, so those texts stay in flight, no idle comes, and an `--exit-when-idle` host doesn't exit on its own. While a switch is under way the host isn't quiet, and a second switch is refused until it has finished, before any session is made or made active. |
-| `command` | `command` (e.g. `"/status"`) | Runs through the slash-command handler (`src/commands.ts`). Each output line comes back as a `command-output` event. `/quit` triggers shutdown. |
+| `text` | `content`, `from?` | Pushes an `external-message`, which requests inference; a recipe's wake gate may decline it, and then no turn starts. Without `from`, its `source` is `'headless'`, and the agent is told the message has no channel locus, so a plain-prose reply won't reach a chat surface. With `from: "console"`, as `connectome send` sends it, its `source` is `'cli'`, as batch mode's lines are, with no such note. A received text counts as activity, and stays in flight until a framework has processed it: the next `lifecycle:turn-work-done` and `lifecycle:idle` cover it (their `texts`). In a session switch, a text the replaced framework hadn't taken from its queue, and one the stopped framework refuses, goes to the new session's framework when the host follows the switch. If the switch fails, no framework runs, so those texts stay in flight, neither comes, and an `--exit-when-idle` host doesn't exit on its own. While a switch is under way the host isn't quiet, and a second switch is refused until it has finished, before any session is made or made active. |
+| `command` | `command` (e.g. `"/status"`), `corrId?`, `from?` | Runs through the slash-command handler (`src/commands.ts`). With `from: "fleet"`, as `fleet--command` sends it, the operator log records the move, rollback, undo, redo or nudge the command makes as the fleet's; without it, as the headless socket's. Each output line comes back as a `command-output` event. With a `corrId`, each line carries it and a `command-done` ends the answer, after any follow-up the command awaits; without one, nothing marks the last line. `/quit` triggers shutdown, after the `command-done`. |
 | `shutdown` | `graceful?` | See Shutdown above. |
 | `describe` | `corrId?` | → `snapshot` |
 | `request-lessons` | `corrId?` | → `lessons-snapshot` |
@@ -112,16 +139,20 @@ subject to the subscription filter: `inference:*`, `tool:*`, `usage:updated`,
 
 | Event | Payload | When |
 |---|---|---|
-| `lifecycle` (`phase: "ready"`) | `pid, dataDir, recipe, idle` | On every socket accept, sent before the parent's `subscribe` can arrive. `recipe` is the recipe's display name, not a path. `idle` is whether the host has said `lifecycle:idle` since its last `inference:started` or `text` received and is still quiet as that idle reads it: every agent idle, with nothing in flight but a background script. When it has said idle and isn't quiet, the quiet that follows brings a new `lifecycle:idle`. A parent that sends texts on this connection counts them from zero. |
-| `lifecycle` (`phase: "idle"`) | `texts` | When, after at least one `inference:started` or `text` received (or once a self-restart is armed), every framework agent has read idle with nothing in flight but a background script left running for ≥500 ms. An `inference:started`, a `text` received, arming or cancelling a self-restart, or a client's `ready` that finds the host not quiet after its idle, starts the 500 ms again. `texts` is how many texts the host has received on this connection, all of which this quiet covers. Nothing in flight means no turn the framework counts alive (one assembling, or waiting to retry, included), no gated wake, no event on the framework's queue, no `text` whose processing (every module's `onProcess`) is still under way, and no subagent run. A background script left running doesn't hold it: in agent-framework 0.28.0, a script that ends cleanly wakes no one. A text a recipe's wake-gate debounce holds isn't seen: agent-framework 0.28.0 doesn't count it, so the idle can come before that turn. Fires once, and again only after the next `inference:started` or `text` received, or a client's `ready` that finds the host not quiet. A text a wake gate declines still ends in an idle, once nothing has been in flight for 500 ms after its processing; texts that arrive together share one. |
+| `lifecycle` (`phase: "ready"`) | `pid, dataDir, recipe, idle, turnWork, agent` | On every socket accept, sent before the parent's `subscribe` can arrive. `recipe` is the recipe's display name, not a path. `idle` is whether the host has said `lifecycle:idle` since its last `inference:started` or `text` received and is still quiet as that idle reads it: every agent idle, with nothing in flight but a background script. When it has said idle and isn't quiet, the quiet that follows brings a new `lifecycle:idle`. `turnWork` is whether turn work is in flight as the client connects (the next row). `agent` is the name the framework runs the recipe's agent under (the recipe's, else the session import's, else `agent`), the one whose `inference:speech` the socket carries. A parent that sends texts on this connection counts them from zero. |
+| any framework trace, with `replay: true` | the trace's own fields | To the first client only, right after its `ready`: the events from before it connected, oldest first. Timestamps are the events' own; `ts` is the send time. |
+| `lifecycle` (`phase: "replay-truncated"`) | `dropped, kept` | After that replay, only when the boot outran the 1,000 kept: how many events were cut after them. |
+| `lifecycle` (`phase: "turn-work-done"`) | `texts` | When, after turn work the host has seen (an `inference:started` of an agent that isn't a subagent's, a `text` received, or turn work in flight at a poll or at a client's `ready`), no turn work has been in flight for ≥500 ms. An armed self-restart isn't turn work. Turn work is a turn of an agent that isn't a subagent's run (one assembling, or waiting to retry, included), a wake on its way to a turn, a text whose processing (its modules' `onProcess`) is under way, or an event on the framework's queue. A running background script or subagent run isn't turn work, though a subagent's own request, counted host-wide among gated or parked wakes or on the queue, briefly is. A wake a recipe's wake-gate debounce holds isn't seen: agent-framework 0.30.0 doesn't count it, so `turn-work-done` can come before that turn. `texts` is as for `lifecycle:idle`. Fires once after each stretch of turn work the host sees. Where a stretch ends in `lifecycle:idle` too, `turn-work-done` comes first, since quiet holds only once turn work has ended. |
+| `lifecycle` (`phase: "idle"`) | `texts` | When, after at least one `inference:started` or `text` received (or once a self-restart is armed), every framework agent has read idle with nothing in flight but a background script left running for ≥500 ms. An `inference:started`, a `text` received, arming or cancelling a self-restart, or a client's `ready` that reports turn work or finds the host not quiet after its idle, starts the 500 ms again. `texts` is how many texts the host has received on this connection, all of which this quiet covers. Nothing in flight means no turn the framework counts alive (one assembling, or waiting to retry, included), no gated wake, no event on the framework's queue, no `text` whose processing (every module's `onProcess`) is still under way, no subagent run, and no operator's work still under way: a `command`'s follow-up (such as `/newtopic`'s summary), from whichever entry sent the command; a credential action (such as `/auth login` waiting for its code to be entered, which the Codex subscription's login gives up on after 10 min by default); and an action that holds a session switch off (the Web UI's session-changing actions, a session-changing `panel-request`, a release switch's `quiesce`). A background script left running doesn't hold it: in agent-framework 0.28.0, a script that ends cleanly wakes no one. A text a recipe's wake-gate debounce holds isn't seen: agent-framework 0.30.0 doesn't count it, so the idle can come before that turn. Fires once, and again only after the next `inference:started` or `text` received, or a client's `ready` that finds the host not quiet. A text a wake gate declines still ends in an idle, once nothing has been in flight for 500 ms after its processing; texts that arrive together share one. |
 | `lifecycle` (`phase: "exiting"`) | `reason` | `shutdown:graceful`, `shutdown:immediate`, `command:/quit`, `SIGTERM`, `SIGINT`, `exit-when-idle`, `self-restart`. A crash emits nothing. |
 | `inference:speech` | `agentName, content` | Primary agent only: the text of an inference round that ended without tool calls. Used by `fleet--relay`. |
-| `command-output` | `text, style` | One per line of a `command` reply. A response, not telemetry (see below). |
+| `command-output` | `text, style, corrId?` | One per line of a `command` reply, carrying the command's `corrId` when it had one. A response, not telemetry (see below). |
+| `command-done` | `corrId, error?, refused?` | The end of the answer to a `command` that carried a `corrId`, with `error` when the command threw, and `refused: true` when `/update` answered that it didn't do what was asked; its lines say why. Only `/update` marks an answer so, and another command's refusal, such as `/session new` or `/session switch` while a switch is under way, ends with a plain `command-done`. `/update` marks it for its refusals, such as an install with nothing newer offered, a restart whose turns didn't end in time or a `back keep` for a Go back no longer offered, for words it doesn't take, for a check whose read of the registry failed, and for `back` alone when it can't read the Go back offer or asks a host that isn't an install. |
 
 **Responses** — `snapshot`, `lessons-snapshot`, `workspace-mounts-snapshot`,
 `workspace-tree-snapshot`, `workspace-file-snapshot`, `cancel-subagent-result`,
-`panel-response`, `update-response` — each echo `corrId`; `command-output` lines answer a
-`command` and carry none. A response goes only to the connection that sent the
+`panel-response`, `update-response`, `command-done` — each echo `corrId`; `command-output` lines answer a
+`command` and carry its `corrId` when it had one. A response goes only to the connection that sent the
 request: if that connection closes or is replaced while the work is pending,
 the reply is dropped and `headless.log` records its type and the reason.
 Shapes are in `fleet-types.ts`. A
@@ -146,7 +177,7 @@ name it assigned.
 - `lifecycle` is one event type with a `phase` field — subscribe to
   `lifecycle`; `lifecycle:*` does **not** match it.
 
-The nine response types — the eight `corrId` replies and `command-output` —
+The ten response types — the nine `corrId` replies and `command-output` —
 bypass the filter, so a `command` gets its reply even under `[]`. `lifecycle`
 and `inference:speech` do **not**; a narrowed subscription must list them.
 
@@ -238,8 +269,10 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--peek` | `name, lines?=50` | Last N raw events from the child's 500-event ring buffer. |
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
-| `fleet--relay` | `from, to, prefix?` | Send `from`'s last `inference:speech` to `to`. |
-| `fleet--await` | `names[], timeoutMs?=300000, requireAll?=true` | Block until the named children emit `lifecycle:idle`; fails fast on crash/exit, partial result on timeout. A child counts as idle while its last `lifecycle:idle` came after its last `inference:started` and covers every `text` this host has sent it on the connection (`texts`), read again on each of its events and every 200 ms. An idle with no `texts`, from an older child, counts. A text a wake-gate debounce holds can be covered before its turn (the idle row). An adopted or reconnected child counts as idle when its `ready` says `idle`. An await already waiting counts a child that went idle and then exited, or was restarted; one that exits before going idle fails the wait, and so does an await begun after a child has exited. A `command` isn't work: an await before a command's turn starts answers from the earlier idle. |
+| `fleet--relay` | `from, to, prefix?` | Send to `to` the last `inference:speech` this host has had from `from` since its connection to `from` last opened. Refused while this host has no connection to a `from` that may be running (below). |
+| `fleet--await` | `names[], timeoutMs?=300000, requireAll?=true` | Block until the named children emit `lifecycle:idle`; fails fast on crash/exit and on a child it can't reach (below), partial result on timeout. A child counts as idle while its last `lifecycle:idle` came after its last `inference:started` and covers every `text` this host has sent it on the connection (`texts`), read again on each of its events and every 200 ms. An idle with no `texts`, from an older child, counts. A text a wake-gate debounce holds can be covered before its turn (the idle row). An adopted or reconnected child counts as idle when its `ready` says `idle`. An await already waiting counts a child that went idle and then exited, was restarted or lost its connection; one that exits before going idle fails the wait, and so does an await begun after a child has exited. An await begun on a child this host has no connection to counts no idle from before the loss: only one its next connection brings. A `command` isn't work: an await before a command's turn starts answers from the earlier idle. |
+
+**A closed connection.** A running child's connection is its parent's. When a `ready` child closes it without having said `lifecycle:exiting`, as it does on its deadline for a parent that stopped reading (§1) or when another client connects, the parent connects again at once. The new connection is the child's only once its `ready`, the first line a child writes to each connection, names the recorded pid, within 3 s for the connect and 3 s for the `ready`; until then nothing it carries reaches the parent's record of the child, and the parent then sends `subscribe` with the child's subscription. That closes any other client connected then, so a client attached to a fleet child by hand loses its connection as soon as the parent's comes. The parent doesn't connect again while it is stopping, detaching included, while it is stopping or restarting that child, or once it has seen the child's process end. A connect that fails is logged with its reason. Nothing tries again in the background: each `fleet--send`, `fleet--command`, `fleet--relay` and `fleet--await` for the child, and each of the release switch's `update-request`s to it (§2.1), finding no connection to a child that may be running, tries to connect once, and answers with the reason only if that fails too; one that finds a connect already under way waits for its outcome instead, unless, as for a `fleet--await` already answered by its other children, its answer stops turning on it. If the connection closes again within 30 s of a connect's `ready`, the parent leaves it closed, since another client may hold it, and logs that; until 30 s after that close, those four tools make no connect of their own: unless a connect the switch started is under way, they answer at once, saying so and from when they try again, a `fleet--relay` once a connect under way to its other child has ended. The switch's requests still try then, since a switch sends a child three at most, and a child whose resume can't be sent stays quiesced. A Web UI panel's request (§4.8) doesn't try, since panels poll: it answers 502 with the child's state. A child's reply made while the parent had no connection didn't reach it, so each connect forgets the child's last reply, and `fleet--relay` from it waits for the next one. While the parent has no connection to a child that may be running, `fleet--relay` from it refuses to pass on the reply it holds, which may not be the latest, until it has seen the child's process end.
 
 The conductor is not fed fleet state in its context and is not woken by fleet
 events; it learns about children by calling these tools.
@@ -294,9 +327,10 @@ Every `subscribe` the parent sends passes through `sendToChild`, which (unless
 the list already contains `*`) adds any event the tree reducer needs that no
 existing pattern covers. That set, `REDUCER_REQUIRED_EVENTS`, is derived from
 the reducer's handlers in `src/state/agent-tree-reducer.ts` — adding a handler
-extends it with no recipe edits — plus `usage:updated`, which the host forces.
-A recipe's `subscription` therefore means "events I want *in addition to* what
-rendering needs".
+extends it with no recipe edits — plus the events the host forces:
+`usage:updated`, and `window:undone` and `presentation:retracted`, at which
+the Web UI reads the child's panels again. A recipe's `subscription`
+therefore means "events I want *in addition to* what rendering needs".
 
 **Not forced:** `lifecycle` (needed by `fleet--await`), `inference:speech`
 (needed by `fleet--relay`) and `ops:alert`. A narrowed recipe must list the
@@ -369,8 +403,9 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
 - **Adopt on start.** For each persisted child whose record allows it (`ready`
   or `starting` with no exit time, or `crashed` by an earlier failed
   adoption): check the pid is alive and the socket path is a socket, connect,
-  re-subscribe, wait for `ready`, and require `ready.pid` to equal the
-  persisted pid (guards against PID reuse). A failure kills nothing and
+  and require the connection's first line to be a `ready` whose `pid` equals
+  the persisted pid (guards against PID reuse) before anything on the
+  connection reaches the record, then re-subscribe. A failure kills nothing and
   removes nothing. If the probe fails, the record's `exitReason` is `adoption
   unresolved; …`, and if the handshake fails, `adopt failed: …`. Either way
   the record stays `starting` while it's from this boot and its PID is in use,
@@ -461,6 +496,6 @@ Behavior of the code as it stands, worth knowing before relying on it:
 ---
 
 **Sources.** `src/headless.ts`, `src/index.ts`, `src/recipe.ts`,
-`src/commands.ts`, `src/tui.ts`, `src/modules/{fleet-types,fleet-module,tui-module,web-ui-module}.ts`,
+`src/commands.ts`, `src/tui.ts`, `src/modules/{fleet-types,fleet-module,fleet-socket-probe,tui-module,web-ui-module}.ts`,
 `src/state/{agent-tree-reducer,fleet-tree-aggregator}.ts`, `src/web/panel-data.ts`.
 Behavior is pinned by the `test/headless-*` and `test/fleet-*` suites.
