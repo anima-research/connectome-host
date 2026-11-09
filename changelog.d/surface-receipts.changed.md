@@ -11,7 +11,9 @@
   this host's socket, not the one that sent this turn"); the client that
   sent the turn for a round's words written to it as `inference:prose`;
   readline and batch mode ("the terminal this host runs in", or "this host's
-  standard output"); the TUI for its root agent ("the TUI"); and a Web UI
+  standard output"); the TUI for its root agent ("the TUI", or,
+  while its turn runs in the background, "the TUI, which holds it while this
+  turn runs in the background"); and a Web UI
   page while it is open, for the agent its pages show ("the Web UI page that
   sent this turn", or "a Web UI page open now, not the one that sent this
   turn"). A turn with no channel that writes a receipt then gets a

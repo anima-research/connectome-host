@@ -384,7 +384,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
-  app.surfaces.answerFor('tui', tuiAnswer(rootAgentName, () => !backgrounded));
+  app.surfaces.answerFor('tui', tuiAnswer(rootAgentName, () => backgrounded));
   /** What a backgrounded root turn's text says since Ctrl+B, shown when it
    *  returns: a line per round, each ending where `backgroundBreaks` says a
    *  tool call ended one, or a thinking block ended its text, as streaming

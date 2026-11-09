@@ -42,8 +42,11 @@ export function readlineAnswer(stdoutIsTty: boolean): SurfaceAnswerer {
   return () => place;
 }
 
-export function tuiAnswer(rootAgentName: string, showing: () => boolean): SurfaceAnswerer {
-  return ({ agentName }) => agentName === rootAgentName && showing() ? 'the TUI' : undefined;
+export function tuiAnswer(rootAgentName: string, backgrounded: () => boolean): SurfaceAnswerer {
+  return ({ agentName }) => {
+    if (agentName !== rootAgentName) return undefined;
+    return backgrounded() ? 'the TUI, which holds it while this turn runs in the background' : 'the TUI';
+  };
 }
 
 export function surfaceTagOf(metadata: unknown): SurfaceTag | undefined {

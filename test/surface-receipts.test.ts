@@ -444,16 +444,17 @@ describe('the TUI module', () => {
     expect(asked).toEqual(['headless', 'headless']);
   });
 
-  test("readline names the terminal, or standard output when it isn't one, for every agent; the TUI names itself for its root agent only, and not while that agent's turn is in the background", () => {
+  test("readline names the terminal, or standard output when it isn't one, for every agent; the TUI names itself for its root agent only, as holding the words while that agent's turn is in the background", () => {
     const question = { agentName: 'helper', text: 'Hi.', final: false, connections: [] };
     expect(readlineAnswer(true)(question)).toBe('the terminal this host runs in');
     expect(readlineAnswer(false)(question)).toBe("this host's standard output");
-    let showing = true;
-    const tuiAnswers = tuiAnswer('resident', () => showing);
+    let backgrounded = false;
+    const tuiAnswers = tuiAnswer('resident', () => backgrounded);
     expect(tuiAnswers({ ...question, agentName: 'resident' })).toBe('the TUI');
     expect(tuiAnswers(question)).toBeUndefined();
-    showing = false;
-    expect(tuiAnswers({ ...question, agentName: 'resident' })).toBeUndefined();
+    backgrounded = true;
+    expect(tuiAnswers({ ...question, agentName: 'resident' })).toBe('the TUI, which holds it while this turn runs in the background');
+    expect(tuiAnswers(question)).toBeUndefined();
   });
 });
 
