@@ -476,6 +476,10 @@ describe("the key's one real call", () => {
     expect(cause(hidden)).not.toContain('<ANTHROPIC_API_KEY>');
     expect(cause(hidden)).not.toContain('7 s');
     expect(cause(hidden)).toContain('It asks for a wait setup can\'t show without the key. Try again shortly.');
+    const hiddenDate = await checkKey({ key: '2026', model: 'm', baseUrl: at('waitdate') });
+    expect(cause(hiddenDate)).not.toContain('<ANTHROPIC_API_KEY>');
+    expect(cause(hiddenDate)).not.toContain('07:28');
+    expect(cause(hiddenDate)).toContain('It asks for a wait setup can\'t show without the key. Try again shortly.');
   });
 
   test('a refused connection says it was refused, where, and what to check, showing only where ANTHROPIC_BASE_URL leads', async () => {

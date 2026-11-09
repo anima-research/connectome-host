@@ -224,10 +224,10 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
         : `${host} has no model ${model} for this key (404).${quoted}`, true);
     case 429: {
       const raw = (response.headers.get('retry-after') ?? '').trim();
-      const wait = /^\d+$/.test(raw)
-        ? quote(raw) === raw ? `It asks for a wait of ${raw} s before the next call.`
-          : 'It asks for a wait setup can\'t show without the key. Try again shortly.'
-        : !Number.isNaN(Date.parse(raw)) ? `It asks for no call before ${quote(raw)}.` : 'Try again shortly.';
+      const seconds = /^\d+$/.test(raw);
+      const wait = !seconds && Number.isNaN(Date.parse(raw)) ? 'Try again shortly.'
+        : quote(raw) !== sentence(raw) ? 'It asks for a wait setup can\'t show without the key. Try again shortly.'
+        : seconds ? `It asks for a wait of ${raw} s before the next call.` : `It asks for no call before ${quote(raw)}.`;
       return failed(`${host} is limiting this key's requests (429).${quoted} ${wait}`, false);
     }
     case 529:
