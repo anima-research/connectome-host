@@ -73,6 +73,15 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
 }
 
 // For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
+// Work held behind an open question waits on the module's asking with await, which calls a thenable's then.
+function heldAt(module: SetupModule): Promise<void> {
+  const held = module as unknown as { asking: PromiseLike<unknown> };
+  const open = held.asking;
+  return new Promise((reached) => {
+    held.asking = { then: (onDone, onFailed) => { reached(); return open.then(onDone, onFailed); } } as PromiseLike<unknown>;
+  });
+}
+
 const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
 
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
@@ -127,6 +136,18 @@ describe('setup--finished', () => {
     expect(statSync(join(dir, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
     expect(module.finishRequested).toBe(true);
     expect(module.finishedAt()).toBe(state.finished);
+  });
+
+  test('a finished time setup didn\'t write, which a command could have put there, is read as answers it doesn\'t keep, and isn\'t told', () => {
+    const { dir, module } = install();
+    mkdirSync(join(dir, '.setup'), { recursive: true });
+    const state = (finished: string) => writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true, finished }));
+    state('sk-ant-stored-key');
+    expect(module.finishedAt()).toBeNull();
+    state('Sun, 01 Nov 2026 01:00:00 GMT');
+    expect(module.finishedAt()).toBeNull();
+    state('2026-11-01T01:00:00.000Z');
+    expect(module.finishedAt()).toBe('2026-11-01T01:00:00.000Z');
   });
 
   test('with no answers of setup\'s to put it beside, records nothing and leaves the conversation going', async () => {
@@ -242,8 +263,9 @@ describe('setup--run', () => {
     const asking = askSecret(module, { name: 'API_TOKEN', purpose: 'a token' });
     for (const started = performance.now(); answer === undefined && performance.now() - started < 5_000; await new Promise((done) => setTimeout(done, 10)));
     expect(answer).toBeDefined();
+    const reached = heldAt(module);
     const running = run(module, 'touch ran');
-    await new Promise((done) => setTimeout(done, 300));
+    await Promise.race([reached, running.then(() => { throw new Error('the command ran without waiting for the question'); })]);
     expect(shown).toEqual([]);
     expect(existsSync(join(dir, 'ran'))).toBe(false);
     answer!('a-held-secret');
@@ -299,16 +321,19 @@ describe('setup--run', () => {
     let asks = 0;
     const made = install({ ...extra, asker: { ask: () => { asks += 1; return answers.shift()!; } } });
     const first = askSecret(made.module, { name: firstName, purpose: 'x' });
-    const pending = made.module.handleToolCall(call);
     let second: Promise<unknown> | undefined;
     let askedAt = -1;
+    let onReached = () => {};
+    const reached = new Promise<void>((done) => { onReached = done; });
     void (made.module as unknown as { asking: Promise<unknown> }).asking.then(() => {
       askedAt = made.shown.length;
       second = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
+      void heldAt(made.module).then(onReached);
     });
+    const pending = made.module.handleToolCall(call);
     releaseFirst('sk-first-value');
     await first;
-    await Bun.sleep(50);
+    await Promise.race([reached, pending.then(() => { throw new Error('it ran without waiting for the second question'); })]);
     const answeredAt = made.shown.length;
     releaseSecond('second-value');
     await second;
@@ -387,6 +412,36 @@ describe('setup--run', () => {
     expect(result.error).toStartWith(`setup--run ran nothing: Bun didn't finish reading the dotenv files in ${dir} within 10 s`);
     expect(result.error).toContain('call again once');
     expect(result.error).not.toContain('put it right');
+  }, 30_000);
+
+  test('a read of the dotenv files that runs out of time after the command ran says it ran, and not to run it again to see its output', () => {
+    const dir = scratch();
+    writeFileSync(join(dir, '.env'), 'MY_SERVER_TOKEN="custom-token-value"\n', { mode: 0o600 });
+    const marker = join(dir, 'ran');
+    const child = join(dir, 'timeout-after-child.ts');
+    writeFileSync(child, `
+      import { mock } from 'bun:test';
+      import { existsSync } from 'node:fs';
+      import * as childProcess from 'node:child_process';
+      const real = childProcess.spawnSync;
+      mock.module('node:child_process', () => ({ ...childProcess, spawnSync: (command, args, options) =>
+        Array.isArray(args) && args.includes('--config=/dev/null') && existsSync(${JSON.stringify(marker)})
+          ? { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: null, signal: 'SIGTERM',
+            error: Object.assign(new Error('spawnSync ' + command + ' ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+          : real(command, args, options) }));
+      const { SetupModule } = await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'modules', 'setup-module.ts'))});
+      const module = new SetupModule({ dir: ${JSON.stringify(dir)}, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: ${JSON.stringify(dir)} },
+        asker: () => null, show: () => {}, fetch: async () => new Response('{}') });
+      console.log(JSON.stringify(await module.handleToolCall({ id: 'c1', name: 'run', input: { command: 'echo once >> ran' } })));
+      process.exit(0);
+    `);
+    const ran = Bun.spawnSync([process.execPath, child], { timeout: 20_000, killSignal: 'SIGKILL', stderr: 'pipe' });
+    expect({ exitCode: ran.exitCode, signal: ran.signalCode ?? null }, ran.stderr.toString()).toEqual({ exitCode: 0, signal: null });
+    const result = JSON.parse(ran.stdout.toString()) as ToolResult;
+    expect(result.success).toBe(false);
+    expect(result.error).toStartWith(`setup--run's command ended (exit 0), and its output isn't shown: Bun didn't finish reading the dotenv files in ${dir} within 10 s. It ran, so calling setup--run again with the same command runs it a second time`);
+    expect(result.error).not.toContain('call again once');
+    expect(readFileSync(marker, 'utf-8')).toBe('once\n');
   }, 30_000);
 
   test('where the environment sets BUN_OPTIONS and a dotenv file expands it, a command runs nothing, since setup reads the files without it', async () => {
@@ -609,6 +664,16 @@ describe('setup--run', () => {
     });
     const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER KEEP_ME');
     expect(answer.stdout.text).toBe('copy=1\nBearer <ANTHROPIC_API_KEY>\nkept\n');
+  });
+
+  test('leaves out of its commands\' environment a variable of another name holding a stored value trimmed, and keeps an empty one where a stored value is only spaces', async () => {
+    const { module } = install({
+      envFile: 'MY_SERVER_TOKEN="  custom-token-value  "\nMY_BLANK="   "\n',
+      env: { MY_COPY: 'custom-token-value', MY_EMPTY: '' },
+    });
+    listSecrets(module, 'MY_SERVER_TOKEN', 'MY_BLANK');
+    const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_EMPTY; echo "empty=$?"');
+    expect(answer.stdout.text).toBe('copy=1\n\nempty=0\n');
   });
 
   test('where the list of stored secrets is missing, every name .env or another dotenv file beside it gives that setup doesn\'t know counts as secret, whatever its value, and the answer says why', async () => {
@@ -1403,6 +1468,14 @@ describe('setup--ask_secret', () => {
     const answer = await run(module, 'echo "${DISCORD_TOKEN:-none}"; cat .env');
     expect(answer.stdout.text).not.toContain('new-discord-token');
     expect(answer.stdout.text.startsWith('none\n')).toBe(true);
+  });
+
+  test('refuses a name that isn\'t letters, digits and _, quoting the name it was given, and asks nothing', async () => {
+    const asked: string[] = [];
+    const { module } = install({ asker: { ask: async (name) => { asked.push(name); return 'unasked'; } } });
+    const result = await askSecret(module, { name: 'DISCORD-TOKEN', purpose: 'the bot token' });
+    expect(result.error).toBe('setup--ask_secret\'s name was "DISCORD-TOKEN", and it needs a name an environment variable can have: letters, digits and _, not starting with a digit.');
+    expect(asked).toEqual([]);
   });
 
   test('replaces every line a name has in .env with one, where the first was, so the value stored is the one read', async () => {
@@ -2278,7 +2351,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     module.handleToolCall({ id: 'c3', name: 'check_model', input } as ToolCall);
   const models = (...ids: string[]) => Response.json({ data: ids.map((id) => ({ id })) });
 
-  test('an OPENAI_API_KEY is checked with OpenAI, at the OPENAI_BASE_URL .env names, before it is stored, and stored once accepted', async () => {
+  test('an OPENAI_API_KEY is checked at the OPENAI_BASE_URL .env names, which is named for what answered, before it is stored, and stored once accepted', async () => {
     const requests: Array<{ url: string; headers: Headers; storedThen: string | undefined }> = [];
     const made = install({
       envFile: 'OPENAI_BASE_URL=https://gateway.example/v1/\n',
@@ -2293,8 +2366,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(requests.map((r) => r.url)).toEqual(['https://gateway.example/v1/models']);
     expect(requests[0]!.headers.get('authorization')).toBe('Bearer sk-openai-key');
     expect(requests[0]!.storedThen).toBeUndefined();
-    expect(String(result.data)).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}. OpenAI accepted it: it listed the models the key can use, which shows the key is accepted, not that a call to one of them succeeds.`);
-    expect(made.shown).toEqual(['Checking it with OpenAI.', 'OpenAI accepted it.']);
+    expect(String(result.data)).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}. OPENAI_BASE_URL's server accepted it: it listed the models the key can use, which shows the key is accepted, not that a call to one of them succeeds.`);
+    expect(made.shown).toEqual(['Checking it with OPENAI_BASE_URL\'s server.', 'OPENAI_BASE_URL\'s server accepted it.']);
     expect(readEnvFile(join(made.dir, '.env')).get('OPENAI_API_KEY')).toBe('sk-openai-key');
   });
 
@@ -2318,7 +2391,21 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     });
     const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
     expect(said(made, result)).not.toContain('openai-gateway-key');
-    expect(String(result.data)).toContain('OpenAI answered 529: no route to <OPENAI_BASE_URL>/models');
+    expect(String(result.data)).toContain('OPENAI_BASE_URL\'s server answered 529: no route to <OPENAI_BASE_URL>/models');
+  });
+
+  test('a key refused where .env names a base URL is said to be refused by that URL\'s server, not the provider, at ask_secret and at check_model', async () => {
+    const refusing = (async () => Response.json({ error: { message: 'no' } }, { status: 401 })) as unknown as typeof fetch;
+    const asked = install({ envFile: 'OPENAI_BASE_URL=https://gateway.example/v1\n', asker: typed('sk-openai-gated'), fetch: refusing });
+    const stored = await askSecret(asked.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
+    expect(stored.error).toStartWith('OPENAI_BASE_URL\'s server refused this key (401) when setup asked it for its list of models, so nothing was stored as OPENAI_API_KEY');
+    expect(asked.shown).toEqual(['Checking it with OPENAI_BASE_URL\'s server.', 'OPENAI_BASE_URL\'s server refused it (401): nothing was stored.']);
+    const checked = install({ envFile: 'OPENAI_BASE_URL=https://gateway.example/v1\nOPENAI_API_KEY=sk-openai-gated\n', fetch: refusing });
+    const model = await checkModel(checked.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
+    expect(model.error).toStartWith('OPENAI_BASE_URL\'s server refused the key stored as OPENAI_API_KEY (401)');
+    expect(said(checked, model)).not.toContain('OpenAI');
+    const plain = install({ envFile: 'OPENAI_API_KEY=sk-openai-plain\n', fetch: refusing });
+    expect((await checkModel(plain.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' })).error).toStartWith('OpenAI refused the key stored as OPENAI_API_KEY (401)');
   });
 
   test('check_model asked while a secret is being asked for waits for it, and checks the key stored then', async () => {
@@ -2525,7 +2612,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     });
     const hiddenDigits = await checkModel(guessed.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(hiddenDigits.error).not.toContain('<NOT_SETUPS>');
-    expect(hiddenDigits.error).toEndWith('Anthropic answered 429: rate limited. It asks for a wait setup can\'t show without what may be a secret. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
+    expect(hiddenDigits.error).toEndWith('Anthropic answered 429: rate limited. It asks for a wait setup can\'t show without what may be a secret, so when to call setup--check_model again isn\'t known: tell the person what it says.');
     const neither = await checkModel(limited('ask again later').module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(neither.error).toEndWith('Anthropic answered 429: rate limited. Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.');
   });
@@ -2544,7 +2631,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const guessed = install({ asker: typed('sk-ant-guessed'), envFile: 'NOT_SETUPS=0\n', fetch: answering(429, '60') });
     expect(String((await askSecret(guessed.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
       'but it isn\'t known to work: Anthropic answered 429: busy. It asks for a wait setup can\'t show without what may be a ' +
-      'secret. Call setup--check_model in a minute, to check the key again.');
+      'secret, so when setup--check_model can check the key again isn\'t known.');
     expect(guessed.shown).toContain('Anthropic didn\'t say whether it works: it answered 429 (busy). It asks for a wait setup can\'t show without what may be a secret.');
     const other = install({ asker: typed('sk-ant-other'), fetch: answering(400) });
     expect(String((await askSecret(other.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
@@ -2609,7 +2696,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String(token.data)).toContain('Discord answered 302, a redirect to https://discord.com, which setup doesn\'t follow with a secret.');
     const gateway = install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\nANTHROPIC_BASE_URL=https://someone:private-pass@gateway.example.test/anthropic\n', fetch: relative });
     const model = await checkModel(gateway.module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(model.error).toContain('Anthropic answered 302, a redirect to https://gateway.example.test, which setup doesn\'t follow with a secret.');
+    expect(model.error).toContain('ANTHROPIC_BASE_URL\'s server answered 302, a redirect to https://gateway.example.test, which setup doesn\'t follow with a secret.');
     expect(model.error).not.toContain('private-pass');
   });
 

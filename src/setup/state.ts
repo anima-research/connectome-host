@@ -22,8 +22,14 @@ export function readSetupState(path: string): KeptState {
   } catch {
     return { unreadable: 'it isn\'t JSON' };
   }
-  if (state?.v !== 1 || typeof state.shell !== 'boolean' || (state.finished !== undefined && typeof state.finished !== 'string')) {
+  if (state?.v !== 1 || typeof state.shell !== 'boolean' || (state.finished !== undefined && !isStamp(state.finished))) {
     return { unreadable: 'it isn\'t the answers this setup keeps' };
   }
   return { state: state as SetupState };
+}
+
+function isStamp(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const time = Date.parse(value);
+  return !Number.isNaN(time) && new Date(time).toISOString() === value;
 }

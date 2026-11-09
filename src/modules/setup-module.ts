@@ -282,7 +282,7 @@ export class SetupModule implements Module {
           `Run one command with bash -c in the install's directory, and get its exit status and output back: of an ` +
           `output longer than 8 KiB, its first and last 4 KiB, each widened to take in whole a secret a cut falls ` +
           `in, or the whole output where the two then meet. Its environment is the host's, less the stored secrets, the provider credentials and the ` +
-          `providers' base URLs, under their own names or any other whose whole value is one of theirs (a variable holding ` +
+          `providers' base URLs, under their own names or any other whose whole value is one of theirs, as stored or trimmed (a variable holding ` +
           `one within a longer value stays), and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
           `install's directory itself unless it's run with --no-env-file. Nothing is kept between calls but what the command ` +
           `leaves behind: a process it leaves running when it ends, before the host shuts down, keeps running, after ` +
@@ -418,8 +418,9 @@ export class SetupModule implements Module {
   private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
     const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
     const env = withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
-    // A stored value under another name goes too. Only a whole one: a guessed secret's value can be as short as 7.
-    for (const [name, value] of Object.entries(env)) if (values.some((secret) => secret.value === value)) delete env[name];
+    for (const [name, value] of Object.entries(env)) {
+      if (value !== '' && values.some((secret) => value === secret.value || value === secret.value.trim())) delete env[name];
+    }
     return env;
   }
 
@@ -529,7 +530,11 @@ export class SetupModule implements Module {
     try {
       ({ values: secrets, guessed } = this.secrets());
     } catch (error) {
-      return this.damaged(error, `setup--run's command ended (exit ${ended.code ?? ended.signal}), and its output isn't shown`);
+      const what = `setup--run's command ended (exit ${ended.code ?? ended.signal}), and its output isn't shown`;
+      if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
+      return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
+        'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
+        'runs out of time again, ask the person to look at the dotenv files there.');
     }
     const notes: string[] = [];
     if (stoppedAtLimit) {
@@ -568,7 +573,10 @@ export class SetupModule implements Module {
   private async askSecret(input: { name?: unknown; purpose?: unknown }): Promise<ToolResult> {
     const { name, purpose } = input;
     if (typeof name !== 'string' || !isSecretName(name)) {
-      return failed('setup--ask_secret needs a name an environment variable can have: letters, digits and _, not starting with a digit.');
+      const rule = 'letters, digits and _, not starting with a digit';
+      return failed(typeof name === 'string'
+        ? `setup--ask_secret's name was ${JSON.stringify(name)}, and it needs a name an environment variable can have: ${rule}.`
+        : `setup--ask_secret needs a name an environment variable can have: ${rule}.`);
     }
     if (typeof purpose !== 'string' || purpose.trim() === '') {
       return failed('setup--ask_secret needs a purpose: what the secret is and where the person finds it.');
@@ -628,6 +636,7 @@ export class SetupModule implements Module {
       }
     }
     let key: ProviderAnswer<null> | null = null;
+    let asked = '';
     if (provider !== undefined) {
       let env: Map<string, string>;
       try {
@@ -643,13 +652,14 @@ export class SetupModule implements Module {
       } catch (error) {
         return this.damaged(error, `Nothing was stored as ${name}`);
       }
-      key = await this.checkKey(name, value, env, hide);
+      asked = answererOf(name, env);
+      key = await this.checkKey(name, value, env, hide, asked);
       if (key.kind === 'refused') {
         return failed(name === 'OPENROUTER_API_KEY'
-          ? `${provider.provider} refused this key (${key.status}), so nothing was stored as ${name}, and what was ` +
+          ? `${asked} refused this key (${key.status}), so nothing was stored as ${name}, and what was ` +
             'stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, ' +
             'then call again.'
-          : `${provider.provider} refused this key (${key.status}) when setup asked it for its list of models, so ` +
+          : `${asked} refused this key (${key.status}) when setup asked it for its list of models, so ` +
             `nothing was stored as ${name}, and what was stored as it before stays as it was. ${LISTING_REFUSED} ` +
             'Tell the person, and ask them to check what the key is allowed, or to copy it again, or to make a new ' +
             'one, then call again.');
@@ -659,7 +669,7 @@ export class SetupModule implements Module {
           'be a key, and nothing was stored. Ask them to check what they copied, then call again.');
       }
     }
-    const told = token !== null ? tokenNote(token) : key !== null ? keyNote(name, key) : '';
+    const told = token !== null ? tokenNote(token) : key !== null ? keyNote(name, asked, key) : '';
     this.seen.names.add(name);
     addSecret(this.seen.values, { name, value });
     let writing = false;
@@ -686,11 +696,12 @@ export class SetupModule implements Module {
     return { success: true, data: `stored as ${name} in ${envFile}${told}` };
   }
 
-  private async checkKey(name: string, value: string, env: Map<string, string>, hide: Secret[]): Promise<ProviderAnswer<null>> {
-    const provider = PROVIDER_KEYS[name]!.provider;
-    this.config.show(`Checking it with ${provider}.`);
+  private async checkKey(
+    name: string, value: string, env: Map<string, string>, hide: Secret[], asked: string,
+  ): Promise<ProviderAnswer<null>> {
+    this.config.show(`Checking it with ${asked}.`);
     const key = await checkProviderKey(name, value, { fetch: this.config.fetch, env, hide })!;
-    this.config.show(answerLine(provider, key, `${provider} accepted it.`, 'nothing was stored'));
+    this.config.show(answerLine(name, asked, key, `${asked} accepted it.`, 'nothing was stored'));
     return key;
   }
 
@@ -700,8 +711,7 @@ export class SetupModule implements Module {
     if (typeof name !== 'string' || typeof model !== 'string' || model.trim() === '') {
       return failed('setup--check_model needs a name, the one the key is stored as, and a model.');
     }
-    const provider = PROVIDER_KEYS[name]?.provider;
-    if (provider === undefined) {
+    if (!Object.hasOwn(PROVIDER_KEYS, name)) {
       return failed(`setup--check_model checks models for the keys stored as ${Object.keys(PROVIDER_KEYS).join(', ')}, ` +
         `not ${name}: Bedrock's requests need AWS's signing, Codex runs on a ChatGPT login, and an openai-compatible ` +
         'endpoint is the recipe\'s.');
@@ -729,7 +739,8 @@ export class SetupModule implements Module {
       return this.damaged(error, 'Nothing was checked');
     }
     const seen = shown(redacted(model, hide));
-    this.config.show(`Checking ${seen} with ${provider}.`);
+    const asked = answererOf(name, env);
+    this.config.show(`Checking ${seen} with ${asked}.`);
     const listed = await listModels(name, key, { fetch: this.config.fetch, env, hide })!;
     if (listed.kind === 'unsendable') {
       const words = `The key stored as ${name} holds a character a request header can't carry, so it can't be a key`;
@@ -737,42 +748,44 @@ export class SetupModule implements Module {
       return failed(`${words}: ask the person for it again with setup--ask_secret.`);
     }
     if (listed.kind !== 'accepted') {
-      this.config.show(answerLine(provider, listed, '', 'whether it offers the model isn\'t known'));
+      this.config.show(answerLine(name, asked, listed, '', 'whether it offers the model isn\'t known'));
       if (listed.kind === 'refused') {
-        return failed(`${provider} refused the key stored as ${name} (${listed.status}) when setup asked it for its ` +
+        return failed(`${asked} refused the key stored as ${name} (${listed.status}) when setup asked it for its ` +
           `list of models, so whether it offers ${model} isn't known. ${LISTING_REFUSED} Ask the person to check what ` +
           'the key is allowed, or for a new key with setup--ask_secret.');
       }
-      const why = keyNote(name, listed, false).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
+      const why = keyNote(name, asked, listed, false).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
       const after = listed.kind === 'answered' ? listed.retryAfter : undefined;
-      return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ${why}` +
-        (after !== undefined && after.shown !== null
-          ? ` It asks for ${waitAsked(after)}: ` +
-            'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
-            'what it says and how long it asks them to wait.'
-          : (after === undefined ? '' : ` It asks for ${waitAsked(after)}.`) +
-            (listed.kind === 'answered' || listed.kind === 'unanswered'
-              ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : '')));
+      return failed(`Whether ${asked} offers ${model} to the key stored as ${name} isn't known: ${why}` +
+        (after === undefined
+          ? (listed.kind === 'answered' || listed.kind === 'unanswered'
+            ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : '')
+          : after.shown !== null
+            ? ` It asks for ${waitAsked(after)}: ` +
+              'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
+              'what it says and how long it asks them to wait.'
+            : ` It asks for ${waitAsked(after)}, so when to call setup--check_model again isn't known: tell the person ` +
+              'what it says.'));
     }
     const { ids, shownIds, more } = listed.value;
     if (ids.includes(model)) {
-      this.config.show(`${provider} lists ${seen} for this key.`);
+      this.config.show(`${asked} lists ${seen} for this key.`);
       return {
         success: true,
-        data: `${provider} lists ${model} among the ${more ? 'first ' : ''}${ids.length} models it offers the key stored as ${name}.`,
+        data: `${asked} lists ${model} among the ${more ? 'first ' : ''}${ids.length} models it offers the key stored as ${name}.`,
       };
     }
     if (more) {
-      this.config.show(`${provider} lists more models than one answer holds, and ${seen} isn't among the first ${ids.length}.`);
-      return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: it lists more models ` +
+      this.config.show(`${asked} lists more models than one answer holds, and ${seen} isn't among the first ${ids.length}.`);
+      return failed(`Whether ${asked} offers ${model} to the key stored as ${name} isn't known: it lists more models ` +
         `than one answer holds, and ${model} isn't among the first ${ids.length}. Ask the person whether ${model} is ` +
         'the one they meant before the recipe names it.');
     }
-    this.config.show(`${provider} doesn't list ${seen} for this key.`);
+    this.config.show(`${asked} doesn't list ${seen} for this key.`);
     const family = familyOf(model);
     const kin = shownIds.filter((_shown, at) => ids[at] === family || ids[at]!.startsWith(`${family}-`) || ids[at]!.startsWith(`${family}.`))
       .sort();
-    return failed(`${provider} doesn't list ${model} among the ${ids.length} models it offers the key stored as ${name}` +
+    return failed(`${asked} doesn't list ${model} among the ${ids.length} models it offers the key stored as ${name}` +
       (kin.length > 0 ? `. Of its family, ${family}, it lists: ${kin.join(', ')}.` : `, and none of its family, ${family}.`) +
       ' Ask the person which they meant before the recipe names it.');
   }
@@ -804,18 +817,18 @@ function tokenLine(token: TokenCheck): string {
 const LISTING_REFUSED = 'The key may be wrong or revoked, or it may not be allowed to list models, or to be used ' +
   'from where this machine is.';
 
-function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted: string, refusedThen: string): string {
+function answerLine(name: string, asked: string, answer: ProviderAnswer<unknown>, accepted: string, refusedThen: string): string {
   switch (answer.kind) {
     case 'accepted': return accepted;
-    case 'refused': return `${provider} refused it (${answer.status}): ${refusedThen}.`;
+    case 'refused': return `${asked} refused it (${answer.status}): ${refusedThen}.`;
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a key: nothing was stored.';
     case 'answered':
-      return `${provider} didn't say whether it works: it answered ${answer.status}` +
+      return `${asked} didn't say whether it works: it answered ${answer.status}` +
         `${answer.said === null ? '' : ` (${shown(answer.said)})`}.` +
         (answer.retryAfter === undefined ? '' : ` It asks for ${shown(waitAsked(answer.retryAfter))}.`);
-    case 'redirected': return `It isn't known to work: ${shown(redirect(provider, answer))}.`;
-    case 'unrecognized': return `It couldn't be checked: ${unrecognized(provider, answer.status)}.`;
-    case 'unanswered': return `${provider} couldn't be asked whether it works (${shown(answer.why)}).`;
+    case 'redirected': return `It isn't known to work: ${shown(redirect(asked, answer))}.`;
+    case 'unrecognized': return `It couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}.`;
+    case 'unanswered': return `${asked} couldn't be asked whether it works (${shown(answer.why)}).`;
   }
 }
 
@@ -824,28 +837,29 @@ function waitAsked(after: { shown: string | null; seconds: boolean }): string {
     : after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`;
 }
 
-function keyNote(name: string, answer: ProviderAnswer<unknown>, again = true): string {
-  const provider = PROVIDER_KEYS[name]!.provider;
+function keyNote(name: string, asked: string, answer: ProviderAnswer<unknown>, again = true): string {
   switch (answer.kind) {
     case 'accepted':
-      return name === 'OPENROUTER_API_KEY' ? `. ${provider} accepted it: it answered for the key.`
-        : `. ${provider} accepted it: it listed the models the key can use, which shows the key is accepted, not ` +
+      return name === 'OPENROUTER_API_KEY' ? `. ${asked} accepted it: it answered for the key.`
+        : `. ${asked} accepted it: it listed the models the key can use, which shows the key is accepted, not ` +
           'that a call to one of them succeeds.';
     case 'answered': {
       const passing = answer.status === 429 || answer.status >= 500;
       const after = answer.retryAfter;
       const next = !again ? ''
-        : after !== undefined && after.shown !== null
+        : after === undefined ? (passing ? ' Call setup--check_model in a minute, to check the key again.' : '')
+        : after.shown !== null
           ? ` It asks for ${waitAsked(after)}` +
             `${passing ? ': call setup--check_model once that has passed, to check the key again' : ''}.`
-          : (after === undefined ? '' : ` It asks for ${waitAsked(after)}.`) +
-            (passing ? ' Call setup--check_model in a minute, to check the key again.' : '');
-      return `, but it isn't known to work: ${provider} answered ${answer.status}` +
+          : ` It asks for ${waitAsked(after)}` +
+            `${passing ? ', so when setup--check_model can check the key again isn\'t known' : ''}.`;
+      return `, but it isn't known to work: ${asked} answered ${answer.status}` +
         `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
     }
-    case 'unanswered': return `, but it isn't known to work: ${provider} couldn't be asked (${answer.why}).`;
-    case 'redirected': return `, but it isn't known to work: ${redirect(provider, answer)}${redirectRemedy(provider, name)}.`;
-    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized(provider, answer.status)}. ${CONNECTION}`;
+    case 'unanswered': return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).`;
+    case 'redirected': return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.`;
+    case 'unrecognized':
+      return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}`;
     case 'unsendable': return ', but it can\'t be a key: it holds a character a request header can\'t carry.';
     default: return '';
   }
@@ -871,9 +885,18 @@ function redirect(service: string, answer: { status: number; to: string | null }
     'doesn\'t follow with a secret';
 }
 
-function redirectRemedy(service: string, name?: string): string {
-  const base = name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL'
+function baseUrlOf(name: string | undefined): string | null {
+  return name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL'
     : name === 'OPENROUTER_API_KEY' ? 'OPENROUTER_BASE_URL' : null;
+}
+
+function answererOf(name: string, env: ReadonlyMap<string, string>): string {
+  const base = baseUrlOf(name);
+  return base !== null && env.get(base) ? `${base}'s server` : PROVIDER_KEYS[name]!.provider;
+}
+
+function redirectRemedy(service: string, name?: string): string {
+  const base = baseUrlOf(name);
   return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
       `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
     : `. Something between this machine and ${service} may have sent it, or ${service} itself: tell the person, and that ` +
