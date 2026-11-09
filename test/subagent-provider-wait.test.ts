@@ -85,7 +85,7 @@ describe("a provider's stated wait that the framework won't sleep", () => {
   }
 
   for (const tool of ['spawn', 'fork'] as const) {
-    test(`fails a ${tool} without a restart when the framework's error is named ProviderWaitNotSleptError, whatever its words`, async () => {
+    test(`fails a ${tool} without a restart when the framework's error is named ProviderWaitNotSleptError, whatever its words, and says the wait, not the words`, async () => {
       // A second copy of the package has a class of its own, so only the name
       // marks its error.
       const words = '503 overloaded: socket hang up';
@@ -97,7 +97,8 @@ describe("a provider's stated wait that the framework won't sleep", () => {
         const res = await h.subagent.handleToolCall(call(tool, `marked-waiter-${tool}`));
         expect(res.success).toBe(false);
         expect(h.runs()).toBe(1);
-        expect(JSON.stringify(res)).toContain(words);
+        expect(JSON.stringify(res)).toContain('the provider asked to wait 7200 s');
+        expect(JSON.stringify(res)).not.toContain(words);
       } finally {
         await h.cleanup();
       }

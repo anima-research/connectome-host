@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -245,7 +245,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       const fw = h.framework as unknown as { createEphemeralAgent: (c: unknown) => Promise<unknown> };
       fw.createEphemeralAgent = async () => { throw new Error('no model "mock-x" here.'); };
       expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(
-        "Subagent 'scout' didn't start, so nothing ran: no model \"mock-x\" here.",
+        "Subagent 'scout' didn't start, so nothing ran: it couldn't be set up.",
       );
       expect(internal(h.subagent).activeSubagents.get('spawn-scout')).toMatchObject({ status: 'failed', statusMessage: 'no model "mock-x" here.' });
     } finally { await h.cleanup(); }
@@ -257,7 +257,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
     internal(h.subagent).waitOrStop = async () => null;
     try {
       expect((await h.subagent.handleToolCall(fork('scout', { sync: true }))).error).toBe(
-        "Fork 'scout' stopped after 2 attempts and returned no result: 503 overloaded. What it did before then stays done, " +
+        "Fork 'scout' stopped after 2 attempts and returned no result: the model call failed (timeout, network or server). What it did before then stays done, " +
         'and forking it again starts its task over.',
       );
       expect(attempts).toBe(2);
@@ -275,7 +275,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       await outcome(h, 'scout');
       await until(() => messages.some((m) => m.startsWith("[Subagent 'scout' failed]")));
       expect(messages.at(-1)).toBe(
-        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the provider refused the request. " +
+        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the turn failed. " +
         'What it did before then stays done, and spawning it again starts its task over.',
       );
     } finally { await h.cleanup(); }
@@ -289,17 +289,17 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       cause: Object.assign(new Error(CAUSE_SENTINEL), { name: 'MembraneError', type: 'invalid_request', httpStatus: 400 }),
     });
 
-  test('a sync run\'s tool result carries the run\'s own words, never its cause\'s', async () => {
+  test('a sync run\'s tool result carries its class\'s words, never its cause\'s', async () => {
     const h = await harness({ maxRetries: 0 }, async () => { throw failedWithCause(); });
     try {
       expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(
-        "Subagent 'scout' stopped and returned no result: the model call failed (invalid_request, HTTP 400). " +
+        "Subagent 'scout' stopped and returned no result: the turn failed. " +
         'What it did before then stays done, and spawning it again starts its task over.',
       );
     } finally { await h.cleanup(); }
   });
 
-  test('an async run\'s failure notice carries the run\'s own words, never its cause\'s', async () => {
+  test('an async run\'s failure notice carries its class\'s words, never its cause\'s', async () => {
     const h = await harness({ maxRetries: 0 }, async () => { throw failedWithCause(); });
     const messages: string[] = [];
     const ctx = (h.subagent as unknown as { ctx: { addMessage(p: string, c: Array<{ text?: string }>): unknown } }).ctx;
@@ -310,7 +310,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       await outcome(h, 'scout');
       await until(() => messages.some((m) => m.startsWith("[Subagent 'scout' failed]")));
       expect(messages.filter((m) => m.startsWith("[Subagent 'scout' failed]"))).toEqual([
-        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the model call failed (invalid_request, HTTP 400). " +
+        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the turn failed. " +
         'What it did before then stays done, and spawning it again starts its task over.',
       ]);
       expect(messages.join('\n')).not.toContain('sentinel-9c1e');
@@ -373,7 +373,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
     acquire.acquireSlot = (kind, _ms, cancelled) => slot(kind, 50, cancelled);
     try {
       expect((await h.subagent.handleToolCall(spawn('r', { sync: true }))).error)
-        .toStartWith("Subagent 'r' stopped and returned no result: 429 Too Many Requests.");
+        .toStartWith("Subagent 'r' stopped and returned no result: the model call failed (rate_limit).");
       expect(sub.throttled).toBe(true);
       expect(h.subagent.getConcurrencyStatus()).toEqual({ configured: 1, effective: 1, active: 0, queued: 0 });
       await h.subagent.handleToolCall(spawn('a'));
@@ -462,5 +462,68 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       });
       expect((await h.subagent.handleToolCall(call('peek', {}))).data).toEqual({ message: 'None of your subagents is running now.' });
     } finally { await h.cleanup(); }
+  });
+});
+
+describe('a failure that isn\'t the host\'s own reaches the parent as fixed words by its class, never its message', () => {
+  /** Text a provider could have written, in the error's own message: 0.33.0's rejection carries it there. */
+  const SENTINEL = 'sentinel-4b7d provider said: invalid x-api-key';
+  const ONCE = 'What it did before then stays done, and spawning it again starts its task over.';
+  const stopped = (why: string) => `Subagent 'scout' stopped and returned no result: ${why}. ${ONCE}`;
+  const unslept = (retryAfterMs: number) => Object.assign(new Error(`${SENTINEL} (the provider asked to wait)`), { name: 'ProviderWaitNotSleptError', retryAfterMs });
+
+  const cases: Array<[label: string, err: () => Error, why: string]> = [
+    ['an error of no class the host knows', () => new Error(SENTINEL), 'the turn failed'],
+    ['a rate limit', () => new Error(`429 Too Many Requests: ${SENTINEL}`), 'the model call failed (rate_limit)'],
+    ['a transient failure', () => new Error(`503 overloaded: ${SENTINEL}`), 'the model call failed (timeout, network or server)'],
+    ['a stated wait it won\'t sleep', () => unslept(1_200_000), "the provider asked to wait 1200 s, which a subagent's run doesn't sleep"],
+    ['a stated wait that isn\'t a number', () => unslept(Number.NaN), "the provider's stated wait is not a number, so a subagent's run doesn't sleep it"],
+    ['a stated wait past what can be represented', () => unslept(Number.POSITIVE_INFINITY), "the provider asked to wait longer than can be represented, which a subagent's run doesn't sleep"],
+  ];
+  for (const [label, err, why] of cases) {
+    test(`${label}: a sync run's tool result says the class's words`, async () => {
+      const h = await harness({ maxRetries: 0 }, async () => { throw err(); });
+      try {
+        expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(stopped(why));
+      } finally { await h.cleanup(); }
+    });
+  }
+
+  test('an async run\'s failure notice says the same words, and none of the message', async () => {
+    const h = await harness({ maxRetries: 0 }, async () => { throw new Error(SENTINEL); });
+    const messages: string[] = [];
+    const ctx = (h.subagent as unknown as { ctx: { addMessage(p: string, c: Array<{ text?: string }>): unknown } }).ctx;
+    const add = ctx.addMessage.bind(ctx);
+    ctx.addMessage = (p, c) => { if (c[0]?.text) messages.push(c[0].text); return add(p, c); };
+    try {
+      await h.subagent.handleToolCall(spawn('scout'));
+      await outcome(h, 'scout');
+      await until(() => messages.some((m) => m.startsWith("[Subagent 'scout' failed]")));
+      expect(messages.filter((m) => m.startsWith("[Subagent 'scout' failed]"))).toEqual([`[Subagent 'scout' failed]\n\nError: ${stopped('the turn failed')}`]);
+      expect(messages.join('\n')).not.toContain('sentinel-4b7d');
+    } finally { await h.cleanup(); }
+  });
+
+  test('a run that couldn\'t be made says it didn\'t start, in fixed words, and the operator keeps its message', async () => {
+    const h = await harness();
+    try {
+      const fw = h.framework as unknown as { createEphemeralAgent: (c: unknown) => Promise<unknown> };
+      fw.createEphemeralAgent = async () => { throw new Error(SENTINEL); };
+      expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(
+        "Subagent 'scout' didn't start, so nothing ran: it couldn't be set up.",
+      );
+      expect(internal(h.subagent).activeSubagents.get('spawn-scout')).toMatchObject({ status: 'failed', statusMessage: SENTINEL });
+    } finally { await h.cleanup(); }
+  });
+
+  test('a failure that isn\'t retried logs its message for the operator before the parent reads the class\'s words', async () => {
+    const logged = spyOn(console, 'error').mockImplementation(() => {});
+    const h = await harness({ maxRetries: 0 }, async () => { throw new Error(SENTINEL); });
+    try {
+      await h.subagent.handleToolCall(spawn('scout', { sync: true }));
+      expect(logged.mock.calls.map((c) => String(c[0])).filter((line) => line.includes(SENTINEL))).toEqual([
+        `[subagent] scout stopped: ${SENTINEL}`,
+      ]);
+    } finally { logged.mockRestore(); await h.cleanup(); }
   });
 });

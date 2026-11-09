@@ -2739,10 +2739,30 @@ export class SubagentModule implements Module {
     return { parent, resultTo: parent === launched && !previous ? firstRoute : { to: parent, as: 'message' } };
   }
 
+  /** What a parent reads of a failure that isn't the host's own: fixed words by
+   *  the class the host's classifiers give it, never its message. Any
+   *  agent-framework's error can carry a provider's words there (0.33.0's
+   *  rejection is the provider's message), and the host can't tell them from
+   *  any other, so it shows none. */
+  private failureWords(err: unknown, run: RunProgress): string {
+    if (err instanceof Error) {
+      if (this.isUnsleptProviderWait(err)) {
+        const ms = (err as { retryAfterMs?: unknown }).retryAfterMs;
+        if (typeof ms !== 'number' || Number.isNaN(ms)) return "the provider's stated wait is not a number, so a subagent's run doesn't sleep it";
+        const asked = Number.isFinite(ms) ? `${Math.ceil(ms / 1000)} s` : 'longer than can be represented';
+        return `the provider asked to wait ${asked}, which a subagent's run doesn't sleep`;
+      }
+      if (this.isRateLimitError(err, run.agentName)) return 'the model call failed (rate_limit)';
+      if (this.isTransientError(err, run.agentName)) return 'the model call failed (timeout, network or server)';
+    }
+    return run.started ? 'the turn failed' : "it couldn't be set up";
+  }
+
   private failedRun(name: string, kind: 'spawn' | 'fork', err: unknown, run: RunProgress): Error {
     const who = kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`;
     const own = err instanceof SubagentFailure ? err : null;
-    const why = (own ? own.why : err instanceof Error ? err.message : String(err)).replace(/[\s.]+$/, '');
+    if (!own) console.error(`[subagent] ${name} ${run.started ? 'stopped' : "didn't start"}: ${err instanceof Error ? err.message : String(err)}`);
+    const why = (own ? own.why : this.failureWords(err, run)).replace(/[\s.]+$/, '');
     const remedy = own?.remedy ? ` ${own.remedy}` : '';
     if (!run.started) return new RunFailed(`${who} didn't start, so nothing ran: ${why}.${remedy}`, run.agentName);
     const tries = run.attempts > 1 ? ` after ${run.attempts} attempts` : '';

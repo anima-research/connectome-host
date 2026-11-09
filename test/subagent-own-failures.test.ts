@@ -342,7 +342,7 @@ describe('a framework failure is read without the ephemeral agent\'s name, and n
         const h = await harness({ maxRetries: 1 }, async (agent) => { throw watchdog(agent); });
         try {
           const res = await h.subagent.handleToolCall((kind === 'spawn' ? spawn : fork)(name, { sync: true }));
-          expect(res.error ?? '').toContain('failed to start inference within 15000ms');
+          expect(res.error ?? '').toBe(stoppedText(name, 'the turn failed', kind));
           expect(h.runs()).toBe(1);
           expect(h.subagent.getConcurrencyStatus().effective).toBe(5);
         } finally { await h.cleanup(); }
@@ -473,7 +473,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     const h = await harness({ maxRetries: 1 }, async () => { attempts++; await sleep(50); throw new Error('503 overloaded'); });
     try {
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 3000 }));
-      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: stoppedText('scout', '503 overloaded') });
+      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: stoppedText('scout', 'the model call failed (timeout, network or server)') });
       expect(attempts).toBe(1);
     } finally { await h.cleanup(); }
   }, 20_000);
@@ -524,7 +524,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
         await h.subagent.handleToolCall(kind === 'spawn' ? spawn('scout', { timeoutMs: 1500 }) : fork('scout', { timeoutMs: 1500 }));
         const out = await outcome(h, 'scout');
         const took = Date.now() - started;
-        expect(out).toEqual({ ok: false, text: stoppedText('scout', '429 Too Many Requests', kind) });
+        expect(out).toEqual({ ok: false, text: stoppedText('scout', 'the model call failed (rate_limit)', kind) });
         expect(h.runs()).toBe(1);
         const cooled = lines.map((l) => /cooling down (\d+)ms/.exec(l)?.[1]).filter((m) => m !== undefined).map(Number);
         expect(cooled).toHaveLength(1);

@@ -737,7 +737,7 @@ describe("a launch whose caller ends before it registers", () => {
       h.release();
       const told = () => h.parentMessages().find((m) => m.content.some((b) => b.text?.includes("[Subagent 'queued-3' failed, for 'caller', which has ended]")));
       await h.until(() => told() !== undefined, 'the failure reaches the primary', 20_000);
-      expect(told()!.content.map((b) => b.text ?? '').join('')).toContain('the request was refused');
+      expect(told()!.content.map((b) => b.text ?? '').join('')).toContain('stopped and returned no result: the turn failed.');
       expect(h.recordOf('queued-3')!.relationships.spawnedBy).toBe('parent');
     } finally { await h.cleanup(); }
   }, 40_000);
