@@ -332,3 +332,22 @@ test('summarizeCacheControls inventories markers without retaining content', () 
   };
   expect(summarizeCacheControls(raw)).toEqual({ count: 2, ttls: ['1h', 'default'] });
 });
+
+test("a reload prices a Claude Sonnet 5.5 call it reads back at the table it runs, at 0.05x under this version, and leaves a failed call unpriced", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'call-ledger-reprice-'));
+  try {
+    const row = (seconds: number, extra: Record<string, unknown>) => JSON.stringify({
+      type: 'call', kind: 'stream', timestamp: at(seconds), durationMs: 1000,
+      requestSummary: { model: 'claude-sonnet-5-5', messages: 10, cacheBreakpoints: 1, cacheTtls: ['5m'], lineage: 'a' },
+      rawResponse: { stop_reason: 'end_turn', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 } },
+      ...extra,
+    });
+    writeFileSync(join(dir, 'llm-calls.test.jsonl'), [row(0, {}), row(60, { error: 'overloaded' })].join('\n') + '\n');
+    const snapshot = new CallLedger({ dataDir: dir }).snapshot();
+    expect(snapshot.rows[0]!.cost).toMatchObject({ cacheRead: 0.1, pricingVersion: 'anthropic-public-2026-11-09' });
+    expect(snapshot.rows[1]!.cost).toBeUndefined();
+    expect(snapshot.summary.cost).toMatchObject({ pricedCalls: 1, unpricedCalls: 1, pricingVersion: 'anthropic-public-2026-11-09' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

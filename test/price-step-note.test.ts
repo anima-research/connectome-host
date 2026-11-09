@@ -59,6 +59,25 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
     expect(note).not.toContain('% over that');
   });
 
+  test('on frontdesk the count says it leaves out the provenance headers frontdesk adds after selecting, and names no budget under the step', () => {
+    const note = priceStepNote(onApi({ strategy: { type: 'frontdesk' } }), 'gpt-6.1-sol')!;
+    expect(note).toContain('kept for tools, leaving out the provenance headers frontdesk adds to messages from a server.');
+    expect(note).not.toContain('or less');
+    expect(priceStepNote(onApi(), 'gpt-6.1-sol')).not.toContain('provenance');
+  });
+
+  test('the system prompt is counted as the agent is given it, without the legacy fold paragraph the host takes off', () => {
+    const legacy = 'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
+      'so a reply of yours that shows no reasoning may still have had some.';
+    const prompt = 'You are a resident of the house, with long instructions of your own. '.repeat(200);
+    expect(priceStepNote(onApi({ systemPrompt: `${prompt}\n\n${legacy}` }), 'gpt-6.1-sol')).toBe(priceStepNote(onApi({ systemPrompt: prompt }), 'gpt-6.1-sol'));
+  });
+
+  test('the grace is shown to four significant figures, so a small one is still shown', () => {
+    expect(priceStepNote(onApi({ strategy: { overBudgetGraceRatio: 0.000049 } }), 'gpt-6.1-sol')).toContain('and up to 0.0049% over that');
+    expect(priceStepNote(onApi(), 'gpt-6.1-sol')).toContain('and up to 2% over that');
+  });
+
   test('no note on a strategy an extension builds, whose compile the host can\'t count', () => {
     const built = onApi();
     const extension = { ...built, agent: { ...built.agent, strategy: { type: 'my-extension-strategy' } } } as typeof built;

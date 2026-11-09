@@ -2,6 +2,7 @@ import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG, defaultTokenEstimator } from '@animala
 import { getDefaultModelLimits, type ModelLimits } from './model-limits.js';
 import { openaiLongContextStep } from './call-pricing.js';
 import { isBuiltinStrategyType } from './extensions.js';
+import { systemPromptFor } from './framework-agent-config.js';
 import { resolveProvider, type Recipe } from './recipe.js';
 
 const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
@@ -416,8 +417,12 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
   // Only the autobiographical strategies, frontdesk's included, allow the grace over the budget less the reply:
   // context-manager's passthrough compiles to it exactly.
   const x = read.raw ? read : { ...read, grace: 0 };
-  const system = systemPromptTokens(recipe);
+  // The prompt as the agent is given it, which drops the legacy fold paragraph.
+  const system = defaultTokenEstimator(systemPromptFor(recipe.agent.systemPrompt));
   const fixed = system + TOOLS_ROOM_TOKENS;
+  // frontdesk adds a provenance header to each copied message from a server after the selection, which the host
+  // can't size ahead, so the count leaves the headers out and names no budget under the step.
+  const frontdesk = recipe.agent.strategy?.type === 'frontdesk';
   const input = (b: number) => Math.max(0, limitOf(x, b - x.reply)) + fixed;
   if (input(budget) <= step.tokens) return undefined;
   const { long, short } = step;
@@ -437,9 +442,11 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
     while (input(under + 1) <= step.tokens) under++;
     while (under > 0 && input(under) > step.tokens) under--;
   } else if (under > 0) under = undefined;
-  const grace = x.grace > 0 ? `, and up to ${+(x.grace * 100).toFixed(2)}% over that` : '';
+  if (frontdesk && under !== 0) under = undefined;
+  const grace = x.grace > 0 ? `, and up to ${Number((x.grace * 100).toPrecision(4))}% over that` : '';
+  const headers = frontdesk ? `, leaving out the provenance headers frontdesk adds to messages from a server` : '';
   return (`[price] ${head}. ` +
     `${said} lets a request's input reach about ${n(input(budget))} tokens by the host's own count: the conversation it compiles to the budget ` +
-    `less agent.maxTokens (${n(x.reply)})${grace}, the system prompt (about ${n(system)}) and ${n(TOOLS_ROOM_TOKENS)} kept for tools. ` +
+    `less agent.maxTokens (${n(x.reply)})${grace}, the system prompt (about ${n(system)}) and ${n(TOOLS_ROOM_TOKENS)} kept for tools${headers}. ` +
     (under === undefined ? '' : under > 0 ? `A budget of ${n(under)} or less keeps a request's input to ${n(step.tokens)} tokens or fewer by that count.` : `No budget keeps a request's input to ${n(step.tokens)} tokens or fewer by that count, since the system prompt and the room kept for tools pass that alone.`)).trimEnd();
 }
