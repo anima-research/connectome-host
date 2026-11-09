@@ -35,7 +35,7 @@ import {
 } from '../mcpl-config.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
-import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from '../server-presentation.js';
+import { isServerPresentation, SERVER_PRESENTATIONS, SERVER_PRESENTATIONS_TEXT } from '../server-presentation.js';
 
 export interface McplAdminModuleConfig {
   timeZone?: string;
@@ -154,11 +154,6 @@ export class McplAdminModule implements Module {
     this.operatorServers = new Map(servers.map((server) => [server.id, serverProvisions(server)]));
   }
 
-  /** How agents are shown a server at first, as configured: by the agent's own
-   *  overlay entry where it defines the server (it replaces the operator's
-   *  definition whole, so without a presentation it's full), else by the
-   *  operator's definition, else in full; unknown while the overlay can't be
-   *  read, as its source is. Each agent's own switch since isn't shown. */
   private configuredPresentation(id: string, overlay: Record<string, AgentOverlayEntry> | null): string {
     if (overlay === null) return 'unknown';
     const own = entryOf(overlay, id);
@@ -232,8 +227,6 @@ export class McplAdminModule implements Module {
     return this.definitions();
   }
 
-  /** MCPL administration is rare: its tools live in agent-framework's built-in
-   *  toolset ("settings"), out of the tool list. */
   toolPlacement(_toolName: string): 'builtin' {
     return 'builtin';
   }
@@ -286,13 +279,13 @@ export class McplAdminModule implements Module {
             disabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool deny-list; wins over enabledTools.' },
             presentation: {
               type: 'string',
-              enum: ['full', 'tab', 'closed-tab'],
-              description: 'How you are shown this server. "full" (the default): its tools in your tool list. "tab": ' +
-                'connected and its events still arrive, but none of its tools is in your list until you ' +
-                'toolsets--open {server}; toolsets--close {server} hides them again. "closed-tab": like a tab, and it ' +
-                'starts disconnected whenever the host starts, until you toolsets--open {server}; the deploy itself ' +
-                'connects it now. A tab suits a server you use now and then; you can switch later with ' +
-                'toolsets--open/--close either way.',
+              enum: [...SERVER_PRESENTATIONS],
+              description: 'How the server starts out. "full" (the default): its tools in the tool list. "tab": ' +
+                'connected and its events still arrive, but its tools start out of the tool list: ' +
+                'toolsets--open {"server": id} lists them for toolsets--act, and toolsets--open ' +
+                '{"server": id, "full": true} puts them back in the list. "closed-tab": a tab that also starts out ' +
+                'disconnected; the deploy itself connects it now. If your tool list lacks toolsets--open or ' +
+                'toolsets--act, you aren\'t shown tabs.',
             },
           },
           required: ['id'],
@@ -484,6 +477,9 @@ export class McplAdminModule implements Module {
       }
     }
 
+    if (live.length > 0) {
+      notes.unshift('Each presentation= is as configured, which isn\'t necessarily how that server is shown to you now.');
+    }
     const closing = notes.map((n) => `\n${n}`).join('');
     if (lines.length === 0) {
       return ok(`No MCPL servers are loaded.${overlay ? ` Use ${DEPLOY} to add one.` : ''}${closing}`);
@@ -688,9 +684,13 @@ export class McplAdminModule implements Module {
         `${CONNECT_REMEDY}${note}`,
       );
     }
+    const tab = fields.presentation === 'tab' || fields.presentation === 'closed-tab'
+      ? ` It's saved as a ${fields.presentation}, whose tools start out of the tool list of an agent that may call ` +
+        `toolsets--open and toolsets--act: toolsets--open {"server": "${id}"} lists them for toolsets--act.`
+      : '';
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
-      `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
+      `${status.toolCount} tools under prefix ${status.toolPrefix}.${tab} ` +
       `Persisted to your agent overlay (survives host restarts).${note}`,
     );
   }

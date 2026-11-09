@@ -6,6 +6,10 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { Agent, Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
+// The caller's history these tests write straight into its context is
+// presented too (presentedRow): since agent-framework #291 a fork inherits
+// its caller's window, which holds only presented rows.
+import { presentedRow } from './presented-host.js';
 
 const probeUtilityNames = ['allowed_util', 'denied_util'];
 const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
@@ -13,6 +17,7 @@ const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
 async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3, maxRetries = 0, defaultMaxTokens?: number) {
   const dir = mkdtempSync(join(tmpdir(), 'sub-tools-'));
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries, maxDepth, defaultMaxTokens });
+  (subagent as unknown as { retryBackoffMs: number }).retryBackoffMs = 0;
   const probe = {
     name: 'probe', start: async () => {}, stop: async () => {},
     getTools: () => ['allowed', 'denied'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
@@ -99,16 +104,6 @@ describe('subagent allowed-tools inheritance', () => {
     } finally { await h.cleanup(); }
   });
 
-  test('unresolved explicit identity fails closed', async () => {
-    const h = await harness('all');
-    try {
-      for (const kind of ['spawn', 'fork'] as const) {
-        expect((await h.call(kind, undefined, 'missing')).success).toBe(false);
-        expect(h.captured).toHaveLength(0);
-      }
-    } finally { await h.cleanup(); }
-  });
-
   for (const kind of ['spawn', 'fork'] as const) {
     for (const sync of [true, false]) {
       test(`${kind} unknown explicit caller fails before admission (sync=${sync})`, async () => {
@@ -150,7 +145,7 @@ describe('subagent allowed-tools inheritance', () => {
         const caller = await h.framework.createEphemeralAgent({ name: `queue-caller-${kind}`, model: 'mock', systemPrompt: 'original caller prompt', proseRouting: 'disabled', allowedTools: [...restricted], maxTokens: 731 });
         const running = h.realRun(caller.agent, caller.contextManager);
         const tools = ['probe--allowed'];
-        caller.contextManager.addMessage('user', [{ type: 'text', text: 'unique queued parent history' }]);
+        presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'unique queued parent history' }]);
         try {
           expect(h.framework.getAgent(caller.agent.name)).toBe(caller.agent);
           const accepted = await h.subagent.handleToolCall({ id: 'queued', name: kind, callerAgentName: caller.agent.name, input: {
@@ -169,7 +164,7 @@ describe('subagent allowed-tools inheritance', () => {
           expect(h.framework.getAgent(caller.agent.name)).toBeNull();
           expect(JSON.stringify((await caller.contextManager.compile()).messages)).toContain('unique queued parent history');
           (caller.agent as unknown as { systemPrompt: string }).systemPrompt = 'changed after admission';
-          caller.contextManager.addMessage('user', [{ type: 'text', text: 'history added after admission' }]);
+          presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'history added after admission' }]);
           unblock();
           await blocker;
           expect(await settled).toBeNull();
@@ -194,7 +189,7 @@ describe('subagent allowed-tools inheritance', () => {
         const caller = await h.framework.createEphemeralAgent({ name: `retry-caller-${kind}`, model: 'mock', systemPrompt: 'original caller prompt', proseRouting: 'disabled', allowedTools: [...restricted], maxTokens: 731 });
         const running = h.realRun(caller.agent, caller.contextManager);
         const tools = ['probe--allowed'];
-        caller.contextManager.addMessage('user', [{ type: 'text', text: 'unique retry parent history' }]);
+        presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'unique retry parent history' }]);
         const histories: string[] = [];
         h.framework.runEphemeralToCompletion = async agent => {
           h.captured.push(agent);

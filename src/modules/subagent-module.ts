@@ -10,8 +10,8 @@ import type {
   TraceEvent,
   ContextManager,
 } from '@animalabs/agent-framework';
-import type { Agent, AgentFramework } from '@animalabs/agent-framework';
-import { KnowledgeStrategy, formatZonedDateTime, resolveTimeZone, storedInjectionMarkOf } from '@animalabs/agent-framework';
+import type { Agent, AgentFramework, AgentRecord } from '@animalabs/agent-framework';
+import { AgentStoppedError, KnowledgeStrategy, formatZonedDateTime, resolveTimeZone, storeOwnRow, storedInjectionMarkOf, taskForkSpec, workerSpec } from '@animalabs/agent-framework';
 import { compiledWithoutStoredInjections } from '../stored-injection.js';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
@@ -20,7 +20,7 @@ import { traceError } from '../state/turn-trace.js';
 import { shown } from './shown.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { hostNoteMetadata } from '../speaker.js';
-import { hasFoldLine, systemPromptFor, thinkingBindingSettings } from '../framework-agent-config.js';
+import { systemPromptFor, thinkingBindingSettings } from '../framework-agent-config.js';
 
 export interface SubagentModuleConfig {
   provider?: string;
@@ -34,6 +34,23 @@ export interface SubagentModuleConfig {
   maxPromptTokens?: number;
   maxExecutionMs?: number;
   maxRetries?: number;
+  /**
+   * What a stream is told at its start: `'full'` (default) — the launch as
+   * resolved and what happened at the start, and for a fork the "two
+   * parallel streams of you" framing; `'none'` — a spawn's task alone, and
+   * a fork's task after one line saying it is the forked stream. A policy:
+   * the stamp assumes one kind of mind's preferences.
+   */
+  orientation?: 'full' | 'none';
+  /**
+   * How far the lifecycle tools reach (list, stop, message, adopt, resume).
+   * `'subtree'` (default): a caller sees and acts on the subagents it
+   * started, and theirs — the scoping `peek` has (postmortem 2026-05-28 P3
+   * #8: sibling gossip caused retry storms). `'all'`: every subagent the
+   * host knows, though an orphan is still adopted only by an agent it was
+   * offered to or in whose tree it hung.
+   */
+  lifecycleReach?: 'subtree' | 'all';
   timeZone?: string;
 }
 
@@ -42,6 +59,8 @@ export interface SubagentResult {
   findings: string[];
   issues: string[];
   toolCallsCount: number;
+  /** The framework agent the attempt ran as (its registry record), when the run produced one. */
+  frameworkAgentName?: string;
 }
 
 interface SpawnInput {
@@ -85,6 +104,7 @@ export class SubagentTerminated extends Error {
     public readonly reason: 'cancelled' | 'zombie' | 'killed',
     public readonly partialOutput: string,
     message?: string,
+    public readonly stop: { by?: string; why?: string } = {},
   ) {
     super(message ?? `Subagent terminated: ${reason}`);
     this.name = 'SubagentTerminated';
@@ -97,6 +117,14 @@ class SubagentFailure extends Error {
     super(why);
   }
 }
+
+class RunFailed extends Error {
+  constructor(message: string, readonly frameworkAgentName?: string) {
+    super(message);
+  }
+}
+
+interface RunProgress { started: boolean; attempts: number; agentName?: string }
 
 /** setTimeout's longest delay; a longer one fires at once. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -118,6 +146,11 @@ const NOT_DONE: Record<string, string> = {
   concurrency: "The concurrency limit wasn't changed",
   peek: 'Nothing was shown',
   return: 'Nothing was returned',
+  list: 'Nothing was listed',
+  stop: 'Nothing was stopped',
+  message: 'Nothing was sent',
+  adopt: 'Nothing was adopted',
+  resume: 'Nothing was resumed',
 };
 
 const GIVE_MISSING: Record<string, Record<string, string>> = {
@@ -133,6 +166,10 @@ const GIVE_MISSING: Record<string, Record<string, string>> = {
   hud: {
     enabled: 'give true to show the fleet status summary, or false to stop showing it',
   },
+  stop: { name: 'name the subagent to stop' },
+  message: { name: 'name the subagent to message', text: 'give the message' },
+  adopt: { name: 'name the orphaned subagent to adopt' },
+  resume: { name: 'name the ended subagent to resume' },
 };
 
 type DeclaredType = 'string' | 'number' | 'boolean' | 'array';
@@ -161,9 +198,9 @@ function inputsOf(input: unknown): Record<string, unknown> | null {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== null));
 }
 
-function stopLabel(reason: SubagentTerminated['reason']): string {
+function stopLabel(reason: SubagentTerminated['reason'], stop: SubagentTerminated['stop'] = {}): string {
   switch (reason) {
-    case 'cancelled': return 'Stopped by user';
+    case 'cancelled': return `Stopped by ${stop.by ?? 'user'}${stop.why ? `: ${stop.why}` : ''}`;
     case 'killed': return "Stopped: its session stopped, as at a session switch or the host's exit";
     case 'zombie': return `Stopped: it showed no activity for over ${duration(ZOMBIE_THRESHOLD_MS)}, so the host reclaimed its slot`;
     default: return 'Stopped';
@@ -295,6 +332,16 @@ const FRAMEWORK_DEFAULT_MAX_TOKENS = 4096;
 
 const UNNAMED_LAUNCHER = 'agent';
 
+interface CancellationHandle {
+  reject: (err: Error) => void;
+  record?: string;
+  spawner?: string;
+}
+
+function startedBy(record: AgentRecord): string | undefined {
+  return record.orphaned?.formerParent.agent ?? record.relationships.spawnedBy;
+}
+
 // agent-framework stores an injection under participant
 // `system_context:<namespace>`.
 const FLEET_NAMESPACE = 'subagent-fleet';
@@ -355,7 +402,8 @@ export function undeliveredLaunchParts(
 const FALLBACK_SUBAGENT_MODEL = 'claude-haiku-4-5-20251001';
 const NO_PARENT_SYSTEM_PROMPT = 'You are a research assistant.';
 
-type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled';
+type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+type LaunchProseRouting = Exclude<ProseRouting, 'locked'>;
 
 /** What each prose-routing mode does with a stream's plain text, as
  *  agent-framework documents the mode (AgentConfig.proseRouting). As terse
@@ -368,13 +416,38 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
   hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
     'a leading ">>>destination" envelope routes that text to the destination it names instead',
   disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
+  locked: 'plain text goes to one destination on every turn, which only prose_locus moves, or is held as drafts',
 };
+
+/**
+ * The mode a subagent runs: its parent's, except that a locked parent's runs
+ * `disabled`. A locked parent's plain text goes only where it chose, and a
+ * subagent has no lock of its own, so it publishes no plain text at all; its
+ * result still reaches its parent, through subagent--return or its final
+ * text. Run as locus mode, a subagent that opens a channel would speak there,
+ * which no prose_locus move chose.
+ */
+function subagentProseRouting(parent: ProseRouting | undefined): LaunchProseRouting | undefined {
+  return parent === 'locked' ? 'disabled' : parent;
+}
 
 function proseRoutingEffect(mode: ProseRouting, shownHelp: boolean): string {
   return PROSE_ROUTING_EFFECT[mode] + (mode === 'explicit' && shownHelp ? '; the prose_help tool shows the syntax' : '');
 }
 
 const SLOT_TIMEOUT_MS = 120_000;
+
+/** The launch essentials a record keeps (`metadata.launch`), enough to rebuild a resumed incarnation's configuration. */
+interface ResumableLaunch {
+  kind: 'spawn' | 'fork';
+  model: string;
+  systemPrompt: string;
+  maxTokens: number;
+  maxStreamTokens: number;
+  proseRouting?: ProseRouting;
+  allowedTools: 'all' | string[];
+  strategy: SubagentLaunch['strategy'];
+}
 
 export interface SubagentLaunch {
   kind: 'fork' | 'spawn';
@@ -386,7 +459,6 @@ export interface SubagentLaunch {
   model: string;
   systemPrompt: string;
   systemPromptSource: 'parent' | 'override' | 'caller' | 'default';
-  systemPromptFoldLine?: 'added' | 'removed';
   maxTokens: number;
   maxStreamTokens: number;
   strategy: {
@@ -396,7 +468,7 @@ export interface SubagentLaunch {
     maxMessageTokens: number;
     compressionModel: string;
   };
-  proseRouting?: ProseRouting;
+  proseRouting?: LaunchProseRouting;
   tools: {
     allowed: 'all' | string[];
     requested?: string[];
@@ -405,6 +477,8 @@ export interface SubagentLaunch {
   };
   parent: null | {
     stream: string;
+    /** The parent's own prose routing, where it differs from the launch's (subagentProseRouting). */
+    proseRouting?: ProseRouting;
     model: string;
     maxTokens: number;
     maxStreamTokens: number;
@@ -505,6 +579,16 @@ export function toolDifferences(extra: readonly string[], missing: readonly stri
   return parts.join(', and ');
 }
 
+function proseRoutingNotInherited(launch: SubagentLaunch): string | undefined {
+  const routing = launch.proseRouting;
+  const parentRouting = launch.parent?.proseRouting;
+  if (routing === undefined || parentRouting === undefined) return undefined;
+  const allowed = launch.tools.allowed;
+  const withHelp = allowed === 'all' || (routing === 'explicit' && allowed.includes('prose_help'));
+  return `- Prose routing: ${routing}, since ${launch.kind === 'fork' ? 'the parent' : 'the caller'}'s is ${parentRouting} ` +
+    `and a subagent has no lock of its own: ${proseRoutingEffect(routing, withHelp)}.`;
+}
+
 export function describeSubagentLaunch(launch: SubagentLaunch): string {
   const fork = launch.kind === 'fork';
   const p = launch.parent;
@@ -558,20 +642,15 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
     settings.push({ name: 'provider connection', line: `- Provider: ${launch.provider ?? 'not stated by the host'}.` });
   }
 
-  const foldLine = launch.systemPromptFoldLine === 'added'
-    ? ", with the host's paragraph on folds added"
-    : launch.systemPromptFoldLine === 'removed'
-      ? ", with the host's paragraph on folds taken off"
-      : '';
   const promptText: Record<SubagentLaunch['systemPromptSource'], string> = {
-    parent: `- System prompt: the parent's${foldLine}.`,
-    override: p ? `- System prompt: overridden for this fork${foldLine}.` : `- System prompt: set for this fork${foldLine}.`,
-    caller: `- System prompt: supplied by the caller for this spawn${foldLine}.`,
-    default: `- System prompt: the default research-assistant prompt${foldLine}.`,
+    parent: "- System prompt: the parent's.",
+    override: p ? '- System prompt: overridden for this fork.' : '- System prompt: set for this fork.',
+    caller: '- System prompt: supplied by the caller for this spawn.',
+    default: '- System prompt: the default research-assistant prompt.',
   };
   settings.push({
     name: 'system prompt',
-    ...(fork && p ? { same: launch.systemPromptSource === 'parent' && launch.systemPromptFoldLine === undefined } : {}),
+    ...(fork && p ? { same: launch.systemPromptSource === 'parent' } : {}),
     line: promptText[launch.systemPromptSource],
   });
 
@@ -626,18 +705,21 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
   const shownHelp = explicit && allowed !== 'all' && allowed.includes('prose_help');
 
   const routing = launch.proseRouting;
+  const routingNotInherited = proseRoutingNotInherited(launch);
   settings.push(routing === undefined
     ? {
         name: 'prose routing',
         ...(p ? { uncompared: 'at-start' as const } : {}),
         line: "- Prose routing: not set by this launch, so the framework's default applies, stated when the stream starts.",
       }
-    : {
-        name: 'prose routing',
-        ...(p ? { same: true } : {}),
-        line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ` +
-          `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
-      });
+    : routingNotInherited !== undefined
+      ? { name: 'prose routing', same: false, line: routingNotInherited }
+      : {
+          name: 'prose routing',
+          ...(p ? { same: true } : {}),
+          line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ` +
+            `${proseRoutingEffect(routing, allowed === 'all' || shownHelp)}.`,
+        });
 
   const gets = (fromList: string, offeredAt: string): string => {
     if (!shownHelp) {
@@ -878,6 +960,24 @@ function withoutRawXml<T extends { rawXml?: string }>(block: T): T {
   return copy;
 }
 
+function resumeRefusal(name: string, ended: { reason: string; by?: string }): string | null {
+  switch (ended.reason) {
+    case 'host-restart':
+    case 'deadline':
+    case 'failed':
+      return null;
+    case 'stopped':
+      return `Nothing was resumed: '${name}' was stopped${ended.by ? ` by ${ended.by}` : ''}, and a resume would undo that stop. ` +
+        'Spawn or fork it again if its work is still wanted.';
+    case 'completed':
+      return `Nothing was resumed: '${name}' completed and returned its result. ` +
+        'A resume continues a run that a restart cut off, a time limit stopped, or that failed; spawn or fork it again for more work.';
+    default:
+      return `Nothing was resumed: '${name}' ended (${ended.reason}), and only a run that a restart cut off, a time limit stopped, ` +
+        'or that failed is resumed. Spawn or fork it again instead.';
+  }
+}
+
 function giveBackWhenCreated(creating: Promise<{ cleanup: () => void }>, name: string): void {
   creating.then(
     (created) => {
@@ -910,6 +1010,7 @@ export class SubagentModule implements Module {
   private consecutiveSuccesses = 0;
   private throttled = false;
   private rateLimitCooldownMs = 30_000;
+  private retryBackoffMs = 5_000;
 
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly REAPER_INTERVAL_MS = 60_000;
@@ -935,7 +1036,7 @@ export class SubagentModule implements Module {
   private callIdIndex = new Map<string, string>();
   private streamSubscribers = new Map<string, Set<SubagentStreamCallback>>();
   private lastInputTokens = new Map<string, number>();
-  private cancellationHandles = new Map<string, { reject: (err: Error) => void }>();
+  private cancellationHandles = new Map<string, CancellationHandle>();
   private agentDepths = new Map<string, number>();
 
   constructor(config: SubagentModuleConfig = {}) {
@@ -1092,7 +1193,7 @@ export class SubagentModule implements Module {
     }
     // framework.stop() rejects every ephemeral run before it stops modules,
     // so no attempt is live here.
-    for (const name of [...this.cancellationHandles.keys()]) this.stopTree(name, 'killed');
+    for (const name of [...this.cancellationHandles.keys()]) this.stopTree(name, { kind: 'killed' });
     this.ctx = null;
   }
 
@@ -1164,7 +1265,7 @@ export class SubagentModule implements Module {
             tools: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Tool names the subagent can use (default: inherit the caller\'s allowed tools). An explicit list can only narrow the caller\'s tools. To give the subagent a tool from the built-in "settings" toolset, list toolsets--open, toolsets--act and the tool\'s own name (module--name). Note: subagent--return is always included automatically.',
+              description: 'Tool names the subagent can use (default: inherit the caller\'s allowed tools). An explicit list can only narrow the caller\'s tools. A tool in the built-in "settings" toolset, such as agent_settings or a module utility like identity--status, is reached through toolsets--open and toolsets--act, so list both with the tool\'s own name. A list without both leaves the subagent no settings toolset: a framework or module tool it names is then in its tool list, and a utility it names can be called only by its own name, with no schema shown. Note: subagent--return is always included automatically.',
             },
             sync: { type: 'boolean', description: 'If true, block until subagent completes (default: false)' },
             timeoutMs: { type: 'number', description: `Milliseconds. A sync task still running then moves to the background and delivers its result as a message when it ends (default ${this.maxExecutionMs}). An async task is stopped once it has run that long, counted from when it starts after any wait for a concurrency slot, retries included; async tasks have no limit by default, so set one only for a hard deadline.` },
@@ -1225,6 +1326,52 @@ export class SubagentModule implements Module {
         },
       },
       {
+        name: 'list',
+        description:
+          'List the subagents within your reach (Dendrite registry) — the ones you started, and theirs: name, kind (worker or task-fork), who spawned it, its task, ' +
+          'whether it is running, ended (and why) or orphaned (its spawner ended), where its result goes, and how many of its results and messages ' +
+          "haven't reached their recipient yet (held), as when the recipient has ended. Ended ones are listed too.",
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'stop',
+        description: 'Stop a running subagent by name: its run is cancelled, its own subagents are stopped first, and what it spawned as task work is orphaned and offered for adoption.',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', description: 'The subagent to stop' }, reason: { type: 'string', description: "Why (optional); it's said with the run's stopped result, after who stopped it" } },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'message',
+        description: 'Send a message to a running subagent. It arrives in its context under your name, and wakes it.',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', description: 'The subagent to message' }, text: { type: 'string', description: 'The message' } },
+          required: ['name', 'text'],
+        },
+      },
+      {
+        name: 'adopt',
+        description: "Adopt an orphaned subagent (one whose spawner ended while it ran) that was offered to you — one from your own tree, or offered to you as the primary: you become its parent, its result comes to you, and results it already produced for the lost parent are delivered to you. " +
+          "An orphan that has since ended isn't restarted: adopting it delivers into your context, as messages under its name, only what it holds for a recipient that has gone; list's held also counts what it holds for one that is running.",
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', description: 'The orphaned subagent to adopt' } },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'resume',
+        description:
+          'Resume an ended subagent of yours from the context it left (a run a restart cut off, a time limit stopped, or that failed): a new incarnation under the same name, continuing on its own branch, with the tools it was launched with — never more than you have. A run that was stopped, that completed, or that ended any other way is not resumed; spawn or fork it again. Its result is delivered as a message when it ends, to you unless it was started with a route to someone else who is still running; the answer says which. Tools it ran before have had their effect.',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', description: 'The ended subagent to resume' } },
+          required: ['name'],
+        },
+      },
+      {
         name: 'return',
         description: 'Return results from a fork or spawn back to the parent agent. Call this when you have completed your task. Your result text will be delivered to the parent as the tool result of the fork/spawn call. This ends your execution.',
         inputSchema: {
@@ -1259,6 +1406,16 @@ export class SubagentModule implements Module {
         return this.handleConcurrency(input as { maxConcurrent?: number });
       case 'peek':
         return this.handlePeek(input as { name?: string }, caller);
+      case 'list':
+        return this.handleList(caller);
+      case 'stop':
+        return this.handleStop(input as { name: string; reason?: string }, caller);
+      case 'message':
+        return this.handleMessage(input as { name: string; text: string }, caller);
+      case 'adopt':
+        return this.handleAdopt(input as { name: string }, caller);
+      case 'resume':
+        return this.handleResume(input as { name: string }, caller);
       case 'return': {
         const result = input.result as string | undefined;
         const callerName = this.callIdIndex.get(call.id);
@@ -1349,10 +1506,13 @@ export class SubagentModule implements Module {
 
   // context-manager stores a long status in shards, in order, each carrying
   // the mark, so the newest row is its last shard, whose lines are runs'
-  // whenever the status lists one.
+  // whenever the status lists one. A row the agent's window doesn't hold
+  // (`held`, as an undone turn's is) is passed over: the newest status is the
+  // newest one the agent is shown.
   private newestStatusListsRun(agentName: string): boolean {
     const rows = this.ctx!.queryMessages({ participant: FLEET_PARTICIPANT }, { forAgent: agentName }).messages;
     for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]!.held) continue;
       const mark = storedInjectionMarkOf(rows[i]!.metadata);
       if (mark?.namespace !== FLEET_NAMESPACE || mark.agent !== agentName) continue;
       const text = rows[i]!.content.map((block) => (block.type === 'text' ? block.text : '')).join('');
@@ -1547,6 +1707,10 @@ export class SubagentModule implements Module {
     this.admitWaiters();
   }
 
+  private retryBackoff(attempt: number): number {
+    return Math.min(this.retryBackoffMs * (attempt + 1), 30_000);
+  }
+
   private onRateLimitHit(deadline?: number): number {
     const prev = this.effectiveConcurrent;
     this.effectiveConcurrent = Math.max(1, Math.floor(this.effectiveConcurrent / 2));
@@ -1575,12 +1739,12 @@ export class SubagentModule implements Module {
     }
   }
 
-  private cancelFor(name: string): { promise: Promise<never>; throwIfFired(): void; dispose(): void } {
+  private cancelFor(name: string, reachedBy: { record?: string; spawner?: string }): { promise: Promise<never>; throwIfFired(): void; dispose(): void } {
     let reject!: (err: Error) => void;
     let fired: Error | null = null;
     const promise = new Promise<never>((_, r) => { reject = r; });
     promise.catch(() => { });
-    const handle = { reject: (err: Error) => { fired ??= err; reject(err); } };
+    const handle: CancellationHandle = { reject: (err: Error) => { fired ??= err; reject(err); }, ...reachedBy };
     this.cancellationHandles.set(name, handle);
     return {
       promise,
@@ -1589,15 +1753,15 @@ export class SubagentModule implements Module {
     };
   }
 
-  private endTerminated(name: string, entry: ActiveSubagent, err: SubagentTerminated, waitedMs: number, started: boolean): SubagentResult {
+  private endTerminated(name: string, entry: ActiveSubagent, err: SubagentTerminated, waitedMs: number, run: RunProgress): SubagentResult {
     entry.status = 'cancelled';
     entry.completedAt = Date.now();
     entry.statusMessage = err.reason;
     const notice = this.concurrencyNotice(waitedMs);
-    const output = err.partialOutput || (started ? '(no output yet)' : '(no output: it was stopped before its run began, so nothing ran)');
-    const summary = notice + `[${stopLabel(err.reason)}] ` + output;
+    const output = err.partialOutput || (run.started ? '(no output yet)' : '(no output: it was stopped before its run began, so nothing ran)');
+    const summary = notice + `[${stopLabel(err.reason, err.stop)}] ` + output;
     this.emit(name, { type: 'done', summary, lastInputTokens: this.lastInputTokens.get(name) });
-    return { summary, findings: [], issues: [], toolCallsCount: entry.toolCallsCount };
+    return { summary, findings: [], issues: [], toolCallsCount: entry.toolCallsCount, ...(run.agentName !== undefined ? { frameworkAgentName: run.agentName } : {}) };
   }
 
   private claimName(name: string, parent: string | undefined): void {
@@ -1610,6 +1774,29 @@ export class SubagentModule implements Module {
     }
   }
 
+  private settleResumedParent(name: string, agentName: string, resumer: string): void {
+    const fw = this.framework;
+    const now = fw?.getAgentRecord(agentName);
+    if (!fw || !now || now.ended) return;
+    let parent = now.relationships.spawnedBy;
+    const resumerRecord = fw.getAgentRecord(resumer);
+    if (parent === undefined && resumer !== agentName && resumerRecord && resumerRecord.ended === undefined) {
+      try {
+        parent = fw.reparentAgent(agentName, resumer, { by: resumer }).relationships.spawnedBy;
+      } catch (err) {
+        console.error(`[subagent] ${name}: its spawner has ended, and making '${resumer}', who resumed it, its parent failed: ${err instanceof Error ? err.message : String(err)}; it runs with no parent`);
+      }
+    }
+    if (parent !== undefined) this.followParent(name, parent);
+    else this.unlinkParent(name);
+  }
+
+  private followParent(name: string, parent: string): void {
+    this.parentMap.set(name, parent);
+    this.launcherShownOf.set(name, this.shownName(parent));
+    this.persistState();
+  }
+
   private unlinkParent(name: string): void {
     this.parentMap.delete(name);
     this.launcherShownOf.delete(name);
@@ -1619,10 +1806,10 @@ export class SubagentModule implements Module {
     for (const [agentName, run] of this.runOfAttempt) if (run === name) this.runOfAttempt.delete(agentName);
   }
 
-  private endQueued(name: string, err: SubagentTerminated): SubagentResult {
-    const summary = `[${stopLabel(err.reason)}] (no output: it was still waiting for a concurrency slot, and never started)`;
+  private endQueued(name: string, err: SubagentTerminated, run?: RunProgress): SubagentResult {
+    const summary = `[${stopLabel(err.reason, err.stop)}] (no output: it was still waiting for a concurrency slot, and never started)`;
     this.emit(name, { type: 'done', summary });
-    return { summary, findings: [], issues: [], toolCallsCount: 0 };
+    return { summary, findings: [], issues: [], toolCallsCount: 0, ...(run?.agentName !== undefined ? { frameworkAgentName: run.agentName } : {}) };
   }
 
   /** agent-framework quotes the ephemeral agent's name in its own messages
@@ -1704,9 +1891,13 @@ export class SubagentModule implements Module {
     return count;
   }
 
-  private stopTree(displayName: string, reason: 'cancelled' | 'killed' = 'cancelled'): number {
+  /** Stop the run named and its children, each child rejected before its
+   *  parent (bottom-up, so their results propagate before the parent's), each
+   *  for `kind`: 'cancelled' for a cancel (by whom and why, when the registry's
+   *  stop says), 'killed' for the module's stop. Returns how many runs this stopped. */
+  private stopTree(displayName: string, stop: { kind?: 'cancelled' | 'killed'; by?: string; reason?: string } = {}): number {
     let stopped = 0;
-    for (const child of this.childrenOf(displayName)) stopped += this.stopTree(child, reason);
+    for (const child of this.childrenOf(displayName)) stopped += this.stopTree(child, stop);
 
     const handle = this.cancellationHandles.get(displayName);
     if (!handle) return stopped;
@@ -1720,9 +1911,26 @@ export class SubagentModule implements Module {
       } catch { }
     }
 
-    const cause = reason === 'cancelled' ? 'cancelled by user' : 'stopped as its module stopped';
-    handle.reject(new SubagentTerminated(reason, partial, `Subagent "${displayName}" ${cause}`));
+    const kind = stop.kind ?? 'cancelled';
+    const cause = kind === 'killed'
+      ? 'stopped as its module stopped'
+      : `${stop.by ? `stopped by ${stop.by}` : 'cancelled by user'}${stop.reason ? `: ${stop.reason}` : ''}`;
+    handle.reject(new SubagentTerminated(kind, partial, `Subagent "${displayName}" ${cause}`, { ...(stop.by ? { by: stop.by } : {}), ...(stop.reason ? { why: stop.reason } : {}) }));
     this.cancellationHandles.delete(displayName);
+    // A cancel ends the registry record as stopped, by whom, before
+    // the run's own rejection could end it as failed (Dendrite): task work it
+    // spawned is orphaned and offered for adoption there. The module's own
+    // stop writes nothing: a run the host's stop cuts off is the framework's
+    // to end, and it leaves the record live on purpose, for the next boot to
+    // end as interrupted and tell its result recipient — not stopped by an
+    // operator who cancelled nothing, with its work orphaned.
+    if (live && kind === 'cancelled') {
+      try {
+        const fw = this.framework;
+        const record = fw?.getAgentRecord(live.frameworkAgentName);
+        if (fw && record && !record.ended) fw.stopAgent(live.frameworkAgentName, { by: stop.by ?? 'operator', reason: stop.reason ?? 'cancelled' });
+      } catch { /* the run's own end settles the record */ }
+    }
     return stopped + 1;
   }
 
@@ -2001,7 +2209,7 @@ export class SubagentModule implements Module {
       systemPromptSource = 'caller';
     } else if (
       input.systemPrompt !== undefined
-      && (!parentAgent || systemPromptFor(input.systemPrompt, model, this.config.formatter) !== systemPromptFor(parentAgent.systemPrompt, model, this.config.formatter))
+      && (!parentAgent || systemPromptFor(input.systemPrompt) !== systemPromptFor(parentAgent.systemPrompt))
     ) {
       systemPrompt = input.systemPrompt;
       systemPromptSource = 'override';
@@ -2013,7 +2221,7 @@ export class SubagentModule implements Module {
       systemPromptSource = 'default';
     }
 
-    const given = systemPromptFor(systemPrompt, model, this.config.formatter);
+    const given = systemPromptFor(systemPrompt);
 
     const requestedTools = kind === 'spawn' ? (input as SpawnInput).tools : undefined;
     const allowed = this.filterToolNames(requestedTools, callerDepth, parentAgent);
@@ -2030,7 +2238,8 @@ export class SubagentModule implements Module {
     const parentRuntime = parentAgent?.getRuntimeSettings();
 
     // Without a caller, the stream takes agent-framework's default, 'locus'.
-    const proseRouting = parentAgent?.proseRouting;
+    const parentRouting = parentAgent?.proseRouting;
+    const proseRouting = subagentProseRouting(parentRouting);
     return {
       kind,
       name: input.name,
@@ -2041,9 +2250,6 @@ export class SubagentModule implements Module {
       model,
       systemPrompt: given,
       systemPromptSource,
-      ...(hasFoldLine(given) !== hasFoldLine(systemPrompt)
-        ? { systemPromptFoldLine: hasFoldLine(given) ? 'added' as const : 'removed' as const }
-        : {}),
       maxTokens: this.resolveMaxTokens(input.maxTokens, callerAgentName),
       maxStreamTokens: SUBAGENT_STREAM_TOKENS,
       strategy: { ...SUBAGENT_STRATEGY, compressionModel: model },
@@ -2057,6 +2263,7 @@ export class SubagentModule implements Module {
       parent: parentAgent
         ? {
             stream: parentAgent.name,
+            ...(parentRouting !== undefined && parentRouting !== proseRouting ? { proseRouting: parentRouting } : {}),
             model: parentAgent.model,
             maxTokens: parentAgent.maxTokens,
             maxStreamTokens: parentAgent.maxStreamTokens,
@@ -2071,25 +2278,47 @@ export class SubagentModule implements Module {
     };
   }
 
-  private ephemeralAgentConfig(launch: SubagentLaunch, agentName: string) {
+  /** The registry metadata a launch leaves on its record: what the tree, the lifecycle tools and a resume read. */
+  private launchMetadata(launch: SubagentLaunch, input: { name: string; task: string }, depth: number) {
     return {
-      name: agentName,
+      subagent: input.name,
+      task: input.task,
+      depth,
+      launch: this.storedLaunch(launch),
+    };
+  }
+
+  /** The launch as its record stores it: what a resume reads back, and what a launch and a resume both build their agent from. */
+  private storedLaunch(launch: SubagentLaunch): ResumableLaunch {
+    return {
+      kind: launch.kind,
       model: launch.model,
       systemPrompt: launch.systemPrompt,
       maxTokens: launch.maxTokens,
-      ...(launch.proseRouting !== undefined ? { proseRouting: launch.proseRouting } : {}),
       maxStreamTokens: launch.maxStreamTokens,
-      ...thinkingBindingSettings(launch.model, launch.provider),
-      strategy: new KnowledgeStrategy({
-        headWindowTokens: launch.strategy.headWindowTokens,
-        recentWindowTokens: launch.strategy.recentWindowTokens,
-        compressionModel: launch.strategy.compressionModel,
-        autoTickOnNewMessage: true,
-        maxMessageTokens: launch.strategy.maxMessageTokens,
-        summaryParticipant: agentName,
-      }),
-      allowedTools: launch.tools.allowed === 'all' ? 'all' as const : [...launch.tools.allowed],
+      ...(launch.proseRouting !== undefined ? { proseRouting: launch.proseRouting } : {}),
+      allowedTools: launch.tools.allowed === 'all' ? 'all' : [...launch.tools.allowed],
+      strategy: launch.strategy,
     };
+  }
+
+  /** The fork's result head: #213's intention framing, or under `orientation: 'none'` the bare fact that this stream is the fork, with its prose routing where that isn't its parent's. */
+  private forkHead(depth: number, orientation: string): string {
+    if (this.config.orientation !== 'none') return intentionFramedHead(depth, this.maxDepth, orientation);
+    return orientation
+      ? `You are the forked stream.\n${orientation}\nYour intention for this stream follows.`
+      : `You are the forked stream. Your intention for this stream follows.`;
+  }
+
+  /** The fork call's result as the fork reads it: #213's intention-framed result, or under `orientation: 'none'` the head and the task alone. */
+  private forkResult(name: string, task: string, depth: number, orientation: string): string {
+    return this.config.orientation === 'none'
+      ? `${this.forkHead(depth, orientation)}\n\n${task}`
+      : buildIntentionFramedForkResult(name, task, depth, this.maxDepth, orientation);
+  }
+
+  private ephemeralAgentConfig(launch: SubagentLaunch, agentName: string) {
+    return { name: agentName, ...this.agentConfig(this.storedLaunch(launch), agentName) };
   }
 
   /**
@@ -2111,6 +2340,12 @@ export class SubagentModule implements Module {
     const names = tools.map((t) => t.name);
     if (agent.proseRouting === 'explicit' && agent.canUseTool('prose_help')) names.push('prose_help');
     return names;
+  }
+
+  private requestTools(agent: { name: string; canUseTool(name: string): boolean }): ToolDefinition[] {
+    const framework = this.getFramework();
+    const canUseMeta = agent.canUseTool('toolsets--open') && agent.canUseTool('toolsets--act');
+    return framework.presentedTools(agent.name, framework.getAllTools().filter((t) => agent.canUseTool(t.name)), canUseMeta);
   }
 
   private spawnInstead(canSpawn: boolean, withCap = false): string {
@@ -2153,6 +2388,7 @@ export class SubagentModule implements Module {
     },
     inherited: SubagentStart['inherited'],
   ): string {
+    if (this.config.orientation === 'none') return launch.kind === 'fork' ? proseRoutingNotInherited(launch) ?? '' : '';
     const framework = this.getFramework();
     let parentTools: string[] | undefined;
     let parentAgentSettings: AgentSettings | undefined;
@@ -2295,33 +2531,65 @@ export class SubagentModule implements Module {
   private deliverAsyncResult(name: string, result: SubagentResult, launcher: string | undefined, launcherShown = launcher): void {
     this.asyncHandles.delete(name);
     if (!this.ctx) return;
-
-    const wake = this.addForLauncher(launcher, launcherShown, name, 'returned', result.summary);
-    if (wake === null) return;
-    this.ctx.pushEvent({
-      type: 'inference-request',
-      agentName: wake,
-      reason: `subagent-completed:${name}`,
-      source: 'subagent',
-    });
+    this.deliverOutcome(name, 'returned', result.summary, result.frameworkAgentName, launcher, launcherShown);
   }
 
   private deliverAsyncError(name: string, err: unknown, launcher: string | undefined, launcherShown = launcher): void {
     this.asyncHandles.delete(name);
     if (!this.ctx) return;
-
     const message = err instanceof Error ? err.message : String(err);
-    const wake = this.addForLauncher(launcher, launcherShown, name, 'failed', `Error: ${message}`);
-    if (wake === null) return;
-    this.ctx.pushEvent({
-      type: 'inference-request',
-      agentName: wake,
-      reason: `subagent-failed:${name}`,
-      source: 'subagent',
-    });
+    this.deliverOutcome(name, 'failed', `Error: ${message}`, err instanceof RunFailed ? err.frameworkAgentName : undefined, launcher, launcherShown);
   }
 
-  private addForLauncher(launcher: string | undefined, launcherShown: string | undefined, name: string, outcome: 'returned' | 'failed', body: string): string | null {
+  private deliverOutcome(
+    name: string,
+    outcome: 'returned' | 'failed',
+    body: string,
+    from: string | undefined,
+    launcher: string | undefined,
+    launcherShown: string | undefined,
+  ): void {
+    const ctx = this.ctx!;
+    const reason = `subagent-${outcome === 'returned' ? 'completed' : 'failed'}:${name}`;
+    const parentAgentName = launcher ?? UNNAMED_LAUNCHER;
+    const fw = this.framework;
+    const record: AgentRecord | null = from !== undefined && fw ? fw.getAgentRecord(from) : null;
+    const route = record?.relationships.resultTo;
+    const to = route?.to ?? parentAgentName;
+    const toRecord: AgentRecord | null = fw ? fw.getAgentRecord(to) : null;
+    const launcherRecord: AgentRecord | null = launcher !== undefined && fw ? fw.getAgentRecord(launcher) : null;
+    const forEnded = launcherRecord?.ended !== undefined && to !== parentAgentName ? `, for '${launcherShown ?? launcher}', which has ended` : undefined;
+    if (fw && record) {
+      const content = [{ type: 'text' as const, text: `[Subagent '${name}' ${outcome}${forEnded ?? ''}]\n\n${body}` }];
+      try {
+        if (route?.as === 'message') {
+          const delivered = fw.deliverAgentResult(record.name, content);
+          if (!delivered.delivered) this.noteHeld(name, outcome, delivered.to);
+          return;
+        }
+        if (toRecord) {
+          if (!fw.sendAgentMessage(record.name, to, content, { wake: true }).delivered) this.noteHeld(name, outcome, to);
+          return;
+        }
+      } catch (err) {
+        console.error(`[subagent] ${name}'s ${outcome === 'returned' ? 'result' : 'failure'} by its route: ${err instanceof Error ? err.message : String(err)}; telling ${to} directly`);
+      }
+    }
+    const wake = to === parentAgentName
+      ? this.addForLauncher(launcher, launcherShown, name, outcome, body)
+      : this.addForLauncher(to, this.shownName(to), name, outcome, body, forEnded);
+    if (wake === null) return;
+    ctx.pushEvent({ type: 'inference-request', agentName: wake, reason, source: 'subagent' });
+  }
+
+  private noteHeld(name: string, outcome: 'returned' | 'failed', to: string): void {
+    console.error(
+      `[subagent] '${name}' ${outcome}, and its ${outcome === 'returned' ? 'result' : 'failure'} is held as mail for '${to}', ` +
+      `${this.framework?.getAgentRecord(to)?.ended !== undefined ? 'which has ended' : 'which this host isn\'t running now'}; subagent--list counts it on '${name}'.`,
+    );
+  }
+
+  private addForLauncher(launcher: string | undefined, launcherShown: string | undefined, name: string, outcome: 'returned' | 'failed', body: string, forWhom?: string): string | null {
     const ctx = this.ctx!;
     const say = (forWhom: string, forAgent?: string): void => {
       const content = [{ type: 'text' as const, text: `[Subagent '${name}' ${outcome}${forWhom}]\n\n${body}` }];
@@ -2338,7 +2606,7 @@ export class SubagentModule implements Module {
     const listed = new Set(ctx.getAgents().map((agent) => agent.name));
     const shown = launcherShown ?? launcher;
     if (listed.has(launcher)) {
-      say(launcher === this.config.parentAgentName ? '' : `, for '${shown}'`, launcher);
+      say(forWhom ?? (launcher === this.config.parentAgentName ? '' : `, for '${shown}'`), launcher);
       return launcher;
     }
     // agent-framework lists an attempt's agent only while that attempt runs,
@@ -2350,23 +2618,103 @@ export class SubagentModule implements Module {
         say(`, for '${shown}': launched by an earlier attempt`, current);
         return current;
       }
-      say(`, for '${shown}': launched by an attempt that has ended`);
-      return null;
     }
-    say(`, for '${shown}', which has ended`);
+    // The launcher, or the attempt that launched the run, has ended: the row
+    // is written for the nearest agent up the launcher's tree that
+    // agent-framework lists, else for the primary, and wakes nobody (#291).
+    // Written for no agent, it would be stamped for every resident, so each
+    // of them would be shown a run that was none of theirs.
+    const why = run !== undefined ? `, for '${shown}': launched by an attempt that has ended` : `, for '${shown}', which has ended`;
+    const reader = this.nearestListedAbove(launcher, listed);
+    if (reader !== undefined) say(why, reader);
+    else say(why);
     return null;
   }
 
-  private failedRun(name: string, kind: 'spawn' | 'fork', err: unknown, run: { started: boolean; attempts: number }): Error {
+  /**
+   * The nearest agent above `agent` in its tree that agent-framework lists:
+   * an ancestor itself, or the current attempt of an ancestor's run that
+   * goes on, else the primary (the first listed agent when none is). Up the
+   * tree by the registry's spawner links, an orphan's through its former
+   * parent, as agent-framework offers an orphan's candidates; and for an
+   * attempt of a run this module holds, by the run's launcher. Undefined
+   * only when no agent is listed.
+   *
+   * attemptEdges climbs the same tree by other rules, and for one run the
+   * two can name different agents. It picks a retry attempt's parent and
+   * resultTo, where the attempt's result goes when the attempt ends, which
+   * the registry records with it. So it follows the registry's records alone,
+   * takes the first agent whose record is missing or hasn't ended, and falls
+   * back to the module's parentAgentName, or to no parent once that has
+   * ended. This rule picks the reader of one row written now, for a run with
+   * no route (addForLauncher): it takes only an agent agent-framework
+   * lists, since a write for any other is refused, steps from an ended
+   * attempt to its run's live attempt, and falls back to the framework's
+   * primary, then to the first listed agent. Where they differ, each names
+   * an agent that can take what is written for it (a row written for a
+   * run's agent goes to the primary if that agent ends without reading it:
+   * agent-framework's PRIMARY_IF_UNREAD), so the difference is in who reads
+   * it, not in whether it is read.
+   */
+  private nearestListedAbove(agent: string, listed: ReadonlySet<string>): string | undefined {
+    const seen = new Set<string>([agent]);
+    for (let cur = this.launcherOf(agent); cur !== undefined && cur !== '' && !seen.has(cur); cur = this.launcherOf(cur)) {
+      seen.add(cur);
+      if (listed.has(cur)) return cur;
+      const run = this.runOfAttempt.get(cur);
+      const current = run === undefined ? undefined : this.liveSubagents.get(run)?.frameworkAgentName;
+      if (current !== undefined && listed.has(current)) return current;
+    }
+    const primary = this.framework?.getPrimaryAgentName() ?? null;
+    if (primary !== null && listed.has(primary)) return primary;
+    return listed.values().next().value;
+  }
+
+  /** Who launched `agent`: its record's spawner, else, for an attempt of a run still going on, the run's launcher. */
+  private launcherOf(agent: string): string | undefined {
+    const record = this.framework?.getAgentRecord(agent) ?? null;
+    const spawner = record?.orphaned?.formerParent.agent ?? record?.relationships.spawnedBy;
+    if (spawner !== undefined) return spawner;
+    const run = this.runOfAttempt.get(agent);
+    return run === undefined ? undefined : this.parentMap.get(run);
+  }
+
+  private attemptEdges(run: RunProgress, launched: string | undefined, sync: boolean | undefined): { parent: string; resultTo: { to: string; as: 'tool-result' | 'message' } } | null {
+    if (launched === undefined) return null;
+    const fw = this.framework;
+    const firstRoute = { to: launched, as: sync ? 'tool-result' as const : 'message' as const };
+    if (!fw) return { parent: launched, resultTo: firstRoute };
+    const previous = run.agentName !== undefined ? fw.getAgentRecord(run.agentName) : null;
+    const seen = new Set<string>();
+    let parent: string | undefined;
+    for (let at: string | undefined = previous?.relationships.spawnedBy ?? launched; at !== undefined && !seen.has(at);) {
+      seen.add(at);
+      const record: AgentRecord | null = fw.getAgentRecord(at);
+      if (!record || !record.ended) { parent = at; break; }
+      at = record.orphaned?.formerParent.agent ?? record.relationships.spawnedBy;
+    }
+    if (parent === undefined) {
+      const primary = this.config.parentAgentName;
+      const record = primary !== undefined ? fw.getAgentRecord(primary) : null;
+      if (primary === undefined || !record || record.ended) return null;
+      parent = primary;
+    }
+    const route = previous?.relationships.resultTo;
+    if (route && route.to === parent) return { parent, resultTo: { ...route } };
+    return { parent, resultTo: parent === launched && !previous ? firstRoute : { to: parent, as: 'message' } };
+  }
+
+  private failedRun(name: string, kind: 'spawn' | 'fork', err: unknown, run: RunProgress): Error {
     const who = kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`;
     const own = err instanceof SubagentFailure ? err : null;
     const why = (own ? own.why : err instanceof Error ? err.message : String(err)).replace(/[\s.]+$/, '');
     const remedy = own?.remedy ? ` ${own.remedy}` : '';
-    if (!run.started) return new Error(`${who} didn't start, so nothing ran: ${why}.${remedy}`);
+    if (!run.started) return new RunFailed(`${who} didn't start, so nothing ran: ${why}.${remedy}`, run.agentName);
     const tries = run.attempts > 1 ? ` after ${run.attempts} attempts` : '';
-    return new Error(
+    return new RunFailed(
       `${who} stopped${tries} and returned no result: ${why}. What it did before then stays done, and ` +
       `${kind === 'fork' ? 'forking' : 'spawning'} it again starts its task over.${remedy}`,
+      run.agentName,
     );
   }
 
@@ -2419,7 +2767,9 @@ export class SubagentModule implements Module {
       if (autoTimer) clearTimeout(autoTimer);
       this.detachableHandles.delete(name);
 
+      const callerEnded = launcher !== undefined && this.framework?.getAgentRecord(launcher)?.ended !== undefined;
       if (winner.kind === 'completed') {
+        if (callerEnded) this.deliverAsyncResult(name, winner.result, launcher, launcherShown);
         return {
           success: true,
           data: launchText ? { ...winner.result, launch: launchText } : winner.result,
@@ -2428,6 +2778,7 @@ export class SubagentModule implements Module {
 
       if (winner.kind === 'error') {
         const err = winner.error;
+        if (callerEnded) this.deliverAsyncError(name, err, launcher, launcherShown);
         return {
           success: false,
           isError: true,
@@ -2475,6 +2826,390 @@ export class SubagentModule implements Module {
     return this.detachableHandles.size > 0;
   }
 
+  // ---------------------------------------------------------------------------
+  // Lifecycle tools over the Dendrite registry (agent-framework#546): every
+  // launch leaves a record naming the subagent (`metadata.subagent`), its
+  // spawner and its result route, so these read and act on the registry.
+  // ---------------------------------------------------------------------------
+
+  /** The registry records this module's launches left, newest incarnation of each name first. */
+  private subagentRecords(includeEnded: boolean): AgentRecord[] {
+    const fw = this.framework;
+    if (!fw) return [];
+    return fw.listAgents({ includeEnded })
+      .filter((r) => typeof (r.metadata as { subagent?: unknown } | undefined)?.subagent === 'string')
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /** The live record under a subagent's display name — or its framework name, as the adoption offer gives it — else its most recent ended one. */
+  private recordNamed(name: string): AgentRecord | null {
+    const all = this.subagentRecords(true).filter((r) => (r.metadata as { subagent: string }).subagent === name || r.name === name);
+    return all.find((r) => !r.ended) ?? all[0] ?? null;
+  }
+
+  private lookUp(name: string): { record: AgentRecord | null; display: string; byAgent: boolean } {
+    const byAgent = this.framework?.getAgentRecord(name) ?? null;
+    const display = (byAgent?.metadata as { subagent?: unknown } | undefined)?.subagent;
+    if (byAgent && typeof display === 'string') return { record: byAgent, display, byAgent: true };
+    return { record: this.recordNamed(name), display: name, byAgent: false };
+  }
+
+  private describeRecord(r: AgentRecord): Record<string, unknown> {
+    const meta = r.metadata as { subagent: string; task?: string; depth?: number };
+    const held = this.framework?.listHeldMail({ from: r.name }).length ?? 0;
+    return {
+      name: meta.subagent,
+      agent: r.name,
+      kind: r.kind,
+      incarnation: r.incarnation,
+      ...(r.relationships.spawnedBy ? { spawnedBy: r.relationships.spawnedBy } : {}),
+      ...(meta.task !== undefined ? { task: meta.task } : {}),
+      ...(meta.depth !== undefined ? { depth: meta.depth } : {}),
+      status: r.ended ? `ended: ${r.ended.reason}${r.ended.by ? ` (by ${r.ended.by})` : ''}` : r.orphaned ? 'running, orphaned' : 'running',
+      ...(r.orphaned ? { orphanedSince: new Date(r.orphaned.since).toISOString(), formerParent: r.orphaned.formerParent.agent } : {}),
+      ...(r.relationships.resultTo ? { resultTo: r.relationships.resultTo } : {}),
+      ...(held > 0 ? { held } : {}),
+      createdAt: new Date(r.createdAt).toISOString(),
+    };
+  }
+
+  /**
+   * Whether a record is within the caller's reach: the caller itself, or a
+   * descendant of it through the registry's spawner links (an orphan through
+   * its former parent). Under `lifecycleReach: 'all'`, everything is. The
+   * same scoping `peek` has (postmortem 2026-05-28 P3 #8): a sibling is out
+   * of reach, and so is a caller's own parent.
+   */
+  private inReach(caller: string | undefined, record: AgentRecord): boolean {
+    // No caller is never an agent's call: the framework attributes every
+    // call it dispatches (`callerAgentName`, set at dispatch, not by the
+    // caller). An unattributed call is the host's own path — the TUI, a
+    // slash command, headless — acting as the operator, with full reach,
+    // as a launch without a caller runs for the configured parent.
+    if ((this.config.lifecycleReach ?? 'subtree') === 'all' || !caller) return true;
+    return this.inTree(caller, record);
+  }
+
+  private inTree(caller: string, record: AgentRecord): boolean {
+    const fw = this.framework;
+    if (!fw) return false;
+    const seen = new Set<string>();
+    let cur: string | undefined = record.name;
+    while (cur && !seen.has(cur)) {
+      if (cur === caller) return true;
+      seen.add(cur);
+      const r: AgentRecord | null = cur === record.name ? record : fw.getAgentRecord(cur);
+      cur = r?.orphaned?.formerParent.agent ?? r?.relationships.spawnedBy;
+    }
+    return false;
+  }
+
+  private reachOfRun(caller: string | undefined, name: string): { inReach: boolean; by: string | undefined } {
+    const fw = this.framework;
+    const handle = this.cancellationHandles.get(name);
+    const live = this.liveSubagents.get(name);
+    const ownName = live?.frameworkAgentName ?? handle?.record;
+    const own = fw && ownName !== undefined ? fw.getAgentRecord(ownName) ?? null : null;
+    const by = own ? startedBy(own) : handle?.spawner;
+    if ((this.config.lifecycleReach ?? 'subtree') === 'all' || !caller) return { inReach: true, by };
+    if (own) return { inReach: this.inTree(caller, own), by };
+    if (!fw || by === undefined) return { inReach: false, by };
+    const spawner = fw.getAgentRecord(by) ?? null;
+    return { inReach: by === caller || (spawner !== null && this.inTree(caller, spawner)), by };
+  }
+
+  private outOfReach(verb: string, name: string, by: string | undefined): ToolResult {
+    return {
+      success: false,
+      isError: true,
+      error: `Nothing was ${verb}: '${name}' is not in your tree${by ? ` (it was started by ${by})` : ''}. You reach the subagents you started, and theirs.`,
+    };
+  }
+
+  /**
+   * What a launch's tool list has that the caller's own rule does not: a
+   * resume gives the new incarnation its launch's tools, and a caller
+   * cannot hand out more than it has (the rule a spawn enforces at launch).
+   * Null when nothing exceeds it.
+   */
+  private beyondCallerRule(caller: string | undefined, launchTools: 'all' | string[]): string | null {
+    const rule = (caller ? this.framework?.getAgent(caller)?.allowedTools : undefined) ?? 'all';
+    if (rule === 'all') return null;
+    if (launchTools === 'all') return 'all tools, where your own list is limited';
+    const mine = new Set(rule);
+    const extra = launchTools.filter((tool) => tool !== 'subagent--return' && !mine.has(tool));
+    return extra.length ? extra.join(', ') : null;
+  }
+
+  private handleList(caller?: string): ToolResult {
+    if (!this.framework) return { success: false, isError: true, error: 'Nothing was listed: the subagent module has no framework yet.' };
+    const records = this.subagentRecords(true).filter((r) => this.inReach(caller, r));
+    return {
+      success: true,
+      data: {
+        subagents: records.map((r) => this.describeRecord(r)),
+        running: records.filter((r) => !r.ended).length,
+        ...((this.config.lifecycleReach ?? 'subtree') === 'subtree' ? { reach: 'the subagents you started, and theirs' } : {}),
+      },
+    };
+  }
+
+  private handleStop(input: { name: string; reason?: string }, caller?: string): ToolResult {
+    const fw = this.framework;
+    if (!fw) return { success: false, isError: true, error: 'Nothing was stopped: the subagent module has no framework yet.' };
+    const { record: found, display: name, byAgent } = this.lookUp(input.name);
+    const stop = { ...(caller ? { by: caller } : {}), ...(input.reason ? { reason: input.reason } : {}) };
+    // A run this module drives is stopped through its own cancel (its
+    // children first), which ends the registry record as the framework
+    // tears the run down; any other live record under the name is stopped
+    // in the registry directly.
+    const handle = this.cancellationHandles.get(name);
+    const itsRun = !byAgent || !found?.ended || handle?.record === found?.name;
+    if (handle && itsRun) {
+      const reach = this.reachOfRun(caller, name);
+      if (!reach.inReach) return this.outOfReach('stopped', input.name, reach.by);
+      const stopped = this.stopTree(name, stop);
+      return { success: true, data: { stopped: name, runs: stopped, note: 'Its run is cancelled; task work it spawned is orphaned and offered for adoption.' } };
+    }
+    const record = found;
+    if (!record) return { success: false, isError: true, error: `Nothing was stopped: no subagent named '${input.name}' is known.` };
+    if (!this.inReach(caller, record)) return this.outOfReach('stopped', input.name, startedBy(record));
+    if (record.ended) return { success: false, isError: true, error: `Nothing was stopped: '${input.name}' already ended (${record.ended.reason}).` };
+    try {
+      const outcome = fw.stopAgent(record.name, stop);
+      return { success: true, data: { stopped: name, agent: record.name, ended: outcome.ended.name, orphaned: outcome.orphaned.map((o) => ({ agent: o.record.name, candidates: o.candidates })) } };
+    } catch (err) {
+      return { success: false, isError: true, error: `Nothing was stopped: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  private handleMessage(input: { name: string; text: string }, caller?: string): ToolResult {
+    const fw = this.framework;
+    if (!fw) return { success: false, isError: true, error: 'Nothing was sent: the subagent module has no framework yet.' };
+    if (!caller) return { success: false, isError: true, error: 'Nothing was sent: a message to a subagent is sent by an agent, under its name.' };
+    const record = this.recordNamed(input.name);
+    if (!record || record.ended) return { success: false, isError: true, error: `Nothing was sent: no subagent named '${input.name}' is running${record?.ended ? ` (it ended: ${record.ended.reason})` : ''}.` };
+    if (!this.inReach(caller, record)) return this.outOfReach('sent', input.name, startedBy(record));
+    try {
+      const sent = fw.sendAgentMessage(caller, record.name, [{ type: 'text', text: input.text }], { wake: true });
+      return { success: true, data: { to: input.name, agent: record.name, delivered: sent.delivered, note: sent.delivered ? 'In its context under your name; it wakes for it.' : 'Held for it until it can receive.' } };
+    } catch (err) {
+      return { success: false, isError: true, error: `Nothing was sent: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  private handleAdopt(input: { name: string }, caller?: string): ToolResult {
+    const fw = this.framework;
+    if (!fw) return { success: false, isError: true, error: 'Nothing was adopted: the subagent module has no framework yet.' };
+    if (!caller) return { success: false, isError: true, error: 'Nothing was adopted: an agent adopts, under its name.' };
+    const { record, display: name } = this.lookUp(input.name);
+    if (!record) return { success: false, isError: true, error: `Nothing was adopted: no subagent named '${input.name}' is known.` };
+    if (!record.orphaned) return { success: false, isError: true, error: `Nothing was adopted: '${input.name}' has its parent (${record.relationships.spawnedBy ?? 'none'}); only an orphan is adopted.` };
+    // Offered to the caller: the framework's candidates (the nearest live
+    // ancestor of the former parent, then the primary), or anyone in whose
+    // tree the orphan hung. An unrelated agent would take the held results
+    // meant for the lost parent with it.
+    if (!record.orphaned.candidates.includes(caller) && !this.inTree(caller, record)) {
+      const former = record.orphaned.formerParent.agent;
+      const offered = record.orphaned.candidates.length ? record.orphaned.candidates.join(', ') : 'no one yet';
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was adopted: '${input.name}' was ${former}'s, and it is offered to ${offered} — an ancestor of its former parent, or the primary — and to the agents in whose tree it hung, not to you.`,
+      };
+    }
+    if (record.ended) {
+      const recipientGone = (to: string) => { const r = fw.getAgentRecord(to); return r === null || r.ended !== undefined; };
+      const left = fw.listHeldMail({ from: record.name }).filter((m) => recipientGone(m.to)).length;
+      if (left === 0) {
+        return {
+          success: false,
+          isError: true,
+          error: `Nothing was adopted: '${input.name}' has ended, and holds nothing for a recipient that has gone; adopting a subagent that has ended only collects that, and doesn't restart it.`,
+        };
+      }
+      try {
+        fw.reparentAgent(record.name, caller, { by: caller });
+      } catch (err) {
+        return { success: false, isError: true, error: `Nothing was adopted: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      return {
+        success: true,
+        data: {
+          adopted: input.name,
+          agent: record.name,
+          status: `ended: ${record.ended.reason}`,
+          collected: left,
+          note: `It has ended and isn't restarted. Its ${left} held item${left === 1 ? '' : 's'} for a recipient that has gone arrive${left === 1 ? 's' : ''} in your context as messages under its name, '${record.name}', with a wake queued for you, not in this result.`,
+        },
+      };
+    }
+    try {
+      const adopted = fw.reparentAgent(record.name, caller, { by: caller });
+      if (this.cancellationHandles.has(name)) this.followParent(name, caller);
+      return { success: true, data: { adopted: input.name, agent: record.name, parent: caller, resultTo: adopted.relationships.resultTo ?? null } };
+    } catch (err) {
+      return { success: false, isError: true, error: `Nothing was adopted: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  private async handleResume(input: { name: string }, caller?: string): Promise<ToolResult> {
+    const fw = this.framework;
+    if (!fw) return { success: false, isError: true, error: 'Nothing was resumed: the subagent module has no framework yet.' };
+    const { record, display: name } = this.lookUp(input.name);
+    if (!record) return { success: false, isError: true, error: `Nothing was resumed: no subagent named '${input.name}' is known.` };
+    if (!this.inReach(caller, record)) return this.outOfReach('resumed', input.name, startedBy(record));
+    if (!record.ended) return { success: false, isError: true, error: `Nothing was resumed: '${input.name}' is still running.` };
+    const unresumable = resumeRefusal(input.name, record.ended);
+    if (unresumable) return { success: false, isError: true, error: unresumable };
+    const inUse = this.nameInUse(name);
+    if (inUse) return inUse;
+    const launch = (record.metadata as { launch?: ResumableLaunch } | undefined)?.launch;
+    if (!launch) return { success: false, isError: true, error: `Nothing was resumed: '${input.name}' left no launch to rebuild its configuration from.` };
+    const beyond = this.beyondCallerRule(caller, launch.allowedTools);
+    if (beyond) {
+      return {
+        success: false,
+        isError: true,
+        error:
+          `Nothing was resumed: '${input.name}' was launched with tools you do not have (${beyond}), and a resume runs it with its launch's tools. ` +
+          'A subagent cannot have more than the agent that starts it; start a narrower one instead.',
+      };
+    }
+    const launcher = caller ?? this.config.parentAgentName;
+    const parentAgentName = launcher ?? UNNAMED_LAUNCHER;
+    const launcherShown = launcher === undefined ? undefined : this.shownName(launcher);
+    // Where its result goes: a resume keeps the record's route (the
+    // framework's rule), so an async record started with a message route to
+    // someone else who is still running reports to them, not the resumer.
+    const route = record.relationships.resultTo;
+    const recipient = route && route.to !== parentAgentName ? fw.getAgentRecord(route.to) : null;
+    const elsewhere = recipient && recipient.ended === undefined ? recipient.name : null;
+    const promise = this.runResumed(name, record, launch, parentAgentName);
+    this.asyncHandles.set(name, { name, type: launch.kind, promise, parentAgentName });
+    promise
+      .then(
+        (result) => this.deliverAsyncResult(name, result, launcher, launcherShown),
+        (err) => this.deliverAsyncError(name, err, launcher, launcherShown),
+      )
+      .catch((err) => console.error(`[subagent] delivering ${name}'s resumed result: ${err instanceof Error ? err.message : String(err)}`));
+    return {
+      success: true,
+      data: {
+        resumed: name,
+        agent: record.name,
+        incarnation: record.incarnation + 1,
+        resultTo: elsewhere ?? parentAgentName,
+        note: elsewhere
+          ? `Running from the context it left; its result goes to ${elsewhere} as a message when it ends — the route it was started with, which a resume keeps. Tools it ran before have had their effect.`
+          : 'Running from the context it left; its result is delivered to you as a message when it ends. Tools it ran before have had their effect.',
+      },
+    };
+  }
+
+  /** An agent's config from its stored launch, for a launch and a resume alike, so a resumed run gets what it launched with,
+   *  less the legacy fold paragraph a launch stored by an earlier host may carry. */
+  private agentConfig(launch: ResumableLaunch, agentName: string) {
+    return {
+      model: launch.model,
+      systemPrompt: systemPromptFor(launch.systemPrompt),
+      maxTokens: launch.maxTokens,
+      maxStreamTokens: launch.maxStreamTokens,
+      // A stored launch never runs locked: a subagent has no lock of its own.
+      ...(launch.proseRouting !== undefined ? { proseRouting: subagentProseRouting(launch.proseRouting) } : {}),
+      ...thinkingBindingSettings(launch.model, this.config.provider),
+      allowedTools: launch.allowedTools === 'all' ? 'all' as const : [...launch.allowedTools],
+      strategy: new KnowledgeStrategy({
+        headWindowTokens: launch.strategy.headWindowTokens,
+        recentWindowTokens: launch.strategy.recentWindowTokens,
+        compressionModel: launch.strategy.compressionModel,
+        autoTickOnNewMessage: true,
+        maxMessageTokens: launch.strategy.maxMessageTokens,
+        summaryParticipant: agentName,
+      }),
+    };
+  }
+
+  /** Drive a resumed incarnation as this module drives any run: a slot, the live register, the watchdogs, the result. */
+  private async runResumed(name: string, record: AgentRecord, launch: ResumableLaunch, parentAgentName: string): Promise<SubagentResult> {
+    const framework = this.getFramework();
+    const cancel = this.cancelFor(name, { record: record.name });
+    const run: RunProgress = { started: false, attempts: 1, agentName: record.name };
+    let acquired: { waitedMs: number; slot: object };
+    try {
+      acquired = await this.acquireSlot(launch.kind, undefined, cancel.promise);
+    } catch (err) {
+      cancel.dispose();
+      if (err instanceof SubagentTerminated) return this.endQueued(name, err, run);
+      throw this.failedRun(name, launch.kind, err, run);
+    }
+    const { waitedMs, slot } = acquired;
+    const now = Date.now();
+    const entry: ActiveSubagent = { name, type: launch.kind, task: (record.metadata as { task?: string }).task ?? '', status: 'running', startedAt: now, lastActivityAt: now, toolCallsCount: 0, findingsCount: 0 };
+    try {
+      this.activeSubagents.set(name, entry);
+      this.slotOf.set(entry, slot);
+      this.persistState();
+      let resuming: ReturnType<AgentFramework['resumeAgent']> | undefined;
+      let created: Awaited<ReturnType<AgentFramework['resumeAgent']>>;
+      try {
+        // A resume runs as it was launched, which its orientation in the
+        // context it resumes from describes (agentConfig never runs locked).
+        resuming = framework.resumeAgent(record.name, this.agentConfig(launch, record.name));
+        created = await Promise.race([resuming, cancel.promise]);
+      } catch (err) {
+        if (err instanceof SubagentTerminated) {
+          if (resuming) giveBackWhenCreated(resuming, name);
+          return this.endTerminated(name, entry, err, waitedMs, run);
+        }
+        entry.status = 'failed';
+        entry.completedAt = Date.now();
+        entry.statusMessage = err instanceof Error ? err.message : String(err);
+        throw this.failedRun(name, launch.kind, err, run);
+      }
+      const { agent, contextManager, cleanup } = created;
+      run.agentName = record.name;
+      this.agentDepths.set(record.name, (record.metadata as { depth?: number }).depth ?? 1);
+      this.registerLive(name, record.name, launch.systemPrompt, contextManager);
+      this.runOfAttempt.set(record.name, name);
+      try {
+        run.started = true;
+        const running = framework.runEphemeralToCompletion(agent, contextManager, this.watchdogsFor(undefined));
+        // agent-framework registers the resumed record before
+        // runEphemeralToCompletion's first await, so it is live here.
+        this.settleResumedParent(name, record.name, parentAgentName);
+        let { speech, toolCallsCount } = await Promise.race([running, cancel.promise]);
+        const returned = this.returnedResults.get(name);
+        if (returned) { speech = returned; this.returnedResults.delete(name); }
+        else if (!speech.trim()) speech = this.extractLastAssistantText(contextManager);
+        entry.status = 'completed';
+        entry.completedAt = Date.now();
+        entry.toolCallsCount = toolCallsCount;
+        this.onSubagentSuccess();
+        const finalSummary = this.concurrencyNotice(waitedMs) + speech;
+        this.emit(name, { type: 'done', summary: finalSummary, lastInputTokens: this.lastInputTokens.get(name) });
+        return { summary: finalSummary, findings: [], issues: [], toolCallsCount, frameworkAgentName: record.name };
+      } catch (err) {
+        if (err instanceof SubagentTerminated) return this.endTerminated(name, entry, err, waitedMs, run);
+        if (err instanceof AgentStoppedError) {
+          return this.endTerminated(name, entry, new SubagentTerminated('cancelled', this.liveSubagents.get(name)?.currentStream ?? '', `Subagent "${name}" stopped${err.by ? ` by ${err.by}` : ''} (${err.reason})`, err.by ? { by: err.by } : {}), waitedMs, run);
+        }
+        entry.status = 'failed';
+        entry.completedAt = Date.now();
+        throw this.failedRun(name, launch.kind, err, run);
+      } finally {
+        this.agentDepths.delete(record.name);
+        this.unregisterLive(name, record.name);
+        cleanup();
+      }
+    } finally {
+      cancel.dispose();
+      this.releaseSlot(slot);
+      this.forgetAttempts(name);
+      this.persistState();
+    }
+  }
+
   private handleHud(input: { enabled: boolean }): ToolResult {
     if (!this.ctx) return { success: false, isError: true, error: 'Module not started' };
     const persisted = this.ctx.getState<{ agents?: unknown; hudEnabled?: boolean }>() ?? {};
@@ -2514,9 +3249,9 @@ export class SubagentModule implements Module {
     executionTimeoutMs?: number,
     ticket?: { queued: boolean },
   ): Promise<SubagentResult> {
-    const cancel = this.cancelFor(input.name);
+    const cancel = this.cancelFor(input.name, launch.parentAgent ? { spawner: launch.parentAgent.name } : {});
     this.claimName(input.name, _callerAgentName);
-    const run = { started: false, attempts: 0 };
+    const run: RunProgress = { started: false, attempts: 0 };
     let acquired: { waitedMs: number; slot: object };
     try {
       acquired = await this.acquireSlot('spawn', undefined, cancel.promise, ticket);
@@ -2552,17 +3287,28 @@ export class SubagentModule implements Module {
         this.runOfAttempt.set(agentName, input.name);
         this.returnedResults.delete(input.name);
         let created: Awaited<ReturnType<AgentFramework['createEphemeralAgent']>>;
-        const creating = framework.createEphemeralAgent(this.ephemeralAgentConfig(launch, agentName));
+        // A spawn is a registered worker (Dendrite): its record names who
+        // spawned it and where its result goes, so an ended caller's result
+        // is held as mail rather than lost, and the tree shows the edge.
+        const edges = this.attemptEdges(run, launch.parentAgent?.name, input.sync);
+        if (edges && edges.parent !== launch.parentAgent?.name) this.followParent(input.name, edges.parent);
+        const { name: _specName, ...spec } = workerSpec(agentName, {
+          ...(edges ? { spawnedBy: edges.parent, resultTo: edges.resultTo } : {}),
+          ...(executionTimeoutMs !== undefined ? { deadlineMs: executionTimeoutMs } : {}),
+          metadata: this.launchMetadata(launch, input, childDepth),
+        });
+        const creating = framework.createEphemeralAgent(this.ephemeralAgentConfig(launch, agentName), spec);
         try {
           created = await Promise.race([creating, cancel.promise]);
         } catch (err) {
           if (err instanceof SubagentTerminated) {
             giveBackWhenCreated(creating, input.name);
-            return this.endTerminated(input.name, entry, err, waitedMs, run.started);
+            return this.endTerminated(input.name, entry, err, waitedMs, run);
           }
           throw err;
         }
         const { agent, contextManager, cleanup } = created;
+        run.agentName = agentName;
 
         this.agentDepths.set(agentName, childDepth);
 
@@ -2570,10 +3316,13 @@ export class SubagentModule implements Module {
 
         try {
           // The orientation, then the task, each its own message: the cap
-          // applies to each message alone, so each has all of it.
+          // applies to each message alone, so each has all of it. Each is the
+          // stream's own row (storeOwnRow), as the framework's seed rows are:
+          // stamped for it alone, and presented in its window when its run
+          // takes it on (#291), since no turn of it is alive yet.
           const orientation = this.orientationFor(launch, agent, { kind: 'none', reason: 'spawn' });
-          contextManager.addMessage('user', [{ type: 'text', text: orientation }]);
-          contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+          storeOwnRow(agent, 'user', [{ type: 'text', text: orientation }]);
+          storeOwnRow(agent, 'user', [{ type: 'text', text: input.task }]);
 
           // A real compile, not a dry one: a dry compile returns an
           // over-budget plan where a real one refuses it, and the stream's
@@ -2585,13 +3334,12 @@ export class SubagentModule implements Module {
           const cut = undeliveredLaunchParts(messages, delivery);
           if (cut.length > 0) throw this.launchRefusal('spawn', cut, delivery, true);
 
-          const tools = framework.getAllTools().filter(t => agent.canUseTool(t.name));
-          const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
+          const est = this.estimatePromptTokens(agent.systemPrompt, messages, this.requestTools(agent));
           if (est > this.maxPromptTokens) {
             throw new SubagentFailure(
               `its prompt would be about ${est} tokens, over this host's limit of ${this.maxPromptTokens}`,
-              'Shorten its task or systemPrompt, or pass tools naming only the tools it needs, since every ' +
-                "tool's definition counts.",
+              'Shorten its task or systemPrompt, or pass tools naming only the tools it needs, since the ' +
+                'definition of every tool in its tool list counts.',
             );
           }
 
@@ -2625,21 +3373,25 @@ export class SubagentModule implements Module {
           const notice = this.concurrencyNotice(waitedMs);
           const finalSummary = notice + speech;
           this.emit(input.name, { type: 'done', summary: finalSummary, lastInputTokens: this.lastInputTokens.get(input.name) });
-          return { summary: finalSummary, findings: [], issues: [], toolCallsCount };
+          return { summary: finalSummary, findings: [], issues: [], toolCallsCount, frameworkAgentName: agentName };
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
 
-          if (lastError instanceof SubagentTerminated) return this.endTerminated(input.name, entry, lastError, waitedMs, run.started);
+          if (lastError instanceof SubagentTerminated) return this.endTerminated(input.name, entry, lastError, waitedMs, run);
+          if (lastError instanceof AgentStoppedError) {
+            // Stopped in the registry from outside this module: a clean end, not a failure.
+            return this.endTerminated(input.name, entry, new SubagentTerminated('cancelled', this.liveSubagents.get(input.name)?.currentStream ?? '', `Subagent "${input.name}" stopped${lastError.by ? ` by ${lastError.by}` : ''} (${lastError.reason})`, lastError.by ? { by: lastError.by } : {}), waitedMs, run);
+          }
 
           if (lastError instanceof SubagentFailure) break;
           if (this.isUnsleptProviderWait(lastError)) break;
           if (this.isRateLimitError(lastError, agentName)) {
             const stopped = await this.waitOrStop(this.onRateLimitHit(deadline), cancel.promise);
-            if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run.started);
+            if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run);
           }
           if (!this.isTransientError(lastError, agentName) || attempt === this.maxRetries) break;
 
-          const delay = Math.min(5_000 * (attempt + 1), 30_000);
+          const delay = this.retryBackoff(attempt);
           if (deadline !== undefined && Date.now() + delay >= deadline) break;
           console.error(
             `[subagent] ${input.name} attempt ${attempt + 1}/${this.maxRetries + 1} failed: ` +
@@ -2647,7 +3399,7 @@ export class SubagentModule implements Module {
           );
           entry.statusMessage = `Retry ${attempt + 1}: ${lastError.message}`;
           const stopped = await this.waitOrStop(delay, cancel.promise);
-          if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run.started);
+          if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run);
         } finally {
           this.agentDepths.delete(agentName);
           this.unregisterLive(input.name, agentName);
@@ -2683,9 +3435,9 @@ export class SubagentModule implements Module {
     callToolUseId?: string,
     ticket?: { queued: boolean },
   ): Promise<SubagentResult> {
-    const cancel = this.cancelFor(input.name);
+    const cancel = this.cancelFor(input.name, launch.parentAgent ? { spawner: launch.parentAgent.name } : {});
     this.claimName(input.name, callerAgentName);
-    const run = { started: false, attempts: 0 };
+    const run: RunProgress = { started: false, attempts: 0 };
     let acquired: { waitedMs: number; slot: object };
     try {
       acquired = await this.acquireSlot('fork', undefined, cancel.promise, ticket);
@@ -2724,17 +3476,46 @@ export class SubagentModule implements Module {
         this.returnedResults.delete(input.name);
 
         let created: Awaited<ReturnType<AgentFramework['createEphemeralAgent']>>;
-        const creating = framework.createEphemeralAgent(this.ephemeralAgentConfig(launch, agentName));
+        // The fork is a Dendrite task-fork on the registry: its record names
+        // its parent, where its result goes (the awaiting call for a sync
+        // run, a message for an async one; a caller that has ended gets
+        // either as held mail) and, while it runs under that parent, that it
+        // inherited the parent's context as a copy — which this module makes
+        // below, as #213 shaped it: cut at the fork call, sibling fork calls
+        // removed. A shared branch would
+        // need the fork to run the parent's strategy class; a subagent runs
+        // its own, so the copy stays, and `deriveAgent` is for later.
+        const edges = this.attemptEdges(run, parentAgent?.name, input.sync);
+        if (edges && edges.parent !== parentAgent?.name) this.followParent(input.name, edges.parent);
+        const spec = parentAgent && edges
+          ? (() => {
+              const { name: _n, ...rest } = taskForkSpec(agentName, {
+                parent: parentAgent.name,
+                spawnedBy: edges.parent,
+                resultTo: edges.resultTo,
+                ...(executionTimeoutMs !== undefined ? { deadlineMs: executionTimeoutMs } : {}),
+                metadata: this.launchMetadata(launch, input, childDepth),
+              });
+              if (edges.parent === parentAgent.name) return rest;
+              const { inherit: _from, ...registrable } = rest;
+              return registrable;
+            })()
+          : (() => { const { name: _n, ...rest } = workerSpec(agentName, {
+              ...(executionTimeoutMs !== undefined ? { deadlineMs: executionTimeoutMs } : {}),
+              metadata: this.launchMetadata(launch, input, childDepth),
+            }); return rest; })();
+        const creating = framework.createEphemeralAgent(this.ephemeralAgentConfig(launch, agentName), spec);
         try {
           created = await Promise.race([creating, cancel.promise]);
         } catch (err) {
           if (err instanceof SubagentTerminated) {
             giveBackWhenCreated(creating, input.name);
-            return this.endTerminated(input.name, entry, err, waitedMs, run.started);
+            return this.endTerminated(input.name, entry, err, waitedMs, run);
           }
           throw err;
         }
         const { agent, contextManager, cleanup } = created;
+        run.agentName = agentName;
 
         this.agentDepths.set(agentName, childDepth);
 
@@ -2766,21 +3547,34 @@ export class SubagentModule implements Module {
                 )
               : null;
 
+            // The copy is the stream's own rows (storeOwnRow), as a spawn's seed
+            // rows are: presented in its window when its run takes it on (#291).
             const seen = new Set<string>();
             const addMsg = (msg: { participant: string; content: ContentBlock[] }) => {
               const key = msg.participant + '\0' + JSON.stringify(msg.content);
               if (seen.has(key)) return;
               seen.add(key);
               const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
-              contextManager.addMessage(participant, msg.content);
+              storeOwnRow(agent, participant, msg.content);
             };
 
             if (transformed) {
+              // Under `orientation: 'none'` the materialised result for this
+              // call is the plain head and the task, as the delivery promises.
+              if (this.config.orientation === 'none') {
+                for (const msg of transformed) {
+                  for (const block of msg.content) {
+                    if (block.type === 'tool_result' && (block as { toolUseId: string }).toolUseId === callToolUseId) {
+                      (block as { content: unknown }).content = this.forkResult(input.name, input.task, childDepth, cutAtCall);
+                    }
+                  }
+                }
+              }
               for (const msg of transformed) addMsg(msg);
               delivery = {
                 kind: 'fork-result',
                 callId: callToolUseId!,
-                head: intentionFramedHead(childDepth, this.maxDepth, cutAtCall),
+                head: this.forkHead(childDepth, cutAtCall),
                 task: input.task,
               };
             } else {
@@ -2788,22 +3582,22 @@ export class SubagentModule implements Module {
 
               const fallbackForkId = `fork-${input.name}-${crypto.randomUUID()}`;
               const atStart = orient({ kind: 'compiled-at-start', reason: callToolUseId ? 'call-not-in-context' : 'no-call-id' });
-              contextManager.addMessage(agentName, [{
+              storeOwnRow(agent, agentName, [{
                 type: 'tool_use',
                 id: fallbackForkId,
                 name: 'subagent--fork',
                 input: { name: input.name, task: input.task },
               }] as ContentBlock[]);
-              contextManager.addMessage('user', [{
+              storeOwnRow(agent, 'user', [{
                 type: 'tool_result',
                 toolUseId: fallbackForkId,
                 toolName: 'subagent--fork',
-                content: buildIntentionFramedForkResult(input.name, input.task, childDepth, this.maxDepth, atStart),
+                content: this.forkResult(input.name, input.task, childDepth, atStart),
               }] as ContentBlock[]);
               delivery = {
                 kind: 'fork-result',
                 callId: fallbackForkId,
-                head: intentionFramedHead(childDepth, this.maxDepth, atStart),
+                head: this.forkHead(childDepth, atStart),
                 task: input.task,
               };
             }
@@ -2812,8 +3606,8 @@ export class SubagentModule implements Module {
             // spawn, since the cap applies to each message alone.
             const orientation = `${orient({ kind: 'none', reason: 'no-parent' })}\n\n` +
               'When this intention is complete, return your findings via subagent--return. Your intention for this stream follows.';
-            contextManager.addMessage('user', [{ type: 'text', text: orientation }]);
-            contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+            storeOwnRow(agent, 'user', [{ type: 'text', text: orientation }]);
+            storeOwnRow(agent, 'user', [{ type: 'text', text: input.task }]);
             delivery = { kind: 'message', orientation, taskBlock: input.task };
           }
 
@@ -2824,8 +3618,7 @@ export class SubagentModule implements Module {
           const cut = undeliveredLaunchParts(messages, delivery);
           if (cut.length > 0) throw this.launchRefusal('fork', cut, delivery, canSpawn);
 
-          const tools = framework.getAllTools().filter(t => agent.canUseTool(t.name));
-          const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
+          const est = this.estimatePromptTokens(agent.systemPrompt, messages, this.requestTools(agent));
           if (est > this.maxPromptTokens) {
             const spawn = this.spawnInstead(canSpawn, true);
             throw new SubagentFailure(
@@ -2865,21 +3658,25 @@ export class SubagentModule implements Module {
           const notice = this.concurrencyNotice(waitedMs);
           const finalSummary = notice + speech;
           this.emit(input.name, { type: 'done', summary: finalSummary, lastInputTokens: this.lastInputTokens.get(input.name) });
-          return { summary: finalSummary, findings: [], issues: [], toolCallsCount };
+          return { summary: finalSummary, findings: [], issues: [], toolCallsCount, frameworkAgentName: agentName };
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
 
-          if (lastError instanceof SubagentTerminated) return this.endTerminated(input.name, entry, lastError, waitedMs, run.started);
+          if (lastError instanceof SubagentTerminated) return this.endTerminated(input.name, entry, lastError, waitedMs, run);
+          if (lastError instanceof AgentStoppedError) {
+            // Stopped in the registry from outside this module: a clean end, not a failure.
+            return this.endTerminated(input.name, entry, new SubagentTerminated('cancelled', this.liveSubagents.get(input.name)?.currentStream ?? '', `Subagent "${input.name}" stopped${lastError.by ? ` by ${lastError.by}` : ''} (${lastError.reason})`, lastError.by ? { by: lastError.by } : {}), waitedMs, run);
+          }
 
           if (lastError instanceof SubagentFailure) break;
           if (this.isUnsleptProviderWait(lastError)) break;
           if (this.isRateLimitError(lastError, agentName)) {
             const stopped = await this.waitOrStop(this.onRateLimitHit(deadline), cancel.promise);
-            if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run.started);
+            if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run);
           }
           if (!this.isTransientError(lastError, agentName) || attempt === this.maxRetries) break;
 
-          const delay = Math.min(5_000 * (attempt + 1), 30_000);
+          const delay = this.retryBackoff(attempt);
           if (deadline !== undefined && Date.now() + delay >= deadline) break;
           console.error(
             `[subagent] ${input.name} attempt ${attempt + 1}/${this.maxRetries + 1} failed: ` +
@@ -2887,7 +3684,7 @@ export class SubagentModule implements Module {
           );
           entry.statusMessage = `Retry ${attempt + 1}: ${lastError.message}`;
           const stopped = await this.waitOrStop(delay, cancel.promise);
-          if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run.started);
+          if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run);
         } finally {
           this.agentDepths.delete(agentName);
           this.unregisterLive(input.name, agentName);
@@ -2914,6 +3711,10 @@ export class SubagentModule implements Module {
     }
   }
 
+  // Only a row the subagent's window holds is the run's answer: one an undo
+  // or a shed took out (`undone`) stays in the record, and one stored and not
+  // presented (`out`, another agent's mail held out past the run's end) was
+  // never shown to it.
   private extractLastAssistantText(contextManager: ContextManager): string {
     try {
       const messages = contextManager.getAllMessages();
@@ -2921,6 +3722,8 @@ export class SubagentModule implements Module {
         const msg = messages[i];
         if (msg.participant === 'user' || msg.participant === 'User') continue;
         if (storedInjectionMarkOf(msg.metadata) !== undefined) continue;
+        const status = contextManager.windowStatusOf?.(msg.id);
+        if (status !== undefined && status !== 'in') continue;
         const texts = msg.content
           .filter((b: ContentBlock) => b.type === 'text')
           .map((b: ContentBlock) => (b as { type: 'text'; text: string }).text);

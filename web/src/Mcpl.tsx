@@ -17,6 +17,7 @@ export interface McplLiveRow {
   toolCount: number;
   toolPrefix?: string;
   target?: string;
+  closedTab?: boolean;
 }
 
 /** One tool's effective MCPL class (RFC-008) and where it came from. */
@@ -104,10 +105,13 @@ export function McplPanel(props: {
           <div class="space-y-1 mb-3">
             <For each={props.live}>{(s) => (
               <div class="border border-neutral-800 rounded px-2 py-1 bg-neutral-950 flex items-baseline gap-2">
-                <span class={`inline-block w-2 h-2 rounded-full self-center shrink-0 ${s.connected ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                  title={s.connected ? 'connected' : 'disconnected'} />
+                <span class={`inline-block w-2 h-2 rounded-full self-center shrink-0 ${s.connected ? 'bg-emerald-500' : s.closedTab ? 'bg-neutral-500' : 'bg-rose-500'}`}
+                  title={s.connected ? 'connected' : s.closedTab ? 'closed tab: disconnected by choice, not by a failure' : 'disconnected'} />
                 <span class="font-mono text-cyan-300 truncate">{s.id}</span>
                 <span class="text-[10px] text-neutral-500 shrink-0">{s.toolCount} tools</span>
+                <Show when={s.closedTab}>
+                  <span class="text-[10px] text-neutral-400 shrink-0">closed tab</span>
+                </Show>
                 <Show when={s.toolPrefix}>
                   <span class="text-[10px] text-neutral-600 shrink-0">prefix={s.toolPrefix}</span>
                 </Show>

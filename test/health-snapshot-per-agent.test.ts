@@ -72,7 +72,7 @@ describe('health snapshot per agent', () => {
   test('with every agent readable, each section has every agent and there are no read failures', () => {
     const snapshot = buildHealthSnapshot(appWith([agentStub('first'), agentStub('second')]));
     for (const section of ['runtimeSettings', 'compressionQuarantine', 'compressionDebt', 'contextComposition']) {
-      expect(Object.keys(snapshot[section] as object)).toEqual(['first', 'second']);
+      expect(Object.keys(snapshot[section] as object).sort()).toEqual(['first', 'second']);
     }
     expect(snapshot.readFailures).toBeUndefined();
   });

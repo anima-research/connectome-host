@@ -536,9 +536,10 @@ describe('what grant and revoke say', () => {
   test('a call naming a tool the module doesn\'t have lists the ones it has, in the built-in settings toolset', async () => {
     const r = await new ObserversModule({ path }).handleToolCall(call('kill', {}));
     expect(r.error).toBe(
-      'There\'s no tool "observers--kill", so nothing ran. The observers tools in the built-in "settings" toolset are ' +
-      'observers--get, observers--grant and observers--revoke: open it with toolsets--open {"toolset": "settings"}, ' +
-      'then call one with toolsets--act, such as {"tool": "observers--get"}.',
+      'There\'s no tool "observers--kill", so nothing ran. The observers tools placed in the built-in "settings" toolset are ' +
+      'observers--get, observers--grant and observers--revoke: reach one with toolsets--open {"toolset": "settings"}, ' +
+      'then toolsets--act {"tool": "observers--get", "args": {...}}; if your tool list lacks toolsets--open or toolsets--act, ' +
+      'call it by its name instead.',
     );
   });
 });

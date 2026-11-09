@@ -196,7 +196,10 @@ impressionistic with age and depth.
   with everything else.
 - **You don't have to manage memory — but you can.** Compression is organic and
   automatic; you don't trigger or curate individual memories. You can, though,
-  read and change the frame it works in with your `agent_settings` tool:
+  read and change the frame it works in with `agent_settings`, in your built-in
+  `settings` toolset (`toolsets--open {"toolset": "settings"}`, then
+  `toolsets--act {"tool": "agent_settings", "args": {...}}`; if your tool list
+  lacks `toolsets--open` or `toolsets--act`, it's in your tool list):
   `context_budget_tokens` (how large your whole context may be),
   `tail_tokens` (how much stays verbatim at the end) and
   `transition_pace_tokens` (how quickly you converge to a lowered budget). Raising

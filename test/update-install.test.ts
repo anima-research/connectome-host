@@ -7,7 +7,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ContractError, copyLabelPath, installPaths, moveCurrent, releaseDir, writeJsonAtomic, type CopyLabel, type Mark,
+  ContractError, appendJournal, copyLabelPath, installPaths, moveCurrent, releaseDir, writeJsonAtomic, type CopyLabel,
+  type Mark,
 } from '../src/update/contract.js';
 import { SYNC_WIDTH, installRelease, machineInstallOps, type InstallOps } from '../src/update/install.js';
 import { HOST_ENTRY, LAUNCHER, RELEASE_HOST } from '../src/update/launcher.js';
@@ -508,10 +509,11 @@ describe('removing releases nothing needs', () => {
     release('0.9.0');
     rmSync(installPaths(root).copy, { recursive: true });
     mkdirSync(join(installPaths(root).releases, '0.9.1.tmp'));
+    appendJournal(root, { v: 1, at: new Date().toISOString(), step: 'copy', from: '0.11.0', to: '0.12.0', outcome: 'failed', reason: 'the copy failed', mark: 'm0' });
     await installRelease(here(), '0.12.0', manager());
     expect(installed()).toEqual(['0.11.0', '0.12.0', '0.9.0']);
-    expect(said).toEqual(["[update] No older release is removed this time: the copy's label isn't there, since no switch " +
-      'has taken a copy yet or it was lost, so nothing says which release a Go back needs.']);
+    expect(said).toEqual(["[update] No older release is removed this time: the copy's label isn't there, and the journal " +
+      'records no copy taken, so nothing says which release a Go back needs.']);
     copyFrom('0.11.0');
     const label = copyLabelPath(installPaths(root).copy);
     const fromless = JSON.parse(readFileSync(label, 'utf-8')) as Record<string, unknown>;
@@ -528,6 +530,16 @@ describe('removing releases nothing needs', () => {
     await installRelease(here(), '0.12.2', manager());
     expect(installed()).toEqual(['0.11.0', '0.12.0', '0.12.1', '0.12.2', '0.9.0']);
     expect(said).toEqual([`[update] No older release is removed this time: ${installPaths(root).current} isn't there.`]);
+  });
+
+  test("with no copy's label where the journal records a copy taken, says the label was lost", async () => {
+    release('0.9.0');
+    rmSync(installPaths(root).copy, { recursive: true });
+    appendJournal(root, { v: 1, at: new Date().toISOString(), step: 'copy', from: '0.10.2', to: '0.11.0', outcome: 'ok', mark: 'm1' });
+    await installRelease(here(), '0.12.0', manager());
+    expect(installed()).toEqual(['0.11.0', '0.12.0', '0.9.0']);
+    expect(said).toEqual(["[update] No older release is removed this time: the copy's label isn't there, though the " +
+      'journal records a copy taken, so it was lost and nothing says which release a Go back needs.']);
   });
 
   test('a mark that can\'t be read leaves current\'s and the copy\'s names kept', async () => {

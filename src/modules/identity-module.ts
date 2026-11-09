@@ -20,7 +20,7 @@ import {
   type ToolDefinition,
   type WorkspaceModule,
 } from '@animalabs/agent-framework';
-import { unknownToolResult } from './unknown-tool.js';
+import { settingsRoute, unknownToolResult } from './unknown-tool.js';
 
 /** agent-framework's disk read reports a file disk lacks as not_found with
  *  ENOENT (nothing there, or a link that leads nowhere), ENOTDIR (a parent
@@ -284,8 +284,8 @@ export class IdentityModule implements Module {
         `to give "${aud}"`;
       throw new IdentityError(
         `${none}; registering takes an invitation code, which the agent redeems through identity--accept_invite`,
-        `${none}. Registering takes an invitation code from your operator: call identity--accept_invite, in the ` +
-          'built-in "settings" toolset (toolsets--open {"toolset": "settings"}, then toolsets--act), with the code and a name',
+        `${none}. Registering takes an invitation code from your operator: call identity--accept_invite with the ` +
+          `code and a name; reach it with ${settingsRoute('identity--accept_invite')}`,
       );
     }
     const timestamp = new Date().toISOString();
@@ -460,8 +460,8 @@ export class IdentityModule implements Module {
         : {
             registeredAs: null,
             note: `No registration with ${this.config.home} is recorded on this host. To register, ask your operator for an ` +
-              'invitation code, then call identity--accept_invite with it, in the built-in "settings" toolset ' +
-              '(toolsets--open {"toolset": "settings"}, then toolsets--act).',
+              'invitation code, then call identity--accept_invite with it; reach it with ' +
+              `${settingsRoute('identity--accept_invite')}.`,
           },
     );
   }

@@ -7,6 +7,12 @@
  * update takes ("Updating an install" and "Updating checkouts" in
  * docs/DEPLOYMENTS.md).
  *
+ * Each namespace, the agent's and, when the recipe enables the persistent
+ * reader, the subconscious's, is opened with the options agent-framework
+ * opens it with (residentContextOptions and subconsciousContextOptions,
+ * #291), so the audit reads the view and the window the framework's own opens
+ * read.
+ *
  * An open is a load, so context-manager's load repair runs in the audit as at
  * a start, and writes what it repairs to the store. Each load repair that
  * dropped summaries holding text is said, since the start that opens the
@@ -15,22 +21,23 @@
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { resolveTimeZone, storedInjectionMarkOf, type ContextStrategy } from '@animalabs/agent-framework';
-import { JsStore } from '@animalabs/chronicle';
 import {
-  ContextManager, StoreTopologyError, WindowedPassthroughStrategy, type StoredMessage,
-} from '@animalabs/context-manager';
+  residentContextOptions, resolveTimeZone, subconsciousContextOptions, type ContextManagerOpenOptions, type ContextStrategy,
+} from '@animalabs/agent-framework';
+import { JsStore } from '@animalabs/chronicle';
+import { ContextManager, StoreTopologyError } from '@animalabs/context-manager';
 import type { Membrane } from '@animalabs/membrane';
 import { resolveAgentName } from '../agent-name.js';
 import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../web/load-repair-alert.js';
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
 import { fleetChildDataDir, fleetChildEnv, spawnErrorText } from '../modules/fleet-module.js';
-import { DEFAULT_RECIPE, loadRecipeDetailed, loadSavedRecipe, recipeModel, type Recipe } from '../recipe.js';
+import { DEFAULT_RECIPE, loadRecipeDetailed, loadSavedRecipe, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
 import { SessionManager } from '../session-manager.js';
 import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
 } from './contract.js';
+import { StartRefusal } from './host.js';
 
 /** The flag that runs the audit in place of a host: `<entry> --audit-stores
  *  [--recipe <recipe>] <data directory>…`, by hand after a copy. */
@@ -48,24 +55,6 @@ const FLEET_CHILD_LOAD_REPAIR = '--fleet-child load repair';
 const FINISHED_LINE = new RegExp(`^${FLEET_CHILD_FINISHED}: ([01])$`);
 const USAGE = `Usage: ${AUDIT_STORES_FLAG} [${RECIPE_OPTION} <recipe>] <data directory>…, with one data directory ` +
   `when a recipe is given`;
-
-/** agent-framework's view of a resident's messages (createAgent): a message
- *  a tune-out diverted, or another agent's stored context injection, never
- *  enters it. agent-framework doesn't export it, so this is a copy. */
-const residentView = (name: string) => (message: StoredMessage): boolean =>
-  !message.metadata?.tuneOut && !isAnotherAgentsInjection(message.metadata, name);
-
-/** agent-framework's view of the subconscious's messages
- *  (createSubconsciousAgent): its own namespace and the residents' slot
- *  merged, tuned-out rows included, less every other agent's stored context
- *  injection. agent-framework doesn't export it, so this is a copy. */
-export const subconsciousView = (name: string) => (message: StoredMessage): boolean =>
-  !isAnotherAgentsInjection(message.metadata, name);
-
-function isAnotherAgentsInjection(metadata: unknown, name: string): boolean {
-  const mark = storedInjectionMarkOf(metadata);
-  return mark !== undefined && mark.agent !== name;
-}
 
 /** `then` isn't among its methods, so the membrane isn't a thenable, and a
  *  strategy that awaits it gets it back. */
@@ -164,14 +153,14 @@ export function placesOnTrial(committed: string, places: () => string[] | null, 
   try {
     within = places();
   } catch (error) {
-    throw new Error(
+    throw new StartRefusal(
       `This release couldn't tell which places its trial's fallback puts back, so it opened ${opened} and starts ` +
       `none of its agents: ${oneLine(error)}. The next start's fallback to ${committed} reads the same records; if ` +
       'it can\'t use them either, it says so and starts nothing.',
     );
   }
   if (within === null) {
-    throw new Error(
+    throw new StartRefusal(
       `No switch or Go back is under way by the install's journal, so this release opened ${opened} and starts none ` +
       `of its agents: nothing would put back what opening its stores before a commit changes. \`current\` still ` +
       `names ${committed}: start that release, or update to this one through the install's launcher, which starts ` +
@@ -184,7 +173,7 @@ export function placesOnTrial(committed: string, places: () => string[] | null, 
 export function checkActiveStore(store: string, committed: string, within: string[]): void {
   const reason = reachesPast(store, within, true, true);
   if (reason === undefined) return;
-  throw new Error(
+  throw new StartRefusal(
     `This release can't open its active session's store on its trial, so it opened no store, starts none of its ` +
     `agents, and the next start goes back to ${committed}:\nCouldn't audit ${store}: ${reason}`,
   );
@@ -211,7 +200,7 @@ export async function auditBeforeCommit(
     },
   });
   if (failures.length === 0) return;
-  throw new Error(
+  throw new StartRefusal(
     `This release couldn't open every store it would open only after its commit, so it starts none of its ` +
     `agents, and the next start goes back to ${committed}:\n${failures.join('\n')}\n` +
     `To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line ` +
@@ -227,11 +216,18 @@ export interface AuditRepair {
   store: string;
 }
 
+/** What the audit opens in a store: the agent's namespace with the options
+ *  agent-framework opens it with, its strategy, and the subconscious's, when
+ *  the recipe enables the persistent reader (reader forks open none). */
 interface Resident {
-  name: string;
   namespace: string;
+  /** residentContextOptions: the namespace and the resident's view of the residents' slot. */
+  options: ContextManagerOpenOptions;
   strategy: () => ContextStrategy;
-  subconscious?: { name: string; namespace: string; reAnchorFraction?: number };
+  /** subconsciousContextOptions for the resident's subconscious, given the
+   *  resident's strategy's message cap, which the framework mirrors: its own
+   *  slot, the residents' merged beside it, its view and a new strategy. */
+  subconscious?: { namespace: string; options: (maxMessageTokens: number | undefined) => ContextManagerOpenOptions };
 }
 
 interface Directory {
@@ -548,9 +544,7 @@ async function auditNamespace(store: JsStore, resident: Resident, repairs: LoadR
   const opens: Array<{ namespace: string; model: ReturnType<typeof noModel>; open: (membrane: Membrane) => Promise<ContextManager> }> = [{
     namespace: resident.namespace,
     model: noModel(),
-    open: (membrane) => ContextManager.open({
-      store, namespace: resident.namespace, strategy, membrane, viewFilter: residentView(resident.name),
-    }),
+    open: (membrane) => ContextManager.open({ store, ...resident.options, strategy, membrane }),
   }];
   const { subconscious } = resident;
   if (subconscious !== undefined) {
@@ -559,14 +553,7 @@ async function auditNamespace(store: JsStore, resident: Resident, repairs: LoadR
       model: noModel(),
       open: (membrane) => ContextManager.open({
         store,
-        namespace: subconscious.namespace,
-        isolate: true,
-        auxiliaryMessageViews: [{}],
-        viewFilter: subconsciousView(subconscious.name),
-        strategy: new WindowedPassthroughStrategy({
-          reAnchorFraction: subconscious.reAnchorFraction,
-          maxMessageTokens: (strategy as { maxMessageTokens?: number }).maxMessageTokens,
-        }),
+        ...subconscious.options((strategy as { maxMessageTokens?: number }).maxMessageTokens),
         membrane,
       }),
     });
@@ -607,14 +594,32 @@ const MODEL_CALLED = 'its strategy called a model while opening it, and the audi
 
 type RecipeRead = { recipe: Recipe | null } | { error: unknown };
 
+/** The recipe the directory's start would load: `source`, or the one saved
+ *  in it. A refusal names the file, which for a saved recipe is a hidden
+ *  one (.recipe.json), unless its own words name it already: resolved (a
+ *  missing or unparsable file), as given in quotes (substituteEnvVars'
+ *  `Recipe "<source>" references …`), or as given with a directory (a URL
+ *  among them). A bare file name counts only resolved or quoted: as given
+ *  it can be one of the refusal's words ("Recipe", "tuneOut.enabled"). */
 async function readRecipe(dataDir: string, source: string | undefined): Promise<RecipeRead> {
   try {
     return source !== undefined
       ? { recipe: (await loadRecipeDetailed(source, { fetchSystemPrompt: false })).recipe }
       : { recipe: await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }) };
   } catch (error) {
-    return { error };
+    const path = source ?? savedRecipePath(dataDir);
+    const said = oneLine(error);
+    if ((/[\\/]/.test(path) && names(said, path)) || said.includes(`"${path}"`) || names(said, resolve(path))) return { error };
+    const file = source !== undefined ? `its recipe, ${path},` : `its saved recipe, ${path},`;
+    return { error: new Error(`${file} can't be loaded: ${said}`, { cause: error }) };
   }
+}
+
+/** Whether `said` names `path` whole: not as a part of a longer path or
+ *  word, as `agent` is of "agent-framework". */
+function names(said: string, path: string): boolean {
+  const text = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w./\\\\-])${text}(?![\\w/\\\\-]|\\.\\w)`).test(said);
 }
 
 function recipeOf(read: RecipeRead): Recipe | null {
@@ -711,7 +716,7 @@ export const CHILD_AUDIT_MINUTES_ENV = 'CONNECTOME_FLEET_CHILD_AUDIT_MINUTES';
 /** A fleet child's audit's limit: the minutes `env` gives, when they're a
  *  number above 0, up to what a timer holds (Infinity included), or else
  *  CHILD_AUDIT_LIMIT_MS. */
-function childAuditLimitMs(env: NodeJS.ProcessEnv): number {
+export function childAuditLimitMs(env: NodeJS.ProcessEnv): number {
   const minutes = Number(env[CHILD_AUDIT_MINUTES_ENV]);
   return minutes > 0 ? Math.min(minutes * 60_000, 2 ** 31 - 1) : CHILD_AUDIT_LIMIT_MS;
 }
@@ -926,21 +931,28 @@ async function residentOf(dataDir: string, read: RecipeRead, loaded?: ExtensionR
     stores,
     names,
     indexed,
-    as: (name) => ({
-      name,
-      namespace: `agents/${name}`,
-      strategy,
-      ...(subconscious?.enabled
-        ? {
-          subconscious: {
-            // agent-framework's default name, as the recipe's doc says.
-            name: subconscious.name ?? 'Subconscious',
-            namespace: `subconscious/${name}`,
-            reAnchorFraction: subconscious.reAnchorFraction,
-          },
-        }
-        : {}),
-    }),
+    as: (name) => {
+      const options = residentContextOptions(name);
+      // Under the persistent reader, the subconscious's own namespace, with
+      // its name and re-anchor fraction. Reader forks (Dendrite) read the
+      // resident's own context and open no subconscious namespace.
+      const reader = subconscious?.enabled && subconscious.reader !== 'forks'
+        ? (maxMessageTokens: number | undefined) => subconsciousContextOptions({
+            serves: name,
+            ...('name' in subconscious && subconscious.name !== undefined ? { name: subconscious.name } : {}),
+            ...('reAnchorFraction' in subconscious && subconscious.reAnchorFraction !== undefined
+              ? { reAnchorFraction: subconscious.reAnchorFraction }
+              : {}),
+            ...(maxMessageTokens !== undefined ? { maxMessageTokens } : {}),
+          })
+        : undefined;
+      return {
+        namespace: options.namespace!,
+        options,
+        strategy,
+        ...(reader ? { subconscious: { namespace: reader(undefined).namespace!, options: reader } } : {}),
+      };
+    },
   };
 }
 

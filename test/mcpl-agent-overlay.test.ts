@@ -263,7 +263,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       id: 's', command: 'node', inheritEnv: true,
       enabledCapabilities: ['contextHooks'], toolLifecycle: { observe: {} }, allowHostCommands: true,
     });
-    expect(operator.grants).toEqual(['enabledCapabilities', 'toolLifecycle', 'allowHostCommands']);
+    expect([...operator.grants].sort()).toEqual(['allowHostCommands', 'enabledCapabilities', 'toolLifecycle']);
     const grants = 'enabled capabilities (enabledCapabilities); tool lifecycle (toolLifecycle); host commands (allowHostCommands)';
     expect(lostByReplacement(operator, { command: 'node', allowHostCommands: true } as never))
       .toBe(`inherited host environment (inheritEnv); ${grants}`);

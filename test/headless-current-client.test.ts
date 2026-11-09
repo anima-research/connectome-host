@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { type Socket } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectWhenAccepting } from './ipc-connect.js';
@@ -21,7 +21,7 @@ async function withChild(body: (h: {
     socket: Socket;
     events: Array<Record<string, unknown>>;
     send: (command: object) => void;
-    hasReply: (text: string) => boolean;
+    answered: (corrId: string) => boolean;
   }>;
 }) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'headless-current-client-'));
@@ -49,8 +49,8 @@ async function withChild(body: (h: {
     socket.on('error', () => { });
     await until(() => events.some(event => event.type === 'lifecycle' && event.phase === 'ready'), 'ready');
     const send = (command: object) => socket.write(JSON.stringify(command) + '\n');
-    const hasReply = (text: string) => events.some(event => event.type === 'command-output' && String(event.text).includes(text));
-    return { socket, events, send, hasReply };
+    const answered = (corrId: string) => events.some(event => event.corrId === corrId);
+    return { socket, events, send, answered };
   };
   try {
     await until(() => existsSync(join(dir, 'ipc.sock')), 'socket');
@@ -77,8 +77,8 @@ test('a client that ends cleanly stops being current, and its disconnect is logg
     first.socket.end();
     await until(() => log().includes('client disconnected; child stays up'), 'the disconnect logged');
     const next = await open();
-    next.send({ type: 'command', command: '/after-end' });
-    await until(() => next.hasReply('/after-end'), 'the next client answered');
+    next.send({ type: 'describe', corrId: 'after-end' });
+    await until(() => next.answered('after-end'), 'the next client answered');
     expect(count(log(), 'client disconnected; child stays up')).toBe(1);
     expect(log()).not.toContain('superseded client disconnected');
     expect(log()).not.toContain('closing previous client');
@@ -90,8 +90,8 @@ test("a superseded client's disconnect leaves the newer client current", async (
     await open();
     const second = await open();
     await until(() => log().includes('superseded client disconnected'), 'the superseded disconnect logged');
-    second.send({ type: 'command', command: '/still-current' });
-    await until(() => second.hasReply('/still-current'), 'the current client answered');
+    second.send({ type: 'describe', corrId: 'still-current' });
+    await until(() => second.answered('still-current'), 'the current client answered');
     expect(log()).not.toContain('client disconnected; child stays up');
     expect(count(log(), 'superseded client disconnected')).toBe(1);
   });
@@ -104,11 +104,8 @@ test.skipIf(!nodeSockets)("a superseded client's later commands are dropped, not
     second.send({ type: 'subscribe', events: [] });
     await until(() => count(log(), 'client connected') >= 2, 'second client current');
 
-    const release = join(dir, 'release');
-    const done = join(dir, 'done');
-    writeFileSync(release, 'go');
     first.send({ type: 'subscribe', events: ['*'] });
-    first.send({ type: 'command', command: `/puppet delayed ${JSON.stringify({ release, done, result: 'SUPERSEDED' })}` });
+    first.send({ type: 'request-workspace-tree', corrId: 'superseded', mount: '/m' });
     first.send({ type: 'text', content: 'from the superseded client' });
     first.send({ type: 'shutdown', graceful: true });
     first.socket.end();
@@ -119,10 +116,9 @@ test.skipIf(!nodeSockets)("a superseded client's later commands are dropped, not
     expect(log()).not.toContain('subscription set: *');
     expect(log()).not.toContain('dispatchCommand threw');
 
-    second.send({ type: 'command', command: '/still-current' });
-    await until(() => second.hasReply('/still-current'), 'the current client answered');
-    await Bun.sleep(100);
-    expect(existsSync(done)).toBe(false);
+    second.send({ type: 'describe', corrId: 'still-current' });
+    await until(() => second.answered('still-current'), 'the current client answered');
+    expect(existsSync(join(dir, 'started'))).toBe(false);
   });
 }, 20_000);
 
@@ -148,8 +144,8 @@ test.skipIf(pythonMissingOutsideCi)('a client whose socket is reset stops being 
 
     await until(() => log().includes('client disconnected; child stays up'), 'the disconnect logged');
     const next = await open();
-    next.send({ type: 'command', command: '/after-reset' });
-    await until(() => next.hasReply('/after-reset'), 'the next client answered');
+    next.send({ type: 'describe', corrId: 'after-reset' });
+    await until(() => next.answered('after-reset'), 'the next client answered');
     expect(count(log(), 'client disconnected; child stays up')).toBe(1);
     expect(log()).not.toContain('superseded client disconnected');
     expect(log()).not.toContain('closing previous client');

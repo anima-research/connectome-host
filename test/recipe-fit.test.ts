@@ -251,9 +251,12 @@ describe('a recipe load refuses what Anthropic refuses', () => {
   });
 
   test('where no one change fits, the refusal says so and names no way', () => {
-    const fit = recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: promptOfAbout(197_000), maxTokens: 16_384, contextBudgetTokens: 20_000 } }), HAIKU);
-    expect(fit.checked && !fit.fits && fit.refusal).toContain('No budget, no lower agent.maxTokens, and no shorter system prompt fits it alone.');
-    expect(fit.checked && !fit.fits && fit.refusal).not.toContain('A budget of');
+    const agent = { systemPrompt: promptOfAbout(197_000), maxTokens: 16_384, contextBudgetTokens: 20_000 };
+    const fit = recipeFit(validateRecipe({ name: 'fit', agent }), HAIKU);
+    const refusal = fit.checked && !fit.fits ? fit.refusal : '';
+    expect(refusal).toContain('No budget, no lower agent.maxTokens, and no shorter system prompt fits it alone.');
+    expect(refusal).not.toContain('A budget of');
+    expect(namedRanges(refusal, agent)).toEqual([]);
   });
 
   type Knob = 'budget' | 'maxTokens' | 'recentWindowTokens' | 'headWindowTokens' | 'system';

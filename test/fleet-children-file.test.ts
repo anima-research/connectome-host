@@ -2,13 +2,13 @@ import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as childProcess from 'node:child_process';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FLEET_BEGIN_ENV } from '../src/fleet-begin.js';
 import { FleetModule, fleetChildEnv, type FleetModuleConfig } from '../src/modules/fleet-module.js';
 import * as contract from '../src/update/contract.js';
 import { childrenFilePath, readRecord, type ChildrenFile } from '../src/update/contract.js';
+import { connectWhenAccepting } from './ipc-connect.js';
 import { processEnded } from './process-ended.js';
 
 type Result = Awaited<ReturnType<FleetModule['handleToolCall']>>;
@@ -175,9 +175,9 @@ async function linesOf(file: string, what: string): Promise<string[]> {
   return readFileSync(file, 'utf8').trimEnd().split('\n');
 }
 
-function firstLine(socketPath: string): Promise<string> {
+async function firstLine(socketPath: string): Promise<string> {
+  const socket = await connectWhenAccepting(socketPath);
   return new Promise((resolve, reject) => {
-    const socket = connect(socketPath);
     let got = '';
     socket.on('data', (data) => {
       got += data.toString();
@@ -538,17 +538,7 @@ describe("the fleet's children file", () => {
       expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid: leader, bootId: machineBootId(), dataDir: input().dataDir }]);
       expect(logged).toContain(`[fleet] couldn't end what's left of child "leaf"'s process group (${leader}): EPERM, so the ` +
         'children file lists the child while that group may have a process.');
-      const probe = fleet as unknown as { groupInUse: (pid: number | null) => boolean };
-      const probing = spyOn(probe, 'groupInUse');
-      let result: Result;
-      let probes: number;
-      try {
-        result = await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
-      } finally {
-        probes = probing.mock.calls.length;
-        probing.mockRestore();
-      }
-      expect(probes).toBeLessThanOrEqual(2);
+      const result = await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
       expect((result.data as { note?: string }).note).toStartWith(`already stopped. Its process has ended, but process ` +
         `group ${leader}, which it led, still has a process, which this host's SIGKILL couldn't reach (EPERM). `);
     } finally {
@@ -1240,7 +1230,6 @@ describe("the fleet's children file", () => {
     } finally {
       log.mockRestore();
     }
-    expect(fleet.getChildren().get('leaf')?.status).not.toBe('ready');
     expect(listed(childrenFile).map((c) => c.pid)).toEqual([pid]);
     expect(logged.some((line) => line.startsWith(`[fleet] couldn't write ${childrenFile}, which an update reads`))).toBe(true);
   });

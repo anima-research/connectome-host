@@ -28,6 +28,7 @@
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
 import { hostMembraneRetry } from './membrane-retry.js';
+import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
   BedrockAdapter,
   Membrane,
@@ -77,16 +78,18 @@ import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChil
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
+import { openReadlineTerminal } from './readline-terminal.js';
+import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
-import { currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
+import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
-import { switchSessionSteps } from './session-switch.js';
+import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName, namingSummary } from './synesthete.js';
 import {
@@ -101,13 +104,16 @@ import {
   clearSavedRecipe,
   parseRecipeArg,
   deprecatedConversationsNotices,
+  deprecatedSurfaceNotices,
   resolveProvider,
   recipeModel,
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning } from './framework-agent-config.js';
-import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
+import { probeAccountBinding } from './thinking-binding-probe.js';
+import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
+import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
@@ -122,6 +128,7 @@ export type { AppContext };
 
 const headless = process.argv.includes('--headless');
 const noTui = !headless && (process.argv.includes('--no-tui') || !process.stdin.isTTY);
+const batch = noTui && !process.stdin.isTTY;
 
 const config = {
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -143,6 +150,7 @@ const config = {
 
 interface AppContext {
   framework: AgentFramework;
+  frameworkSessionId: string;
   membrane: Membrane;
   sessionManager: SessionManager;
   recipe: Recipe;
@@ -154,11 +162,21 @@ interface AppContext {
   quotaMeter: QuotaMeter | null;
   credentials: CredentialMonitor | null;
   subscriptionUnmetered: boolean;
+  /**
+   * Headless only: the framework's traces from create() on, held until
+   * runHeadless attaches the sink that feeds the agent tree, the socket and
+   * the host's idle. create() replays its early traces (registry restore,
+   * work a stop cut off, resumed tune-out epochs) only to a listener
+   * attached before start(), and runHeadless runs after start(); this is
+   * that listener (src/boot-traces.ts).
+   */
+  bootTraces?: BootTraceHold;
   stopping?: boolean;
   switching?: boolean;
+  switchSettled?: Promise<{ madeStopFailed: boolean }>;
   onFrameworkReplaced?: () => void;
 
-  switchSession(id: string): Promise<void>;
+  switchSession(id: string): Promise<boolean>;
 }
 
 async function resolveRecipe(): Promise<Recipe> {
@@ -262,6 +280,8 @@ async function createFramework(
       formatter: recipe.agent.formatter,
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
+      ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
+      ...(subagentConfig.lifecycleReach ? { lifecycleReach: subagentConfig.lifecycleReach } : {}),
       timeZone,
     });
     moduleInstances.push(subagentModule);
@@ -391,9 +411,6 @@ async function createFramework(
 
   let mcplAdminModule: McplAdminModule | null = null;
   if (modules.mcplAdmin === true || typeof modules.mcplAdmin === 'object') {
-    if (typeof modules.mcplAdmin === 'object' && modules.mcplAdmin.surface !== undefined) {
-      console.warn('[deprecated] modules.mcplAdmin.surface is no longer read: mcpl-admin\'s tools are in the built-in "settings" toolset (toolsets--open {toolset:"settings"}).');
-    }
     mcplAdminModule = new McplAdminModule({ timeZone });
     moduleInstances.push(mcplAdminModule);
   }
@@ -437,9 +454,6 @@ async function createFramework(
       ...(subscriptionUnmetered ? { subscriptionUnmetered } : {}),
     });
     moduleInstances.push(webUiModule);
-    if (webuiConfig.observersSurface !== undefined) {
-      console.warn('[deprecated] modules.webui.observersSurface is no longer read: the observer tools are in the built-in "settings" toolset (toolsets--open {toolset:"settings"}).');
-    }
     moduleInstances.push(new ObserversModule({ path: observersPath }));
   }
 
@@ -486,6 +500,7 @@ async function createFramework(
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   for (const notice of deprecatedConversationsNotices(recipe.conversations)) console.warn(`[deprecated] ${notice}`);
+  for (const notice of deprecatedSurfaceNotices(recipe.modules)) console.warn(`[deprecated] ${notice}`);
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
   // The framework's heartbeat (heartbeat-options.ts), with heartbeat-mcpl
@@ -496,6 +511,7 @@ async function createFramework(
   const framework = await AgentFramework.create({
     storePath,
     membrane,
+    ...frameworkErrorPolicy(recipe.agent.retry),
 agents: [agentConfig],
     modules: moduleInstances,
     mcplServers,
@@ -507,12 +523,16 @@ agents: [agentConfig],
     // A 429 while a subscription window is spent is a quota, not a throttle:
     // park until it resets instead of retrying into it.
     ...(quotaMeter ? { providerHold: quotaProviderHold(quotaMeter, () => model) } : {}),
-    ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
+    ...codeExecutionOption(recipe),
     ...(conversations ? { conversations } : {}),
-    // Passed through as written: agent-framework fills in the subconscious's
-    // defaults.
-    ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
+    // Tune-out's reader (agent-framework#77, #232) and the Dendrite options
+    // (`speech`, `tuneOut`, `dendrite`) — recipe opt-ins, typed against the
+    // framework's own config (agent-framework#546); the reader mapping adds
+    // the one field a recipe cannot state.
+    ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
     ...(toolClassConfig(recipe) as object),
+    maintenanceIntervalMs: recipe.maintenanceIntervalMs,
+    inferenceBounds: recipe.inferenceBounds,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -689,26 +709,34 @@ async function runPiped(app: AppContext) {
   const { createInterface } = await import('node:readline');
   const { handleCommand } = await import('./commands.js');
 
+  let say = (line: string): void => { console.error(line); };
+  let atPrompt = false;
+  let onAlert: ((event: Record<string, unknown>) => void) | null = null;
   const turns = createPipedTurns(app.agentName, {
-    write: (text) => { process.stdout.write(text); },
-    log: (line) => { console.log(line); },
-    error: (line) => { console.error(line); },
+    write: (text) => { atPrompt = false; process.stdout.write(text); },
+    log: (line) => { atPrompt = false; console.log(line); },
+    error: (line) => { say(line); },
   }, failureHint(app.recipe, process.env, app.credentials));
-  const traces = traceFollower((event) => turns.onTrace(event as { type: string; [key: string]: unknown }));
+  const traces = traceFollower((event) => {
+    const e = event as { type: string; [key: string]: unknown };
+    turns.onTrace(e);
+    if (e.type === 'ops:alert') onAlert?.(e);
+  });
   traces.follow(app.framework);
+  let afterSwitch = (): void => {};
 
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
     if (!trimmed) return false;
     if (trimmed.startsWith('/')) {
-      const result = handleCommand(trimmed, app);
+      const result = handleCommand(trimmed, app, { lineByLine: true });
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
       if (result.asyncWork) {
         try {
           for (const l of (await result.asyncWork).lines) console.log(l.text);
         } catch (error) {
-          console.error(`${trimmed.split(/\s/)[0]} failed: ${error instanceof Error ? error.message : String(error)}`);
+          say(`${trimmed.split(/\s/)[0]} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       if (result.branchChanged) {
@@ -720,8 +748,9 @@ async function runPiped(app: AppContext) {
       if (result.switchToSessionId) {
         const sessionId = result.switchToSessionId;
         turns.switched();
-        await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
-        console.log('Session switched.');
+        const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+        afterSwitch();
+        console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
       }
     } else {
       app.framework.pushEvent({
@@ -733,7 +762,7 @@ async function runPiped(app: AppContext) {
     return false;
   }
 
-  if (!process.stdin.isTTY) {
+  if (batch) {
     console.log(batchModeStartNotice());
     const lines: string[] = [];
     const rl = createInterface({ input: process.stdin });
@@ -743,6 +772,7 @@ async function runPiped(app: AppContext) {
       console.log(`> ${batchEchoLine(line)}`);
       if (await processLine(line)) break;
     }
+    app.stopping = true;
     console.log('Done.');
     const serverIds = app.framework.listMcplServers().map((s) => s.id);
     console.log(batchTeardownNotice(serverIds));
@@ -760,21 +790,44 @@ async function runPiped(app: AppContext) {
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
-  let restarting = false;
-  hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
-  console.log('connectome-host (readline mode). Type /help for commands.');
-  rl.prompt();
-  rl.on('line', async (line: string) => {
-    if (await processLine(line)) { rl.close(); return; }
+  const terminal = openReadlineTerminal(config.dataDir, { showing: () => atPrompt, redraw: () => { rl.prompt(true); } });
+  try {
+    say = terminal.say;
+    hostUpdate.attachNotices(terminal.say);
+    const alerts = new Map<string, OpsAlertEntry>();
+    const showAlert = (alert: { kind: string; agent: string; message: string }): void => {
+      const line = opsAlertLine(alerts, alert.kind, alert.agent, alert.message);
+      if (line !== null) terminal.say(line.text);
+    };
+    onAlert = (event) => { showAlert(opsAlertOf(event)); };
+    afterSwitch = () => { alerts.clear(); };
+    let restarting = false;
+    hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
+    console.log('connectome-host (readline mode). Type /help for commands.');
+    if (terminal.logging()) terminal.say(`Error log: ${terminal.logPath}`);
+    let closed = false;
+    rl.on('close', () => { closed = true; atPrompt = false; });
     rl.prompt();
-  });
-  await new Promise<void>(r => rl.on('close', r));
-  console.log('\nShutting down...');
-  await app.framework.stop();
-  if (restarting) {
-    await stopWebUiServer().catch((error: unknown) => {
-      console.error(`[webui] closing the Web UI's server for the restart failed: ${error instanceof Error ? error.message : String(error)}`);
+    atPrompt = true;
+    rl.on('line', async (line: string) => {
+      atPrompt = false;
+      if (await processLine(line)) { rl.close(); return; }
+      if (closed) return;
+      rl.prompt();
+      atPrompt = true;
     });
+    await new Promise<void>(r => rl.on('close', r));
+    app.stopping = true;
+    console.log('\nShutting down...');
+    await app.framework.stop();
+    if (restarting) {
+      await stopWebUiServer().catch((error: unknown) => {
+        terminal.say(`[webui] closing the Web UI's server for the restart failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  } finally {
+    onAlert = null;
+    terminal.end();
   }
 }
 
@@ -870,6 +923,7 @@ async function main() {
           : { token: config.authToken }),
         autoRefresh: config.anthropicAutoRefresh,
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+        onWriteBack: (file, error) => credentialsRef?.observeWriteBack(file, error),
       })
     : null;
   // Subscription credentials draw down utilization windows instead of being
@@ -892,6 +946,7 @@ async function main() {
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;
@@ -911,7 +966,7 @@ async function main() {
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
-    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+    const name = fw?.getPrimaryAgentName()
       ?? (agents.length === 1 ? agents[0]!.name : undefined);
     if (!name) return null;
     const agent = agents.find((a) => a.name === name);
@@ -1085,10 +1140,21 @@ async function main() {
   }
 
   const extensions = await loadExtensions(recipe);
+  // Before any agent config is built: what this account does with thinking
+  // whose earlier conversation changed decides whether agents leave it out.
+  await probeAccountBinding(membrane, {
+    provider,
+    formatter: recipe.agent.formatter,
+    assistant: agentName,
+    models: [resolveModel(recipe), typeof recipe.modules?.subagents === 'object' ? recipe.modules.subagents.defaultModel : undefined],
+    stateFile: join(config.dataDir, 'thinking-binding.json'),
+    route: `${provider} ${process.env.ANTHROPIC_BASE_URL ?? ''}`.trim(),
+  });
   const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
 
   const app: AppContext = {
     framework,
+    frameworkSessionId: activeSession.id,
     membrane,
     sessionManager,
     recipe,
@@ -1103,7 +1169,7 @@ async function main() {
 
     async switchSession(id: string) {
       const newStorePath = sessionManager.getStorePath(id);
-      await switchSessionSteps(this, {
+      return switchSessionSteps(this, {
         stopOld: async () => {
           handleExport(this);
           await stopForSessionSwitch(this.framework, id);
@@ -1114,6 +1180,7 @@ async function main() {
         },
         install: async (next) => {
           this.framework = next;
+          this.frameworkSessionId = id;
           this.onFrameworkReplaced?.();
           await startFramework(next, null);
           this.userMessageCount = 0;
@@ -1140,6 +1207,10 @@ async function main() {
     };
   }
 
+  // The headless sink attaches inside runHeadless, after start() has
+  // dropped the traces create() replays; hold them from here (see
+  // AppContext.bootTraces), before startFramework calls start().
+  if (headless) app.bootTraces = holdBootTraces(framework);
   await startFramework(framework, installHere, {
     dataDir: config.dataDir,
     activeStore: storePath,
@@ -1159,8 +1230,10 @@ async function main() {
       },
     },
   });
-  if (!(noTui && !process.stdin.isTTY)) hostUpdate.startChecks();
-  getWebUiModule(framework)?.setApp(app);
+  if (!batch) hostUpdate.startChecks();
+  const serve = (): void => { getWebUiModule(app.framework)?.setApp(app); };
+  if (batch) serve();
+  else hostUpdate.whenStopAttached(serve);
   for (const [kind, message, data] of queuedAlerts.splice(0)) {
     (framework as unknown as { notifyOpsAlert?: (k: string, a: string, m: string, d?: Record<string, unknown>) => void })
       .notifyOpsAlert?.(kind, agentName, message, data);
@@ -1190,7 +1263,8 @@ async function main() {
 }
 
 main().catch(async (err) => {
-  console.error('Fatal error:', err);
+  if (err instanceof StartRefusal) console.error(err.message);
+  else console.error('Fatal error:', err);
   // Headless, headless.log may still hold lines written just before the
   // failure, such as the server's error; exiting at once would drop them.
   await beforeFatalExit?.();

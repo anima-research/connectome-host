@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import {
-  ContractError, copyLabelPath, installPaths, lastCopy, readCurrent, readMark, releaseDir,
+  ContractError, copyLabelPath, installPaths, lastCopy, readCurrent, readJournal, readMark, releaseDir,
 } from './contract.js';
 import { exists, syncPath } from './data-swap.js';
 import type { ReleaseHere } from './host.js';
@@ -171,8 +171,11 @@ async function prune(here: ReleaseHere, version: string, ops: InstallOps): Promi
     const to = readMark(here.root)?.to;
     if (typeof to === 'string') keep.add(to);
     unknown = current === null ? `${paths.current} isn't there`
-      : label === null ? 'the copy\'s label isn\'t there, since no switch has taken a copy yet or it was lost, so nothing ' +
-        'says which release a Go back needs'
+      : label === null ? (readJournal(here.root).some((line) => line.step === 'copy' && line.outcome === 'ok')
+        ? 'the copy\'s label isn\'t there, though the journal records a copy taken, so it was lost and nothing says ' +
+          'which release a Go back needs'
+        : 'the copy\'s label isn\'t there, and the journal records no copy taken, so nothing says which release a Go ' +
+          'back needs')
       : typeof label.from !== 'string' ? `the copy's label at ${copyLabelPath(paths.copy)} names no release` : null;
   } catch (error) {
     unknown = `which releases a start, a Go back or a request needs can't be told (${errorText(error)})`;

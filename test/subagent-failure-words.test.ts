@@ -231,7 +231,8 @@ describe('every input is checked against the type its schema declares', () => {
     try {
       expect((await h.subagent.handleToolCall(call('kill', {}))).error).toBe(
         'There\'s no tool "subagent--kill", so nothing ran. The subagent tools are subagent--spawn, subagent--fork, ' +
-        'subagent--hud, subagent--concurrency, subagent--peek and subagent--return.',
+        'subagent--hud, subagent--concurrency, subagent--peek, subagent--list, subagent--stop, subagent--message, ' +
+        'subagent--adopt, subagent--resume and subagent--return.',
       );
     } finally { await h.cleanup(); }
   });
@@ -285,7 +286,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
     try {
       expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toMatch(new RegExp(
         "^Subagent 'scout' didn't start, so nothing ran: its prompt would be about \\d+ tokens, over this host's limit of 10\\. " +
-        "Shorten its task or systemPrompt, or pass tools naming only the tools it needs, since every tool's definition counts\\.$",
+        "Shorten its task or systemPrompt, or pass tools naming only the tools it needs, since the definition of every tool in its tool list counts\\.$",
       ));
       expect((await h.subagent.handleToolCall(fork('probe', { sync: true }))).error).toMatch(new RegExp(
         "^Fork 'probe' didn't start, so nothing ran: it would begin at about \\d+ tokens, over this host's limit of 10, because a " +

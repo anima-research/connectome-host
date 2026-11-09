@@ -1,8 +1,3 @@
-/**
- * A server's `presentation` (agent-framework's host toolsets, 0.29.0): how
- * agents are shown it at first — "full", "tab" or "closed-tab" — validated
- * and passed through from the recipe, mcpl-servers.json and the agent overlay.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

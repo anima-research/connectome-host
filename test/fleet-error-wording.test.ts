@@ -34,6 +34,10 @@ function setup(config: FleetModuleConfig = {}) {
   return { fleet, dir, call, launch };
 }
 
+function escaped(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function until(ready: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await ready())) {
@@ -99,13 +103,38 @@ describe('fleet refusals name what the agent can do', () => {
 
   test('a child this host has no connection to is described by its state', async () => {
     const { fleet, call, launch } = setup();
+    const socketOf = (name: string) => fleet.getChildren().get(name)!.socket;
     expect((await launch('dropped')).success).toBe(true);
+    const first = socketOf('dropped');
     expect((await call('command', { name: 'dropped', command: '/drop' })).success).toBe(true);
-    await until(() => fleet.getChildren().get('dropped')!.socket === null);
-    expect((await call('send', { name: 'dropped', content: 'hi' })).error).toBe(
-      "Nothing was sent: child 'dropped' is ready, but its connection to this host has closed and its exit hasn't " +
-      "been seen yet, so it may be exiting. fleet--status for 'dropped' shows its state; if it still shows ready, " +
-      "fleet--restart for 'dropped' stops it and starts it again.",
+    await until(() => socketOf('dropped') !== null && socketOf('dropped') !== first);
+    expect((await call('command', { name: 'dropped', command: '/drop' })).success).toBe(true);
+    await until(() => socketOf('dropped') === null);
+    expect((await call('send', { name: 'dropped', content: 'hi' })).error).toMatch(new RegExp(
+      `^${escaped("Nothing was sent: child 'dropped' is ready, but its connection to this host closed again within " +
+        '30 s of this host connecting to it again, so another client may hold it, and this host stopped connecting ' +
+        'to it by itself. This host tries to connect to it once at the first fleet--send, fleet--command, ' +
+        'fleet--relay or fleet--await for it after ')}\\S+ \\[[^\\]]+\\]${escaped(', and until then they answer ' +
+        'this way, unless this host is already connecting to it for an update, when they wait for that connect. ' +
+        "fleet--restart for 'dropped' stops it and starts it again.")}$`,
+    ));
+    expect((await launch('closed')).success).toBe(true);
+    expect((await call('command', { name: 'closed', command: '/drop-closed' })).success).toBe(true);
+    await until(() => socketOf('closed') === null);
+    expect((await call('send', { name: 'closed', content: 'hi' })).error).toMatch(new RegExp(
+      `^${escaped("Nothing was sent: child 'closed' is ready, but its connection to this host closed, and " +
+        'connecting to it again failed: ')}.+${escaped('. It may be exiting or not answering, and the next ' +
+        "fleet--send, fleet--command, fleet--relay or fleet--await for it tries to connect once more. fleet--status " +
+        "for 'closed' shows its state; if it still shows ready, fleet--restart for 'closed' stops it and starts it " +
+        'again.')}$`,
+    ));
+    expect((await launch('leaving')).success).toBe(true);
+    expect((await call('command', { name: 'leaving', command: '/exiting' })).success).toBe(true);
+    await until(() => socketOf('leaving') === null);
+    expect((await call('send', { name: 'leaving', content: 'hi' })).error).toBe(
+      "Nothing was sent: child 'leaving' said it was exiting before its connection to this host closed, so it " +
+      "takes nothing more. fleet--status for 'leaving' shows its state, and fleet--restart for 'leaving' starts " +
+      'it again.',
     );
     const pending = launch('slow', { noSocket: true });
     await until(() => fleet.getChildren().get('slow')?.process != null);
@@ -125,6 +154,20 @@ describe('fleet refusals name what the agent can do', () => {
       `unresolved; its pid (${process.pid}) is still in use, so this host starts no other copy of it, and ` +
       'fleet--restart of it reattaches once it answers on its socket). fleet--restart for ' +
       "'leaf' reattaches to it once it answers on its socket, or starts it again if its process is gone.",
+    );
+  });
+
+  test('an await on a restored child this host is not attached to answers at once, saying so', async () => {
+    const { fleet } = await restored();
+    const result = await fleet.handleToolCall({
+      id: 'await', name: 'await', input: { names: ['leaf'], timeoutMs: 20_000 },
+    });
+    expect(result.error).toBe(
+      "No idle of child 'leaf' can reach this host, since it is recorded as starting, but this host isn't attached " +
+      `to it (adoption unresolved; its pid (${process.pid}) is still in use, so this host starts no other copy of it, ` +
+      'and fleet--restart of it reattaches once it answers on its socket). fleet--restart for ' +
+      "'leaf' reattaches to it once it answers on its socket, or starts it again if its process is gone. Idle so " +
+      'far: none.',
     );
   });
 
@@ -286,9 +329,9 @@ describe('fleet refusals name what the agent can do', () => {
 
   test('a relay from a child with no finished reply says what would bring one', async () => {
     const { fleet, call, launch } = setup({ sigtermEscalationMs: 2_000 });
-    const steps = (name: string) => `Nothing was relayed: '${name}' hasn't finished a reply since this host began ` +
-      'tracking it. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay passes ' +
-      `it on then; if '${name}' has nothing to answer, fleet--send gives it something.`;
+    const steps = (name: string) => `Nothing was relayed: '${name}' hasn't finished a reply since this host's ` +
+      'connection to it last opened. A reply counts once one of its inference rounds ends without tool calls, and ' +
+      `fleet--relay passes it on then; if '${name}' has nothing to answer, fleet--send gives it something.`;
     expect((await launch('dst')).success).toBe(true);
     expect((await launch('busy')).success).toBe(true);
     expect((await call('relay', { from: 'busy', to: 'dst' })).error).toBe(steps('busy'));
@@ -296,19 +339,47 @@ describe('fleet refusals name what the agent can do', () => {
     await until(async () => (await call('peek', { name: 'idle' })).data.events
       .some((e: { phase?: string }) => e.phase === 'idle'));
     expect((await call('relay', { from: 'idle', to: 'dst' })).error).toBe(steps('idle'));
+    const heard = (name: string, content: string) => (fleet as unknown as {
+      recordEvent(child: object, event: object): void;
+    }).recordEvent(fleet.getChildren().get(name)!, { type: 'inference:speech', agentName: 'mock', content });
     expect((await launch('dropped')).success).toBe(true);
+    const first = fleet.getChildren().get('dropped')!.socket;
+    heard('dropped', 'a reply before the drop');
     expect((await call('command', { name: 'dropped', command: '/drop' })).success).toBe(true);
-    await until(() => fleet.getChildren().get('dropped')!.socket === null);
-    expect((await call('relay', { from: 'dropped', to: 'dst' })).error).toBe(
-      "Nothing was relayed: 'dropped' hasn't finished a reply since this host began tracking it, and it is ready, " +
-      "but its connection to this host has closed and its exit hasn't been seen yet, so it may be exiting. " +
-      "fleet--status for 'dropped' shows its state; if it still shows ready, fleet--restart for 'dropped' stops it " +
-      'and starts it again.',
+    await until(() => ![null, first].includes(fleet.getChildren().get('dropped')!.socket));
+    expect((await call('relay', { from: 'dropped', to: 'dst' })).error).toBe(steps('dropped'));
+    expect((await launch('closed')).success).toBe(true);
+    heard('closed', 'a reply before the close');
+    expect((await call('command', { name: 'closed', command: '/drop-closed' })).success).toBe(true);
+    await until(() => fleet.getChildren().get('closed')!.socket === null);
+    expect((await call('relay', { from: 'closed', to: 'dst' })).error).toMatch(new RegExp(
+      `^${escaped("Nothing was relayed: this host can't reach 'closed', since it is ready, but its connection to " +
+        'this host closed, and connecting to it again failed: ')}.+${escaped('. It may be exiting or not answering, ' +
+        'and the next fleet--send, fleet--command, fleet--relay or fleet--await for it tries to connect once more. ' +
+        "fleet--status for 'closed' shows its state; if it still shows ready, fleet--restart for 'closed' stops it " +
+        "and starts it again. The reply this host holds from 'closed' came before it lost that connection, and " +
+        "'closed' may have answered whoever held its connection since, so it may not be the latest. Once this host " +
+        "knows 'closed' has exited, fleet--relay passes that reply on.")}$`,
+    ));
+    expect((await call('kill', { name: 'closed' })).success).toBe(true);
+    expect(await call('relay', { from: 'closed', to: 'dst' })).toMatchObject({ success: true, data: { chars: 24 } });
+    expect((await launch('leaving')).success).toBe(true);
+    heard('leaving', 'a reply before the exit');
+    expect((await call('command', { name: 'leaving', command: '/exiting' })).success).toBe(true);
+    await until(() => fleet.getChildren().get('leaving')!.socket === null);
+    expect((await call('relay', { from: 'leaving', to: 'dst' })).error).toBe(
+      "Nothing was relayed: this host can't reach 'leaving', since it said it was exiting before its connection to " +
+      "this host closed, so it takes nothing more. fleet--status for 'leaving' shows its state, and fleet--restart " +
+      "for 'leaving' starts it again. The reply this host holds from 'leaving' came before it lost that connection, " +
+      "and 'leaving' may have answered whoever held its connection since, so it may not be the latest. Once this " +
+      "host knows 'leaving' has exited, fleet--relay passes that reply on.",
     );
+    expect((await call('kill', { name: 'leaving' })).success).toBe(true);
+    expect(await call('relay', { from: 'leaving', to: 'dst' })).toMatchObject({ success: true, data: { chars: 23 } });
     expect((await call('kill', { name: 'busy' })).success).toBe(true);
     expect((await call('relay', { from: 'busy', to: 'dst' })).error).toBe(
-      "Nothing was relayed: 'busy' hasn't finished a reply since this host began tracking it, and it has exited " +
-      "(clean), so it isn't running. fleet--restart for 'busy' starts it again.",
+      "Nothing was relayed: 'busy' hasn't finished a reply since this host's connection to it last opened, and it " +
+      "has exited (clean), so it isn't running. fleet--restart for 'busy' starts it again.",
     );
   });
 

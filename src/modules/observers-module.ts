@@ -68,8 +68,6 @@ export class ObserversModule implements Module {
     return this.definitions();
   }
 
-  /** Grant edits are rare: the observer tools live in agent-framework's
-   *  built-in toolset ("settings"), out of the tool list. */
   toolPlacement(_toolName: string): 'builtin' {
     return 'builtin';
   }

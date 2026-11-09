@@ -112,6 +112,18 @@ export const PAGE_WAYS: UpdateWays = {
   check: 'Check now',
 };
 
+export const CLI_WAYS: UpdateWays = {
+  install: 'connectome update install',
+  restart: 'connectome update restart',
+  wait: 'connectome update restart wait',
+  now: 'connectome update restart now',
+  resume: 'connectome update restart resume',
+  back: 'connectome update back',
+  keep: 'connectome update back keep',
+  restore: 'connectome update back restore',
+  check: 'connectome update check',
+};
+
 function notesUrl(version: string): string {
   return `https://github.com/anima-research/connectome-host/blob/v${version}/CHANGELOG.md`;
 }
@@ -208,7 +220,8 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   const lines = [`connectome-host ${status.running}.`];
   const check = status.check;
   if (check === null) {
-    lines.push(status.checks ? 'The registry hasn\'t been read yet.' : 'This host doesn\'t read the registry on its own.');
+    lines.push(`${status.checks ? 'The registry hasn\'t been read yet' : 'This host doesn\'t read the registry on its ' +
+      'own'}: ${ways.check} reads it.`);
   } else if (!check.ok) {
     lines.push(told(`Reading the registry failed at ${check.at}`, check.error));
   } else if (check.candidate === null) {
@@ -287,10 +300,14 @@ function problemLines(problems: string[]): string[] {
     : [...said, `${unsaid} part${unsaid === 1 ? '' : 's'} of this status couldn't be read.`];
 }
 
+export function goBackUnread(status: UpdateStatus): string | undefined {
+  return status.problems.find((problem) => problem.startsWith(GO_BACK_UNREAD));
+}
+
 export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
   if (!status.install) return [NOT_AN_INSTALL];
   if (status.goBack === null) {
-    const unread = status.problems.find((problem) => problem.startsWith(GO_BACK_UNREAD));
+    const unread = goBackUnread(status);
     return [unread !== undefined
       ? `Whether a Go back is offered can't be told: ${unread.slice(GO_BACK_UNREAD.length + 2)}`
       : 'No Go back is offered: the copy doesn\'t hold another installed release\'s data.'];
