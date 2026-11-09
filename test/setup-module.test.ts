@@ -471,10 +471,11 @@ describe('setup--run', () => {
   linuxTest('stops a command at its limit with every process in its group, says so, and answers', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'child.pid');
-    const started = performance.now();
-    const answer = await run(module, `sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
-    expect(performance.now() - started).toBeGreaterThanOrEqual(450);
-    expect(performance.now() - started).toBeLessThan(15_000);
+    const startedFile = join(dir, 'started-at');
+    const answer = await run(module, `cut -d" " -f1 /proc/uptime > ${startedFile}; sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
+    const ran = Math.round((uptime() - Number(readFileSync(startedFile, 'utf-8'))) * 1000);
+    expect(ran).toBeGreaterThanOrEqual(400);
+    expect(ran).toBeLessThan(15_000);
     expect(answer.stoppedAtLimit).toBe(true);
     expect(answer.note).toContain('500 ms limit');
     expect(answer.stdout.text).toBe('begun\n');
@@ -518,8 +519,8 @@ describe('setup--run', () => {
     const pidFile = join(dir, 'holder.pid');
     let holder = 0;
     try {
-      const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun`, 900);
-      holder = Number(readFileSync(pidFile, 'utf-8'));
+      const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & echo begun`, 900);
+      holder = Number(await waitForFile(pidFile));
       expect(answer.outputHeldOpen).toBe(true);
       expect(answer.stoppedAtLimit).toBe(false);
       expect(answer.note).not.toContain('limit');

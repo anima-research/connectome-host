@@ -594,7 +594,9 @@ linux('a line typed while a turn runs that holds what the person then enters hid
     hosts.at(-1)!.stdin!.write('tok-hidden-9\r');
     await until(() => host.seen.output.includes('Not sent, since it holds what you entered hidden.') || host.bodies.length >= 4, 30_000,
       `the queued line's fate (output: ${host.seen.output.slice(-1500)})`);
-    await Bun.sleep(500);
+    hosts.at(-1)!.stdin!.write('after line\r');
+    await until(() => host.bodies.some((each) => lastFromPerson(each).endsWith('after line')), 30_000,
+      `the next line's request, which goes after anything still queued (output: ${host.seen.output.slice(-1500)})`);
     hosts.at(-1)!.stdin!.write('/quit\r');
     expect(await host.exit).toBe(0);
     expect(host.seen.output).toContain('Not sent, since it holds what you entered hidden.');

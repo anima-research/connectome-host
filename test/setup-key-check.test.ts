@@ -582,7 +582,7 @@ describe('the check and the agent\'s client', () => {
     expect(ours).toBe(theirs);
   });
 
-  test('on each stream, the check passes exactly when membrane\'s own Anthropic stream() reads it as one message', async () => {
+  test('on each stream, the check and membrane\'s own Anthropic stream() give the same outcome within their 3 s and 4 s deadlines, and stream() reads exactly the readable ones; a stream other than the held-open CR one that misses a deadline fails the test, named', async () => {
     const stubs = Bun.serve({ port: 0, fetch: (request) => STREAMS[new URL(request.url).pathname.split('/')[1]!]!() });
     try {
       const outcomes = await Promise.all(Object.keys(STREAMS).map(async (choice) => {

@@ -1396,7 +1396,7 @@ async function script(body: string): Promise<{ status: number | null; out: strin
   return { status, out, err };
 }
 
-test('a terminal that closes at a question gives the question no answer', async () => {
+test('input that ends at a question gives the question no answer', async () => {
   const ran = await script('console.log(JSON.stringify(await realWorld().ask("Does the resident get a shell? ")));');
   expect(ran.status).toBe(0);
   expect(ran.out.trim()).toBe('Does the resident get a shell? null');
@@ -1894,13 +1894,20 @@ test('the launch setup gives its agent starts the installed host, run here on a 
   child.stdout.on('data', (chunk) => { out += chunk; });
   child.stderr.on('data', (chunk) => { out += chunk; });
   const closed = new Promise((done) => child.on('close', done));
-  for (const started = Date.now(); !out.includes('[batch]') && Date.now() - started < 30_000;) await Bun.sleep(50);
-  expect(out).toContain('[batch]');
-  const root = join(dir, 'connectome-host');
-  expect(() => takeLock(root, machineOps())).not.toThrow();
-  unlinkSync(installPaths(root).lock);
-  child.stdin.end();
-  expect(await closed).toBe(0);
+  try {
+    for (const started = performance.now(); !out.includes('[batch]') && performance.now() - started < 30_000;) await Bun.sleep(50);
+    expect(out).toContain('[batch]');
+    const root = join(dir, 'connectome-host');
+    expect(() => takeLock(root, machineOps())).not.toThrow();
+    unlinkSync(installPaths(root).lock);
+    child.stdin.end();
+    expect(await closed).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await closed;
+    }
+  }
 }, 60_000);
 
 test('a directory holding only setup\'s own .setup/ is setup\'s, so setup goes on there', async () => {
@@ -1924,7 +1931,8 @@ async function holdLock(dir: string, source = `
     setInterval(() => db, 1000);
   `, waitMs = 4_000) {
   mkdirSync(join(dir, '.setup'), { recursive: true });
-  const holder = spawn(process.execPath, ['-e', source], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const holder = spawn(process.execPath, ['-e', source], { stdio: ['pipe', 'pipe', 'inherit'] });
+  holder.stdin!.on('error', () => {});
   const closed = new Promise<void>((done) => holder.once('close', () => done()));
   const kill = () => {
     holder.kill('SIGKILL');
@@ -1938,6 +1946,7 @@ async function holdLock(dir: string, source = `
       holder.stdout!.on('data', (chunk) => {
         said += String(chunk);
         if (said.includes('held')) done();
+        else holder.stdin!.write('\n');
       });
       holder.once('error', fail);
       holder.once('exit', (code, signal) => fail(new Error(`the lock holder ended before it held the lock (${signal ?? `exit ${code}`})`)));
@@ -1950,7 +1959,7 @@ async function holdLock(dir: string, source = `
 }
 
 test('the lock holder is waited for until it says it holds the lock, however its output is split, and one that ends first fails the wait, named', async () => {
-  const split = await holdLock(directory(), "process.stdout.write('he'); setTimeout(() => process.stdout.write('ld\\n'), 200); setInterval(() => {}, 1000);");
+  const split = await holdLock(directory(), "process.stdout.write('he'); process.stdin.once('data', () => process.stdout.write('ld\\n')); setInterval(() => {}, 1000);");
   await split.kill();
   await expect(holdLock(directory(), 'process.exit(3);')).rejects.toThrow('the lock holder ended before it held the lock (exit 3)');
 }, 5_000);
@@ -2643,7 +2652,7 @@ test('a host started again on setup\'s data goes on with the conversation it had
   expect(second.out).toContain('hello-from-the-first-run');
 }, 60_000);
 
-test('the host refuses modules.setup headless, in the TUI, or with stdin or stdout off a terminal, so its agent runs only in readline mode on one', async () => {
+test('the host refuses modules.setup headless, in the TUI, or with stdin or stdout off a terminal, so its agent runs only in readline mode on one (the cases on a terminal on Linux only)', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', ''], secrets: [KEY], host: 'copy' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2653,6 +2662,7 @@ test('the host refuses modules.setup headless, in the TUI, or with stdin or stdo
   expect(ran.exitCode).not.toBe(0);
   expect(ran.stdout.toString() + ran.stderr.toString()).toContain(refusal);
   expect(ran.stderr.toString(), 'a refusal, not a crash with its stack').not.toContain('Fatal error');
+  if (process.platform !== 'linux') return;
 
   // script(1) gives the host a terminal on stdin; the redirect inside takes stdout off it.
   const out = join(directory(), 'out.txt');
@@ -2872,7 +2882,7 @@ test('setup\'s runner stops a program still running at its limit, and says so', 
   try {
     if (process.platform === 'linux') {
       let seen = left();
-      for (const until = performance.now() + 5_000; seen.length === 0 && performance.now() < until;) seen = left();
+      for (const until = performance.now() + 5_000; seen.length === 0 && performance.now() < until; Bun.sleepSync(1)) seen = left();
       expect(seen).not.toEqual([]);
     }
   } finally {
