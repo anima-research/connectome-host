@@ -2972,3 +2972,32 @@ test('the line saying setup uses the .env ANTHROPIC_BASE_URL over the exported o
   expect(shown).toContain('which leads to https://<ANTHROPIC_API_KEY>.gateway.example, not the one exported in this shell');
   expect(shown.toLowerCase()).not.toContain(KEY);
 });
+
+test('on a first setup, the exported-base-URL line hides a value under any other .env name, as the agent\'s side guesses it a secret', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'),
+    `ANTHROPIC_API_KEY=${KEY}\nMY_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] },
+    { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://elsewhere.example' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('which leads to https://<MY_TOKEN>.gateway.example, not the one exported in this shell');
+  expect(shown.toLowerCase()).not.toContain('tok-in-host');
+});
+
+test('where setup\'s list of stored secrets can\'t be read, the exported-base-URL line hides the guessed names\' values too', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.setup', 'stored-secrets.json'), 'not a list');
+  writeFileSync(join(dir, '.env'),
+    `ANTHROPIC_API_KEY=${KEY}\nMY_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://tok-in-host.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] },
+    { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://elsewhere.example' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('which leads to https://<MY_TOKEN>.gateway.example, not the one exported in this shell');
+  expect(shown).not.toContain('tok-in-host');
+});
