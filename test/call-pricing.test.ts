@@ -167,6 +167,21 @@ describe('Anthropic per-call pricing', () => {
     }
   });
 
+  test('a dated Fable 5 or Mythos 5 snapshot is priced as its own model, not as the 5.2 its id begins with', () => {
+    for (const model of ['claude-fable-5-20260301', 'claude-mythos-5-20260301']) {
+      const cost = priceAnthropicCall(model, timestamp, usage({ cacheReadTokens: 1_000_000 }));
+      expect([model, cost?.rates.inputPerMillion, cost?.rates.outputPerMillion]).toEqual([model, 10, 50]);
+      expect(cost?.rates.cacheReadPerMillion).toBeCloseTo(1, 9);
+      expect(anthropicCacheReadMultiplier(model)).toBe(0.1);
+    }
+    for (const model of ['claude-fable-5-2', 'claude-mythos-5-2', 'claude-fable-5-2-20261109', 'claude-mythos-5-2-20261109']) {
+      expect([model, priceAnthropicCall(model, timestamp, usage({}))?.rates.inputPerMillion]).toEqual([model, 8]);
+    }
+    expect(priceAnthropicCall('claude-sonnet-4-20250514', timestamp, usage({}))?.rates.inputPerMillion).toBe(3);
+    expect(priceAnthropicCall('claude-opus-4-20250514', timestamp, usage({}))?.rates.inputPerMillion).toBe(15);
+    expect(priceAnthropicCall('claude-opus-4-1-20250805', timestamp, usage({}))?.rates.inputPerMillion).toBe(15);
+  });
+
   test('Fable 5.1 reads from cache at 0.025x, a quarter of the Fable 5 rate', () => {
     const fable51 = priceAnthropicCall('claude-fable-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
     const fable5 = priceAnthropicCall('claude-fable-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
