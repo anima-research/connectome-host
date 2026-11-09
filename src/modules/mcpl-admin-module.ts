@@ -689,14 +689,7 @@ export class McplAdminModule implements Module {
         (forGrant?.url !== undefined
           ? ` The home node's directory publishes ${forGrant.url} for the access grant ${JSON.stringify(entry.access)}: ` +
             'leave `url` out, and the deploy dials that.'
-          : forGrant?.published !== undefined
-            ? ' Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory, which ' +
-              'a deploy with `access` and no `url` then dials.'
-            : forGrant?.unreadable !== undefined
-              ? ' The home node\'s directory of MCPL endpoints couldn\'t be read, ' +
-                `so it isn't known whether it publishes one for the access grant ${JSON.stringify(entry.access)}: a deploy ` +
-                'with `access` and no `url`, called again later, dials the endpoint it publishes, if it publishes one.'
-              : ''),
+          : ''),
       );
     }
 
