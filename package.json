@@ -33,7 +33,7 @@
     "@animalabs/agent-framework": "^0.33.0",
     "@animalabs/chronicle": "^0.6.0",
     "@animalabs/context-manager": "^0.25.0",
-    "@animalabs/membrane": "^0.8.0",
+    "@animalabs/membrane": "^0.8.1",
     "@opentui/core": "^0.2.16"
   },
   "engines": {
