@@ -9,9 +9,9 @@ import { createInterface, type Interface } from 'node:readline';
 import { Database } from 'bun:sqlite';
 import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
-import { ANTHROPIC_API, checkKey, originOf, withoutKey, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
+import { ANTHROPIC_API, checkKey, originOf, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
 import {
-  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, withoutStoredSecrets, writeEnvValue,
+  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, storedSecretsIn, unwritableValue, writeEnvValue,
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
@@ -665,6 +665,9 @@ async function installAndStart(
   out(`The installed host (${running}) starts.`);
 
   const stored = readEnvFile(envFile);
+  // Read again at each use, since the person can change .env while setup waits on a question.
+  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile);
+  const shownOrigin = (url: string, key: string) => withSecretsHidden(String(originOf(url)), key, hide());
   const baseIn = (): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
     if (url === undefined || originOf(url) !== null) return url;
@@ -679,8 +682,7 @@ async function installAndStart(
   if (shell.ANTHROPIC_BASE_URL !== undefined && (shell.ANTHROPIC_BASE_URL || undefined) !== baseUrl) {
     out(`Setup checks the key at, and gives its agent, ${baseUrl === undefined
       ? `Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL`
-      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ` +
-        withoutStoredSecrets(String(originOf(baseUrl)), stored, join(dir, '.setup'), envFile)}, ` +
+      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${shownOrigin(baseUrl, '')}`}, ` +
       `not the one exported in this shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
   }
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
@@ -695,7 +697,7 @@ async function installAndStart(
   for (;;) {
     if (key === null) {
       key = await world.askHidden(`${baseUrl === undefined ? 'An Anthropic API key, from console.anthropic.com\'s API keys'
-        : `An API key that ${originOf(baseUrl)} accepts`}, typed hidden (Enter alone stops setup)`);
+        : `An API key that ${shownOrigin(baseUrl, '')} accepts`}, typed hidden (Enter alone stops setup)`);
       fromDotEnv = false;
       if (!key) return stopped();
     }
@@ -715,9 +717,9 @@ async function installAndStart(
     }
     if (baseUrl === null) return 1;
     out(`Checking ${fromDotEnv ? `the ANTHROPIC_API_KEY in ${envFile}` : 'the key'}: one call at ` +
-      `${baseUrl === undefined ? ANTHROPIC_API : withoutKey(String(originOf(baseUrl)), key)} to ${model}, the model setup's ` +
+      `${baseUrl === undefined ? ANTHROPIC_API : shownOrigin(baseUrl, key)} to ${model}, the model setup's ` +
       'agent runs on, which the key\'s account has to be able to use.');
-    const checked = await world.checkKey({ key, model, envFile, ...(baseUrl === undefined ? {} : { baseUrl }) });
+    const checked = await world.checkKey({ key, model, envFile, hide: hide(), ...(baseUrl === undefined ? {} : { baseUrl }) });
     if (checked.ok) break;
     err(checked.cause);
     if (checked.anotherKeyMayHelp) {

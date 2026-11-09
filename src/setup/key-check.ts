@@ -1,6 +1,7 @@
 import { Stream } from '@anthropic-ai/sdk/streaming';
 import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
-import { JSON_TYPE, redirectTarget } from './provider-key.js';
+import { JSON_TYPE, redirectTarget, shownByName } from './provider-key.js';
+import type { Secret } from './secrets.js';
 
 export type KeyCheck = { ok: true } | { ok: false; cause: string; anotherKeyMayHelp: boolean };
 
@@ -11,18 +12,17 @@ export interface KeyCheckOptions {
   timeoutMs?: number;
   fetch?: typeof fetch;
   envFile?: string;
+  /** Other stored secrets, shown by name wherever the check's words could carry one. */
+  hide?: readonly Secret[];
 }
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
 
-/** The words with the key in them shown as <ANTHROPIC_API_KEY>, trimmed or whole, its ASCII letters in any case: fetch
- *  sends a header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's host gets it
- *  back lowercased. */
-export function withoutKey(words: string, key: string): string {
-  for (const each of [...new Set([key, key.trim()])].filter((one) => one.trim() !== '').sort((a, b) => b.length - a.length)) {
-    words = words.replace(new RegExp(each.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<ANTHROPIC_API_KEY>');
-  }
-  return words;
+/** The words with the key shown as <ANTHROPIC_API_KEY> and each secret of hide by its name, trimmed or whole, their
+ *  ASCII letters in any case: fetch sends a header's value trimmed, so a server can quote the key that way, and one that
+ *  puts a secret in a URL's host gets it back lowercased. */
+export function withSecretsHidden(words: string, key: string, hide: readonly Secret[] = []): string {
+  return shownByName(words, [{ name: 'ANTHROPIC_API_KEY', value: key }, ...hide]);
 }
 
 export function originOf(baseUrl: string): string | null {
@@ -92,16 +92,16 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     return failed('ANTHROPIC_BASE_URL isn\'t an http:// or https:// URL, so nothing was called. Set it to one, ' +
       `such as ${ANTHROPIC_API}, or unset it for Anthropic's own API, and run setup again.`, false);
   }
-  const origin = withoutKey(reached, key);
+  const origin = withSecretsHidden(reached, key, options.hide);
   // As @anthropic-ai/sdk 0.52.0's buildURL joins the base URL and the path, so the check calls where the agent will.
   const url = base + (base.endsWith('/') ? 'v1/messages' : '/v1/messages');
-  const host = withoutKey(new URL(url).host, key);
+  const host = withSecretsHidden(new URL(url).host, key, options.hide);
   const urls = [...new Set([url, new URL(url).href, base, new URL(base).href])].sort((a, b) => b.length - a.length);
   const path = new URL(base).pathname.replace(/\/+$/, '') === '' ? null : new URL(url).pathname;
   const quote = (words: string) => {
     for (const each of urls) words = words.split(each).join(origin);
     if (path !== null) words = words.split(path).join('<the request\'s path>');
-    return sentence(withoutKey(words, key));
+    return sentence(withSecretsHidden(words, key, options.hide));
   };
   const notAllowed = set
     ? `Ask whoever runs ${origin}, or manages the key's account there, to allow it, or use a key that can make that call.`

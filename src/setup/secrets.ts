@@ -360,12 +360,9 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-/** The text with each of the .env values that the agent's side takes as a secret, by secretNames, shown by its name,
- *  as everywhere setup hides one: a URL's host can carry one. The base URLs are left out, since such text says where
- *  one of them leads. */
-export function withoutStoredSecrets(
-  text: string, values: ReadonlyMap<string, string>, setupDir: string, envFile: string,
-): string {
+/** The .env values the agent's side takes as secrets, by secretNames, each with its name: what setup's own lines show
+ *  by its name, as a URL's host can carry one. The base URLs are left out, since such a line says where one leads. */
+export function storedSecretsIn(setupDir: string, envFile: string): Secret[] {
   let taken: string[];
   try {
     taken = secretNames(setupDir, envFile).names;
@@ -374,8 +371,6 @@ export function withoutStoredSecrets(
     taken = [...KNOWN_SECRETS, ...guessedNames(envFile)];
   }
   const names = new Set(taken.filter((name) => !name.endsWith('_BASE_URL')));
-  const secrets = [...values].filter(([name, value]) => names.has(name) && value.trim() !== '')
+  return [...readEnvFile(envFile)].filter(([name, value]) => names.has(name) && value.trim() !== '')
     .map(([name, value]) => ({ name, value }));
-  const bytes = Buffer.from(text);
-  return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text;
 }

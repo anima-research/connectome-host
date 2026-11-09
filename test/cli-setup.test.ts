@@ -1046,7 +1046,7 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
   }
   expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
   expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o600);
-  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env') }]);
+  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), hide: expect.any(Array) }]);
   expect(statSync(join(dir, 'data')).mode & 0o777).toBe(0o700);
   expect(statSync(join(dir, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
   expect(made.seen.launched).not.toBeNull();
@@ -2391,7 +2391,7 @@ test('the key is checked where the resident will call: at the ANTHROPIC_BASE_URL
   writeFileSync(envFile, `${readFileSync(envFile, 'utf-8')}ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n`);
   const fromFile = world(dir);
   expect(await runSetup(dir, ['discord'], fromFile)).toBe(0);
-  expect(fromFile.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), baseUrl: 'https://gateway.example/anthropic' }]);
+  expect(fromFile.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), baseUrl: 'https://gateway.example/anthropic', hide: expect.any(Array) }]);
   expect(fromFile.seen.launched!.env.ANTHROPIC_BASE_URL).toBe('https://gateway.example/anthropic');
   expect(text(fromFile.seen.out)).toContain('A gateway at ANTHROPIC_BASE_URL may charge otherwise.');
 
@@ -2501,7 +2501,7 @@ test('an empty ANTHROPIC_BASE_URL in .env means Anthropic\'s own API, as it does
   writeFileSync(join(dir, '.env'), `ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
   const made = world(dir, { answers: ['no', ''] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env') }]);
+  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), hide: expect.any(Array) }]);
   expect(text(made.seen.out)).toContain(`Checking the ANTHROPIC_API_KEY in ${join(dir, '.env')}: one call at https://api.anthropic.com to ${SETUP_MODEL},`);
   expect(made.seen.launched!.env.ANTHROPIC_BASE_URL).toBeUndefined();
 });
@@ -2512,7 +2512,7 @@ test('an ANTHROPIC_BASE_URL exported in this shell is named, setup checking the 
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] },
     { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://someone:pass-in-url@gateway.example/path?token=in-query' } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env') }]);
+  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), hide: expect.any(Array) }]);
   expect(made.seen.launched!.env.ANTHROPIC_BASE_URL).toBeUndefined();
   expect(readEnvFile(envFile).has('ANTHROPIC_BASE_URL')).toBe(false);
   expect(text(made.seen.out)).toContain(`Setup checks the key at, and gives its agent, Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL, not the one exported in this shell.`);
@@ -2524,7 +2524,7 @@ test('an ANTHROPIC_BASE_URL exported in this shell is named, setup checking the 
   for (const exported of ['https://other.example', '']) {
     const again = world(dir, {}, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: exported } });
     expect(await runSetup(dir, ['discord'], again)).toBe(0);
-    expect(again.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), baseUrl: 'https://gateway.example' }]);
+    expect(again.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), baseUrl: 'https://gateway.example', hide: expect.any(Array) }]);
     expect(again.seen.launched!.env.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
     expect(text(again.seen.out)).toContain(`Setup checks the key at, and gives its agent, the ANTHROPIC_BASE_URL in ${envFile}, which leads to https://gateway.example, not the one exported in this shell.`);
     expect(readEnvFile(envFile).get('ANTHROPIC_BASE_URL')).toBe('https://gateway.example');
