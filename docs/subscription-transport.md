@@ -121,10 +121,14 @@ stream, and decides where and how loudly each alert kind is told.
   Zulip, never on Discord" is one line. Public channels never see error text.
 - `status` kinds (`context-refusal`, `mcpl-down`, `quota-unreadable`,
   `auth-expiring`, `credential-unsaved`, …) and all `reply` kinds also go to
-  `statusChannels` with the operator-grade message (kind + error text). Status
-  channels follow the kind-level timeline: one line once a kind has been
-  active for `quietMs` (so a flap that resolves in seconds says nothing),
-  one line when a told kind clears, naming what remains.
+  `statusChannels`, as the kind and a fixed line saying what happened
+  ("context-refusal: its context couldn't be compiled for a request"). The
+  alert's own message, which can carry a provider's error text, never goes
+  to a channel: it stays on the TUI's alert line, the Web UI, failures.log
+  and the webhook. Status channels follow the kind-level timeline: one line
+  once a kind has been active for `quietMs` (so a flap that resolves in
+  seconds says nothing), one line when a told kind clears, naming what
+  remains.
 - `silent` kinds (`refusal`, and anything unknown) only reach failures.log
   and the webhook as before.
 
