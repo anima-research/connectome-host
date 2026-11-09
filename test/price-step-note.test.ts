@@ -51,6 +51,14 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
     expect(priceStepNote(onApi({ contextBudgetTokens: 251_680 }), 'gpt-6.1-sol')).toContain('251,679 or less');
   });
 
+  test('on the passthrough strategy, which compiles to the budget less agent.maxTokens with no grace, the line counts none: 256,384 gets no note and 256,385 gets one', () => {
+    const passthrough = { strategy: { type: 'passthrough' } };
+    expect(priceStepNote(onApi({ ...passthrough, contextBudgetTokens: 256_384 }), 'gpt-6.1-sol')).toBeUndefined();
+    const note = priceStepNote(onApi({ ...passthrough, contextBudgetTokens: 256_385 }), 'gpt-6.1-sol')!;
+    expect(note).toContain('256,384 or less');
+    expect(note).not.toContain('% over that');
+  });
+
   test("the rates are the recipe's tier's: flex's for flex, Fast mode's for priority", () => {
     expect(priceStepNote(onApi({ responses: { serviceTier: 'flex' } }), 'gpt-6.1-sol')).toContain('$2.00 input, $0.10 cached input and $7.50 output');
     expect(priceStepNote(onApi({ responses: { serviceTier: 'priority' } }), 'gpt-6.1-sol')).toContain('$8.00 input, $0.40 cached input and $30.00 output');

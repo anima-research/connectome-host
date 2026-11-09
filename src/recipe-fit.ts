@@ -399,16 +399,20 @@ function listed(parts: string[]): string {
 /** The note the host prints once at start where a recipe on OpenAI's API can
  *  send a request's input past its model's long-context step, by the host's
  *  own count: the conversation a compile sends (the budget less the reply,
- *  and up to the grace over that), the system prompt and the room the fit
- *  keeps for tools. Undefined on any other provider, for a model the pricing
- *  table doesn't step, and for a budget whose requests stay under it. */
+ *  and on the autobiographical and frontdesk strategies up to the grace over
+ *  that), the system prompt and the room the fit keeps for tools. Undefined
+ *  on any other provider, for a model the pricing table doesn't step, and for
+ *  a budget whose requests stay under it. */
 export function priceStepNote(recipe: Recipe, model: string): string | undefined {
   if (resolveProvider(recipe) !== 'openai-responses' || typeof model !== 'string') return undefined;
   const step = openaiLongContextStep(model, recipe.agent.responses?.serviceTier);
   if (!step) return undefined;
   const budget = effectiveContextBudgetTokens(recipe, model);
-  const x = readNumbers(recipe);
-  if (!isTokenSize(budget) || typeof x === 'string') return undefined;
+  const read = readNumbers(recipe);
+  if (!isTokenSize(budget) || typeof read === 'string') return undefined;
+  // Only the autobiographical strategies, frontdesk's included, allow the grace over the budget less the reply:
+  // context-manager's passthrough compiles to it exactly.
+  const x = read.raw ? read : { ...read, grace: 0 };
   const system = systemPromptTokens(recipe);
   const fixed = system + TOOLS_ROOM_TOKENS;
   const input = (b: number) => Math.max(0, limitOf(x, b - x.reply)) + fixed;
@@ -417,7 +421,7 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
   const kinds = (['input', 'cached', 'output'] as const).filter((k) => long?.[k] !== undefined && short[k] !== undefined);
   const name = { input: 'input', cached: 'cached input', output: 'output' };
   const head = long
-    ? `${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens at its long-context rates for the whole request: ` +
+    ? `${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens at its long-context rates: ` +
       `${listed(kinds.map((k) => `${usd(long[k]!)} ${name[k]}`))} per million tokens, against ${listed(kinds.map((k) => usd(short[k]!)))} under it`
     : `OpenAI's pricing page gives ${model} on its API, at the ${step.tier} tier, rates for a request of up to ${n(step.tokens)} input tokens and none for a longer one`;
   const said = recipe.agent.contextBudgetTokens === undefined || recipe.agent.contextBudgetTokens === null
