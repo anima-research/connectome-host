@@ -551,6 +551,7 @@ agents: [agentConfig],
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
     inferenceBounds: recipe.inferenceBounds,
+    toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
