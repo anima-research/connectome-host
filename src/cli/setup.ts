@@ -680,8 +680,8 @@ async function installAndStart(
     out(`Setup checks the key at, and gives its agent, ${baseUrl === undefined
       ? `Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL`
       : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ` +
-        withoutStoredSecrets(String(originOf(baseUrl)), stored, join(dir, '.setup'))}, not the one exported in this ` +
-      `shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
+        withoutStoredSecrets(String(originOf(baseUrl)), stored, join(dir, '.setup'), envFile)}, ` +
+      `not the one exported in this shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
   }
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
   let key: string | null = storedKey ?? null;

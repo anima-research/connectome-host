@@ -360,17 +360,20 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-/** The text with each key or token the dotenv values give, under a name setup knows as one or has stored, shown by its
- *  name, as everywhere setup hides a stored secret: a URL's host can carry one. The base URLs are left out, since such
- *  text says where one of them leads. */
-export function withoutStoredSecrets(text: string, values: ReadonlyMap<string, string>, setupDir: string): string {
-  let listed: string[] = [];
+/** The text with each of the .env values that the agent's side takes as a secret, by secretNames, shown by its name,
+ *  as everywhere setup hides one: a URL's host can carry one. The base URLs are left out, since such text says where
+ *  one of them leads. */
+export function withoutStoredSecrets(
+  text: string, values: ReadonlyMap<string, string>, setupDir: string, envFile: string,
+): string {
+  let taken: string[];
   try {
-    listed = new StoredSecrets(setupDir).read() ?? [];
+    taken = secretNames(setupDir, envFile).names;
   } catch {
-    // Setup says an unreadable list is unreadable where it reads it for its agent; the names it knows still go here.
+    // An unreadable list is said where setup reads it for its agent. Here every name it could hold is hidden.
+    taken = [...KNOWN_SECRETS, ...guessedNames(envFile)];
   }
-  const names = new Set([...KNOWN_SECRETS, ...listed].filter((name) => !name.endsWith('_BASE_URL')));
+  const names = new Set(taken.filter((name) => !name.endsWith('_BASE_URL')));
   const secrets = [...values].filter(([name, value]) => names.has(name) && value.trim() !== '')
     .map(([name, value]) => ({ name, value }));
   const bytes = Buffer.from(text);
