@@ -1,7 +1,8 @@
 import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
 import { callFailed, callOriginLabel, callOriginTone } from './call-origin';
-import { agentActivity, healthComposition, lastInferenceLine, latestInferenceError, type AgentRetrying } from './composition-text';
+import { healthComposition, lastInferenceLine, latestInferenceError } from './composition-text';
+import { agentActivity, type AgentRetrying } from '@conhost/web/agent-activity';
 import { credentialNote, healthEntry, lastActionText, readFailureLine } from '@conhost/web/health-lookup';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
 import { loadRepairLines, type LoadRepairReport } from '@conhost/web/load-repair-alert';
@@ -482,9 +483,7 @@ export function HealthPanel(props: {
             <div class="flex items-center gap-2">
               <span class="text-neutral-100">{a.name}</span>
               {(() => {
-                // As of the snapshot, on the host's clock: `until` is the host's.
-                const at = Date.parse(props.health?.at ?? '');
-                const activity = agentActivity(a, Number.isFinite(at) ? at : Date.now());
+                const activity = agentActivity(a, props.health?.at);
                 return (
                   <>
                     <span class={statusTone(activity.word)} title={a.status !== undefined && a.status !== activity.word ? `state: ${a.status}` : undefined}>

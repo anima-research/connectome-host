@@ -1,46 +1,53 @@
 import { describe, expect, test } from 'bun:test';
 import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
-import { agentActivity, waitText } from '../web/src/composition-text';
+import { agentActivity, waitText } from '../src/web/agent-activity';
 
 const inFor = (ms: number) => `${Math.ceil(ms / 1000)}s`;
+const at = (ms: number) => new Date(ms).toISOString();
 
 describe("the health row's word for what an agent is doing", () => {
   test('a turn waiting for its next try reads retrying, with what it retries as, which try is next, and when', () => {
     const a = { status: 'idle', turnAlive: true, retrying: { since: 100, until: 61_000, nextTry: 7, maxTries: 13, retryClass: 'overloaded' } };
-    expect(agentActivity(a, 1_000, inFor)).toEqual({ word: 'retrying', detail: 'overloaded · try 7 of 13 · in 60s' });
+    expect(agentActivity(a, at(1_000), inFor)).toEqual({ word: 'retrying', detail: 'overloaded · try 7 of 13 · in 60s' });
   });
 
   test('it says what the policy said, and no more', () => {
-    expect(agentActivity({ status: 'idle', retrying: { nextTry: 2, until: 5_000 } }, 1_000, inFor)).toEqual({ word: 'retrying', detail: 'try 2 · in 4s' });
-    expect(agentActivity({ status: 'idle', retrying: {} }, 1_000, inFor)).toEqual({ word: 'retrying' });
+    expect(agentActivity({ status: 'idle', retrying: { nextTry: 2, until: 5_000 } }, at(1_000), inFor)).toEqual({ word: 'retrying', detail: 'try 2 · in 4s' });
+    expect(agentActivity({ status: 'idle', retrying: {} }, at(1_000), inFor)).toEqual({ word: 'retrying' });
   });
 
   test('a wait whose time has come reads due now, until the next poll', () => {
-    expect(agentActivity({ status: 'idle', retrying: { nextTry: 3, until: 900 } }, 1_000, inFor)).toEqual({ word: 'retrying', detail: 'try 3 · due now' });
+    expect(agentActivity({ status: 'idle', retrying: { nextTry: 3, until: 900 } }, at(1_000), inFor)).toEqual({ word: 'retrying', detail: 'try 3 · due now' });
   });
 
   test('an idle state with a turn alive says so; any other state reads as it is', () => {
-    expect(agentActivity({ status: 'idle', turnAlive: true, retrying: null }, 0, inFor)).toEqual({ word: 'idle+turn-alive' });
-    expect(agentActivity({ status: 'idle', turnAlive: false, retrying: null }, 0, inFor)).toEqual({ word: 'idle' });
-    expect(agentActivity({ status: 'streaming', turnAlive: true }, 0, inFor)).toEqual({ word: 'streaming' });
-    expect(agentActivity({}, 0, inFor)).toEqual({ word: '?' });
+    expect(agentActivity({ status: 'idle', turnAlive: true, retrying: null }, at(0), inFor)).toEqual({ word: 'idle+turn-alive' });
+    expect(agentActivity({ status: 'idle', turnAlive: false, retrying: null }, at(0), inFor)).toEqual({ word: 'idle' });
+    expect(agentActivity({ status: 'streaming', turnAlive: true }, at(0), inFor)).toEqual({ word: 'streaming' });
+    expect(agentActivity({}, at(0), inFor)).toEqual({ word: '?' });
   });
 
   test('a retry record wins over any state and over turnAlive', () => {
     const retrying = { nextTry: 2, until: 5_000 };
-    for (const status of ['idle', 'streaming', 'inferring', 'waiting_for_tools']) {
+    for (const status of ['idle', 'ready', 'streaming', 'inferring', 'waiting_for_tools', undefined]) {
       for (const turnAlive of [true, false, undefined]) {
-        expect(agentActivity({ status, turnAlive, retrying }, 1_000, inFor).word).toBe('retrying');
+        expect(agentActivity({ status, turnAlive, retrying }, at(1_000), inFor).word).toBe('retrying');
       }
     }
   });
 
-  test('it counts down from the time it is given, as the panel gives it the snapshot\'s', () => {
-    expect(agentActivity({ status: 'idle', retrying: { until: 130_000 } }, 10_000).detail).toBe('in 2m');
+  test('without a formatter it counts in seconds under two minutes, then in minutes', () => {
+    expect(agentActivity({ status: 'idle', retrying: { until: 130_000 } }, at(10_000)).detail).toBe('in 2m');
+    expect(agentActivity({ status: 'idle', retrying: { until: 11_000 } }, at(10_000)).detail).toBe('in 1s');
+  });
+
+  test("it counts down from the snapshot's time, not this process's clock", () => {
+    const taken = Date.parse('2026-01-01T00:00:10.000Z');
+    expect(agentActivity({ status: 'idle', retrying: { until: taken + 60_000 } }, '2026-01-01T00:00:10.000Z', inFor).detail).toBe('in 60s');
   });
 
   test("an agent-framework without the fields reads its status, as before", () => {
-    expect(agentActivity({ status: 'idle' }, 0, inFor)).toEqual({ word: 'idle' });
+    expect(agentActivity({ status: 'idle' }, at(0), inFor)).toEqual({ word: 'idle' });
   });
 });
 
@@ -61,7 +68,7 @@ describe('a health client gets the retry', () => {
     expect(r.since).toBe(100);
     expect(JSON.stringify(sent)).not.toContain('zz unnamed text');
     expect(sent.agents[0]!.turnAlive).toBe(true);
-    expect(agentActivity(sent.agents[0]!, 1_000, inFor)).toEqual({ word: 'retrying', detail: 'overloaded · try 7 of 13 · in 60s' });
+    expect(agentActivity(sent.agents[0]!, at(1_000), inFor)).toEqual({ word: 'retrying', detail: 'overloaded · try 7 of 13 · in 60s' });
   });
 });
 
