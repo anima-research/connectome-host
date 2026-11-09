@@ -98,18 +98,21 @@ export function modelAcceptsAdaptiveThinking(model: string): boolean {
 
 /** Whether `model` returns the notes it writes between tool calls ("found X,
  *  checking Y next") as signed `thinking` blocks instead of `text`, and
- *  accepts `thinking.display: 'updates'` to get their text back: Fable 5 and
- *  5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5 (Anthropic's migration docs; on
- *  Opus 5.5 and Sonnet 5.5, notes longer than a sentence or two). Thinking
+ *  accepts `thinking.display: 'updates'` to get their text back: Fable 5,
+ *  5.1 and 5.2, Mythos 5.1 and 5.2, Opus 5.5 and Sonnet 5.5 (Anthropic's
+ *  migration docs; on Opus 5.5 and Sonnet 5.5, notes longer than a sentence
+ *  or two; on Fable 5.2, its prompting guide, and the API took 'updates' on
+ *  2026-11-09; on Mythos 5.2, untried, the same guide, which covers both
+ *  models though its sentence on the notes names Fable 5.2). Thinking
  *  can't be turned off on any of them, and under the default display
  *  ('omitted') those notes come back empty. A later model isn't assumed to
  *  accept 'updates': an unaccepted display is a 400 on every turn, the same
  *  fail-safe posture as modelAcceptsEffort. So the ID may go on with a dated
  *  snapshot (`-20260301`, `@20260301`) or a suffix such as the 1M-context
  *  marker ([1m]), but not with a version: a digit (`opus-5-50`) or a hyphen
- *  and one or two digits (`fable-5-2`, `fable-5-10`). */
+ *  and one or two digits (`fable-5-3`, `fable-5-10`). */
 export function modelReturnsNotesInThinking(model: string): boolean {
-  return /claude-(fable-5(-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?!\d|-\d{1,2}(?!\d))/.test(model);
+  return /claude-(fable-5(-[12])?|mythos-5-[12]|opus-5-5|sonnet-5-5)(?!\d|-\d{1,2}(?!\d))/.test(model);
 }
 
 /** What a model does with its signed thinking (anima-research/context-manager#155). */
@@ -135,12 +138,20 @@ const NEITHER: ModelThinking = { binds: false, dropBlock: false, thinksWithoutCo
 const UNREACHED: ModelThinking = { binds: true, dropBlock: false, thinksWithoutConfig: false };
 
 const MODEL_THINKING: ReadonlyArray<readonly [string, ModelThinking]> = [
+  // Fable 5.2: measured on 2026-11-09. A signed block replayed under a
+  // changed tool list was dropped, and reported as dropped with the control;
+  // it thought with no config; and it refused a 1,500,057-token prompt with
+  // "> 1000000 maximum".
+  ['fable-5-2', BINDS_WITH_CONTROL],
   ['fable-5-1', BINDS_WITH_CONTROL],
   ['opus-5-5', BINDS_WITH_CONTROL],
   ['sonnet-5-5', BINDS_WITH_CONTROL],
   ['haiku-5-5', BINDS_WITH_CONTROL],
   // Membrane's changelog records the Mythos family refusing thinking configs
-  // with a 400, so it isn't sent the control untried.
+  // with a 400, so it isn't sent the control untried. Mythos 5.2 is recorded
+  // by family: its docs page says it requires verification, and it wasn't
+  // reached to measure.
+  ['mythos-5-2', BINDS_WITHOUT_CONTROL],
   ['mythos-5-1', BINDS_WITHOUT_CONTROL],
   ['mythos-5', BINDS_WITHOUT_CONTROL],
   ['mythos-preview', BINDS_WITHOUT_CONTROL],

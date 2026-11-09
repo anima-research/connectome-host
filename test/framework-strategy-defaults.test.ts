@@ -39,6 +39,8 @@ describe('standard-recipe memory defaults', () => {
     expect(prices({}, 'claude-opus-4-6')).toEqual([0.1, 2]);
     expect(prices({}, 'claude-opus-5-5')).toEqual([0.05, 2]);
     expect(prices({}, 'claude-fable-5-1')).toEqual([0.025, 2]);
+    expect(prices({}, 'claude-fable-5-2')).toEqual([0.025, 2]);
+    expect(prices({}, 'claude-mythos-5-2')).toEqual([0.025, 2]);
     expect(prices({ cacheTtl: '5m' }, 'claude-opus-4-6')).toEqual([0.1, 1.25]);
     expect(prices({ provider: 'bedrock', cacheTtl: '1h' }, 'global.anthropic.claude-opus-4-6')).toEqual([0.1, 1.25]);
     expect(prices({ provider: 'openai-responses' }, 'gpt-5.6-sol')).toEqual([0.1, 1.25]);
