@@ -16,6 +16,13 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
     .map((key) => [key, Array.isArray(held[key]) ? [...held[key] as unknown[]] : held[key]]);
 }
 
+/** Whether text holds a line of an answer given hidden, in any letter case, as setup matches a stored secret everywhere
+ *  it hides or cleans one out. */
+export function holdsAnswer(text: string, given: readonly string[]): boolean {
+  const folded = text.toLowerCase();
+  return given.some((line) => folded.includes(line.toLowerCase()));
+}
+
 export async function askHidden(
   rl: Interface, output: Writable, label: string, paste?: Pick<BracketedPaste, 'pasting' | 'drop'>,
 ): Promise<string> {
@@ -111,10 +118,10 @@ export async function askHidden(
     rl.off('line', take);
     for (const listener of others) rl.on('line', listener);
     const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
-    history.splice(0, history.length, ...before.filter((entry) => !given.some((line) => entry.includes(line))));
+    history.splice(0, history.length, ...before.filter((entry) => !holdsAnswer(entry, given)));
     const held = rl as unknown as Record<symbol, unknown>;
     const ring = killRing.find(([key]) => key.description === '_killRing')?.[1];
-    const kept = Array.isArray(ring) ? ring.filter((entry) => !given.some((line) => String(entry).includes(line))) : ring;
+    const kept = Array.isArray(ring) ? ring.filter((entry) => !holdsAnswer(String(entry), given)) : ring;
     // Ctrl-Y yanks the ring's entry at its cursor, which can be past the end once entries are gone, and Meta-Y takes out
     // the last yank by that entry's length. So with entries gone, the cursor goes back to the newest and no yank goes on.
     const moved = Array.isArray(ring) && (kept as unknown[]).length < ring.length;
@@ -128,13 +135,13 @@ export async function askHidden(
     }
     echoing._writeToOutput = write;
     output.write('\n');
-    const dropped = given.length === 0 ? undefined : paste?.drop(given);
+    const dropped = given.length === 0 ? undefined : paste?.drop((line) => holdsAnswer(line, given));
     if (dropped !== undefined && dropped.taken > 0) {
       output.write(`${dropped.taken === 1 ? '1 pasted line' : `${dropped.taken} pasted lines`} held what you just entered ` +
         `hidden, so ${dropped.taken === 1 ? 'it was' : 'they were'} taken out${dropped.left > 0 ? '. Enter sends the rest' : ''}.\n`);
     }
     if (draft !== '' && !gone) {
-      if (!given.some((line) => draft.includes(line))) rl.write(draft);
+      if (!holdsAnswer(draft, given)) rl.write(draft);
       else output.write('What you\'d typed held what you just entered hidden, so it was taken out.\n');
     }
   }

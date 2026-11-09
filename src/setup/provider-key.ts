@@ -169,14 +169,13 @@ async function ask<T>(
   };
 }
 
-// The key under test in any letter case, since a server that puts it in a URL's host gives it back lowercased.
+// Every secret in any letter case, since a server that puts one in a URL's host gives it back lowercased.
 function hidden(words: string, key: string, name: string, also: Options['hide'] = []): string {
-  const forms = [...[key, key.trim()].map((value) => ({ name, value, anyCase: true })),
-    ...also.flatMap((form) => [form.value, form.value.trim()].map((value) => ({ name: form.name, value, anyCase: false })))]
+  const forms = [...[key, key.trim()].map((value) => ({ name, value })),
+    ...also.flatMap((form) => [form.value, form.value.trim()].map((value) => ({ name: form.name, value })))]
     .filter(({ value }) => value !== '').sort((a, b) => b.value.length - a.value.length);
   for (const form of forms) {
-    words = words.replace(new RegExp(form.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), form.anyCase ? 'gi' : 'g'),
-      `<${form.name}>`);
+    words = words.replace(new RegExp(form.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), `<${form.name}>`);
   }
   return words;
 }

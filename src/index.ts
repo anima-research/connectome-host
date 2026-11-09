@@ -77,7 +77,7 @@ import {
 } from './modules/setup-module.js';
 import { bracketedPaste } from './readline-paste.js';
 import { speakerOf } from './speaker.js';
-import { askHidden } from './setup/terminal-secret.js';
+import { askHidden, holdsAnswer } from './setup/terminal-secret.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
@@ -902,7 +902,7 @@ async function runPiped(app: AppContext) {
             paste ?? undefined);
           const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
           for (const waiting of waitingLines) {
-            if (given.some((line) => waiting.line.includes(line))) waiting.holdsHidden = true;
+            if (holdsAnswer(waiting.line, given)) waiting.holdsHidden = true;
           }
           return answer || null;
         } finally {

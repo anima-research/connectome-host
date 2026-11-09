@@ -305,13 +305,17 @@ interface Span {
   names: string[];
 }
 
+// ASCII letters fold one to one, so a match in the folded bytes is at the same offsets in the bytes.
+const foldAscii = (bytes: Buffer): Buffer => Buffer.from(bytes.map((byte) => (byte >= 0x41 && byte <= 0x5a ? byte + 0x20 : byte)));
+
 function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   const candidates: Span[] = [];
+  const folded = foldAscii(bytes);
   for (const { name, value } of secrets) {
     for (const form of new Set([value, value.trim()])) {
-      const needle = Buffer.from(form, 'utf-8');
+      const needle = foldAscii(Buffer.from(form, 'utf-8'));
       if (needle.length === 0) continue;
-      for (let at = bytes.indexOf(needle); at >= 0; at = bytes.indexOf(needle, at + 1)) {
+      for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + 1)) {
         candidates.push({ start: at, end: at + needle.length, names: [name] });
       }
     }
