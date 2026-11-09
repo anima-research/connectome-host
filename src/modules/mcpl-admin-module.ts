@@ -885,7 +885,9 @@ export class McplAdminModule implements Module {
       // gave. Where the directory publishes an endpoint for the access
       // grant, leaving `url` out dials it, and the refusal names it; where
       // the directory was read and publishes none, the service's operator
-      // can publish one, so the resident needn't judge the network.
+      // can publish one, so the resident needn't judge the network; where
+      // it couldn't be read, the refusal says so, since a deploy without
+      // `url` may find one once it can be.
       const forGrant = typeof entry.access === 'string'
         ? await endpointFor(this.identity, entry.access)
         : null;
@@ -900,7 +902,11 @@ export class McplAdminModule implements Module {
           : forGrant?.published !== undefined
             ? ' Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory, which ' +
               'a deploy with `access` and no `url` then dials.'
-            : ''),
+            : forGrant?.unreadable !== undefined
+              ? ` The home node's directory of MCPL endpoints couldn't be read (${forGrant.unreadable.replace(/[\s.]+$/, '')}), ` +
+                `so it isn't known whether it publishes one for the access grant ${JSON.stringify(entry.access)}: a deploy ` +
+                'with `access` and no `url`, called again later, dials the endpoint it publishes, if it publishes one.'
+              : ''),
       );
     }
 
