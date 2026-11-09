@@ -8,7 +8,7 @@ import { parseCommand } from './command-name.js';
 
 const KEEP_SERVING_HINT = 'use --headless to keep serving';
 
-export const BATCH_UNANSWERED_NOTICE = '[batch] the last turn hasn\'t answered, and batch mode stops the agent now, ' +
+export const BATCH_UNANSWERED_NOTICE = '[batch] a line hasn\'t been answered yet, and batch mode stops the agent now, ' +
   'so its answer won\'t print here';
 
 export function batchModeStartNotice(): string {
