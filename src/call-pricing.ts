@@ -6,10 +6,11 @@
  * authoritative usage buckets. Cache creation MUST remain split by TTL:
  * Anthropic bills 5m writes at 1.25x input and 1h writes at 2x input.
  *
- * Anthropic bills cache READS at 0.1x input on every model but four: Claude
+ * Anthropic bills cache READS at 0.1x input on every model but six: Claude
  * Fable 5.1 and Claude Mythos 5.1 read at 0.025x ($0.25/MTok), a quarter of
- * the 5 pair's rate, and Claude Opus 5.5 and Claude Sonnet 5.5 at 0.05x
- * ($0.20 and $0.10/MTok). This table gives the first three their rates, and
+ * the 5 pair's rate, Claude Fable 5.2 and Claude Mythos 5.2 at 0.025x too
+ * ($0.20/MTok), and Claude Opus 5.5 and Claude Sonnet 5.5 at 0.05x ($0.20
+ * and $0.10/MTok). This table gives all but Sonnet 5.5 their rates, and
  * Sonnet 5.5 0.1x: see the Sonnet 5 entry.
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
@@ -17,7 +18,7 @@
 
 import type { CallCostBreakdown } from './web/protocol.js';
 
-export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-19';
+export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-19-5-2';
 
 const DEFAULT_CACHE_READ_MULTIPLIER = 0.1;
 
@@ -91,8 +92,10 @@ function anthropicPromptTokens(usage: PriceableCallUsage): number {
 }
 
 function anthropicBaseRate(model: string, promptTokens: number): BaseRate | undefined {
-  // The 5.1 pair first: their prefixes also match the Fable 5 / Mythos 5 test
-  // below, and they read from cache at 0.025x.
+  // The 5.2 and 5.1 pairs first: their prefixes also match the Fable 5 /
+  // Mythos 5 test below, and they read from cache at 0.025x. The 5.2 pair is
+  // $8/$40 (pricing page, read 2026-11-09).
+  if (starts(model, 'claude-fable-5-2', 'claude-mythos-5-2')) return rate(8, 40, 0.025);
   if (starts(model, 'claude-fable-5-1', 'claude-mythos-5-1')) return rate(10, 50, 0.025);
 
   // Fable 5 and Mythos 5 share pricing.
@@ -395,8 +398,13 @@ function priceOpenAI(call: PriceCallInput): CallPrice | undefined {
   };
 }
 
+/** Whether one of `prefixes` names `model`: the model is the prefix, or goes
+ *  on from it with anything but a digit, unless the prefix itself ends in
+ *  `-`. So 'claude-fable-5' names 'claude-fable-5-20260301', and
+ *  'claude-fable-5-2' doesn't. */
 function starts(model: string, ...prefixes: string[]): boolean {
-  return prefixes.some((prefix) => model.startsWith(prefix));
+  return prefixes.some((prefix) =>
+    model.startsWith(prefix) && (prefix.endsWith('-') || !/^\d/.test(model.slice(prefix.length))));
 }
 
 function rate(

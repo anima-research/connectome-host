@@ -127,6 +127,8 @@ describe('Anthropic per-call pricing', () => {
 
   test('anthropicCacheReadMultiplier strips Bedrock and gateway prefixes and defaults to 0.1x', () => {
     expect(anthropicCacheReadMultiplier('claude-fable-5-1')).toBe(0.025);
+    expect(anthropicCacheReadMultiplier('claude-fable-5-2')).toBe(0.025);
+    expect(anthropicCacheReadMultiplier('global.anthropic.claude-mythos-5-2')).toBe(0.025);
     expect(anthropicCacheReadMultiplier('claude-opus-5-5')).toBe(0.05);
     expect(anthropicCacheReadMultiplier('anthropic/claude-opus-5-5')).toBe(0.05);
     expect(anthropicCacheReadMultiplier('global.anthropic.claude-mythos-5-1')).toBe(0.025);
@@ -148,6 +150,45 @@ describe('Anthropic per-call pricing', () => {
     expect(openaiCacheMultipliers('o3', 'api')).toEqual({ read: 0.25, write: 1 });
     expect(openaiCacheMultipliers('gpt-5.6-sol', 'codex')).toEqual({ read: 0.1, write: 1 });
     expect(openaiCacheMultipliers('gpt-6.1-sol', 'codex')).toEqual({ read: 0.05, write: 1 });
+  });
+
+  test('Fable 5.2 and Mythos 5.2 are $8/$40, with writes at $10 and $16 and reads at $0.20, as the pricing page gives them', () => {
+    for (const model of ['claude-fable-5-2', 'claude-mythos-5-2', 'claude-fable-5-2-20261109']) {
+      const cost = priceAnthropicCall(model, timestamp, usage({
+        inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 1_000_000,
+        cacheWrite5mTokens: 1_000_000, cacheWrite1hTokens: 1_000_000,
+      }));
+      expect([model, cost?.rates.inputPerMillion, cost?.rates.outputPerMillion]).toEqual([model, 8, 40]);
+      expect(cost?.rates.cacheWrite5mPerMillion).toBeCloseTo(10, 9);
+      expect(cost?.rates.cacheWrite1hPerMillion).toBeCloseTo(16, 9);
+      expect(cost?.rates.cacheReadPerMillion).toBeCloseTo(0.2, 9);
+      expect(cost?.total).toBeCloseTo(8 + 40 + 10 + 16 + 0.2, 9);
+      expect(cost?.pricingVersion).toBe('anthropic-public-2026-10-19-5-2');
+    }
+  });
+
+  test('a dated Fable 5 or Mythos 5 snapshot is priced as its own model, not as the 5.2 its id begins with', () => {
+    for (const model of ['claude-fable-5-20260301', 'claude-mythos-5-20260301']) {
+      const cost = priceAnthropicCall(model, timestamp, usage({ cacheReadTokens: 1_000_000 }));
+      expect([model, cost?.rates.inputPerMillion, cost?.rates.outputPerMillion]).toEqual([model, 10, 50]);
+      expect(cost?.rates.cacheReadPerMillion).toBeCloseTo(1, 9);
+      expect(anthropicCacheReadMultiplier(model)).toBe(0.1);
+    }
+    for (const model of ['claude-fable-5-2', 'claude-mythos-5-2', 'claude-fable-5-2-20261109', 'claude-mythos-5-2-20261109']) {
+      expect([model, priceAnthropicCall(model, timestamp, usage({}))?.rates.inputPerMillion]).toEqual([model, 8]);
+    }
+    expect(priceAnthropicCall('claude-sonnet-4-20250514', timestamp, usage({}))?.rates.inputPerMillion).toBe(3);
+    expect(priceAnthropicCall('claude-opus-4-20250514', timestamp, usage({}))?.rates.inputPerMillion).toBe(15);
+    expect(priceAnthropicCall('claude-opus-4-1-20250805', timestamp, usage({}))?.rates.inputPerMillion).toBe(15);
+  });
+
+  test('a later Fable or Mythos version such as 5.3 is priced at its family row', () => {
+    for (const model of ['claude-fable-5-3', 'claude-mythos-5-3']) {
+      const cost = priceAnthropicCall(model, timestamp, usage({ cacheReadTokens: 1_000_000 }));
+      expect([model, cost?.rates.inputPerMillion, cost?.rates.outputPerMillion]).toEqual([model, 10, 50]);
+      expect(cost?.rates.cacheReadPerMillion).toBeCloseTo(1, 9);
+      expect(anthropicCacheReadMultiplier(model)).toBe(0.1);
+    }
   });
 
   test('Fable 5.1 reads from cache at 0.025x, a quarter of the Fable 5 rate', () => {

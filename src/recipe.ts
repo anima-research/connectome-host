@@ -307,9 +307,10 @@ export interface RecipeAgent {
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
    * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
    * which with prompt caching on are only those after the last cache marker.
-   * On a model whose thinking binds and whose window the host passes (Fable
-   * 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 through the Anthropic API), the
-   * framework doesn't break a turn's stream at it; the window still does.
+   * On a model whose thinking binds and whose window the host passes, through
+   * the Anthropic API (`thinkingBindingSettings` in framework-agent-config.ts
+   * says which, from `modelThinking`), the framework doesn't break a turn's
+   * stream at it; the window still does.
    */
   maxStreamTokens?: number;
   /** Per-agent context compile budget (input tokens), which holds
