@@ -546,21 +546,30 @@ ambient channel chatter enters context without waking.
 
 1. **Image handling** — discord-mcpl base64-inlines attachments. What exists
    now: context-manager's compile keeps at most 6 live images
-   (`maxLiveImages`), strips images deeper than 30 000 tokens
-   (`imageStripDepthTokens`) and keeps cumulative inline image base64 under
+   (`maxLiveImages`), strips them deeper than 30 000 tokens
+   (`imageStripDepthTokens`) and keeps their cumulative inline base64 under
    20 MiB (`maxLiveImageBytes`), replacing the rest with placeholders; membrane
    degrades API-rejected media types (SVG, TIFF, …) to a visible placeholder
    and fails loudly, before the API call, when a request exceeds its byte cap
-   (28 MB, `MEMBRANE_MAX_REQUEST_BYTES`); agent-framework's `read_image`
+   (28 MiB, `MEMBRANE_MAX_REQUEST_BYTES`); agent-framework's `read_image`
    rejects files over 5 MB. Still missing: nothing downsamples or
    size-checks an individual image on ingest (membrane's `images.autoResize` /
    `maxSizeBytes` config is declared but unused), so one image over the
    provider's per-image limit still 400s the request while it stays live —
    the poison-history breaker only sheds newest exchanges. Recipes can tune
-   the three image keys under `agent.strategy` (autobiographical and
-   frontdesk). A depth of zero turns depth stripping off; a count or byte
-   limit of zero means up to context-manager's ceilings, 500 images and
-   24 MiB, and a larger one is held to them. (Stopgap: a per-install
+   the image keys under `agent.strategy` (autobiographical and frontdesk):
+   the three limits and their ceilings, `imageCeiling` (default 500 images)
+   and `imageByteCeiling` (default 24 MiB). Zero turns the depth limit or a
+   ceiling off, and lets the count or the bytes grow to its ceiling, which
+   also bounds a larger value. In the live window the limits and the ceilings
+   count every image, whether top-level, nested in a tool result or
+   generated, except one inside an opaque provider item. Within a turn,
+   messages a tool boundary injects are rendered as the next compile will
+   send them, the limits applied over their batch where the strategy can
+   place them. The rest of what the turn adds, its tool results' images
+   included, such as `read_image`'s, isn't held to the limits until the next
+   compile.
+   (Stopgap: a per-install
    `strip-oversized-images.mjs`, below.)
 
 ## Helper scripts (per install dir)

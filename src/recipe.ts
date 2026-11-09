@@ -47,15 +47,36 @@ export interface RecipeStrategy {
   recoverLiteralThinkingWrappedCompression?: boolean;
   maxMessageTokens?: number;
   /** Maximum live image count, newest-first (default 6). Zero means up to
-   * context-manager's image ceiling, 500, and a larger value is held to it. */
+   *  `imageCeiling`, which also bounds a larger value. */
   maxLiveImages?: number;
   /** Token depth from the tail beyond which images become placeholders (default 30000).
    * Zero disables depth-based stripping; surrounding text stays verbatim. */
   imageStripDepthTokens?: number;
-  /** Cumulative base64 byte budget for live images (default 20 MiB).
-   * Zero means up to context-manager's byte ceiling, 24 MiB, and a larger
-   * value is held to it. Count and depth limits still apply. */
+  /** Cumulative base64 byte budget for live images (default 20 MiB). Zero
+   * means up to `imageByteCeiling`, which also bounds a larger value. Count
+   * and depth limits still apply. */
   maxLiveImageBytes?: number;
+  /** The most images the live window keeps, whatever `maxLiveImages` says,
+   * and the most images a compression prompt carries (context-manager's
+   * default 500; the provider refuses a request with more than 600 images and
+   * documents together). Zero means no ceiling. In the window it counts every
+   * image, whether top-level, nested in a tool result or generated, except
+   * one inside an opaque provider item. Within a turn, messages a tool
+   * boundary injects are held to it over their own batch where the strategy
+   * can place them, and the request they join, with the turn's tool results'
+   * images, isn't held to it until the next compile. A compression prompt
+   * counts every image. */
+  imageCeiling?: number;
+  /** The most inline base64 bytes of the live window's images, whatever
+   * `maxLiveImageBytes` says, and the most a compression prompt carries
+   * (context-manager's default 24 MiB, under membrane's 28 MiB request byte
+   * cap). Zero means no ceiling. Raising `MEMBRANE_MAX_REQUEST_BYTES` doesn't
+   * raise it; to keep more image bytes, raise it too, set `maxLiveImageBytes`
+   * to 0 or at least as high, and leave room under the cap for what the
+   * ceiling doesn't count: the messages' text and JSON, documents, images
+   * inside opaque provider items, and, until the next compile, what a turn
+   * adds, its tool results' images included. */
+  imageByteCeiling?: number;
   overBudgetGraceRatio?: number;
   enforceBudget?: boolean;
   maxSpeculativeL1s?: number;
@@ -2708,7 +2729,7 @@ export function validateRecipe(raw: unknown): Recipe {
     validateKvUnifiedConfig(strategy);
     const strategyType = strategy.type ?? 'autobiographical';
     if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
-      for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
+      for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes', 'imageCeiling', 'imageByteCeiling'] as const) {
         const value = strategy[key];
         if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
           throw new Error(`Recipe agent.strategy.${key} must be a non-negative safe integer.`);
