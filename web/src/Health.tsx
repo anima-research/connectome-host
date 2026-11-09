@@ -109,14 +109,6 @@ const fmtTokens = (n: number): string => {
   return (n / 1_000_000).toFixed(2) + 'M';
 };
 
-/** How long until a time `ms` away: seconds under two minutes, then minutes. */
-const fmtIn = (ms: number): string => {
-  const sec = Math.ceil(ms / 1000);
-  if (sec < 120) return `${sec}s`;
-  const min = Math.round(sec / 60);
-  return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`;
-};
-
 const fmtAgo = (ts: number): string => {
   const sec = Math.floor((Date.now() - ts) / 1000);
   if (sec < 60) return `${sec}s ago`;
@@ -490,7 +482,9 @@ export function HealthPanel(props: {
             <div class="flex items-center gap-2">
               <span class="text-neutral-100">{a.name}</span>
               {(() => {
-                const activity = agentActivity(a, Date.now(), fmtIn);
+                // As of the snapshot, on the host's clock: `until` is the host's.
+                const at = Date.parse(props.health?.at ?? '');
+                const activity = agentActivity(a, Number.isFinite(at) ? at : Date.now());
                 return (
                   <>
                     <span class={statusTone(activity.word)} title={a.status !== undefined && a.status !== activity.word ? `state: ${a.status}` : undefined}>

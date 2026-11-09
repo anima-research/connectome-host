@@ -87,6 +87,15 @@ export interface AgentRetrying {
   retryClass?: string;
 }
 
+/** How long until a time `ms` away, for a retry's countdown: seconds under
+ *  two minutes, then minutes, then hours and minutes. */
+export function waitText(ms: number): string {
+  const sec = Math.ceil(ms / 1000);
+  if (sec < 120) return `${sec}s`;
+  const min = Math.round(sec / 60);
+  return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
 /** What an agent's health row says it is doing. agent-framework's `status` is
  *  its agent's state machine, which reads `idle` between a failed call and
  *  its retry: the failed call reset it. `retrying` and `turnAlive` say what it
@@ -94,8 +103,10 @@ export interface AgentRetrying {
  *  row reads `status` as it always did. */
 export function agentActivity(
   a: { status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null },
+  /** The host's time of the snapshot (`at`), not the browser's: `until` is
+   *  the host's clock, and the browser's may be minutes off. */
   now: number,
-  inFor: (ms: number) => string,
+  inFor: (ms: number) => string = waitText,
 ): { word: string; detail?: string } {
   const r = a.retrying;
   if (r) {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
-import { agentActivity } from '../web/src/composition-text';
+import { agentActivity, waitText } from '../web/src/composition-text';
 
 const inFor = (ms: number) => `${Math.ceil(ms / 1000)}s`;
 
@@ -26,6 +26,19 @@ describe("the health row's word for what an agent is doing", () => {
     expect(agentActivity({}, 0, inFor)).toEqual({ word: '?' });
   });
 
+  test('a retry record wins over any state and over turnAlive', () => {
+    const retrying = { nextTry: 2, until: 5_000 };
+    for (const status of ['idle', 'streaming', 'inferring', 'waiting_for_tools']) {
+      for (const turnAlive of [true, false, undefined]) {
+        expect(agentActivity({ status, turnAlive, retrying }, 1_000, inFor).word).toBe('retrying');
+      }
+    }
+  });
+
+  test('it counts down from the time it is given, as the panel gives it the snapshot\'s', () => {
+    expect(agentActivity({ status: 'idle', retrying: { until: 130_000 } }, 10_000).detail).toBe('in 2m');
+  });
+
   test("an agent-framework without the fields reads its status, as before", () => {
     expect(agentActivity({ status: 'idle' }, 0, inFor)).toEqual({ word: 'idle' });
   });
@@ -49,5 +62,22 @@ describe('a health client gets the retry', () => {
     expect(JSON.stringify(sent)).not.toContain('zz unnamed text');
     expect(sent.agents[0]!.turnAlive).toBe(true);
     expect(agentActivity(sent.agents[0]!, 1_000, inFor)).toEqual({ word: 'retrying', detail: 'overloaded · try 7 of 13 · in 60s' });
+  });
+});
+
+describe('the countdown', () => {
+  test('seconds under two minutes, rounded up', () => {
+    expect(waitText(1)).toBe('1s');
+    expect(waitText(59_001)).toBe('60s');
+    expect(waitText(119_000)).toBe('119s');
+    expect(waitText(119_500)).toBe('2m');
+  });
+
+  test('then minutes, then hours and minutes', () => {
+    expect(waitText(150_000)).toBe('3m');
+    expect(waitText(299_000)).toBe('5m');
+    expect(waitText(3_569_000)).toBe('59m');
+    expect(waitText(3_599_000)).toBe('1h 0m');
+    expect(waitText(5_400_000)).toBe('1h 30m');
   });
 });
