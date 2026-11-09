@@ -229,9 +229,9 @@ function call(provider: string, model: string, overrides: Partial<PriceCallInput
 describe('priceCall', () => {
   test('prices an Anthropic call as priceAnthropicCall does, its two writes summed', () => {
     const parts = { inputTokens: 40_000, outputTokens: 3_000, cacheReadTokens: 50_000, cacheWrite5mTokens: 7_000, cacheWrite1hTokens: 9_000 };
-    for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']) {
-      const ledger = priceAnthropicCall(model, timestamp, usage({ ...parts, serviceTier: undefined, inferenceGeo: undefined }))!;
-      const price = priceCall(call('anthropic', model, parts))!;
+    for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']) for (const inferenceGeo of [undefined, 'us']) {
+      const ledger = priceAnthropicCall(model, timestamp, usage({ ...parts, serviceTier: undefined, inferenceGeo }))!;
+      const price = priceCall(call('anthropic', model, { ...parts, inferenceGeo }))!;
       expect(price).toMatchObject({ input: ledger.input, cacheRead: ledger.cacheRead, output: ledger.output, total: ledger.total, tier: 'standard', pricingVersion: ANTHROPIC_PRICING_VERSION });
       expect(price.cacheWrite).toBeCloseTo(ledger.cacheWrite5m + ledger.cacheWrite1h, 12);
     }
@@ -242,6 +242,7 @@ describe('priceCall', () => {
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite5mTokens: 1_000, unclassifiedCacheWriteTokens: 1 }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-unknown-9', { inputTokens: 1_000 }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite30mTokens: 1_000 }))).toBeUndefined();
+    expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite12hTokens: 1_000 }))).toBeUndefined();
   });
 
   test('says which side of Haiku 5.5\'s 100,000-token step an Anthropic call fell on', () => {
@@ -250,15 +251,15 @@ describe('priceCall', () => {
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { inputTokens: 300_000 }))?.context).toBeUndefined();
   });
 
-  const sol = { inputTokens: 100_000, cacheReadTokens: 100_000, cacheWrite30mTokens: 20_000, cacheWrite12hTokens: 10_000, outputTokens: 10_000 };
+  const sol = { inputTokens: 100_000, cacheReadTokens: 50_000, cacheWrite30mTokens: 20_000, cacheWrite12hTokens: 8_000, outputTokens: 10_000 };
 
   test('prices each part of an OpenAI call at its Standard rate when the call reports default or no tier', () => {
     const none = priceCall(call('openai-responses', 'gpt-6.1-sol', sol))!;
     expect(none.input).toBeCloseTo(0.2, 12);
-    expect(none.cacheRead).toBeCloseTo(0.01, 12);
-    expect(none.cacheWrite).toBeCloseTo(0.05 + 0.05, 12);
+    expect(none.cacheRead).toBeCloseTo(0.005, 12);
+    expect(none.cacheWrite).toBeCloseTo(0.05 + 0.04, 12);
     expect(none.output).toBeCloseTo(0.1, 12);
-    expect(none.total).toBeCloseTo(0.41, 12);
+    expect(none.total).toBeCloseTo(0.395, 12);
     expect(none).toMatchObject({ tier: 'standard', context: 'short', currency: 'USD', pricingVersion: OPENAI_PRICING_VERSION });
     expect(priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'default' }))).toEqual(none);
   });
@@ -268,12 +269,12 @@ describe('priceCall', () => {
     const fast = priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'fast' }))!;
     const ultrafast = priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'ultrafast' }))!;
     expect(flex).toMatchObject({ tier: 'flex' });
-    expect(flex.total).toBeCloseTo(0.205, 12);
+    expect(flex.total).toBeCloseTo(0.1975, 12);
     expect(fast).toMatchObject({ tier: 'fast' });
-    expect(fast.total).toBeCloseTo(0.82, 12);
+    expect(fast.total).toBeCloseTo(0.79, 12);
     expect(priceCall(call('openai-responses', 'gpt-6.1-sol', { ...sol, serviceTier: 'priority' }))).toEqual(fast);
     expect(ultrafast).toMatchObject({ tier: 'ultrafast' });
-    expect(ultrafast.total).toBeCloseTo(2.46, 12);
+    expect(ultrafast.total).toBeCloseTo(2.37, 12);
     expect(priceCall(call('openai-responses', 'gpt-6-sol', { ...sol, serviceTier: 'ultrafast' }))).toBeUndefined();
   });
 
@@ -284,14 +285,18 @@ describe('priceCall', () => {
     expect(at.total).toBeCloseTo((200_000 * 2 + 62_000 * 0.1 + 10_000 * 2.5 + 1_000 * 10) / 1e6, 12);
     expect(over.context).toBe('long');
     expect(over.total).toBeCloseTo((200_001 * 4 + 62_000 * 0.2 + 10_000 * 5 + 1_000 * 15) / 1e6, 12);
+    const twelve = priceCall(call('openai-responses', 'gpt-6.1-sol', { inputTokens: 200_000, cacheReadTokens: 62_000, cacheWrite30mTokens: 9_999, cacheWrite12hTokens: 2, outputTokens: 1_000 }))!;
+    expect(twelve.context).toBe('long');
+    expect(twelve.cacheWrite).toBeCloseTo((9_999 * 5 + 2 * 10) / 1e6, 12);
   });
 
   test('prices a model with one listed rate the same at every size', () => {
-    const small = priceCall(call('openai-responses', 'gpt-5.4-mini', { inputTokens: 1_000_000 }))!;
-    const large = priceCall(call('openai-responses', 'gpt-5.4-mini', { inputTokens: 400_000 }))!;
-    expect(small.input).toBeCloseTo(0.75, 12);
-    expect(large.input).toBeCloseTo(0.3, 12);
-    expect(large.context).toBeUndefined();
+    const short = priceCall(call('openai-responses', 'gpt-5.4-mini', { inputTokens: 100_000 }))!;
+    const long = priceCall(call('openai-responses', 'gpt-5.4-mini', { inputTokens: 1_000_000 }))!;
+    expect(short.input).toBeCloseTo(0.075, 12);
+    expect(long.input).toBeCloseTo(0.75, 12);
+    expect(short.context).toBeUndefined();
+    expect(long.context).toBeUndefined();
   });
 
   test('gives no OpenAI price where the page gives none for what the call used', () => {
@@ -305,6 +310,9 @@ describe('priceCall', () => {
     expect(priced('gpt-5.5-pro', { cacheReadTokens: 1_000 })).toBeUndefined();
     expect(priced('gpt-5.5', { cacheWrite12hTokens: 1_000 })).toBeUndefined();
     expect(priced('gpt-5.5', { cacheWrite5mTokens: 1_000 })).toBeUndefined();
+    expect(priced('gpt-5.5', { cacheWrite30mTokens: 1_000 })).toBeUndefined();
+    expect(priced('gpt-6.1-sol', { cacheWrite1hTokens: 1_000 })).toBeUndefined();
+    expect(priced('gpt-6.1-sol', { unclassifiedCacheWriteTokens: 1_000 })).toBeUndefined();
   });
 
   test('gives no price on Codex, OpenRouter, an OpenAI-compatible server or Bedrock', () => {
@@ -314,11 +322,11 @@ describe('priceCall', () => {
     }
   });
 
-  test('reads a dated snapshot or an openai/ prefix as the model it names, and nothing else', () => {
+  test('reads an openai/ prefix as the model it names, and prices no name the page doesn\'t list, a dated snapshot included', () => {
     const base = priceCall(call('openai-responses', 'gpt-6.1-sol', sol))!;
-    expect(priceCall(call('openai-responses', 'gpt-6.1-sol-2026-10-01', sol))).toEqual(base);
     expect(priceCall(call('openai-responses', 'openai/gpt-6.1-sol', sol))).toEqual(base);
+    expect(priceCall(call('openai-responses', 'gpt-6.1-sol-2026-10-01', sol))).toBeUndefined();
+    expect(priceCall(call('openai-responses', 'gpt-4o-2024-05-13', { inputTokens: 1_000 }))).toBeUndefined();
     expect(priceCall(call('openai-responses', 'gpt-6.1-sol-mini', sol))).toBeUndefined();
-    expect(priceCall(call('openai-responses', 'gpt-5.4-mini', { inputTokens: 1_000_000 }))?.input).toBeCloseTo(0.75, 12);
   });
 });

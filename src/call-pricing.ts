@@ -359,7 +359,7 @@ function openaiTier(serviceTier: string | undefined): keyof typeof OPENAI_RATES 
 function priceOpenAI(call: PriceCallInput): CallPrice | undefined {
   const tier = openaiTier(call.serviceTier);
   if (!tier) return undefined;
-  const name = call.model.replace(/^openai\//, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+  const name = call.model.replace(/^openai\//, '');
   const row = Object.hasOwn(OPENAI_RATES[tier], name) ? OPENAI_RATES[tier][name] : undefined;
   if (!row) return undefined;
   if (call.cacheWrite5mTokens > 0 || call.cacheWrite1hTokens > 0 || call.unclassifiedCacheWriteTokens > 0) return undefined;
