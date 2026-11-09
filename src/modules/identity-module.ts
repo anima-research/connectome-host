@@ -84,7 +84,12 @@ export type McplEndpointAnswer =
   | { url?: undefined; published: string[]; unreadable?: undefined }
   | { url?: undefined; published?: undefined; unreadable: string };
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function isWssUrl(url: string): boolean {
+  if (/\s/.test(url)) return false;
   try {
     return new URL(url).protocol === 'wss:';
   } catch {
@@ -497,6 +502,7 @@ export class IdentityModule implements Module {
           });
           if (!res.ok) throw new Error(`status ${res.status}`);
           const json = (await res.json()) as { services?: Record<string, unknown>; mcpl?: Record<string, unknown> };
+          if (!isPlainObject(json) || (json.mcpl !== undefined && !isPlainObject(json.mcpl))) throw new Error('not a directory');
           const map: Record<string, string> = {};
           for (const [name, base] of Object.entries(json.services ?? {})) {
             if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;

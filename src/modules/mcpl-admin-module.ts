@@ -574,8 +574,8 @@ export class McplAdminModule implements Module {
     if (directory?.url !== undefined) url = directory.url;
     const foundUrl = directory?.url !== undefined
       ? ` Its url, ${directory.url}, is the endpoint the home node's directory publishes for the access grant ` +
-        `${JSON.stringify(accessName)}, saved with the entry: if the service moves, deploy it again with \`access\` ` +
-        'and no `url`, which dials what the directory publishes then.'
+        `${JSON.stringify(accessName)}, saved with the entry: if the service moves, deploy it again with its other ` +
+        'fields as now, `access`, and no `url`, which dials what the directory publishes then.'
       : '';
     let directoryAnswer: string | undefined;
     if (command === undefined && url === undefined) {
