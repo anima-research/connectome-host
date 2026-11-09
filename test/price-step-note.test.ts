@@ -59,10 +59,10 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
     expect(auto).toContain('$4.00 input, $0.20 cached input and $15.00 output');
   });
 
-  test('where the tier\'s row gives no long-context rates, the note says the page lists none', () => {
+  test('where the tier\'s row gives no long-context rates, the note says the page gives rates up to the step and none past it', () => {
     const note = priceStepNote(onApi({ model: 'gpt-6-cyber' }), 'gpt-6-cyber')!;
-    expect(note).toContain('272,000');
-    expect(note).toContain("doesn't list");
+    expect(note).toContain('rates for a request of up to 272,000 input tokens and none for a longer one');
+    expect(note).not.toContain('bills');
   });
 
   test("no note on Codex, a third party's API, Anthropic or Bedrock, for a model priced in one column, or for a name the page doesn't list", () => {

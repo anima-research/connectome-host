@@ -397,9 +397,10 @@ function listed(parts: string[]): string {
 }
 
 /** The note the host prints once at start where a recipe on OpenAI's API can
- *  send requests past its model's long-context step, by the fit's own
- *  reckoning: the budget, the system prompt and the room kept for the tools
- *  over the step. Undefined on any other provider, for a model the pricing
+ *  send a request's input past its model's long-context step, by the host's
+ *  own count: the conversation a compile sends (the budget less the reply,
+ *  and up to the grace over that), the system prompt and the room the fit
+ *  keeps for tools. Undefined on any other provider, for a model the pricing
  *  table doesn't step, and for a budget whose requests stay under it. */
 export function priceStepNote(recipe: Recipe, model: string): string | undefined {
   if (resolveProvider(recipe) !== 'openai-responses' || typeof model !== 'string') return undefined;
@@ -415,10 +416,10 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
   const { long, short } = step;
   const kinds = (['input', 'cached', 'output'] as const).filter((k) => long?.[k] !== undefined && short[k] !== undefined);
   const name = { input: 'input', cached: 'cached input', output: 'output' };
-  const rates = long
-    ? `at its long-context rates for the whole request: ${listed(kinds.map((k) => `${usd(long[k]!)} ${name[k]}`))} per million tokens, ` +
-      `against ${listed(kinds.map((k) => usd(short[k]!)))} under it`
-    : `at long-context rates for the whole request, which the pricing page doesn't list for this tier`;
+  const head = long
+    ? `${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens at its long-context rates for the whole request: ` +
+      `${listed(kinds.map((k) => `${usd(long[k]!)} ${name[k]}`))} per million tokens, against ${listed(kinds.map((k) => usd(short[k]!)))} under it`
+    : `OpenAI's pricing page gives ${model} on its API, at the ${step.tier} tier, rates for a request of up to ${n(step.tokens)} input tokens and none for a longer one`;
   const said = recipe.agent.contextBudgetTokens === undefined || recipe.agent.contextBudgetTokens === null
     ? `The budget the host gives this recipe, ${n(budget)},`
     : `Recipe agent.contextBudgetTokens (${n(budget)})`;
@@ -426,8 +427,8 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
   while (input(under + 1) <= step.tokens) under++;
   while (under > 0 && input(under) > step.tokens) under--;
   const grace = x.grace > 0 ? `, and up to ${+(x.grace * 100).toFixed(2)}% over that` : '';
-  return `[price] ${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens ${rates}. ` +
+  return `[price] ${head}. ` +
     `${said} lets a request's input reach about ${n(input(budget))} tokens by the host's own count: the conversation it compiles to the budget ` +
     `less agent.maxTokens (${n(x.reply)})${grace}, the system prompt (about ${n(system)}) and ${n(TOOLS_ROOM_TOKENS)} kept for tools. ` +
-    (under > 0 ? `A budget of ${n(under)} or less keeps a request under the step.` : `No budget keeps a request under it, since the system prompt and the tools' room fill it.`);
+    (under > 0 ? `A budget of ${n(under)} or less keeps a request's input to ${n(step.tokens)} tokens or fewer by that count.` : `No budget keeps a request's input to ${n(step.tokens)} tokens or fewer by that count, since the system prompt and the room kept for tools pass that alone.`);
 }
