@@ -15,6 +15,7 @@ import { handleCommand } from '../src/commands.js';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const USER = 'admin';
 const PASS = 'open-sesame';
@@ -79,7 +80,7 @@ describe("the requester of a command's operator action", () => {
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'commands-requester-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html><title>t</title>');
-    webUi = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: USER, password: PASS }, staticDir: dir });
+    webUi = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', basicAuth: { username: USER, password: PASS }, staticDir: dir });
     await webUi.start({} as ModuleContext);
     const bound = __getSharedServerPortForTests();
     if (!bound) throw new Error('webui server not bound');

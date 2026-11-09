@@ -381,7 +381,7 @@ describe('modules that offer no tools of their own', () => {
       new NoticesModule({}),
       new TtsRelayModule({ url: 'ws://localhost:1/bot', token: 't' }),
       new RetrievalModule({ membrane: {} as never }),
-      new WebUiModule(),
+      new WebUiModule({ surfaces: new SurfaceAnswers() }),
     ];
     for (const m of others) {
       const r = await m.handleToolCall(call('send'));

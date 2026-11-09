@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { WebUiModule } from '../src/modules/web-ui-module.js';
 import { connectWhenAccepting } from './ipc-connect.js';
 import { READ_FIELDS, READ_PAGE, readResultShapes } from './workspace-read-shapes.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const shapes = Object.keys(readResultShapes) as Array<keyof typeof readResultShapes>;
 
@@ -21,7 +22,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
 describe("the web UI's file viewer", () => {
   for (const shape of shapes) {
     test(`shows the page when the read's fields are in ${shape}`, async () => {
-      const viewer = new WebUiModule({ port: 0 }) as unknown as {
+      const viewer = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0 }) as unknown as {
         workspaceMod(): Promise<unknown>;
         send(client: unknown, message: unknown): void;
         sendWorkspaceFileRead(client: unknown, path: string): Promise<void>;

@@ -1,6 +1,7 @@
 import { mock } from 'bun:test';
 import * as core from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const watchdog = setTimeout(() => { process.stdout.write('TUI_ERROR timed out\n'); process.exit(2); }, 20000);
 const [running] = process.argv.slice(2);
@@ -16,6 +17,7 @@ const history = Array.from({ length: 50 }, (_, i) => ({
   content: [{ type: 'text', text: `history ${String(i + 1).padStart(2, '0')}` }],
 }));
 const app = {
+  surfaces: new SurfaceAnswers(),
   membrane: {},
   recipe: { name: 'bun-floor-test', agent: { name: 'agent' } },
   sessionManager: { getActiveSession: () => ({ id: 's1', name: 'saved' }) },

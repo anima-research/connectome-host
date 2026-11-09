@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModuleContext } from '@animalabs/agent-framework';
 import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 let module: WebUiModule | undefined;
 let root: string | undefined;
@@ -22,7 +23,7 @@ async function serve(basicAuth?: { username: string; password: string } | null):
   const staticDir = join(root, 'web');
   mkdirSync(staticDir);
   writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>loopback</title>');
-  module = new WebUiModule({ port: 0, host: '127.0.0.1', staticDir, ...(basicAuth !== undefined ? { basicAuth: basicAuth as never } : {}) });
+  module = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', staticDir, ...(basicAuth !== undefined ? { basicAuth: basicAuth as never } : {}) });
   await module.start({} as ModuleContext);
   const port = __getSharedServerPortForTests();
   if (!port) throw new Error('the Web UI server did not bind');

@@ -104,7 +104,7 @@ describe('headless', () => {
     });
   });
 
-  test("of a stream with rounds, answers for the reply after its last call", async () => {
+  test("of a stream with rounds, answers each final piece from the reply it wrote after the last call, whatever words the piece has", async () => {
     await withChild(async (dir, connect) => {
       const send = await connect(['inference:speech']);
       send({ type: 'text', content: JSON.stringify({ stream: ['Looking around.', 'Found it. It was here.'] }), from: 'console' });
@@ -113,8 +113,10 @@ describe('headless', () => {
       const ask = (text: string) => send({ type: 'text', content: JSON.stringify({ ask: { text, final: true, connections: [id] } }), from: 'console' });
       ask('Found it.');
       ask('It was here.');
-      await until(() => answers(dir).length === 3, 'the asks');
+      ask('Looking around.');
+      await until(() => answers(dir).length === 4, 'the asks');
       expect(answers(dir).slice(1).map((a) => a.asked)).toEqual([
+        'the terminal that sent this turn (`connectome send`)',
         'the terminal that sent this turn (`connectome send`)',
         'the terminal that sent this turn (`connectome send`)',
       ]);

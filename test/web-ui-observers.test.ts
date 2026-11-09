@@ -34,6 +34,7 @@ import { WEB_PROTOCOL_VERSION, type WebUiServerMessage, type WelcomeMessage, typ
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 import { BASIC, helloFor, makeKeypair } from './web-ui-observed-host.js';
 import { blankLiterals } from './blank-literals.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 describe('ObserverRegistry.verifyHello', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'observers-unit-'));
@@ -1150,6 +1151,7 @@ describe('WebUiModule observer flow (e2e)', () => {
     saveObserversFile(observersPath, { observers: [] });
 
     mod = new WebUiModule({
+    surfaces: new SurfaceAnswers(),
       port: 0,
       host: '127.0.0.1',
       basicAuth: { username: 'admin', password: 'pw' },

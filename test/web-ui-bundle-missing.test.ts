@@ -8,6 +8,7 @@ import {
   __getSharedServerPortForTests,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -29,7 +30,7 @@ async function startCapturingWarnings(root: string): Promise<string[]> {
   const orig = console.warn;
   console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
   try {
-    await new WebUiModule({ port: 0, host: '127.0.0.1', staticDir: root }).start({} as ModuleContext);
+    await new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', staticDir: root }).start({} as ModuleContext);
   } finally {
     console.warn = orig;
   }

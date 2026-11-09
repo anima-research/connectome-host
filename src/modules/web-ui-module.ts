@@ -150,7 +150,7 @@ export interface WebUiModuleConfig {
   quotaMeter?: QuotaMeter;
   credentials?: CredentialMonitor;
   subscriptionUnmetered?: boolean;
-  surfaces?: SurfaceAnswers;
+  surfaces: SurfaceAnswers;
 }
 
 interface WsData {
@@ -441,7 +441,7 @@ export class WebUiModule implements Module {
 
   private observerPollMs: number | undefined;
 
-  constructor(config: WebUiModuleConfig = {}) {
+  constructor(config: WebUiModuleConfig) {
     this.config = {
       ...config,
       basicAuth: config.basicAuth || undefined,
@@ -516,7 +516,7 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
-    this.config.surfaces?.answerFor('web-ui', webUiPagesAnswer);
+    this.config.surfaces.answerFor('web-ui', webUiPagesAnswer);
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it's there. ` +

@@ -14,6 +14,7 @@ import {
   __getSharedServerPortForTests,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 // agent-framework's code for a link among a path's directories that stays
 // inside the mount.
@@ -71,7 +72,7 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       },
     };
     workspace = standIn;
-    webUiModule = new WebUiModule({ port: 0, host: '127.0.0.1', staticDir: staticRoot });
+    webUiModule = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', staticDir: staticRoot });
     await webUiModule.start({} as ModuleContext);
     const port = __getSharedServerPortForTests();
     if (!port) throw new Error('webui server not bound; did start() succeed?');
