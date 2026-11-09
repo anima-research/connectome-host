@@ -3,6 +3,7 @@ import {
   logKeepaliveEvent,
   formatKeepaliveEvent,
   KEEPALIVE_LOG_PREFIX,
+  keepalivePersistWarning,
 } from '../src/cache-keepalive-log.js';
 import type { KeepaliveEvent } from '@animalabs/membrane';
 
@@ -64,5 +65,17 @@ describe('keepalive event logging', () => {
     }
     expect(toStderr.length).toBe(EVENTS.length);
     expect(toStdout.length).toBe(0);
+  });
+});
+
+describe('keepalivePersistWarning', () => {
+  test('says nothing when persist is off, or membrane can save state', () => {
+    expect(keepalivePersistWarning(undefined, {})).toBeNull();
+    expect(keepalivePersistWarning(false, {})).toBeNull();
+    expect(keepalivePersistWarning(true, { persistPath: undefined })).toBeNull();
+  });
+
+  test('warns when persist is on but membrane has no statePath', () => {
+    expect(keepalivePersistWarning(true, {})).toContain("this membrane can't save keepalive state");
   });
 });

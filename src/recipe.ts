@@ -349,9 +349,11 @@ export interface RecipeAgent {
     /** Refresh once untouched this long. Must be < 60 with a 1h TTL. Default 45. */
     refreshAfterMinutes?: number;
     /**
-     * Save keepalive state to `<dataDir>/cache-keepalive.json` so a restart
-     * (a backup, an upgrade) replays the exact recorded request and keeps the
-     * cached prefix warm instead of starting cold. Default false.
+     * Save keepalive state to `<dataDir>/cache-keepalive.json` so that after
+     * a restart (a backup, an upgrade) the keepalive goes on refreshing the
+     * cached prefix, instead of nothing touching it until the next turn.
+     * Needs a membrane with `cacheKeepalive.statePath`; the host warns at
+     * startup when it hasn't one. Default false.
      */
     persist?: boolean;
   };

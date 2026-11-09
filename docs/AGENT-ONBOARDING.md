@@ -692,10 +692,14 @@ Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user 
 restart-loop). These caught real incidents.
 
 Any restart (a watchdog restart, an upgrade, a backup that stops the service) drops the
-prompt-cache keepalive's state, so the next turn pays a full cache write on the whole context.
+prompt-cache keepalive's state, so nothing refreshes the cache until the next turn, and if the
+cache entry's hour runs out first, that turn pays a full cache write on the whole context.
 Set `agent.cacheKeepalive.persist: true` in the recipe to save that state in
-`data/cache-keepalive.json`; the agent then re-warms its cache on startup, as long as it was
-down for less than the cache's hour.
+`data/cache-keepalive.json`; the restarted agent then refreshes the cache when it's due. The
+hour counts from the entry's last read or write, not from the stop: with the default
+45-minute refresh, a stop of under about 15 minutes is always safe, and with
+`agent.cacheTtl: '5m'` the window is minutes. It needs a membrane with
+`cacheKeepalive.statePath`; the host warns at startup when it hasn't one.
 
 ---
 

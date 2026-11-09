@@ -118,7 +118,7 @@ import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTria
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { wireLoadRepairAlert } from './web/load-repair-alert.js';
-import { logKeepaliveEvent } from './cache-keepalive-log.js';
+import { keepalivePersistWarning, logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions, type ExtensionRegistry } from './extensions.js';
 import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
 import { stopForSessionSwitch } from './session-switch-stop.js';
@@ -1056,8 +1056,8 @@ async function main() {
             ...(recipe.agent.cacheKeepalive?.refreshAfterMinutes !== undefined
               ? { refreshAfterMs: recipe.agent.cacheKeepalive.refreshAfterMinutes * 60_000 }
               : {}),
-            // Survive restarts: membrane saves what it needs to replay the
-            // last request and re-warms the cache on startup.
+            // Survive restarts: membrane saves the lineages it keeps warm, and
+            // the next process refreshes them when they're due.
             ...(recipe.agent.cacheKeepalive?.persist === true
               ? { statePath: join(config.dataDir, 'cache-keepalive.json') }
               : {}),
@@ -1068,6 +1068,9 @@ async function main() {
         () => settingsModule.getReasoning(),
         (record) => callLedger!.record(record),
       );
+
+  const persistWarning = keepalivePersistWarning(recipe.agent.cacheKeepalive?.persist);
+  if (persistWarning) console.warn(persistWarning);
 
   const sessionManager = new SessionManager(config.dataDir);
   sessionManager.migrateIfNeeded();
