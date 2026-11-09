@@ -135,6 +135,7 @@ async function endpointFor(identity: DeployIdentity | null, access: string): Pro
   try {
     return await identity.mcplEndpointFor(access);
   } catch (error) {
+    console.error(`[mcpl] the home node's directory lookup for the access grant "${access}" failed: ${reasonText(error)}`);
     return { unreadable: reasonText(error) };
   }
 }
@@ -143,8 +144,8 @@ function noEndpointText(access: string, answer: McplEndpointAnswer): string {
   const name = JSON.stringify(access);
   const giveUrl = 'give `url`, a wss:// address (or ws:// to this machine)';
   if (answer.unreadable !== undefined) {
-    return `The home node's directory of MCPL endpoints couldn't be read (${answer.unreadable.replace(/[\s.]+$/, '')}), so no endpoint ` +
-      `was found for the access grant ${name}: call ${DEPLOY} again shortly, or ${giveUrl}.`;
+    return `The home node's directory of MCPL endpoints couldn't be read, so no endpoint was found for the access grant ` +
+      `${name}: call ${DEPLOY} again shortly, or ${giveUrl}.`;
   }
   const others = answer.published ?? [];
   return `The home node's directory publishes no wss:// MCPL endpoint for the access grant ${name}` +
@@ -662,8 +663,13 @@ export class McplAdminModule implements Module {
     }
     if (problems.length > 0) {
       if (problems.length === 1 && problems[0] === directoryAnswer) return fail(`Nothing was deployed or saved: ${directoryAnswer}`);
+      const outage = directory?.unreadable !== undefined;
+      const toCorrect = outage ? problems.length - 1 : problems.length;
+      const correct = outage
+        ? (toCorrect === 1 ? 'the other problem' : 'the others')
+        : (toCorrect === 1 ? 'it' : 'each');
       return fail(
-        `Nothing was deployed or saved: ${problems.join(' ')} Correct ${problems.length === 1 ? 'it' : 'each'}` +
+        `Nothing was deployed or saved: ${problems.join(' ')} Correct ${correct}` +
         `${malformed ? ' (or leave out a field the server can do without)' : ''} and call ${DEPLOY} again.`,
       );
     }
@@ -687,7 +693,7 @@ export class McplAdminModule implements Module {
             ? ' Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory, which ' +
               'a deploy with `access` and no `url` then dials.'
             : forGrant?.unreadable !== undefined
-              ? ` The home node's directory of MCPL endpoints couldn't be read (${forGrant.unreadable.replace(/[\s.]+$/, '')}), ` +
+              ? ' The home node\'s directory of MCPL endpoints couldn\'t be read, ' +
                 `so it isn't known whether it publishes one for the access grant ${JSON.stringify(entry.access)}: a deploy ` +
                 'with `access` and no `url`, called again later, dials the endpoint it publishes, if it publishes one.'
               : ''),
