@@ -184,13 +184,7 @@ export function shownByName(words: string, secrets: readonly { name: string; val
 
 // Every secret, its ASCII letters in any case, since a server that puts one in a URL's host gives it back lowercased.
 function hidden(words: string, key: string, name: string, also: Options['hide'] = []): string {
-  const forms = [...[key, key.trim()].map((value) => ({ name, value })),
-    ...also.flatMap((form) => [form.value, form.value.trim()].map((value) => ({ name: form.name, value })))]
-    .filter(({ value }) => value !== '').sort((a, b) => b.value.length - a.value.length);
-  for (const form of forms) {
-    words = words.replace(new RegExp(form.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), `<${form.name}>`);
-  }
-  return words;
+  return shownByName(words, [{ name, value: key }, ...also]);
 }
 
 export function familyOf(model: string): string {
