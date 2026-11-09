@@ -63,8 +63,8 @@ function settingsResult(body: unknown): string | undefined {
   return undefined;
 }
 
-/** What `agent_settings get` reports for the inline cap, in the framework the host builds from `extra`'s recipe. */
-async function inlineCapReported(extra: Record<string, unknown>): Promise<{ source: string; effective: number }> {
+/** The inline cap's four fields of `agent_settings get`, in the framework the host builds from `extra`'s recipe. */
+async function inlineCapReported(extra: Record<string, unknown>): Promise<Record<string, unknown>> {
   const dir = mkdtempSync(join(tmpdir(), 'inline-cap-'));
   let result: ((text: string) => void) | undefined;
   const reported = new Promise<string>((resolveReported) => { result = resolveReported; });
@@ -91,9 +91,13 @@ async function inlineCapReported(extra: Record<string, unknown>): Promise<{ sour
   try {
     const recipePath = join(dir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify({ ...RECIPE, ...extra }));
+    const env: Record<string, string | undefined> = { ...process.env, ANTHROPIC_API_KEY: 'sk-test-inline-cap', ANTHROPIC_BASE_URL: `http://127.0.0.1:${model.port}`, DATA_DIR: dir };
+    // Either takes precedence over the API key (src/index.ts's config).
+    delete env.ANTHROPIC_OAUTH_CREDENTIALS_FILE;
+    delete env.ANTHROPIC_AUTH_TOKEN;
     const started = spawn(process.execPath, [INDEX_PATH, recipePath, '--headless'], {
       cwd: dir,
-      env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-inline-cap', ANTHROPIC_BASE_URL: `http://127.0.0.1:${model.port}`, DATA_DIR: dir },
+      env,
       stdio: 'ignore',
     });
     host = started;
@@ -124,11 +128,9 @@ async function inlineCapReported(extra: Record<string, unknown>): Promise<{ sour
       });
       return reported;
     })();
-    const text = await Promise.race([asked, failed]);
-    const source = /"tool_result_inline_max_chars_source"\s*:\s*"([^"]+)"/.exec(text)?.[1];
-    const effective = /"tool_result_inline_max_chars_effective"\s*:\s*(\d+)/.exec(text)?.[1];
-    if (source === undefined || effective === undefined) throw new Error(`agent_settings get's result names no inline cap: ${text}`);
-    return { source, effective: Number(effective) };
+    const settings = JSON.parse(await Promise.race([asked, failed])) as Record<string, unknown>;
+    const fields = ['tool_result_inline_max_chars', 'tool_result_inline_max_chars_effective', 'tool_result_inline_max_chars_source', 'tool_result_inline_max_chars_clamped_by'];
+    return Object.fromEntries(fields.map((field) => [field, settings[field]]));
   } finally {
     clearTimeout(deadline);
     socket?.destroy();
@@ -143,11 +145,21 @@ async function inlineCapReported(extra: Record<string, unknown>): Promise<{ sour
 
 describe('toolResultInlineMaxChars', () => {
   test("the framework the host builds takes the recipe's value: agent_settings get reports it, from framework-config", async () => {
-    expect(await inlineCapReported({ toolResultInlineMaxChars: 30_000 })).toEqual({ source: 'framework-config', effective: 30_000 });
+    expect(await inlineCapReported({ toolResultInlineMaxChars: 30_000 })).toEqual({
+      tool_result_inline_max_chars: null,
+      tool_result_inline_max_chars_effective: 30_000,
+      tool_result_inline_max_chars_source: 'framework-config',
+      tool_result_inline_max_chars_clamped_by: null,
+    });
   }, 60_000);
 
   test("left out, agent-framework's own default stands: agent_settings get reports 24000, from default", async () => {
-    expect(await inlineCapReported({})).toEqual({ source: 'default', effective: 24_000 });
+    expect(await inlineCapReported({})).toEqual({
+      tool_result_inline_max_chars: null,
+      tool_result_inline_max_chars_effective: 24_000,
+      tool_result_inline_max_chars_source: 'default',
+      tool_result_inline_max_chars_clamped_by: null,
+    });
   }, 60_000);
 
   test('1000 and a fraction above it load as written', () => {
@@ -157,6 +169,7 @@ describe('toolResultInlineMaxChars', () => {
 
   const refused: Array<[string, unknown, string]> = [
     ['999', 999, 'Recipe toolResultInlineMaxChars is 999; it must be a finite number of at least 1000.'],
+    ['999.5', 999.5, 'Recipe toolResultInlineMaxChars is 999.5; it must be a finite number of at least 1000.'],
     ['0', 0, 'Recipe toolResultInlineMaxChars is 0; it must be a finite number of at least 1000.'],
     ['Infinity', Infinity, 'Recipe toolResultInlineMaxChars is Infinity; it must be a finite number of at least 1000.'],
     ['a number given as a string', '30000', 'Recipe toolResultInlineMaxChars is "30000"; it must be a finite number of at least 1000.'],

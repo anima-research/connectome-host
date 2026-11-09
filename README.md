@@ -208,8 +208,8 @@ default stands. A resident's own `agent_settings` value
 what becomes of a result over the cap and how the cap in effect is reached
 are in that option's doc in agent-framework's types, which its package ships
 (`node_modules/@animalabs/agent-framework/dist/src/types/framework.d.ts` in
-an install). A value that isn't a finite number of at least 1000 stops the
-load, naming it.
+an install). A value that isn't a finite number of at least 1000,
+agent-framework's own minimum, stops the load, naming it.
 
 ### Prose routing
 
