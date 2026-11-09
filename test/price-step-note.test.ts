@@ -46,6 +46,11 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
     expect(priceStepNote(onApi({ ...exact, contextBudgetTokens: largest(0, REPLY, 0) + 1 }), 'gpt-6.1-sol')).toContain(`${n(largest(0, REPLY, 0))} or less`);
   });
 
+  test('at an empty system prompt and the default reply and grace, a budget of 251,679 gets no note and 251,680 gets one', () => {
+    expect(priceStepNote(onApi({ contextBudgetTokens: 251_679 }), 'gpt-6.1-sol')).toBeUndefined();
+    expect(priceStepNote(onApi({ contextBudgetTokens: 251_680 }), 'gpt-6.1-sol')).toContain('251,679 or less');
+  });
+
   test("the rates are the recipe's tier's: flex's for flex, Fast mode's for priority", () => {
     expect(priceStepNote(onApi({ responses: { serviceTier: 'flex' } }), 'gpt-6.1-sol')).toContain('$2.00 input, $0.10 cached input and $7.50 output');
     expect(priceStepNote(onApi({ responses: { serviceTier: 'priority' } }), 'gpt-6.1-sol')).toContain('$8.00 input, $0.40 cached input and $30.00 output');
