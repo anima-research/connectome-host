@@ -508,7 +508,7 @@ describe('mcpl_deploy', () => {
     expectSays(
       byName.data, 'Deployed server "body"',
       'Its url, wss://body.example:8865/, is the endpoint the home node\'s directory publishes for the access grant "body"',
-      'deploy it again with `access` and no `url`',
+      'deploy it again with its other fields as now, `access`, and no `url`',
     );
     expect(readAgentOverlay(overlayPath).body).toEqual({ url: 'wss://body.example:8865/', transport: 'websocket', access: 'body' });
     expect(asked).toStrictEqual(['body']);
@@ -576,6 +576,14 @@ describe('mcpl_deploy', () => {
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
     const none = await call(mod, 'mcpl_deploy', { id: 'nowhere', access: 'nowhere' });
     expectSays(none.error, 'publishes no wss:// MCPL endpoint for the access grant "nowhere": give `url`');
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: ['body'] }) });
+    const three = await call(mod, 'mcpl_deploy', { id: 'bad id!', access: 'nowhere', reconnect: 'yes' });
+    expect(three.error).toStartWith('Nothing was deployed or saved: The id "bad id!" has characters other than letters');
+    expectSays(
+      three.error, 'The home node\'s directory publishes no wss:// MCPL endpoint for the access grant "nowhere" (it publishes one for "body")',
+      'The entry would be malformed: its reconnect is neither true nor false.',
+      'Correct each (or leave out a field the server can do without) and call mcpl-admin--mcpl_deploy again.',
+    );
 
     mod.setIdentity(new IdentityModule({
       keyPath: join(dir, 'k.pem'),
@@ -621,7 +629,7 @@ describe('mcpl_deploy', () => {
     expectSays(
       failed.error, 'was saved to your overlay, but connecting it failed',
       'Its url, wss://body.example:8865/, is the endpoint the home node\'s directory publishes for the access grant "body"',
-      'deploy it again with `access` and no `url`',
+      'deploy it again with its other fields as now, `access`, and no `url`',
     );
 
     const retrying = makeStubFramework();
@@ -676,6 +684,7 @@ describe('mcpl_deploy', () => {
     expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
     const tokenOver = await call(mod, 'mcpl_deploy', { id: 'tools', url: 'ws://tools.example:3101/mcpl', token: 't' });
     expect(tokenOver.success).toBe(false);
+    expect(tokenOver.error).toStartWith('Nothing was deployed: its token would go to tools.example:3101 over unencrypted ws://');
     expect(String(tokenOver.error)).not.toContain('leave `url` out');
     expect(String(tokenOver.error)).not.toContain('Or ask the service');
     for (const url of ['ws://tools.example/mcpl?token=abc', 'ws://user:pass@tools.example/mcpl']) {
