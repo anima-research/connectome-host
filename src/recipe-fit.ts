@@ -1,6 +1,7 @@
 import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG, defaultTokenEstimator } from '@animalabs/context-manager';
 import { getDefaultModelLimits, type ModelLimits } from './model-limits.js';
 import { openaiLongContextStep } from './call-pricing.js';
+import { isBuiltinStrategyType } from './extensions.js';
 import { resolveProvider, type Recipe } from './recipe.js';
 
 const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
@@ -401,10 +402,12 @@ function listed(parts: string[]): string {
  *  own count: the conversation a compile sends (the budget less the reply,
  *  and on the autobiographical and frontdesk strategies up to the grace over
  *  that), the system prompt and the room the fit keeps for tools. Undefined
- *  on any other provider, for a model the pricing table doesn't step, and for
+ *  on any other provider, on a strategy an extension builds, whose compile
+ *  the host can't count, for a model the pricing table doesn't step, and for
  *  a budget whose requests stay under it. */
 export function priceStepNote(recipe: Recipe, model: string): string | undefined {
   if (resolveProvider(recipe) !== 'openai-responses' || typeof model !== 'string') return undefined;
+  if (!isBuiltinStrategyType(recipe.agent.strategy?.type ?? 'autobiographical')) return undefined;
   const step = openaiLongContextStep(model, recipe.agent.responses?.serviceTier);
   if (!step) return undefined;
   const budget = effectiveContextBudgetTokens(recipe, model);
@@ -427,12 +430,16 @@ export function priceStepNote(recipe: Recipe, model: string): string | undefined
   const said = recipe.agent.contextBudgetTokens === undefined || recipe.agent.contextBudgetTokens === null
     ? `The budget the host gives this recipe, ${n(budget)},`
     : `Recipe agent.contextBudgetTokens (${n(budget)})`;
-  let under = x.reply + Math.floor((step.tokens - fixed) / (1 + x.grace));
-  while (input(under + 1) <= step.tokens) under++;
-  while (under > 0 && input(under) > step.tokens) under--;
+  // The largest budget whose input stays at or under the step: none where the fixed input alone passes it, and
+  // left unsaid where the figures pass the integers a double holds exactly, since counting by one there can't move.
+  let under: number | undefined = fixed > step.tokens ? 0 : x.reply + Math.floor((step.tokens - fixed) / (1 + x.grace));
+  if (under > 0 && under + step.tokens <= Number.MAX_SAFE_INTEGER) {
+    while (input(under + 1) <= step.tokens) under++;
+    while (under > 0 && input(under) > step.tokens) under--;
+  } else if (under > 0) under = undefined;
   const grace = x.grace > 0 ? `, and up to ${+(x.grace * 100).toFixed(2)}% over that` : '';
-  return `[price] ${head}. ` +
+  return (`[price] ${head}. ` +
     `${said} lets a request's input reach about ${n(input(budget))} tokens by the host's own count: the conversation it compiles to the budget ` +
     `less agent.maxTokens (${n(x.reply)})${grace}, the system prompt (about ${n(system)}) and ${n(TOOLS_ROOM_TOKENS)} kept for tools. ` +
-    (under > 0 ? `A budget of ${n(under)} or less keeps a request's input to ${n(step.tokens)} tokens or fewer by that count.` : `No budget keeps a request's input to ${n(step.tokens)} tokens or fewer by that count, since the system prompt and the room kept for tools pass that alone.`);
+    (under === undefined ? '' : under > 0 ? `A budget of ${n(under)} or less keeps a request's input to ${n(step.tokens)} tokens or fewer by that count.` : `No budget keeps a request's input to ${n(step.tokens)} tokens or fewer by that count, since the system prompt and the room kept for tools pass that alone.`)).trimEnd();
 }

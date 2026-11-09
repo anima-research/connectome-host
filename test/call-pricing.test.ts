@@ -161,6 +161,10 @@ describe('Anthropic per-call pricing', () => {
     }
   });
 
+  test('the Anthropic table is the one checked against the pricing page on November 9, 2026, and says so', () => {
+    expect(ANTHROPIC_PRICING_VERSION).toBe('anthropic-public-2026-11-09');
+  });
+
   test('every other model the pricing page lists reads and writes at exactly the multiples it did before', () => {
     const before: Record<string, [number, number]> = {
       'gpt-6-astra': [0.1, 1.25], 'gpt-6.1-sol': [0.05, 1.25], 'gpt-6-luna': [0.1, 1.25], 'gpt-6-sol': [0.1, 1.25],

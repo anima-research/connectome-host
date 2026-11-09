@@ -59,6 +59,24 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
     expect(note).not.toContain('% over that');
   });
 
+  test('no note on a strategy an extension builds, whose compile the host can\'t count', () => {
+    const built = onApi();
+    const extension = { ...built, agent: { ...built.agent, strategy: { type: 'my-extension-strategy' } } } as typeof built;
+    expect(priceStepNote(built, 'gpt-6.1-sol')).toBeDefined();
+    expect(priceStepNote(extension, 'gpt-6.1-sol')).toBeUndefined();
+  });
+
+  test('the budget search ends whatever the figures: no budget where the fixed input alone passes the step, and none named where the figures pass what a double counts by one', () => {
+    const systemPrompt = 'a resident\'s long fixed instructions. '.repeat(30_000);
+    expect(defaultTokenEstimator(systemPrompt)).toBeGreaterThan(240_000);
+    const huge = priceStepNote(onApi({ systemPrompt, maxTokens: 1e20 }), 'gpt-6.1-sol')!;
+    expect(huge).toContain('No budget keeps a request\'s input to 272,000 tokens or fewer by that count');
+    const unsafe = priceStepNote(onApi({ maxTokens: 1e20, contextBudgetTokens: 2e20 }), 'gpt-6.1-sol')!;
+    expect(unsafe).toContain('kept for tools.');
+    expect(unsafe).not.toContain('or less');
+    expect(unsafe).not.toContain('No budget');
+  });
+
   test("the rates are the recipe's tier's: flex's for flex, Fast mode's for priority", () => {
     expect(priceStepNote(onApi({ responses: { serviceTier: 'flex' } }), 'gpt-6.1-sol')).toContain('$2.00 input, $0.10 cached input and $7.50 output');
     expect(priceStepNote(onApi({ responses: { serviceTier: 'priority' } }), 'gpt-6.1-sol')).toContain('$8.00 input, $0.40 cached input and $30.00 output');
@@ -68,6 +86,7 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
   });
 
   test('where the tier\'s row gives no long-context rates, the note says the page gives rates up to the step and none past it', () => {
+    expect(priceStepNote(onApi({ model: 'gpt-6-cyber', responses: { serviceTier: 'flex' } }), 'gpt-6-cyber')).toBeUndefined();
     const note = priceStepNote(onApi({ model: 'gpt-6-cyber' }), 'gpt-6-cyber')!;
     expect(note).toContain('rates for a request of up to 272,000 input tokens and none for a longer one');
     expect(note).not.toContain('bills');
@@ -79,6 +98,9 @@ describe("the start note on OpenAI's 272,000-token price step", () => {
     expect(priceStepNote(recipe({ provider: 'openai-compatible', baseUrl: 'http://localhost:11434/v1', model: 'gpt-6.1-sol' }), 'gpt-6.1-sol')).toBeUndefined();
     expect(priceStepNote(recipe({ model: 'claude-opus-5-5' }), 'claude-opus-5-5')).toBeUndefined();
     expect(priceStepNote(recipe({ provider: 'bedrock', model: 'us.anthropic.claude-opus-4-6-v1' }), 'us.anthropic.claude-opus-4-6-v1')).toBeUndefined();
+    for (const provider of ['anthropic', 'bedrock']) {
+      expect(priceStepNote(recipe({ provider, model: 'gpt-6.1-sol' }), 'gpt-6.1-sol')).toBeUndefined();
+    }
     expect(priceStepNote(onApi({ model: 'gpt-5.4-mini' }), 'gpt-5.4-mini')).toBeUndefined();
     expect(priceStepNote(onApi({ model: 'gpt-9' }), 'gpt-9')).toBeUndefined();
   });
