@@ -1170,7 +1170,7 @@ describe("an alert's message stays with the operator", () => {
     ['auth-login-required', '⚠ [host notice] clerk — auth-login-required: its provider login must be redone.'],
     ['provider-hold', '⚠ [host notice] clerk — provider-hold: the provider is holding its requests.'],
     ['context-refusal', "⚠ [host notice] clerk — context-refusal: its context couldn't be compiled for a request."],
-    ['mcpl-down', "⚠ [host notice] discord — mcpl-down: this MCPL server isn't answering.", 'discord'],
+    ['mcpl-down', "⚠ [host notice] discord — mcpl-down: this server isn't answering.", 'discord'],
     ['quota-unreadable', "⚠ [host notice] clerk — quota-unreadable: its subscription quota couldn't be read."],
     ['auth-expiring', '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon.'],
     ['credential-unsaved', "⚠ [host notice] clerk — credential-unsaved: its provider credential couldn't be saved to its file."],
@@ -1196,6 +1196,15 @@ describe("an alert's message stays with the operator", () => {
     await h.settle();
     expect(h.posts.map((p) => p.text)).toEqual([
       '⚠ [host notice] clerk — quota-spent: its subscription quota is spent. Expected back after 1970-01-01 01:00 UTC.',
+    ]);
+  });
+
+  test('an expiring credential says when it expires, not when the agent is back', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('auth-expiring', SENTINEL, { until: 3_600_000 });
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([
+      '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon. It expires at 1970-01-01 01:00 UTC.',
     ]);
   });
 

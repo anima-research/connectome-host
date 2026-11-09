@@ -144,7 +144,7 @@ const REPLY_WORDS: Readonly<Record<string, string>> = Object.freeze({
 
 const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'context-refusal': "its context couldn't be compiled for a request",
-  'mcpl-down': "this MCPL server isn't answering",
+  'mcpl-down': "this server isn't answering",
   'quota-unreadable': "its subscription quota couldn't be read",
   'auth-expiring': 'its provider credential expires soon',
   'credential-unsaved': "its provider credential couldn't be saved to its file",
@@ -153,6 +153,10 @@ const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'context-maintenance-failed': "its context maintenance didn't finish",
   'compression-quarantine': 'part of its history is held back from summaries',
   'instructions-unavailable': "its instructions couldn't be loaded",
+});
+
+const UNTIL_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  'auth-expiring': 'It expires at',
 });
 
 function plainReason(kind: string): string {
@@ -177,7 +181,7 @@ export function replyClearText(agent: string): string {
 }
 
 export function statusNoticeText(subject: string, ep: { kind: string; until?: number }): string {
-  const when = ep.until !== undefined ? ` Expected back after ${fmtUntil(ep.until)}.` : '';
+  const when = ep.until !== undefined ? ` ${UNTIL_WORDS[ep.kind] ?? 'Expected back after'} ${fmtUntil(ep.until)}.` : '';
   return `⚠ [host notice] ${subject} — ${ep.kind}: ${statusReason(ep.kind)}.${when}`;
 }
 
