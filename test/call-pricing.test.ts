@@ -237,8 +237,11 @@ describe('priceCall', () => {
     }
   });
 
-  test('gives no Anthropic price where priceAnthropicCall gives none, or for an OpenAI write lifetime', () => {
+  test('gives no Anthropic price where priceAnthropicCall gives none, for an OpenAI write lifetime, or for Sonnet 5.5\'s cache reads', () => {
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { inputTokens: 1_000, serviceTier: 'priority' }))).toBeUndefined();
+    expect(priceCall(call('anthropic', 'claude-opus-5-5', { inputTokens: 1_000, inferenceGeo: 'eu' }))).toBeUndefined();
+    expect(priceCall(call('anthropic', 'claude-sonnet-5-5', { inputTokens: 1_000, cacheReadTokens: 1_000 }))).toBeUndefined();
+    expect(priceCall(call('anthropic', 'claude-sonnet-5-5', { inputTokens: 1_000_000, outputTokens: 1_000_000 }))?.total).toBeCloseTo(12, 9);
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite5mTokens: 1_000, unclassifiedCacheWriteTokens: 1 }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-unknown-9', { inputTokens: 1_000 }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite30mTokens: 1_000 }))).toBeUndefined();

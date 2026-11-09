@@ -208,8 +208,10 @@ export interface CallPrice {
  * where its provider, model, tier or usage has no list price: `openai-codex`
  * bills in credits, `openrouter` and `openai-compatible` carry a third
  * party's prices, and `bedrock` AWS's. Anthropic's is `priceAnthropicCall`'s,
- * its two cache writes summed. OpenAI's 10% uplift for regional-processing
- * and FedRAMP endpoints isn't priced.
+ * its two cache writes summed, but a Claude Sonnet 5.5 call that reads from
+ * the cache gets none, since that table's read rate for it isn't the page's.
+ * OpenAI's 10% uplift for regional-processing and FedRAMP endpoints isn't
+ * priced.
  */
 export function priceCall(call: PriceCallInput): CallPrice | undefined {
   if (call.provider === 'anthropic') return priceAnthropic(call);
@@ -219,6 +221,9 @@ export function priceCall(call: PriceCallInput): CallPrice | undefined {
 
 function priceAnthropic(call: PriceCallInput): CallPrice | undefined {
   if (call.cacheWrite30mTokens > 0 || call.cacheWrite12hTokens > 0) return undefined;
+  // The table reads Claude Sonnet 5.5's cache at 0.1x where the pricing page
+  // gives 0.05x (see its Sonnet 5 entry), so those reads have no list price here.
+  if (starts(call.model, 'claude-sonnet-5-5') && call.cacheReadTokens > 0) return undefined;
   const cost = priceAnthropicCall(call.model, '', call);
   if (!cost) return undefined;
   const context = anthropicBaseRate(call.model, anthropicPromptTokens(call))?.context;
