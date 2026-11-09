@@ -1,0 +1,1 @@
+- `priceCall` now prices a Claude Sonnet 5.5 call that reads from the cache, as `priceAnthropicCall` does, with its reads at 0.05x input. 0.24.0 gave such a call no price, since the table then read Sonnet 5.5's cache at 0.1x where Anthropic's page gives 0.05x.
