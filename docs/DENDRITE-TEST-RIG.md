@@ -41,8 +41,10 @@ prefix — a passthrough resident caches only system and tools):
   is a copy of the resident; another model is allowed when named.
 - `subconscious.voice` is the reader's voice block, delivered to each fork
   after the fork point with the held traffic; it is not a system prompt.
-- Leave `subconscious` out and set `"tuneOut": { "enabled": true }` for a
-  silent hold with no reader at all.
+- Leave `subconscious` out and the resident is not offered `tune_out` or
+  `focus`: there is no silent hold with no reader. agent-framework 0.33.0
+  removed `tuneOut.enabled`, which offered one, and a recipe that sets
+  `"tuneOut": { "enabled": true }` is refused at load.
 - `"speech": { "locus": "latest-inbound" }` brings back the moves on an
   addressed message and the most recent inbound message's channel as the
   fallback, after an open all-except tune-out's excepted channel, for prose

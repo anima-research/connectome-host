@@ -305,7 +305,9 @@ describe('FleetModule — unresolved launch artifacts', () => {
           'dendrite:agent-ended', 'dendrite:agent-interrupted',
           'inference:usage', 'inference:completed', 'inference:failed', 'inference:exhausted',
           'inference:aborted', 'inference:stream_resumed', 'inference:stream_restarted',
-          'inference:turn_ended', 'tool:started', 'tool:completed', 'tool:failed', 'usage:updated'];
+          'inference:turn_ended', 'tool:started', 'tool:completed', 'tool:failed', 'usage:updated',
+          // At which the Web UI reads the child's panels again (#485 bot review 5, finding 18).
+          'window:undone', 'presentation:retracted'];
         for (const event of mandatory) expect(wire).toContain(event);
         expect(wire).toHaveLength(expected.length + mandatory.length);
         expect(wire.includes('inference:speech')).toBe(expected.includes('inference:speech'));

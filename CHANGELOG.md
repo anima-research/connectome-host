@@ -6,6 +6,695 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.23.0 — 2026-11-07
+
+### Breaking
+
+- **Installers and packagers:** connectome-host now declares
+  `@animalabs/agent-framework` `^0.33.0` (was `^0.32.0`; 0.31.0 and 0.32.0 were cut from main without the presentation),
+  `@animalabs/context-manager` `^0.25.0` (was `^0.24.0`) and
+  `@animalabs/chronicle` `^0.6.0` (was `^0.5.1`), above the floors 0.19.0's
+  Dendrite entry, 0.20.0's chronicle entry and 0.21.0's agent-framework entry set; `@animalabs/membrane` stays `^0.8.0`. They
+  are the releases that carry agent-framework #291's presentation index and
+  the exports this release imports (`asOwnRow`, `storeOwnRow`,
+  `residentContextOptions`, `subconsciousContextOptions`), context-manager's
+  window release with its batched window write, and the chronicle with the
+  identity-stamped batched append (`appendManyToStateJsonWithIdentity`) that
+  context-manager writes a window with. Neither of the last two floors can
+  be lower. context-manager 0.23.0 and 0.24.0 were both published without
+  the window APIs (`windowStatusOf`, `presentRows`, `retractRows`,
+  `getPresentedMessages`), and chronicle 0.5.0 without the batched append;
+  agent-framework refuses to start on either, naming the range to install.
+  The context-manager, chronicle and membrane ranges are the ones
+  agent-framework declares, chronicle's is the one context-manager declares,
+  and membrane's falls within context-manager's (`^0.8.0 || ^0.9.0`), so an
+  install takes one copy of each: two
+  membrane copies make TypeScript refuse the host's `Membrane` where
+  agent-framework or context-manager takes one, and two chronicle copies
+  hand context-manager a store handle from a chronicle it doesn't load.
+  Under the old ranges an install from the registry took releases without
+  those exports, and the host failed to load. agent-framework 0.33.0,
+  context-manager 0.25.0 and chronicle 0.6.0 are published on npm, and
+  `bun.lock` and `package-lock.json` resolve those three, with membrane at
+  0.8.0; `scripts/lockfiles-agree.mjs` finds that the two lockfiles resolve
+  the stack's packages alike.
+  **Migration:** none for a host that installs connectome-host whole. A
+  deployment that pins any of the four itself takes the ranges above. The
+  first window written down with rows, or any window write of two or more
+  items, such as a presentation or an undo of more than one row, moves the
+  store's `MANIFEST` to version 2, which chronicle 0.5.1 and
+  earlier refuse (see the "Going back to an earlier release" entry below).
+
+- **Operators: `/undo` and `/redo` act on the agent's window, and `/checkout`,
+  `/restore` and `/branchto` go through agent-framework** (agent-framework
+  #291, whose release this one needs: see the "Installers and packagers"
+  entry above).
+  Every agent's context now follows a
+  window of its own over the one store, the rows it was shown in the order its
+  requests carried them, so a command that moved the store's branch through
+  one agent's context manager would leave the other agents' windows behind.
+  - `/undo` is agent-framework's `undoLastTurn`: the agent's last turn leaves
+    its window, and its next request is built without it. The record keeps the
+    turn and no branch moves, so the workspace and `_config` mounts, MCPL
+    checkpoints and the inference log are no longer reverted, history search
+    (`modules.history`, its semantic search too) still finds the turn,
+    marked `window: "undone"`, where it left out a turn the undo had moved
+    off the current branch, and another
+    resident's newer row is left alone, where `/undo` used to branch the store
+    before the record's newest reply, whoever's it was. `/redo` can put the turn
+    back until the agent's next turn, a branch move or a restart, as `/undo`'s
+    answer says (agent-framework keeps the redo in memory only). Both are
+    refused while the agent's own turn is alive, and for an agent whose
+    window couldn't be written down when it started. Another
+    agent's turn no longer refuses them: the 0.16.0 entry for #264 had them
+    refused, as a branch move is, while any agent sharing the store was
+    mid-turn.
+  - The `_config` mount's files are written back after a branch switch or a
+    rollback, and not after an undo or a redo, which act on the window only
+    and never touch them. 0.15.0's `configMount` note said a file there other
+    than the gate's is no longer versioned "or written back after an undo, a
+    redo or a branch switch", and that "an undo or a branch switch takes back
+    `gate.js`": from this release each reads "a branch switch or a rollback".
+  - `/checkout` is agent-framework's `switchBranch`, and `/restore` and
+    `/branchto` its `rollbackToMessage`: a new branch cut at the write that
+    showed the agent the checkpoint's or the given message (see below), and
+    the store moved to it. A `/restore` whose checkpoint has no message (one
+    taken on an empty branch), or whose message isn't on the current
+    branch, is a `switchBranch` to the checkpoint's branch head instead, and
+    one at its checkpoint already moves nothing. Each of the others is
+    refused unless every agent sharing the store is idle, as before, and
+    each takes every agent's context to the branch it moves to. While the
+    command agent's own turn is alive the host refuses each at once, as
+    before (`/checkout refused: a turn is in flight (…)`). While another
+    agent's turn is, the host refused each at once too; now a `/restore` at
+    its checkpoint already answers `Already at checkpoint …`, and one that
+    would move the store answers with its progress line
+    (`Switching → branch …`, `Restoring to checkpoint …`, `Branching at
+    …`), then with agent-framework's refusal after `Checkout failed:`,
+    `Restore failed:` or `branchto failed:` (`Cannot … while … — every
+    agent sharing the store must be idle (quiesce the host first)`) and
+    `This command moved nothing. Try again once what it names has
+    finished.` The operator log
+    records `/restore` and `/branchto` as `rollback`, `/checkout` and a
+    `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
+    `undo-turn` and `redo-turn`, each with who gave the command: `webui`
+    with the basic-auth user (`operator` without basic auth) for the Web
+    UI's command box, as for its surgery; `headless` for a command on a headless host's socket; `fleet`
+    for a parent's `fleet--command`; and `host-console` for the TUI and the
+    readline and piped modes. A `/nudge`'s `nudge` entry carries the same
+    in its requester's name.
+    `/branchto` at the branch's last message is refused, as there is nothing
+    after it to roll back.
+  - A rollback cuts at the write that showed the agent its message, so rows
+    after the message can stay, and `/branchto`, `/restore` and the Web UI's
+    rollback say so, where `/branchto` used to say everything after it was
+    dropped:
+    rows one write showed together with the message stay in the window after
+    it, for a suppression or a hide to take out, and rows stored before the
+    message was shown and shown after it stay in the record, out of the
+    window until the agent's next turn starts, or the host restarts before
+    then. The Web UI's `surgery-result`
+    frame carries them as `keptInWindowAfterTarget` and `returnedToArrivals`,
+    and the Surgery panel's log summarizes a rollback's and a checkout's.
+    `/branchto` says everything after the message was dropped only when the
+    cut took every row stored after it, and otherwise how many it took: a
+    co-resident's row stored before the message was shown stays too. The
+    Web UI's rollback dialog and its roll-back buttons say the fork is at
+    that write on a presented window, and that such a row stays on the
+    fork, in neither count, where they said the fork was at the message.
+  - The TUI's and the Web UI's transcripts still show the record, so an undo
+    changes what the agent is sent next, not the transcript; both mark the
+    rows an undo or a shed took out (dimmed, and `(undone)` in the TUI,
+    which marks its lines in place, a reply it streamed (text on both
+    sides of a tool call is one line, as it streams it), the `[tools]` line
+    of each round it streamed, a reply backgrounded with Ctrl+B (which now
+    comes back a line per round, and one for its text on each side of a
+    thinking block, the first after the words streamed before the press,
+    its thinking left out, where it came back as one line with its
+    thinking's words run into its text) and a message sent from it
+    included, each linked to its row as the turn ends (a backgrounded
+    turn's replies as it returns, and marked then if a shed took them out
+    meanwhile), never to another resident's row, a reply never to an
+    earlier row in the same words, a message that was never stored (one
+    the framework refused, or one sent during a session switch that
+    failed) to no row, and the same message sent twice in the order sent,
+    and draws below them an undone row stored since it loaded
+    the history that it has no line for, past the scrollback cap too, until
+    a redo puts it back, but not one whose lines `/clear` or the scrollback
+    cap took down, unless the cap took down 2,000 later lines of the same
+    kind, the operator's messages or replies, before its row was
+    linked), and the Web
+    UI's context panels (makeup and coverage, the compiled context, the
+    pins) read the window again, once, at each undo, redo or shed on the
+    window of the agent they show, which they ask for by scope alone: the
+    conversation agent's, or a fleet child's agent that its pins or
+    settings answer named (any of the child's agents before one has), and
+    not another resident's or a subagent's. Another of the child's agents
+    moving its window has the page ask for the child's pins and settings
+    again, and an answer naming another agent than before (the child
+    restarted with it) reads the panels again, where they stayed on the
+    old agent until fetched again. A figure
+    that comes back after a newer read of it started is dropped, and the
+    coverage panel's five-second poll starts no read while one is pending,
+    where a read slower than the poll had another started at each tick; a
+    coverage read that has gone 30 seconds unanswered fails, and the next
+    tick starts one. The local pin picker lists the host's candidates, the
+    record's last 200 rows, as a fleet child's does, where it listed the
+    rows the transcript had loaded; it leaves out undone rows and rows
+    stamped for other residents only, and on a legacy window, which reads
+    no stamp, the rows the resident's view leaves out (held traffic,
+    suppressed rows, another agent's stored injections). A
+    message stored in parts is one
+    candidate, by its first part with the parts' text joined, as it is one
+    row in the transcript, where a fleet child's picker listed each part,
+    and the 200 rows reach back to its first part when they start inside
+    it. A picker whose candidates couldn't be read says so and why, where it
+    said no pinnable messages were loaded, as for an empty list. The Web UI's
+    transcript shows one text ingested twice, each time stored in parts, as
+    two rows, each marked by its own first part, where it joined both into
+    one row.
+- **Web UI observers:** the trace frames of agent-framework's presentation
+  index, `presentation:presented`, `presentation:unreadable-audience`,
+  `presentation:failed`, `presentation:hand-off-mismatch`,
+  `presentation:retracted` and `tune-out:subconscious-window`, need the `ops`
+  scope, and `presentation:repaired` needs `health` and `ops`. They carry
+  agent names, counts, ids and slots, never content. `window:undone`, an undo
+  or a redo on a window, needs `messages`, and so does the new
+  `undone-marks` frame, sent at each undo, redo or shed on the conversation
+  agent's window and right after each welcome, which names each row of the
+  transcript's record that an
+  undo or a shed took out of that window (status `undone`), from `fromIndex`
+  0, as a welcome's and a history page's entries mark them (`undone: true`).
+  Building it walks every row of the record, on the host's event loop (in
+  the store the residents share, theirs too), and asks the status only of
+  the rows out of that window that aren't stamped for other residents only:
+  once at each welcome of a client it goes to, and at each undo, redo or
+  shed while such a client is connected. `undo:completed` and
+  `redo:completed` are gone, with agent-framework's branch-moving undo.
+  A fleet child now sends `window:undone` and `presentation:retracted` to
+  its parent whatever its recipe's `subscription` asks, as it sends
+  `usage:updated`, so the parent's Web UI reads the child's panels again at
+  an undo, a redo or a shed on one of its agents' windows.
+- **Web UI protocol 4:** reload an open Web UI page after updating. An undo
+  and a redo no longer move the branch, so a page from an earlier release,
+  which learned of them from the move, would show an undone turn as still
+  in context, and this release's page on an earlier host would show an
+  empty pin picker. Either way the page shows the protocol mismatch banner
+  until it is reloaded from a host of the same release. In a fleet, update
+  the parent and its children together: between releases on either side of
+  this one, observers miss each other's undo and redo frames (a parent of
+  this release scopes no `undo:completed`, an earlier one no
+  `window:undone`, and a frame no scope names goes to full clients only),
+  and the child's panels don't read again.
+- **Operators: a quiesced host keeps no queue of held writes on disk**
+  (agent-framework 0.33.0, whose deferral queue is gone). A write to an
+  agent's context is stored at once, quiesced or not. Writes that arrive
+  while a rollback, a suppression or a branch switch runs (the Web UI's
+  surgery, `/checkout`, `/restore` and `/branchto`) are kept in memory and
+  stored when it ends, as are an agent's writes while its context manager
+  refuses its work after a failed re-initialization, until a branch move.
+  Those for an agent that ends meanwhile go to the primary where it takes
+  them in that agent's place, and are otherwise dropped, logged. A crash
+  before then loses them, where an earlier release kept a quiesced
+  host's queue on disk. agent-framework 0.33.0's entry on the deferral
+  queue says what a stop keeps.
+- **Going back to an earlier release** after this one: the first window
+  written down with rows, or any window write of two or more items, such
+  as a presentation or an undo of more than one row, moves the
+  store's MANIFEST to version 2, which chronicle 0.5.1 and earlier refuse,
+  and so every earlier release of this host (context-manager's notes): going
+  back after that needs the copy the update took, which holds none of this
+  release's rows. `/update back restore` puts it back. `/update back keep`
+  stops at the older release's store audit, and the next start puts this
+  release back. A store still at version 1, whose windows were written
+  down empty and then changed one row at a time, opens on an earlier release,
+  which compiles the record in record order: rows taken out of an agent's
+  window come back into its context, an undone turn's among them, and so do
+  rows it was never shown, such as another resident's own rows it doesn't
+  observe and mail meant for another agent, and a row this release stored
+  for an agent while its turn was alive is where the record put it. So the
+  agent's next request misses the prompt cache from the first row it
+  compiles differently, and from the start where its tools or system text
+  differ between the two releases (such as the tools whose descriptions
+  this release changes, in the Changed entries on prompt caches), and, on
+  a model that binds a reply's thinking to what came before it, leaves out
+  the thinking of every reply from that point on. Nothing is lost. A queue
+  of held writes that an earlier release left is stored once at this
+  release's first start, and an earlier release then finds it empty.
+
+  **Migration:** to revert the record, as `/undo` did, use
+  `/branchto <msgId>` with the id of the last row to keep (`/history` and
+  `/find` show ids), or the Web UI's rollback. A client that refreshed its view
+  on `undo:completed` or `redo:completed` listens for `window:undone`.
+  `/history`, `/find` and `/branches` read the context of the agent the
+  commands act for, as `/branchto` does, where they read the first
+  registered agent's. A checkpoint saves the record's position, its last
+  row, an undone one included, as it did. `/undo` leaves that row the
+  record's last, so after `/undo` a `/restore` to a checkpoint at the undone
+  turn's last row, with no row stored since, says it is already there and
+  moves nothing (and, where a redo exists, says `/redo` puts back what the
+  agent's latest undo took out, that row if the undo took it: a shed marks
+  rows undone and keeps none); once a row is stored after the
+  checkpoint, a `/restore` to it rolls back with that turn in the window, a
+  checkpoint taken after `/undo` included. **Unchanged:**
+  `/checkout`, `/restore` and `/branchto` are still refused while any agent
+  sharing the store is mid-turn, the subconscious included, as the 0.16.0
+  entry for #264 has it, and `/newtopic` while the agent the command acts
+  for is. A `/restore` at its checkpoint already is now refused only for
+  the command agent's own turn: it moves nothing, and says so while
+  another agent's turn is alive.
+  A caller that
+  reads or matches a branch command's answer gets, for another agent's
+  turn, the progress line and then agent-framework's refusal (above), and
+  the host's immediate `refused: a turn is in flight` only for the command
+  agent's own turn.
+
+- **Recipe authors:** a recipe with `"tuneOut": { "enabled": true }` is
+  refused at load, naming agent-framework 0.33.0's removal of tune-out
+  without a reader (agent-framework #959), and the store audit stops at it,
+  a saved recipe's too (the data directory's hidden `.recipe.json`), until
+  it is fixed. The audit's refusal of a recipe names its file, where it
+  said only what was wrong with it, unless the refusal names that path
+  whole already (`--recipe agent` is named, though the refusal says
+  "agent-framework", and `--recipe Recipe`, a path with no directory or
+  extension, though the refusal opens with the word "Recipe"). On 0.22.0 and 0.22.1, with agent-framework 0.32,
+  such a recipe loaded and ran. **Migration:** remove `tuneOut.enabled`
+  (from `.recipe.json` too, for a directory started with that recipe),
+  and configure a `subconscious` to keep `tune_out`.
+  `"enabled": false`, which agent-framework still accepts and ignores, and
+  `tuneOut.announce` still load.
+
+- **Operators of the TTS relay (`modules.ttsRelay`) whose agent speaks on a
+  server other than the one `editServerId` names (`discord` when it's
+  unset):** the relay now voices only messages published on that server.
+  A host whose Discord server's key isn't `discord`, with `editServerId`
+  unset, voices nothing until `modules.ttsRelay.editServerId` is set to
+  that key, which its interruption trims already needed. A host whose
+  agent speaks only on a server that isn't Discord voices nothing until
+  `editServerId` names that server. A host whose agent speaks on more than
+  one server voices only the one `editServerId` names, and no setting
+  voices more than one. At the first message published on each server it
+  doesn't voice, the host logs a line naming that server and the server
+  the relay voices. Unchanged: a host whose agent speaks only on the
+  server `editServerId` names, or only on a Discord server whose key is
+  `discord` with `editServerId` unset, needs no change to its recipe.
+- **Operators whose `modules.ttsRelay.editServerId` is empty or isn't a
+  string:** the host now refuses the recipe at load, naming the field.
+  Set it to the key of the server the relay voices, or leave it out for
+  `discord`.
+
+### Added
+
+- Recipes accept `agent.proseRouting: "locked"` and `agent.proseLock`
+  (agent-framework's locked prose routing: plain text goes to one
+  destination, the recipe's `proseLock` until the agent chooses another,
+  is held as drafts while there is none, and only the agent's
+  `prose_locus` tool moves it). `proseLock` is
+  refused unless `proseRouting` is `"locked"`. A locked recipe is refused
+  beside `conversations`, and, without a `proseLock`, with an `allowedTools`
+  list that doesn't name `prose_locus`. Subagents a locked resident launches
+  run `"disabled"`, and a resume runs as its launch did: a subagent has no
+  lock of its own, so it publishes no plain text, and its result still
+  reaches its parent.
+
+- The web UI server reports the phase of each of its process's agents to clients holding `health`, from when the Web UI binds to the host's agents, at start and at each session switch, where each starts as `idle` until its next phase begins, or, for an agent added after that, from the start of its first turn: the tree's own words (`sending`, `streaming`, `invoking`, `executing`, …) and when it began, with no content. It arrives as a new `agent-phase` frame, in the welcome's `agentPhases`, and in the local `/healthz`'s `agentPhases`, so a dashboard can show what an agent is doing without being granted its messages. A fleet child's phases aren't included, and `/healthz?scope=<child>` has none. `/healthz` also keeps `kind` in `agents[].upcomingWakes` for clients without `ops`.
+
+### Changed
+
+- Residents whose recipe enables a `subconscious`: agent-framework 0.33.0
+  changes the description of `tune_out`, which their requests carry, and
+  of the reader's four tools (`cancel_tuneout`, `deliver_summary`,
+  `note_disposition` and `speak_in_channel`), which every agent's requests
+  carry with reader forks (`reader: "forks"`), and only a persistent
+  subconscious's own requests carry otherwise. So where prompt caching is
+  on, the first request after the update of each agent whose requests
+  carry one of them writes its prompt cache in full, once: with a
+  persistent subconscious, each resident's and the subconscious's.
+- Residents whose recipe turns on `modules.history`: agent-framework
+  0.33.0 changes the descriptions of `history--extract`,
+  `history--search`, `history--overview` and, where it's configured,
+  `history--semantic_search` (each says what it now marks and leaves out
+  for the calling agent, and `history--extract`'s also how it shows a
+  send and a result flagged as an error), so where prompt caching is on,
+  such a resident's first request after the update writes its prompt
+  cache in full, once.
+- An agent whose `agent.allowedTools` list names `wake_add_rule` but not
+  both `toolsets--open` and `toolsets--act`, with the wake gate on: the
+  tool is in its tool list rather than the settings toolset, and
+  agent-framework 0.33.0 changes its definition, so where prompt caching
+  is on, its first request after the update writes its prompt cache in
+  full, once. With both of those tools, the gate's tools stay in the
+  settings toolset, out of the tool list.
+- In each of these, a tool doesn't count for an agent whose
+  `agent.allowedTools` leaves it out or whose `agent.toolPresentation` file
+  hides it. Nor does one whose description that file, or a component
+  profile it selects, gives in place of agent-framework's, but for
+  `tune_out` and `wake_add_rule`, whose input schemas agent-framework
+  0.33.0 changes too (`tune_out`'s `backlogCap` description and
+  `wake_add_rule`'s new `suppress` property).
+
+- The TTS relay (`modules.ttsRelay`) sends voice clients only what the
+  agent's prose published: each message, once its publish is confirmed, as
+  one text block on the channel it was published to, when that channel is
+  on the server `editServerId` names (`discord` when it's unset). It used
+  to stream everything the model wrote as it wrote it, tagged with the
+  turn's channel, so voice clients were sent, as text to speak, text the
+  agent kept back, such as an explicit-mode agent's unprefixed text, and a
+  `>>` reply's envelope. The relay no longer receives the model's
+  thinking, tool calls or tool results either. A spoken reply now starts
+  when its message is posted, not while it is being written. A message's
+  block can now arrive after its turn's `activation_end`, or on a channel
+  where no activation was opened.
+- A failed model call that the framework tries again, or holds for a
+  provider's wait, no longer ends the voice client's activation, so the
+  speech still being fetched for what the turn had already published is no
+  longer cancelled. A turn
+  the framework gives up on still ends it as an error.
+- When the TTS relay module stops with an activation still open, such as
+  a turn held after a failed model call, it now sends that activation's
+  `activation_end`, as an abort, before it disconnects, if it's connected
+  to the relay. The relay keeps no activation state, so Melodeus went on
+  showing the agent as thinking after the host had gone. On an abort,
+  Melodeus cancels the speech it is still fetching for the host, so the
+  end of a message the turn published may go unvoiced. The message is
+  still in its channel as text.
+
+### Fixed
+
+- What the host writes into an agent's context about that agent is stamped
+  for it and shown to it as agent-framework #291 shows any row: at once while
+  the agent has no turn alive, and otherwise at a point of its turn that can
+  carry it, never between rounds a request didn't carry. Each was stored
+  straight into the agent's context, or written for no agent, which with
+  each agent's window would reach every resident sharing the slot. The
+  session's start time and the note after a self-restart are for every
+  resident, and are still written for no agent.
+  - A host notice's marker (`modules.notices`) is written for its agent
+    through the module's context, and so is the Web UI's opt-in notice that an
+    operator changed the agent's context settings, through the settings
+    module.
+  - `/newtopic`'s `[Topic Transition]` row is the agent's own row: in its
+    window, where its head window starts, and in no other resident's. It is
+    stored only while the agent has no turn alive. A turn that started
+    while a bare `/newtopic` wrote its summary used to get the row in its
+    window between rounds its requests were sent without, and so did a turn
+    whose continuation or retry was on its way when `/newtopic` was given
+    (the agent reads idle then, a budget restart's continuation queued or a
+    provider hold's retry waiting). Now `/newtopic` is refused while a
+    continuation or a retry of the agent's turn is on its way, and a bare
+    `/newtopic` stores its summary only if, once it is written, the agent
+    still has no turn alive, no row entered or left its window, and nothing
+    moved meanwhile. A branch or strategy change while it is written leaves no
+    summary: context-manager refuses one written across either, so nothing
+    is stored and the answer says it couldn't be written. A turn's start,
+    rows entering the agent's window (a turn that started and ended, or
+    another `/newtopic`'s transition: the answer says `rows entered
+    <agent>'s window`), rows leaving it (an undo or a shed: `rows left
+    <agent>'s window`), both (`rows entered <agent>'s window and rows left
+    it`), rows that come and go and leave the window holding what it held,
+    as a turn and its undo or an undo and its redo do (`rows entered
+    <agent>'s window and left it, or left it and entered it again`), a
+    session switch or the host's stop meanwhile
+    stores nothing either, and the answer gives the written summary back
+    to run as `/newtopic <text>`: as written in the TUI, the Web UI and the
+    headless mode, which send a multi-line command whole, and in the
+    readline and piped modes as a one-line `/newtopic <text>`, its line
+    breaks folded to spaces, since they read each line as its own input: a
+    summary given back on several lines would store its first line alone
+    there, and send the rest to the agent, but for a line starting with
+    `/`, which runs as a command. One given back as the TUI stops
+    is printed to the terminal the TUI leaves, if it comes before the host
+    exits, as any command's answer that comes then now is: the TUI dropped
+    it, its scrollback gone. That answer names the stop once and says to
+    store the summary after the restart. `/newtopic <text>` stores its
+    text as given, but for the white space at its two ends, its line breaks
+    included (a multi-line one needs the TUI, the Web UI or the headless
+    mode, which send it whole), where it joined its words with single
+    spaces.
+  - tts-relay's note that a voiced reply was interrupted is written for the
+    agent that spoke: the author of the published message the heard words
+    start, else the agent voicing in its channel. It was written for no
+    agent, so every resident sharing the slot was shown it. An interruption
+    whose speaker can't be named (no published message matched it, and not
+    exactly one agent, still registered, was voiced in its channel; or the
+    heard words start messages by more than one agent, by an agent no longer
+    registered, or messages there by another agent are no longer kept)
+    writes no note, and, while `notifyOnInterruption` isn't `false`, the log
+    says why. Heard words that start no published message in the channel
+    edit nothing: the relay used to edit the channel's latest published
+    message still kept, if any, to them.
+  - A subagent's result or failure told straight to the agent that started
+    it, when the run has no route of its own through agent-framework, and
+    its launcher, or the attempt that launched it, has ended (its line says
+    `, which has ended` or `: launched by an attempt that has ended`), was
+    written for no agent. It is now written for the nearest agent above the
+    launcher that agent-framework lists, such as the resident whose subagent
+    launched it, or the current attempt of a run above it, else for the
+    primary. It wakes nobody, as before. One whose launcher is listed was
+    already written for it, and a run with a route of its own (a subagent
+    agent-framework registered) still goes where agent-framework routes it:
+    held as mail for its launcher if that launcher ends after the attempt
+    began (delivered on adoption). An attempt begun after its launcher
+    ended (a launch that waited for a slot, or a later attempt of a retried
+    run) goes to the launcher's nearest live ancestor, else to the
+    subagent module's parent agent if it's live, and otherwise has no route
+    of its own, as above.
+  - A subagent's first rows (its orientation and task, a fork's copy of its
+    parent's context, and the fork call and result a fork without one is
+    given) are the subagent's own rows.
+- A subagent run that ends on a tool call, with no speech and no
+  `subagent--return` result, answers with the newest text its window holds that isn't the user's or a stored
+  injection's (and `(no text output)` when there is none), not a text row
+  an undo or a shed took out of it, or one stored and never shown to it
+  (another agent's mail held out of it past the run's end), which
+  agent-framework 0.33.0's record keeps.
+
+- **Web UI observers** with the `ops` scope receive agent-framework's
+  `tune-out:announced`, `tune-out:announce-failed` and
+  `tune-out:wake-budget-paused` traces, which carry ids, counts and an
+  error, never text, and its wake onboarding's `gate:onboarding-offered`
+  and `gate:onboarding-decided` (agent-framework #957), which carry the
+  server's id, the offer's digest, a count of rules or the names of the
+  rules accepted, and the policy or the decision, never text. The host's
+  trace table had no entry for them: on 0.22.1 the three `tune-out:`
+  traces went to full clients only, and agent-framework 0.32.0 raised
+  neither `gate:onboarding-` trace.
+  A client with the `messages` scope also receives `message:lost` (the
+  presentation release of agent-framework #844: a write a surgery's hold
+  kept whose store threw at the release, named by its agent and the
+  write's external id, never its text), as it receives `message:removed`.
+  An ops observer also receives `gate:suppressed` (a suppress rule's name,
+  the event type, server and channel; no content) and
+  `gate:suppression-review` (counts and verdicts per rule), from
+  agent-framework's event suppression (#975).
+  An ops observer also receives `tune-out:deferred-cancel-dropped` (a
+  deferred cancel dropped because its hold ended, because delivering its
+  note failed once its hold ended, because the host stopped while it
+  waited, or because it joined an earlier cancel of the same hold: the
+  epoch it was for, the one in force, the reason, and whether a note was
+  lost; no text).
+  An ops observer also receives `tune-out:note-loss-untold` (a lost queued
+  note's loss notice could not be written to its author: the author, the
+  hold and the error; no text).
+  An ops observer also receives `tune-out:stop-unrecorded` (a boot found a
+  hold on record that the last stop's stamp didn't cover and told the
+  persistent subconscious: the hold, its epoch and what the store showed of
+  the cancel — a release stored after it was asked, its note delivered,
+  the caller's own ask, or unknown; no text).
+
+- tts-relay matches an interruption's heard words to the messages published
+  in its channel, runs of white space made one space and white space at
+  either end dropped: a message the heard words start is one whose text
+  starts with the heard words' first 80 characters, or all of them when
+  they are fewer. Of the messages that match, the one whose text shares the
+  longest opening with all of the heard words is edited, the newest of those
+  that share as much; the newest that matched was edited before. When the
+  matched messages are by more than one agent, no note that the reply was
+  interrupted is written, and the log names them. With no message matched,
+  the agent voicing in the channel is the one whose activation there is
+  live or was announced there, or that published there, since the
+  channel's previous interruption; when that is more than one agent, no
+  note is written, and the log names them. The agents voiced are kept for every channel the relay voices in,
+  however many. These log lines are written while
+  `modules.ttsRelay.notifyOnInterruption` isn't `false`.
+- tts-relay matches an interruption's heard words only to messages published
+  in its channel since the channel's previous interruption, which ended its
+  voicing. A message published before that was matched again, so a later
+  reply that opened with the same words had it edited again.
+- tts-relay counts an agent whose activation was live at a channel's
+  interruption as voiced there since, as the relay goes on voicing what it
+  publishes there. Once that activation has ended and another agent's has
+  started there, a later interruption that matches no message writes no note,
+  and, while `notifyOnInterruption` isn't `false`, the log names both.
+- tts-relay keeps each channel's latest 32 publishes to match an
+  interruption there, for the 32 channels it last published in. It kept the
+  latest 32 of every channel together, so another channel's traffic could
+  push out the message the heard words started, and the newest message
+  still kept there that they start, else the channel's latest message
+  still kept, if any, was edited to them instead. A
+  channel keeps the names of the agents voiced there since its previous
+  interruption, and of those whose messages it let go, past those 32
+  channels or past its latest 32 publishes. Until its next one, heard
+  words that start no message there are told by those names, and heard
+  words that start messages kept there edit one of them and tell its
+  author, as above, unless an agent with no kept message there that they
+  start had messages let go there; then nothing is edited, no note is
+  written, and the log names the message and those agents, and, while
+  `notifyOnInterruption` isn't `false`, the kept messages' authors too.
+- tts-relay doesn't keep a message published while the host isn't
+  connected to the relay to match an interruption, nor count its author as
+  voiced in its channel: the relay never voiced it. It was matched like a
+  voiced message, so heard words that started it and an earlier voiced
+  message in the same words had it edited, as the newer, instead.
+
+- The TUI draws the history of the branch the store is on once `/checkout`,
+  `/restore` or `/branchto` has moved it, and when a rollback whose switch
+  failed left the store on the new branch. It kept showing the earlier
+  branch's transcript: agent-framework traces no branch move, and the TUI
+  read a branch change only from a command's first answer, which never
+  carries one. It doesn't write the `_config` mount again then:
+  agent-framework writes it for the move, for `/checkout` and a `/restore`
+  to a branch's head while it holds the store (the answer says if that
+  failed), and for `/branchto` and a `/restore` to a checkpoint's message
+  as it lets the store go (a failure is only in its log). A
+  rollback that failed and couldn't put the store back writes it for
+  neither, and its answer now says the gate's files may still be the
+  previous branch's and that `/checkout <branch>` writes them. A turn
+  of the root agent's that started on the new branch before the move's
+  answer came streams on, and the branch is drawn once the turn ends, the
+  answer again below it with every command's answer drawn since. A
+  `/clear` while that redraw waits takes up the branch there and leaves
+  the scrollback clear; the lines drawn after it are marked at an undo as
+  any are. Another
+  client's move (a Web UI `/checkout`, `/restore` or `/branchto`), of
+  which the TUI hears nothing either, is drawn before the TUI next links
+  or marks its lines, at a turn's end or an undo, redo or shed, or once a
+  root turn running on the new branch ends, with a line naming the
+  branch: the TUI kept showing the earlier branch. An async command started or answered
+  while a root turn runs, backgrounded or held after a failed attempt
+  too, leaves the turn's status as it is, where its start set it to
+  thinking and its answer to idle.
+
+- The Web UI's surgery dialog answers once the Web UI has written the
+  `_config` mount after a rollback or a suppression, and says when that
+  write failed (`surgery-result`'s `mountError`), as it does after one
+  that failed and left the store on the branch it made. It answered
+  before the write and dropped its failure, so the dialog said Done while
+  the gate's files could still be the previous branch's. The failure is
+  logged as `[webui] _config refresh failed: …`.
+- In the Web UI, a command's answer that says the `_config` mount wasn't
+  written (a `/checkout`, or a `/restore` to a branch's head, whose write
+  of it failed, a failed rollback that left the store on its new branch) is followed by what the
+  Web UI's own write of the mount, which follows every move there, then
+  did: "The Web UI has since written the _config mount from <branch>." or
+  "The Web UI's refresh of the _config mount failed too: …". The other
+  modes write no mount after a move, so the answer holds there.
+
+- A Web UI page that reconnects reads its open context panels (makeup and
+  coverage, the compiled context, the pins) once at the new connection's
+  welcome. It read none, so the makeup, the compiled context and the pins
+  of a window another client moved while the page was away, by an undo
+  say, stayed stale there until the panel was reopened or refreshed; the
+  coverage figure caught up at the panel's next five-second poll.
+
+## 0.22.1 — 2026-11-06
+
+### Changed
+
+- An Anthropic error record in llm-calls keeps the full request only for the
+  first failure of each kind of error (its type, or for an untyped error its
+  name, with its HTTP status when it has one) in a run of failures on its
+  cache lineage (model, system and tools) that the budget below has room for
+  and the 16 MiB line bound leaves whole. A run begins at its first failure,
+  and a call's success on that lineage, or more than an hour with no failed
+  call on it, ends it; keepalive pokes, cancelled calls, and failed calls whose
+  request is missing or can't be serialized count for neither.
+  The run's later failures of that kind, such as each retry or each turn of
+  a rate-limit storm, record the request's size under `rawRequestOmitted`,
+  with the hash of the run's copy of that kind as `copySha256` once that
+  copy is written, and each complete or stream error record whose request
+  can be serialized carries `requestSha256`, unless the line bound cuts the
+  record to its head. A request at or over the line bound by itself records
+  its size so at every failure; one just under it whose record still passes
+  the bound is cut, carries `truncated` instead, and is tried whole again at
+  the run's next failure of that kind. The adapter remembers the runs of the 256 lineages
+  whose runs began latest, dropping runs that have ended first, and a log
+  writes at most 64 MiB of such copies at once, refilled at 64 MiB a day:
+  the first copy refused for it since the last one written prints one
+  `[llm-calls]` stderr line. An anomalous response's copy isn't charged to
+  it, and a cancelled call (membrane's `abort`) keeps none. One OAuth 429
+  storm had grown a single log to 687MB. A request membrane rejects before sending (such as an unsupported
+  prefill) is now kept too, from the error. `LLM_CALLS_FULL_PAYLOADS=1`
+  still keeps the full request of every call, failures included, within the
+  16 MiB line bound.
+
+## 0.22.0 — 2026-11-05
+
+### Changed
+
+- `agent.retry` now reaches framework-wide turn retries as well as other
+  provider calls (#470). Partial overrides preserve the framework's turn
+  defaults: at least 13 overloaded sends per policy cycle, or `maxRetries`
+  if that's more, unless `overloaded.maxRetries` is specified,
+  stated-wait ceilings of at least 10 minutes, and one fresh call after a
+  stream deadline cut. The ceilings apply to subagent runs; residents and
+  conversation forks hold the provider's full stated wait before the policy
+  runs. Omitted or empty retry settings and non-turn retry behavior are unchanged.
+
+- **The onboarding guide recommends code execution for every resident.** Its
+  recipe skeleton includes `"codeExecution": { "enabled": true }`, with a section
+  on what agent-framework's `code_execution` does (JavaScript that calls the
+  agent's own tools in a QuickJS isolate; calls and intermediate results stay out
+  of the context), its defaults, the cost of turning it on for a running resident
+  (one full cache write), and the security note's caveat (no operating-system
+  sandbox; containment is the engine's). The built-in default recipe still leaves
+  it off. `index.ts` now passes the setting to `AgentFramework.create` through
+  `codeExecutionOption(recipe)` in `framework-agent-config.ts`, with tests that
+  the tool is offered when it is on and not when it is off or absent.
+
+### Fixed
+
+- An agent whose model call failed and is being tried again, or is held
+  until a provider's limit lifts, no longer shows as failed in the Web UI
+  and the TUI. Its node in the agent trees, a subagent's row, and the TUI's
+  status line for the host's own agent show `attempt-failed` until its next
+  attempt starts or its turn ends, the tree's in a colour of its own, except
+  the TUI tree's row for the host's own agent. The
+  Web UI shows the failure's error when you hover over the phase, and the
+  TUI on a fleet child's agent detail. A turn the TUI had moved to the
+  background stays there through a failed attempt, and when it returns it
+  shows what its earlier rounds wrote and the retry's answer, without the
+  failed attempt's words. A turn that ends failed shows `failed` with its
+  last error, or an error in the TUI's status line; one a stop ends shows
+  `cancelled`, or idle. A fleet parent on an earlier release can show a
+  child's `attempt-failed` agent in a plain colour and leave it out of its
+  count of running agents. On a fleet child running agent-framework older
+  than 0.26.2, a held turn whose retry is dropped ends with no event, so it
+  shows `attempt-failed`, and counts as running, until that agent's next
+  attempt starts. On one older than 0.22.3, an agent stopped through
+  `Agent.cancelStream` shows `failed`.
+
+- **Dependencies:** `@opentui/core` moves to `^0.2.16` (from `^0.1.82`). From
+  0.2.1 it depends on `diff` 9.0.0 and no longer on `jimp`, so installing the
+  host no longer brings the versions of `diff`, `file-type` and `zod` 3 that
+  published advisories cover. The Web UI is built with `dompurify` 3.4.17 and
+  `solid-js` 1.9.18, whose `seroval` is 1.6.12, and the repository's lockfiles
+  take `undici` 6.29.1, each within its existing range.
+
+- **Web UI:** `/files/<mount>/<path>` serves a workspace file with
+  `X-Content-Type-Options: nosniff` and a sandboxing
+  `Content-Security-Policy` (`sandbox allow-same-origin`, without
+  `allow-scripts`). An HTML or SVG file an agent wrote no longer runs script
+  when the operator opens it, where before its script ran on the Web UI's
+  origin and could reach `/ws` with the operator's authority. Such a page
+  still shows its text and inline styles, stylesheets from the Web UI's
+  `/files/`, and images, fonts, audio and video from its `/files/` or
+  `data:` URLs. Its scripts, forms, frames that load a page, a link in it
+  that opens a new window, and a download it starts no longer work, and it
+  loads nothing from another host, nor from a Web UI route other than
+  `/files/` and the static app shell; a plain link in it still navigates the
+  tab. A download from a file's own `/files/` URL isn't affected.
+
 ## 0.21.0 — 2026-10-31
 
 ### Breaking
