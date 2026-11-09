@@ -542,6 +542,30 @@ describe('mcpl_deploy', () => {
     expect(calls).toEqual(['connect:body', 'restart:body', 'connect:elsewhere', 'connect:local']);
   });
 
+  test("a deploy by access name saved as a tab names the tab and the directory's url, and agent-framework's rules read the saved entry as a dial", async () => {
+    const { stub } = makeStubFramework();
+    const mod = makeModule(stub);
+    mod.setIdentity({
+      accessFor: async (audience) => `credential-for-${audience}`,
+      mcplEndpointFor: async () => ({ url: 'wss://games.example:8865/mcpl' }),
+    });
+    const deployed = await call(mod, 'mcpl_deploy', { id: 'games', access: 'games', presentation: 'tab' });
+    expect(deployed.success).toBe(true);
+    const receipt = String(deployed.data);
+    const tab = receipt.indexOf('It\'s saved as a tab, whose tools start out of the tool list');
+    const persisted = receipt.indexOf('Persisted to your agent overlay (survives host restarts).');
+    const found = receipt.indexOf(
+      'Its url, wss://games.example:8865/mcpl, is the endpoint the home node\'s directory publishes for the access grant "games"',
+    );
+    expect([tab >= 0, persisted >= 0, found >= 0]).toEqual([true, true, true]);
+    expect(tab < persisted && persisted < found).toBe(true);
+    const saved = readAgentOverlay(overlayPath).games!;
+    expect(saved).toEqual({ url: 'wss://games.example:8865/mcpl', transport: 'websocket', access: 'games', presentation: 'tab' });
+    expect(mcplConfig.openedBy(saved)).toBe('dial');
+    expect(mcplConfig.cleartextCredential(saved)).toBeUndefined();
+    expect(String((await call(mod, 'mcpl_list')).data)).toMatch(/games: CONNECTED [^\n]*wss:\/\/games\.example:8865\/mcpl/);
+  });
+
   test("a deploy by access name the directory has no endpoint for is refused saying why: none for it, naming those it has, or a directory that can't be read", async () => {
     const { stub, calls } = makeStubFramework();
     const mod = makeModule(stub);
