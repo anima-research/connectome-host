@@ -593,13 +593,23 @@ describe('mcpl_deploy', () => {
     const unreadable = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
     expectSays(
       unreadable.error,
-      'The home node\'s directory of MCPL endpoints couldn\'t be read (ECONNREFUSED), so no endpoint was found for the access grant "body": call mcpl-admin--mcpl_deploy again shortly, or give `url`',
+      'The home node\'s directory of MCPL endpoints couldn\'t be read, so no endpoint was found for the access grant "body": call mcpl-admin--mcpl_deploy again shortly, or give `url`',
     );
+    expect(String(unreadable.error)).not.toContain('ECONNREFUSED');
     expect(String(unreadable.error)).not.toContain('publishes no');
     expect(String(unreadable.error)).not.toContain('Neither `command` nor `url`');
     expect(String(unreadable.error)).not.toContain('Correct it');
-    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('home node unreachable.'); } });
-    expectSays((await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' })).error, 'couldn\'t be read (home node unreachable), so no endpoint');
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('DIRECTORY_MARKER: home node unreachable.'); } });
+    const thrown = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
+    expectSays(thrown.error, 'MCPL endpoints couldn\'t be read, so no endpoint');
+    expect(String(thrown.error)).not.toContain('DIRECTORY_MARKER');
+    const outageAndId = await call(mod, 'mcpl_deploy', { id: 'bad id!', access: 'body' });
+    expectSays(
+      outageAndId.error, 'The id "bad id!" has characters other than letters',
+      'MCPL endpoints couldn\'t be read, so no endpoint was found for the access grant "body": call mcpl-admin--mcpl_deploy again shortly, or give `url`',
+      'Correct the other problem and call mcpl-admin--mcpl_deploy again.',
+    );
+    expect(String(outageAndId.error)).not.toContain('Correct each');
 
     mod.setIdentity({ accessFor: async () => 'grant-token' });
     const older = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
@@ -697,16 +707,20 @@ describe('mcpl_deploy', () => {
     const unreadable = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
     expectSays(
       unreadable.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://',
-      'The home node\'s directory of MCPL endpoints couldn\'t be read (status 503), so it isn\'t known whether it ' +
+      'The home node\'s directory of MCPL endpoints couldn\'t be read, so it isn\'t known whether it ' +
         'publishes one for the access grant "eidoverse": a deploy with `access` and no `url`, called again later, ' +
         'dials the endpoint it publishes, if it publishes one.',
     );
-    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('home node unreachable'); } });
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('DIRECTORY_MARKER: home node unreachable'); } });
     const throwing = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
     expectSays(
       throwing.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://',
-      'The home node\'s directory of MCPL endpoints couldn\'t be read (home node unreachable)',
+      'The home node\'s directory of MCPL endpoints couldn\'t be read, so it isn\'t known whether it publishes one',
     );
+    for (const refused of [unreadable, throwing]) {
+      expect(String(refused.error)).not.toContain('status 503');
+      expect(String(refused.error)).not.toContain('DIRECTORY_MARKER');
+    }
     for (const refused of [unreadable, throwing]) {
       expect(refused.success).toBe(false);
       expect(String(refused.error)).not.toContain('leave `url` out');

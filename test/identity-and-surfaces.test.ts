@@ -224,7 +224,57 @@ describe('identity module', () => {
     expect(fetches).toBe(4);
   });
 
-  it("mcplEndpointFor: a directory answer, or an mcpl in it, that isn't an object is unreadable, and the last good read's services stay", async () => {
+  it('mcplEndpointFor: an access grant named __proto__ is an ordinary name', async () => {
+    const dir = tempDir('ident-');
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: (async () => new Response('{"services":{},"mcpl":{"__proto__":"wss://proto.test/","body":"wss://body.test/"}}', { status: 200 })) as typeof fetch,
+    });
+    expect(await mod.mcplEndpointFor('__proto__')).toEqual({ url: 'wss://proto.test/' });
+    expect(await mod.mcplEndpointFor('nowhere')).toEqual({ published: ['__proto__', 'body'] });
+  });
+
+  it('mcplEndpointFor: a lookup answers from its own read of the directory, whatever another read finds', async () => {
+    const dir = tempDir('ident-');
+    let startedB = false;
+    let lookupB: Promise<unknown> | undefined;
+    const mod: IdentityModule = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: ((() => {
+        if (startedB) return Promise.reject(new Error('B_FAILED'));
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => {
+            queueMicrotask(() => queueMicrotask(() => { startedB = true; lookupB = mod.mcplEndpointFor('body'); }));
+            return Promise.resolve({ services: {}, mcpl: { body: 'wss://a.test/' } });
+          },
+        } as unknown as Response);
+      }) as unknown) as typeof fetch,
+    });
+    expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://a.test/' });
+    expect([{ url: 'wss://a.test/' }, { unreadable: 'B_FAILED' }]).toContainEqual(await lookupB);
+  });
+
+  it('mcplEndpointFor: a fetch that throws as it is called is unreadable once, and the next lookup reads the directory again', async () => {
+    const dir = tempDir('ident-');
+    let fetches = 0;
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: ((() => {
+        if (++fetches === 1) throw new Error('SYNC_ONCE');
+        return Promise.resolve(new Response(JSON.stringify({ services: {}, mcpl: { body: 'wss://body.test/' } }), { status: 200 }));
+      }) as unknown) as typeof fetch,
+    });
+    expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'SYNC_ONCE' });
+    expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test/' });
+    expect(fetches).toBe(2);
+  });
+
+  it("mcplEndpointFor: a directory answer, or a services or mcpl in it, that isn't an object is unreadable, and the last good read's services stay", async () => {
     const dir = tempDir('ident-');
     let answer: unknown = { home: 'id.test', services: { orrery: 'https://orrery.test' }, mcpl: { body: 'wss://body.test/' } };
     const mod = new IdentityModule({
@@ -241,7 +291,10 @@ describe('identity module', () => {
     });
     await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
     expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test/' });
-    for (const bad of [[], { home: 'id.test', services: {}, mcpl: ['wss://body.test/'] }, { home: 'id.test', services: {}, mcpl: 'wss://body.test/' }]) {
+    for (const bad of [
+      [], { home: 'id.test', services: {}, mcpl: ['wss://body.test/'] }, { home: 'id.test', services: {}, mcpl: 'wss://body.test/' },
+      { home: 'id.test', services: [], mcpl: {} }, { home: 'id.test', services: 'https://orrery.test', mcpl: {} },
+    ]) {
       answer = bad;
       expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'not a directory' });
       const orrery = await mod.handleToolCall(call('request', { service: 'orrery', path: '/x' }));
