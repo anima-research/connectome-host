@@ -9,6 +9,7 @@ import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
 import { EnvFormError, envForm, readEnvFile, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
+import { modeTest } from './mode-test.js';
 import { processEnded, waitForEnd } from './process-ended.js';
 import { bracketedPaste } from '../src/readline-paste.js';
 import { checkDiscordToken } from '../src/setup/discord-token.js';
@@ -162,7 +163,7 @@ describe('setup--finished', () => {
     expect(module.finishRequested).toBe(false);
   });
 
-  test('where its directory can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
+  modeTest('where its directory can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
     writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
@@ -755,14 +756,18 @@ describe('setup--run', () => {
     expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe('OPENAI_API_KEY="openai-key-value"\n');
   });
 
-  test('a link to a list that\'s gone, or a list setup can\'t reach, isn\'t taken for no list: setup--run runs nothing', async () => {
+  test('a link to a list that\'s gone isn\'t taken for no list: setup--run runs nothing', async () => {
     const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
     mkdirSync(join(dir, '.setup'));
     symlinkSync(join(dir, 'gone.json'), join(dir, '.setup', 'stored-secrets.json'));
     const linked = await runCall(module, 'echo ran > ran.txt');
     expect(linked.success).toBe(false);
     expect(linked.error).toContain(`setup--run ran nothing: ${join(dir, '.setup', 'stored-secrets.json')} can't be read: ENOENT`);
-    rmSync(join(dir, '.setup', 'stored-secrets.json'));
+    expect(existsSync(join(dir, 'ran.txt'))).toBe(false);
+  });
+
+  modeTest('a list setup can\'t reach isn\'t taken for no list: setup--run runs nothing', async () => {
+    const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
     listSecrets(module, 'MY_SERVER_TOKEN');
     chmodSync(join(dir, '.setup'), 0o000);
     try {
@@ -1637,7 +1642,7 @@ describe('setup--ask_secret', () => {
     expect(statSync(holding).mode & 0o777).toBe(0o644);
   });
 
-  test('says it isn\'t known whether a value was stored when writing .env ends in an error, and leaves no copy of it beside .env', async () => {
+  modeTest('says it isn\'t known whether a value was stored when its directory refuses the write to .env, and leaves no copy of it beside .env', async () => {
     const { dir, module } = install({ envFile: 'PORT=8080\n', asker: { ask: async () => 'unwritten-value' } });
     mkdirSync(join(dir, '.setup'), { mode: 0o700 });
     chmodSync(dir, 0o500);
@@ -1652,7 +1657,9 @@ describe('setup--ask_secret', () => {
     expect(result.error).toEndWith('. Ask the person to put right what that names, then call again, which asks for the value again.');
     expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe('PORT=8080\n');
     expect(readdirSync(dir).sort()).toEqual(['.env', '.setup']);
+  });
 
+  test('a write of .env or of the list of stored secrets that ends in an error leaves .env as it was, and no copy beside either', () => {
     const other = scratch();
     writeFileSync(join(other, '.env'), 'OPENAI_API_KEY=openai-key-value\n');
     const script = `const { StoredSecrets, writeEnvValue } = await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'setup', 'secrets.ts'))});
@@ -1665,7 +1672,7 @@ describe('setup--ask_secret', () => {
     expect(readFileSync(join(other, '.env'), 'utf-8')).toBe('OPENAI_API_KEY=openai-key-value\n');
   });
 
-  test('says nothing was stored when .env can\'t be read once the person has typed the value, before anything is written', async () => {
+  modeTest('says nothing was stored when .env can\'t be read once the person has typed the value, before anything is written', async () => {
     let envFile = '';
     const { dir, module } = install({
       envFile: 'PORT=8080\n',
@@ -1708,19 +1715,21 @@ describe('setup--ask_secret', () => {
     expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe('NOTE="a note\nover two lines"\n');
   });
 
-  test('asks nothing while .env can\'t be read, and says so', async () => {
-    for (const unreadable of ['a directory', 'a file this user can\'t read']) {
-      let asked = false;
-      const { dir, module } = install({ asker: { ask: async () => { asked = true; return 'a-new-secret'; } } });
-      if (unreadable === 'a directory') mkdirSync(join(dir, '.env'));
-      else writeFileSync(join(dir, '.env'), 'PORT=8080\n', { mode: 0o000 });
-      const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-      expect(result.isError, unreadable).toBe(true);
-      expect(result.error, unreadable).toStartWith('Nothing was asked, so nothing was stored as DISCORD_TOKEN');
-      expect(result.error, unreadable).toContain(`${join(dir, '.env')} can't be read`);
-      expect(asked, unreadable).toBe(false);
-    }
-  });
+  const asksNothingWhile = async (unreadable: (envFile: string) => void) => {
+    let asked = false;
+    const { dir, module } = install({ asker: { ask: async () => { asked = true; return 'a-new-secret'; } } });
+    unreadable(join(dir, '.env'));
+    const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(result.isError).toBe(true);
+    expect(result.error).toStartWith('Nothing was asked, so nothing was stored as DISCORD_TOKEN');
+    expect(result.error).toContain(`${join(dir, '.env')} can't be read`);
+    expect(asked).toBe(false);
+  };
+
+  test('asks nothing while .env is a directory, and says so', () => asksNothingWhile((envFile) => mkdirSync(envFile)));
+
+  modeTest('asks nothing while .env is a file this user can\'t read, and says so', () =>
+    asksNothingWhile((envFile) => writeFileSync(envFile, 'PORT=8080\n', { mode: 0o000 })));
 
   test('a question already open when the module stops is answered and stored', async () => {
     let module: SetupModule | undefined;
@@ -1777,7 +1786,7 @@ describe('setup--ask_secret', () => {
     expect(answer.stdout.text).toBe('constructor="<constructor>"\n');
   });
 
-  test('a name that can\'t be recorded stores nothing, and says why', async () => {
+  modeTest('a name that can\'t be recorded stores nothing, and says why', async () => {
     const { dir, module } = install({ asker: { ask: async () => 'unrecorded-value' } });
     mkdirSync(join(dir, '.setup'), { mode: 0o500 });
     try {
@@ -2502,7 +2511,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(readEnvFile(join(made.dir, '.env')).get('ANTHROPIC_API_KEY')).toBeUndefined();
   });
 
-  test('a provider key isn\'t sent, or stored, where .env became unreadable while it was typed, since where to ask about it isn\'t known', async () => {
+  modeTest('a provider key isn\'t sent, or stored, where .env became unreadable while it was typed, since where to ask about it isn\'t known', async () => {
     let called = 0;
     let envFile = '';
     const made = install({

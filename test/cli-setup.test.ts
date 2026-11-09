@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import {
-  accessSync, chmodSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
+  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
   statSync, lstatSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,6 +18,7 @@ import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, instal
 import { entryPointText } from '../src/update/setup.js';
 import { machineOps, shellWord, takeLock } from '../src/update/launcher.js';
 import { HostUpdate } from '../src/update/update.js';
+import { modeTest } from './mode-test.js';
 import { processEnded } from './process-ended.js';
 
 const REPO = resolve(import.meta.dir, '..');
@@ -33,25 +34,6 @@ const DEFAULT_TRUSTED = ['node-pty', 'puppeteer'];
 afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-
-// Root, and a process with CAP_DAC_OVERRIDE, read and write through any file mode.
-const modesBind = (() => {
-  const dir = mkdtempSync(join(tmpdir(), 'setup-modes-'));
-  try {
-    const file = join(dir, 'shut');
-    writeFileSync(file, '');
-    chmodSync(file, 0o000);
-    try {
-      accessSync(file, constants.R_OK);
-      return false;
-    } catch {
-      return true;
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-})();
-const modeTest = test.skipIf(!modesBind);
 
 function directory(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'setup-')));
