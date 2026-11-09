@@ -49,13 +49,13 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   - Its Anthropic adapter leaves `temperature`, `top_p` and `top_k` out for
     both, as it does for Fable 5.1 and Mythos 5.1, including values given in
     a request's provider parameters. 0.8.0 already left a request config's
-    sampling out for both. It passed sampling given in provider parameters
-    on to the API, except, with a thinking config, a `temperature`, a `top_k`
-    or a `top_p` under 0.95. This host's provider parameters carry no
-    sampling (it sets them only for `openai-responses` and `openai-codex`),
-    so it sends neither model any sampling, on 0.8.0 or 0.8.1. membrane's
-    source records that Fable 5.2 refuses a `temperature` of 0.2, a `top_k`
-    of 40 and a `top_p` of 0.9 with a 400.
+    sampling out for both. Without a thinking config, sampling given in
+    provider parameters reached the API. With one, only a `top_p` of 0.95 or
+    more did. This host's provider parameters carry no sampling (it sets
+    them only for `openai-responses` and `openai-codex`), so it sends
+    neither model any sampling, on 0.8.0 or 0.8.1. membrane's source records
+    that Fable 5.2 refuses a `temperature` of 0.2, a `top_k` of 40 and a
+    `top_p` of 0.9 with a 400.
   - Its own cost estimate for a response prices both at $8 input, $40
     output, $10 for a cache write and $0.20 for a cache read per million
     tokens. 0.8.0 priced them as Fable 5 or Mythos 5. A prefix in its pricing
