@@ -15,6 +15,16 @@ export interface KeyCheckOptions {
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
 
+/** The words with the key in them shown as <ANTHROPIC_API_KEY>, trimmed or whole and in any letter case: fetch sends a
+ *  header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's host gets it back
+ *  lowercased. */
+export function withoutKey(words: string, key: string): string {
+  for (const each of [...new Set([key, key.trim()])].filter((one) => one.trim() !== '').sort((a, b) => b.length - a.length)) {
+    words = words.replace(new RegExp(each.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<ANTHROPIC_API_KEY>');
+  }
+  return words;
+}
+
 export function originOf(baseUrl: string): string | null {
   try {
     const url = new URL(baseUrl);
@@ -77,25 +87,21 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
   const set = options.baseUrl !== undefined;
   const dotenv = options.envFile ?? '.env';
   const base = options.baseUrl ?? ANTHROPIC_API;
-  const origin = originOf(base);
-  if (origin === null) {
+  const reached = originOf(base);
+  if (reached === null) {
     return failed('ANTHROPIC_BASE_URL isn\'t an http:// or https:// URL, so nothing was called. Set it to one, ' +
       `such as ${ANTHROPIC_API}, or unset it for Anthropic's own API, and run setup again.`, false);
   }
+  const origin = withoutKey(reached, key);
   // As @anthropic-ai/sdk 0.52.0's buildURL joins the base URL and the path, so the check calls where the agent will.
   const url = base + (base.endsWith('/') ? 'v1/messages' : '/v1/messages');
-  const host = new URL(url).host;
+  const host = withoutKey(new URL(url).host, key);
   const urls = [...new Set([url, new URL(url).href, base, new URL(base).href])].sort((a, b) => b.length - a.length);
   const path = new URL(base).pathname.replace(/\/+$/, '') === '' ? null : new URL(url).pathname;
-  // fetch sends a header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's
-  // host gets it back lowercased, so the key is matched in any letter case.
-  const keys = [...new Set([key, key.trim()])].filter((each) => each.trim() !== '').sort((a, b) => b.length - a.length)
-    .map((each) => new RegExp(each.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
   const quote = (words: string) => {
     for (const each of urls) words = words.split(each).join(origin);
     if (path !== null) words = words.split(path).join('<the request\'s path>');
-    for (const each of keys) words = words.replace(each, '<ANTHROPIC_API_KEY>');
-    return sentence(words);
+    return sentence(withoutKey(words, key));
   };
   const notAllowed = set
     ? `Ask whoever runs ${origin}, or manages the key's account there, to allow it, or use a key that can make that call.`
@@ -176,7 +182,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       return failed(`${host} answered, but its stream ended in an error.${words} So the key isn't known to work. ` +
         (streamed.type === 'overloaded_error' ? 'Try again in a few minutes.' : 'Try again shortly.'), false);
     }
-    if (/^application\/json\b/i.test(type ?? '')) {
+    if (type !== null && JSON_TYPE.test(type.trim())) {
       return failed(`${host} answered ${response.status} with ${kind} where the check asked for an event stream, so the ` +
         `key isn't known to work. ${STREAMS}, so a ${set ? 'gateway' : 'server'} that answers only unstreamed calls ` +
         `can't serve it.${set ? ` Point ANTHROPIC_BASE_URL in ${dotenv} at one that streams (a URL put right there is read ` +

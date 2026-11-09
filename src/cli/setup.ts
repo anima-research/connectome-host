@@ -9,7 +9,7 @@ import { createInterface, type Interface } from 'node:readline';
 import { Database } from 'bun:sqlite';
 import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
-import { ANTHROPIC_API, checkKey, originOf, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
+import { ANTHROPIC_API, checkKey, originOf, withoutKey, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
 import {
   EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, writeEnvValue,
 } from '../setup/secrets.js';
@@ -714,8 +714,8 @@ async function installAndStart(
     }
     if (baseUrl === null) return 1;
     out(`Checking ${fromDotEnv ? `the ANTHROPIC_API_KEY in ${envFile}` : 'the key'}: one call at ` +
-      `${baseUrl === undefined ? ANTHROPIC_API : originOf(baseUrl)} to ${model}, the model setup's agent runs on, which ` +
-      'the key\'s account has to be able to use.');
+      `${baseUrl === undefined ? ANTHROPIC_API : withoutKey(String(originOf(baseUrl)), key)} to ${model}, the model setup's ` +
+      'agent runs on, which the key\'s account has to be able to use.');
     const checked = await world.checkKey({ key, model, envFile, ...(baseUrl === undefined ? {} : { baseUrl }) });
     if (checked.ok) break;
     err(checked.cause);

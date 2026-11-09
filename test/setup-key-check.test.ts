@@ -473,11 +473,11 @@ describe("the key's one real call", () => {
     expect(cause(soon)).not.toContain('soon');
     expect(cause(soon)).toContain('Try again shortly.');
     const hidden = await checkKey({ key: '3', model: 'm', baseUrl: at('wait') });
-    expect(cause(hidden)).not.toContain('<ANTHROPIC_API_KEY>');
+    expect(cause(hidden)).not.toContain('a wait of');
     expect(cause(hidden)).not.toContain('7 s');
     expect(cause(hidden)).toContain('It asks for a wait setup can\'t show without the key. Try again shortly.');
     const hiddenDate = await checkKey({ key: '2026', model: 'm', baseUrl: at('waitdate') });
-    expect(cause(hiddenDate)).not.toContain('<ANTHROPIC_API_KEY>');
+    expect(cause(hiddenDate)).not.toContain('no call before');
     expect(cause(hiddenDate)).not.toContain('07:28');
     expect(cause(hiddenDate)).toContain('It asks for a wait setup can\'t show without the key. Try again shortly.');
   });
