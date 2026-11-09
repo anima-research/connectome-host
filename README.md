@@ -200,6 +200,17 @@ agent-framework's README, which its package ships
 doesn't know, or a value that isn't a finite number above 0, stops the load,
 naming it.
 
+`toolResultInlineMaxChars`, at the recipe's top level, is the residence's
+inline cap for tool results, in characters, passed to agent-framework as its
+`FrameworkConfig.toolResultInlineMaxChars`. Left out, agent-framework's
+default stands. A resident's own `agent_settings` value
+`tool_result_inline_max_chars` wins over it for that agent. The default,
+what becomes of a result over the cap and how the cap in effect is reached
+are in that option's doc in agent-framework's types, which its package ships
+(`node_modules/@animalabs/agent-framework/dist/src/types/framework.d.ts` in
+an install). A value that isn't a finite number of at least 1000 stops the
+load, naming it.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is

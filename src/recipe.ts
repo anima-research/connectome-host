@@ -1659,6 +1659,16 @@ export interface Recipe {
    * the "Inference bounds" section of the README its package ships gives them.
    */
   inferenceBounds?: FrameworkConfig['inferenceBounds'];
+  /**
+   * The residence's inline cap for tool results, in characters, passed to
+   * agent-framework as FrameworkConfig.toolResultInlineMaxChars. Left out,
+   * agent-framework's default stands. A resident's own `agent_settings` value
+   * `tool_result_inline_max_chars` wins over it for that agent. A value that
+   * isn't a finite number of at least 1000 stops the load, naming it. The
+   * default, what becomes of a result over the cap and how the cap in effect
+   * is reached are in that option's doc in agent-framework's types.
+   */
+  toolResultInlineMaxChars?: number;
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -2001,7 +2011,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
-  'maintenanceIntervalMs', 'inferenceBounds',
+  'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -3435,6 +3445,14 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   if (obj.inferenceBounds !== undefined) validateInferenceBounds(obj.inferenceBounds);
+
+  if (obj.toolResultInlineMaxChars !== undefined) {
+    const cap = obj.toolResultInlineMaxChars;
+    if (!Number.isFinite(cap) || (cap as number) < 1000) {
+      const shown = typeof cap === 'number' ? String(cap) : JSON.stringify(cap);
+      throw new Error(`Recipe toolResultInlineMaxChars is ${shown}; it must be a finite number of at least 1000.`);
+    }
+  }
 
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {
