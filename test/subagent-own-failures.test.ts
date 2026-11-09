@@ -206,8 +206,8 @@ describe('the module\'s own failures end the retry loop without their words bein
 describe("a run's failure is classified by membrane's fields, when its cause carries them", () => {
   type Type = ConstructorParameters<typeof MembraneError>[0]['type'];
   /** agent-framework's rejection: its own words, with membrane's error as the cause. */
-  const failed = (type: Type, httpStatus?: number, words = `the model call failed (${type}${httpStatus ? `, HTTP ${httpStatus}` : ''})`) =>
-    new Error(words, { cause: new MembraneError({ type, message: 'provider words', retryable: false, ...(httpStatus ? { httpStatus } : {}) }) });
+  const failed = (type: Type, httpStatus?: number, words = `the model call failed (${type}${httpStatus ? `, HTTP ${httpStatus}` : ''})`, providerWords = 'provider words') =>
+    new Error(words, { cause: new MembraneError({ type, message: providerWords, retryable: false, ...(httpStatus ? { httpStatus } : {}) }) });
 
   test('each type and status classifies by membrane\'s fields', async () => {
     const h = await harness({});
@@ -216,7 +216,7 @@ describe("a run's failure is classified by membrane's fields, when its cause car
       const cases: Array<[Type, number | undefined, { rateLimit: boolean; transient: boolean }]> = [
         ['rate_limit', 429, { rateLimit: true, transient: true }],
         ['rate_limit', undefined, { rateLimit: true, transient: true }],
-        ['unknown', 429, { rateLimit: true, transient: true }],
+        ['invalid_request', 429, { rateLimit: true, transient: true }],
         ['timeout', undefined, { rateLimit: false, transient: true }],
         ['network', undefined, { rateLimit: false, transient: true }],
         ['server', 500, { rateLimit: false, transient: true }],
@@ -236,6 +236,17 @@ describe("a run's failure is classified by membrane's fields, when its cause car
         const err = failed(type, status);
         expect([type, status, sub.isRateLimitError(err), sub.isTransientError(err)]).toEqual([type, status, verdict.rateLimit, verdict.transient]);
       }
+    } finally { await h.cleanup(); }
+  });
+
+  test('where membrane typed the failure from the provider\'s words alone, those words decide', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      expect(sub.isTransientError(failed('server', undefined, undefined, 'upstream overloaded_error'))).toBe(true);
+      expect(sub.isTransientError(failed('unknown', undefined, undefined, 'the upstream is overloaded'))).toBe(true);
+      expect(sub.isTransientError(failed('unknown', undefined, undefined, 'the upstream said no'))).toBe(false);
+      expect(sub.isRateLimitError(failed('unknown', undefined, undefined, 'too many requests, slow down'))).toBe(true);
     } finally { await h.cleanup(); }
   });
 
@@ -269,10 +280,13 @@ describe("a run's failure is classified by membrane's fields, when its cause car
         ['status=529 overloaded', 'server', 529],
         ['HTTP 400 invalid_request_error', 'invalid_request', 400],
         ['HTTP 401 authentication_error', 'auth', 401],
+        ['upstream overloaded_error', 'server', undefined],
+        ['the upstream is overloaded', 'unknown', undefined],
+        ['the upstream said no', 'unknown', undefined],
       ];
       for (const [words, type, status] of pairs) {
         const old = new Error(words);
-        const now = failed(type, status);
+        const now = failed(type, status, undefined, words);
         expect([words, sub.isRateLimitError(now), sub.isTransientError(now)])
           .toEqual([words, sub.isRateLimitError(old), sub.isTransientError(old)]);
       }
