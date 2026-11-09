@@ -135,6 +135,8 @@ const TIMER_SLACK_MS = 2;
 
 const ZOMBIE_THRESHOLD_MS = 120_000;
 
+const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([500, 502, 503, 504, 529]);
+
 function duration(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 100) / 10} s`;
 }
@@ -1821,8 +1823,21 @@ export class SubagentModule implements Module {
     return text.toLowerCase();
   }
 
+  /** agent-framework rejects a failed run with its own words and membrane's
+   *  error as the cause, read here by its name, which a second copy of the
+   *  package gives its own class too. */
+  private membraneCause(err: Error): { type: string; httpStatus?: number } | undefined {
+    const cause = (err as { cause?: unknown }).cause;
+    if (!(cause instanceof Error) || cause.name !== 'MembraneError') return undefined;
+    const { type, httpStatus } = cause as { type?: unknown; httpStatus?: unknown };
+    if (typeof type !== 'string') return undefined;
+    return { type, ...(typeof httpStatus === 'number' ? { httpStatus } : {}) };
+  }
+
   private isRateLimitError(err: unknown, agentName?: string): boolean {
     if (!(err instanceof Error)) return false;
+    const cause = this.membraneCause(err);
+    if (cause) return cause.type === 'rate_limit' || cause.httpStatus === 429;
     const msg = this.classifiedText(err, agentName);
     return /(?<![a-z])rate[\s_-]?(limit|exceeded)/.test(msg)
       || /\b429\b/.test(msg)
@@ -1838,6 +1853,12 @@ export class SubagentModule implements Module {
 
   private isTransientError(err: Error, agentName?: string): boolean {
     if (this.isUnsleptProviderWait(err)) return false;
+    const cause = this.membraneCause(err);
+    if (cause) {
+      return cause.type === 'timeout' || cause.type === 'network'
+        || (cause.httpStatus !== undefined && TRANSIENT_STATUSES.has(cause.httpStatus))
+        || this.isRateLimitError(err, agentName);
+    }
     const msg = this.classifiedText(err, agentName);
     return (
       msg.includes('timeout') ||

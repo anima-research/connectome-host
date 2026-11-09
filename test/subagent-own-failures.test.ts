@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
-import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
+import { Membrane, MembraneError, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
 type Internal = {
@@ -201,6 +201,109 @@ describe('the module\'s own failures end the retry loop without their words bein
       } finally { await h.cleanup(); }
     }, 20_000);
   }
+});
+
+describe("a run's failure is classified by membrane's fields, when its cause carries them", () => {
+  type Type = ConstructorParameters<typeof MembraneError>[0]['type'];
+  /** agent-framework's rejection: its own words, with membrane's error as the cause. */
+  const failed = (type: Type, httpStatus?: number, words = `the model call failed (${type}${httpStatus ? `, HTTP ${httpStatus}` : ''})`) =>
+    new Error(words, { cause: new MembraneError({ type, message: 'provider words', retryable: false, ...(httpStatus ? { httpStatus } : {}) }) });
+
+  test('each type and status classifies by membrane\'s fields', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      const cases: Array<[Type, number | undefined, { rateLimit: boolean; transient: boolean }]> = [
+        ['rate_limit', 429, { rateLimit: true, transient: true }],
+        ['rate_limit', undefined, { rateLimit: true, transient: true }],
+        ['unknown', 429, { rateLimit: true, transient: true }],
+        ['timeout', undefined, { rateLimit: false, transient: true }],
+        ['network', undefined, { rateLimit: false, transient: true }],
+        ['server', 500, { rateLimit: false, transient: true }],
+        ['server', 502, { rateLimit: false, transient: true }],
+        ['server', 503, { rateLimit: false, transient: true }],
+        ['server', 504, { rateLimit: false, transient: true }],
+        ['server', 529, { rateLimit: false, transient: true }],
+        ['server', 501, { rateLimit: false, transient: false }],
+        ['server', 507, { rateLimit: false, transient: false }],
+        ['invalid_request', 400, { rateLimit: false, transient: false }],
+        ['context_length', 400, { rateLimit: false, transient: false }],
+        ['auth', 401, { rateLimit: false, transient: false }],
+        ['safety', undefined, { rateLimit: false, transient: false }],
+        ['abort', undefined, { rateLimit: false, transient: false }],
+      ];
+      for (const [type, status, verdict] of cases) {
+        const err = failed(type, status);
+        expect([type, status, sub.isRateLimitError(err), sub.isTransientError(err)]).toEqual([type, status, verdict.rateLimit, verdict.transient]);
+      }
+    } finally { await h.cleanup(); }
+  });
+
+  test('the fields decide over the words, and a 504 is transient though its words say no "timeout"', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      const loud = failed('invalid_request', 400, 'network overloaded: 503 rate limit timeout');
+      expect([sub.isRateLimitError(loud), sub.isTransientError(loud)]).toEqual([false, false]);
+      const gateway = failed('server', 504, 'the model call failed (server, HTTP 504)');
+      expect(gateway.message).not.toContain('timeout');
+      expect(sub.isTransientError(gateway)).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+
+  test('each failure today\'s words classify gets the same verdict from the new words with a cause', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      const pairs: Array<[string, Type, number | undefined]> = [
+        ['rate_limit_error: slow down', 'rate_limit', 429],
+        ['429 Too Many Requests', 'rate_limit', 429],
+        ['request timeout', 'timeout', undefined],
+        ['read ECONNRESET', 'network', undefined],
+        ['socket hang up', 'network', undefined],
+        ['network error', 'network', undefined],
+        ['HTTP 500 Internal Server Error', 'server', 500],
+        ['HTTP 502 Bad Gateway', 'server', 502],
+        ['HTTP 503 Service Unavailable', 'server', 503],
+        ['504 Gateway Timeout', 'server', 504],
+        ['status=529 overloaded', 'server', 529],
+        ['HTTP 400 invalid_request_error', 'invalid_request', 400],
+        ['HTTP 401 authentication_error', 'auth', 401],
+      ];
+      for (const [words, type, status] of pairs) {
+        const old = new Error(words);
+        const now = failed(type, status);
+        expect([words, sub.isRateLimitError(now), sub.isTransientError(now)])
+          .toEqual([words, sub.isRateLimitError(old), sub.isTransientError(old)]);
+      }
+    } finally { await h.cleanup(); }
+  });
+
+  test('a cause that isn\'t membrane\'s leaves the words to decide, and a second copy of membrane is read by its name', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      expect(sub.isTransientError(new Error('Stream aborted: no terminal event'))).toBe(true);
+      expect(sub.isTransientError(new Error('HTTP 503 Service Unavailable', { cause: new Error('socket') }))).toBe(true);
+      expect(sub.isTransientError(new Error('the model call failed', { cause: { type: 'network' } }))).toBe(false);
+      const another = Object.assign(new Error('x'), { name: 'GatewayError', type: 'network' });
+      expect(sub.isTransientError(new Error('the model call failed', { cause: another }))).toBe(false);
+      const copy = Object.assign(new Error('provider words'), { name: 'MembraneError', type: 'network', retryable: true });
+      expect(sub.isTransientError(new Error('the model call failed', { cause: copy }))).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+
+  test('a spawned run that fails on a 504 is retried, and one that fails on a 400 isn\'t', async () => {
+    for (const [status, type, runs] of [[504, 'server', 2], [400, 'invalid_request', 1]] as const) {
+      const h = await harness({ maxRetries: 1 }, async () => { throw failed(type, status); });
+      internal(h.subagent).retryBackoffMs = 0;
+      try {
+        const res = await h.subagent.handleToolCall(spawn('scout', { sync: true }));
+        expect(res.success).toBe(false);
+        expect([status, h.runs()]).toEqual([status, runs]);
+      } finally { await h.cleanup(); }
+    }
+  }, 20_000);
 });
 
 describe('a framework failure is read without the ephemeral agent\'s name, and numbers as whole numbers', () => {
