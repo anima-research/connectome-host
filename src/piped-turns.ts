@@ -26,6 +26,8 @@ export interface PipedTurns {
   running(): boolean;
   takenIn(): void;
   owed(): boolean;
+  /** A turn is running, or a line is owed one: what batch mode's last notice and setup's close both ask. */
+  unanswered(): boolean;
 }
 
 export const PIPED_TURN_CAP_MS = 120_000;
@@ -196,9 +198,10 @@ export function createPipedTurns(
     wait.after = turnsStarted;
   }
 
+  const owed = (): boolean => lateTakeIns > 0 || (lastTakenIn !== null && turnsStarted <= lastTakenIn);
   return {
-    onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn,
-    owed: () => lateTakeIns > 0 || (lastTakenIn !== null && turnsStarted <= lastTakenIn),
+    onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn, owed,
+    unanswered: () => turnRunning || owed(),
   };
 }
 

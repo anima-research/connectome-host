@@ -847,7 +847,7 @@ async function runPiped(app: AppContext) {
       console.log(`> ${batchEchoLine(line)}`);
       if (await processLine(line)) break;
     }
-    if (turns.running()) console.log(BATCH_UNANSWERED_NOTICE);
+    if (turns.unanswered()) console.log(BATCH_UNANSWERED_NOTICE);
     app.stopping = true;
     console.log('Done.');
     const serverIds = app.framework.listMcplServers().map((s) => s.id);
@@ -936,7 +936,7 @@ async function runPiped(app: AppContext) {
     const promptIfDone = (): void => {
       if (closed || unanswered > 0) return;
       if (setupModule()?.finishRequested) {
-        if (!turns.running() && !turns.owed()) rl.close();
+        if (!turns.unanswered()) rl.close();
         return;
       }
       rl.prompt();
