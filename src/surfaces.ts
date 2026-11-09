@@ -1,5 +1,12 @@
 export type SurfaceName = 'headless' | 'readline' | 'tui' | 'web-ui';
 
+/** The host's own name for the surface that sent a message, and for headless
+ *  and the Web UI the connection. It splits the message's `source`, which
+ *  agent-framework stores and its readers see: `source` is `'cli'` for readline
+ *  and `connectome send` alike, `'tui'` for the TUI and a Web UI page alike, and
+ *  `'headless'` for a socket text without `from`, but each surface answers only
+ *  for what it showed. Which surfaces are asked where a routed piece was shown,
+ *  and with which connection, comes from this tag alone, never from `source`. */
 export interface SurfaceTag {
   surface: SurfaceName;
   connection?: string;
