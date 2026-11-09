@@ -289,17 +289,17 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       cause: Object.assign(new Error(CAUSE_SENTINEL), { name: 'MembraneError', type: 'invalid_request', httpStatus: 400 }),
     });
 
-  test('a sync run\'s tool result carries its class\'s words, never its cause\'s', async () => {
+  test('a sync run\'s tool result carries membrane\'s type and status, never its cause\'s message', async () => {
     const h = await harness({ maxRetries: 0 }, async () => { throw failedWithCause(); });
     try {
       expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(
-        "Subagent 'scout' stopped and returned no result: the turn failed. " +
+        "Subagent 'scout' stopped and returned no result: the model call failed (invalid_request, HTTP 400). " +
         'What it did before then stays done, and spawning it again starts its task over.',
       );
     } finally { await h.cleanup(); }
   });
 
-  test('an async run\'s failure notice carries its class\'s words, never its cause\'s', async () => {
+  test('an async run\'s failure notice carries membrane\'s type and status, never its cause\'s message', async () => {
     const h = await harness({ maxRetries: 0 }, async () => { throw failedWithCause(); });
     const messages: string[] = [];
     const ctx = (h.subagent as unknown as { ctx: { addMessage(p: string, c: Array<{ text?: string }>): unknown } }).ctx;
@@ -310,7 +310,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       await outcome(h, 'scout');
       await until(() => messages.some((m) => m.startsWith("[Subagent 'scout' failed]")));
       expect(messages.filter((m) => m.startsWith("[Subagent 'scout' failed]"))).toEqual([
-        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the turn failed. " +
+        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the model call failed (invalid_request, HTTP 400). " +
         'What it did before then stays done, and spawning it again starts its task over.',
       ]);
       expect(messages.join('\n')).not.toContain('sentinel-9c1e');
@@ -483,6 +483,32 @@ describe('a failure that isn\'t the host\'s own reaches the parent as fixed word
   for (const [label, err, why] of cases) {
     test(`${label}: a sync run's tool result says the class's words`, async () => {
       const h = await harness({ maxRetries: 0 }, async () => { throw err(); });
+      try {
+        expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(stopped(why));
+      } finally { await h.cleanup(); }
+    });
+  }
+
+  /** agent-framework's companion change rejects with a bounded copy of membrane's error as the cause. */
+  const typed = (type: string, httpStatus?: number) => new Error('the model call failed', {
+    cause: Object.assign(new Error(SENTINEL), { name: 'MembraneError', type, retryable: false, ...(httpStatus !== undefined ? { httpStatus } : {}) }),
+  });
+  const types: Array<[cause: () => Error, why: string]> = [
+    [() => typed('invalid_request', 404), 'the model call failed (invalid_request, HTTP 404)'],
+    [() => typed('context_length', 400), 'the model call failed (context_length, HTTP 400)'],
+    [() => typed('auth', 401), 'the model call failed (auth, HTTP 401)'],
+    [() => typed('unsupported'), 'the model call failed (unsupported)'],
+    [() => typed('rate_limit', 429), 'the model call failed (rate_limit, HTTP 429)'],
+    [() => typed('server', 503), 'the model call failed (server, HTTP 503)'],
+    [() => typed('unknown'), 'the model call failed (unknown)'],
+    [() => typed('timeout'), 'the model call timed out'],
+    [() => typed('timeout', 408), 'the model call timed out (HTTP 408)'],
+    [() => typed('safety', 400), "the request couldn't be completed"],
+    [() => typed('a-type-of-its-own', 400), 'the turn failed'],
+  ];
+  for (const [cause, why] of types) {
+    test(`a cause membrane typed reads as its type, as agent-framework words it: ${why}`, async () => {
+      const h = await harness({ maxRetries: 0 }, async () => { throw cause(); });
       try {
         expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(stopped(why));
       } finally { await h.cleanup(); }

@@ -137,6 +137,11 @@ const ZOMBIE_THRESHOLD_MS = 120_000;
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([500, 502, 503, 504, 529]);
 
+/** membrane's MembraneErrorType, as membrane 0.8.0 declares it. */
+const MEMBRANE_TYPES: ReadonlySet<string> = new Set([
+  'rate_limit', 'context_length', 'invalid_request', 'auth', 'server', 'network', 'timeout', 'abort', 'safety', 'unsupported', 'unknown',
+]);
+
 function duration(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 100) / 10} s`;
 }
@@ -2751,6 +2756,15 @@ export class SubagentModule implements Module {
         if (typeof ms !== 'number' || Number.isNaN(ms)) return "the provider's stated wait is not a number, so a subagent's run doesn't sleep it";
         const asked = Number.isFinite(ms) ? `${Math.ceil(ms / 1000)} s` : 'longer than can be represented';
         return `the provider asked to wait ${asked}, which a subagent's run doesn't sleep`;
+      }
+      // A type from membrane's own set and a number are membrane's words, not
+      // the provider's, so they're shown as agent-framework words them.
+      const cause = this.membraneCause(err);
+      if (cause && MEMBRANE_TYPES.has(cause.type)) {
+        const status = cause.httpStatus !== undefined ? `HTTP ${cause.httpStatus}` : undefined;
+        if (cause.type === 'safety') return "the request couldn't be completed";
+        if (cause.type === 'timeout') return `the model call timed out${status ? ` (${status})` : ''}`;
+        return `the model call failed (${status ? `${cause.type}, ${status}` : cause.type})`;
       }
       if (this.isRateLimitError(err, run.agentName)) return 'the model call failed (rate_limit)';
       if (this.isTransientError(err, run.agentName)) return 'the model call failed (timeout, network or server)';
