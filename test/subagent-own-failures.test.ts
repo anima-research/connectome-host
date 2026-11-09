@@ -1878,3 +1878,35 @@ describe('with the clock held, agent names stay new to agent-framework', () => {
     }, 20_000);
   }
 });
+
+describe('the fleet status a parent reads', () => {
+  test('a retrying subagent is listed, and its retry status message, which holds the error\'s words, is not', async () => {
+    const SENTINEL = 'sentinel-3f9c provider said: upstream body';
+    let attempts = 0;
+    const h = await harness({ maxRetries: 1 }, async () => {
+      attempts++;
+      throw new Error(`503 overloaded: ${SENTINEL}`);
+    });
+    const sub = internal(h.subagent);
+    sub.retryBackoffMs = 60_000;
+    const waits = watchWaits(h.subagent);
+    const status = async () => ((await h.subagent.gatherContext('parent'))[0]?.content[0] as { text: string } | undefined)?.text ?? '';
+    const entry = () => [...(sub.activeSubagents as unknown as Map<string, { name: string; status: string; statusMessage?: string }>).values()]
+      .find((a) => a.name === 'scout');
+    try {
+      expect((await h.subagent.handleToolCall({ id: 't-hud', name: 'hud', input: { enabled: true }, callerAgentName: 'parent' })).success).toBe(true);
+      expect((await h.subagent.handleToolCall(spawn('scout'))).success).toBe(true);
+      // Inside the retry's wait: the backoff is held open, and the stop below ends it.
+      await until(() => waits.some((w) => w.endedBy === undefined) && (entry()?.statusMessage ?? '').startsWith('Retry 1:'));
+      expect(entry()?.status).toBe('running');
+      expect(entry()?.statusMessage).toContain(SENTINEL);
+      const hud = await status();
+      expect(hud).toContain('scout [spawn] running since');
+      expect(hud).not.toContain('sentinel-3f9c');
+      expect(attempts).toBe(1);
+    } finally {
+      h.subagent.cancelSubagent('scout');
+      await h.cleanup();
+    }
+  }, 20_000);
+});
