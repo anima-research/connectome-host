@@ -11,7 +11,7 @@ import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
 import { ANTHROPIC_API, checkKey, originOf, withoutKey, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
 import {
-  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, writeEnvValue,
+  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, withoutStoredSecrets, writeEnvValue,
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
@@ -679,7 +679,8 @@ async function installAndStart(
   if (shell.ANTHROPIC_BASE_URL !== undefined && (shell.ANTHROPIC_BASE_URL || undefined) !== baseUrl) {
     out(`Setup checks the key at, and gives its agent, ${baseUrl === undefined
       ? `Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL`
-      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${originOf(baseUrl)}`}, not the one exported in this ` +
+      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ` +
+        withoutStoredSecrets(String(originOf(baseUrl)), stored, join(dir, '.setup'))}, not the one exported in this ` +
       `shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
   }
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
