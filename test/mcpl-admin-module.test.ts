@@ -689,12 +689,27 @@ describe('mcpl_deploy', () => {
     }
     // Only an access grant names an audience to look up.
     expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
-    // An identity whose lookup throws gives the refusal no advice, and the refusal stands.
+    // A directory that couldn't be read, whether the lookup says so or throws, is named with its reason, and the
+    // refusal says a deploy with `access` and no `url` may find an endpoint later; the refusal stands.
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ unreadable: 'status 503.' }) });
+    const unreadable = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
+    expectSays(
+      unreadable.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://',
+      'The home node\'s directory of MCPL endpoints couldn\'t be read (status 503), so it isn\'t known whether it ' +
+        'publishes one for the access grant "eidoverse": a deploy with `access` and no `url`, called again later, ' +
+        'dials the endpoint it publishes, if it publishes one.',
+    );
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('home node unreachable'); } });
     const throwing = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
-    expectSays(throwing.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://');
-    expect(String(throwing.error)).not.toContain('leave `url` out');
-    expect(String(throwing.error)).not.toContain('Or ask the service');
+    expectSays(
+      throwing.error, 'the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://',
+      'The home node\'s directory of MCPL endpoints couldn\'t be read (home node unreachable)',
+    );
+    for (const refused of [unreadable, throwing]) {
+      expect(refused.success).toBe(false);
+      expect(String(refused.error)).not.toContain('leave `url` out');
+      expect(String(refused.error)).not.toContain('Or ask the service');
+    }
     // A directory that was read and publishes nothing at all gets the operator's sentence too.
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
     const empty = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
