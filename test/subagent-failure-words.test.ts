@@ -281,6 +281,42 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
     } finally { await h.cleanup(); }
   });
 
+  /** agent-framework's rejection: its own words, with the provider's on a
+   *  bounded copy of membrane's error as the cause. */
+  const CAUSE_SENTINEL = 'sentinel-9c1e provider said: invalid x-api-key';
+  const failedWithCause = () =>
+    new Error('the model call failed (invalid_request, HTTP 400)', {
+      cause: Object.assign(new Error(CAUSE_SENTINEL), { name: 'MembraneError', type: 'invalid_request', httpStatus: 400 }),
+    });
+
+  test('a sync run\'s tool result carries the run\'s own words, never its cause\'s', async () => {
+    const h = await harness({ maxRetries: 0 }, async () => { throw failedWithCause(); });
+    try {
+      expect((await h.subagent.handleToolCall(spawn('scout', { sync: true }))).error).toBe(
+        "Subagent 'scout' stopped and returned no result: the model call failed (invalid_request, HTTP 400). " +
+        'What it did before then stays done, and spawning it again starts its task over.',
+      );
+    } finally { await h.cleanup(); }
+  });
+
+  test('an async run\'s failure notice carries the run\'s own words, never its cause\'s', async () => {
+    const h = await harness({ maxRetries: 0 }, async () => { throw failedWithCause(); });
+    const messages: string[] = [];
+    const ctx = (h.subagent as unknown as { ctx: { addMessage(p: string, c: Array<{ text?: string }>): unknown } }).ctx;
+    const add = ctx.addMessage.bind(ctx);
+    ctx.addMessage = (p, c) => { if (c[0]?.text) messages.push(c[0].text); return add(p, c); };
+    try {
+      await h.subagent.handleToolCall(spawn('scout'));
+      await outcome(h, 'scout');
+      await until(() => messages.some((m) => m.startsWith("[Subagent 'scout' failed]")));
+      expect(messages.filter((m) => m.startsWith("[Subagent 'scout' failed]"))).toEqual([
+        "[Subagent 'scout' failed]\n\nError: Subagent 'scout' stopped and returned no result: the model call failed (invalid_request, HTTP 400). " +
+        'What it did before then stays done, and spawning it again starts its task over.',
+      ]);
+      expect(messages.join('\n')).not.toContain('sentinel-9c1e');
+    } finally { await h.cleanup(); }
+  });
+
   test('a prompt over the limit didn\'t start, and says what to shorten, or for a fork to spawn instead', async () => {
     const h = await harness({ maxPromptTokens: 10 });
     try {
