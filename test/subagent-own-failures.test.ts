@@ -205,9 +205,13 @@ describe('the module\'s own failures end the retry loop without their words bein
 
 describe("a run's failure is classified by membrane's fields, when its cause carries them", () => {
   type Type = ConstructorParameters<typeof MembraneError>[0]['type'];
-  /** agent-framework's rejection: its own words, with membrane's error as the cause. */
-  const failed = (type: Type, httpStatus?: number, words = `the model call failed (${type}${httpStatus ? `, HTTP ${httpStatus}` : ''})`, providerWords = 'provider words') =>
-    new Error(words, { cause: new MembraneError({ type, message: providerWords, retryable: false, ...(httpStatus ? { httpStatus } : {}) }) });
+  /** agent-framework's rejection: its own words, with a bounded copy of
+   *  membrane's error as the cause, a plain Error with the original's name
+   *  and membrane's fields. */
+  const failed = (type: Type, httpStatus?: number, words = `the model call failed (${type}${httpStatus ? `, HTTP ${httpStatus}` : ''})`, providerWords = 'provider words') => {
+    const cause = Object.assign(new Error(providerWords), { name: 'MembraneError', type, retryable: false, ...(httpStatus ? { httpStatus } : {}) });
+    return new Error(words, { cause });
+  };
 
   test('each type and status classifies by membrane\'s fields', async () => {
     const h = await harness({});
@@ -225,6 +229,7 @@ describe("a run's failure is classified by membrane's fields, when its cause car
         ['server', 504, { rateLimit: false, transient: true }],
         ['server', 529, { rateLimit: false, transient: true }],
         ['server', 501, { rateLimit: false, transient: false }],
+        ['server', 505, { rateLimit: false, transient: false }],
         ['server', 507, { rateLimit: false, transient: false }],
         ['invalid_request', 400, { rateLimit: false, transient: false }],
         ['context_length', 400, { rateLimit: false, transient: false }],
@@ -282,6 +287,7 @@ describe("a run's failure is classified by membrane's fields, when its cause car
         ['HTTP 401 authentication_error', 'auth', 401],
         ['upstream overloaded_error', 'server', undefined],
         ['the upstream is overloaded', 'unknown', undefined],
+        ['the stream was idle too long', 'unknown', undefined],
         ['the upstream said no', 'unknown', undefined],
       ];
       for (const [words, type, status] of pairs) {
@@ -293,7 +299,7 @@ describe("a run's failure is classified by membrane's fields, when its cause car
     } finally { await h.cleanup(); }
   });
 
-  test('a cause that isn\'t membrane\'s leaves the words to decide, and a second copy of membrane is read by its name', async () => {
+  test('a cause that isn\'t membrane\'s leaves the words to decide, its own words among them, and membrane\'s own error as the cause is read like its copy', async () => {
     const h = await harness({});
     try {
       const sub = internal(h.subagent);
@@ -302,8 +308,11 @@ describe("a run's failure is classified by membrane's fields, when its cause car
       expect(sub.isTransientError(new Error('the model call failed', { cause: { type: 'network' } }))).toBe(false);
       const another = Object.assign(new Error('x'), { name: 'GatewayError', type: 'network' });
       expect(sub.isTransientError(new Error('the model call failed', { cause: another }))).toBe(false);
-      const copy = Object.assign(new Error('provider words'), { name: 'MembraneError', type: 'network', retryable: true });
-      expect(sub.isTransientError(new Error('the model call failed', { cause: copy }))).toBe(true);
+      expect(sub.isTransientError(new Error('the turn failed', { cause: new Error('read ECONNRESET') }))).toBe(true);
+      expect(sub.isRateLimitError(new Error('the turn failed', { cause: new Error('429 Too Many Requests') }))).toBe(true);
+      expect(sub.isTransientError(new Error('the turn failed', { cause: new Error('the upstream said no') }))).toBe(false);
+      const original = new MembraneError({ type: 'network', message: 'provider words', retryable: true });
+      expect(sub.isTransientError(new Error('the model call failed', { cause: original }))).toBe(true);
     } finally { await h.cleanup(); }
   });
 

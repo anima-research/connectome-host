@@ -1817,21 +1817,25 @@ export class SubagentModule implements Module {
   /** agent-framework quotes the ephemeral agent's name in its own messages
    *  ("Ephemeral agent \"spawn-migrate-…\" failed to start inference …"), and
    *  the name is the agent's choice, so it's taken out before the classifiers
-   *  read the words. */
+   *  read the words. They read the error's message, and its cause's when the
+   *  cause is an Error, either one counting: agent-framework's rejection
+   *  gives its own words, with the original's on a bounded copy as the
+   *  cause. They are only classified here. */
   private classifiedText(err: Error, agentName?: string): string {
-    const text = agentName ? err.message.split(agentName).join('') : err.message;
-    return text.toLowerCase();
+    const cause = (err as { cause?: unknown }).cause;
+    const texts = cause instanceof Error ? [err.message, cause.message] : [err.message];
+    return texts.map((text) => (agentName ? text.split(agentName).join('') : text).toLowerCase()).join('\n');
   }
 
-  /** agent-framework rejects a failed run with its own words and membrane's
-   *  error as the cause, read here by its name, which a second copy of the
-   *  package gives its own class too. */
-  private membraneCause(err: Error): { error: Error; type: string; httpStatus?: number } | undefined {
+  /** agent-framework rejects a failed run with its own words and a bounded
+   *  copy of the error as the cause: a plain Error with the original's name
+   *  and, for membrane's, membrane's fields. So it is read by its name. */
+  private membraneCause(err: Error): { type: string; httpStatus?: number } | undefined {
     const cause = (err as { cause?: unknown }).cause;
     if (!(cause instanceof Error) || cause.name !== 'MembraneError') return undefined;
     const { type, httpStatus } = cause as { type?: unknown; httpStatus?: unknown };
     if (typeof type !== 'string') return undefined;
-    return { error: cause, type, ...(typeof httpStatus === 'number' ? { httpStatus } : {}) };
+    return { type, ...(typeof httpStatus === 'number' ? { httpStatus } : {}) };
   }
 
   /** Where membrane couldn't type a failure from a status, as `unknown` or as
@@ -1845,7 +1849,7 @@ export class SubagentModule implements Module {
     if (!(err instanceof Error)) return false;
     const cause = this.membraneCause(err);
     if (cause && this.fieldsDecide(cause)) return cause.type === 'rate_limit' || cause.httpStatus === 429;
-    const msg = this.classifiedText(cause?.error ?? err, agentName);
+    const msg = this.classifiedText(err, agentName);
     return /(?<![a-z])rate[\s_-]?(limit|exceeded)/.test(msg)
       || /\b429\b/.test(msg)
       || /too many (\w+ )?requests/.test(msg);
@@ -1866,7 +1870,7 @@ export class SubagentModule implements Module {
         || (cause.httpStatus !== undefined && TRANSIENT_STATUSES.has(cause.httpStatus))
         || this.isRateLimitError(err, agentName);
     }
-    const msg = this.classifiedText(cause?.error ?? err, agentName);
+    const msg = this.classifiedText(err, agentName);
     return (
       msg.includes('timeout') ||
       msg.includes('idle') ||
