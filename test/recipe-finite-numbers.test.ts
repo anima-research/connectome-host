@@ -67,7 +67,7 @@ describe('recipe numbers must be finite', () => {
           try { validateRecipe(build(value)); } catch { accepted = false; }
           if (!accepted) continue;
           saveRecipe(dataDir, build(value));
-          const resumed = await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }).then(() => 'loaded', (err: Error) => err.message);
+          const resumed = await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }).then((r) => r === null ? 'nothing saved' : 'loaded', (err: Error) => err.message);
           expect(`${field} = ${value}: ${resumed}`).toBe(`${field} = ${value}: loaded`);
         }
       });
