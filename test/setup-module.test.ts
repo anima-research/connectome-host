@@ -140,7 +140,7 @@ describe('setup--finished', () => {
     expect(module.finishedAt()).toBe(state.finished);
   });
 
-  test('a finished time setup didn\'t write, which a command could have put there, is read as answers it doesn\'t keep, and isn\'t told', () => {
+  test('a finished time that isn\'t an ISO time reading back the same, such as a stored key or an RFC 1123 date, is read as answers setup doesn\'t keep, and isn\'t told; an ISO time is read as when setup finished', () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
     const state = (finished: string) => writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true, finished }));
@@ -1384,7 +1384,7 @@ describe('checkProviderKey', () => {
     expect(result).toEqual({ kind: 'answered', status: 400, said: 'no route for <MY_TOKEN>' });
   });
 
-  test('a 401 or 403 typed other than JSON, json-seq included, is no answer of the provider\'s, decided before the body, and one typed JSON, or untyped, is its refusal', async () => {
+  test('a 401 or 403 typed other than JSON, json-seq included, is read as unrecognized, decided before the body, and one typed JSON, or untyped, as the provider\'s refusal', async () => {
     const answering = (status: number, type: string | null, body: BodyInit | null) => (async () =>
       new Response(body, { status, headers: type === null ? {} : { 'content-type': type } })) as unknown as typeof fetch;
     const never = () => new ReadableStream({ start() {} });
@@ -1403,7 +1403,7 @@ describe('checkProviderKey', () => {
     }
   });
 
-  test('a 404 typed other than JSON is no answer of the provider\'s, decided before the body, and one typed JSON is its answer', async () => {
+  test('a 404 typed other than JSON is read as unrecognized, decided before the body, and one typed JSON as the provider\'s answer', async () => {
     const answering = (type: string, body: BodyInit) => (async () =>
       new Response(body, { status: 404, headers: { 'content-type': type } })) as unknown as typeof fetch;
     expect({
@@ -1451,7 +1451,7 @@ describe('checkDiscordToken', () => {
     expect(result).toEqual({ kind: 'refused' });
   });
 
-  test('a 401 typed other than JSON is no answer of Discord\'s, decided before the body, and one typed JSON, or a +json type, is its refusal', async () => {
+  test('a 401 typed other than JSON is read as unrecognized, decided before the body, and one typed JSON, or a +json type, as Discord\'s refusal', async () => {
     const answering = (type: string) => (async () => new Response(new ReadableStream({ start() {} }), {
       status: 401, headers: { 'content-type': type },
     })) as unknown as typeof fetch;
@@ -1472,7 +1472,7 @@ describe('checkDiscordToken', () => {
     expect(result).toEqual({ kind: 'unanswered', why: 'no answer within 0.05 s' });
   });
 
-  test('a 200 that isn\'t JSON is no answer of Discord\'s, one that isn\'t the bot user is Discord answering otherwise, and Discord\'s own words never show the token', async () => {
+  test('a 200 that isn\'t JSON is read as unrecognized, one that isn\'t the bot user as Discord answering otherwise, and Discord\'s own words never show the token', async () => {
     expect(await checkDiscordToken('a-token', { fetch: (async () => new Response('<html>')) as unknown as typeof fetch }))
       .toEqual({ kind: 'unrecognized', status: 200 });
     expect(await checkDiscordToken('a-token', { fetch: (async () => Response.json({})) as unknown as typeof fetch }))
@@ -1690,7 +1690,7 @@ describe('setup--ask_secret', () => {
     expect(readdirSync(dir).sort()).toEqual(['.env', '.setup']);
   });
 
-  test('a write of .env or of the list of stored secrets that ends in an error leaves .env as it was, and no copy beside either', () => {
+  test('a write of .env or of the list of stored secrets that fails before its rename, here at a file-size limit, leaves .env as it was, and no copy beside either', () => {
     const other = scratch();
     writeFileSync(join(other, '.env'), 'OPENAI_API_KEY=openai-key-value\n');
     const script = `const { StoredSecrets, writeEnvValue } = await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'setup', 'secrets.ts'))});
@@ -2832,7 +2832,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     });
   });
 
-  test('a secret that is no provider key setup knows is stored without being checked', async () => {
+  test('an OPENAI_COMPATIBLE_API_KEY is stored without being checked', async () => {
     let called = 0;
     const made = install({ asker: typed('a-value'), fetch: (async () => { called += 1; return models(); }) as unknown as typeof fetch });
     const result = await askSecret(made.module, { name: 'OPENAI_COMPATIBLE_API_KEY', purpose: 'a key' });
