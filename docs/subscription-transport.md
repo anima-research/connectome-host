@@ -127,10 +127,10 @@ stream, and decides where and how loudly each alert kind is told.
   to a channel: it stays on the TUI's alert line, the Web UI, failures.log
   and the webhook. Status channels follow the kind-level timeline: one line
   once a kind has been active for `quietMs` (so a flap that resolves in
-  seconds says nothing), one line when a told kind clears, naming what
-  remains.
-- `silent` kinds (`refusal`, and anything unknown) only reach failures.log
-  and the webhook as before.
+  seconds says nothing), one line when a told kind clears, naming the kind
+  still open that is most in force: the newest of the highest tier.
+- `silent` kinds (`refusal`, and anything unknown) reach no channel: only
+  the TUI's alert line, the Web UI, failures.log and the webhook, as before.
 
 Episodes close on the kind's `-clear` alert, or, for framework kinds with no
 clear (`hard-down`, refusals), on the agent's next completed inference; an

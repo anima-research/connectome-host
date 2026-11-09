@@ -1171,14 +1171,14 @@ describe("an alert's message stays with the operator", () => {
     ['provider-hold', '⚠ [host notice] clerk — provider-hold: the provider is holding its requests.'],
     ['context-refusal', "⚠ [host notice] clerk — context-refusal: its context couldn't be compiled for a request."],
     ['mcpl-down', "⚠ [host notice] discord — mcpl-down: this server isn't answering.", 'discord'],
-    ['quota-unreadable', "⚠ [host notice] clerk — quota-unreadable: its subscription quota couldn't be read."],
+    ['quota-unreadable', "⚠ [host notice] clerk — quota-unreadable: its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again."],
     ['auth-expiring', '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon.'],
-    ['credential-unsaved', "⚠ [host notice] clerk — credential-unsaved: its provider credential couldn't be saved to its file."],
+    ['credential-unsaved', "⚠ [host notice] clerk — credential-unsaved: its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again."],
     ['refusal-offpath', "⚠ [host notice] clerk — refusal-offpath: a request couldn't be completed."],
     ['refusal', "⚠ [host notice] clerk — refusal: a request couldn't be completed."],
     ['context-maintenance-failed', "⚠ [host notice] clerk — context-maintenance-failed: its context maintenance didn't finish."],
-    ['compression-quarantine', '⚠ [host notice] clerk — compression-quarantine: part of its history is held back from summaries.'],
-    ['instructions-unavailable', "⚠ [host notice] clerk — instructions-unavailable: its instructions couldn't be loaded."],
+    ['compression-quarantine', '⚠ [host notice] clerk — compression-quarantine: part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it.'],
+    ['instructions-unavailable', "⚠ [host notice] clerk — instructions-unavailable: its instructions couldn't be loaded, so none are injected."],
     ['a-kind-of-its-own', '⚠ [host notice] clerk — a-kind-of-its-own: it needs an operator.'],
   ];
   for (const [kind, text, subject] of WORDS) {
@@ -1204,8 +1204,24 @@ describe("an alert's message stays with the operator", () => {
     h.alert('auth-expiring', SENTINEL, { until: 3_600_000 });
     await h.settle();
     expect(h.posts.map((p) => p.text)).toEqual([
-      '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon. It expires at 1970-01-01 01:00 UTC.',
+      '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon. The credential expires at 1970-01-01 01:00 UTC.',
     ]);
+  });
+
+  test('a recipe that makes auth-expiring a reply kind gets the expiry wording in its reply too', () => {
+    expect(replyNoticeText('clerk', { kind: 'auth-expiring', until: 3_600_000 })).toBe(
+      '⚠ [host notice] clerk cannot respond right now: it is temporarily unavailable (auth-expiring). The credential expires at 1970-01-01 01:00 UTC. An operator has been alerted.',
+    );
+  });
+
+  test('a kind named like an Object property takes the fallback words', () => {
+    expect(statusNoticeText('clerk', { kind: 'constructor', until: 3_600_000 })).toBe(
+      '⚠ [host notice] clerk — constructor: it needs an operator. Expected back after 1970-01-01 01:00 UTC.',
+    );
+    expect(statusNoticeText('clerk', { kind: 'toString' })).toBe('⚠ [host notice] clerk — toString: it needs an operator.');
+    expect(replyNoticeText('clerk', { kind: 'hasOwnProperty', until: 3_600_000 })).toBe(
+      '⚠ [host notice] clerk cannot respond right now: it is temporarily unavailable (hasOwnProperty). Expected back after 1970-01-01 01:00 UTC. An operator has been alerted.',
+    );
   });
 
   test('a clear says which kind cleared and which stays open, and nothing of why it cleared', async () => {
@@ -1261,10 +1277,29 @@ describe("an alert's message stays with the operator", () => {
     await h.settle();
     h.emit({ type: 'inference:completed', agentName: 'clerk' });
     await h.settle();
-    expect(h.posts.length).toBeGreaterThan(4);
-    expect(h.markers.length).toBeGreaterThan(1);
+    const ops = h.posts.filter((p) => p.channelId === 'zulip:ops').map((p) => p.text);
+    for (const kind of ['hard-down', 'context-refusal', 'refusal', 'compression-quarantine']) {
+      expect(ops).toContain(statusNoticeText('clerk', { kind }));
+    }
+    expect(h.posts.filter((p) => p.channelId === 'zulip:dev').map((p) => p.text)).toEqual([replyNoticeText('clerk', { kind: 'hard-down' }), replyClearText('clerk')]);
+    const quarantine = statusNoticeText('clerk', { kind: 'compression-quarantine' });
+    expect(h.markers).toContain(
+      `[host-notice] The host posted this status notice in zulip:ops about compression-quarantine, for whoever runs it; nothing in it needs you to act: "${quarantine}"`,
+    );
+    expect(h.markers.filter((m) => m.startsWith('[host-notice] While you could not respond ('))).toHaveLength(1);
     for (const text of [...h.posts.map((p) => p.text), ...h.markers]) expect(text).not.toContain('sentinel-7f3a');
     const line = formatWireEvent({ type: 'ops:alert', kind: 'hard-down', agentName: 'clerk', message: `Last reason: ${SENTINEL}` } as never);
     expect(line?.text).toContain(SENTINEL);
+  });
+
+  test('a reply notice, and the marker it writes, carry no alert message', async () => {
+    const h = await started();
+    h.alert('hard-down', `inference failed 3 times in a row. Last reason: ${SENTINEL}`);
+    await h.settle();
+    await h.incoming('zulip:dev');
+    await h.settle();
+    const reply = replyNoticeText('clerk', { kind: 'hard-down' });
+    expect(h.posts.map((p) => [p.channelId, p.text])).toEqual([['zulip:dev', reply]]);
+    expect(h.markers).toEqual([`[host-notice] While you could not respond (hard-down), the host posted this in zulip:dev: "${reply}"`]);
   });
 });
