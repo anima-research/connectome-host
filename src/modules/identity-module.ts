@@ -79,16 +79,11 @@ const DEFAULT_SERVICES: Record<string, string> = {
 const SERVICES_TTL_MS = 60_000;
 const SERVICES_TIMEOUT_MS = 5_000;
 
-/** What the home node's directory says of an audience's MCPL endpoint, read
- *  afresh: the endpoint; or none for it, with the audiences it does publish
- *  one for; or that the directory couldn't be read, and why. */
 export type McplEndpointAnswer =
   | { url: string; published?: undefined; unreadable?: undefined }
   | { url?: undefined; published: string[]; unreadable?: undefined }
   | { url?: undefined; published?: undefined; unreadable: string };
 
-/** Whether `url` parses as a wss:// url: the only MCPL endpoint the
- *  directory is taken to publish. */
 function isWssUrl(url: string): boolean {
   try {
     return new URL(url).protocol === 'wss:';
@@ -177,12 +172,8 @@ export class IdentityModule implements Module {
   private readonly recordPath: string;
 
   private servicesFromHome: Record<string, string> = {};
-  /** The home node's MCPL directory (audience → wss endpoint), fetched with
-   *  the service directory. */
   private mcplFromHome: Record<string, string> = {};
   private servicesFetchedAt = 0;
-  /** Why the latest directory read failed, or null once one has succeeded
-   *  since: what mcplEndpointFor says when the directory can't be read. */
   private servicesError: string | null = null;
   private servicesInflight: Promise<void> | null = null;
 
@@ -510,10 +501,7 @@ export class IdentityModule implements Module {
           for (const [name, base] of Object.entries(json.services ?? {})) {
             if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;
           }
-          // wss only, as the home node publishes it: the resident's
-          // credential goes on this dial, and mcpl_deploy refuses to send
-          // one over ws:// to another machine. A value that doesn't parse as
-          // a wss:// url is left out, so the deploy never meets one.
+          // archipelago-home publishes an audience's MCPL endpoint as wss:// only.
           const mcpl: Record<string, string> = {};
           for (const [name, url] of Object.entries(json.mcpl ?? {})) {
             if (typeof url === 'string' && isWssUrl(url)) mcpl[name] = url;
@@ -540,16 +528,6 @@ export class IdentityModule implements Module {
     return { ...DEFAULT_SERVICES, ...this.servicesFromHome, ...this.config.services };
   }
 
-  /** The MCPL endpoint the home node publishes for an audience, so a
-   *  resident can dial a service by the name of its access grant and never
-   *  hold, or judge, an address: the directory is the operator's word that
-   *  the endpoint is safe to dial with a credential. Each call reads the
-   *  directory afresh, or joins a read already under way (refreshing the
-   *  services' cache too), since a deploy saves what it finds: a service
-   *  that moved is found where it is now, and an old copy is never saved
-   *  when the directory can't be read. The answer is the endpoint; or, when
-   *  the directory publishes none for the audience, the audiences it
-   *  publishes one for; or, when it couldn't be read, why. Never throws. */
   async mcplEndpointFor(audience: string): Promise<McplEndpointAnswer> {
     await this.resolveServices({ force: true });
     if (this.servicesError !== null) return { unreadable: this.servicesError };

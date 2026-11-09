@@ -514,26 +514,22 @@ describe('mcpl_deploy', () => {
     expect(asked).toStrictEqual(['body']);
     expect(dialled).toEqual([{ id: 'body', url: 'wss://body.example:8865/', credential: 'credential-for-body' }]);
 
-    // The service moves, and a redeploy by name saves and names where the directory publishes it now.
     bodyUrl = 'wss://body.example:9000/';
     const moved = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
     expect(moved.success).toBe(true);
     expectSays(moved.data, 'Redeployed server "body"', 'Its url, wss://body.example:9000/, is the endpoint');
     expect(readAgentOverlay(overlayPath).body?.url).toBe('wss://body.example:9000/');
     expect(asked).toStrictEqual(['body', 'body']);
-    // The restart dials the new url, with the grant's credential.
     expect(dialled).toStrictEqual([
       { id: 'body', url: 'wss://body.example:8865/', credential: 'credential-for-body' },
       { id: 'body', url: 'wss://body.example:9000/', credential: 'credential-for-body' },
     ]);
 
-    // A given url is dialled as given: the directory isn't asked, and the receipt says nothing of it.
     const byUrl = await call(mod, 'mcpl_deploy', { id: 'elsewhere', url: 'wss://other.example/mcpl', access: 'body' });
     expect(byUrl.success).toBe(true);
     expect(String(byUrl.data)).not.toContain('directory');
     expect(readAgentOverlay(overlayPath).elsewhere?.url).toBe('wss://other.example/mcpl');
 
-    // A command with an access grant is spawned as given, though the directory publishes the grant.
     const byCommand = await call(mod, 'mcpl_deploy', { id: 'local', command: 'node', args: ['server.js'], access: 'body' });
     expect(byCommand.success).toBe(true);
     expect(String(byCommand.data)).not.toContain('directory');
@@ -581,7 +577,6 @@ describe('mcpl_deploy', () => {
     const none = await call(mod, 'mcpl_deploy', { id: 'nowhere', access: 'nowhere' });
     expectSays(none.error, 'publishes no wss:// MCPL endpoint for the access grant "nowhere": give `url`');
 
-    // The identity module itself, its home node unreachable before anything was read.
     mod.setIdentity(new IdentityModule({
       keyPath: join(dir, 'k.pem'),
       home: 'id.test',
@@ -595,11 +590,9 @@ describe('mcpl_deploy', () => {
     expect(String(unreadable.error)).not.toContain('publishes no');
     expect(String(unreadable.error)).not.toContain('Neither `command` nor `url`');
     expect(String(unreadable.error)).not.toContain('Correct it');
-    // An identity whose lookup throws is a directory that couldn't be read too, and a reason's own full stop is dropped.
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('home node unreachable.'); } });
     expectSays((await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' })).error, 'couldn\'t be read (home node unreachable), so no endpoint');
 
-    // An identity that lends no directory refuses as before, without naming one, and so does a deploy without access.
     mod.setIdentity({ accessFor: async () => 'grant-token' });
     const older = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
     expectSays(older.error, 'Neither `command` nor `url` was given');
@@ -609,7 +602,6 @@ describe('mcpl_deploy', () => {
     expect(bare.success).toBe(false);
     expectSays(bare.error, 'Neither `command` nor `url` was given');
     expect(String(bare.error)).not.toContain('directory');
-    // A host with no identity at all: the grant is refused as one it can't serve, and no directory is asked.
     const noIdentity = await call(makeModule(stub), 'mcpl_deploy', { id: 'body', access: 'body' });
     expectSays(noIdentity.error, 'this host has no identity configured', 'Neither `command` nor `url` was given');
     expect(String(noIdentity.error)).not.toContain('directory');
@@ -661,8 +653,6 @@ describe('mcpl_deploy', () => {
     const byGrant = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
     expect(byGrant.error).toStartWith('Nothing was deployed: the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://');
     expect(String(byGrant.error)).not.toContain('leave `url` out');
-    // With a directory: where it publishes the grant's endpoint, the refusal names it, and where it doesn't, it says
-    // nothing of one; a token or a credential in the url gets no such advice, since only a grant names an audience.
     const lookups: string[] = [];
     mod.setIdentity({
       accessFor: async () => 'grant-token',
@@ -693,10 +683,7 @@ describe('mcpl_deploy', () => {
       expect(byUrl.error).toStartWith('Nothing was deployed: the user, password or token parameter in its url would go to tools.example over unencrypted ws://');
       expect(String(byUrl.error)).not.toContain('leave `url` out');
     }
-    // Only an access grant names an audience to look up.
     expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
-    // A directory that couldn't be read, whether the lookup says so or throws, is named with its reason, and the
-    // refusal says a deploy with `access` and no `url` may find an endpoint later; the refusal stands.
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ unreadable: 'status 503.' }) });
     const unreadable = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
     expectSays(
@@ -716,7 +703,6 @@ describe('mcpl_deploy', () => {
       expect(String(refused.error)).not.toContain('leave `url` out');
       expect(String(refused.error)).not.toContain('Or ask the service');
     }
-    // A directory that was read and publishes nothing at all gets the operator's sentence too.
     mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
     const empty = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
     expectSays(empty.error, 'Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory');

@@ -181,18 +181,13 @@ describe('identity module', () => {
       }) as typeof fetch,
     });
     expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test:8865/' });
-    // Only a value that parses as a wss:// url is an endpoint, since a credential goes on this dial; a name every
-    // object inherits is none either.
     for (const name of ['plain', 'odd', 'broken', 'count', 'arr', 'toString']) {
       expect(await mod.mcplEndpointFor(name)).toEqual({ published: ['body'] });
     }
-    // Each lookup reads the directory again, so an endpoint that moved, or a new one, is found at once.
     const before = directoryFetches;
     mcpl = { games: 'wss://games.test/mcpl', body: 'wss://body.test:9000/' };
     expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test:9000/' });
-    // The audiences are listed sorted, whatever order the directory gives them in.
     expect(await mod.mcplEndpointFor('nowhere')).toEqual({ published: ['body', 'games'] });
-    // An audience the directory stops publishing is gone at the next read.
     mcpl = { games: 'wss://games.test/mcpl' };
     expect(await mod.mcplEndpointFor('body')).toEqual({ published: ['games'] });
     expect(directoryFetches).toBe(before + 3);
@@ -215,17 +210,14 @@ describe('identity module', () => {
         return new Response('{}', { status: 404 });
       }) as typeof fetch,
     });
-    // Nothing has been read yet. Each lookup is one read, failed or not.
     expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'ECONNREFUSED' });
     expect(fetches).toBe(1);
     up = true;
     expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test/' });
     expect(fetches).toBe(2);
-    // A read that fails after a good one isn't answered from the copy the good one left.
     up = false;
     expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'ECONNREFUSED' });
     expect(fetches).toBe(3);
-    // An answer that isn't 2xx is a read that failed.
     up = true;
     status = 503;
     expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'status 503' });
