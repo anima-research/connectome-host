@@ -100,7 +100,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   `recipes/clerk.json`'s system prompt now says a fork's result or failure
   arrives as a message from the fork that wakes the resident, and one that
   couldn't be created, or whose message can't be delivered, as an
-  `inference-request` scope event.
+  `inference-request` scope event. A resident started with that file as its
+  recipe argument sends the new prompt at its next request, which writes its
+  prompt cache in full once. One that resumes its saved recipe keeps the
+  prompt saved with it.
 
 - `scripts/warmup-session.ts` no longer prints "Converged." over work it
   didn't do. It declares no tool definitions, so the first chunk whose
