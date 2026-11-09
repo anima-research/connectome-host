@@ -1,5 +1,8 @@
 import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG, defaultTokenEstimator } from '@animalabs/context-manager';
 import { getDefaultModelLimits, type ModelLimits } from './model-limits.js';
+import { openaiLongContextStep } from './call-pricing.js';
+import { isBuiltinStrategyType } from './extensions.js';
+import { systemPromptFor } from './framework-agent-config.js';
 import { resolveProvider, type Recipe } from './recipe.js';
 
 const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
@@ -387,4 +390,63 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
       ? sentence(ways) + (atAnEnd ? ` ${AT_AN_END}` : '')
       : `No budget, no lower ${lowerList}, and no shorter system prompt fits it alone.`),
   };
+}
+
+const usd = (rate: number) => `$${rate.toFixed(Math.max(2, (String(rate).split('.')[1] ?? '').length))}`;
+
+function listed(parts: string[]): string {
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0] ?? '';
+}
+
+/** The note the host prints once at start where a recipe on OpenAI's API can
+ *  send a request's input past its model's long-context step, by the host's
+ *  own count: the conversation a compile sends (the budget less the reply,
+ *  and on the autobiographical and frontdesk strategies up to the grace over
+ *  that), the system prompt and the room the fit keeps for tools. Undefined
+ *  on any other provider, on a strategy an extension builds, whose compile
+ *  the host can't count, for a model the pricing table doesn't step, and for
+ *  a budget whose requests stay under it. */
+export function priceStepNote(recipe: Recipe, model: string): string | undefined {
+  if (resolveProvider(recipe) !== 'openai-responses' || typeof model !== 'string') return undefined;
+  if (!isBuiltinStrategyType(recipe.agent.strategy?.type ?? 'autobiographical')) return undefined;
+  const step = openaiLongContextStep(model, recipe.agent.responses?.serviceTier);
+  if (!step) return undefined;
+  const budget = effectiveContextBudgetTokens(recipe, model);
+  const read = readNumbers(recipe);
+  if (!isTokenSize(budget) || typeof read === 'string') return undefined;
+  // Only the autobiographical strategies, frontdesk's included, allow the grace over the budget less the reply:
+  // context-manager's passthrough compiles to it exactly.
+  const x = read.raw ? read : { ...read, grace: 0 };
+  // The prompt as the agent is given it, which drops the legacy fold paragraph.
+  const system = defaultTokenEstimator(systemPromptFor(recipe.agent.systemPrompt));
+  const fixed = system + TOOLS_ROOM_TOKENS;
+  // frontdesk adds a provenance header to each copied message from a server after the selection, which the host
+  // can't size ahead, so the count leaves the headers out and names no budget under the step.
+  const frontdesk = recipe.agent.strategy?.type === 'frontdesk';
+  const input = (b: number) => Math.max(0, limitOf(x, b - x.reply)) + fixed;
+  if (input(budget) <= step.tokens) return undefined;
+  const { long, short } = step;
+  const kinds = (['input', 'cached', 'output'] as const).filter((k) => long?.[k] !== undefined && short[k] !== undefined);
+  const name = { input: 'input', cached: 'cached input', output: 'output' };
+  const head = long
+    ? `${model} on OpenAI's API, at the ${step.tier} tier, bills a request over ${n(step.tokens)} input tokens at its long-context rates: ` +
+      `${listed(kinds.map((k) => `${usd(long[k]!)} ${name[k]}`))} per million tokens, against ${listed(kinds.map((k) => usd(short[k]!)))} under it`
+    : `OpenAI's pricing page gives ${model} on its API, at the ${step.tier} tier, rates for a request of up to ${n(step.tokens)} input tokens and none for a longer one`;
+  const said = recipe.agent.contextBudgetTokens === undefined || recipe.agent.contextBudgetTokens === null
+    ? `The budget the host gives this recipe, ${n(budget)},`
+    : `Recipe agent.contextBudgetTokens (${n(budget)})`;
+  // The largest budget whose input stays at or under the step: none where the fixed input alone passes it, and
+  // left unsaid where the figures pass the integers a double holds exactly, since counting by one there can't move.
+  let under: number | undefined = fixed > step.tokens ? 0 : x.reply + Math.floor((step.tokens - fixed) / (1 + x.grace));
+  if (under > 0 && under + step.tokens <= Number.MAX_SAFE_INTEGER) {
+    while (input(under + 1) <= step.tokens) under++;
+    while (under > 0 && input(under) > step.tokens) under--;
+  } else if (under > 0) under = undefined;
+  if (frontdesk && under !== 0) under = undefined;
+  const grace = x.grace > 0 ? `, and up to ${Number((x.grace * 100).toPrecision(4))}% over that` : '';
+  const headers = frontdesk ? `, leaving out the provenance headers frontdesk adds to messages from a server` : '';
+  return (`[price] ${head}. ` +
+    `${said} lets a request's input reach about ${n(input(budget))} tokens by the host's own count: the conversation it compiles to the budget ` +
+    `less agent.maxTokens (${n(x.reply)})${grace}, the system prompt (about ${n(system)}) and ${n(TOOLS_ROOM_TOKENS)} kept for tools${headers}. ` +
+    (under === undefined ? '' : under > 0 ? `A budget of ${n(under)} or less keeps a request's input to ${n(step.tokens)} tokens or fewer by that count.` : `No budget keeps a request's input to ${n(step.tokens)} tokens or fewer by that count, since the system prompt and the room kept for tools pass that alone.`)).trimEnd();
 }

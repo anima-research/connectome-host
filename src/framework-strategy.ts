@@ -69,8 +69,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
  * provider bills them: Anthropic writes at 2x on the 1-hour cache and 1.25x
  * on the 5-minute one, and Bedrock has only the 5-minute cache. Reads, and
  * OpenAI's prices, come from the pricing table (anthropicCacheReadMultiplier,
- * openaiCacheMultipliers), where Sonnet 5.5 takes 0.1x, as its entry
- * explains.
+ * openaiCacheMultipliers).
  */
 export function standardKvUnifiedConfig(recipe: Recipe, model: string): RecipeKvUnifiedConfig {
   const provider = recipe.agent.provider;

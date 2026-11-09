@@ -514,14 +514,14 @@ dollar figures. The host's standard block matches them to what the provider bill
 
 - **Claude writes:** `2` on the 1-hour cache (the default `cacheTtl`), `1.25` on the
   5-minute cache and on Bedrock (5-minute only);
-- **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5, `0.025` on Claude
-  Fable 5.1 / Mythos 5.1 and Claude Fable 5.2 / Mythos 5.2. Claude Sonnet 5.5 takes `0.1`,
-  though its reads are billed at `0.05`, since a lower price can change the layout the
-  solver picks and rewrite the agent's prompt cache;
+- **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5 and Sonnet 5.5, `0.025`
+  on Claude Fable 5.1 / Mythos 5.1 and Claude Fable 5.2 / Mythos 5.2;
 - **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
   models, and `1` on Codex, whose credit billing has no cache-write charge;
 - **OpenAI reads:** the model's cached-input ratio, the same on the API and in Codex: `0.1`
-  on most models, `0.05` on GPT-6.1 Sol.
+  on most models, `0.05` on GPT-6.1 Sol and GPT-6.1 Terra, `0.25` on the gpt-4.1 family,
+  o3 and o4-mini, `0.5` on the gpt-4o family, o1 and o3-mini, and `1` on the pro models,
+  which the pricing page gives no cached-input price.
 
 Write the block yourself only to change the policy, and then set the prices to match.
 `recentWindowTokens` follows the budget as in §5 (300k tail on a 600k budget, 100k–120k on

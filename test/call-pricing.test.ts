@@ -134,7 +134,8 @@ describe('Anthropic per-call pricing', () => {
     expect(anthropicCacheReadMultiplier('global.anthropic.claude-mythos-5-1')).toBe(0.025);
     expect(anthropicCacheReadMultiplier('claude-opus-4-6')).toBe(0.1);
     expect(anthropicCacheReadMultiplier('claude-haiku-5-5')).toBe(0.1);
-    expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.1);
+    expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.05);
+    expect(anthropicCacheReadMultiplier('claude-sonnet-5')).toBe(0.1);
     expect(anthropicCacheReadMultiplier('some-unknown-model')).toBe(0.1);
   });
 
@@ -152,6 +153,54 @@ describe('Anthropic per-call pricing', () => {
     expect(openaiCacheMultipliers('gpt-6.1-sol', 'codex')).toEqual({ read: 0.05, write: 1 });
   });
 
+  test('openaiCacheMultipliers reads a model the pricing page lists from its standard row: gpt-6.1-terra 0.05x, the pro models no discount', () => {
+    expect(openaiCacheMultipliers('gpt-6.1-terra', 'api')).toEqual({ read: 0.05, write: 1.25 });
+    expect(openaiCacheMultipliers('openai/gpt-6.1-terra', 'api')).toEqual({ read: 0.05, write: 1.25 });
+    expect(openaiCacheMultipliers('gpt-6.1-terra', 'codex')).toEqual({ read: 0.05, write: 1 });
+    for (const pro of ['gpt-5.5-pro', 'gpt-5.4-pro', 'gpt-5.2-pro', 'gpt-5-pro', 'o3-pro']) {
+      expect(openaiCacheMultipliers(pro, 'api')).toEqual({ read: 1, write: 1 });
+      expect(openaiCacheMultipliers(pro, 'codex')).toEqual({ read: 1, write: 1 });
+    }
+  });
+
+  test('the Anthropic table is the one checked against the pricing page on November 9, 2026, and says so', () => {
+    expect(ANTHROPIC_PRICING_VERSION).toBe('anthropic-public-2026-11-09');
+  });
+
+  test('every other model the pricing page lists reads and writes at exactly the multiples it did before', () => {
+    const before: Record<string, [number, number]> = {
+      'gpt-6-astra': [0.1, 1.25], 'gpt-6.1-sol': [0.05, 1.25], 'gpt-6-luna': [0.1, 1.25], 'gpt-6-sol': [0.1, 1.25],
+      'gpt-5.6-sol': [0.1, 1.25], 'gpt-5.6-terra': [0.1, 1.25], 'gpt-5.6-luna': [0.1, 1.25], 'gpt-5.5': [0.1, 1], 'gpt-5.4': [0.1, 1],
+      'gpt-5.4-mini': [0.1, 1], 'gpt-5.4-nano': [0.1, 1], 'gpt-5.2': [0.1, 1], 'gpt-5.1': [0.1, 1], 'gpt-5': [0.1, 1], 'gpt-5-mini': [0.1, 1],
+      'gpt-5-nano': [0.1, 1], 'gpt-4.1': [0.25, 1], 'gpt-4.1-mini': [0.25, 1], 'gpt-4o': [0.5, 1], 'gpt-4o-mini': [0.5, 1], 'o3': [0.25, 1],
+      'gpt-6-cyber': [0.1, 1.25], 'gpt-5.6-cyber': [0.1, 1.25], 'gpt-5.5-cyber': [0.1, 1], 'gpt-6-rosalind': [0.1, 1.25],
+      'gpt-rosalind-research': [0.1, 1], 'gpt-rosalind-discovery': [0.1, 1],
+    };
+    for (const [model, [read, write]] of Object.entries(before)) {
+      expect(openaiCacheMultipliers(model, 'api')).toEqual({ read, write });
+      expect(openaiCacheMultipliers(model, 'codex')).toEqual({ read, write: 1 });
+    }
+  });
+
+  test('a name the pricing page doesn\'t list keeps the multiples its prefix gave before', () => {
+    expect(openaiCacheMultipliers('o1', 'api')).toEqual({ read: 0.5, write: 1 });
+    expect(openaiCacheMultipliers('o3-mini', 'api')).toEqual({ read: 0.5, write: 1 });
+    expect(openaiCacheMultipliers('o4-mini', 'api')).toEqual({ read: 0.25, write: 1 });
+    expect(openaiCacheMultipliers('gpt-4o-2024-08-06', 'api')).toEqual({ read: 0.5, write: 1 });
+    expect(openaiCacheMultipliers('gpt-6.1-sol-2026-10-01', 'api')).toEqual({ read: 0.05, write: 1.25 });
+    expect(openaiCacheMultipliers('gpt-6-nova', 'api')).toEqual({ read: 0.1, write: 1.25 });
+    expect(openaiCacheMultipliers('gpt-6-nova', 'codex')).toEqual({ read: 0.1, write: 1 });
+    expect(openaiCacheMultipliers('some-unknown-model', 'api')).toEqual({ read: 0.1, write: 1 });
+  });
+
+  test('Sonnet 5.5 reads from cache at 0.05x, half the Sonnet 5 rate', () => {
+    const sonnet55 = priceAnthropicCall('claude-sonnet-5-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    const sonnet5 = priceAnthropicCall('claude-sonnet-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    expect(sonnet55?.cacheRead).toBeCloseTo(0.1, 9);
+    expect(sonnet55?.rates.cacheReadPerMillion).toBeCloseTo(0.1, 9);
+    expect(sonnet5?.cacheRead).toBeCloseTo(0.2, 9);
+  });
+
   test('Fable 5.2 and Mythos 5.2 are $8/$40, with writes at $10 and $16 and reads at $0.20, as the pricing page gives them', () => {
     for (const model of ['claude-fable-5-2', 'claude-mythos-5-2', 'claude-fable-5-2-20261109']) {
       const cost = priceAnthropicCall(model, timestamp, usage({
@@ -163,7 +212,7 @@ describe('Anthropic per-call pricing', () => {
       expect(cost?.rates.cacheWrite1hPerMillion).toBeCloseTo(16, 9);
       expect(cost?.rates.cacheReadPerMillion).toBeCloseTo(0.2, 9);
       expect(cost?.total).toBeCloseTo(8 + 40 + 10 + 16 + 0.2, 9);
-      expect(cost?.pricingVersion).toBe('anthropic-public-2026-10-19-5-2');
+      expect(cost?.pricingVersion).toBe('anthropic-public-2026-11-09');
     }
   });
 
@@ -270,7 +319,7 @@ function call(provider: string, model: string, overrides: Partial<PriceCallInput
 describe('priceCall', () => {
   test('prices an Anthropic call as priceAnthropicCall does, its two writes summed', () => {
     const parts = { inputTokens: 40_000, outputTokens: 3_000, cacheReadTokens: 50_000, cacheWrite5mTokens: 7_000, cacheWrite1hTokens: 9_000 };
-    for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']) for (const inferenceGeo of [undefined, 'us']) {
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']) for (const inferenceGeo of [undefined, 'us']) {
       const ledger = priceAnthropicCall(model, timestamp, usage({ ...parts, serviceTier: undefined, inferenceGeo }))!;
       const price = priceCall(call('anthropic', model, { ...parts, inferenceGeo }))!;
       expect(price).toMatchObject({ input: ledger.input, cacheRead: ledger.cacheRead, output: ledger.output, total: ledger.total, tier: 'standard', pricingVersion: ANTHROPIC_PRICING_VERSION });
@@ -278,11 +327,16 @@ describe('priceCall', () => {
     }
   });
 
-  test('gives no Anthropic price where priceAnthropicCall gives none, for an OpenAI write lifetime, or for Sonnet 5.5\'s cache reads', () => {
+  test('prices Sonnet 5.5\'s cache reads at 0.05x', () => {
+    const price = priceCall(call('anthropic', 'claude-sonnet-5-5', { inputTokens: 1_000_000, cacheReadTokens: 1_000_000 }));
+    expect(price?.input).toBeCloseTo(2, 9);
+    expect(price?.cacheRead).toBeCloseTo(0.1, 9);
+    expect(price?.total).toBeCloseTo(2.1, 9);
+  });
+
+  test('gives no Anthropic price where priceAnthropicCall gives none, or for an OpenAI write lifetime', () => {
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { inputTokens: 1_000, serviceTier: 'priority' }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { inputTokens: 1_000, inferenceGeo: 'eu' }))).toBeUndefined();
-    expect(priceCall(call('anthropic', 'claude-sonnet-5-5', { inputTokens: 1_000, cacheReadTokens: 1_000 }))).toBeUndefined();
-    expect(priceCall(call('anthropic', 'claude-sonnet-5-5', { inputTokens: 1_000_000, outputTokens: 1_000_000 }))?.total).toBeCloseTo(12, 9);
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite5mTokens: 1_000, unclassifiedCacheWriteTokens: 1 }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-unknown-9', { inputTokens: 1_000 }))).toBeUndefined();
     expect(priceCall(call('anthropic', 'claude-opus-5-5', { cacheWrite30mTokens: 1_000 }))).toBeUndefined();
