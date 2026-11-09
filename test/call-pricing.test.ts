@@ -182,6 +182,15 @@ describe('Anthropic per-call pricing', () => {
     expect(priceAnthropicCall('claude-opus-4-1-20250805', timestamp, usage({}))?.rates.inputPerMillion).toBe(15);
   });
 
+  test('a later Fable or Mythos version such as 5.3 is priced at its family row', () => {
+    for (const model of ['claude-fable-5-3', 'claude-mythos-5-3']) {
+      const cost = priceAnthropicCall(model, timestamp, usage({ cacheReadTokens: 1_000_000 }));
+      expect([model, cost?.rates.inputPerMillion, cost?.rates.outputPerMillion]).toEqual([model, 10, 50]);
+      expect(cost?.rates.cacheReadPerMillion).toBeCloseTo(1, 9);
+      expect(anthropicCacheReadMultiplier(model)).toBe(0.1);
+    }
+  });
+
   test('Fable 5.1 reads from cache at 0.025x, a quarter of the Fable 5 rate', () => {
     const fable51 = priceAnthropicCall('claude-fable-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
     const fable5 = priceAnthropicCall('claude-fable-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
