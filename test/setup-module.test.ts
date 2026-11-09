@@ -9,6 +9,7 @@ import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
 import { EnvFormError, envForm, readEnvFile, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
+import * as terminalSecret from '../src/setup/terminal-secret.js';
 import { modeTest } from './mode-test.js';
 import { processEnded, waitForEnd } from './process-ended.js';
 import { bracketedPaste } from '../src/readline-paste.js';
@@ -305,6 +306,13 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('token <MY_TOKEN>\n');
   });
 
+  test('a stored secret in a command\'s output is shown by its name in any letter case', async () => {
+    const { module } = install({ envFile: 'DISCORD_TOKEN="Discord-Token-Value"\n' });
+    const answer = await run(module, 'echo "discord-token-value DISCORD-TOKEN-VALUE"; echo "Discord-Token-Value" >&2');
+    expect(answer.stdout.text).toBe('<DISCORD_TOKEN> <DISCORD_TOKEN>\n');
+    expect(answer.stderr.text).toBe('<DISCORD_TOKEN>\n');
+  });
+
   test('a secret a dotenv file names as a name every object has, such as constructor, is shown by its name in a command\'s output', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n' });
     writeFileSync(join(dir, '.env.local'), 'constructor=private-token\n');
@@ -384,6 +392,13 @@ describe('setup--run', () => {
     writeFileSync(join(dir, '.env.local'), 'MY_PATH=tok-${DATA_DIR}-en\nMY_TOKEN=tok-${NODE_ENV}-en\n');
     const answer = await run(module, `${process.execPath} -e 'console.log(process.env.MY_PATH, process.env.MY_TOKEN)'`);
     expect(answer.stdout.text).toBe('<MY_PATH> <MY_TOKEN>\n');
+  });
+
+  test('a secret a dotenv file builds from a variable that holds another secret\'s value, which the command\'s environment leaves out, is shown by its name', async () => {
+    const { dir, module } = install({ env: { ANTHROPIC_API_KEY: 'secret123', COPY: 'secret123' } });
+    writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=prefix${COPY}\n');
+    const answer = await run(module, `${process.execPath} -e 'console.log(process.env.MY_TOKEN)'`);
+    expect(answer.stdout.text).toBe('<MY_TOKEN>\n');
   });
 
   test('a read of the dotenv files that runs out of time is answered as one to try once more, not as a file to put right', () => {
@@ -1345,6 +1360,14 @@ describe('checkProviderKey', () => {
     expect(result).toEqual({ kind: 'redirected', status: 302, to: 'https://<OPENROUTER_API_KEY>.example/' });
   });
 
+  test('another stored secret is hidden in what the provider says in any letter case', async () => {
+    const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
+      hide: [{ name: 'MY_TOKEN', value: 'AbCd1234' }],
+      fetch: (async () => Response.json({ error: { message: 'no route for abcd1234 or ABCD1234' } }, { status: 400 })) as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ kind: 'answered', status: 400, said: 'no route for <MY_TOKEN> or <MY_TOKEN>' });
+  });
+
   test('another stored secret is hidden in what the provider says, in its trimmed form as well as whole', async () => {
     const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
       hide: [{ name: 'MY_TOKEN', value: '  abc123  ' }],
@@ -2066,6 +2089,41 @@ describe("the terminal's hidden question", () => {
     expect(lines).toEqual(['after']);
     expect(shown().split('tok-123456').length - 1).toBe(1);
     rl.close();
+  });
+
+  test('a line on the prompt, a pasted line held for the conversation, a history entry and a kill that hold the answer in another letter case are taken out too', async () => {
+    const { input, output, rl, shown } = terminal();
+    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
+    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
+    const sent: string[] = [];
+    rl.on('line', (line) => {
+      const message = paste.take(line);
+      if (message !== null) sent.push(message);
+    });
+    input.write('TOK-ABCDEF\x15');
+    input.write('\x1b[200~my token is\rthe token is Tok-AbcDef\r\x1b[201~');
+    await Bun.sleep(30);
+    input.write('typed TOK-abcdef');
+    await Bun.sleep(20);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
+    input.write('tok-abcdef\r');
+    expect(await answer).toBe('tok-abcdef');
+    expect(rl.line).toBe('');
+    expect(shown()).toContain('What you\'d typed held what you just entered hidden, so it was taken out.');
+    expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out. Enter sends the rest.\n');
+    const history = (rl as unknown as { history: string[] }).history;
+    expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef'))).toBe(false);
+    const yanked = new Promise<void>((resolve) => rl.once('line', () => resolve()));
+    input.write('\x19\r');
+    await yanked;
+    expect(sent).toEqual(['my token is\n']);
+    paste.end();
+    rl.close();
+  });
+
+  test('whether a line holds an answer given hidden is told in any letter case, as a line queued for the conversation is', () => {
+    expect(terminalSecret.holdsAnswer('my TOK-abcdef', ['tok-ABCDEF'])).toBe(true);
+    expect(terminalSecret.holdsAnswer('my token', ['tok-abcdef', 'other'])).toBe(false);
   });
 
   test('a draft that holds the answer isn\'t given back where the answer came with spaces around it', async () => {

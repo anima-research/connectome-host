@@ -606,3 +606,32 @@ describe('the check and the agent\'s client', () => {
     }
   }, 20_000);
 });
+
+describe('the key where ANTHROPIC_BASE_URL carries it', () => {
+  test('a key in the base URL\'s host is hidden in any letter case wherever the check names that host or its origin', async () => {
+    const result = await checkKey({
+      key: 'Key-In-Host', model: 'm', baseUrl: 'https://key-in-host.gateway.test',
+      fetch: (async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch,
+    });
+    expect(cause(result)).toContain('<ANTHROPIC_API_KEY>.gateway.test');
+    expect(cause(result).toLowerCase()).not.toContain('key-in-host');
+    const refused = await checkKey({
+      key: 'Key-In-Host', model: 'm', baseUrl: 'https://key-in-host.gateway.test',
+      fetch: (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'no' } }, { status: 403 })) as unknown as typeof fetch,
+    });
+    expect(cause(refused)).toContain('Ask whoever runs https://<ANTHROPIC_API_KEY>.gateway.test');
+    expect(cause(refused).toLowerCase()).not.toContain('key-in-host');
+  });
+});
+
+describe('a 200 that isn\'t an event stream', () => {
+  const typed = (type: string) => (async () => new Response('{}', { headers: { 'content-type': type } })) as unknown as typeof fetch;
+
+  test('is JSON by the same rule as the other checks: application/problem+json is, application/json-seq isn\'t', async () => {
+    const problem = await checkKey({ key: 'k', model: 'm', baseUrl: 'https://gateway.test', fetch: typed('application/problem+json') });
+    expect(cause(problem)).toContain('where the check asked for an event stream');
+    const seq = await checkKey({ key: 'k', model: 'm', baseUrl: 'https://gateway.test', fetch: typed('application/json-seq') });
+    expect(cause(seq)).not.toContain('where the check asked for an event stream');
+    expect(cause(seq)).toContain('not with a message from Anthropic\'s Messages API');
+  });
+});

@@ -106,6 +106,23 @@ describe('the wait for a line\'s turn', () => {
     expect(await settled(wait)).toBe(true);
   });
 
+  test('a line is unanswered while its turn runs, and while it\'s owed one, even one whose wait ran out before it was taken in, as batch mode and the setup close both ask', async () => {
+    await onFakeTimers(async (advance) => {
+      const { turns, emit } = setUp();
+      const settledTrace = [...TURN_SETTLED_TRACES][0]!;
+      expect(turns.unanswered()).toBe(false);
+      void turns.waitForTurn(400);
+      await advance(400);
+      expect({ running: turns.running(), unanswered: turns.unanswered() }).toEqual({ running: false, unanswered: true });
+      turns.takenIn();
+      expect(turns.unanswered()).toBe(true);
+      emit('inference:started');
+      expect(turns.unanswered()).toBe(true);
+      emit(settledTrace);
+      expect(turns.unanswered()).toBe(false);
+    });
+  });
+
   test('a line whose wait ran out before it was taken in is owed a turn until its take-in comes and a turn starts, and a switch forgets it', async () => {
     await onFakeTimers(async (advance) => {
       const { turns, emit } = setUp();

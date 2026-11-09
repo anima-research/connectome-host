@@ -2947,3 +2947,15 @@ const LATER_RUN = [
   'Starting setup\'s agent. It speaks first. /quit leaves the conversation, and `<dir>/connectome-host/connectome setup discord` picks it up where it stopped.',
   'To go on with setup where it stopped: `<dir>/connectome-host/connectome setup discord`.',
 ];
+
+test('the line saying where the key is checked hides the key in any letter case where ANTHROPIC_BASE_URL\'s host carries it', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\nANTHROPIC_BASE_URL=https://${KEY.toUpperCase()}.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('one call at https://<ANTHROPIC_API_KEY>.gateway.example to ');
+  expect(shown.toLowerCase()).not.toContain(KEY);
+});
