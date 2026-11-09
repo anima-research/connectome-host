@@ -93,11 +93,14 @@ to stop, `kickstart -k` to restart.)
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
-`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To avoid it, stop the
-resident first, then drain the debt offline with `bun scripts/warmup-session.ts
+`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To make fewer of them,
+stop the resident first, then drain what the warmup can offline with `bun scripts/warmup-session.ts
 <session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
-`--merge-threshold` must pass the same values to the warmup command.
+`--merge-threshold` must pass the same values to the warmup command. The warmup
+leaves the work that waits on the agent's tool definitions to the restarted host;
+[Stage 3 of `claudeai-evacuation.md`](./claudeai-evacuation.md#stage-3--warmup-compress-the-message-history)
+says which work that is and when the host compresses it.
 
 **Logs / observability** (`data/` below is `DATA_DIR`, default `./data` under
 the working directory):
@@ -573,6 +576,7 @@ repo**:
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
   `scripts/warmup-session.ts <session>`, which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
-  not read from the recipe).
+  not read from the recipe), except for work that waits on tool definitions,
+  which it names and leaves.
 - `scripts/strip-oversized-images.mjs` — remove >5 MB image blocks from the
   chronicle (agent must be stopped). No shipped equivalent.

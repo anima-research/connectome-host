@@ -34,7 +34,11 @@ import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
-const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated'];
+/** Events every child sends whatever its subscription asks for, for the
+ *  host's own readers: its usage, and an undo, a redo or a shed on one of
+ *  its agents' windows, at which the Web UI reads the child's panels again
+ *  (agent-streams.ts WindowFrames). */
+const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated', 'window:undone', 'presentation:retracted'];
 export const CLOCK_SLACK_MS = 60_000;
 const ADOPTION_UNRESOLVED = 'adoption unresolved;';
 
@@ -1574,7 +1578,7 @@ export class FleetModule implements Module {
           `string; ${got(input.command)}.`,
       };
     }
-    this.sendToChild(ok.child, { type: 'command', command: input.command });
+    this.sendToChild(ok.child, { type: 'command', command: input.command, from: 'fleet' });
     return { success: true, data: { name: input.name, sent: 'command', command: input.command } };
   }
 

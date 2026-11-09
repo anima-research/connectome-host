@@ -133,12 +133,23 @@ for (const second of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
   }, 60_000);
 }
 
-test('a command whose work answers once the stop has begun doesn\'t fail the stop, and nothing throws', async () => {
-  const { receipt, code, signal, stdout } = await runChild('healthy', 'late-command');
-  expect(stdout).toContain('LATE_COMMAND_ANSWERED');
-  expect(receipt).toEqual({ ...STOPPED_ONCE, status: 'fulfilled', originalError: false });
-  expect({ code, signal }).toEqual({ code: 0, signal: null });
-}, 60_000);
+// The mock's renderer captures console output until it is destroyed, as
+// the CLI's does, so an answer printed before the destroy isn't on stdout
+// (#485 bot review 4, finding 19). A stop signal has OpenTUI destroy the
+// renderer before the TUI's stop runs, so /quit is what shows the stop's
+// own order: the renderer destroyed before the framework's stop starts.
+for (const [control, how] of [['late-command', 'a stop signal'], ['late-command-quit', '/quit']] as const) {
+  test(`a command whose work answers once the stop by ${how} has begun doesn't fail the stop, nothing throws, and its answer is printed`, async () => {
+    const { receipt, code, signal, stdout } = await runChild('healthy', control);
+    expect(stdout).toContain('LATE_COMMAND_ANSWERED');
+    // The renderer is gone by then: the answer goes to the terminal, as a
+    // bare /newtopic's summary given back at the stop has to (#485 bot
+    // review 3, finding 10).
+    expect(stdout).toContain('puppet agent: late_tool → ok (toolu_late)');
+    expect(receipt).toEqual({ ...STOPPED_ONCE, status: 'fulfilled', originalError: false });
+    expect({ code, signal }).toEqual({ code: 0, signal: null });
+  }, 60_000);
+}
 
 for (const mode of ['healthy', 'failure']) {
   test(`once a ${mode === 'healthy' ? 'clean' : 'failed'} stop has settled, a stop signal ends a host that something else keeps running`, async () => {
