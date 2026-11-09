@@ -507,22 +507,26 @@ export class IdentityModule implements Module {
         });
         if (!res.ok) throw new Error(`status ${res.status}`);
         const json: unknown = await res.json();
-        if (
-          !isPlainObject(json)
-          || (json.services !== undefined && !isPlainObject(json.services))
-          || (json.mcpl !== undefined && !isPlainObject(json.mcpl))
-        ) throw new Error('not a directory');
-        const map: Record<string, string> = {};
-        for (const [name, base] of Object.entries((json.services ?? {}) as Record<string, unknown>)) {
-          if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;
+        if (!isPlainObject(json)) throw new Error('not a directory');
+        if (json.services === undefined || isPlainObject(json.services)) {
+          const map: Record<string, string> = {};
+          for (const [name, base] of Object.entries(json.services ?? {})) {
+            if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;
+          }
+          this.servicesFromHome = map;
+          this.servicesFetchedAt = Date.now();
+        } else {
+          console.error(`[identity] service directory refresh (${this.config.home}): its services isn't an object, so the last good services stay`);
+        }
+        if (json.mcpl !== undefined && !isPlainObject(json.mcpl)) {
+          console.error(`[identity] service directory refresh (${this.config.home}): its mcpl isn't an object`);
+          return { unreadable: "its mcpl isn't an object" };
         }
         // archipelago-home publishes an audience's MCPL endpoint as wss:// only.
         const mcpl: Record<string, string> = Object.create(null);
-        for (const [name, url] of Object.entries((json.mcpl ?? {}) as Record<string, unknown>)) {
+        for (const [name, url] of Object.entries(json.mcpl ?? {})) {
           if (typeof url === 'string' && isWssUrl(url)) mcpl[name] = url;
         }
-        this.servicesFromHome = map;
-        this.servicesFetchedAt = Date.now();
         return { mcpl };
       } catch (err) {
         console.error(`[identity] service directory refresh failed (${this.config.home}): ${errorText(err)}`);
