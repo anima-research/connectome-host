@@ -2,10 +2,12 @@ import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runHeadless } from '../src/headless.js';
 import type { AppContext } from '../src/index.js';
-import { SURFACE_TAG_KEY, TuiModule, surfaceAnswers, type SurfaceQuestion } from '../src/modules/tui-module.js';
+import { TuiModule } from '../src/modules/tui-module.js';
+import { SURFACE_TAG_KEY, SurfaceAnswers, type SurfaceQuestion } from '../src/surfaces.js';
 
 const dir = process.env.DATA_DIR!;
-const tui = new TuiModule();
+const surfaces = new SurfaceAnswers();
+const tui = new TuiModule(surfaces);
 let registry = false;
 const listeners: Array<(event: unknown) => void> = [];
 const trace = (event: Record<string, unknown>): void => { for (const listener of [...listeners]) listener(event); };
@@ -23,6 +25,7 @@ const stream = (rounds: string | string[]): void => {
 };
 
 await runHeadless({
+  surfaces,
   recipe: { name: 'answer-test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {
@@ -37,7 +40,7 @@ await runHeadless({
       const tag = added?.metadata?.[SURFACE_TAG_KEY] as { connection?: string } | undefined;
       const content = String((event as { content?: unknown }).content ?? '');
       const command = content.startsWith('{')
-        ? JSON.parse(content) as { stream?: string | string[]; blocks?: Array<{ content: string; blockType: string }>; ask?: { text: string; connections: string[]; final?: boolean }; registry?: boolean }
+        ? JSON.parse(content) as { stream?: string | string[]; ask?: { text: string; connections: string[]; final?: boolean }; registry?: boolean }
         : undefined;
       if (command?.registry !== undefined) {
         registry = command.registry;
@@ -45,14 +48,7 @@ await runHeadless({
         return;
       }
       if (command?.ask) {
-        record({ asked: surfaceAnswers.answer('headless', { agentName: 'fixture', final: true, ...command.ask }) ?? null });
-        return;
-      }
-      if (command?.blocks) {
-        trace({ type: 'inference:started', agentName: 'fixture' });
-        command.blocks.forEach((block, blockIndex) => trace({ type: 'inference:tokens', agentName: 'fixture', ...block, blockIndex }));
-        trace({ type: 'inference:completed', agentName: 'fixture' });
-        record({ streamed: command.blocks, tag: tag ?? null });
+        record({ asked: surfaces.answer('headless', { agentName: 'fixture', final: true, ...command.ask }) ?? null });
         return;
       }
       if (command?.stream) {
@@ -63,13 +59,12 @@ await runHeadless({
       stream('Hi there.');
       const connections = tag?.connection ? [tag.connection] : [];
       const ask = (question: Partial<SurfaceQuestion>) =>
-        surfaceAnswers.answer('headless', { agentName: 'fixture', text: 'Hi there.', final: true, connections, ...question }) ?? null;
+        surfaces.answer('headless', { agentName: 'fixture', text: 'Hi there.', final: true, connections, ...question }) ?? null;
       record({
         tag: tag ?? null,
         texts: added?.content?.map((block) => block.text) ?? null,
         final: ask({}),
         round: ask({ final: false }),
-        notWritten: ask({ text: 'Looking around.' }),
         anotherBoot: ask({ connections: ['an-id-from-another-boot'] }),
         anotherAgent: ask({ agentName: 'helper' }),
       });

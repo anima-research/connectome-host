@@ -43,7 +43,7 @@ import {
 } from './session-switch.js';
 import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
 import { randomUUID } from 'node:crypto';
-import { REPLY_UNHEARD_KEY, SURFACE_TAG_KEY, surfaceAnswers } from './modules/tui-module.js';
+import { REPLY_UNHEARD_KEY, SURFACE_TAG_KEY } from './surfaces.js';
 
 interface HeadlessOptions {
   socketPath?: string;
@@ -162,7 +162,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   const connectionIds = new WeakMap<Socket, string>();
   const consoleClients = new WeakSet<Socket>();
   const explicitSubscribers = new WeakSet<Socket>();
-  let speechWritten: { text: string; client: Socket } | null = null;
+  let speechWrittenTo: Socket | null = null;
   let stopAnswering = (): void => {};
   const stoppedReadingMs = testing.stoppedReadingMs ?? STOPPED_READING_MS;
   // Framework events from before the first client connected, sent to it on
@@ -287,7 +287,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         currentSpeech = '';
         silentStream = (event as { silent?: unknown }).silent === true;
         roundOpen = !silentStream;
-        speechWritten = null;
+        speechWrittenTo = null;
       }
     } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
       const { content, blockType } = event as { content?: string; blockType?: string };
@@ -301,7 +301,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       if (roundOpen) {
         const client = currentClient;
         if (emit({ type: 'inference:speech', agentName, content: currentSpeech }) && currentSpeech && client) {
-          speechWritten = { text: currentSpeech, client };
+          speechWrittenTo = client;
         }
       }
       currentSpeech = '';
@@ -817,12 +817,9 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       if (!client || id === undefined || !connections.includes(id)) return undefined;
       return emit({ type: 'inference:prose', agentName, content: text }) ? client : undefined;
     };
-    stopAnswering = surfaceAnswers.answerFor('headless', ({ agentName, text, final, connections }) => {
+    stopAnswering = app.surfaces.answerFor('headless', ({ agentName, text, final, connections }) => {
       if (agentName !== primaryAgentName) return undefined;
-      const bare = (words: string): string => words.replace(/\s+/g, '');
-      const shown = !final
-        ? writeProse(agentName, text, connections)
-        : speechWritten && bare(speechWritten.text).includes(bare(text)) ? speechWritten.client : undefined;
+      const shown = final ? speechWrittenTo : writeProse(agentName, text, connections);
       if (!shown) return undefined;
       const id = connectionIds.get(shown);
       if (id !== undefined && connections.includes(id)) {

@@ -108,7 +108,7 @@ import {
 } from '../web/panel-data.js';
 import { loadRecipeDetailed } from '../recipe.js';
 import { randomUUID } from 'node:crypto';
-import { SURFACE_TAG_KEY, surfaceAnswers, type SurfaceQuestion } from './tui-module.js';
+import { SURFACE_TAG_KEY, type SurfaceAnswers, type SurfaceQuestion } from '../surfaces.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -150,6 +150,7 @@ export interface WebUiModuleConfig {
   quotaMeter?: QuotaMeter;
   credentials?: CredentialMonitor;
   subscriptionUnmetered?: boolean;
+  surfaces?: SurfaceAnswers;
 }
 
 interface WsData {
@@ -515,7 +516,7 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
-    surfaceAnswers.answerFor('web-ui', webUiPagesAnswer);
+    this.config.surfaces?.answerFor('web-ui', webUiPagesAnswer);
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it's there. ` +

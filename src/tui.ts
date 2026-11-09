@@ -41,7 +41,7 @@ import { effectiveContextBudgetTokens } from './recipe-fit.js';
 import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from './stored-injection.js';
 import { speakerOf, type Speaker } from './speaker.js';
-import { SURFACE_TAG_KEY, surfaceAnswers, tuiAnswer } from './modules/tui-module.js';
+import { SURFACE_TAG_KEY, tuiAnswer, type SurfaceAnswers } from './surfaces.js';
 
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -273,6 +273,7 @@ interface AppContext {
   quotaMeter?: import('./quota-meter.js').QuotaMeter | null;
   credentials?: import('./credential-state.js').CredentialMonitor | null;
   subscriptionUnmetered?: boolean;
+  surfaces: SurfaceAnswers;
   stopping?: boolean;
   switching?: boolean;
   switchSession(id: string): Promise<unknown>;
@@ -383,7 +384,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
-  surfaceAnswers.answerFor('tui', tuiAnswer(rootAgentName, () => !backgrounded));
+  app.surfaces.answerFor('tui', tuiAnswer(rootAgentName, () => !backgrounded));
   /** What a backgrounded root turn's text says since Ctrl+B, shown when it
    *  returns: a line per round, each ending where `backgroundBreaks` says a
    *  tool call ended one, or a thinking block ended its text, as streaming

@@ -11,71 +11,16 @@ import type {
   SpeechSent,
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
+import { REPLY_UNHEARD_KEY, SURFACE_ORDER, SURFACE_TAG_KEY, SurfaceAnswers, surfaceTagOf, type SurfaceName } from '../surfaces.js';
 
-export type SurfaceName = 'headless' | 'readline' | 'tui' | 'web-ui';
-
-export interface SurfaceTag {
-  surface: SurfaceName;
-  connection?: string;
-}
-
-export const SURFACE_TAG_KEY = 'connectomeSurface';
-export const REPLY_UNHEARD_KEY = 'connectomeReplyUnheard';
 const REPLY_UNHEARD_NOTE = '[host note: the client that sent this wasn\'t subscribed to inference:speech when it ' +
   'arrived, so a plain-prose reply won\'t reach it unless it subscribes.]';
-
-export interface SurfaceQuestion {
-  agentName: string;
-  text: string;
-  final: boolean;
-  connections: string[];
-}
-
-export type SurfaceAnswerer = (question: SurfaceQuestion) => string | undefined;
-
-const SURFACE_ORDER: readonly SurfaceName[] = ['headless', 'readline', 'tui', 'web-ui'];
-
-export class SurfaceAnswers {
-  private readonly answerers = new Map<SurfaceName, SurfaceAnswerer>();
-
-  answerFor(surface: SurfaceName, answerer: SurfaceAnswerer): () => void {
-    this.answerers.set(surface, answerer);
-    return () => { if (this.answerers.get(surface) === answerer) this.answerers.delete(surface); };
-  }
-
-  answer(surface: SurfaceName, question: SurfaceQuestion): string | undefined {
-    try {
-      return this.answerers.get(surface)?.(question);
-    } catch (error) {
-      console.error(`[surfaces] ${surface}'s answer failed:`, error);
-      return undefined;
-    }
-  }
-}
-
-export const surfaceAnswers = new SurfaceAnswers();
-
-export function readlineAnswer(stdoutIsTty: boolean): SurfaceAnswerer {
-  const place = stdoutIsTty ? 'the terminal this host runs in' : "this host's standard output";
-  return () => place;
-}
-
-export function tuiAnswer(rootAgentName: string, showing: () => boolean): SurfaceAnswerer {
-  return ({ agentName }) => agentName === rootAgentName && showing() ? 'the TUI' : undefined;
-}
-
-export function surfaceTagOf(metadata: unknown): SurfaceTag | undefined {
-  const tag = (metadata as Record<string, unknown> | null | undefined)?.[SURFACE_TAG_KEY] as Partial<SurfaceTag> | undefined;
-  if (!tag || typeof tag !== 'object' || !SURFACE_ORDER.includes(tag.surface as SurfaceName)) return undefined;
-  if (tag.connection !== undefined && typeof tag.connection !== 'string') return undefined;
-  return { surface: tag.surface as SurfaceName, ...(typeof tag.connection === 'string' ? { connection: tag.connection } : {}) };
-}
 
 export class TuiModule implements Module {
   readonly name = 'tui';
   private ctx: ModuleContext | null = null;
 
-  constructor(private readonly answers: SurfaceAnswers = surfaceAnswers) {}
+  constructor(private readonly answers: SurfaceAnswers) {}
 
   async start(ctx: ModuleContext): Promise<void> { this.ctx = ctx; }
   async stop(): Promise<void> {}
@@ -116,7 +61,7 @@ export class TuiModule implements Module {
     return response;
   }
 
-  async onSpeechRouted(agentName: string, text: string, context: SpeechRoutedContext): Promise<SpeechSent> {
+  onSpeechRouted(agentName: string, text: string, context: SpeechRoutedContext): SpeechSent {
     const connections = new Map<SurfaceName, string[]>();
     for (const id of context.openedBy?.messages ?? []) {
       const tag = surfaceTagOf(this.ctx?.getMessage(id)?.metadata);

@@ -1,4 +1,5 @@
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 import { selfRestart } from '../src/self-restart.ts';
 import { CredentialMonitor } from '../src/credential-state.ts';
@@ -263,8 +264,9 @@ const framework = (agents: Array<{ name: string; state: { status: string } }> = 
 const unnamed = process.env.FIXTURE_UNNAMED_AGENT === '1';
 const app: {
   recipe: unknown; agentName: string; framework: ReturnType<typeof framework>; onFrameworkReplaced?: () => void; switching?: boolean;
-  credentials?: CredentialMonitor;
+  credentials?: CredentialMonitor; surfaces: SurfaceAnswers;
 } = {
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'Self-restart test', agent: unnamed ? {} : { name: 'fixture' } },
   agentName: unnamed ? 'imported-name' : 'fixture',
   framework: framework(),

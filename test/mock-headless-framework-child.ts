@@ -3,49 +3,26 @@ import { join } from 'node:path';
 import { AgentFramework, type Module } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { runHeadless } from '../src/headless.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 import type { AppContext } from '../src/index.js';
 import { TuiModule } from '../src/modules/tui-module.js';
 
 const dir = process.env.DATA_DIR!;
 const textOf = (content: Array<{ text?: string }>): string => content.map((b) => b.text ?? '').join('');
 
-const holdsTurnOne = {
-  name: 'holds-turn-one',
-  async start(): Promise<void> {},
-  async stop(): Promise<void> {},
-  getTools: () => [],
-  async handleToolCall() { return { success: true, data: '' }; },
-  async onProcess() { return {}; },
-  async onSpeechRouted(_agentName: string, text: string): Promise<void> {
-    if (text !== 'Reply one.') return;
-    writeFileSync(join(dir, 'asked-one'), '');
-    while (!existsSync(join(dir, 'release'))) await new Promise((resolve) => setTimeout(resolve, 10));
-  },
-};
+const surfaces = new SurfaceAnswers();
 
-class TakesTexts extends TuiModule {
-  override async onProcess(...args: Parameters<TuiModule['onProcess']>): ReturnType<TuiModule['onProcess']> {
-    if ((args[0] as { content?: unknown }).content === 'second') writeFileSync(join(dir, 'taken-second'), '');
-    return super.onProcess(...args);
-  }
-}
-
-const holdsFirstNote = {
-  name: 'holds-first-note',
+const looks = {
+  name: 'looks',
   async start(): Promise<void> {},
   async stop(): Promise<void> {},
   getTools: () => [{ name: 'look', description: 'Look.', inputSchema: { type: 'object', properties: {} } }],
   async handleToolCall() { return { success: true, data: 'seen' }; },
   async onProcess() { return {}; },
-  async onSpeechRouted(_agentName: string, text: string): Promise<void> {
-    if (text !== 'First note.') return;
-    writeFileSync(join(dir, 'holding-first-note'), '');
-    while (!existsSync(join(dir, 'release-note'))) await new Promise((resolve) => setTimeout(resolve, 10));
-  },
 };
 
 type Block = { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
-const look = (id: string): Block => ({ type: 'tool_use', id, name: 'holds-first-note--look', input: {} });
+const look = (id: string): Block => ({ type: 'tool_use', id, name: 'looks--look', input: {} });
 const ROUNDS: Record<string, Block[][]> = {
   notes: [
     [{ type: 'text', text: 'First note.' }, look('look-1')],
@@ -76,17 +53,12 @@ const mode = process.env.CHILD_MODE;
 const wakeMode = mode === 'wake';
 const rounds = mode ? ROUNDS[mode] : undefined;
 const adapter = rounds ? new RoundsAdapter(rounds) : new MockAdapter();
-if (!rounds) adapter.queueResponses(wakeMode ? ['Woken reply.'] : ['Reply one.', 'Reply two.']);
+if (!rounds) adapter.queueResponses(['Woken reply.']);
 const framework = await AgentFramework.create({
   storePath: join(dir, 'store.chronicle'),
   membrane: new Membrane(adapter, rounds ? { formatter: new NativeFormatter() } : undefined),
   agents: [{ name: 'resident', model: 'test-model', systemPrompt: 'Resident.', proseRouting: 'locus' }],
-  modules: [new TakesTexts(), (rounds ? holdsFirstNote : holdsTurnOne) as unknown as Module],
-});
-let starts = 0;
-framework.onTrace((event) => {
-  if (event.type === 'inference:started') writeFileSync(join(dir, 'starts'), String(++starts));
-  if (event.type === 'inference:completed') writeFileSync(join(dir, 'completed'), '');
+  modules: [new TuiModule(surfaces), ...(rounds ? [looks as unknown as Module] : [])],
 });
 await framework.start();
 await (framework as unknown as { initializeMcpl(servers: []): Promise<void> }).initializeMcpl([]);
@@ -107,6 +79,7 @@ if (wakeMode) {
 }
 
 await runHeadless({
+  surfaces,
   recipe: { name: 'framework-answer-test', agent: { name: 'resident' } },
   agentName: 'resident',
   framework,

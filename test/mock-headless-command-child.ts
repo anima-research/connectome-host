@@ -1,11 +1,13 @@
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runHeadless } from '../src/headless.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 import type { AppContext } from '../src/index.js';
 import { TuiModule } from '../src/modules/tui-module.js';
 import { hostUpdate } from '../src/update/update.js';
 
-const tui = new TuiModule();
+const surfaces = new SurfaceAnswers();
+const tui = new TuiModule(surfaces);
 if (process.env.UPDATE_NOT_AN_INSTALL === '1') {
   hostUpdate.configure({
     here: null, running: '0.0.0', env: { CONNECTOME_UPDATE_CHECK: '0' },
@@ -14,6 +16,7 @@ if (process.env.UPDATE_NOT_AN_INSTALL === '1') {
 }
 
 await runHeadless({
+  surfaces,
   recipe: { name: 'command-owner-test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {

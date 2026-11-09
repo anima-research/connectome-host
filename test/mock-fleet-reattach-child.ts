@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 
 const dataDir = process.env.DATA_DIR!;
@@ -54,6 +55,7 @@ setInterval(() => {
 }, 10);
 
 await runHeadless({
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'Reattach', agent: { name: 'resident' } },
   agentName: 'resident',
   framework: {

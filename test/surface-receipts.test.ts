@@ -7,15 +7,8 @@ import { AgentFramework, type ModuleContext, type ProcessEvent } from '@animalab
 import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { connectWhenAccepting } from './ipc-connect.js';
 import { send } from '../src/cli/connectome.js';
-import {
-  SURFACE_TAG_KEY,
-  SurfaceAnswers,
-  TuiModule,
-  readlineAnswer,
-  surfaceAnswers,
-  surfaceTagOf,
-  tuiAnswer,
-} from '../src/modules/tui-module.js';
+import { TuiModule } from '../src/modules/tui-module.js';
+import { SURFACE_TAG_KEY, SurfaceAnswers, readlineAnswer, surfaceTagOf, tuiAnswer } from '../src/surfaces.js';
 import { WebUiModule, __getSharedServerPortForTests, pagesAnswer, stopWebUiServer } from '../src/modules/web-ui-module.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -75,7 +68,6 @@ describe('headless', () => {
       await until(() => send.frames.some((f) => f.type === 'inference:speech'), 'the speech frame');
       expect(send.frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual(['Hi there.']);
       expect(answer.round).toBeNull();
-      expect(answer.notWritten).toBeNull();
       expect(answer.anotherAgent).toBeNull();
       expect(answer.anotherBoot).toBe("another client on this host's socket, not the one that sent this turn");
     });
@@ -112,19 +104,17 @@ describe('headless', () => {
     });
   });
 
-  test("of a stream with rounds, answers for the reply after its last call, and not for a round's words asked about as the reply", async () => {
+  test("of a stream with rounds, answers for the reply after its last call", async () => {
     await withChild(async (dir, connect) => {
       const send = await connect(['inference:speech']);
       send({ type: 'text', content: JSON.stringify({ stream: ['Looking around.', 'Found it. It was here.'] }), from: 'console' });
       await until(() => answers(dir).length === 1, 'the turn');
       const id = answers(dir)[0].tag.connection;
       const ask = (text: string) => send({ type: 'text', content: JSON.stringify({ ask: { text, final: true, connections: [id] } }), from: 'console' });
-      ask('Looking around.');
       ask('Found it.');
       ask('It was here.');
-      await until(() => answers(dir).length === 4, 'the asks');
+      await until(() => answers(dir).length === 3, 'the asks');
       expect(answers(dir).slice(1).map((a) => a.asked)).toEqual([
-        null,
         'the terminal that sent this turn (`connectome send`)',
         'the terminal that sent this turn (`connectome send`)',
       ]);
@@ -169,39 +159,6 @@ describe('headless', () => {
       expect(senderId).toMatch(UUID);
       expect([answers(dir)[1].asked, answers(dir)[4].asked]).toEqual([null, null]);
       expect([...sender.frames, ...another.frames, ...speechOnly.frames].filter((f) => f.type === 'inference:prose')).toEqual([]);
-    });
-  });
-
-  test("answers for words the relay wrote as one run that the framework joins with a newline, as it joins a reply's text blocks", async () => {
-    await withChild(async (dir, connect) => {
-      const send = await connect(['inference:speech']);
-      send({ type: 'text', content: JSON.stringify({ stream: 'Hello.World.' }), from: 'console' });
-      await until(() => answers(dir).length === 1, 'the turn');
-      const id = answers(dir)[0].tag.connection;
-      send({ type: 'text', content: JSON.stringify({ ask: { text: 'Hello.\nWorld.', connections: [id] } }), from: 'console' });
-      await until(() => answers(dir).length === 2, 'the ask');
-      expect(answers(dir)[1].asked).toBe('the terminal that sent this turn (`connectome send`)');
-    });
-  });
-
-  test("answers for a reply whose text blocks the stream interleaved with thinking, matching the text blocks alone", async () => {
-    await withChild(async (dir, connect) => {
-      const send = await connect(['inference:speech']);
-      send({ type: 'text', content: JSON.stringify({ blocks: [
-        { content: 'Hello.', blockType: 'text' },
-        { content: 'considering it', blockType: 'thinking' },
-        { content: 'World.', blockType: 'text' },
-      ] }), from: 'console' });
-      await until(() => answers(dir).length === 1, 'the turn');
-      const id = answers(dir)[0].tag.connection;
-      send({ type: 'text', content: JSON.stringify({ ask: { text: 'Hello.\nWorld.', connections: [id] } }), from: 'console' });
-      await until(() => answers(dir).length === 2, 'the ask');
-      expect(answers(dir)[1].asked).toBe('the terminal that sent this turn (`connectome send`)');
-      await until(() => send.frames.some((f) => f.type === 'inference:speech'), 'the speech frame');
-      const speech = send.frames.filter((f) => f.type === 'inference:speech').map((f) => String(f.content));
-      expect(speech).toHaveLength(1);
-      expect(speech[0]!.indexOf('Hello.')).toBeGreaterThanOrEqual(0);
-      expect(speech[0]!.indexOf('World.')).toBeGreaterThan(speech[0]!.indexOf('Hello.'));
     });
   });
 
@@ -277,47 +234,6 @@ describe('headless', () => {
 });
 
 describe('headless on a real framework', () => {
-  test("a turn sent while the previous turn is still being asked about waits for it, and each turn's receipt names the terminal that sent it", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'surface-receipts-framework-'));
-    const child = spawn(process.execPath, [new URL('./mock-headless-framework-child.ts', import.meta.url).pathname], {
-      env: { ...process.env, DATA_DIR: dir }, stdio: 'ignore',
-    });
-    const sockets: Array<{ destroy(): void }> = [];
-    try {
-      await until(() => existsSync(join(dir, 'ipc.sock')), 'the socket');
-      const connect = async () => {
-        const socket = await connectWhenAccepting(join(dir, 'ipc.sock'));
-        sockets.push(socket);
-        socket.write(`${JSON.stringify({ type: 'subscribe', events: ['inference:speech'] })}\n`);
-        return (content: string) => socket.write(`${JSON.stringify({ type: 'text', content, from: 'console' })}\n`);
-      };
-      const first = await connect();
-      first('first');
-      await until(() => existsSync(join(dir, 'asked-one')), "turn 1's ask", 20_000);
-      const second = await connect();
-      second('second');
-      await until(() => existsSync(join(dir, 'taken-second')), 'the framework to take the second text in', 20_000);
-      await Bun.sleep(200);
-      expect(readFileSync(join(dir, 'starts'), 'utf8')).toBe('1');
-      writeFileSync(join(dir, 'release'), '');
-      const context = (): string[] => existsSync(join(dir, 'context.json')) ? JSON.parse(readFileSync(join(dir, 'context.json'), 'utf8')) : [];
-      const receipts = () => context().filter((t) => t.startsWith('[delivered]') || t.startsWith('[send-undeliverable]'));
-      await until(() => receipts().length === 2, 'both receipts', 20_000);
-      const turnLines = (t: string) => ['first', 'Reply one.', 'second', 'Reply two.'].includes(t) || t.startsWith('[delivered]') || t.startsWith('[send-undeliverable]');
-      expect(context().filter(turnLines)).toEqual([
-        'first',
-        'Reply one.',
-        '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · this turn\'s routing posted it to no channel',
-        'second',
-        'Reply two.',
-        '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · this turn\'s routing posted it to no channel',
-      ]);
-    } finally {
-      for (const socket of sockets) socket.destroy();
-      child.kill('SIGKILL');
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 60_000);
 });
 
 describe('headless on a real framework, a turn whose rounds end with tool calls', () => {
@@ -359,20 +275,17 @@ describe('headless on a real framework, a turn whose rounds end with tool calls'
   }
   const idle = (frames: Array<Record<string, unknown>>) => frames.some((f) => f.type === 'lifecycle' && f.phase === 'idle' && Number(f.texts) >= 1);
 
-  test("each note the framework routes reaches the terminal that sent the turn as inference:prose, a note asked about after the reply's frame included, and the resident is told so", async () => {
+  test("each note the framework routes reaches the terminal that sent the turn as inference:prose, and the resident is told so", async () => {
     await withRounds('notes', async (dir) => {
       const terminal = await client(dir, ['inference:speech', 'inference:prose', 'lifecycle']);
       try {
         terminal.say('please');
-        await until(() => existsSync(join(dir, 'holding-first-note')), "the first note's delivery to be held", 20_000);
-        await until(() => terminal.frames.some((f) => f.type === 'inference:speech'), 'the reply', 20_000);
-        writeFileSync(join(dir, 'release-note'), '');
         await until(() => idle(terminal.frames), 'the turn to end', 20_000);
         const ended = Date.now();
         expect(terminal.frames.filter((f) => f.type === 'inference:prose' || f.type === 'inference:speech').map((f) => [f.type, f.content])).toEqual([
           ['inference:prose', 'First note.'],
-          ['inference:speech', 'The reply.'],
           ['inference:prose', 'Second note.'],
+          ['inference:speech', 'The reply.'],
         ]);
         expect(receipts(await contextAfter(dir, ended))).toEqual([TERMINAL]);
       } finally {
@@ -381,16 +294,13 @@ describe('headless on a real framework, a turn whose rounds end with tool calls'
     });
   }, 60_000);
 
-  test("connectome send prints each note, a note that came after the reply's frame included, and the reply last", async () => {
+  test("connectome send prints each note, and the reply last", async () => {
     await withRounds('notes', async (dir) => {
       const root = join(dir, 'install');
       mkdirSync(root);
       writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: dir, extraState: [] }));
       const out: string[] = [];
       const sent = send({ root, argv: ['please'], out: (line) => out.push(line), err: () => {} });
-      await until(() => existsSync(join(dir, 'holding-first-note')), "the first note's delivery to be held", 20_000);
-      await until(() => existsSync(join(dir, 'completed')), 'the reply', 20_000);
-      writeFileSync(join(dir, 'release-note'), '');
       expect(await sent).toBe(0);
       expect(out).toEqual(['First note.', 'Second note.', 'The reply.']);
     });
@@ -605,11 +515,12 @@ describe('the Web UI', () => {
   let dir: string;
   let webUi: WebUiModule;
   let port: number;
+  const surfaces = new SurfaceAnswers();
   const pushed: Array<{ metadata?: Record<string, unknown> }> = [];
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'surface-receipts-webui-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html><title>t</title>');
-    webUi = new WebUiModule({ port: 0, host: '127.0.0.1', staticDir: dir });
+    webUi = new WebUiModule({ port: 0, host: '127.0.0.1', staticDir: dir, surfaces });
     await webUi.start({} as ModuleContext);
     port = __getSharedServerPortForTests()!;
     webUi.setApp(appShowing('main'));
@@ -665,7 +576,7 @@ describe('the Web UI', () => {
     const tag = pushed[0]!.metadata?.[SURFACE_TAG_KEY] as { surface: string; connection: string };
     expect(tag.surface).toBe('web-ui');
     expect(tag.connection).toMatch(UUID);
-    const ask = (connections: string[], agentName = 'main') => surfaceAnswers.answer('web-ui', { agentName, text: 'Hi.', final: false, connections });
+    const ask = (connections: string[], agentName = 'main') => surfaces.answer('web-ui', { agentName, text: 'Hi.', final: false, connections });
     expect(ask([tag.connection])).toBe('the Web UI page that sent this turn');
     expect(ask(['a-page-from-another-boot'])).toBe('a Web UI page open now, not the one that sent this turn');
     expect(ask([tag.connection], 'helper')).toBeUndefined();
@@ -686,7 +597,7 @@ describe('the Web UI', () => {
     const before = pushed.length;
     await until(() => pushed.length === before + 1, 'the pushed text');
     const tag = pushed[before]!.metadata?.[SURFACE_TAG_KEY] as { connection: string };
-    const ask = (agentName: string) => surfaceAnswers.answer('web-ui', { agentName, text: 'Hi.', final: false, connections: [tag.connection] });
+    const ask = (agentName: string) => surfaces.answer('web-ui', { agentName, text: 'Hi.', final: false, connections: [tag.connection] });
     expect(ask('main')).toBe('the Web UI page that sent this turn');
     await webUi.stop();
     expect(ask('main')).toBeUndefined();

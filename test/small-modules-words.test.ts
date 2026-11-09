@@ -7,6 +7,7 @@ import { SettingsModule } from '../src/modules/settings-module.js';
 import { InstructionsModule } from '../src/modules/instructions-module.js';
 import { TimeModule } from '../src/modules/time-module.js';
 import { TuiModule } from '../src/modules/tui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 import { NoticesModule } from '../src/modules/notices-module.js';
 import { TtsRelayModule } from '../src/modules/tts-relay-module.js';
 import { RetrievalModule } from '../src/modules/retrieval-module.js';
@@ -376,7 +377,7 @@ describe('modules that offer no tools of their own', () => {
 
   test('the others say they have none and point to the tools listed', async () => {
     const others = [
-      new TuiModule(),
+      new TuiModule(new SurfaceAnswers()),
       new NoticesModule({}),
       new TtsRelayModule({ url: 'ws://localhost:1/bot', token: 't' }),
       new RetrievalModule({ membrane: {} as never }),
