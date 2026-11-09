@@ -306,7 +306,7 @@ describe('setup--run', () => {
     expect(answer.stdout.text).toBe('token <MY_TOKEN>\n');
   });
 
-  test('a stored secret in a command\'s output is shown by its name in any letter case', async () => {
+  test('a stored secret in a command\'s output is shown by its name, its ASCII letters in any case', async () => {
     const { module } = install({ envFile: 'DISCORD_TOKEN="Discord-Token-Value"\n' });
     const answer = await run(module, 'echo "discord-token-value DISCORD-TOKEN-VALUE"; echo "Discord-Token-Value" >&2');
     expect(answer.stdout.text).toBe('<DISCORD_TOKEN> <DISCORD_TOKEN>\n');
@@ -1360,7 +1360,7 @@ describe('checkProviderKey', () => {
     expect(result).toEqual({ kind: 'redirected', status: 302, to: 'https://<OPENROUTER_API_KEY>.example/' });
   });
 
-  test('another stored secret is hidden in what the provider says in any letter case', async () => {
+  test('another stored secret is hidden in what the provider says, its ASCII letters in any case', async () => {
     const result = await checkProviderKey('OPENROUTER_API_KEY', 'sk-or-ABC', {
       hide: [{ name: 'MY_TOKEN', value: 'AbCd1234' }],
       fetch: (async () => Response.json({ error: { message: 'no route for abcd1234 or ABCD1234' } }, { status: 400 })) as unknown as typeof fetch,
@@ -2091,7 +2091,7 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('a line on the prompt, a pasted line held for the conversation, a history entry and a kill that hold the answer in another letter case are taken out too', async () => {
+  test('a line on the prompt, a pasted line held for the conversation, a history entry and a kill that hold the answer, its ASCII letters in another case, are taken out too', async () => {
     const { input, output, rl, shown } = terminal();
     const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
     const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
@@ -2121,7 +2121,7 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('whether a line holds an answer given hidden is told in any letter case, as a line queued for the conversation is', () => {
+  test('whether a line holds an answer given hidden is told with ASCII letters in any case, as a line queued for the conversation is', () => {
     expect(terminalSecret.holdsAnswer('my TOK-abcdef', ['tok-ABCDEF'])).toBe(true);
     expect(terminalSecret.holdsAnswer('my token', ['tok-abcdef', 'other'])).toBe(false);
   });

@@ -169,7 +169,7 @@ async function ask<T>(
   };
 }
 
-// Every secret in any letter case, since a server that puts one in a URL's host gives it back lowercased.
+// Every secret, its ASCII letters in any case, since a server that puts one in a URL's host gives it back lowercased.
 function hidden(words: string, key: string, name: string, also: Options['hide'] = []): string {
   const forms = [...[key, key.trim()].map((value) => ({ name, value })),
     ...also.flatMap((form) => [form.value, form.value.trim()].map((value) => ({ name: form.name, value })))]

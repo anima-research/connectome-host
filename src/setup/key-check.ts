@@ -15,9 +15,9 @@ export interface KeyCheckOptions {
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
 
-/** The words with the key in them shown as <ANTHROPIC_API_KEY>, trimmed or whole and in any letter case: fetch sends a
- *  header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's host gets it back
- *  lowercased. */
+/** The words with the key in them shown as <ANTHROPIC_API_KEY>, trimmed or whole, its ASCII letters in any case: fetch
+ *  sends a header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's host gets it
+ *  back lowercased. */
 export function withoutKey(words: string, key: string): string {
   for (const each of [...new Set([key, key.trim()])].filter((one) => one.trim() !== '').sort((a, b) => b.length - a.length)) {
     words = words.replace(new RegExp(each.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<ANTHROPIC_API_KEY>');

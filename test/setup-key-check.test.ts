@@ -608,7 +608,7 @@ describe('the check and the agent\'s client', () => {
 });
 
 describe('the key where ANTHROPIC_BASE_URL carries it', () => {
-  test('a key in the base URL\'s host is hidden in any letter case wherever the check names that host or its origin', async () => {
+  test('a key in the base URL\'s host is hidden, its ASCII letters in any case, wherever the check names that host or its origin', async () => {
     const result = await checkKey({
       key: 'Key-In-Host', model: 'm', baseUrl: 'https://key-in-host.gateway.test',
       fetch: (async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch,

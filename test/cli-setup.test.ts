@@ -2948,7 +2948,7 @@ const LATER_RUN = [
   'To go on with setup where it stopped: `<dir>/connectome-host/connectome setup discord`.',
 ];
 
-test('the line saying where the key is checked hides the key in any letter case where ANTHROPIC_BASE_URL\'s host carries it', async () => {
+test('the line saying where the key is checked hides the key, its ASCII letters in any case, where ANTHROPIC_BASE_URL\'s host carries it', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
@@ -2960,7 +2960,7 @@ test('the line saying where the key is checked hides the key in any letter case 
   expect(shown.toLowerCase()).not.toContain(KEY);
 });
 
-test('the line saying setup uses the .env ANTHROPIC_BASE_URL over the exported one hides a stored secret its host carries, in any letter case', async () => {
+test('the line saying setup uses the .env ANTHROPIC_BASE_URL over the exported one hides a stored secret its host carries, its ASCII letters in any case', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
