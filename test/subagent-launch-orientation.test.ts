@@ -1401,17 +1401,15 @@ describe('the first request a fork actually sends', () => {
     }
   });
 
-  // On a framework with host toolsets, what a request lists turns on whether
-  // the stream may call both toolsets--open and toolsets--act, so the
-  // orientation is checked against the request for each.
-  const hostToolsets = typeof (AgentFramework.prototype as { presentedTools?: unknown }).presentedTools === 'function';
+  // A spawn that may call neither or only one of toolsets--open and
+  // toolsets--act keeps the settings toolset's tools in its request, and its
+  // orientation names exactly the tools that request carries.
   for (const [tools, sends] of [
     [['agent_settings'], ['agent_settings', 'subagent--return']],
     [['toolsets--open', 'agent_settings'], ['agent_settings', 'subagent--return', 'toolsets--open']],
     [['toolsets--act', 'agent_settings'], ['agent_settings', 'subagent--return', 'toolsets--act']],
-    [['toolsets--open', 'toolsets--act', 'agent_settings'], ['subagent--return', 'toolsets--act', 'toolsets--open']],
   ]) {
-    test.skipIf(!hostToolsets)(`a spawn listing ${tools.join(', ')} is sent exactly the tools its orientation lists`, async () => {
+    test(`a spawn listing ${tools.join(', ')} is sent exactly the tools its orientation lists`, async () => {
       const { adapter, subagent, cleanup } = await realHarness();
       try {
         const input = { name: 'worker', systemPrompt: 'p', task: 'say done', model: 'mock-spawn', sync: true, tools };
