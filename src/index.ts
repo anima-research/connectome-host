@@ -103,7 +103,6 @@ import {
   savedRecipePath,
   clearSavedRecipe,
   parseRecipeArg,
-  deprecatedModuleNotices,
   deprecatedConversationsNotices,
   deprecatedSurfaceNotices,
   resolveProvider,
@@ -267,7 +266,6 @@ async function createFramework(
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
   const timeZone = resolveTimeZone(recipe.agent.timezone);
-  for (const notice of deprecatedModuleNotices(modules)) console.warn(`[deprecated] ${notice}`);
 
   const extensionRegistry = extensions ?? await loadExtensions(recipe);
 

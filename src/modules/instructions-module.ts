@@ -1,9 +1,4 @@
 /**
- * @deprecated modules.instructions is deprecated. Not recommended for new recipes: it delivers content
- * through context injection, which is deprecated (agent-framework#171) —
- * injected blocks are per-compile overlays, re-anchored on every compile,
- * that break prompt-cache prefixes across activations. Put stable instructions in agent.systemPrompt.
- *
  * readFileFromDisk takes no signal, so a stop can't cancel a read: the
  * module lets go of one under way. It keeps at most maxBytes, for a file
  * that grows while it's read too.

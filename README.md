@@ -708,7 +708,7 @@ unknown-key warning, like those at the other levels.
   the load. Sync sends the raw record — including the agent's private notes
   unless `includePrivateTools: false` — and `/session delete` does not remove
   the remote index
-- **Shared instructions** (opt-in, `modules.instructions` — **deprecated, not recommended**: it relies on context injection, see below; put stable instructions in `agent.systemPrompt`) — see below
+- **Shared instructions** (opt-in, `modules.instructions`) — see below
 - **Identity** (opt-in, `modules.identity`) — the agent's own key-based
   identity, used to obtain access to services without credentials entering
   its context
@@ -744,10 +744,8 @@ unknown-key warning, like those at the other levels.
 **More agents**
 
 - **Fleets** (opt-in, `modules.fleet`) — a conductor launches and supervises other recipes as headless child processes; one agent tree across processes in both UIs ([`docs/fleet-protocol.md`](docs/fleet-protocol.md))
-- **Subagent forking** (opt-in, `modules.subagents` — **deprecated, not recommended**: its fleet-status HUD relies on context injection, see below) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
-- **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in that is **deprecated and not recommended** — it relies on context injection (see below) and adds retrieval-model calls; prefer the lesson tools
-
-> **Deprecated: context injection and the modules built on it.** `modules.subagents`, `modules.retrieval` and `modules.instructions` deliver content through context injection (module `gatherContext` / MCPL `beforeInference`), which is deprecated ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)): injected blocks are per-compile overlays — never stored, re-anchored on every compile — so they break prompt-cache prefixes across activations (head-only cache hits on OpenAI lanes). They still work, and the host logs a `[deprecated]` line at startup for each one a recipe enables; don't enable them in new recipes.
+- **Subagent forking** (opt-in, `modules.subagents`) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
+- **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
@@ -798,10 +796,24 @@ reached through a linked directory), and on any mount one whose canonical
 path lies outside it isn't either, a link that leads out included: either
 raises the alert instead.
 
-**Cache note**: at `position: "system"` the block lives in every agent's
-prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next
-turn — curate in batches, or use `afterUser` for cache-cheap, lower-salience
-injection. Compared to **lessons** (`modules.lessons`): lessons are a
+**Where the block lands, and what that costs**:
+
+- `"system"`, the default, puts it in every agent's system prompt. An edit to
+  the file misses the cache from the system prompt on, for every agent, at its
+  next turn, so curate in batches.
+- `"afterUser"` places it after the newest user message at each start, so it
+  stays near the end. Unlike another module's `afterUser` block, which
+  agent-framework stores where it lands, it isn't stored. It moves: a request
+  misses the cache from its old place on, and on a model that binds a reply's
+  thinking to everything before it, every reply after its old place loses its
+  thinking.
+- `"beforeUser"` is deprecated
+  ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)).
+  It's spliced in again before the newest user message at every compile, so
+  it moves, at `afterUser`'s cost, and it can split a tool call from its
+  result. Use `"afterUser"` or `"system"`.
+
+Compared to **lessons** (`modules.lessons`): lessons are a
 structured, confidence-scored store with model-driven retrieval; instructions
 are one free-form curated document, always present verbatim.
 
