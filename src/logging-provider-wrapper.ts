@@ -4,12 +4,20 @@
 //
 // Contents: a request summary and a summarized-but-complete response record
 // (stop reason, usage, per-block shape, full text) on every call, plus the
-// raw provider response. The raw request is kept on a failure, and on a
-// success only with LLM_CALLS_FULL_PAYLOADS=1, as the Anthropic writer keeps
-// it, and on a refusal or an anomalous response (see responseAnomaly) too:
-// on the OpenAI Responses path a request carries the whole compiled context,
+// raw provider response. The raw request is kept:
+//   - on every failure that isn't a cancellation (membrane's `abort`), each
+//     retry attempt included: unlike the Anthropic writer, this wrapper
+//     keeps no run of failures per lineage, dedups nothing by hash and has
+//     no copy budget, so a host whose calls fail repeatedly writes the full
+//     request once per attempt (#341 keeps the shared policy as a follow-up);
+//   - on a refusal, and on an anomalous response (responseAnomaly, and on
+//     the Responses path a tool call the provider cut off: cutOffToolCall);
+//   - on every call, cancellations included, with LLM_CALLS_FULL_PAYLOADS=1.
+// On the OpenAI Responses path a request carries the whole compiled context,
 // so keeping it on every success put ~3 MB per call into the file whose last
-// ~64 MiB the call ledger and /bug read (#341). A cancelled call keeps none.
+// ~64 MiB /bug reads on these hosts (#341); the call ledger reads the file
+// only on an Anthropic host, so these rows reach it only if the data
+// directory is later served by one.
 //
 // Each line: { type: 'call'|'error', provider, kind: 'complete'|'stream',
 //   timestamp, durationMs, requestSummary?, response?, rawRequest?,
@@ -90,6 +98,36 @@ function isRefusal(response: ProviderResponse): boolean {
   return response.stopReason === 'refusal' || raw?.stop_reason === 'refusal';
 }
 
+/**
+ * A tool call the provider cut off, which responseAnomaly can't see on the
+ * Responses path: membrane reports `tool_use` whenever the output holds a
+ * function_call, before it reads `status: 'incomplete'`, so the cut
+ * survives only as the response's `status` (and `incomplete_details`) or
+ * as a tool_use block whose arguments didn't parse (`unparseableInput`).
+ * Provider-agnostic: either sign counts, on any adapter.
+ */
+function cutOffToolCall(response: ProviderResponse): Record<string, unknown> | undefined {
+  const r = response as {
+    content?: unknown;
+    providerStopReason?: unknown;
+    raw?: { status?: unknown; incomplete_details?: { reason?: unknown } | null } | null;
+  };
+  const blocks = Array.isArray(r.content) ? r.content as Array<{ type?: unknown; name?: unknown; unparseableInput?: unknown } | null> : [];
+  const tools = blocks.filter((b) => !!b && typeof b === 'object' && b.type === 'tool_use');
+  if (tools.length === 0) return undefined;
+  const unparseable = tools.filter((b) => b!.unparseableInput !== undefined).map((b) => (typeof b!.name === 'string' ? b!.name : '?'));
+  const raw = r.raw && typeof r.raw === 'object' ? r.raw : undefined;
+  const incomplete = raw?.status === 'incomplete';
+  if (unparseable.length === 0 && !incomplete) return undefined;
+  return {
+    kind: 'tool_use_cut_off',
+    toolNames: tools.map((b) => (typeof b!.name === 'string' ? b!.name : '?')),
+    ...(unparseable.length > 0 ? { unparseableInput: unparseable } : {}),
+    ...(incomplete ? { status: 'incomplete', reason: typeof raw?.incomplete_details?.reason === 'string' ? raw.incomplete_details.reason : null } : {}),
+    ...('providerStopReason' in r ? { providerStopReason: typeof r.providerStopReason === 'string' ? r.providerStopReason : null } : {}),
+  };
+}
+
 export class LoggingProviderAdapter implements ProviderAdapter {
   readonly name: string;
 
@@ -155,16 +193,14 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     let record: Record<string, unknown>;
     try {
       const errorFields = failed ? describeError(outcome.error) : undefined;
-      const anomaly = failed ? undefined : responseAnomaly(outcome.response);
-      // Which calls keep the raw request, as the Anthropic writer decides it:
-      // a failure keeps the request that was refused, except a cancelled
-      // call (membrane types it `abort`), which is never the request's
-      // doing; a success keeps it when the response is a refusal or
-      // anomalous (a client tool_use under another stop reason), or when
-      // asked for every call.
-      const keepRaw = failed
-        ? errorFields?.errorType !== 'abort'
-        : this.fullPayloads || anomaly !== undefined || isRefusal(outcome.response);
+      const anomaly = failed ? undefined : (responseAnomaly(outcome.response) ?? cutOffToolCall(outcome.response));
+      // Which calls keep the raw request (the header has the rule): every
+      // failure except a cancellation (membrane types it `abort`), which is
+      // never the request's doing; a refusal; an anomalous response; and,
+      // with the opt-in, every call, cancellations included, as the
+      // Anthropic writer's opt-in keeps them.
+      const keepRaw = this.fullPayloads
+        || (failed ? errorFields?.errorType !== 'abort' : anomaly !== undefined || isRefusal(outcome.response));
       record = {
         ...head,
         requestSummary: summarizeRequest(request),

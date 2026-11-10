@@ -100,14 +100,59 @@ describe('LoggingProviderAdapter and the raw request', () => {
     });
   }
 
-  test('a refusal keeps the raw request without the opt-in', async () => {
+  test('a refusal keeps the raw request without the opt-in: a Responses-shaped one, which reaches the wrapper only as the normalized stop reason', async () => {
     const path = logFile();
-    const refusal = { ...response, stopReason: 'refusal', raw: { id: 'resp_r', stop_reason: 'refusal' } } as unknown as ProviderResponse;
+    // A Responses object has no stop_reason; the refusal is an output part.
+    const refusal = {
+      ...response,
+      stopReason: 'refusal',
+      raw: { id: 'resp_r', status: 'completed', output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'no' }] }] },
+    } as unknown as ProviderResponse;
     await new LoggingProviderAdapter(answering(refusal), path, { fullPayloads: false }).complete(request);
     const [record] = records(path);
     expect(record!.type).toBe('call');
     expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
     expect('anomaly' in record!).toBe(false);
+  });
+
+  test('a refusal named only by the raw stop_reason keeps it too', async () => {
+    const path = logFile();
+    const refusal = { ...response, stopReason: 'end_turn', raw: { id: 'msg_r', stop_reason: 'refusal' } } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(refusal), path, { fullPayloads: false }).complete(request);
+    const [record] = records(path);
+    expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
+  });
+
+  test('a Responses tool call the provider cut off keeps the raw request and carries anomaly, though membrane reports tool_use', async () => {
+    const path = logFile();
+    // membrane maps a function_call to stopReason 'tool_use' before it reads
+    // status: 'incomplete'; the cut arguments may come back unparseable.
+    const cut = {
+      content: [{ type: 'tool_use', id: 'fc_1', name: 'zz_tool', input: {}, unparseableInput: '{"path": "/ro' }],
+      stopReason: 'tool_use',
+      providerStopReason: 'max_output_tokens',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      raw: { id: 'resp_c', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [{ type: 'function_call', name: 'zz_tool', arguments: '{"path": "/ro' }] },
+    } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(cut), path, { fullPayloads: false }).complete(request);
+    const [record] = records(path);
+    expect(record!.type).toBe('call');
+    expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
+    expect(record!.anomaly).toEqual({
+      kind: 'tool_use_cut_off', toolNames: ['zz_tool'], unparseableInput: ['zz_tool'],
+      status: 'incomplete', reason: 'max_output_tokens', providerStopReason: 'max_output_tokens',
+    });
+    // Either sign alone counts.
+    const path2 = logFile();
+    const incompleteOnly = { ...cut, content: [{ type: 'tool_use', id: 'fc_2', name: 'zz_tool', input: { path: '/' } }] } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(incompleteOnly), path2, { fullPayloads: false }).complete(request);
+    expect(records(path2)[0]!.anomaly).toMatchObject({ kind: 'tool_use_cut_off', status: 'incomplete' });
+    // A completed tool round is not flagged.
+    const path3 = logFile();
+    const whole = { ...incompleteOnly, raw: { id: 'resp_w', status: 'completed', output: [] } } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(whole), path3, { fullPayloads: false }).complete(request);
+    expect('anomaly' in records(path3)[0]!).toBe(false);
+    expect('rawRequest' in records(path3)[0]!).toBe(false);
   });
 
   test('an anomalous response (a client tool_use under end_turn) keeps the raw request and carries anomaly', async () => {
@@ -123,6 +168,16 @@ describe('LoggingProviderAdapter and the raw request', () => {
     expect(record!.type).toBe('call');
     expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
     expect(record!.anomaly).toMatchObject({ kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', toolNames: ['zz_tool'] });
+  });
+
+  test('with the opt-in a cancelled call keeps its request too, as the Anthropic writer keeps it', async () => {
+    const path = logFile();
+    const aborted = Object.assign(new Error('zz aborted'), { name: 'MembraneError', type: 'abort', retryable: false });
+    const wrapped = new LoggingProviderAdapter(failing(aborted), path, { fullPayloads: true });
+    await expect(wrapped.complete(request)).rejects.toBe(aborted);
+    const [record] = records(path);
+    expect(record!.errorType).toBe('abort');
+    expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
   });
 
   test('a cancelled call keeps no raw request, as the Anthropic writer keeps none', async () => {
