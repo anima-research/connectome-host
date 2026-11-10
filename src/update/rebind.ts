@@ -281,20 +281,27 @@ export function moveAside(root: string, to: string, places: string[], kept: Kept
   const { copy, copyPrev } = installPaths(root);
   for (const path of [copyPrev, copy].filter(there)) moves.push({ from: path, to: join(aside, basename(path)) });
   const moved: Moved[] = [];
+  const stopped = (what: string, then: string) => new ContractError(`${what}, so setup stops there. Setup has moved ` +
+    `${moved.length === 0 ? 'nothing else'
+      : `only these:\n${moved.map((one) => `  ${one.from} → ${one.to}`).join('\n')}\nand nothing else`}, removes ` +
+    `nothing it moved, and hasn't bound the install. ${then}`);
   for (const move of moves) {
     try {
       makeDirs(dirname(move.to));
       renameSync(move.from, move.to);
+    } catch (error) {
+      throw stopped(`Moving ${move.from} to ${move.to} failed (${(error as Error).message})`, `Move ${move.from} out of ` +
+        'the way yourself, keeping what you want of it, and run setup again, which moves what\'s left (by hand, with ' +
+        '--move-aside again).');
+    }
+    moved.push(move);
+    try {
       syncDir(dirname(move.from));
       syncDir(dirname(move.to));
     } catch (error) {
-      throw new ContractError(`Moving ${move.from} to ${move.to} failed (${(error as Error).message}), so setup stops ` +
-        `there. Setup has moved ${moved.length === 0 ? 'nothing else'
-          : `only these:\n${moved.map((one) => `  ${one.from} → ${one.to}`).join('\n')}\nand nothing else`}, removes ` +
-        `nothing it moved, and hasn't bound the install. Move ${move.from} out of the way yourself, keeping what you ` +
-        'want of it, and run setup again, which moves what\'s left (by hand, with --move-aside again).');
+      throw stopped(`Moving ${move.from} to ${move.to} was done, but saving that move to disk failed ` +
+        `(${(error as Error).message})`, 'Run setup again, which moves what\'s left (by hand, with --move-aside again).');
     }
-    moved.push(move);
   }
   return { moved, outside };
 }
