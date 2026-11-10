@@ -35,14 +35,13 @@ needed:
 Omitting `type` selects autobiographical. Omitting `compressionInstructions`,
 using `{}`, or selecting `{"preset":"default"}` preserves built-in wording.
 A partial templates object changes only named slots; omitted slots keep the
-built-ins (or the explicitly selected preset). An empty `templates: {}` is
+built-ins. `default` is the only accepted preset. An empty `templates: {}` is
 invalid: omit it instead.
 
-Optional `preset: "factual"` selects CM's factual/attributed wording and requires
-an explicit nonblank `participant`. Templates still take precedence. There is
-no `legacy` preset. `participant` is also required by any `{participant}`
-placeholder; the host does **not** infer it from `agent.name`, `summaryParticipant`
-or history. It does not change the existing summary voice/ownership settings.
+An explicit nonblank `participant` is required only when a custom template uses
+a `{participant}` placeholder; the host does **not** infer it from `agent.name`,
+`summaryParticipant` or history. It does not change the existing summary
+voice/ownership settings.
 
 ## Slots and substitutions
 

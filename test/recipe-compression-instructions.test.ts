@@ -70,7 +70,7 @@ describe('recipe compression instructions: native dependency route', () => {
   test('AF re-exports the same feature-capable CM constructor (an older nested CM must fail)', () => {
     expect(FrameworkStrategy).toBe(AutobiographicalStrategy);
     expect(typeof validateCompressionInstructions).toBe('function');
-    expect(() => new FrameworkStrategy({ compressionInstructions: { preset: 'legacy' } } as never))
+    expect(() => new FrameworkStrategy({ compressionInstructions: { preset: 'unknown-preset' } } as never))
       .toThrow('Invalid compressionInstructions configuration');
   });
 
@@ -99,16 +99,12 @@ describe('recipe compression instructions: native dependency route', () => {
     expect(texts(result)).toContain('OPEN Participant {targetTokens} $&');
     expect(instruction(result)).toBe('CHUNK Participant {targetTokens} $& 321\n\nREMINDER');
   });
-
-  test('factual is optional, requires an explicit participant, and reaches the request', async () => {
-    const result = await capture({ compressionInstructions: { preset: 'factual', participant: 'Participant' } });
-    expect(instruction(result)).toContain('factual event note about Participant');
-  });
 });
 
 describe('recipe compression instructions: admission before construction/provider use', () => {
-  const invalid = [null, [], 'VALUE_SENTINEL', 1, { preset: 'legacy' }, { preset: 'FACTUAL' },
-    { preset: 'factual' }, { participant: '' }, { participant: 123 }, { VALUE_SENTINEL: 'secret' },
+  const invalid = [null, [], 'VALUE_SENTINEL', 1, { preset: 'unknown-preset' }, { preset: 'unregistered-preset' },
+    { preset: 'unregistered-preset', participant: 'Participant', templates: { chunk: 'CUSTOM {participant}' } },
+    { participant: '' }, { participant: 123 }, { VALUE_SENTINEL: 'secret' },
     { templates: {} }, { templates: [] }, { templates: { VALUE_SENTINEL: 'secret' } },
     ...['', ' ', 123, null, {}, [], '{', '{{targetTokens}}', '{unknown}', '{totalTokens}', '{participant}']
       .map(chunk => ({ templates: { chunk } })),
