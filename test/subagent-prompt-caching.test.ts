@@ -1,12 +1,13 @@
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Module } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
-import { cacheSettingsFor, promptCachingFor, recipeCacheSettings, resolvePromptCaching } from '../src/framework-agent-config.js';
+import { cacheSettingsFor, promptCachingFor, recipeCacheSettings, resolvePromptCaching, subagentModuleConfig } from '../src/framework-agent-config.js';
 import { SubagentModule, describeSubagentLaunch } from '../src/modules/subagent-module.js';
+import { validateRecipe } from '../src/recipe.js';
 import type { Recipe } from '../src/recipe.js';
 
 // #339: spawn and fork built their agent config without promptCaching or
@@ -26,7 +27,7 @@ describe('cacheSettingsFor', () => {
     expect(cacheSettingsFor({ promptCaching: false, provider: 'openai-codex' }, 'gpt-6.1-sol')).toEqual({ promptCaching: false });
   });
 
-  test('without one, Bedrock gates per model and other providers leave membrane its default', () => {
+  test("without one, Bedrock gates per model and other providers leave agent-framework its default", () => {
     expect(promptCachingFor({ provider: 'bedrock' }, BEDROCK_CACHED)).toBe(true);
     expect(promptCachingFor({ provider: 'bedrock' }, BEDROCK_UNCACHED)).toBe(false);
     expect(promptCachingFor({ provider: 'anthropic' }, 'claude-3-5-sonnet-20241022')).toBeUndefined();
@@ -51,6 +52,24 @@ describe('cacheSettingsFor', () => {
       .toEqual({ promptCaching: false, cacheTtl: '1h', provider: 'anthropic' });
     expect(recipeCacheSettings(recipe({}))).toEqual({});
   });
+
+  test('the module the host builds carries the recipe\'s settings, as a loaded recipe has them', () => {
+    const loaded = (agent: Record<string, unknown>) => validateRecipe({ name: 'r', agent: { systemPrompt: 'sys', ...agent }, modules: { subagents: true } });
+    const off = subagentModuleConfig(loaded({ promptCaching: false }), 'resident', 'claude-opus-5-5', 'UTC');
+    expect(off.promptCaching).toBe(false);
+    expect(off.cacheTtl).toBe('1h'); // validateRecipe fills the TTL
+    expect(off.provider).toBe('anthropic');
+    expect(off.defaultModel).toBe('claude-opus-5-5');
+    const says = subagentModuleConfig(loaded({}), 'resident', 'claude-opus-5-5', 'UTC');
+    expect('promptCaching' in says).toBe(false);
+    expect(says.cacheTtl).toBe('1h');
+    const bedrock = subagentModuleConfig(loaded({ provider: 'bedrock', cacheTtl: '5m' }), 'resident', BEDROCK_CACHED, 'UTC');
+    expect(bedrock.provider).toBe('bedrock');
+    expect(bedrock.cacheTtl).toBe('5m');
+    // Through the module, with the model each child sends.
+    expect(cacheSettingsFor(off, 'claude-opus-5-5')).toEqual({ promptCaching: false, cacheTtl: '1h' });
+    expect(cacheSettingsFor(bedrock, BEDROCK_UNCACHED)).toEqual({ promptCaching: false });
+  });
 });
 
 describe('subagents', () => {
@@ -63,8 +82,9 @@ describe('subagents', () => {
       defaultMaxTokens: 256,
       maxRetries: 0,
     });
+    const dir = mkdtempSync(join(tmpdir(), 'sub-caching-'));
     const framework = await AgentFramework.create({
-      storePath: join(mkdtempSync(join(tmpdir(), 'sub-caching-')), 'store'),
+      storePath: join(dir, 'store'),
       membrane,
       agents: [{ name: 'parent', model: 'claude-opus-5-5', systemPrompt: 'parent', maxTokens: 256 }],
       modules: [subagent as unknown as Module],
@@ -77,11 +97,14 @@ describe('subagents', () => {
     };
     const configOf = (kind: 'spawn' | 'fork', input: Record<string, unknown>) =>
       inner.ephemeralAgentConfig(inner.resolveLaunch(kind, { name: 'child', task: 't', ...input }, 'parent', 0), 'child-1');
-    return { framework, configOf };
+    const stop = async () => {
+      try { await framework.stop(); } finally { rmSync(dir, { recursive: true, force: true }); }
+    };
+    return { framework, configOf, stop };
   }
 
   test('a caching-off recipe reaches a spawn and a fork, with its cacheTtl', async () => {
-    const { framework, configOf } = await harness({ provider: 'anthropic', promptCaching: false, cacheTtl: '1h' });
+    const { configOf, stop } = await harness({ provider: 'anthropic', promptCaching: false, cacheTtl: '1h' });
     try {
       const spawn = configOf('spawn', { systemPrompt: 'Look it up.' });
       expect(spawn.promptCaching).toBe(false);
@@ -90,23 +113,23 @@ describe('subagents', () => {
       expect(fork.promptCaching).toBe(false);
       expect(fork.cacheTtl).toBe('1h');
     } finally {
-      await framework.stop();
+      await stop();
     }
   });
 
-  test('a recipe that says nothing leaves both out, so membrane keeps its default', async () => {
-    const { framework, configOf } = await harness({ provider: 'anthropic' });
+  test('a module handed nothing leaves both out, so agent-framework keeps its default', async () => {
+    const { configOf, stop } = await harness({ provider: 'anthropic' });
     try {
       const spawn = configOf('spawn', { systemPrompt: 'Look it up.' });
       expect('promptCaching' in spawn).toBe(false);
       expect('cacheTtl' in spawn).toBe(false);
     } finally {
-      await framework.stop();
+      await stop();
     }
   });
 
   test("on Bedrock the gate follows the subagent's own model, and no cacheTtl is forwarded", async () => {
-    const { framework, configOf } = await harness({ provider: 'bedrock', cacheTtl: '1h' });
+    const { configOf, stop } = await harness({ provider: 'bedrock', cacheTtl: '1h' });
     try {
       const denied = configOf('spawn', { systemPrompt: 'Look it up.', model: BEDROCK_UNCACHED });
       expect(denied.promptCaching).toBe(false);
@@ -115,7 +138,7 @@ describe('subagents', () => {
       expect(allowed.promptCaching).toBe(true);
       expect('cacheTtl' in allowed).toBe(false);
     } finally {
-      await framework.stop();
+      await stop();
     }
   });
 });

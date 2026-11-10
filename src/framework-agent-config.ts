@@ -1,5 +1,6 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
+import type { SubagentModuleConfig } from './modules/subagent-module.js';
 import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
 import { leavesOutChangedThinking, modelThinking } from './logging-adapter.js';
@@ -103,13 +104,15 @@ export interface RecipeCacheSettings {
 /**
  * The prompt-caching setting an agent on `model` gets: the recipe's explicit
  * `promptCaching`, else Bedrock's per-model gate, else undefined, which
- * leaves membrane's default (on). Shared by the resident's config and each
- * subagent's, so the gate applies to the model each of them runs.
+ * leaves agent-framework its default (on: it sets `promptCaching` on every
+ * request the agent sends, so membrane's own default isn't consulted there).
+ * Shared by the resident's config and each subagent's, so the gate applies
+ * to the model each of them runs.
  */
 export function promptCachingFor(settings: RecipeCacheSettings, model: string): boolean | undefined {
   if (settings.promptCaching !== undefined) return settings.promptCaching;
   if (settings.provider === 'bedrock') return bedrockModelSupportsPromptCaching(model);
-  return undefined; // membrane default (on)
+  return undefined; // agent-framework's default (on)
 }
 
 /**
@@ -137,6 +140,32 @@ export function recipeCacheSettings(recipe: Recipe): RecipeCacheSettings {
 
 export function resolvePromptCaching(recipe: Recipe, model: string): boolean | undefined {
   return promptCachingFor(recipeCacheSettings(recipe), model);
+}
+
+/**
+ * The subagent module's config from the recipe: the recipe's cache
+ * settings (#339), the resolved provider, and `modules.subagents`' own
+ * fields. One function, so what the host passes the module is testable
+ * without booting index.ts.
+ */
+export function subagentModuleConfig(
+  recipe: Recipe,
+  agentName: string,
+  model: string,
+  timeZone: string,
+): SubagentModuleConfig {
+  const subagentConfig = typeof recipe.modules?.subagents === 'object' ? recipe.modules.subagents : {};
+  return {
+    parentAgentName: agentName,
+    ...recipeCacheSettings(recipe),
+    provider: resolveProvider(recipe),
+    formatter: recipe.agent.formatter,
+    defaultModel: subagentConfig.defaultModel || model,
+    defaultMaxTokens: subagentConfig.defaultMaxTokens,
+    ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
+    ...(subagentConfig.lifecycleReach ? { lifecycleReach: subagentConfig.lifecycleReach } : {}),
+    timeZone,
+  };
 }
 
 /**

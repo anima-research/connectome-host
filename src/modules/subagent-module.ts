@@ -28,7 +28,7 @@ export interface SubagentModuleConfig {
   /**
    * The recipe's explicit `agent.promptCaching`, when it sets one. Each
    * subagent's config takes it, or Bedrock's per-model gate, as the resident's
-   * does (`cacheSettingsFor`); left out, membrane's default (on) applies.
+   * does (`cacheSettingsFor`); left out, agent-framework's default (on) applies.
    */
   promptCaching?: boolean;
   /** The recipe's `agent.cacheTtl`, when it sets one; not forwarded on Bedrock. */
@@ -3119,7 +3119,9 @@ export class SubagentModule implements Module {
   }
 
   /** An agent's config from its stored launch, for a launch and a resume alike, so a resumed run gets what it launched with,
-   *  less the legacy fold paragraph a launch stored by an earlier host may carry. */
+   *  less the legacy fold paragraph a launch stored by an earlier host may carry. Host policy is the exception: the thinking
+   *  binding and the cache settings come from the module's current config, so a resume after a recipe change follows the
+   *  operator's current policy, not the one the launch was stored under. */
   private agentConfig(launch: ResumableLaunch, agentName: string) {
     return {
       model: launch.model,
@@ -3133,8 +3135,8 @@ export class SubagentModule implements Module {
       // where Bedrock decides per model, for the requests this agent sends
       // itself (#339). Its strategy's compression calls set no promptCaching
       // and take the host's one membrane default, set from the resident's
-      // model in index.ts.
-      ...cacheSettingsFor(this.cacheSettings(), launch.model),
+      // model in index.ts (#630).
+      ...cacheSettingsFor(this.config, launch.model),
       allowedTools: launch.allowedTools === 'all' ? 'all' as const : [...launch.allowedTools],
       strategy: new KnowledgeStrategy({
         headWindowTokens: launch.strategy.headWindowTokens,
@@ -3144,15 +3146,6 @@ export class SubagentModule implements Module {
         maxMessageTokens: launch.strategy.maxMessageTokens,
         summaryParticipant: agentName,
       }),
-    };
-  }
-
-  /** The recipe's caching settings as the host handed them to this module; `cacheSettingsFor` gates them on a launch's model. */
-  private cacheSettings(): RecipeCacheSettings {
-    return {
-      ...(this.config.promptCaching !== undefined && { promptCaching: this.config.promptCaching }),
-      ...(this.config.cacheTtl && { cacheTtl: this.config.cacheTtl }),
-      ...(this.config.provider && { provider: this.config.provider }),
     };
   }
 

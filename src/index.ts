@@ -110,7 +110,7 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, recipeCacheSettings, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, subagentModuleConfig } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
@@ -273,20 +273,9 @@ async function createFramework(
 
   let subagentModule: SubagentModule | null = null;
   if (modules.subagents) {
-    const subagentConfig = typeof modules.subagents === 'object' ? modules.subagents : {};
-    subagentModule = new SubagentModule({
-      parentAgentName: agentName,
-      // The recipe's promptCaching and cacheTtl, for each subagent's own
-      // config (#339); the module's provider is the resolved one below.
-      ...recipeCacheSettings(recipe),
-      provider: resolveProvider(recipe),
-      formatter: recipe.agent.formatter,
-      defaultModel: subagentConfig.defaultModel || model,
-      defaultMaxTokens: subagentConfig.defaultMaxTokens,
-      ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
-      ...(subagentConfig.lifecycleReach ? { lifecycleReach: subagentConfig.lifecycleReach } : {}),
-      timeZone,
-    });
+    // The recipe's promptCaching and cacheTtl ride in it, for each
+    // subagent's own config (#339).
+    subagentModule = new SubagentModule(subagentModuleConfig(recipe, agentName, model, timeZone));
     moduleInstances.push(subagentModule);
   }
 
