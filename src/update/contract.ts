@@ -26,7 +26,11 @@
  * - the launcher: every other journal line, the lock, the copy and its label,
  *   and what a restore sets aside; and, run from a shell with `--go-back`, a
  *   Go back's mark (writeMark);
- * - setup: the install record;
+ * - setup: the install record; and, binding an install moved or copied
+ *   (rebind.ts), the data directories of the fleet's children file in the
+ *   data directory it serves and, where a child's is the other install's,
+ *   its process, and with --move-aside the moves of the copies and of what
+ *   Go backs keep, only while it holds the lock;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
@@ -184,6 +188,7 @@ export interface InstallRecord {
   dataDir: string;
   /** State kept outside the data directory, which each update copies with it. */
   extraState: string[];
+  workingDir?: string;
 }
 
 /** How the block setup prints each run with the state kept outside the data directory opens, which the remedy
@@ -231,10 +236,19 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
-  'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
-  'as a current that names no release. Its service can keep running ' +
-  'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
-  'again: its next start runs start.js, whose launcher reads the record.';
+  'records only those. A record written this way doesn\'t say which directory the install was set up in, so setup ' +
+  'takes each place under the directory that holds the record\'s directory as this install\'s, unless another ' +
+  'install\'s root lies between, and asks where each other place is in this install (a place inside another goes ' +
+  'with it): `connectome setup discord` asks about each in turn, and a setup run by hand lists them, each to be ' +
+  'given with --place PATH PLACE. Then it writes the record, start.js and connectome again, or says what else stops ' +
+  'it first, such as a current that names no release. Its service can keep running while you write the record, ' +
+  'since a running host doesn\'t read it; a service restarting a host that isn\'t running would start it on the record ' +
+  'you write, so stop that service first. Where setup then binds a place to a new path, it needs the host stopped, ' +
+  'and says so. If this install was moved or copied while its root held copy, copy.prev or set-aside, move them out ' +
+  'of its root as well, with each mark\'s areas, .connectome-update/set-aside/<mark> and ' +
+  '.connectome-update/staging/<mark> inside each directory an update copies, since they name the old directory\'s ' +
+  'places, and restoring from them would write those. Don\'t restart or update the host until setup has run again: ' +
+  'its next start runs start.js, whose launcher reads the record.';
 
 /** mark.json, written by the host's Restart, or by the launcher's Go back
  *  from a shell (writeMark). */
@@ -415,6 +429,7 @@ export function readGoBackList(root: string, markId: string): GoBackList['places
 export interface ChildrenFile {
   v: 1;
   children: Array<{ name: string; pid: number | null; bootId: string | null; dataDir: string }>;
+  boundTo?: string;
 }
 
 /** A path's real form as the places of a trial are written (trialPlaces): its
@@ -453,6 +468,8 @@ export class ContractError extends Error {
     this.name = 'ContractError';
   }
 }
+
+export class VersionError extends ContractError {}
 
 function pathSegment(value: unknown): value is string {
   return typeof value === 'string' && value !== '' && value !== '.' && value !== '..' &&
@@ -556,7 +573,7 @@ function checkVersion<T>(value: unknown, named: string): T {
   }
   const v = (value as { v?: unknown }).v;
   if (v !== 1) {
-    throw new ContractError(`${named} has version ${JSON.stringify(v)}, and this release reads only version 1.`);
+    throw new VersionError(`${named} has version ${JSON.stringify(v)}, and this release reads only version 1.`);
   }
   return value as T;
 }

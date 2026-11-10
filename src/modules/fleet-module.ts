@@ -31,6 +31,7 @@ import { CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../child-a
 import { unknownToolResult } from './unknown-tool.js';
 import { INSTALL_ROOT_ENV, isChildEntry, readRecord, writeJsonAtomic, type ChildrenFile } from '../update/contract.js';
 import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
+import { sameDirectory } from '../update/rebind.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
@@ -459,10 +460,24 @@ export class FleetModule implements Module {
     }
     if (!state?.children) return;
 
+    const listed = this.childrenFileEntries();
+    const keptAt = (name: string): string[] => {
+      const entries = Array.isArray(listed) ? listed.filter(isChildEntry).filter((entry) => entry.name === name) : [];
+      if (entries.length > 0) return entries.map((entry) => entry.dataDir);
+      const configured = this.autoStartChildren.find((child) => child.name === name);
+      const dir = configured === undefined ? null : fleetChildDataDir(configured);
+      return dir !== null && existsSync(dir) ? [dir] : [];
+    };
     this.adopting = true;
     try {
       for (const [name, p] of Object.entries(state.children)) {
         if (name !== p.name || p.socketPath !== join(p.dataDir, 'ipc.sock')) continue;
+        const kept = this.childrenFile === null ? [] : keptAt(name);
+        if (kept.length > 0 && existsSync(p.dataDir) && !kept.some((dir) => sameDirectory(p.dataDir, dir))) {
+          console.error(`[fleet] child ${JSON.stringify(name)} isn't adopted: this host's store names it at ${p.dataDir}, ` +
+            `and this install keeps it at ${kept.join(' or ')}, so it's another install's, as after a copy of this one`);
+          continue;
+        }
 
         if (!this.canRetryAdoption(p)) {
           this.children.set(name, this.reconstructOrphan(p));
