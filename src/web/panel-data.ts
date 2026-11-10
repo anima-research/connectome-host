@@ -27,6 +27,8 @@ export interface PanelAppRef {
   quotaMeter?: QuotaMeter | null;
   credentials?: CredentialMonitor | null;
   subscriptionUnmetered?: boolean;
+  /** cacheKeepalivePersist in /healthz, when the recipe sets agent.cacheKeepalive.persist. */
+  keepalivePersist?: () => Record<string, unknown> | null;
 }
 
 export const PANEL_OPS = [
@@ -820,6 +822,13 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   try {
     const ledger = app.callLedger?.snapshot();
     if (ledger) (snapshot as Record<string, unknown>).callLedger = ledger;
+  } catch {
+  }
+  // cacheKeepalivePersist: whether the cache keepalive is saving its state,
+  // when the recipe asks it to; saving false once it gave up the file.
+  try {
+    const persist = app.keepalivePersist?.();
+    if (persist) (snapshot as Record<string, unknown>).cacheKeepalivePersist = persist;
   } catch {
   }
   // update: the host's update status, absent before main() sets it up.

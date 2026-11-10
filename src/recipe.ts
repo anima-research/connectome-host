@@ -351,10 +351,12 @@ export interface RecipeAgent {
     refreshAfterMinutes?: number;
     /**
      * Save keepalive state to `<dataDir>/cache-keepalive.json` so that after
-     * a restart (a backup, an upgrade) the keepalive goes on refreshing the
-     * cached prefix, instead of nothing touching it until the next turn.
-     * Needs a membrane with `cacheKeepalive.statePath`; the host warns at
-     * startup when it hasn't one. Default false.
+     * a restart that keeps the model, system prompt and tools (a watchdog
+     * restart, such an upgrade) the keepalive goes on refreshing the cached
+     * prefix, instead of nothing touching it until the next turn. Anthropic
+     * and the 1-hour cache only. Needs a membrane with
+     * `cacheKeepalive.statePath`; the host warns at startup when the option
+     * can't work, and deletes the file at startup when it's off. Default false.
      */
     persist?: boolean;
   };
