@@ -214,12 +214,29 @@ export interface RecipeKvUnifiedConfig {
      * (context-manager ≥ 0.17): an integer from 0 to 64, 0 prices exact ages.
      * Optional; a strategy built from a recipe takes 4 unless set. */
     ageBandSteps?: number;
+    /** What rewriting the prompt costs, in points per `cacheScale` tokens
+     * a layout change rewrites, linear in the rewrite (context-manager
+     * ≥ 0.25.3): it takes the place of the quadratic `cacheLambda` term, so
+     * the layout last sent is cheaper than any change by that change's
+     * whole rewrite. Optional; absent or 0 keeps the quadratic term. */
+    rewriteLambda?: number;
   };
   tokenBucketSize: number;
   continuityBucketSize: number;
   fidelityBucketSize: number;
   labelCeiling: number;
   adoptEpsilon: number;
+  /** What a change of layout costs in thinking, in points per token of the
+   * agent's own thinking the change would make a model that binds thinking
+   * drop (context-manager ≥ 0.25.3). It is added to `adoptEpsilon` for the
+   * compile, so the layout holds while recent thinking is live and moves
+   * once it is gone anyway. Optional; absent or 0 prices none, and a model
+   * that doesn't bind thinking is never priced. */
+  thinkingLambda?: number;
+  /** How far back thinking still counts for `thinkingLambda`: a reply's
+   * thinking weighs half as much for each this many raw tokens between it
+   * and the newest message. Optional; 50,000 unless set. */
+  thinkingHalfLifeTokens?: number;
   treeifyNonContiguousSummaries: boolean;
   /** Preserve summaries spanning gaps instead of treeifying them. Mutually exclusive
    * with treeifyNonContiguousSummaries; both flags must be explicit. */
@@ -1982,6 +1999,17 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   ) {
     throw new Error('Recipe agent.strategy.kvUnified.policy.ageBandSteps must be an integer from 0 to 64 when present.');
   }
+  // What a change of layout costs (context-manager ≥ 0.25.3), each optional.
+  const notNegative = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  if (policy.rewriteLambda !== undefined && !notNegative(policy.rewriteLambda)) {
+    throw new Error('Recipe agent.strategy.kvUnified.policy.rewriteLambda must be a finite number of 0 or more when present.');
+  }
+  if (config.thinkingLambda !== undefined && !notNegative(config.thinkingLambda)) {
+    throw new Error('Recipe agent.strategy.kvUnified.thinkingLambda must be a finite number of 0 or more when present.');
+  }
+  if (config.thinkingHalfLifeTokens !== undefined && !(notNegative(config.thinkingHalfLifeTokens) && (config.thinkingHalfLifeTokens as number) > 0)) {
+    throw new Error('Recipe agent.strategy.kvUnified.thinkingHalfLifeTokens must be a finite number above 0 when present.');
+  }
   for (const key of [
     'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
   ] as const) {
@@ -2084,14 +2112,14 @@ const RECIPE_MODULE_KEYS = [
 ] as const;
 const RECIPE_KV_UNIFIED_KEYS = [
   'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
-  'adoptEpsilon', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
+  'adoptEpsilon', 'thinkingLambda', 'thinkingHalfLifeTokens', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
   'hysteresisCertificate', 'engine', 'latentDemandMode',
 ] as const;
 const RECIPE_KV_UNIFIED_POLICY_KEYS = [
   'alpha', 'budgetLowRatio', 'budgetHighRatio', 'budgetUnderLambda', 'budgetOverLambda',
   'cacheLambda', 'cacheScale', 'cacheReadPrice', 'cacheWritePrice', 'continuityLambda',
   'continuityScale', 'continuityRecencyHalfLifeTokens', 'continuityRecencyFloor',
-  'continuityStableHalfLife', 'continuityStableFloor', 'ageBandSteps',
+  'continuityStableHalfLife', 'continuityStableFloor', 'ageBandSteps', 'rewriteLambda',
 ] as const;
 type ListsExactly<K extends string, L extends readonly string[]> =
   [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
