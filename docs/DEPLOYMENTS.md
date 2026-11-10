@@ -380,7 +380,8 @@ hand `--move-aside` does: it moves each into `<root>/moved-aside/<time>/`,
 and the areas inside each place under the new directory into that place's
 `.connectome-update/moved-aside/<time>/`, saying each move, and it names an
 area in a place outside the new directory and leaves it. Or move them out of
-the root yourself, with each mark's areas. Setup refuses while a trial is
+the root yourself, with each mark's areas in a place under the new
+directory, leaving any outside it, which may be another install's. Setup refuses while a trial is
 unfinished, since that trial's fallback restores from them: let the
 trial end where the install was, and then move or copy it again. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
@@ -394,11 +395,14 @@ such an install was moved or copied with every recorded place outside its
 directory, its copy still names the old directory's `mcpl-servers.json`
 and agent overlay, which `/update back restore` would write: move `copy`,
 `copy.prev` and `set-aside` out of the root yourself, with each mark's
-areas. A Go back to a release from before
+areas in a place under its directory, leaving any outside it, which may be
+another install's. A Go back to a release from before
 this one keeps the refusal of `start.js` and `connectome` only until that
 release's own setup runs there, since that setup writes `start.js`, and
 `connectome` where it has one, without it, and the record without
-`workingDir`.
+`workingDir`. Such a Go back on a copy made while a fleet child ran can
+adopt the original's child, since a release from before this one doesn't
+check where the copy keeps a child its store names.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.

@@ -230,7 +230,7 @@ export const MOVED_ASIDE_AFTERWARDS = 'Nothing removes what\'s moved aside: it t
   'Until the next update takes a new copy, /update back restore isn\'t there, and each update says it removes no older ' +
   'release.';
 
-export const MOVE_ASIDE_BY_HAND = 'each one listed, and in each directory an update copies, ' +
+export const MOVE_ASIDE_BY_HAND = 'each one listed, and in each directory an update copies that\'s under this install\'s directory, ' +
   '.connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for each mark listed, with or without ' +
   '.tmp, .filling or .emptying after it';
 
@@ -316,7 +316,8 @@ export function lockForBinding(root: string, from: string | null, ops: LauncherO
         `which is running, and ${unproved}. So it may be this install's own host, or a lock that came with this ` +
         'install when it was copied while another install\'s host ran. Setup binds this install\'s places only ' +
         'while it holds the lock, so it has changed nothing. If that process is this install\'s host, stop it and ' +
-        `run setup again; if the lock came with a copy, remove ${lock} and run setup again.`);
+        `run setup again; if the lock came with a copy, remove ${lock} if it still names process ${holder.pid} since ` +
+        `${holder.at}, and run setup again.`);
     }
     setAsideCopied(lock, holder);
   }
