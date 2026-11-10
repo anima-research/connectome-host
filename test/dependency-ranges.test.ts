@@ -27,8 +27,12 @@
  * agent-framework's create() doesn't check itself. An agent-framework without
  * the exports the host imports fails the host's load, and membrane's range
  * is the one the host declared before the presentation. Each range is also
- * asked to admit its presentation release (agent-framework 0.33.0,
- * context-manager 0.25.0, chronicle 0.6.0), which no install layout changes.
+ * asked to admit the release the host needs first (agent-framework 0.33.0
+ * and chronicle 0.6.0, their presentation releases; context-manager 0.25.3),
+ * which no install layout changes. context-manager's floor is above its
+ * presentation release, 0.25.0: 0.25.3 is the first of that line to price
+ * what a recipe's `rewriteLambda` and `thinkingLambda` set, and an earlier
+ * one would take the keys and price nothing.
  */
 import { describe, test, expect } from 'bun:test';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -45,9 +49,9 @@ const ours = manifest(join(ROOT, 'package.json'));
 const installed = (name: string): Manifest => manifest(join(ROOT, 'node_modules', name, 'package.json'));
 /** Whether `name` is a sibling tree linked into node_modules, which keeps its main's version until its release is cut. */
 const linked = (name: string): boolean => lstatSync(join(ROOT, 'node_modules', name)).isSymbolicLink();
-/** That `range` admits `release`, the presentation release of `name`, whatever the install layout. */
+/** That `range` admits `release`, the release of `name` the host needs first, whatever the install layout. */
 function admitsRelease(name: string, range: string, release: string): void {
-  expect(Bun.semver.satisfies(release, range), `${range} admits ${name} ${release}, its presentation release`).toBe(true);
+  expect(Bun.semver.satisfies(release, range), `${range} admits ${name} ${release}, the release the host needs first`).toBe(true);
 }
 /** That `range` admits the installed `name`, asked only of a package installed from the registry (not `linked`). */
 function admitsInstalled(name: string, range: string): void {
@@ -88,10 +92,10 @@ describe("the host's dependency ranges (#291's release set)", () => {
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
-  test("takes context-manager from its release with the window APIs, 0.25.0: not main's 0.23.0 or 0.24.0, which have none", () => {
+  test("takes context-manager from 0.25.3, the first of the window-API line that prices what a recipe's change-cost keys set: not main's 0.23.0 or 0.24.0, which have no window APIs, nor 0.25.0 to 0.25.2, which would take those keys and price nothing", () => {
     const range = ours.dependencies?.['@animalabs/context-manager'];
-    for (const published of ['0.23.0', '0.24.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    admitsRelease('@animalabs/context-manager', range!, '0.25.0');
+    for (const published of ['0.23.0', '0.24.0', '0.25.0', '0.25.1', '0.25.2']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/context-manager', range!, '0.25.3');
     // agent-framework's create() refuses a ContextManager without presentRows.
     const proto = ContextManager.prototype as unknown as Record<string, unknown>;
     for (const method of ['windowStatusOf', 'retractRows', 'getPresentedMessages']) {

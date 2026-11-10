@@ -85,10 +85,12 @@ describe('live-image recipe limits', () => {
     for (const key of Object.keys(limits)) {
       expect(parsed.agent.strategy).not.toHaveProperty(key);
     }
-    expect(built.maxLiveImages).toBe(6);
-    expect(built.imageStripDepthTokens).toBe(30000);
-    // context-manager applies its 20 MiB byte default when it renders, so the
-    // built config leaves it unset.
+    // context-manager 0.25.2 strips no live image by default: both limits
+    // are 0, where they were 6 images and 30,000 tokens of depth.
+    expect(built.maxLiveImages).toBe(0);
+    expect(built.imageStripDepthTokens).toBe(0);
+    // context-manager applies its byte default (0 too, from 0.25.2) when it
+    // renders, so the built config leaves it unset.
     expect(built.maxLiveImageBytes).toBeUndefined();
   });
 
