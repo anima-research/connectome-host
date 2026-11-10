@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
-import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
+import { Membrane, MembraneError, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
 type Internal = {
@@ -203,6 +203,132 @@ describe('the module\'s own failures end the retry loop without their words bein
   }
 });
 
+describe("a run's failure is classified by membrane's fields, when its cause carries them", () => {
+  type Type = ConstructorParameters<typeof MembraneError>[0]['type'];
+  /** agent-framework's rejection: its own words, with a bounded copy of
+   *  membrane's error as the cause, a plain Error with the original's name
+   *  and membrane's fields. */
+  const failed = (type: Type, httpStatus?: number, words = `the model call failed (${type}${httpStatus ? `, HTTP ${httpStatus}` : ''})`, providerWords = 'provider words') => {
+    const cause = Object.assign(new Error(providerWords), { name: 'MembraneError', type, retryable: false, ...(httpStatus ? { httpStatus } : {}) });
+    return new Error(words, { cause });
+  };
+
+  test('each type and status classifies by membrane\'s fields', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      const cases: Array<[Type, number | undefined, { rateLimit: boolean; transient: boolean }]> = [
+        ['rate_limit', 429, { rateLimit: true, transient: true }],
+        ['rate_limit', undefined, { rateLimit: true, transient: true }],
+        ['invalid_request', 429, { rateLimit: true, transient: true }],
+        ['timeout', undefined, { rateLimit: false, transient: true }],
+        ['network', undefined, { rateLimit: false, transient: true }],
+        ['server', 500, { rateLimit: false, transient: true }],
+        ['server', 502, { rateLimit: false, transient: true }],
+        ['server', 503, { rateLimit: false, transient: true }],
+        ['server', 504, { rateLimit: false, transient: true }],
+        ['server', 529, { rateLimit: false, transient: true }],
+        ['server', 501, { rateLimit: false, transient: false }],
+        ['server', 505, { rateLimit: false, transient: false }],
+        ['server', 507, { rateLimit: false, transient: false }],
+        ['invalid_request', 400, { rateLimit: false, transient: false }],
+        ['context_length', 400, { rateLimit: false, transient: false }],
+        ['auth', 401, { rateLimit: false, transient: false }],
+        ['safety', undefined, { rateLimit: false, transient: false }],
+        ['abort', undefined, { rateLimit: false, transient: false }],
+      ];
+      for (const [type, status, verdict] of cases) {
+        const err = failed(type, status);
+        expect([type, status, sub.isRateLimitError(err), sub.isTransientError(err)]).toEqual([type, status, verdict.rateLimit, verdict.transient]);
+      }
+    } finally { await h.cleanup(); }
+  });
+
+  test('where membrane typed the failure from the provider\'s words alone, those words decide', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      expect(sub.isTransientError(failed('server', undefined, undefined, 'upstream overloaded_error'))).toBe(true);
+      expect(sub.isTransientError(failed('unknown', undefined, undefined, 'the upstream is overloaded'))).toBe(true);
+      expect(sub.isTransientError(failed('unknown', undefined, undefined, 'the upstream said no'))).toBe(false);
+      expect(sub.isRateLimitError(failed('unknown', undefined, undefined, 'too many requests, slow down'))).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+
+  test('the fields decide over the words, and a 504 is transient though its words say no "timeout"', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      const loud = failed('invalid_request', 400, 'network overloaded: 503 rate limit timeout');
+      expect([sub.isRateLimitError(loud), sub.isTransientError(loud)]).toEqual([false, false]);
+      const gateway = failed('server', 504, 'the model call failed (server, HTTP 504)');
+      expect(gateway.message).not.toContain('timeout');
+      expect(sub.isTransientError(gateway)).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+
+  test('each failure today\'s words classify gets the same verdict from the new words with a cause', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      const pairs: Array<[string, Type, number | undefined]> = [
+        ['rate_limit_error: slow down', 'rate_limit', 429],
+        ['429 Too Many Requests', 'rate_limit', 429],
+        ['request timeout', 'timeout', undefined],
+        ['read ECONNRESET', 'network', undefined],
+        ['socket hang up', 'network', undefined],
+        ['network error', 'network', undefined],
+        ['HTTP 500 Internal Server Error', 'server', 500],
+        ['HTTP 502 Bad Gateway', 'server', 502],
+        ['HTTP 503 Service Unavailable', 'server', 503],
+        ['504 Gateway Timeout', 'server', 504],
+        ['status=529 overloaded', 'server', 529],
+        ['HTTP 400 invalid_request_error', 'invalid_request', 400],
+        ['HTTP 401 authentication_error', 'auth', 401],
+        ['upstream overloaded_error', 'server', undefined],
+        ['the upstream is overloaded', 'unknown', undefined],
+        ['the stream was idle too long', 'unknown', undefined],
+        ['the upstream said no', 'unknown', undefined],
+      ];
+      for (const [words, type, status] of pairs) {
+        const old = new Error(words);
+        const now = failed(type, status, undefined, words);
+        expect([words, sub.isRateLimitError(now), sub.isTransientError(now)])
+          .toEqual([words, sub.isRateLimitError(old), sub.isTransientError(old)]);
+      }
+    } finally { await h.cleanup(); }
+  });
+
+  test('a cause that isn\'t membrane\'s leaves the words to decide, its own words among them, and membrane\'s own error as the cause is read like its copy', async () => {
+    const h = await harness({});
+    try {
+      const sub = internal(h.subagent);
+      expect(sub.isTransientError(new Error('Stream aborted: no terminal event'))).toBe(true);
+      expect(sub.isTransientError(new Error('HTTP 503 Service Unavailable', { cause: new Error('socket') }))).toBe(true);
+      expect(sub.isTransientError(new Error('the model call failed', { cause: { type: 'network' } }))).toBe(false);
+      const another = Object.assign(new Error('x'), { name: 'GatewayError', type: 'network' });
+      expect(sub.isTransientError(new Error('the model call failed', { cause: another }))).toBe(false);
+      expect(sub.isTransientError(new Error('the turn failed', { cause: new Error('read ECONNRESET') }))).toBe(true);
+      expect(sub.isRateLimitError(new Error('the turn failed', { cause: new Error('429 Too Many Requests') }))).toBe(true);
+      expect(sub.isTransientError(new Error('the turn failed', { cause: new Error('the upstream said no') }))).toBe(false);
+      const original = new MembraneError({ type: 'network', message: 'provider words', retryable: true });
+      expect(sub.isTransientError(new Error('the model call failed', { cause: original }))).toBe(true);
+    } finally { await h.cleanup(); }
+  });
+
+  test('a spawned run that fails on a 504 is retried, and one that fails on a 400 isn\'t', async () => {
+    for (const [status, type, runs] of [[504, 'server', 2], [400, 'invalid_request', 1]] as const) {
+      const h = await harness({ maxRetries: 1 }, async () => { throw failed(type, status); });
+      internal(h.subagent).retryBackoffMs = 0;
+      try {
+        const res = await h.subagent.handleToolCall(spawn('scout', { sync: true }));
+        expect(res.success).toBe(false);
+        expect([status, h.runs()]).toEqual([status, runs]);
+      } finally { await h.cleanup(); }
+    }
+  }, 20_000);
+});
+
 describe('a framework failure is read without the ephemeral agent\'s name, and numbers as whole numbers', () => {
   // agent-framework's startup watchdog error, which quotes the agent's name.
   const watchdog = (agent: { name: string }) => new Error(
@@ -216,7 +342,7 @@ describe('a framework failure is read without the ephemeral agent\'s name, and n
         const h = await harness({ maxRetries: 1 }, async (agent) => { throw watchdog(agent); });
         try {
           const res = await h.subagent.handleToolCall((kind === 'spawn' ? spawn : fork)(name, { sync: true }));
-          expect(res.error ?? '').toContain('failed to start inference within 15000ms');
+          expect(res.error ?? '').toBe(stoppedText(name, 'the turn failed', kind));
           expect(h.runs()).toBe(1);
           expect(h.subagent.getConcurrencyStatus().effective).toBe(5);
         } finally { await h.cleanup(); }
@@ -347,7 +473,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     const h = await harness({ maxRetries: 1 }, async () => { attempts++; await sleep(50); throw new Error('503 overloaded'); });
     try {
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 3000 }));
-      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: stoppedText('scout', '503 overloaded') });
+      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: stoppedText('scout', 'the model call failed (timeout, network or server)') });
       expect(attempts).toBe(1);
     } finally { await h.cleanup(); }
   }, 20_000);
@@ -398,7 +524,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
         await h.subagent.handleToolCall(kind === 'spawn' ? spawn('scout', { timeoutMs: 1500 }) : fork('scout', { timeoutMs: 1500 }));
         const out = await outcome(h, 'scout');
         const took = Date.now() - started;
-        expect(out).toEqual({ ok: false, text: stoppedText('scout', '429 Too Many Requests', kind) });
+        expect(out).toEqual({ ok: false, text: stoppedText('scout', 'the model call failed (rate_limit)', kind) });
         expect(h.runs()).toBe(1);
         const cooled = lines.map((l) => /cooling down (\d+)ms/.exec(l)?.[1]).filter((m) => m !== undefined).map(Number);
         expect(cooled).toHaveLength(1);
@@ -1751,4 +1877,36 @@ describe('with the clock held, agent names stay new to agent-framework', () => {
       } finally { await h.cleanup(); }
     }, 20_000);
   }
+});
+
+describe('the fleet status a parent reads', () => {
+  test('a retrying subagent is listed, and its retry status message, which holds the error\'s words, is not', async () => {
+    const SENTINEL = 'sentinel-3f9c provider said: upstream body';
+    let attempts = 0;
+    const h = await harness({ maxRetries: 1 }, async () => {
+      attempts++;
+      throw new Error(`503 overloaded: ${SENTINEL}`);
+    });
+    const sub = internal(h.subagent);
+    sub.retryBackoffMs = 60_000;
+    const waits = watchWaits(h.subagent);
+    const status = async () => ((await h.subagent.gatherContext('parent'))[0]?.content[0] as { text: string } | undefined)?.text ?? '';
+    const entry = () => [...(sub.activeSubagents as unknown as Map<string, { name: string; status: string; statusMessage?: string }>).values()]
+      .find((a) => a.name === 'scout');
+    try {
+      expect((await h.subagent.handleToolCall({ id: 't-hud', name: 'hud', input: { enabled: true }, callerAgentName: 'parent' })).success).toBe(true);
+      expect((await h.subagent.handleToolCall(spawn('scout'))).success).toBe(true);
+      // Inside the retry's wait: the backoff is held open, and the stop below ends it.
+      await until(() => waits.some((w) => w.endedBy === undefined) && (entry()?.statusMessage ?? '').startsWith('Retry 1:'));
+      expect(entry()?.status).toBe('running');
+      expect(entry()?.statusMessage).toContain(SENTINEL);
+      const hud = await status();
+      expect(hud).toContain('scout [spawn] running since');
+      expect(hud).not.toContain('sentinel-3f9c');
+      expect(attempts).toBe(1);
+    } finally {
+      h.subagent.cancelSubagent('scout');
+      await h.cleanup();
+    }
+  }, 20_000);
 });

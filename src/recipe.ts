@@ -1110,8 +1110,9 @@ export interface RecipeModules {
    * pending login, provider hold, MCPL server down, …). Off by default:
    * writing into a channel is a bigger act than showing a typing indicator.
    *
-   * - `statusChannels` — always get the operator-grade message (kind + error
-   *   text) for `status` and `reply` kinds, after `quietMs` without a clear.
+   * - `statusChannels` — get the kind and a fixed line saying what happened
+   *   for `status` and `reply` kinds, after `quietMs` without a clear; the
+   *   alert's own message stays on the operator's surfaces.
    * - `reply.in` / `reply.not` — channel-id patterns (`zulip:*`, exact ids)
    *   where a person who writes to the agent during an outage gets one canned
    *   "cannot respond right now" line, and where the channel whose message

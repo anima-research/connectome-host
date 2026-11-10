@@ -135,6 +135,13 @@ const TIMER_SLACK_MS = 2;
 
 const ZOMBIE_THRESHOLD_MS = 120_000;
 
+const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([500, 502, 503, 504, 529]);
+
+/** membrane's MembraneErrorType, as membrane 0.8.0 declares it. */
+const MEMBRANE_TYPES: ReadonlySet<string> = new Set([
+  'rate_limit', 'context_length', 'invalid_request', 'auth', 'server', 'network', 'timeout', 'abort', 'safety', 'unsupported', 'unknown',
+]);
+
 function duration(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 100) / 10} s`;
 }
@@ -1815,14 +1822,38 @@ export class SubagentModule implements Module {
   /** agent-framework quotes the ephemeral agent's name in its own messages
    *  ("Ephemeral agent \"spawn-migrate-…\" failed to start inference …"), and
    *  the name is the agent's choice, so it's taken out before the classifiers
-   *  read the words. */
+   *  read the words. They read the error's message, and its cause's when the
+   *  cause is an Error, either one counting: agent-framework's rejection
+   *  gives its own words, with the original's on a bounded copy as the
+   *  cause. They are only classified here. */
   private classifiedText(err: Error, agentName?: string): string {
-    const text = agentName ? err.message.split(agentName).join('') : err.message;
-    return text.toLowerCase();
+    const cause = (err as { cause?: unknown }).cause;
+    const texts = cause instanceof Error ? [err.message, cause.message] : [err.message];
+    return texts.map((text) => (agentName ? text.split(agentName).join('') : text).toLowerCase()).join('\n');
+  }
+
+  /** agent-framework rejects a failed run with its own words and a bounded
+   *  copy of the error as the cause: a plain Error with the original's name
+   *  and, for membrane's, membrane's fields. So it is read by its name. */
+  private membraneCause(err: Error): { type: string; httpStatus?: number } | undefined {
+    const cause = (err as { cause?: unknown }).cause;
+    if (!(cause instanceof Error) || cause.name !== 'MembraneError') return undefined;
+    const { type, httpStatus } = cause as { type?: unknown; httpStatus?: unknown };
+    if (typeof type !== 'string') return undefined;
+    return { type, ...(typeof httpStatus === 'number' ? { httpStatus } : {}) };
+  }
+
+  /** Where membrane couldn't type a failure from a status, as `unknown` or as
+   *  `server` with no status, the provider's words decide, as they did
+   *  before the cause was read. */
+  private fieldsDecide(cause: { type: string; httpStatus?: number }): boolean {
+    return cause.type !== 'unknown' && !(cause.type === 'server' && cause.httpStatus === undefined);
   }
 
   private isRateLimitError(err: unknown, agentName?: string): boolean {
     if (!(err instanceof Error)) return false;
+    const cause = this.membraneCause(err);
+    if (cause && this.fieldsDecide(cause)) return cause.type === 'rate_limit' || cause.httpStatus === 429;
     const msg = this.classifiedText(err, agentName);
     return /(?<![a-z])rate[\s_-]?(limit|exceeded)/.test(msg)
       || /\b429\b/.test(msg)
@@ -1838,6 +1869,12 @@ export class SubagentModule implements Module {
 
   private isTransientError(err: Error, agentName?: string): boolean {
     if (this.isUnsleptProviderWait(err)) return false;
+    const cause = this.membraneCause(err);
+    if (cause && this.fieldsDecide(cause)) {
+      return cause.type === 'timeout' || cause.type === 'network'
+        || (cause.httpStatus !== undefined && TRANSIENT_STATUSES.has(cause.httpStatus))
+        || this.isRateLimitError(err, agentName);
+    }
     const msg = this.classifiedText(err, agentName);
     return (
       msg.includes('timeout') ||
@@ -2704,10 +2741,41 @@ export class SubagentModule implements Module {
     return { parent, resultTo: parent === launched && !previous ? firstRoute : { to: parent, as: 'message' } };
   }
 
+  /** What a parent reads of a failure that isn't the host's own: fixed words by
+   *  the class the host's classifiers give it, never its message. Any
+   *  agent-framework's error can carry a provider's words there (0.33.0's
+   *  rejection is the provider's message), and the host can't tell them from
+   *  any other, so it shows none. */
+  private failureWords(err: unknown, run: RunProgress): string {
+    if (err instanceof Error) {
+      if (this.isUnsleptProviderWait(err)) {
+        const ms = (err as { retryAfterMs?: unknown }).retryAfterMs;
+        if (typeof ms !== 'number' || Number.isNaN(ms)) return "the provider's stated wait is not a number, so a subagent's run doesn't sleep it";
+        const asked = Number.isFinite(ms) ? `${Math.ceil(ms / 1000)} s` : 'longer than can be represented';
+        return `the provider asked to wait ${asked}, which a subagent's run doesn't sleep`;
+      }
+      // A type from membrane's own set and a number are membrane's words, not
+      // the provider's, so they're shown in agent-framework's form for a
+      // membrane error. Where the fields don't decide the class, the class
+      // words below say what the host decided instead.
+      const cause = this.membraneCause(err);
+      if (cause && MEMBRANE_TYPES.has(cause.type) && this.fieldsDecide(cause)) {
+        const status = cause.httpStatus !== undefined ? `HTTP ${cause.httpStatus}` : undefined;
+        if (cause.type === 'safety') return "the request couldn't be completed";
+        if (cause.type === 'timeout') return `the model call timed out${status ? ` (${status})` : ''}`;
+        return `the model call failed (${status ? `${cause.type}, ${status}` : cause.type})`;
+      }
+      if (this.isRateLimitError(err, run.agentName)) return 'the model call failed (rate_limit)';
+      if (this.isTransientError(err, run.agentName)) return 'the model call failed (timeout, network or server)';
+    }
+    return run.started ? 'the turn failed' : "it couldn't be set up";
+  }
+
   private failedRun(name: string, kind: 'spawn' | 'fork', err: unknown, run: RunProgress): Error {
     const who = kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`;
     const own = err instanceof SubagentFailure ? err : null;
-    const why = (own ? own.why : err instanceof Error ? err.message : String(err)).replace(/[\s.]+$/, '');
+    if (!own) console.error(`[subagent] ${name} ${run.started ? 'stopped' : "didn't start"}: ${err instanceof Error ? err.message : String(err)}`);
+    const why = (own ? own.why : this.failureWords(err, run)).replace(/[\s.]+$/, '');
     const remedy = own?.remedy ? ` ${own.remedy}` : '';
     if (!run.started) return new RunFailed(`${who} didn't start, so nothing ran: ${why}.${remedy}`, run.agentName);
     const tries = run.attempts > 1 ? ` after ${run.attempts} attempts` : '';
