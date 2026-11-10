@@ -64,9 +64,7 @@ import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
 import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
-import {
-  hasRecoveredThinking, isRecoveredThinkingRefusal, recordRecoveredThinkingRefused, recoveredThinkingRefused, stripRecoveredThinking,
-} from './recovered-thinking.js';
+import { prepareRecoveredThinking, resendWithoutRecoveredThinking } from './recovered-thinking.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -598,26 +596,6 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     };
   }
 
-  /** Leaves `<recovered_thinking>` blocks out for a model found to refuse them (recovered-thinking.ts). */
-  private withoutRecoveredThinking(request: ProviderRequest): ProviderRequest {
-    if (!recoveredThinkingRefused(request.model)) return request;
-    const messages = stripRecoveredThinking(request.messages);
-    return messages === request.messages ? request : { ...request, messages };
-  }
-
-  /** True when this response is the model's first refusal of recovered thinking
-   *  the request carried: the model is marked, and the caller sends it again. */
-  private learnRecoveredThinkingRefusal(request: ProviderRequest, response: ProviderResponse): boolean {
-    if (recoveredThinkingRefused(request.model)) return false;
-    if (!isRecoveredThinkingRefusal(response) || !hasRecoveredThinking(request.messages)) return false;
-    recordRecoveredThinkingRefused(request.model);
-    console.error(
-      `[recovered-thinking] ${request.model} refused a request carrying <recovered_thinking> blocks ` +
-      '(reasoning_extraction); they are left out of its requests from now on (the store keeps them).',
-    );
-    return true;
-  }
-
   private readonly warnedEffort = new Set<string>();
   private readonly warnedThinking = new Set<string>();
 
@@ -707,6 +685,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     summary: Record<string, unknown>,
     outcome: { response: ProviderResponse } | { error: unknown },
     errorText: string | undefined,
+    resent = false,
   ): void {
     try {
       if ('error' in outcome) this.onProviderError?.(outcome.error, kind);
@@ -714,7 +693,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     } catch { }
     const response = 'response' in outcome ? outcome.response : undefined;
     const raw0 = (response as { raw?: { stop_reason?: string; stop_details?: { category?: string } } } | undefined)?.raw;
-    if (kind === 'complete' && raw0?.stop_reason === 'refusal' && this.onRefusal) {
+    // A refusal of recovered thinking that is sent again without it isn't
+    // the caller's to hear about: the resend's outcome is.
+    if (kind === 'complete' && !resent && raw0?.stop_reason === 'refusal' && this.onRefusal) {
       try {
         this.onRefusal({
           kind,
@@ -902,6 +883,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     t0: number,
     rawRequest: unknown,
     outcome: { response: ProviderResponse } | { error: unknown },
+    resent = false,
   ): void {
     try {
       const timestamp = new Date().toISOString();
@@ -951,7 +933,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         const error = errorFields?.error;
         const errorText = error === undefined ? undefined
           : typeof error === 'string' ? error : (error as { message: string }).message;
-        this.observeCall(kind, timestamp, durationMs, request, summary, outcome, errorText);
+        this.observeCall(kind, timestamp, durationMs, request, summary, outcome, errorText, resent);
       } catch { }
     } catch {
     }
@@ -962,7 +944,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withOAuthIdentity(this.withReasoning(this.withoutRecoveredThinking(request)));
+    const prepared = prepareRecoveredThinking(request);
+    const effective = this.withOAuthIdentity(this.withReasoning(prepared.request));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     let response: ProviderResponse;
@@ -972,8 +955,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       this.recordCall('complete', request, t0, sink.rawRequest, { error: err });
       throw err;
     }
-    this.recordCall('complete', request, t0, sink.rawRequest, { response });
-    if (this.learnRecoveredThinkingRefusal(request, response)) return this.complete(request, options);
+    const resend = resendWithoutRecoveredThinking(request.model, prepared.carried, response);
+    this.recordCall('complete', request, t0, sink.rawRequest, { response }, resend);
+    if (resend) return this.complete(request, options);
     return response;
   }
 
@@ -986,13 +970,14 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // What the request was shaped by: a refusal is answered from this, not from
     // a verdict another agent's refusal changed while this one was out.
     const sentWithoutControl = accountBinding(request.model) === 'shows';
-    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(this.withoutRecoveredThinking(request))))));
+    const prepared = prepareRecoveredThinking(request);
+    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(prepared.request)))));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     let delivered = false;
-    // Watched too while recovered thinking may still be refused: a refused
+    // Watched too while the request carries recovered thinking: a refused
     // request is sent again only when nothing of it reached the caller.
-    const watch = sentWithoutControl || (!recoveredThinkingRefused(request.model) && hasRecoveredThinking(request.messages));
+    const watch = sentWithoutControl || prepared.carried;
     const watched: StreamCallbacks = watch
       ? {
           ...callbacks,
@@ -1021,8 +1006,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       );
       return this.stream(request, callbacks, options);
     }
-    this.recordCall('stream', request, t0, sink.rawRequest, { response });
-    if (!delivered && this.learnRecoveredThinkingRefusal(request, response)) return this.stream(request, callbacks, options);
+    const resend = resendWithoutRecoveredThinking(request.model, prepared.carried, response, delivered);
+    this.recordCall('stream', request, t0, sink.rawRequest, { response }, resend);
+    if (resend) return this.stream(request, callbacks, options);
     return response;
   }
 }

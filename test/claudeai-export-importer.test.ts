@@ -112,6 +112,25 @@ describe('transformContent', () => {
     expect(transformContent(msg, { dropThinking: true })).toEqual([{ type: 'text', text: 'Answer' }]);
   });
 
+  test('a turn of thinking alone keeps a placeholder when its thinking is left out', () => {
+    const msg = mkMsg({ uuid: 'x', sender: 'assistant', content: [{ type: 'thinking', thinking: 'only a thought' }] });
+    expect(transformContent(msg, { dropThinking: true })).toEqual([{ type: 'text', text: '[earlier thinking left out]' }]);
+    const empty = mkMsg({ uuid: 'y', sender: 'assistant', content: [{ type: 'thinking', thinking: '' }] });
+    expect(transformContent(empty)).toEqual([{ type: 'text', text: '[earlier thinking left out]' }]);
+    // A human turn with nothing to import stays empty, as before.
+    expect(transformContent(mkMsg({ uuid: 'z', sender: 'human', content: [] }))).toEqual([]);
+  });
+
+  test('a non-string thought does not stop the import', () => {
+    const msg = mkMsg({ uuid: 'x', sender: 'assistant', content: [{ type: 'thinking', thinking: 123 }, { type: 'text', text: 'ok' }] });
+    expect(transformContent(msg)).toEqual([
+      { type: 'text', text: '<recovered_thinking>\n123\n</recovered_thinking>' },
+      { type: 'text', text: 'ok' },
+    ]);
+    const missing = mkMsg({ uuid: 'y', sender: 'assistant', content: [{ type: 'thinking' }, { type: 'text', text: 'ok' }] });
+    expect(transformContent(missing)).toEqual([{ type: 'text', text: 'ok' }]);
+  });
+
   test('empty thinking never produces a block', () => {
     const msg = mkMsg({
       uuid: 'x',

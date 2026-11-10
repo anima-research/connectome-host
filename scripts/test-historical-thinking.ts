@@ -110,13 +110,27 @@ function summarize(body: string, ok: boolean): string {
   }
 }
 
+/** A 200 can still be a refusal: stop_reason "refusal", with its category. */
+export function refusalOf(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { stop_reason?: unknown; stop_details?: { category?: unknown } | null };
+    if (parsed.stop_reason !== 'refusal') return undefined;
+    const category = parsed.stop_details?.category;
+    return `stop_reason=refusal${typeof category === 'string' ? `, category=${category}` : ''}`;
+  } catch {
+    return undefined;
+  }
+}
+
 async function main() {
   console.log(`Model: ${MODEL}\n`);
   for (const c of CASES) {
     process.stdout.write(`[${c.name}] ${c.description} ... `);
     try {
       const { ok, status, body } = await runCase(c);
-      console.log(`${ok ? 'PASS' : 'FAIL'} (${status}) — ${summarize(body, ok)}\n`);
+      const refusal = ok ? refusalOf(body) : undefined;
+      const verdict = !ok ? 'FAIL' : refusal !== undefined ? 'REFUSED' : 'PASS';
+      console.log(`${verdict} (${status}) — ${refusal ?? summarize(body, ok)}\n`);
     } catch (err) {
       console.log(`THROW — ${(err as Error).message}\n`);
     }

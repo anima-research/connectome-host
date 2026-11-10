@@ -13,25 +13,37 @@
  * good. It removes those blocks; nothing else is touched.
  *
  * Only whole text blocks that consist of one <recovered_thinking>…</recovered_thinking>
- * are removed (the importer's exact shape). Text blocks that mention the tag
- * alongside other text are reported and left alone. A message that would be
- * left with no content is skipped, as are bodyGroup shards. Edits go through
- * ContextManager.editMessage() (event-sourced; the original stays in history).
+ * are removed (the importer's exact shape). A message of such blocks alone
+ * keeps one short `[earlier thinking left out]` text block in their place, so
+ * turns keep their order and roles. Text blocks that mention the tag
+ * alongside other text are reported and left alone: they are someone's words,
+ * not the importer's (the host leaves the tagged spans in them out of a
+ * refusing model's requests). bodyGroup shards are reported and left alone.
+ * Edits go through ContextManager.editMessage() (event-sourced; the original
+ * stays in history).
  *
  * DRY-RUN BY DEFAULT: prints what it would change. Run with the agent STOPPED,
  * on a copy of the store first. Expect a one-time cache re-warm.
+ *
+ * Run it from a checkout of a host that has src/recovered-thinking.ts (the
+ * release that brought the per-model filter, or later); the store it edits can
+ * come from an older host.
  *
  * Usage:
  *   bun scripts/strip-recovered-thinking.ts <store-path> [--empty-only] [--apply]
  *
  *   --empty-only  Remove only empty tags (keep non-empty recovered thinking).
  *                 Opus 5, Opus 5.5 and Fable refuse non-empty blocks too.
+ *
+ * Exit status: 0 when no block the run was asked to remove is left in the
+ * store (or, on a dry run, would be left), 2 when some are (mixed blocks or
+ * bodyGroup shards: the summary says which), 1 on bad arguments or failure.
  */
 
 import { existsSync } from 'node:fs';
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
-import { classifyRecoveredThinking, type RecoveredThinkingVerdict } from '../src/recovered-thinking.js';
+import { classifyRecoveredThinking, LEFT_OUT, type RecoveredThinkingVerdict } from '../src/recovered-thinking.js';
 
 export type BlockVerdict = RecoveredThinkingVerdict;
 
@@ -39,29 +51,51 @@ export function classifyBlock(block: ContentBlock, emptyOnly = false): BlockVerd
   return classifyRecoveredThinking(block, emptyOnly);
 }
 
-/** The content a message should have after stripping, or null if unchanged. */
+/** The content a message should have after stripping, or null if unchanged.
+ *  A message of removed blocks alone keeps the placeholder (`placeholder`).
+ *  `keptNonEmpty` counts non-empty blocks `--empty-only` keeps. */
 export function stripBlocks(
   content: ContentBlock[],
   emptyOnly = false,
-): { keep: ContentBlock[]; removed: number; mixed: number } | null {
+): { keep: ContentBlock[]; removed: number; mixed: number; keptNonEmpty: number; placeholder: boolean } | null {
   let mixed = 0;
+  let keptNonEmpty = 0;
   const keep = content.filter((b) => {
     const v = classifyBlock(b, emptyOnly);
     if (v === 'mixed') mixed++;
+    if (emptyOnly && v === 'keep' && classifyBlock(b) === 'remove') keptNonEmpty++;
     return v !== 'remove';
   });
   const removed = content.length - keep.length;
-  if (removed === 0 && mixed === 0) return null;
-  return { keep, removed, mixed };
+  if (removed === 0 && mixed === 0 && keptNonEmpty === 0) return null;
+  const placeholder = removed > 0 && keep.length === 0;
+  if (placeholder) keep.push({ type: 'text', text: LEFT_OUT });
+  return { keep, removed, mixed, keptNonEmpty, placeholder };
+}
+
+const USAGE = 'Usage: bun scripts/strip-recovered-thinking.ts <store-path> [--empty-only] [--apply]';
+const FLAGS = new Set(['--apply', '--empty-only']);
+
+/** The parsed arguments, or an error naming what's wrong. Anything unknown
+ *  is refused before the store is opened, so a misspelled flag can't change
+ *  what --apply edits. */
+export function parseStripArgs(args: string[]): { storePath: string; apply: boolean; emptyOnly: boolean } | { error: string } {
+  const unknown = args.filter((a) => a.startsWith('-') && !FLAGS.has(a));
+  if (unknown.length > 0) return { error: `unknown option${unknown.length > 1 ? 's' : ''}: ${unknown.join(' ')}` };
+  const paths = args.filter((a) => !a.startsWith('-'));
+  if (paths.length !== 1) return { error: paths.length === 0 ? 'no store path' : `one store path, not ${paths.length}` };
+  return { storePath: paths[0]!, apply: args.includes('--apply'), emptyOnly: args.includes('--empty-only') };
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const storePath = args.find((a) => !a.startsWith('--'));
-  const apply = args.includes('--apply');
-  const emptyOnly = args.includes('--empty-only');
-  if (!storePath || !existsSync(storePath)) {
-    console.error('Usage: bun scripts/strip-recovered-thinking.ts <store-path> [--empty-only] [--apply]');
+  const parsed = parseStripArgs(process.argv.slice(2));
+  if ('error' in parsed) {
+    console.error(`${parsed.error}\n${USAGE}`);
+    process.exit(1);
+  }
+  const { storePath, apply, emptyOnly } = parsed;
+  if (!existsSync(storePath)) {
+    console.error(`no store at ${storePath}\n${USAGE}`);
     process.exit(1);
   }
 
@@ -79,40 +113,43 @@ async function main(): Promise<void> {
 
   let edited = 0;
   let removedBlocks = 0;
-  let skipped = 0;
+  let placeholders = 0;
+  let skippedShards = 0;
   let mixedBlocks = 0;
+  let keptNonEmpty = 0;
   for (const m of manager.getAllMessages()) {
     const r = stripBlocks(m.content as ContentBlock[], emptyOnly);
     if (!r) continue;
+    keptNonEmpty += r.keptNonEmpty;
     if (r.mixed > 0) {
       mixedBlocks += r.mixed;
       console.warn(`LEAVE msg ${m.id}: ${r.mixed} text block(s) mention <recovered_thinking> with other text`);
     }
     if (r.removed === 0) continue;
-    if (r.keep.length === 0) {
-      skipped++;
-      console.warn(`SKIP msg ${m.id}: would be left empty`);
-      continue;
-    }
     const groupId = (m as { bodyGroupId?: string }).bodyGroupId;
     if (groupId) {
-      skipped++;
-      console.warn(`SKIP shard msg ${m.id} (bodyGroup ${groupId})`);
+      skippedShards++;
+      console.warn(`SKIP shard msg ${m.id} (bodyGroup ${groupId}): ${r.removed} block(s) left in place`);
       continue;
     }
     edited++;
     removedBlocks += r.removed;
+    if (r.placeholder) placeholders++;
     if (apply) manager.editMessage(m.id, r.keep);
-    else console.log(`would edit msg ${m.id} (${m.participant}): remove ${r.removed}, keep ${r.keep.length}`);
+    else console.log(`would edit msg ${m.id} (${m.participant}): remove ${r.removed}, keep ${r.keep.length}${r.placeholder ? ' (placeholder)' : ''}`);
   }
 
   console.log(`\n=== strip-recovered-thinking ${apply ? 'APPLIED' : 'DRY-RUN'} ===`);
   console.log(`Store: ${storePath}`);
   console.log(`Messages ${apply ? 'edited' : 'to edit'}: ${edited}, blocks removed: ${removedBlocks}`);
-  if (skipped > 0) console.log(`Skipped (would be empty, or bodyGroup shard): ${skipped}. These still carry the tag.`);
-  if (mixedBlocks > 0) console.log(`Mixed blocks left alone: ${mixedBlocks}`);
+  if (placeholders > 0) console.log(`Messages of thinking alone, given the placeholder "${LEFT_OUT}": ${placeholders}`);
+  if (keptNonEmpty > 0) console.log(`Non-empty blocks kept (--empty-only): ${keptNonEmpty}. Opus 5, Opus 5.5 and Fable refuse these too.`);
+  const left = skippedShards > 0 || mixedBlocks > 0;
+  if (skippedShards > 0) console.log(`bodyGroup shards left alone: ${skippedShards}. These still carry the tag.`);
+  if (mixedBlocks > 0) console.log(`Mixed blocks left alone: ${mixedBlocks}. These still carry the tag.`);
   if (!apply && edited > 0) console.log('Dry-run only: re-run with --apply to edit.');
   manager.close();
+  if (left) process.exitCode = 2;
 }
 
 if (import.meta.main) {

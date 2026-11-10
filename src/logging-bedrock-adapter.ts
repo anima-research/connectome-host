@@ -25,6 +25,7 @@ import type {
 import { appendFileSync } from 'node:fs';
 import { describeErrorObject } from './logging-error-fields.js';
 import { serializeRecord } from './logging-record.js';
+import { sendWithRecoveredThinkingGuard } from './recovered-thinking.js';
 
 type BedrockConfig = ConstructorParameters<typeof BedrockAdapter>[0];
 
@@ -110,7 +111,24 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
     }
   }
 
+  // Recovered thinking a model refuses is left out of its requests, and a
+  // request refused for it is sent again once without it (recovered-thinking.ts).
   override async complete(
+    request: ProviderRequest,
+    options?: ProviderRequestOptions,
+  ): Promise<ProviderResponse> {
+    return sendWithRecoveredThinkingGuard(request, undefined, (req) => this.completeOnce(req, options));
+  }
+
+  override async stream(
+    request: ProviderRequest,
+    callbacks: StreamCallbacks,
+    options?: ProviderRequestOptions,
+  ): Promise<ProviderResponse> {
+    return sendWithRecoveredThinkingGuard(request, callbacks, (req, cb) => this.streamOnce(req, cb!, options));
+  }
+
+  private async completeOnce(
     request: ProviderRequest,
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
@@ -131,7 +149,7 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
     return response;
   }
 
-  override async stream(
+  private async streamOnce(
     request: ProviderRequest,
     callbacks: StreamCallbacks,
     options?: ProviderRequestOptions,

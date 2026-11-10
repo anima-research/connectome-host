@@ -19,6 +19,7 @@ import {
 } from '../tool-lifecycle-config.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
 import { hostUpdate } from '../update/update.js';
+import { recoveredThinkingRefused, stripRecoveredThinking } from '../recovered-thinking.js';
 
 export interface PanelAppRef {
   framework: AgentFramework;
@@ -1100,6 +1101,10 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     // adapters only AnthropicAdapter does: the host's for provider anthropic.
     resolveProvider(app.recipe) === 'anthropic',
   );
+  // Counted as inference sends it: without the recovered thinking the agent's
+  // model was found to refuse (recovered-thinking.ts).
+  const agentModel = (agent as { model?: string }).model;
+  if (agentModel && recoveredThinkingRefused(agentModel)) payload.messages = stripRecoveredThinking(payload.messages);
   // lastBilledInputTokens: what the provider billed for the input of the
   // latest call on the agent's stream that reported one (fresh + cache read
   // + cache creation); null from a stream's start until a call reports one.

@@ -50,6 +50,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { LEFT_OUT } from '../src/recovered-thinking.js';
 import { createLineReader } from './lib/line-reader.js';
 
 interface Opts {
@@ -259,10 +260,13 @@ export function transformContent(
       case 'thinking': {
         // An empty tag carries nothing, and the models that refuse wrapped
         // thinking refuse it too, so it is never written.
-        if (dropThinking || !block.thinking?.trim()) break;
+        // A malformed export can carry a non-string thought; it's kept as JSON.
+        const raw = block.thinking as unknown;
+        const thought = typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw);
+        if (dropThinking || !thought.trim()) break;
         out.push({
           type: 'text',
-          text: `<recovered_thinking>\n${block.thinking}\n</recovered_thinking>`,
+          text: `<recovered_thinking>\n${thought}\n</recovered_thinking>`,
         });
         break;
       }
@@ -325,6 +329,13 @@ export function transformContent(
       type: 'text',
       text: `[image: ${f.file_name} (file_uuid=${f.file_uuid}, bytes not in export)]`,
     });
+  }
+
+  // An assistant turn of thinking alone, with its thinking left out, keeps a
+  // short marker: dropping the turn would put two user turns side by side and
+  // leave the next turn's originalParent pointing at a turn never imported.
+  if (out.length === 0 && msg.sender === 'assistant' && msg.content?.some((b) => b?.type === 'thinking')) {
+    out.push({ type: 'text', text: LEFT_OUT });
   }
 
   return out;
@@ -392,6 +403,9 @@ async function importConversation(
   const meta = sessionMgr.createSession(conv.name || `Imported ${conv.uuid.slice(0, 8)}`);
   const storePath = sessionMgr.getStorePath(meta.id);
   const store = JsStore.openOrCreate({ path: storePath });
+  // What was written, not the path's length: a message with nothing to import
+  // is skipped, and one mixing tool blocks is written as several.
+  let written = 0;
   try {
     const cm = await ContextManager.open({ store });
     try {
@@ -401,6 +415,7 @@ async function importConversation(
         const sourceParticipant = msg.sender === 'assistant' ? opts.agentName : 'user';
         const messages = splitMixedToolMessages(blocks, sourceParticipant);
         for (const [idx, m] of messages.entries()) {
+          written++;
           cm.addMessage(m.participant, m.content, {
             sourceId: messages.length > 1 ? `${msg.uuid}#${idx}` : msg.uuid,
             exportSource: {
@@ -433,7 +448,7 @@ async function importConversation(
         updatedAt: conv.updated_at,
         agentName: opts.agentName,
         originalMessageCount: conv.chat_messages.length,
-        importedMessageCount: path.length,
+        importedMessageCount: written,
         branched,
         importedAt: new Date().toISOString(),
       },
@@ -444,11 +459,11 @@ async function importConversation(
 
   const idx = sessionMgr.load();
   if (idx.sessions[meta.id]) {
-    idx.sessions[meta.id]!.messageCount = path.length;
+    idx.sessions[meta.id]!.messageCount = written;
     sessionMgr.save(idx);
   }
 
-  return { sessionId: meta.id, messageCount: path.length, branched };
+  return { sessionId: meta.id, messageCount: written, branched };
 }
 
 function formatRow(idx: number, selected: boolean, conv: ExportConversation): string {
