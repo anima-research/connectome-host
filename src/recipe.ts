@@ -456,7 +456,9 @@ export interface RecipeAgent {
     effort?: ReasoningEffort;
   };
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
-   * compaction and serviceTier are API-key transport settings. */
+   * compaction and serviceTier are API-key transport settings, sent on
+   * `openai-responses` only: a Codex recipe that sets them is warned at
+   * start-up (responsesTransportSettingsWarning). */
   responses?: {
     reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningContext?: 'current_turn' | 'all_turns';

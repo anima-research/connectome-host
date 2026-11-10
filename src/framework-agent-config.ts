@@ -20,6 +20,26 @@ export function autoContinueSupportWarning(recipe: Recipe, agent: object | undef
     '(agent-framework#744): turns end as before, without continuing, until it is upgraded.';
 }
 
+/**
+ * `agent.responses.serviceTier` and `compactThreshold` are API-key transport
+ * settings: the host sends them on `openai-responses` only, so a Codex recipe
+ * that sets them gets neither, with no other sign. Fast processing on Codex
+ * is `agent.codex.fastMode`.
+ */
+export function responsesTransportSettingsWarning(recipe: Recipe): string | undefined {
+  if (recipe.agent.provider !== 'openai-codex') return undefined;
+  const set = [
+    ...(recipe.agent.responses?.serviceTier !== undefined ? ['agent.responses.serviceTier'] : []),
+    ...(recipe.agent.responses?.compactThreshold !== undefined ? ['agent.responses.compactThreshold'] : []),
+  ];
+  if (set.length === 0) return undefined;
+  const fast = recipe.agent.responses?.serviceTier !== undefined
+    ? ' (fast processing on Codex is agent.codex.fastMode)' : '';
+  return `[agent-settings] ${set.join(' and ')} ${set.length === 1 ? 'is' : 'are'} API-key transport ` +
+    `setting${set.length === 1 ? '' : 's'} sent on provider "openai-responses" only: provider "openai-codex" doesn't send ` +
+    `${set.length === 1 ? 'it' : 'them'}${fast}.`;
+}
+
 export type FrameworkAgentConfig = AgentConfig & {
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
