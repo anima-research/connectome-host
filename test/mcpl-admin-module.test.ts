@@ -2,9 +2,10 @@ import { test, expect, describe, beforeEach, afterEach, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { AgentFramework } from '@animalabs/agent-framework';
+import type { AgentFramework, McplServerConfig } from '@animalabs/agent-framework';
 
 import { McplAdminModule } from '../src/modules/mcpl-admin-module.js';
+import { IdentityModule } from '../src/modules/identity-module.js';
 import { readAgentOverlay, saveAgentOverlay } from '../src/mcpl-config.js';
 import * as mcplConfig from '../src/mcpl-config.js';
 
@@ -469,6 +470,194 @@ describe('mcpl_deploy', () => {
     expect(readAgentOverlay(overlayPath).world).toEqual({ url: 'ws://localhost:3101', transport: 'websocket', access: 'eidoverse' });
   });
 
+  /** A stub framework whose dials, a connect or a restart with an entry, record the url each was given and the credential its provider hands over. */
+  function recordingDials(stub: AgentFramework) {
+    const dialled: Array<{ id: string; url?: string; credential: string | null }> = [];
+    const target = stub as unknown as {
+      connectMcplServer: (config: McplServerConfig) => Promise<void>;
+      restartMcplServer: (id: string, config?: McplServerConfig) => Promise<void>;
+    };
+    const connect = target.connectMcplServer;
+    target.connectMcplServer = async (config) => {
+      dialled.push({ id: config.id, url: config.url, credential: config.accessProvider ? await config.accessProvider() : null });
+      await connect(config);
+    };
+    const restart = target.restartMcplServer;
+    target.restartMcplServer = async (id, config) => {
+      dialled.push({ id, url: config?.url, credential: config?.accessProvider ? await config.accessProvider() : null });
+      await restart(id, config);
+    };
+    return dialled;
+  }
+
+  test("dials the endpoint the home node's directory publishes for an access grant when no url or command is given, saving it with the entry", async () => {
+    const { stub, calls } = makeStubFramework();
+    const dialled = recordingDials(stub);
+    const mod = makeModule(stub);
+    const asked: string[] = [];
+    let bodyUrl = 'wss://body.example:8865/';
+    mod.setIdentity({
+      accessFor: async (audience) => `credential-for-${audience}`,
+      mcplEndpointFor: async (audience) => {
+        asked.push(audience);
+        return audience === 'body' ? { url: bodyUrl } : { published: ['body'] };
+      },
+    });
+    const byName = await call(mod, 'mcpl_deploy', { id: 'body', access: ' body ' });
+    expect(byName.success).toBe(true);
+    expectSays(
+      byName.data, 'Deployed server "body"',
+      'Its url, wss://body.example:8865/, is the endpoint the home node\'s directory publishes for the access grant "body"',
+      'deploy it again with its other fields as now, `access`, and no `url`',
+    );
+    expect(readAgentOverlay(overlayPath).body).toEqual({ url: 'wss://body.example:8865/', transport: 'websocket', access: 'body' });
+    expect(asked).toStrictEqual(['body']);
+    expect(dialled).toEqual([{ id: 'body', url: 'wss://body.example:8865/', credential: 'credential-for-body' }]);
+
+    bodyUrl = 'wss://body.example:9000/';
+    const moved = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
+    expect(moved.success).toBe(true);
+    expectSays(moved.data, 'Redeployed server "body"', 'Its url, wss://body.example:9000/, is the endpoint');
+    expect(readAgentOverlay(overlayPath).body?.url).toBe('wss://body.example:9000/');
+    expect(asked).toStrictEqual(['body', 'body']);
+    expect(dialled).toStrictEqual([
+      { id: 'body', url: 'wss://body.example:8865/', credential: 'credential-for-body' },
+      { id: 'body', url: 'wss://body.example:9000/', credential: 'credential-for-body' },
+    ]);
+
+    const byUrl = await call(mod, 'mcpl_deploy', { id: 'elsewhere', url: 'wss://other.example/mcpl', access: 'body' });
+    expect(byUrl.success).toBe(true);
+    expect(String(byUrl.data)).not.toContain('directory');
+    expect(readAgentOverlay(overlayPath).elsewhere?.url).toBe('wss://other.example/mcpl');
+
+    const byCommand = await call(mod, 'mcpl_deploy', { id: 'local', command: 'node', args: ['server.js'], access: 'body' });
+    expect(byCommand.success).toBe(true);
+    expect(String(byCommand.data)).not.toContain('directory');
+    expect(readAgentOverlay(overlayPath).local).toEqual({ command: 'node', args: ['server.js'], access: 'body' });
+    expect(asked).toStrictEqual(['body', 'body']);
+    expect(calls).toEqual(['connect:body', 'restart:body', 'connect:elsewhere', 'connect:local']);
+  });
+
+  test("a deploy by access name saved as a tab names the tab and the directory's url, and agent-framework's rules read the saved entry as a dial", async () => {
+    const { stub } = makeStubFramework();
+    const mod = makeModule(stub);
+    mod.setIdentity({
+      accessFor: async (audience) => `credential-for-${audience}`,
+      mcplEndpointFor: async () => ({ url: 'wss://games.example:8865/mcpl' }),
+    });
+    const deployed = await call(mod, 'mcpl_deploy', { id: 'games', access: 'games', presentation: 'tab' });
+    expect(deployed.success).toBe(true);
+    const receipt = String(deployed.data);
+    const tab = receipt.indexOf('It\'s saved as a tab, whose tools start out of the tool list');
+    const persisted = receipt.indexOf('Persisted to your agent overlay (survives host restarts).');
+    const found = receipt.indexOf(
+      'Its url, wss://games.example:8865/mcpl, is the endpoint the home node\'s directory publishes for the access grant "games"',
+    );
+    expect([tab >= 0, persisted >= 0, found >= 0]).toEqual([true, true, true]);
+    expect(tab < persisted && persisted < found).toBe(true);
+    const saved = readAgentOverlay(overlayPath).games!;
+    expect(saved).toEqual({ url: 'wss://games.example:8865/mcpl', transport: 'websocket', access: 'games', presentation: 'tab' });
+    expect(mcplConfig.openedBy(saved)).toBe('dial');
+    expect(mcplConfig.cleartextCredential(saved)).toBeUndefined();
+    expect(String((await call(mod, 'mcpl_list')).data)).toMatch(/games: CONNECTED [^\n]*wss:\/\/games\.example:8865\/mcpl/);
+  });
+
+  test("a deploy by access name the directory has no endpoint for is refused saying why: none for it, naming those it has, or a directory that can't be read", async () => {
+    const { stub, calls } = makeStubFramework();
+    const mod = makeModule(stub);
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: ['body', 'games'] }) });
+    const unpublished = await call(mod, 'mcpl_deploy', { id: 'nowhere', access: 'nowhere' });
+    expect(String(unpublished.error)).not.toContain('Neither `command` nor `url`');
+    expect(String(unpublished.error)).not.toContain('Correct it');
+    expectSays(
+      unpublished.error, 'Nothing was deployed or saved: The home node\'s directory publishes no wss:// MCPL endpoint for the access grant "nowhere" (it publishes one for "body", "games")',
+      'give `url`, a wss:// address (or ws:// to this machine)', 'ask the service\'s operator to publish its endpoint there',
+    );
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
+    const none = await call(mod, 'mcpl_deploy', { id: 'nowhere', access: 'nowhere' });
+    expectSays(none.error, 'publishes no wss:// MCPL endpoint for the access grant "nowhere": give `url`');
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: ['body'] }) });
+    const three = await call(mod, 'mcpl_deploy', { id: 'bad id!', access: 'nowhere', reconnect: 'yes' });
+    expect(three.error).toStartWith('Nothing was deployed or saved: The id "bad id!" has characters other than letters');
+    expectSays(
+      three.error, 'The home node\'s directory publishes no wss:// MCPL endpoint for the access grant "nowhere" (it publishes one for "body")',
+      'The entry would be malformed: its reconnect is neither true nor false.',
+      'Correct each (or leave out a field the server can do without) and call mcpl-admin--mcpl_deploy again.',
+    );
+
+    mod.setIdentity(new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: (async () => { throw new Error('ECONNREFUSED'); }) as typeof fetch,
+    }));
+    const unreadable = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
+    expectSays(
+      unreadable.error,
+      'The home node\'s directory of MCPL endpoints couldn\'t be read, so no endpoint was found for the access grant "body": call mcpl-admin--mcpl_deploy again shortly, or give `url`',
+    );
+    expect(String(unreadable.error)).not.toContain('ECONNREFUSED');
+    expect(String(unreadable.error)).not.toContain('publishes no');
+    expect(String(unreadable.error)).not.toContain('Neither `command` nor `url`');
+    expect(String(unreadable.error)).not.toContain('Correct it');
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('DIRECTORY_MARKER: home node unreachable.'); } });
+    const thrown = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
+    expectSays(thrown.error, 'MCPL endpoints couldn\'t be read, so no endpoint');
+    expect(String(thrown.error)).not.toContain('DIRECTORY_MARKER');
+    const outageAndId = await call(mod, 'mcpl_deploy', { id: 'bad id!', access: 'body' });
+    expectSays(
+      outageAndId.error, 'The id "bad id!" has characters other than letters',
+      'MCPL endpoints couldn\'t be read, so no endpoint was found for the access grant "body": call mcpl-admin--mcpl_deploy again shortly, or give `url`',
+      'Correct the other problem and call mcpl-admin--mcpl_deploy again.',
+    );
+    expect(String(outageAndId.error)).not.toContain('Correct each');
+
+    mod.setIdentity({ accessFor: async () => 'grant-token' });
+    const older = await call(mod, 'mcpl_deploy', { id: 'body', access: 'body' });
+    expectSays(older.error, 'Neither `command` nor `url` was given');
+    expect(String(older.error)).not.toContain('directory');
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ url: 'wss://body.example/' }) });
+    const bare = await call(mod, 'mcpl_deploy', { id: 'body' });
+    expect(bare.success).toBe(false);
+    expectSays(bare.error, 'Neither `command` nor `url` was given');
+    expect(String(bare.error)).not.toContain('directory');
+    const noIdentity = await call(makeModule(stub), 'mcpl_deploy', { id: 'body', access: 'body' });
+    expectSays(noIdentity.error, 'this host has no identity configured', 'Neither `command` nor `url` was given');
+    expect(String(noIdentity.error)).not.toContain('directory');
+    expect(calls).toEqual([]);
+    expect(readAgentOverlay(overlayPath)).toEqual({});
+  });
+
+  test('a directory endpoint that fails to connect, or stays unconnected, is named with where it came from', async () => {
+    const identity = { accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ url: 'wss://body.example:8865/' }) };
+    const failing = makeStubFramework();
+    (failing.stub as unknown as { connectMcplServer: () => Promise<void> }).connectMcplServer = async () => {
+      throw new Error('connect ECONNREFUSED body.example:8865');
+    };
+    const refused = makeModule(failing.stub);
+    refused.setIdentity(identity);
+    const failed = await call(refused, 'mcpl_deploy', { id: 'body', access: 'body' });
+    expectSays(
+      failed.error, 'was saved to your overlay, but connecting it failed',
+      'Its url, wss://body.example:8865/, is the endpoint the home node\'s directory publishes for the access grant "body"',
+      'deploy it again with its other fields as now, `access`, and no `url`',
+    );
+
+    const retrying = makeStubFramework();
+    const target = retrying.stub as unknown as { connectMcplServer: (config: McplServerConfig) => Promise<void> };
+    const connect = target.connectMcplServer;
+    target.connectMcplServer = async (config) => {
+      await connect(config);
+      Object.assign(retrying.servers.get(config.id)!, { connected: false, retrying: true });
+    };
+    const stuck = makeModule(retrying.stub);
+    stuck.setIdentity(identity);
+    expectSays(
+      (await call(stuck, 'mcpl_deploy', { id: 'body2', access: 'body' })).error,
+      'was saved to your overlay, but it isn\'t connected',
+      'Its url, wss://body.example:8865/, is the endpoint the home node\'s directory publishes',
+    );
+  });
+
   test('refuses a credential over ws:// to another machine, in a field or in the url, saving nothing, and takes wss:// or this machine', async () => {
     const { stub, calls } = makeStubFramework();
     const mod = makeModule(stub);
@@ -481,9 +670,49 @@ describe('mcpl_deploy', () => {
     );
     const byGrant = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
     expect(byGrant.error).toStartWith('Nothing was deployed: the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://');
+    expect(String(byGrant.error)).not.toContain('leave `url` out');
+    const lookups: string[] = [];
+    mod.setIdentity({
+      accessFor: async () => 'grant-token',
+      mcplEndpointFor: async (audience) => {
+        lookups.push(audience);
+        return audience === 'eidoverse' ? { url: 'wss://eidoverse.example/mcpl' } : { published: ['eidoverse'] };
+      },
+    });
+    const published = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
+    expectSays(
+      published.error, 'over unencrypted ws://',
+      'The home node\'s directory publishes wss://eidoverse.example/mcpl for the access grant "eidoverse": leave `url` out, and the deploy dials that.',
+    );
+    const unpublished = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'orrery' });
+    expect(unpublished.error).toStartWith('Nothing was deployed: the credential of its access grant "orrery" would go to 10.0.0.7 over unencrypted ws://');
+    expect(unpublished.error).toEndWith('ask your operator to add the server to the recipe.');
+    expect(String(unpublished.error)).not.toContain('directory');
+    expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
+    const tokenOver = await call(mod, 'mcpl_deploy', { id: 'tools', url: 'ws://tools.example:3101/mcpl', token: 't' });
+    expect(tokenOver.success).toBe(false);
+    expect(tokenOver.error).toStartWith('Nothing was deployed: its token would go to tools.example:3101 over unencrypted ws://');
+    expect(String(tokenOver.error)).not.toContain('leave `url` out');
+    expect(String(tokenOver.error)).not.toContain('directory');
     for (const url of ['ws://tools.example/mcpl?token=abc', 'ws://user:pass@tools.example/mcpl']) {
       const byUrl = await call(mod, 'mcpl_deploy', { id: 'pasted', url });
       expect(byUrl.error).toStartWith('Nothing was deployed: the user, password or token parameter in its url would go to tools.example over unencrypted ws://');
+      expect(String(byUrl.error)).not.toContain('leave `url` out');
+    }
+    expect(lookups).toStrictEqual(['eidoverse', 'orrery']);
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ unreadable: 'status 503.' }) });
+    const unreadable = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => { throw new Error('DIRECTORY_MARKER: home node unreachable'); } });
+    const throwing = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
+    mod.setIdentity({ accessFor: async () => 'grant-token', mcplEndpointFor: async () => ({ published: [] }) });
+    const empty = await call(mod, 'mcpl_deploy', { id: 'world', url: 'ws://10.0.0.7/mcpl', access: 'eidoverse' });
+    for (const refused of [unreadable, throwing, empty]) {
+      expect(refused.success).toBe(false);
+      expect(refused.error).toStartWith('Nothing was deployed: the credential of its access grant "eidoverse" would go to 10.0.0.7 over unencrypted ws://');
+      expect(refused.error).toEndWith('ask your operator to add the server to the recipe.');
+      expect(String(refused.error)).not.toContain('directory');
+      expect(String(refused.error)).not.toContain('status 503');
+      expect(String(refused.error)).not.toContain('DIRECTORY_MARKER');
     }
     expectMalformed((await call(mod, 'mcpl_deploy', { id: 'odd', url: 'ws://tools.example', access: 5 })).error, "its access isn't text");
     expect(calls).toEqual([]);

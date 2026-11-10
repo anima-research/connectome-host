@@ -78,6 +78,27 @@ const DEFAULT_SERVICES: Record<string, string> = {
 
 const SERVICES_TTL_MS = 60_000;
 const SERVICES_TIMEOUT_MS = 5_000;
+
+export type McplEndpointAnswer =
+  | { url: string; published?: undefined; unreadable?: undefined }
+  | { url?: undefined; published: string[]; unreadable?: undefined }
+  | { url?: undefined; published?: undefined; unreadable: string };
+
+type DirectoryRead = { mcpl: Record<string, string> } | { unreadable: string };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isWssUrl(url: string): boolean {
+  if (/\s/.test(url)) return false;
+  try {
+    return new URL(url).protocol === 'wss:';
+  } catch {
+    return false;
+  }
+}
+
 const IDENTITY_TIMEOUT_MS = 15_000;
 
 const REQUEST_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
@@ -159,7 +180,7 @@ export class IdentityModule implements Module {
 
   private servicesFromHome: Record<string, string> = {};
   private servicesFetchedAt = 0;
-  private servicesInflight: Promise<void> | null = null;
+  private servicesInflight: Promise<DirectoryRead> | null = null;
 
   private readonly state: RegistrationState;
 
@@ -470,38 +491,63 @@ export class IdentityModule implements Module {
     const now = Date.now();
     const fresh = this.servicesFetchedAt > 0 && now - this.servicesFetchedAt < SERVICES_TTL_MS;
     if (!opts.force && fresh) return this.layerServices();
-    if (!this.servicesInflight) {
-      const f = this.config.fetchImpl ?? fetch;
-      this.servicesInflight = (async () => {
-        try {
-          const res = await f(`https://${this.config.home}/services`, {
-            method: 'GET',
-            headers: { accept: 'application/json' },
-            signal: AbortSignal.timeout(SERVICES_TIMEOUT_MS),
-          });
-          if (!res.ok) throw new Error(`status ${res.status}`);
-          const json = (await res.json()) as { services?: Record<string, unknown> };
+    await this.readDirectory();
+    return this.layerServices();
+  }
+
+  private readDirectory(): Promise<DirectoryRead> {
+    if (this.servicesInflight) return this.servicesInflight;
+    const f = this.config.fetchImpl ?? fetch;
+    const read: Promise<DirectoryRead> = Promise.resolve().then(async () => {
+      try {
+        const res = await f(`https://${this.config.home}/services`, {
+          method: 'GET',
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(SERVICES_TIMEOUT_MS),
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const json: unknown = await res.json();
+        if (!isPlainObject(json)) throw new Error('not a directory');
+        if (json.services === undefined || isPlainObject(json.services)) {
           const map: Record<string, string> = {};
           for (const [name, base] of Object.entries(json.services ?? {})) {
             if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;
           }
           this.servicesFromHome = map;
           this.servicesFetchedAt = Date.now();
-        } catch (err) {
-          console.error(
-            `[identity] service directory refresh failed (${this.config.home}): ${err instanceof Error ? err.message : String(err)}`,
-          );
-        } finally {
-          this.servicesInflight = null;
+        } else {
+          console.error(`[identity] service directory refresh (${this.config.home}): its services isn't an object, so the last good services stay`);
         }
-      })();
-    }
-    await this.servicesInflight;
-    return this.layerServices();
+        if (json.mcpl !== undefined && !isPlainObject(json.mcpl)) {
+          console.error(`[identity] service directory refresh (${this.config.home}): its mcpl isn't an object`);
+          return { unreadable: "its mcpl isn't an object" };
+        }
+        // archipelago-home publishes an audience's MCPL endpoint as wss:// only.
+        const mcpl: Record<string, string> = Object.create(null);
+        for (const [name, url] of Object.entries(json.mcpl ?? {})) {
+          if (typeof url === 'string' && isWssUrl(url)) mcpl[name] = url;
+        }
+        return { mcpl };
+      } catch (err) {
+        console.error(`[identity] service directory refresh failed (${this.config.home}): ${errorText(err)}`);
+        return { unreadable: errorText(err) };
+      } finally {
+        if (this.servicesInflight === read) this.servicesInflight = null;
+      }
+    });
+    this.servicesInflight = read;
+    return read;
   }
 
   private layerServices(): Record<string, string> {
     return { ...DEFAULT_SERVICES, ...this.servicesFromHome, ...this.config.services };
+  }
+
+  async mcplEndpointFor(audience: string): Promise<McplEndpointAnswer> {
+    const read = await this.readDirectory();
+    if ('unreadable' in read) return { unreadable: read.unreadable };
+    if (Object.hasOwn(read.mcpl, audience)) return { url: read.mcpl[audience]! };
+    return { published: Object.keys(read.mcpl).sort() };
   }
 
   private async request(input: {
