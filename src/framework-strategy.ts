@@ -34,6 +34,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'carrierPolicy',
   'targetChunkTokens',
   'mergeThreshold',
+  'mergeHoldSummaryIds',
   'mergeMaxSourceSpanMessages',
   'summaryTargetTokens',
   'productionBudgetTokens',
@@ -223,8 +224,35 @@ export function buildConversationsConfig(
     ...(conv.idleTtlMs !== undefined ? { idleTtlMs: conv.idleTtlMs } : {}),
     ...(conv.closurePrompt !== undefined ? { closurePrompt: conv.closurePrompt } : {}),
     ...(conv.agentPrefix !== undefined ? { agentPrefix: conv.agentPrefix } : {}),
-    strategyFactory: () => buildFrameworkStrategy(recipe, model, timeZone, extensions),
+    strategyFactory: () => buildFrameworkStrategy(withoutMergeHolds(recipe), model, timeZone, extensions),
   };
+}
+
+function withoutMergeHolds(recipe: Recipe): Recipe {
+  const strategy = recipe.agent.strategy;
+  if (strategy?.mergeHoldSummaryIds === undefined) return recipe;
+  const { mergeHoldSummaryIds: _held, ...rest } = strategy;
+  return { ...recipe, agent: { ...recipe.agent, strategy: rest } };
+}
+
+export function mergeHoldWarning(
+  recipe: Recipe,
+  getSummary: (id: string) => { mergedInto?: string } | null,
+): string | null {
+  const missing: string[] = [];
+  const merged: string[] = [];
+  for (const id of recipe.agent.strategy?.mergeHoldSummaryIds ?? []) {
+    const summary = getSummary(id);
+    if (summary === null) missing.push(id);
+    else if (summary.mergedInto) merged.push(`${id} is already merged into ${summary.mergedInto}`);
+  }
+  const parts: string[] = [];
+  if (missing.length > 0) {
+    parts.push(`${missing.join(', ')} ${missing.length === 1 ? 'names' : 'name'} no summary in this agent's store, ` +
+      `so ${missing.length === 1 ? 'it holds' : 'they hold'} nothing`);
+  }
+  if (merged.length > 0) parts.push(`${merged.join(', ')}, and a hold doesn't undo a merge`);
+  return parts.length > 0 ? `[merge holds] agent.strategy.mergeHoldSummaryIds: ${parts.join('; ')}.` : null;
 }
 
 /**
