@@ -4,10 +4,13 @@
  *
  * Older versions of scripts/import-claudeai-export.ts wrote each historical
  * `thinking` block as a text block `<recovered_thinking>\n…\n</recovered_thinking>`
- * inside the assistant turn. Since 2026-11-09 the Anthropic API refuses any
- * request carrying one (stop_reason "refusal", category "reasoning_extraction",
- * 0 output tokens), including an empty tag, so an imported agent stops
- * answering. This script removes those blocks; nothing else is touched.
+ * inside the assistant turn, empty ones included. Since 2026-11-09 some models
+ * (Opus 5, Opus 5.5, Fable) refuse any request carrying one (stop_reason
+ * "refusal", category "reasoning_extraction", 0 output tokens), so an imported
+ * agent on those models stops answering. The host now leaves the blocks out of
+ * those models' requests on its own (src/recovered-thinking.ts); this script
+ * is for hosts older than that, or to take the blocks out of the store for
+ * good. It removes those blocks; nothing else is touched.
  *
  * Only whole text blocks that consist of one <recovered_thinking>…</recovered_thinking>
  * are removed (the importer's exact shape). Text blocks that mention the tag
@@ -22,28 +25,18 @@
  *   bun scripts/strip-recovered-thinking.ts <store-path> [--empty-only] [--apply]
  *
  *   --empty-only  Remove only empty tags (keep non-empty recovered thinking).
- *                 Non-empty blocks are refused by the API too, so this is
- *                 for other endpoints or models only.
+ *                 Opus 5, Opus 5.5 and Fable refuse non-empty blocks too.
  */
 
 import { existsSync } from 'node:fs';
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
+import { classifyRecoveredThinking, type RecoveredThinkingVerdict } from '../src/recovered-thinking.js';
 
-const WRAPPED = /^\s*<recovered_thinking>([\s\S]*)<\/recovered_thinking>\s*$/;
+export type BlockVerdict = RecoveredThinkingVerdict;
 
-export type BlockVerdict = 'remove' | 'keep' | 'mixed';
-
-/** Classify one content block. `mixed` means a text block that mentions the
- *  tag but is not just one wrapped block; it is reported and kept. */
 export function classifyBlock(block: ContentBlock, emptyOnly = false): BlockVerdict {
-  if (block.type !== 'text') return 'keep';
-  const text = (block as { text?: unknown }).text;
-  if (typeof text !== 'string' || !text.includes('<recovered_thinking>')) return 'keep';
-  const m = WRAPPED.exec(text);
-  if (!m || m[1]!.includes('<recovered_thinking>')) return 'mixed';
-  if (emptyOnly && m[1]!.trim() !== '') return 'keep';
-  return 'remove';
+  return classifyRecoveredThinking(block, emptyOnly);
 }
 
 /** The content a message should have after stripping, or null if unchanged. */

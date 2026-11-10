@@ -64,6 +64,9 @@ import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
 import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
+import {
+  hasRecoveredThinking, isRecoveredThinkingRefusal, recordRecoveredThinkingRefused, recoveredThinkingRefused, stripRecoveredThinking,
+} from './recovered-thinking.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -595,6 +598,26 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     };
   }
 
+  /** Leaves `<recovered_thinking>` blocks out for a model found to refuse them (recovered-thinking.ts). */
+  private withoutRecoveredThinking(request: ProviderRequest): ProviderRequest {
+    if (!recoveredThinkingRefused(request.model)) return request;
+    const messages = stripRecoveredThinking(request.messages);
+    return messages === request.messages ? request : { ...request, messages };
+  }
+
+  /** True when this response is the model's first refusal of recovered thinking
+   *  the request carried: the model is marked, and the caller sends it again. */
+  private learnRecoveredThinkingRefusal(request: ProviderRequest, response: ProviderResponse): boolean {
+    if (recoveredThinkingRefused(request.model)) return false;
+    if (!isRecoveredThinkingRefusal(response) || !hasRecoveredThinking(request.messages)) return false;
+    recordRecoveredThinkingRefused(request.model);
+    console.error(
+      `[recovered-thinking] ${request.model} refused a request carrying <recovered_thinking> blocks ` +
+      '(reasoning_extraction); they are left out of its requests from now on (the store keeps them).',
+    );
+    return true;
+  }
+
   private readonly warnedEffort = new Set<string>();
   private readonly warnedThinking = new Set<string>();
 
@@ -939,7 +962,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withOAuthIdentity(this.withReasoning(request));
+    const effective = this.withOAuthIdentity(this.withReasoning(this.withoutRecoveredThinking(request)));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     let response: ProviderResponse;
@@ -950,6 +973,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       throw err;
     }
     this.recordCall('complete', request, t0, sink.rawRequest, { response });
+    if (this.learnRecoveredThinkingRefusal(request, response)) return this.complete(request, options);
     return response;
   }
 
@@ -962,11 +986,14 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // What the request was shaped by: a refusal is answered from this, not from
     // a verdict another agent's refusal changed while this one was out.
     const sentWithoutControl = accountBinding(request.model) === 'shows';
-    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(request)))));
+    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(this.withoutRecoveredThinking(request))))));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     let delivered = false;
-    const watched: StreamCallbacks = sentWithoutControl
+    // Watched too while recovered thinking may still be refused: a refused
+    // request is sent again only when nothing of it reached the caller.
+    const watch = sentWithoutControl || (!recoveredThinkingRefused(request.model) && hasRecoveredThinking(request.messages));
+    const watched: StreamCallbacks = watch
       ? {
           ...callbacks,
           onChunk: (chunk) => { delivered = true; callbacks.onChunk(chunk); },
@@ -995,6 +1022,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       return this.stream(request, callbacks, options);
     }
     this.recordCall('stream', request, t0, sink.rawRequest, { response });
+    if (!delivered && this.learnRecoveredThinkingRefusal(request, response)) return this.stream(request, callbacks, options);
     return response;
   }
 }

@@ -7,8 +7,8 @@
  *
  * Block-level fidelity:
  *   - text         → TextContent
- *   - thinking     → dropped (default). With --keep-thinking, non-empty thinking
- *                    becomes TextContent wrapped in <recovered_thinking>…</recovered_thinking>
+ *   - thinking     → TextContent wrapped in <recovered_thinking>…</recovered_thinking>;
+ *                    empty thinking is skipped; --drop-thinking drops it all
  *                    (the export's thinking summaries are never imported)
  *   - tool_use     → ToolUseContent (claude.ai-internal tool names kept as-is;
  *                    inert at replay since no module advertises them)
@@ -16,12 +16,13 @@
  *   - attachments  → leading <attachment …>{extracted_content}</attachment> text
  *   - files (no bytes) → trailing [image: name (file_uuid=…, bytes not in export)]
  *
- * The export carries no thinking signatures, so thinking can't be replayed as
- * native thinking blocks. Since 2026-11-09 the API also refuses requests whose
- * assistant turns carry earlier reasoning as plain text (stop_reason "refusal",
- * category "reasoning_extraction"), even an empty <recovered_thinking> tag, so
- * the default is to drop it. --keep-thinking restores the old wrapping for
- * models or endpoints that still accept it.
+ * Thinking is imported as wrapped text because the export carries no
+ * signatures, and the API refuses unsigned thinking blocks and
+ * redacted_thinking with fabricated data. Some models (Opus 5, Opus 5.5, Fable,
+ * as of 2026-11-10) refuse the wrapped text too (reasoning_extraction); the
+ * host leaves it out of their requests on its own (src/recovered-thinking.ts),
+ * and the store keeps it for models that take it. --drop-thinking leaves it
+ * out of the store as well.
  *
  * Tree handling:
  *   The export records branches via `parent_message_uuid`. When a fork is
@@ -40,8 +41,7 @@
  *                     can read it back without re-passing the flag.
  *   --filter <regex>  Only import conversations whose name matches (case-insens.)
  *   --dry-run         Parse and report; don't write
- *   --keep-thinking   Keep non-empty thinking as <recovered_thinking> text
- *                     (refused by the Anthropic API as of 2026-11-09)
+ *   --drop-thinking   Don't import thinking at all
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -59,14 +59,14 @@ interface Opts {
   filter?: RegExp;
   dryRun: boolean;
   interactive: boolean;
-  keepThinking: boolean;
+  dropThinking: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive] [--keep-thinking]',
+      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive] [--drop-thinking]',
     );
     process.exit(1);
   }
@@ -75,7 +75,7 @@ function parseArgs(argv: string[]): Opts {
   let agentName = 'Claude';
   let filter: RegExp | undefined;
   let dryRun = false;
-  let keepThinking = false;
+  let dropThinking = false;
   // Interactive by default if stdin is a TTY; --no-interactive forces off.
   let interactive = !!process.stdin.isTTY;
   for (let i = 1; i < args.length; i++) {
@@ -84,7 +84,7 @@ function parseArgs(argv: string[]): Opts {
     else if (a === '--agent') agentName = args[++i]!;
     else if (a === '--filter') filter = new RegExp(args[++i]!, 'i');
     else if (a === '--dry-run') dryRun = true;
-    else if (a === '--keep-thinking') keepThinking = true;
+    else if (a === '--drop-thinking') dropThinking = true;
     else if (a === '--no-interactive') interactive = false;
     else if (a === '--interactive') interactive = true;
     else {
@@ -92,7 +92,7 @@ function parseArgs(argv: string[]): Opts {
       process.exit(1);
     }
   }
-  return { exportDir, outDir, agentName, filter, dryRun, interactive, keepThinking };
+  return { exportDir, outDir, agentName, filter, dryRun, interactive, dropThinking };
 }
 
 interface ExportTextBlock {
@@ -232,7 +232,7 @@ export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; b
  *  non-empty string. */
 export function transformContent(
   msg: ExportMessage,
-  { keepThinking = false }: { keepThinking?: boolean } = {},
+  { dropThinking = false }: { dropThinking?: boolean } = {},
 ): ContentBlock[] {
   const out: ContentBlock[] = [];
 
@@ -257,9 +257,9 @@ export function transformContent(
         break;
 
       case 'thinking': {
-        // Dropped by default: see the header comment (reasoning_extraction).
-        // An empty tag is refused too, so it is never written.
-        if (!keepThinking || !block.thinking?.trim()) break;
+        // An empty tag carries nothing, and the models that refuse wrapped
+        // thinking refuse it too, so it is never written.
+        if (dropThinking || !block.thinking?.trim()) break;
         out.push({
           type: 'text',
           text: `<recovered_thinking>\n${block.thinking}\n</recovered_thinking>`,
@@ -396,7 +396,7 @@ async function importConversation(
     const cm = await ContextManager.open({ store });
     try {
       for (const msg of path) {
-        const blocks = transformContent(msg, { keepThinking: opts.keepThinking });
+        const blocks = transformContent(msg, { dropThinking: opts.dropThinking });
         if (blocks.length === 0) continue;
         const sourceParticipant = msg.sender === 'assistant' ? opts.agentName : 'user';
         const messages = splitMixedToolMessages(blocks, sourceParticipant);

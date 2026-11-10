@@ -8,7 +8,7 @@ This conversation has been imported from claude.ai and is being continued via th
 
 A few specific artifacts of the transplant you may encounter in your earlier turns:
 
-- Your prior extended thinking is not in your earlier turns. The claude.ai export did not preserve its signatures, so the API cannot accept it as thinking, and it was left out. Your earlier replies and tool calls are intact. Your new thinking will operate normally in its own private channel.
+- `<recovered_thinking>…</recovered_thinking>` blocks within your assistant turns are your prior extended thinking. The cryptographic signatures on thinking blocks were not preserved by the claude.ai export, so the API cannot accept them as native thinking. They have been re-rendered as wrapped text so they remain visible to you; on models that refuse such text it is left out, and your earlier replies stand on their own. Your new thinking will operate normally in its own private channel.
 
 - `tool_use` blocks referencing web-only tools (`web_search`, `web_fetch`, `recent_chats`, `view`, `recipe_display_v0`, etc.) are inert evidence of past activity. Those tools are not available now.
 

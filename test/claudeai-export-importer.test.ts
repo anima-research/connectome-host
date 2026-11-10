@@ -85,25 +85,13 @@ describe('transformContent', () => {
     expect(out).toEqual([{ type: 'text', text: 'hello' }]);
   });
 
-  test('thinking blocks are dropped by default', () => {
-    const msg = mkMsg({
-      uuid: 'x',
-      sender: 'assistant',
-      content: [
-        { type: 'thinking', thinking: 'I was reasoning about X' },
-        { type: 'text', text: 'Answer' },
-      ],
-    });
-    expect(transformContent(msg)).toEqual([{ type: 'text', text: 'Answer' }]);
-  });
-
-  test('keepThinking wraps non-empty thinking as <recovered_thinking> text', () => {
+  test('thinking block becomes <recovered_thinking>-wrapped text', () => {
     const msg = mkMsg({
       uuid: 'x',
       sender: 'assistant',
       content: [{ type: 'thinking', thinking: 'I was reasoning about X' }],
     });
-    const out = transformContent(msg, { keepThinking: true });
+    const out = transformContent(msg);
     expect(out).toHaveLength(1);
     const t = out[0]! as { type: 'text'; text: string };
     expect(t.type).toBe('text');
@@ -112,7 +100,19 @@ describe('transformContent', () => {
     expect(t.text).toContain('</recovered_thinking>');
   });
 
-  test('empty thinking never produces a block, even with keepThinking', () => {
+  test('dropThinking leaves thinking out', () => {
+    const msg = mkMsg({
+      uuid: 'x',
+      sender: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'I was reasoning about X' },
+        { type: 'text', text: 'Answer' },
+      ],
+    });
+    expect(transformContent(msg, { dropThinking: true })).toEqual([{ type: 'text', text: 'Answer' }]);
+  });
+
+  test('empty thinking never produces a block', () => {
     const msg = mkMsg({
       uuid: 'x',
       sender: 'assistant',
@@ -122,7 +122,7 @@ describe('transformContent', () => {
         { type: 'text', text: 'Hello!' },
       ],
     });
-    expect(transformContent(msg, { keepThinking: true })).toEqual([{ type: 'text', text: 'Hello!' }]);
+    expect(transformContent(msg)).toEqual([{ type: 'text', text: 'Hello!' }]);
   });
 
   test('tool_use round-trips with id, name, input', () => {

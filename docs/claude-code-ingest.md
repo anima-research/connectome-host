@@ -423,10 +423,12 @@ blocks will be rejected. Options, in order of preference:
    The text and tool record remain verbatim; the reasoning is lost.
 2. Wrap them as text inside the same assistant turn
    (`<recovered_thinking>…</recovered_thinking>`), as `claudeai-evacuation.md` does.
-   The new model sees what the old one thought, as prose. Since 2026-11-09 the
-   Anthropic API refuses this shape outright (`reasoning_extraction`, 0 output
-   tokens), even an empty tag or another label, so use option 1.
-   `scripts/strip-recovered-thinking.ts` removes the tags from an existing store.
+   The new model sees what the old one thought, as prose. This also increases the
+   surface for the refusal class in §5 — historical reasoning rendered as text is
+   exactly what a "reasoning extraction" classifier looks for. Prefer option 1 unless
+   the reasoning is the point. Since 2026-11-09 Opus 5, Opus 5.5 and Fable refuse
+   this shape outright, even an empty tag; the host then leaves the blocks out of
+   those models' requests (`src/recovered-thinking.ts`).
 
 Never modify a turn's *shape* around a retained signed block (split it, reorder it,
 insert before it): the API returns 400 "thinking blocks cannot be modified" — a
