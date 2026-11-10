@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import type { CompressionInstructions } from '@animalabs/context-manager';
-import { BUILTIN_STRATEGY_KEYS, validateBuiltinStrategy } from './recipe-strategy.js';
+import { validateBuiltinStrategy } from './recipe-strategy.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -2273,7 +2273,10 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     }
     const strategy = obj.agent.strategy;
     if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
-      check('agent.strategy.', strategy, BUILTIN_STRATEGY_KEYS);
+      for (const key of Object.keys(strategy)) {
+        const path = `agent.strategy.${key}`;
+        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+      }
     }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);

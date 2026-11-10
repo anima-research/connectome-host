@@ -7,7 +7,7 @@ import { AutobiographicalStrategy, ContextManager, validateCompressionInstructio
 import type { ContentBlock, NormalizedRequest } from '@animalabs/membrane';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { emptyExtensionRegistry } from '../src/extensions.js';
-import { BUILTIN_STRATEGY_KEYS } from '../src/recipe-strategy.js';
+import { FrontdeskStrategy } from '../src/strategies/frontdesk-strategy.js';
 import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
 
 const raw = (strategy: Record<string, unknown> = {}) => JSON.parse(JSON.stringify({
@@ -119,6 +119,8 @@ describe('recipe compression instructions: admission before construction/provide
     test(`malformed nested settings ${i} fail with a fixed, value-free error`, () => {
       expect(errorMessage(() => recipe({ compressionInstructions: value })))
         .toBe('Invalid compressionInstructions configuration');
+      expect(errorMessage(() => buildFrameworkStrategy(raw({ compressionInstructions: value }), 'mock-only', 'UTC')))
+        .toBe('Invalid compressionInstructions configuration');
     });
   }
 
@@ -150,28 +152,58 @@ describe('recipe compression instructions: admission before construction/provide
     });
   }
 
-  test('built-in outer misspellings are rejected, not silently ignored or echoed', () => {
-    for (const type of [undefined, 'autobiographical', 'frontdesk', 'passthrough']) {
-      for (const key of ['compressionInstruction', 'compressionInstrutions', 'CompressionInstructions', 'VALUE_SENTINEL']) {
-        expect(errorMessage(() => recipe({ type, [key]: 'VALUE_SENTINEL' })))
-          .toBe('Recipe agent.strategy has an unknown built-in strategy key.');
-      }
+  for (const type of [undefined, 'autobiographical', 'frontdesk', 'passthrough']) {
+    for (const extra of [{ identityReminderSilent: false }, { formerlyIgnored: true }]) {
+      test(`review repro: ${type ?? 'omitted type'} accepts ${Object.keys(extra)[0]} without templates`, () => {
+        // Real JSON admission AND the actual host/AF/CM constructor, not mocks.
+        const input = JSON.parse(JSON.stringify({ name: 'Compatibility repro', agent: {
+          name: 'Synthetic', provider: 'mock', systemPrompt: 'Synthetic only', strategy: { type, ...extra },
+        } }));
+        const warn = spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const validated = validateRecipe(input);
+          const built = buildFrameworkStrategy(validated, 'mock-only', 'UTC');
+          expect(built.constructor).toBe(type === 'passthrough' ? PassthroughStrategy
+            : type === 'frontdesk' ? FrontdeskStrategy : FrameworkStrategy);
+          if ('identityReminderSilent' in extra) {
+            const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
+              'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+              'if it was true; if it was false, nothing)';
+            expect(unknownRecipeKeys(input)).toEqual([retired]);
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith(`Recipe "Compatibility repro" has keys the host does not read (ignored): ${retired}.`);
+          } else {
+            expect(unknownRecipeKeys(input)).toEqual([]);
+            expect(warn).not.toHaveBeenCalled();
+          }
+        } finally { warn.mockRestore(); }
+      });
     }
+  }
+
+  test('templates do not tighten unrelated keys or change the native forwarded request', async () => {
+    const settings = { compressionInstructions: { templates: { chunk: 'HOST CHUNK {targetTokens}' } } };
+    const baseline = await capture(settings);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await capture({ ...settings, identityReminderSilent: false, formerlyIgnored: true })).toEqual(baseline);
+      expect(instruction(baseline)).toBe('HOST CHUNK 321');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('if it was false, nothing');
+      expect(warn.mock.calls[0]![0]).not.toContain('formerlyIgnored');
+    } finally { warn.mockRestore(); }
   });
 
   test('invalid new settings fail before recipe warnings can echo arbitrary keys or values', () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      expect(errorMessage(() => recipe({ compressionInstructions: { templates: { VALUE_SENTINEL: 'SECRET' } } })))
+      expect(errorMessage(() => recipe({ identityReminderSilent: false, VALUE_SENTINEL: 'SECRET', compressionInstructions: { templates: { VALUE_SENTINEL: 'SECRET' } } })))
         .toBe('Invalid compressionInstructions configuration');
-      expect(errorMessage(() => recipe({ VALUE_SENTINEL: 'SECRET' })))
-        .toBe('Recipe agent.strategy has an unknown built-in strategy key.');
       expect(warn).not.toHaveBeenCalled();
     } finally { warn.mockRestore(); }
   });
 
-  test('every existing declared strategy key is recognized; unrelated known recipe keys remain open to their existing validators', () => {
-    expect(unknownRecipeKeys(raw(Object.fromEntries(BUILTIN_STRATEGY_KEYS.map(k => [k, k === 'type' ? 'autobiographical' : null]))))).toEqual([]);
+  test('unrelated known recipe keys remain open to their existing validators', () => {
     expect(() => recipe({ compressionInstructions: {}, summarySystemPrompt: 's', summaryUserPrompt: 'u',
       compressionRecallBudgetTokens: 123, maxLiveImages: 6, l1HoldbackChunks: 2 })).not.toThrow();
   });

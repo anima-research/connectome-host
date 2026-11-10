@@ -55,25 +55,11 @@ export const PASSTHROUGH_KEYS = [
   'witnessedIdentityReminder',
 ] as const satisfies ReadonlyArray<keyof RecipeStrategy>;
 
-export const BUILTIN_STRATEGY_KEYS = [
-  ...PASSTHROUGH_KEYS,
-  'type', 'headWindowTokens', 'recentWindowTokens', 'compressionModel',
-  'compressionMaxTokens', 'maxMessageTokens',
-] as const satisfies ReadonlyArray<keyof RecipeStrategy>;
-
-// Do not let the runtime key list silently fall behind the recipe type.
-const allStrategyKeysListed: Exclude<keyof RecipeStrategy, typeof BUILTIN_STRATEGY_KEYS[number]> extends never
-  ? true : false = true;
-void allStrategyKeysListed;
-
 export function validateBuiltinStrategy(strategy: Record<string, unknown>): void {
   const type = strategy.type ?? 'autobiographical';
   // A custom factory owns validation and receives the entire strategy object.
   if (typeof type !== 'string' || !isBuiltinStrategyType(type)) return;
-  if (Object.keys(strategy).some((key) => !(BUILTIN_STRATEGY_KEYS as readonly string[]).includes(key))) {
-    // Do not echo arbitrary key names or template/participant values.
-    throw new Error('Recipe agent.strategy has an unknown built-in strategy key.');
-  }
+  // The forwarding list is not an admission schema for unrelated recipe keys.
   if (strategy.compressionInstructions === undefined) return;
   if (type !== 'autobiographical') {
     throw new Error('Recipe compressionInstructions requires an autobiographical strategy.');

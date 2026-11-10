@@ -74,12 +74,10 @@ Settings are snapshotted by CM at construction, not hot-tuned.
 - Only the built-in autobiographical strategy supports this host option.
   `frontdesk` overrides ordinary L1 wording, and `passthrough` does not compress;
   both reject even an empty or default `compressionInstructions` object.
-- Built-in strategy outer keys are now checked against the existing forwarding
-  list plus the host's explicitly handled keys. Unknown/misspelled keys such as
-  `compressionInstruction` fail rather than appearing supported and being
-  silently dropped. All previously declared `RecipeStrategy` keys remain
-  recognized. **Migration:** remove previously ignored/retired keys or correct
-  their spelling. This is not a new strict schema for every old recipe setting.
+- Unrelated strategy keys retain their existing admission behavior, including
+  ignored keys and retired-field warnings, with or without templates. The
+  forwarding list is not a strict schema for those keys. Strict validation
+  applies to the new `compressionInstructions` settings, not all recipe keys.
 - Custom extension strategy factories still receive the whole strategy object
   verbatim and own its validation/semantics. Acceptance there is not a claim
   that the host implements templates for that extension.
