@@ -1285,9 +1285,13 @@ describe("a fleet's adoption of the children its store names, after its install 
     }
   }
 
-  test("a copy's host doesn't adopt a child its store names at the original's data directory, which the children file doesn't name: it isn't in the copy's record or file, and the host says why", async () => {
+  test("a copy's host doesn't adopt a child its store names at the original's data directory, which the children file doesn't name: it isn't in the copy's record or file, isn't connected to, and the host says why", async () => {
     const first = await startedFleet({ childrenFile: childrenFilePath(parentDataDir()) });
+    const connections = join(first.dir, 'connections');
+    writeFileSync(first.input().recipe, JSON.stringify({ connections }));
     expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const connected = readFileSync(connections, 'utf8');
+    expect(connected).not.toBe('');
     const pid = first.fleet.getChildren().get('leaf')!.pid!;
     const copyData = parentDataDir();
     const copied = join(copyData, 'leaf');
@@ -1299,6 +1303,7 @@ describe("a fleet's adoption of the children its store names, after its install 
     expect((next.record() as Record_).children).toEqual({});
     expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid: null, bootId: null, dataDir: copied }]);
     expect(logged.filter((line) => line.includes(first.input('leaf').dataDir) && line.includes(copied))).toHaveLength(1);
+    expect(readFileSync(connections, 'utf8')).toBe(connected);
     expect(isAlive(pid)).toBe(true);
   });
 
@@ -1363,6 +1368,7 @@ describe("a fleet's adoption of the children its store names, after its install 
     const childrenFile = childrenFilePath(parentDataDir());
     const first = await startedFleet({ childrenFile });
     expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    mkdirSync(join(first.dir, 'edited-leaf'));
     const next = await startedFleet({
       childrenFile, autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: join(first.dir, 'edited-leaf') }],
     }, { record: first.record() });

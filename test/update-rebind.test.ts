@@ -703,6 +703,19 @@ describe('the lock across a move or a copy', () => {
     expect(readRecord<LockRecord>(lock, 'lock')!.pid).toBe(other);
   });
 
+  test('a binding takes the lock from a holder whose process has ended, and binds', () => {
+    setup(options(install));
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const ended = Bun.spawnSync(['sh', '-c', 'echo $$']);
+    const pid = Number(ended.stdout.toString().trim());
+    expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    lockHeldBy(copy, pid);
+    setup(options(copy));
+    expect(record(copy)!.workingDir).toBe(copy);
+    expect(existsSync(installPaths(rootOf(copy)).lock)).toBe(false);
+  });
+
   test('a record from before workingDir, with a place moved and a running lock holder, is refused with both readings', () => {
     setup(options(install));
     writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [] });
