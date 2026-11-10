@@ -261,6 +261,22 @@ describe('binding an install to the directory it is in', () => {
     expect(readFileSync(join(root, 'copy', 'copy.json'), 'utf-8')).toBe(labelled);
   });
 
+  test('a record from before workingDir given --extra-state in place of its list counts the list it replaces as moved, so it refuses while the root keeps what names that list', () => {
+    const outside = join(dir, 'state.json');
+    writeFileSync(outside, 'state');
+    setup(options(install, { extraState: [outside] }));
+    updated(install, [outside]);
+    const root = rootOf(install);
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: join(install, 'data'), extraState: [outside] });
+    const kept = tree(root);
+    const own = join(install, 'state.json');
+    writeFileSync(own, 'state');
+    const why = refusal(() => setup(options(install, { extraState: [own] })));
+    expect(why).toContain('This binding gives places of this install other places than its record names, so what its updates and Go backs keep in its root names the places as they were');
+    expect(why).toContain('Setup has changed nothing. Run it again with --move-aside');
+    expect(tree(root)).toEqual(kept);
+  });
+
   test('a record from before workingDir in a copy made above the original asks about the original\'s places, which lie below another install\'s root', () => {
     const above = join(dir, 'above');
     const original = join(above, 'service');
