@@ -40,7 +40,7 @@ async function turnFrames(dir: string, turns = 1): Promise<Array<Record<string, 
       buffer = buffer.slice(at + 1);
     }
   });
-  socket.write(`${JSON.stringify({ type: 'subscribe', events: ['inference:speech', 'inference:tokens', 'inference:started', 'inference:completed', 'inference:tool_calls_yielded', 'inference:turn_ended', 'lifecycle'] })}\n`);
+  socket.write(`${JSON.stringify({ type: 'subscribe', events: ['inference:speech', 'inference:prose', 'inference:tokens', 'inference:started', 'inference:completed', 'inference:tool_calls_yielded', 'inference:turn_ended', 'lifecycle'] })}\n`);
   const deadline = Date.now() + 20_000;
   for (let turn = 1; turn <= turns; turn++) {
     socket.write(`${JSON.stringify({ type: 'text', content: `hello ${turn}`, from: 'console' })}\n`);
@@ -90,11 +90,12 @@ test("a turn that ends on an end-turn tool sends no inference:speech, so the ear
   }, { CHILD_REPLY: 'then-skip' });
 }, 60_000);
 
-test("a final round after an ordinary tool's round sends its own text alone, without the tool round's", async () => {
+test("a final round after an ordinary tool's round sends its own text alone, without the tool round's, which a host with no channel server sends nowhere", async () => {
   await withHost(async (dir) => {
     const frames = await turnFrames(dir);
     expect(frames.some((f) => f.type === 'inference:tool_calls_yielded')).toBe(true);
     expect(frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual(['Done.']);
+    expect(frames.filter((f) => f.type === 'inference:prose')).toEqual([]);
   }, { CHILD_REPLY: 'tool-then-reply' });
 }, 60_000);
 

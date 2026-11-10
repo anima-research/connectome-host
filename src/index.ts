@@ -60,6 +60,7 @@ import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
 import { TuiModule } from './modules/tui-module.js';
+import { SURFACE_TAG_KEY, SurfaceAnswers, readlineAnswer } from './surfaces.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -162,6 +163,7 @@ interface AppContext {
   quotaMeter: QuotaMeter | null;
   credentials: CredentialMonitor | null;
   subscriptionUnmetered: boolean;
+  surfaces: SurfaceAnswers;
   /**
    * Headless only: the framework's traces from create() on, held until
    * runHeadless attaches the sink that feeds the agent tree, the socket and
@@ -256,6 +258,7 @@ async function createFramework(
   storePath: string,
   recipe: Recipe,
   agentName: string,
+  surfaces: SurfaceAnswers,
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
   quotaMeter: QuotaMeter | null,
@@ -269,7 +272,7 @@ async function createFramework(
 
   const extensionRegistry = extensions ?? await loadExtensions(recipe);
 
-  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(timeZone), settingsModule];
+  const moduleInstances: Module[] = [new TuiModule(surfaces), new TimeModule(timeZone), settingsModule];
 
   let subagentModule: SubagentModule | null = null;
   if (modules.subagents) {
@@ -448,6 +451,7 @@ async function createFramework(
       basicAuth: webuiConfig.basicAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
       observersPath,
+      surfaces,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
       ...(credentials ? { credentials } : {}),
@@ -724,6 +728,7 @@ async function runPiped(app: AppContext) {
     if (e.type === 'ops:alert') onAlert?.(e);
   });
   traces.follow(app.framework);
+  app.surfaces.answerFor('readline', readlineAnswer(!!process.stdout.isTTY));
   let afterSwitch = (): void => {};
 
   async function processLine(line: string): Promise<boolean> {
@@ -756,7 +761,7 @@ async function runPiped(app: AppContext) {
     } else {
       app.framework.pushEvent({
         type: 'external-message', source: 'cli',
-        content: trimmed, metadata: {}, triggerInference: true,
+        content: trimmed, metadata: { [SURFACE_TAG_KEY]: { surface: 'readline' } }, triggerInference: true,
       });
       await turns.waitForTurn();
     }
@@ -1151,7 +1156,8 @@ async function main() {
     stateFile: join(config.dataDir, 'thinking-binding.json'),
     route: `${provider} ${process.env.ANTHROPIC_BASE_URL ?? ''}`.trim(),
   });
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
+  const surfaces = new SurfaceAnswers();
+  const framework = await createFramework(membrane, storePath, recipe, agentName, surfaces, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
 
   const app: AppContext = {
     framework,
@@ -1167,6 +1173,7 @@ async function main() {
     quotaMeter,
     credentials,
     subscriptionUnmetered: !!codexGate,
+    surfaces,
 
     async switchSession(id: string) {
       const newStorePath = sessionManager.getStorePath(id);
@@ -1177,7 +1184,7 @@ async function main() {
         },
         make: () => {
           sessionManager.setActiveSession(id);
-          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
+          return createFramework(membrane, newStorePath, recipe, this.agentName, this.surfaces, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
         },
         install: async (next) => {
           this.framework = next;

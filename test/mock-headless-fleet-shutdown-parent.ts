@@ -1,5 +1,6 @@
 import { FleetModule } from '../src/modules/fleet-module.ts';
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +20,7 @@ if (!launched.success) throw new Error(String(launched.error));
 writeFileSync(join(dir, 'child-pid.json'), JSON.stringify({ pid: fleet.getChildren().get('fixture')!.pid }));
 fleet.setDetachMode(mode === 'detach');
 await runHeadless({
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'Fleet shutdown test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {

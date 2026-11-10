@@ -9,6 +9,7 @@ import {
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 import { observerStatement, saveObserversFile, type ObserverScope } from '../src/modules/web-ui-observers.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 export function makeKeypair() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -67,6 +68,7 @@ export async function startObservedHost(options: {
     observers: [...keys].map(([label, kp]) => ({ key: kp.id, label, scopes: options.grants[label]! })),
   });
   const module = new WebUiModule({
+    surfaces: new SurfaceAnswers(),
     port: 0,
     host: '127.0.0.1',
     basicAuth: { username: 'admin', password: 'pw' },

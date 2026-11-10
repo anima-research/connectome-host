@@ -107,6 +107,8 @@ import {
   type McplLiveServer,
 } from '../web/panel-data.js';
 import { loadRecipeDetailed } from '../recipe.js';
+import { randomUUID } from 'node:crypto';
+import { SURFACE_TAG_KEY, type SurfaceAnswers, type SurfaceQuestion } from '../surfaces.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -148,6 +150,7 @@ export interface WebUiModuleConfig {
   quotaMeter?: QuotaMeter;
   credentials?: CredentialMonitor;
   subscriptionUnmetered?: boolean;
+  surfaces: SurfaceAnswers;
 }
 
 interface WsData {
@@ -158,6 +161,7 @@ interface WsData {
 
 interface ClientState {
   id: number;
+  connection: string;
   ws: ServerWebSocket<WsData>;
   welcomed: boolean;
   auth: 'full' | 'pending' | 'observer';
@@ -437,7 +441,7 @@ export class WebUiModule implements Module {
 
   private observerPollMs: number | undefined;
 
-  constructor(config: WebUiModuleConfig = {}) {
+  constructor(config: WebUiModuleConfig) {
     this.config = {
       ...config,
       basicAuth: config.basicAuth || undefined,
@@ -512,6 +516,7 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
+    this.config.surfaces.answerFor('web-ui', webUiPagesAnswer);
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it's there. ` +
@@ -1422,7 +1427,7 @@ export class WebUiModule implements Module {
   private onWsOpen(ws: ServerWebSocket<WsData>): void {
     const id = ws.data.id;
     const client: ClientState = {
-      id, ws, welcomed: false, peeks: new Map(),
+      id, connection: randomUUID(), ws, welcomed: false, peeks: new Map(),
       auth: ws.data.authed ? 'full' : 'pending',
       scopes: null,
     };
@@ -1788,7 +1793,7 @@ export class WebUiModule implements Module {
           type: 'external-message',
           source: 'tui',
           content: parsed.content,
-          metadata: {},
+          metadata: { [SURFACE_TAG_KEY]: { surface: 'web-ui', connection: client.connection } },
           triggerInference: true,
         });
         return;
@@ -3604,6 +3609,21 @@ function mimeFor(path: string): string {
 
 export function __getSharedServerPortForTests(): number | null {
   return sharedServer?.port ?? null;
+}
+
+export function pagesAnswer(
+  clients: Iterable<Parameters<typeof clientHolds>[0] & { connection: string; welcomed: boolean }>,
+  { agentName, connections }: Pick<SurfaceQuestion, 'agentName' | 'connections'>,
+  shownAgent: string | undefined,
+): string | undefined {
+  if (agentName !== shownAgent) return undefined;
+  const pages = [...clients].filter((c) => c.welcomed && clientHolds(c, ['messages']));
+  if (pages.some((page) => connections.includes(page.connection))) return 'the Web UI page that sent this turn';
+  return pages.length > 0 ? 'a Web UI page open now, not the one that sent this turn' : undefined;
+}
+
+function webUiPagesAnswer(question: SurfaceQuestion): string | undefined {
+  return pagesAnswer(sharedServer?.clients.values() ?? [], question, sharedServer?.app?.framework.getAllAgents()[0]?.name);
 }
 
 export async function stopWebUiServer(): Promise<void> {

@@ -41,6 +41,7 @@ import { effectiveContextBudgetTokens } from './recipe-fit.js';
 import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from './stored-injection.js';
 import { speakerOf, type Speaker } from './speaker.js';
+import { SURFACE_TAG_KEY, tuiAnswer, type SurfaceAnswers } from './surfaces.js';
 
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -272,6 +273,7 @@ interface AppContext {
   quotaMeter?: import('./quota-meter.js').QuotaMeter | null;
   credentials?: import('./credential-state.js').CredentialMonitor | null;
   subscriptionUnmetered?: boolean;
+  surfaces: SurfaceAnswers;
   stopping?: boolean;
   switching?: boolean;
   switchSession(id: string): Promise<unknown>;
@@ -382,6 +384,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
+  app.surfaces.answerFor('tui', tuiAnswer(rootAgentName, () => backgrounded));
   /** What a backgrounded root turn's text says since Ctrl+B, shown when it
    *  returns: a line per round, each ending where `backgroundBreaks` says a
    *  tool call ended one, or a thinking block ended its text, as streaming
@@ -3027,7 +3030,7 @@ export async function runTui(app: AppContext): Promise<void> {
       try {
         app.framework.pushEvent({
           type: 'external-message', source: 'tui',
-          content: text, metadata: {}, triggerInference: true,
+          content: text, metadata: { [SURFACE_TAG_KEY]: { surface: 'tui' } }, triggerInference: true,
         });
       } catch (err) {
         // A send the framework refused (its queue closed by a stop) is never

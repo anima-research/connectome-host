@@ -1442,6 +1442,8 @@ export interface RecipeFleetChild {
    * Relevant synthetic events the parent may care about:
    *   - `lifecycle` (includes `ready` / `idle` / `exiting`) — required for fleet--await.
    *   - `inference:speech` — per-final-inference speech text, required for fleet--relay.
+   *   - `inference:prose` — the words of a round that ended with tool calls, for a turn this
+   *     parent sent, when the framework routes them as speech. Never a reply.
    *   - `inference:completed` / `inference:failed` / `tool:completed` / `tool:failed` — useful for status tracking.
    */
   subscription?: string[];

@@ -3,8 +3,11 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { EventResponse, Module, ModuleContext, ProcessEvent, ProcessState, ToolCall, ToolDefinition, ToolResult } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 import { TuiModule } from '../src/modules/tui-module.ts';
+
+const surfaces = new SurfaceAnswers();
 
 type Block =
   | { type: 'thinking'; thinking: string; signature: string }
@@ -91,7 +94,7 @@ const framework = await AgentFramework.create({
     name: 'resident', model: 'mock', systemPrompt: 'test', maxTokens: 64,
     ...(mode === 'refusal-retry' ? { refusalHandling: { retries: 1 } } : {}),
   }],
-  modules: [new TuiModule(), new ProbeModule()],
+  modules: [new TuiModule(surfaces), new ProbeModule()],
 });
 framework.start();
 // skip_reply is a tool of the channel registry, which initializeMcpl starts.
@@ -112,6 +115,7 @@ if (mode === 'then-silent' || mode === 'then-silent-tool') {
   });
 }
 await runHeadless({
+  surfaces,
   recipe: { name: 'Thinking test', agent: { name: 'resident' } },
   agentName: 'resident',
   framework,
