@@ -113,6 +113,7 @@ import { createBranchState, resetBranchState, handleExport, type BranchState } f
 import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
+import { buildCompressionMembrane, describeCompressionProvider } from './compression-provider.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
@@ -262,6 +263,7 @@ async function createFramework(
   credentials: CredentialMonitor | null,
   subscriptionUnmetered = false,
   extensions?: ExtensionRegistry,
+  compressionMembrane?: Membrane,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -497,7 +499,11 @@ async function createFramework(
   });
 
   const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry, agentName);
-  const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
+  const agentConfig = {
+    ...buildFrameworkAgentConfig(recipe, agentName, model, strategy),
+    // agent.strategy.compressionProvider's membrane (compression-provider.ts).
+    ...(compressionMembrane ? { compressionMembrane } : {}),
+  };
 
   for (const notice of deprecatedConversationsNotices(recipe.conversations)) console.warn(`[deprecated] ${notice}`);
   for (const notice of deprecatedSurfaceNotices(recipe.modules)) console.warn(`[deprecated] ${notice}`);
@@ -548,6 +554,19 @@ agents: [agentConfig],
     const cm = framework.getAgent(agentName)?.getContextManager();
     if (cm) {
       historyModule.bind(cm, framework.channels ?? undefined);
+    }
+  }
+
+  // An agent-framework without AgentConfig.compressionMembrane drops it, and
+  // memory writes would go to the agent's own provider without a word.
+  if (compressionMembrane) {
+    const cm = framework.getAgent(agentName)?.getContextManager() as { getCompressionMembrane?: () => unknown } | undefined;
+    if (cm?.getCompressionMembrane?.() === undefined) {
+      await framework.stop().catch(() => {});
+      throw new Error(
+        'agent.strategy.compressionProvider needs an @animalabs/agent-framework and @animalabs/context-manager ' +
+          'that support a compression membrane; with the installed ones compression would go to the agent\'s own provider.',
+      );
     }
   }
 
@@ -1100,6 +1119,27 @@ async function main() {
     assistantParticipant: agentName,
   });
 
+  // agent.strategy.compressionProvider: memory writes on another provider or
+  // credential than the agent's turns (compression-provider.ts).
+  const compressionSpec = recipe.agent.strategy?.compressionProvider;
+  let compressionMembrane: Membrane | undefined;
+  if (compressionSpec) {
+    try {
+      compressionMembrane = buildCompressionMembrane({
+        recipe,
+        spec: compressionSpec,
+        model: recipe.agent.strategy?.compressionModel ?? resolveModel(recipe),
+        assistantParticipant: agentName,
+        llmLogPath,
+        getReasoning: () => settingsModule.getReasoning(),
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+    console.log(`[compression-provider] memory writes go to ${describeCompressionProvider(compressionSpec)}`);
+  }
+
   const storePath = sessionManager.getStorePath(activeSession.id);
   let placesForTrial: string[] | null = null;
   if (installHere !== null) {
@@ -1151,7 +1191,7 @@ async function main() {
     stateFile: join(config.dataDir, 'thinking-binding.json'),
     route: `${provider} ${process.env.ANTHROPIC_BASE_URL ?? ''}`.trim(),
   });
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions, compressionMembrane);
 
   const app: AppContext = {
     framework,
@@ -1177,7 +1217,7 @@ async function main() {
         },
         make: () => {
           sessionManager.setActiveSession(id);
-          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
+          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, undefined, compressionMembrane);
         },
         install: async (next) => {
           this.framework = next;
