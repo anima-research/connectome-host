@@ -53,7 +53,7 @@ import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { SubagentModule } from './modules/subagent-module.js';
 import { historyModuleOptions, assertSemanticSearchRegistered } from './history-semantic.js';
 import { LessonsModule } from './modules/lessons-module.js';
@@ -118,7 +118,8 @@ import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTria
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { wireLoadRepairAlert } from './web/load-repair-alert.js';
-import { logKeepaliveEvent } from './cache-keepalive-log.js';
+import { KEEPALIVE_STATE_FILE, keepalivePersistHealth, keepalivePersistWarning, logKeepaliveEvent, type KeepaliveRef } from './cache-keepalive-log.js';
+import { noteRecipeWarning } from './recipe-warnings.js';
 import { loadExtensions, type ExtensionRegistry } from './extensions.js';
 import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
 import { stopForSessionSwitch } from './session-switch-stop.js';
@@ -162,6 +163,8 @@ interface AppContext {
   quotaMeter: QuotaMeter | null;
   credentials: CredentialMonitor | null;
   subscriptionUnmetered: boolean;
+  /** /healthz's cacheKeepalivePersist (cache-keepalive-log.ts). */
+  keepalivePersist?: () => Record<string, unknown> | null;
   /**
    * Headless only: the framework's traces from create() on, held until
    * runHeadless attaches the sink that feeds the agent tree, the socket and
@@ -1014,6 +1017,20 @@ async function main() {
 
   const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks, activeTurnTrigger);
 
+  // A keepalive state file left from when persist was on holds whole requests
+  // and would be replayed if persist came back on: forget it.
+  if (recipe.agent.cacheKeepalive?.persist !== true) {
+    const stale = join(config.dataDir, KEEPALIVE_STATE_FILE);
+    if (existsSync(stale)) {
+      try {
+        rmSync(stale, { force: true });
+        console.error(`[cache-keepalive] agent.cacheKeepalive.persist is off: removed ${stale}`);
+      } catch (err) {
+        console.error(`[cache-keepalive] could not remove ${stale}: ${(err as Error).message}`);
+      }
+    }
+  }
+
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
         new OpenAIResponsesAPIAdapter({
@@ -1058,6 +1075,11 @@ async function main() {
             ...(recipe.agent.cacheKeepalive?.refreshAfterMinutes !== undefined
               ? { refreshAfterMs: recipe.agent.cacheKeepalive.refreshAfterMinutes * 60_000 }
               : {}),
+            // Survive restarts: membrane saves the lineages it keeps warm, and
+            // the next process refreshes them when they're due.
+            ...(recipe.agent.cacheKeepalive?.persist === true
+              ? { statePath: join(config.dataDir, KEEPALIVE_STATE_FILE) }
+              : {}),
             onEvent: logKeepaliveEvent,
           },
         },
@@ -1065,6 +1087,13 @@ async function main() {
         () => settingsModule.getReasoning(),
         (record) => callLedger!.record(record),
       );
+
+  const keepaliveRef = (adapter as { cacheKeepalive?: KeepaliveRef }).cacheKeepalive;
+  const persistWarning = keepalivePersistWarning(recipe.agent.cacheKeepalive?.persist, keepaliveRef, recipe.agent.cacheTtl);
+  if (persistWarning) {
+    console.warn(persistWarning);
+    noteRecipeWarning(persistWarning);
+  }
 
   const sessionManager = new SessionManager(config.dataDir);
   sessionManager.migrateIfNeeded();
@@ -1167,6 +1196,7 @@ async function main() {
     quotaMeter,
     credentials,
     subscriptionUnmetered: !!codexGate,
+    keepalivePersist: () => keepalivePersistHealth(recipe.agent.cacheKeepalive?.persist, keepaliveRef),
 
     async switchSession(id: string) {
       const newStorePath = sessionManager.getStorePath(id);

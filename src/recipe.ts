@@ -366,6 +366,16 @@ export interface RecipeAgent {
     maxIdleHours?: number;
     /** Refresh once untouched this long. Must be < 60 with a 1h TTL. Default 45. */
     refreshAfterMinutes?: number;
+    /**
+     * Save keepalive state to `<dataDir>/cache-keepalive.json` so that after
+     * a restart that keeps the model, system prompt and tools (a watchdog
+     * restart, such an upgrade) the keepalive goes on refreshing the cached
+     * prefix, instead of nothing touching it until the next turn. Anthropic
+     * and the 1-hour cache only. Needs a membrane with
+     * `cacheKeepalive.statePath`; the host warns at startup when the option
+     * can't work, and deletes the file at startup when it's off. Default false.
+     */
+    persist?: boolean;
   };
   /**
    * Explicit prompt-caching override. Unset means provider-appropriate
@@ -2624,10 +2634,14 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof keepalive !== 'object' || keepalive === null) {
       throw new Error(`Recipe agent.cacheKeepalive must be an object, got ${JSON.stringify(keepalive)}.`);
     }
-    const { maxIdleHours, refreshAfterMinutes } = keepalive as {
+    const { maxIdleHours, refreshAfterMinutes, persist } = keepalive as {
       maxIdleHours?: unknown;
       refreshAfterMinutes?: unknown;
+      persist?: unknown;
     };
+    if (persist !== undefined && typeof persist !== 'boolean') {
+      throw new Error(`Recipe agent.cacheKeepalive.persist must be a boolean, got ${JSON.stringify(persist)}.`);
+    }
     if (refreshAfterMinutes !== undefined) {
       if (typeof refreshAfterMinutes !== 'number' || !(refreshAfterMinutes > 0)) {
         throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${shown(refreshAfterMinutes)}.`);

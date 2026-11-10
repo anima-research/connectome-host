@@ -689,6 +689,32 @@ Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
 Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user or root, since
 `data/` is readable by its owner alone).
 
+A restart drops the prompt-cache keepalive's state, so nothing refreshes the cache until the
+next turn, and if the cache entry's hour runs out first, that turn pays a full cache write on
+the whole context. Set `agent.cacheKeepalive.persist: true` in the recipe to save that state in
+`data/cache-keepalive.json`; the restarted agent then refreshes the cache when it's due.
+
+- **When it helps:** a watchdog restart, or an upgrade or restart that leaves the model, the
+  system prompt and the tools as they were. Change any of those and the next turn starts a new
+  cache entry whatever `persist` does; the restored old one is then refreshed for nothing,
+  every 45–50 minutes until `maxIdleHours` (24 by default) after its last real turn, about 30
+  cache reads of the old context. Delete `data/cache-keepalive.json` before such a restart to
+  skip that.
+- **Timing:** the hour counts from the entry's last read or write, not from the stop. With the
+  default 45-minute refresh and the keepalive's 5-minute check, a stop of under about 10
+  minutes is always safe.
+- **Only with the 1-hour cache:** the keepalive keeps only 1-hour entries warm, so with
+  `agent.cacheTtl: '5m'` neither it nor `persist` does anything.
+- **The file** holds up to four whole recent requests (mode 0600), is rewritten on every turn,
+  and is in your backups. Deleting it forgets them; the host deletes it at startup when
+  `persist` is off.
+- **One host per data directory:** a second host started on the same `data/` (a TUI, a test
+  run) takes the file over, and the running service stops saving. `/healthz` then shows
+  `cacheKeepalivePersist.saving: false`.
+
+It needs a membrane with `cacheKeepalive.statePath` (antra-tess/membrane#246, not yet
+released); the host warns at startup when the option can't work.
+
 ---
 
 ## 10. Phase 7 — Launch & verification checks

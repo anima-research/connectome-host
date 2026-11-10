@@ -673,7 +673,10 @@ unknown-key warning, like those at the other levels.
   Settings); nothing is deleted from Chronicle
 - **Prompt-cache economics** — cache-stable folding, a 1-hour cache by
   default (`agent.cacheTtl`), and `agent.cacheKeepalive` (on by default for
-  `anthropic`) refreshing an idle agent's cache before it expires
+  `anthropic`) refreshing an idle agent's cache before it expires; set
+  `agent.cacheKeepalive.persist: true` to carry that across a restart that
+  keeps the model, system prompt and tools (1-hour cache only; needs a
+  membrane with `cacheKeepalive.statePath`)
 - **Cost and quota** — a billing-grade call ledger with a cache verdict per
   call; on subscriptions, quota windows instead of dollars and parking on a
   spent window
