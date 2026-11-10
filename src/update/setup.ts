@@ -50,7 +50,7 @@ import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launch
 import {
   MOVE_ASIDE_BY_HAND, MOVE_ASIDE_REFUSED, MOVED_ASIDE_AFTERWARDS, bindChildren, bindingCheckLines, bindingOf, childPathsOf,
   childrenIn, childrenMove, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, movesPlaces, movingAside,
-  unfinishedTrialWords, workingDirOf, type Moved, type Place,
+  sameDirectory, unfinishedTrialWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 
@@ -413,7 +413,9 @@ export function setup(options: SetupOptions): void {
   let bindPlaces: Moved[] = [];
   if (binding !== null) {
     const known = (path: string) => binding.places.some((place) => place.path === path);
-    const unknown = placed.find((place) => !known(place.from));
+    const stamped = binding.children?.bound ? binding.children.paths : [];
+    const done = (place: Moved) => stamped.some((path) => sameDirectory(path, place.to));
+    const unknown = placed.find((place) => !known(place.from) && !done(place));
     if (unknown !== undefined && given !== null && Array.isArray(existing?.extraState) &&
       existing.extraState.includes(unknown.from)) {
       throw new ContractError(`--place ${unknown.from} names a place of state this install's record lists, but this ` +
@@ -444,7 +446,8 @@ export function setup(options: SetupOptions): void {
         `${unanswered.map(placeLine).join('\n')}\nGive each with --place PATH PLACE, PLACE being PATH again where it's ` +
         'this install\'s, or the path of this install\'s own. Setup has changed nothing.');
     }
-    bindPlaces = [...placed, ...binding.kept.filter((kept) => !placed.some((given) => given.from === kept.from))];
+    bindPlaces = [...placed.filter((place) => !done(place)),
+      ...binding.kept.filter((kept) => !placed.some((given) => given.from === kept.from))];
   }
   const replaced = given !== null && Array.isArray(existing?.extraState) &&
     existing.extraState.some((path) => !given.includes(path));
@@ -778,7 +781,9 @@ export function setup(options: SetupOptions): void {
       }
       command = writeEntries();
       if (kept !== null && kept.found.length > 0) {
-        const places = [dataDir, ...extraState, ...childPathsOf(binding).map((was) => mapPath(was, bindShape) ?? was)];
+        const children = binding.children?.bound ? binding.children.paths
+          : childPathsOf(binding).map((was) => mapPath(was, bindShape) ?? was);
+        const places = [dataDir, ...extraState, ...children];
         const { moved, outside } = moveAside(root, binding.to, [...new Set(places)], kept, new Date());
         say('Moved aside what this install\'s updates and Go backs kept, which names places that aren\'t this install\'s now:');
         for (const { from, to } of moved) say(`  ${from} → ${to}`);
