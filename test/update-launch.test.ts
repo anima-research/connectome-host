@@ -202,6 +202,16 @@ describe('the binding check, before any release loads', () => {
     expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.10.2', root: copyRoot, cwd: copy });
   });
 
+  test('a copy of an install whose record is bound to / is sent to a setup command for the data directory under its own directory', () => {
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: '/data', extraState: [], workingDir: '/' });
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain('since its record is bound to /, and it');
+    expect(run.stderr).toContain(`DATA_DIR=${join(copy, 'data')} bun --no-env-file `);
+  });
+
   test('a copy of an install serving a data directory other than ./data is sent to a setup command that, run as printed, binds it to its own data directory', () => {
     const state = join(install, 'state');
     mkdirSync(join(state, 'sessions'), { recursive: true });
