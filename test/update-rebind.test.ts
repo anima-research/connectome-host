@@ -1047,6 +1047,44 @@ describe('the fleet\'s children file', () => {
     expect(record(copy)!.workingDir).toBe(copy);
   });
 
+  test('cut after the children file, before the record: the same --place for a child outside, run again, is taken as done, since the stamped file already names its new place', () => {
+    setup(options(install));
+    const outside = join(dir, 'kids', 'c');
+    withChild(install, outside, null);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const own = join(copy, 'kids', 'c');
+    mkdirSync(own, { recursive: true });
+    const placed = { places: [{ from: outside, to: own }] };
+    const recordAt = installPaths(rootOf(copy)).install;
+    mkdirSync(`${recordAt}.tmp`);
+    expect(() => setup(options(copy, placed))).toThrow(/install\.json\.tmp/);
+    rmSync(`${recordAt}.tmp`, { recursive: true });
+    expect(stampOf(copy)).toBe(copy);
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
+    setup(options(copy, placed));
+    expect(record(copy)!.workingDir).toBe(copy);
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
+  });
+
+  test('a move aside, where the children file is already stamped for this directory, takes the areas a Go back kept in each child directory it names', () => {
+    setup(options(install));
+    const kid = join(install, 'data', 'kids', 'c');
+    withChild(install, kid, null);
+    updated(install, [kid]);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const copiedKid = join(copy, 'data', 'kids', 'c');
+    const held = join(copiedKid, '.connectome-update', 'set-aside', 'm2');
+    mkdirSync(held, { recursive: true });
+    writeJsonAtomic(join(copy, 'data', 'fleet-children.json'),
+      { v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: copiedKid }], boundTo: copy } satisfies ChildrenFile);
+    setup(options(copy, { moveAside: true }));
+    expect(record(copy)!.workingDir).toBe(copy);
+    expect(existsSync(held)).toBe(false);
+    expect(readdirSync(join(copiedKid, '.connectome-update', 'moved-aside'))).toHaveLength(1);
+  });
+
   test('a stamp a finished binding left, which names the directory the record is bound to, doesn\'t stop the next move from binding the file', () => {
     setup(options(install));
     withChild(install, join(install, 'data', 'kids', 'c'), null);
