@@ -38,8 +38,12 @@ A matched rule resolves to one behavior:
 | `{ "passive_sample": { "every": n, "keyBy": "channelId" } }` | Wake on every nth matching event. |
 | `{ "judge": { "debounceMs": ms, "maxWaitMs": ms, "instructions": "…" } }` | Batch like a debounce, then ask the **reply judge**, a small, cheap model, whether now is a good time for you to reply. It reads your context (its newest part), your `instructions` and the batch, and either wakes you or lets the batch go by (the messages stay in your context, as for `defer`). `maxWaitMs` (optional) makes it decide by then even while messages keep coming. Needs an agent-framework release newer than 0.27.0; see below. |
 
-`keyBy` is optional on both counting behaviors: it names a metadata field, and
-each distinct value gets its own bucket/counter (without it, one shared one).
+`keyBy` is optional on both counting behaviors: each distinct value gets its own
+bucket/counter (without it, one shared one). `"channelId"` counts by the
+registered id the gate resolves for the event's channel, where it resolves one,
+so a channel's messages and its pushes (reactions, edits, voice reports) share
+one. Otherwise, and for any other name, it counts by the event's metadata field
+of that name, and an event without one uses the shared one.
 
 ### The reply judge
 
@@ -107,7 +111,8 @@ It's an ordered list — **first match wins** — plus a `default`:
     { "name": "dms",     "match": { "tagsAny": ["chat:dm"] },                               "behavior": "always" },
     { "name": "mentions","match": { "tagsAny": ["chat:addressed"] },                        "behavior": "always" },
     { "name": "bots",    "match": { "tagsAny": ["chat:from-bot"] },                         "behavior": "defer" },
-    { "name": "firehose","match": { "source": "discord", "channel": "discord:*:12345" },    "behavior": { "passive_sample": { "every": 20 } } },
+    { "name": "firehose","match": { "source": "discord", "channel": "discord:*:12345", "tagsAny": ["chat:ambient"] },
+                          "behavior": { "passive_sample": { "every": 20 } } },
     { "name": "ambient", "match": { "tagsAll": ["chat:ambient"], "tagsNone": ["chat:from-self"] },
                           "behavior": { "debounce": 180000 } }
   ],
@@ -121,15 +126,25 @@ It's an ordered list — **first match wins** — plus a `default`:
 **Match fields** (all AND together; omitted fields match anything):
 - `scope` — exact event types, e.g. `mcpl:channel-incoming` (messages in open
   channels), `mcpl:push-event` (pushed events — heartbeat ticks, addressed
-  messages from closed channels), `workspace:created` / `workspace:modified` /
+  messages from closed channels, and a channel's reactions, edits, deletes,
+  voice reports and catch-ups), `workspace:created` / `workspace:modified` /
   `workspace:deleted`
 - `source` — the event's server id: the MCPL server's name in your recipe
   (`discord`, `heartbeat`, …), glob ok
 - `channel` — the channel id, glob ok. Globs must match the **whole** id (`*` is
-  the only wildcard, and it also matches `:` and `/`). Discord messages in open
-  channels carry the namespaced id `discord:<guildId>:<channelId>`, so a bare
-  `"12345"` never matches — write `"discord:*:12345"`. Addressed pushes from
-  closed channels carry the integration's own id (for Discord, the raw snowflake).
+  the only wildcard, and it also matches `:` and `/`). Write a Discord channel
+  in its registered form, `discord:<guildId>:<channelId>` (`"discord:*:12345"`).
+  That form meets every event in the channel: its messages, whether they
+  arrive while it's open or as pushes while it's closed, and its reactions,
+  edits, deletes, voice reports and catch-ups. Open channels' messages carry
+  that id. A push carries the integration's own id (for Discord, the raw
+  snowflake, and none on a voice report), and where that misses, the gate tries
+  the registered id it resolves for the push. So a bare `"12345"` meets only
+  pushes that carry it, never the channel's open-channel messages. To keep a
+  rule to the channel's messages and edits to them, add
+  `tagsAny: ["chat:ambient", "chat:addressed"]`, and
+  `tagsNone: ["chat:edited"]` as well to leave the edits out. To keep it to
+  open-channel messages, add `scope: ["mcpl:channel-incoming"]`.
 - `tagsAny` / `tagsAll` / `tagsNone` — event tags (see below), globs ok (`robotics:*`)
 - `mount` / `pathGlob` — workspace file events: the mount name, and a glob over
   the touched paths, which are **mount-prefixed** (`"project/notes/*.md"`, not
