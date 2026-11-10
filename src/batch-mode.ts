@@ -1,6 +1,6 @@
 /**
  * Batch mode stops the framework once stdin ends, which closes every MCPL
- * server, and `reconnect: true` rightly does not undo that (an explicit close
+ * server, and reconnecting rightly does not undo that (an explicit close
  * is not a transport failure).
  */
 
