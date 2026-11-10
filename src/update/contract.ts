@@ -249,7 +249,8 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   '.connectome-update/staging/<mark> inside each directory an update copies that\'s under this install\'s ' +
   'directory, since they name the old directory\'s places, and restoring from them would write those. If a trial ' +
   'is unfinished, the journal\'s last ok trial-start with no ok commit, fallback or go-back after it, its fallback ' +
-  'restores from them: let it end where the install was, by starting the install there, before moving them. ' +
+  'restores from them: let it end where the install was, by starting the install there, moving it back first if it ' +
+  'was moved, before moving them. ' +
   'Don\'t restart or update the host until setup has run again: ' +
   'its next start runs start.js, whose launcher reads the record.';
 
