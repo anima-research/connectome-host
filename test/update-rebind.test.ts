@@ -820,6 +820,42 @@ describe('what a moved or copied install\'s root keeps', () => {
     expect(tree(moved)).toEqual(kept);
   });
 
+  test('a move aside whose directory sync fails after its rename counts that move as made, and says so', () => {
+    setup(options(install));
+    updated(install);
+    const data = join(install, 'data');
+    mkdirSync(area(data, 'set-aside', 'm2'), { recursive: true });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const held = area(join(moved, 'data'), 'set-aside', 'm2');
+    const realRename = fs.renameSync;
+    const realSync = fs.fsyncSync;
+    let renamed: string | null = null;
+    let failed = false;
+    const rename = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      realRename(from, to);
+      if (String(from) === held) renamed = String(to);
+    }) as typeof fs.renameSync);
+    const sync = spyOn(fs, 'fsyncSync').mockImplementation(((fd: number) => {
+      if (renamed !== null && !failed) {
+        failed = true;
+        throw new Error('EIO: i/o error, fsync');
+      }
+      return realSync(fd);
+    }) as typeof fs.fsyncSync);
+    let why: string;
+    try {
+      why = refusal(() => setup(options(moved, { moveAside: true })));
+    } finally {
+      rename.mockRestore();
+      sync.mockRestore();
+    }
+    expect(renamed).not.toBeNull();
+    expect(existsSync(renamed!)).toBe(true);
+    expect(why).toContain(`Setup has moved only these:\n  ${held} → ${renamed}\nand nothing else`);
+    expect(why).not.toContain('Setup has moved nothing else');
+  });
+
   bindMounted('a move aside that fails partway stops there, saying what it moved and that it removed nothing, and run again once that one is moved by hand, it finishes', () => {
     setup(options(install));
     updated(install);
