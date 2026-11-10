@@ -1621,7 +1621,11 @@ export interface Recipe {
   modules?: RecipeModules;
   /** Deployment-specific code extensions, keyed by a human-readable name. */
   extensions?: Record<string, RecipeExtension>;
-  sessionNaming?: { examples?: string[] };
+  /** Session naming (synesthete): example names for the prompt, and the
+   *  model the naming call goes to. Left out, the model is Claude Haiku on
+   *  the `anthropic` route and the resident's own model elsewhere
+   *  (auxiliaryModel), one the recipe's provider serves. */
+  sessionNaming?: { examples?: string[]; model?: string };
   /** Client-side programmatic tool calling (code_execution tool). */
   codeExecution?: RecipeCodeExecution;
   /**
@@ -3423,6 +3427,19 @@ export function validateRecipe(raw: unknown): Recipe {
         const must = fleet[k] === undefined ? null : timerMs(0)(fleet[k]);
         if (must) throw new Error(`fleet.${k} must be ${must}, got ${shown(fleet[k])}`);
       }
+    }
+  }
+
+  if (obj.sessionNaming !== undefined) {
+    const naming = obj.sessionNaming as { examples?: unknown; model?: unknown };
+    if (naming === null || typeof naming !== 'object' || Array.isArray(naming)) {
+      throw new Error(`Recipe sessionNaming must be an object, got ${shown(obj.sessionNaming)}.`);
+    }
+    if (naming.examples !== undefined && (!Array.isArray(naming.examples) || naming.examples.some((e) => typeof e !== 'string'))) {
+      throw new Error('Recipe sessionNaming.examples must be an array of strings.');
+    }
+    if (naming.model !== undefined && (typeof naming.model !== 'string' || !naming.model.trim())) {
+      throw new Error(`Recipe sessionNaming.model must be a non-empty string, got ${shown(naming.model)}.`);
     }
   }
 

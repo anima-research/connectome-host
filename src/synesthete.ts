@@ -38,10 +38,17 @@ export function namingSummary(
     .join('\n');
 }
 
+/**
+ * A name for the session, from `model` (auxiliaryModel: one the host's
+ * provider serves), or null when the model's answer isn't one or the call
+ * fails. A failure is logged once per process, so a host whose naming calls
+ * are refused says so instead of leaving sessions unnamed in silence.
+ */
 export async function generateSessionName(
   membrane: Membrane,
   conversationSummary: string,
-  examples?: string[],
+  examples: string[] | undefined,
+  model: string,
 ): Promise<string | null> {
   try {
     const response = await membrane.complete({
@@ -53,7 +60,7 @@ export async function generateSessionName(
       ],
       system: buildNamingPrompt(examples),
       config: {
-        model: 'claude-haiku-4-5-20251001',
+        model,
         maxTokens: 30,
         temperature: 0.8,
       },
@@ -67,7 +74,14 @@ export async function generateSessionName(
 
     if (!text || text.length > 60 || text.includes('\n')) return null;
     return text;
-  } catch {
+  } catch (error) {
+    if (!namingFailureLogged) {
+      namingFailureLogged = true;
+      console.warn(`[session-naming] the naming call to ${model} failed, so this session keeps its default name ` +
+        `(said once per process; recipe sessionNaming.model picks the model): ${error instanceof Error ? error.message : String(error)}`);
+    }
     return null;
   }
 }
+
+let namingFailureLogged = false;

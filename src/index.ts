@@ -92,6 +92,7 @@ import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName, namingSummary } from './synesthete.js';
+import { auxiliaryModel } from './auxiliary-model.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
@@ -642,7 +643,7 @@ function setupSynesthete(app: AppContext): void {
     const { messages } = cm.queryMessages({});
     const summary = namingSummary(messages);
 
-    generateSessionName(app.membrane, summary, namingExamples).then(name => {
+    generateSessionName(app.membrane, summary, namingExamples, auxiliaryModel(app.recipe, app.recipe.sessionNaming?.model)).then(name => {
       if (name) {
         app.sessionManager.renameSession(session.id, name, false);
       }

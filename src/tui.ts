@@ -34,6 +34,7 @@ import { handleCommand, resetBranchState } from './commands.js';
 import { refusedWhileSwitching, trackOperatorWork } from './session-switch.js';
 import { formatQuotaReadout } from './quota-meter.js';
 import { recipeModel } from './recipe.js';
+import { ANTHROPIC_AUXILIARY_MODEL, auxiliaryModel } from './auxiliary-model.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
 import { bunFloorNotice } from './bun-floor-check.js';
 import { hostUpdate } from './update/update.js';
@@ -568,7 +569,7 @@ export async function runTui(app: AppContext): Promise<void> {
           content: [{ type: 'text', text: `Agent activity stream:\n\n${window}\n\nWhat is this agent doing right now? Answer in 5-10 words.` }],
         }],
         system: 'You distill an agent\'s activity into a terse status phrase. 5-10 words max. No punctuation. Specific, not generic.',
-        config: { model: 'claude-haiku-4-5-20251001', maxTokens: 40, temperature: 0.3 },
+        config: { model: app.recipe ? auxiliaryModel(app.recipe) : ANTHROPIC_AUXILIARY_MODEL, maxTokens: 40, temperature: 0.3 },
       };
       const response = await membrane.complete(request);
       const text = response.content
