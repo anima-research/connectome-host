@@ -97,11 +97,22 @@ The file lives on disk at `<storePath>/config/gate.json` — in this host,
 `$DATA_DIR/sessions/<session-id>/config/gate.json`; `gate_status` shows the
 exact path as `configPath`. Your recipe's `modules.wake` seeds it on first
 start (a recipe with no policies there writes no file — until you add a rule,
-you have no rules and everything wakes you). On every restart after that, any
-recipe rule whose *name* isn't in the file is appended again (your other edits
-and the `default` are left alone) — so to retire a recipe-declared rule for
-good, replace it under the same name (e.g. with `defer`) rather than removing
-it. See **Changing your rules** below for how to edit it safely.
+you have no rules and everything wakes you). agent-framework keeps the recipe it
+last applied beside it, in `gate.recipe.json`, and merges the recipe in at every
+later start, rule by rule and by name:
+- a rule as the last recipe left it follows the recipe, so one the recipe
+  redefines, renames, moves or drops changes with it;
+- a rule you edited keeps your definition, and one you added stays;
+- a recipe rule you removed comes back at its place while the recipe declares
+  it, so to retire one for good, replace it under the same name (e.g. with
+  `defer`) rather than removing it;
+- once you've moved a recipe rule, the file's order stays;
+- an unedited `default` takes the recipe's.
+
+A start that changes something logs a line naming what it changed. A start
+that finds `gate.json` but no `gate.recipe.json`, as the first since
+agent-framework 0.27.0 does, removes and redefines nothing. See **Changing your
+rules** below for how to edit it safely.
 
 It's an ordered list — **first match wins** — plus a `default`:
 

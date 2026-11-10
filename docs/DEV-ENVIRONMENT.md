@@ -250,11 +250,13 @@ systemd user unit in your home directory.
 1. **Recipe MCP paths are absolute.** Each `mcpServers.*.args[0]` points at a
    `dist/src/index.js` by absolute path — they must match the new env's checkout
    location, or templatize them.
-2. **`gate.json` is per-session and append-only.** The recipe's `modules.wake`
-   seeds a fresh session's `data/sessions/<id>/config/gate.json` verbatim, but on a
-   *resumed* session the gate only *appends* recipe policies it doesn't already
-   have (by name) — it does NOT reorder. Since the gate is first-match-wins, to
-   change wake ordering you must edit the **live** `gate.json`, not just the recipe.
+2. **`gate.json` is per-session.** The recipe's `modules.wake` seeds a fresh
+   session's `data/sessions/<id>/config/gate.json` verbatim. On a *resumed* session,
+   agent-framework merges the recipe in against the one it last applied
+   (`gate.recipe.json`, beside it): a policy as the last recipe left it follows
+   the recipe, but one edited at run time keeps its definition, and once a
+   recipe policy was moved at run time the live order stays. To change those,
+   edit the **live** `gate.json`: the recipe alone doesn't reach them.
 3. **Single `membrane` instance** (see §3) — the #1 source of weird runtime errors
    if you skip the symlink wiring and end up with two copies.
 4. **Prod vs dev divergence.** Production boxes may run `@animalabs/*` as

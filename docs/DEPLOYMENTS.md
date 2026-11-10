@@ -79,7 +79,10 @@ In a shell command, put each path or value that you fill in between single quote
   environment replaces agent-framework's default. See DEV-ENVIRONMENT for
   file-defined servers.
 - `data/` — chronicle store + per-session `config/gate.json` (wake policies;
-  append-only reconcile, so reorder the **live** file, not just the recipe).
+  each start merges the recipe in, but a policy edited at run time keeps its
+  live definition, and once a recipe policy was moved at run time the file
+  keeps its live order, so change those in the **live** file, not just the
+  recipe).
 
 **Start / stop / restart:**
 

@@ -413,7 +413,7 @@ Under `$DATA_DIR` (default `./data`):
 |---|---|
 | `.recipe.json` | Unresolved recipe snapshot (0600). |
 | `sessions.json`, `sessions/<id>/` | Session index; one Chronicle store per session. |
-| `sessions/<id>/config/gate.json` | Wake policies (seeded from the recipe, then append-only reconciled). |
+| `sessions/<id>/config/gate.json` | Wake policies (seeded from the recipe, then merged with it at each later start against the recipe last applied, which `gate.recipe.json` beside it holds). |
 | `sessions/<id>/operator-actions.jsonl` | Operator surgery log. |
 | `sessions/<id>/mcpl-stderr/<server>.log` | MCPL server stderr. |
 | `sessions/<id>.import-source.json` | Provenance sidecar written by the importers. |
