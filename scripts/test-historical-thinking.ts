@@ -6,7 +6,8 @@
  *
  *   case A: signature field omitted
  *   case B: signature field empty string ""
- *   case C: thinking wrapped as <recovered_thinking> text (control — must work)
+ *   case C: thinking wrapped as <recovered_thinking> text (worked until
+ *           2026-11-09; now refused with category reasoning_extraction)
  *   case D: redacted_thinking block (alt encoding the API natively supports)
  *
  * Run: ANTHROPIC_API_KEY=sk-... bun scripts/test-historical-thinking.ts
@@ -51,7 +52,7 @@ const CASES: Case[] = [
   },
   {
     name: 'C_wrapped_text_control',
-    description: 'recovered_thinking as wrapped text (must succeed)',
+    description: 'recovered_thinking as wrapped text (refused since 2026-11-09)',
     assistantBlocks: [
       {
         type: 'text',

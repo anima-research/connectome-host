@@ -85,19 +85,44 @@ describe('transformContent', () => {
     expect(out).toEqual([{ type: 'text', text: 'hello' }]);
   });
 
-  test('thinking block becomes <recovered_thinking>-wrapped text', () => {
+  test('thinking blocks are dropped by default', () => {
+    const msg = mkMsg({
+      uuid: 'x',
+      sender: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'I was reasoning about X' },
+        { type: 'text', text: 'Answer' },
+      ],
+    });
+    expect(transformContent(msg)).toEqual([{ type: 'text', text: 'Answer' }]);
+  });
+
+  test('keepThinking wraps non-empty thinking as <recovered_thinking> text', () => {
     const msg = mkMsg({
       uuid: 'x',
       sender: 'assistant',
       content: [{ type: 'thinking', thinking: 'I was reasoning about X' }],
     });
-    const out = transformContent(msg);
+    const out = transformContent(msg, { keepThinking: true });
     expect(out).toHaveLength(1);
     const t = out[0]! as { type: 'text'; text: string };
     expect(t.type).toBe('text');
     expect(t.text).toContain('<recovered_thinking>');
     expect(t.text).toContain('I was reasoning about X');
     expect(t.text).toContain('</recovered_thinking>');
+  });
+
+  test('empty thinking never produces a block, even with keepThinking', () => {
+    const msg = mkMsg({
+      uuid: 'x',
+      sender: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '' },
+        { type: 'thinking', thinking: '  \n ' },
+        { type: 'text', text: 'Hello!' },
+      ],
+    });
+    expect(transformContent(msg, { keepThinking: true })).toEqual([{ type: 'text', text: 'Hello!' }]);
   });
 
   test('tool_use round-trips with id, name, input', () => {
