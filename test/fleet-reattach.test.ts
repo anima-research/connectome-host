@@ -11,7 +11,7 @@ import { connectWhenAccepting } from './ipc-connect.js';
 type Result = { success: boolean; error?: string; data?: unknown };
 type Event = { type?: string; phase?: string; content?: string };
 type Child = Record<string, unknown> & {
-  socket: Socket | null; lastCompletedSpeech: string; events: Event[]; reopening?: Promise<void>;
+  socket: Socket | null; lastCompletedSpeech?: string; events: Event[]; reopening?: Promise<void>;
 };
 type Fleet = {
   children: Map<string, Child>;
@@ -71,7 +71,7 @@ function setup(config: FleetModuleConfig = {}) {
       pid: recordedPid ?? proc.pid, process: adopted ? null : proc, ...(adopted ? { adopted: true } : {}),
       socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null, lastEventAt: null, exitCode: null,
       exitReason: null, events: [], buffer: '', subscription, idleSinceWork: false, textsSent: 0,
-      autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+      autoRestart: false, killRequested: false, restartAttempts: [],
     } as unknown as Child;
     fleet.children.set(name, child);
     const seen = { ready: 0, idle: 0, marker: 0, snapshot: 0 };
@@ -343,7 +343,7 @@ test('a socket that takes each connect and closes it before any ready gets one c
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [],
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -375,7 +375,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: 'the held reply',
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -386,7 +386,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
   ]);
   expect(child.socket).toBeNull();
   expect(child.events).toEqual([]);
-  expect(child.lastCompletedSpeech).toBe('');
+  expect(child.lastCompletedSpeech).toBe('the held reply');
 }, 30_000);
 
 test('after a failed connect, fleet--await tries to connect once before it waits', async () => {
@@ -603,7 +603,42 @@ test("fleet--relay passes on only a reply made since this host's connection to t
   const unreachable = await call('relay', { from: 'leaf', to: 'sibling' });
   expect(unreachable.success).toBe(false);
   expect(unreachable.error).toContain('may not be the latest');
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
   expect(sibling.texts()).not.toContain('the reply before the loss');
+}, 30_000);
+
+test('a held reply with no text is forgotten by a connect, as any reply is', async () => {
+  const { fleet, call, launch } = setup();
+  fleet.reopenWindowMs = 100;
+  const leaf = await launch('leaf');
+  await launch('sibling');
+  await leaf.reply('');
+  expect((await call('relay', { from: 'leaf', to: 'sibling' })).error).toContain('had no text in it');
+  await leaf.cut();
+  await until(() => leaf.connections() === 2 && leaf.child.socket !== null, 'the parent connecting again');
+  expect(leaf.child.lastCompletedSpeech).toBeUndefined();
+  expect((await call('relay', { from: 'leaf', to: 'sibling' })).error)
+    .toContain("hasn't finished a reply since this host's connection to it last opened");
+}, 30_000);
+
+test("a held reply with no text is refused as empty while this host can't reach the child, saying why it can't", async () => {
+  const { call, launch, failed } = setup();
+  const leaf = await launch('leaf');
+  const sibling = await launch('sibling');
+  await leaf.reply('');
+  await leaf.signal('unlink', 'unlinked');
+  await leaf.cut();
+  await until(() => failed('leaf') === 1, 'the failed attempt');
+  const relayed = await call('relay', { from: 'leaf', to: 'sibling' });
+  expect(relayed.error).toStartWith(
+    "Nothing was relayed: the latest inference round this host saw from 'leaf' ended without tool calls, outside a " +
+    "silent heartbeat, and had no text in it, so there was nothing to pass on. 'leaf' is ready, but its connection " +
+    'to this host closed, and connecting to it again failed: ',
+  );
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
+  expect(sibling.texts()).toBe('after the refusal\n');
 }, 30_000);
 
 test('after a failed connect, fleet--relay from the child tries once to connect to it', async () => {
@@ -620,7 +655,9 @@ test('after a failed connect, fleet--relay from the child tries once to connect 
   expect(relayed.error).toContain("hasn't finished a reply since this host's connection to it last opened");
   expect(reconnected('leaf')).toBe(1);
   expect(failed('leaf')).toBe(1);
-  expect(sibling.texts()).toBe('');
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
+  expect(sibling.texts()).toBe('after the refusal\n');
 }, 30_000);
 
 test("fleet--relay waits for a connect to its source that starts while it waits for its target's", async () => {
@@ -639,7 +676,9 @@ test("fleet--relay waits for a connect to its source that starts while it waits 
   leaf.release();
   const relayed = await relaying;
   expect(relayed.error).toContain("hasn't finished a reply since this host's connection to it last opened");
-  expect(sibling.texts()).toBe('');
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
+  expect(sibling.texts()).toBe('after the refusal\n');
 }, 30_000);
 
 for (const [state, arrange] of [

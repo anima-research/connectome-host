@@ -533,6 +533,7 @@ agents: [agentConfig],
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
     inferenceBounds: recipe.inferenceBounds,
+    toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -946,6 +947,7 @@ async function main() {
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;

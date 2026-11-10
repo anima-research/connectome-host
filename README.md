@@ -200,6 +200,17 @@ agent-framework's README, which its package ships
 doesn't know, or a value that isn't a finite number above 0, stops the load,
 naming it.
 
+`toolResultInlineMaxChars`, at the recipe's top level, is the residence's
+inline cap for tool results, in characters, passed to agent-framework as its
+`FrameworkConfig.toolResultInlineMaxChars`. Left out, agent-framework's
+default stands. A resident's own `agent_settings` value
+`tool_result_inline_max_chars` wins over it for that agent. The default,
+what becomes of a result over the cap and how the cap in effect is reached
+are in that option's doc in agent-framework's types, which its package ships
+(`node_modules/@animalabs/agent-framework/dist/src/types/framework.d.ts` in
+an install). A value that isn't a finite number of at least 1000,
+agent-framework's own minimum, stops the load, naming it.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is
@@ -609,7 +620,7 @@ depend on what the endpoint reports.
 |---|---|---|
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (default `us-west-2`) | Claude on AWS — including models retired from the first-party API. `BEDROCK_BASE_URL` routes through an inference gateway. Prompt caching is enabled per model where Bedrock supports it; `agent.promptCaching` overrides. |
 | `openai-responses` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` optional) | OpenAI Platform, Responses API. |
-| `openrouter` | `OPENROUTER_API_KEY` | |
+| `openrouter` | `OPENROUTER_API_KEY` (`OPENROUTER_BASE_URL` optional) | |
 | `mock` | none | Echoes the last user message by default; scripted replies and timing are set under `agent.mock` ([below](#mock-provider)). Calls are still logged. |
 
 Every provider's calls are logged to `$DATA_DIR/llm-calls.<iso>.jsonl`.
@@ -799,10 +810,24 @@ reached through a linked directory), and on any mount one whose canonical
 path lies outside it isn't either, a link that leads out included: either
 raises the alert instead.
 
-**Cache note**: at `position: "system"` the block lives in every agent's
-prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next
-turn — curate in batches, or use `afterUser` for cache-cheap, lower-salience
-injection. Compared to **lessons** (`modules.lessons`): lessons are a
+**Where the block lands, and what that costs**:
+
+- `"system"`, the default, puts it in every agent's system prompt. An edit to
+  the file misses the cache from the system prompt on, for every agent, at its
+  next turn, so curate in batches.
+- `"afterUser"` places it after the newest user message at each start, so it
+  stays near the end. Unlike another module's `afterUser` block, which
+  agent-framework stores where it lands, it isn't stored. It moves: a request
+  misses the cache from its old place on, and on a model that binds a reply's
+  thinking to everything before it, every reply after its old place loses its
+  thinking.
+- `"beforeUser"` is deprecated
+  ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)).
+  It's spliced in again before the newest user message at every compile, so
+  it moves, at `afterUser`'s cost, and it can split a tool call from its
+  result. Use `"afterUser"` or `"system"`.
+
+Compared to **lessons** (`modules.lessons`): lessons are a
 structured, confidence-scored store with model-driven retrieval; instructions
 are one free-form curated document, always present verbatim.
 
@@ -831,6 +856,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `OPENROUTER_API_KEY` | — | `openrouter` recipes |
+| `OPENROUTER_BASE_URL` | OpenRouter API (`https://openrouter.ai/api/v1`) | Route OpenRouter calls through a gateway |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | region `us-west-2` | `bedrock` recipes |
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |

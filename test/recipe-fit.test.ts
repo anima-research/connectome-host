@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { ContextManager, defaultTokenEstimator } from '@animalabs/context-manager';
 import { DEFAULT_RECIPE, type Recipe, loadRecipe, loadRecipeDetailed, loadSavedRecipe, saveRecipe, savedRecipePath, validateRecipe } from '../src/recipe.js';
 import { effectiveContextBudgetTokens, recipeFit } from '../src/recipe-fit.js';
-import { LIMITS_TABLE } from '../src/model-limits.js';
+import { LIMITS_TABLE, getDefaultModelLimits } from '../src/model-limits.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 
@@ -477,6 +477,13 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     expect(text).toContain('over claude-haiku-4-5\'s maximum output of 64,000 tokens');
     expect(text).toMatch(/lower agent\.maxTokens to between ([\d,]+) and 64,000/i);
     expect(text).not.toContain('or less');
+  });
+
+  test('the Fable 5.2 and Mythos 5.2 rows give a 1,000,000-token window and 128,000 tokens of output, by id and dated id; a later version has none', () => {
+    for (const id of ['claude-fable-5-2', 'claude-mythos-5-2', 'claude-fable-5-2-20261109']) {
+      expect([id, getDefaultModelLimits(id)]).toEqual([id, { maxContextTokens: 1_000_000, maxOutputTokens: 128_000 }]);
+    }
+    for (const id of ['claude-fable-5-3', 'claude-mythos-5-3']) expect([id, getDefaultModelLimits(id)]).toEqual([id, undefined]);
   });
 
   test('the default recipe, which no loader checks, fits every model the table holds', () => {

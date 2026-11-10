@@ -2333,12 +2333,9 @@ export class SubagentModule implements Module {
   private streamSurface(agent: { name?: string; canUseTool(name: string): boolean; proseRouting: ProseRouting }): string[] {
     const framework = this.getFramework();
     let tools = framework.getAllTools().filter((t) => agent.canUseTool(t.name));
-    const present = (framework as AgentFramework & {
-      presentedTools?: (agentName: string, tools: ToolDefinition[], canUseMeta?: boolean) => ToolDefinition[];
-    }).presentedTools;
-    if (typeof present === 'function' && agent.name) {
+    if (agent.name) {
       const canUseMeta = agent.canUseTool('toolsets--open') && agent.canUseTool('toolsets--act');
-      tools = present.call(framework, agent.name, tools, canUseMeta);
+      tools = framework.presentedTools(agent.name, tools, canUseMeta);
     }
     const names = tools.map((t) => t.name);
     if (agent.proseRouting === 'explicit' && agent.canUseTool('prose_help')) names.push('prose_help');
@@ -2560,16 +2557,14 @@ export class SubagentModule implements Module {
     const route = record?.relationships.resultTo;
     const to = route?.to ?? parentAgentName;
     const toRecord: AgentRecord | null = fw ? fw.getAgentRecord(to) : null;
-    const primaryLive = to === this.config.parentAgentName && toRecord !== null && toRecord.ended === undefined;
     const launcherRecord: AgentRecord | null = launcher !== undefined && fw ? fw.getAgentRecord(launcher) : null;
     const forEnded = launcherRecord?.ended !== undefined && to !== parentAgentName ? `, for '${launcherShown ?? launcher}', which has ended` : undefined;
-    if (fw && record && !(outcome === 'failed' && primaryLive)) {
+    if (fw && record) {
       const content = [{ type: 'text' as const, text: `[Subagent '${name}' ${outcome}${forEnded ?? ''}]\n\n${body}` }];
       try {
         if (route?.as === 'message') {
           const delivered = fw.deliverAgentResult(record.name, content);
-          if (delivered.delivered) ctx.pushEvent({ type: 'inference-request', agentName: delivered.to, reason, source: 'subagent' });
-          else this.noteHeld(name, outcome, delivered.to);
+          if (!delivered.delivered) this.noteHeld(name, outcome, delivered.to);
           return;
         }
         if (toRecord) {

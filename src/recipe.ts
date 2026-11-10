@@ -17,11 +17,13 @@ import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecuti
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
+import { isBuiltinStrategyType } from './extensions.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
+import { shown } from './modules/shown.js';
 import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from './server-presentation.js';
 
 export interface RecipeStrategy {
@@ -189,8 +191,6 @@ export interface RecipeStrategy {
    *  mixed targets keep identityReminder (context-manager
    *  witnessedIdentityReminder). */
   witnessedIdentityReminder?: string;
-  /** Follow the reminder with an instruction to apply it silently. */
-  identityReminderSilent?: boolean;
 }
 
 export interface RecipeKvUnifiedConfig {
@@ -307,9 +307,10 @@ export interface RecipeAgent {
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
    * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
    * which with prompt caching on are only those after the last cache marker.
-   * On a model whose thinking binds and whose window the host passes (Fable
-   * 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 through the Anthropic API), the
-   * framework doesn't break a turn's stream at it; the window still does.
+   * On a model whose thinking binds and whose window the host passes, through
+   * the Anthropic API (`thinkingBindingSettings` in framework-agent-config.ts
+   * says which, from `modelThinking`), the framework doesn't break a turn's
+   * stream at it; the window still does.
    */
   maxStreamTokens?: number;
   /** Per-agent context compile budget (input tokens), which holds
@@ -1053,11 +1054,19 @@ export interface RecipeModules {
    * agent. A missing FILE remains fail-open at runtime: no injection, with
    * a log line and an `instructions-unavailable` ops alert.
    *
-   * Cache economics: with position 'system' the injected block sits in the
-   * prompt-cache prefix of every agent, so each EDIT to the file is a
-   * fleet-wide cache cold start on the next turn (steady state between
-   * edits caches normally). Curate in batches rather than per-message;
-   * 'afterUser' is the cache-cheap, lower-salience alternative.
+   * Where the block lands, and what that costs:
+   * - 'system' (the default) puts it in every agent's system prompt. An edit
+   *   to the file misses the cache from the system prompt on, for every
+   *   agent, at its next turn, so curate in batches.
+   * - 'afterUser' places it after the newest user message at each start, so
+   *   it stays near the end. Unlike another module's 'afterUser' block, which
+   *   agent-framework stores where it lands, it isn't stored. It moves: a
+   *   request misses the cache from its old place on, and on a model that
+   *   binds a reply's thinking to everything before it, every reply after its
+   *   old place loses its thinking.
+   * - 'beforeUser' is deprecated (agent-framework#171). It's spliced in again
+   *   before the newest user message at every compile, so it moves, and it
+   *   can split a tool call from its result. Use 'afterUser' or 'system'.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1074,7 +1083,7 @@ export interface RecipeModules {
      * no more than this. Default 32768.
      */
     maxBytes?: number;
-    /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
+    /** Where the block lands: 'system' (default) | 'beforeUser' (deprecated) | 'afterUser'. */
     position?: 'system' | 'beforeUser' | 'afterUser';
   };
   /**
@@ -1668,6 +1677,17 @@ export interface Recipe {
    * the "Inference bounds" section of the README its package ships gives them.
    */
   inferenceBounds?: FrameworkConfig['inferenceBounds'];
+  /**
+   * The residence's inline cap for tool results, in characters, passed to
+   * agent-framework as FrameworkConfig.toolResultInlineMaxChars. Left out,
+   * agent-framework's default stands. A resident's own `agent_settings` value
+   * `tool_result_inline_max_chars` wins over it for that agent. A value that
+   * isn't a finite number of at least 1000, agent-framework's own minimum,
+   * stops the load, naming it. The default, what becomes of a result over the
+   * cap and how the cap in effect is reached are in that option's doc in
+   * agent-framework's types.
+   */
+  toolResultInlineMaxChars?: number;
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -2010,7 +2030,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
-  'maintenanceIntervalMs', 'inferenceBounds',
+  'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -2170,6 +2190,10 @@ const MOUNT_KEY_INSTEAD: Record<string, string> = {
 
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
+  'agent.strategy.identityReminderSilent':
+    'a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
+    'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+    'if it was true; if it was false, nothing',
 };
 
 function editDistance(a: string, b: string): number {
@@ -2220,6 +2244,13 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     check('agent.strategy.kvUnified.', kvUnified, RECIPE_KV_UNIFIED_KEYS);
     if (isObject(kvUnified)) {
       check('agent.strategy.kvUnified.policy.', kvUnified.policy, RECIPE_KV_UNIFIED_POLICY_KEYS);
+    }
+    const strategy = obj.agent.strategy;
+    if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
+      for (const key of Object.keys(strategy)) {
+        const path = `agent.strategy.${key}`;
+        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+      }
     }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
@@ -2446,8 +2477,8 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe agent.responses.serviceTier must be a non-empty string.');
     }
     if (responses.compactThreshold !== undefined &&
-        (typeof responses.compactThreshold !== 'number' || responses.compactThreshold <= 0)) {
-      throw new Error('Recipe agent.responses.compactThreshold must be a positive number.');
+        (typeof responses.compactThreshold !== 'number' || !Number.isFinite(responses.compactThreshold) || responses.compactThreshold <= 0)) {
+      throw new Error(`Recipe agent.responses.compactThreshold must be a positive number (finite), got ${shown(responses.compactThreshold)}.`);
     }
     const serviceTiers = ['auto', 'default', 'flex', 'priority'];
     if (responses.serviceTier !== undefined && !serviceTiers.includes(String(responses.serviceTier))) {
@@ -2497,8 +2528,8 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
-    throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
+  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || !Number.isFinite(agent.maxStreamTokens) || agent.maxStreamTokens <= 0)) {
+    throw new Error(`Recipe agent.maxStreamTokens must be a positive number (finite), got ${shown(agent.maxStreamTokens)}.`);
   }
 
   // Anthropic answers a TTL it doesn't know ("1hr", "60m") with a 400 at the
@@ -2562,7 +2593,7 @@ export function validateRecipe(raw: unknown): Recipe {
   } else if (agent.baseUrl !== undefined) {
     throw new Error(
       `Recipe agent.baseUrl only applies to agent.provider 'openai-compatible' (got provider ${JSON.stringify(agent.provider ?? 'anthropic')}); ` +
-      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL.',
+      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL / CODEX_BASE_URL / OPENROUTER_BASE_URL.',
     );
   }
 
@@ -2583,7 +2614,7 @@ export function validateRecipe(raw: unknown): Recipe {
     }
     if (refreshAfterMinutes !== undefined) {
       if (typeof refreshAfterMinutes !== 'number' || !(refreshAfterMinutes > 0)) {
-        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${JSON.stringify(refreshAfterMinutes)}.`);
+        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${shown(refreshAfterMinutes)}.`);
       }
       const ttlMinutes = agent.cacheTtl === '1h' ? 60 : 5;
       if (refreshAfterMinutes >= ttlMinutes) {
@@ -2593,8 +2624,8 @@ export function validateRecipe(raw: unknown): Recipe {
         );
       }
     }
-    if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !(maxIdleHours > 0))) {
-      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number, got ${JSON.stringify(maxIdleHours)}.`);
+    if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !Number.isFinite(maxIdleHours) || !(maxIdleHours > 0))) {
+      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number (finite), got ${shown(maxIdleHours)}.`);
     }
   }
 
@@ -2623,8 +2654,8 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof thinking.enabled !== 'boolean') {
       throw new Error('Recipe agent.thinking.enabled must be a boolean.');
     }
-    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || thinking.budgetTokens <= 0)) {
-      throw new Error('Recipe agent.thinking.budgetTokens must be a positive number.');
+    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || !Number.isFinite(thinking.budgetTokens) || thinking.budgetTokens <= 0)) {
+      throw new Error(`Recipe agent.thinking.budgetTokens must be a positive number (finite), got ${shown(thinking.budgetTokens)}.`);
     }
     if (thinking.type !== undefined && thinking.type !== 'enabled' && thinking.type !== 'adaptive') {
       throw new Error('Recipe agent.thinking.type must be "enabled" or "adaptive".');
@@ -3396,10 +3427,13 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error('fleet.defaultSubscription must be an array of strings');
         }
       }
-      for (const k of ['socketWaitTimeoutMs', 'readyTimeoutMs', 'gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
-        if (fleet[k] !== undefined && (typeof fleet[k] !== 'number' || (fleet[k] as number) < 0)) {
-          throw new Error(`fleet.${k} must be a non-negative number`);
-        }
+      const socketWait = fleet.socketWaitTimeoutMs;
+      if (socketWait !== undefined && (typeof socketWait !== 'number' || !Number.isFinite(socketWait) || socketWait < 0)) {
+        throw new Error(`fleet.socketWaitTimeoutMs must be a non-negative number (finite), got ${shown(socketWait)}`);
+      }
+      for (const k of ['readyTimeoutMs', 'gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
+        const must = fleet[k] === undefined ? null : timerMs(0)(fleet[k]);
+        if (must) throw new Error(`fleet.${k} must be ${must}, got ${shown(fleet[k])}`);
       }
     }
   }
@@ -3437,6 +3471,14 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   if (obj.inferenceBounds !== undefined) validateInferenceBounds(obj.inferenceBounds);
+
+  if (obj.toolResultInlineMaxChars !== undefined) {
+    const cap = obj.toolResultInlineMaxChars;
+    if (!Number.isFinite(cap) || (cap as number) < 1000) {
+      const shown = typeof cap === 'number' ? String(cap) : JSON.stringify(cap);
+      throw new Error(`Recipe toolResultInlineMaxChars is ${shown}; it must be a finite number of at least 1000.`);
+    }
+  }
 
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {

@@ -26,8 +26,8 @@ const NEITHER = { binds: false, dropBlock: false, thinksWithoutConfig: false };
 
 describe('modelThinking', () => {
   test.each([
-    ['claude-fable-5-1', BOUND], ['claude-opus-5-5', BOUND], ['claude-sonnet-5-5', BOUND], ['claude-haiku-5-5', BOUND],
-    ['claude-mythos-5-1', BOUND_NO_CONTROL], ['claude-mythos-5', BOUND_NO_CONTROL], ['claude-mythos-preview', BOUND_NO_CONTROL],
+    ['claude-fable-5-2', BOUND], ['claude-fable-5-1', BOUND], ['claude-opus-5-5', BOUND], ['claude-sonnet-5-5', BOUND], ['claude-haiku-5-5', BOUND],
+    ['claude-mythos-5-2', BOUND_NO_CONTROL], ['claude-mythos-5-1', BOUND_NO_CONTROL], ['claude-mythos-5', BOUND_NO_CONTROL], ['claude-mythos-preview', BOUND_NO_CONTROL],
     ['claude-fable-5', THINKS_UNBOUND], ['claude-opus-5', THINKS_UNBOUND], ['claude-sonnet-5', THINKS_UNBOUND],
     ['claude-opus-4-8', NEITHER], ['claude-opus-4-7', NEITHER], ['claude-opus-4-6', NEITHER], ['claude-opus-4-5', NEITHER],
     ['claude-sonnet-4-6', NEITHER], ['claude-sonnet-4-5', NEITHER], ['claude-haiku-4-5', NEITHER],
@@ -60,8 +60,8 @@ describe('modelThinking', () => {
   });
 
   test.each([
-    'claude-opus-5-6', 'claude-opus-5-50', 'claude-fable-5-2', 'claude-fable-5-10', 'claude-sonnet-5-6', 'claude-haiku-5-6',
-    'claude-mythos-5-2', 'claude-opus-6', 'claude-opus-4-9', 'bedrock:claude-opus-5-6', 'claude-5-opus',
+    'claude-opus-5-6', 'claude-opus-5-50', 'claude-fable-5-3', 'claude-fable-5-10', 'claude-sonnet-5-6', 'claude-haiku-5-6',
+    'claude-mythos-5-3', 'claude-opus-6', 'claude-opus-4-9', 'bedrock:claude-opus-5-6', 'claude-5-opus',
   ])('records %s, which it doesn\'t name, as binding without the control', (model) => {
     expect(modelThinking(model)).toEqual(UNREACHED);
   });
@@ -79,7 +79,7 @@ describe('LoggingAnthropicAdapter.withBinding', () => {
   const request = (model: string, more: Record<string, unknown> = {}) =>
     ({ messages: [], model, maxTokens: 1024, ...more }) as ProviderRequest;
 
-  test.each(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])(
+  test.each(['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])(
     "sends %s, which thinks with no config, an 'omitted' adaptive config with the control when there's none",
     (model) => {
       const req = request(model);
@@ -309,7 +309,7 @@ describe('thinkingBindingSettings and the agent config', () => {
       .toEqual({ thinkingBinding: { binds: true, dropBlock: true }, physicalWindowTokens: 1_000_000 });
   });
 
-  test.each(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])(
+  test.each(['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])(
     '%s gets the 1,000,000-token window its provider\'s refusal showed, from the limits table', (model) => {
       expect(getDefaultModelLimits(model)?.maxContextTokens).toBe(1_000_000);
       expect(thinkingBindingSettings(model, 'anthropic').physicalWindowTokens).toBe(1_000_000);
@@ -323,7 +323,7 @@ describe('thinkingBindingSettings and the agent config', () => {
   });
 
   test('a model recorded as binding without the control binds, with no window', () => {
-    for (const model of ['claude-mythos-5-1', 'claude-opus-5-6']) {
+    for (const model of ['claude-mythos-5-2', 'claude-mythos-5-1', 'claude-opus-5-6']) {
       expect(thinkingBindingSettings(model, 'anthropic')).toEqual({ thinkingBinding: { binds: true, dropBlock: false } });
     }
   });

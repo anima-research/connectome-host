@@ -900,6 +900,7 @@ export interface ContextCoverageSnapshot {
   queue: {
     inFlight: boolean;
     pending: string | null;
+    waiting: string | null;
     l1: number[];
     merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
   };
@@ -911,6 +912,7 @@ export function buildContextCoverageSnapshot(
     currentBranch: () => { name: string };
     getStrategy: () => unknown;
     getPendingWork?: () => { description?: string } | null;
+    getWaitingWork?: () => { description?: string } | null;
   },
 ): ContextCoverageSnapshot {
   const strategy = cm.getStrategy() as CoverageStrategy;
@@ -965,6 +967,7 @@ export function buildContextCoverageSnapshot(
   });
   const covered = projectedChunks.filter(chunk => chunk.maxLevel > 0);
   const pending = cm.getPendingWork?.()?.description ?? null;
+  const waiting = cm.getWaitingWork?.()?.description ?? null;
 
   return {
     agent: agentName,
@@ -983,6 +986,7 @@ export function buildContextCoverageSnapshot(
     queue: {
       inFlight: strategy.pendingCompression != null,
       pending,
+      waiting,
       l1: [...compressionQueue],
       merges: mergeQueue.map(merge => ({
         targetLevel: merge.level,

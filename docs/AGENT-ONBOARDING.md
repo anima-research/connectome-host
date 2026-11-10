@@ -515,9 +515,9 @@ dollar figures. The host's standard block matches them to what the provider bill
 - **Claude writes:** `2` on the 1-hour cache (the default `cacheTtl`), `1.25` on the
   5-minute cache and on Bedrock (5-minute only);
 - **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5, `0.025` on Claude
-  Fable 5.1 / Mythos 5.1. Claude Sonnet 5.5 takes `0.1`, though its reads are billed at
-  `0.05`, since a lower price can change the layout the solver picks and rewrite the
-  agent's prompt cache;
+  Fable 5.1 / Mythos 5.1 and Claude Fable 5.2 / Mythos 5.2. Claude Sonnet 5.5 takes `0.1`,
+  though its reads are billed at `0.05`, since a lower price can change the layout the
+  solver picks and rewrite the agent's prompt cache;
 - **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
   models, and `1` on Codex, whose credit billing has no cache-write charge;
 - **OpenAI reads:** the model's cached-input ratio, the same on the API and in Codex: `0.1`
@@ -687,9 +687,7 @@ Two `systemd --user` units in `~/.config/systemd/user/`:
 Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
 
 Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user or root, since
-`data/` is readable by its owner alone) and a lightweight **watchdog** cron
-(detect "messages arriving but no reply for N min" → restart, with a cooldown so it can't
-restart-loop). These caught real incidents.
+`data/` is readable by its owner alone).
 
 Any restart (a watchdog restart, an upgrade, a backup that stops the service) drops the
 prompt-cache keepalive's state, so nothing refreshes the cache until the next turn, and if the
@@ -880,7 +878,7 @@ trigger into a channel the resident reads.
 works only on the model that minted them; any other model 400s. Editing the *shape* of a turn
 around a retained thinking block (split, reorder, insert before) also 400s ("thinking blocks
 cannot be modified") — a transport error the membrane retries once text-only, not a refusal.
-On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound
+On Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound
 to the conversation and head (system text, tools, model) it was minted under: an account that
 enforces the binding refuses a request where those changed, as after a fold. The host sends the
 drop control on agent turns through the Anthropic API so the provider sets such a block aside instead, and context-manager
@@ -906,7 +904,7 @@ only where its next request would pass the window, and a fresh compile carries t
 
 - Tell the user how to reach the webui (SSH tunnel to the loopback port + the basic-auth creds).
 - Explain what it does on its own (wakes on mentions/DMs in scoped channels + on its heartbeat).
-- Keep the snapshots + watchdog running. Pull an off-box copy of `data/` for safety.
+- Keep the snapshots running. Pull an off-box copy of `data/` for safety.
 - Widen channel scope / adjust the recent window / tune the budget as it settles.
 
 ---
@@ -1020,8 +1018,8 @@ same being, different door — which brought it back.
 "Opus 4 C". Invited it; scoped `DISCORD_GUILD_ID=<guild>:<#opus id>`; confirmed exactly **1**
 channel registered.
 
-**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent), 15-min backups, a
-wedge-watchdog. Then the check that matters:
+**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent) and 15-min backups.
+Then the check that matters:
 ```bash
 curl -su "$WEBUI_USER:$WEBUI_PASS" http://127.0.0.1:7343/debug/context/makeup   # total + maxTokens < window?
 ```
