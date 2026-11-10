@@ -60,6 +60,36 @@ describe('isAuthFailure', () => {
 });
 
 describe('CredentialMonitor — auth verdicts', () => {
+  test('a local auth failure without an HTTP verdict reports unavailability, with recovery guidance intact', () => {
+    const detail = 'An existing login is required. ' + 'Configured credential directory: /synthetic/home. '.repeat(6) + 'Then retry.';
+    const { monitor, alerts } = harness({ source: { loginDisabledReason: detail } });
+    try {
+      monitor.observeError(Object.assign(new Error(detail), { type: 'auth', retryable: false }));
+      expect(monitor.snapshot().kind).toBe('auth-rejected');
+      expect(alerts[0]!.message).toBe(`anthropic authentication unavailable: ${detail}`);
+      expect(alerts[0]!.message).not.toContain('rejected the credential');
+    } finally { monitor.dispose(); }
+  });
+
+  test('other typed auth failures retain rejection wording even without an HTTP status', () => {
+    const { monitor } = harness({ source: { loginDisabledReason: 'Known disabled-login guidance.' } });
+    try {
+      monitor.observeError(Object.assign(new Error('Actual provider rejection'), { type: 'auth', retryable: false }));
+      expect(monitor.snapshot().message).toBe('anthropic rejected the credential (Actual provider rejection)');
+      expect(monitor.snapshot().kind).toBe('auth-rejected');
+    } finally { monitor.dispose(); }
+  });
+
+  test('a disabled login returns its recovery reason and does not advertise a restart action', async () => {
+    const reason = 'Host login actions are disabled. Use the configured CLI and credential directory, then retry.';
+    const { monitor } = harness({ source: { loginDisabledReason: reason } });
+    try {
+      monitor.loginRequired({ verificationUrl: 'https://example.test/device', userCode: 'synthetic-code' });
+      expect(monitor.snapshot().actions.map(action => action.id)).toEqual(['recheck']);
+      expect((await monitor.runAction('login')).lastAction).toMatchObject({ id: 'login', ok: false, message: reason });
+    } finally { monitor.dispose(); }
+  });
+
   test('starts ok, a 401 becomes auth-rejected with paste + recheck actions when not rotatable', () => {
     const { monitor, alerts } = harness({ source: { setToken: () => {} } });
     expect(monitor.snapshot().kind).toBe('ok');

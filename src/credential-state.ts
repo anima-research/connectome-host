@@ -54,6 +54,8 @@ export interface CredentialSource {
   canRefresh(): boolean;
   refresh?(): Promise<void>;
   login?(): Promise<void>;
+  /** Recovery guidance for an intentionally unavailable host login action. */
+  loginDisabledReason?: string;
   cancelLogin?(): Promise<boolean>;
   setToken?(token: string): Promise<void> | void;
   expiresAt?(): number | undefined;
@@ -193,11 +195,15 @@ export class CredentialMonitor {
     const expiresAt = this.expiry();
     const expired = expiresAt !== undefined && expiresAt <= this.now();
     const detail = isRecord(error) && typeof error.message === 'string' ? error.message : 'authentication rejected';
+    const status = isRecord(error) ? error.httpStatus ?? error.status : undefined;
+    const disabledLogin = status !== 401 && status !== 403 && detail === this.source.loginDisabledReason;
     this.transition({
       kind: expired ? 'auth-expired' : 'auth-rejected',
       message: expired
         ? `${this.source.provider} credential expired ${new Date(expiresAt).toISOString()} — the provider rejects it (${trim(detail)})`
-        : `${this.source.provider} rejected the credential (${trim(detail)})`,
+        : disabledLogin
+          ? `${this.source.provider} authentication unavailable: ${detail}`
+          : `${this.source.provider} rejected the credential (${trim(detail)})`,
       rotatable: this.source.canRefresh(),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
       actions: this.authActions(),
@@ -227,7 +233,7 @@ export class CredentialMonitor {
       rotatable: false,
       login: { ...details },
       actions: [
-        { id: 'login', label: 'Restart login', hint: 'Starts a new device-code login and shows a fresh code.' },
+        ...(this.source.login ? [{ id: 'login' as const, label: 'Restart login', hint: 'Starts a new device-code login and shows a fresh code.' }] : []),
         { id: 'recheck', label: 'Re-check' },
       ],
     });
@@ -385,7 +391,7 @@ export class CredentialMonitor {
           return done(...(await this.settle('refreshed', id)));
         }
         case 'login': {
-          if (!this.source.login) return done(false, `${this.source.provider} has no interactive login`);
+          if (!this.source.login) return done(false, this.source.loginDisabledReason ?? `${this.source.provider} has no interactive login`);
           if (params.restart && !this.state.kind.startsWith('auth-')) return done(true, 'login no longer needed — the credential is accepted');
           this.loginInFlight = true;
           try {

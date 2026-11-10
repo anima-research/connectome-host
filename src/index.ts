@@ -47,7 +47,7 @@ import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { mockAdapterConfig } from './mock-provider.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth, parseCodexRequireExistingLogin } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
@@ -144,6 +144,7 @@ const config = {
   // used in its place, since the recipe names the endpoint.
   openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
+  codexRequireExistingLogin: parseCodexRequireExistingLogin(process.env.CODEX_REQUIRE_EXISTING_LOGIN),
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
@@ -908,6 +909,7 @@ async function main() {
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
+        requireExistingLogin: config.codexRequireExistingLogin,
         fastMode: recipe.agent.codex?.fastMode ?? false,
         onLoginRequired: ({ verificationUrl, userCode }) => {
           console.error('\nOpenAI Codex subscription login required.');
