@@ -383,7 +383,8 @@ area in a place outside the new directory and leaves it. Or move them out of
 the root yourself, with each mark's areas in a place under the new
 directory, leaving any outside it, which may be another install's. Setup refuses while a trial is
 unfinished, since that trial's fallback restores from them: let the
-trial end where the install was, and then move or copy it again. Nothing
+trial end where the install was, moving it back first if it was moved,
+and then move or copy it again. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
 move out what you want of it rather than deleting it. Until the next update
 takes a new copy, `/update back restore` isn't there, and each update
