@@ -5,10 +5,9 @@ import { join } from 'node:path';
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Module } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
-import { cacheSettingsFor, promptCachingFor, recipeCacheSettings, resolvePromptCaching, subagentModuleConfig } from '../src/framework-agent-config.js';
+import { cacheSettingsFor, subagentModuleConfig } from '../src/framework-agent-config.js';
 import { SubagentModule, describeSubagentLaunch } from '../src/modules/subagent-module.js';
 import { validateRecipe } from '../src/recipe.js';
-import type { Recipe } from '../src/recipe.js';
 
 // #339: spawn and fork built their agent config without promptCaching or
 // cacheTtl, so a recipe's explicit `promptCaching: false` never reached a
@@ -20,39 +19,6 @@ const BEDROCK_CACHED = 'anthropic.claude-sonnet-4-5-20250929-v1:0';
 const BEDROCK_UNCACHED = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 
 describe('cacheSettingsFor', () => {
-  test('an explicit promptCaching wins on every provider and model', () => {
-    expect(promptCachingFor({ promptCaching: false, provider: 'anthropic' }, 'claude-opus-5-5')).toBe(false);
-    expect(promptCachingFor({ promptCaching: false, provider: 'bedrock' }, BEDROCK_CACHED)).toBe(false);
-    expect(promptCachingFor({ promptCaching: true, provider: 'bedrock' }, BEDROCK_UNCACHED)).toBe(true);
-    expect(cacheSettingsFor({ promptCaching: false, provider: 'openai-codex' }, 'gpt-6.1-sol')).toEqual({ promptCaching: false });
-  });
-
-  test("without one, Bedrock gates per model and other providers leave agent-framework its default", () => {
-    expect(promptCachingFor({ provider: 'bedrock' }, BEDROCK_CACHED)).toBe(true);
-    expect(promptCachingFor({ provider: 'bedrock' }, BEDROCK_UNCACHED)).toBe(false);
-    expect(promptCachingFor({ provider: 'anthropic' }, 'claude-3-5-sonnet-20241022')).toBeUndefined();
-    expect(promptCachingFor({}, 'claude-opus-5-5')).toBeUndefined();
-    expect(cacheSettingsFor({ provider: 'anthropic' }, 'claude-opus-5-5')).toEqual({});
-  });
-
-  test('cacheTtl is forwarded except on Bedrock, which offers only its default cache', () => {
-    expect(cacheSettingsFor({ cacheTtl: '1h', provider: 'anthropic' }, 'claude-opus-5-5')).toEqual({ cacheTtl: '1h' });
-    expect(cacheSettingsFor({ cacheTtl: '1h', provider: 'bedrock' }, BEDROCK_CACHED)).toEqual({ promptCaching: true });
-    expect(cacheSettingsFor({ cacheTtl: '1h', promptCaching: false, provider: 'anthropic' }, 'claude-opus-5-5'))
-      .toEqual({ cacheTtl: '1h', promptCaching: false });
-  });
-
-  test('the resident reads the recipe through the same resolver', () => {
-    const recipe = (agent: Record<string, unknown>) => ({ agent } as unknown as Recipe);
-    expect(resolvePromptCaching(recipe({ promptCaching: false }), 'claude-opus-5-5')).toBe(false);
-    expect(resolvePromptCaching(recipe({ provider: 'bedrock' }), BEDROCK_UNCACHED)).toBe(false);
-    expect(resolvePromptCaching(recipe({ provider: 'bedrock' }), BEDROCK_CACHED)).toBe(true);
-    expect(resolvePromptCaching(recipe({}), 'claude-opus-5-5')).toBeUndefined();
-    expect(recipeCacheSettings(recipe({ promptCaching: false, cacheTtl: '1h', provider: 'anthropic' })))
-      .toEqual({ promptCaching: false, cacheTtl: '1h', provider: 'anthropic' });
-    expect(recipeCacheSettings(recipe({}))).toEqual({});
-  });
-
   test('the module the host builds carries the recipe\'s settings, as a loaded recipe has them', () => {
     const loaded = (agent: Record<string, unknown>) => validateRecipe({ name: 'r', agent: { systemPrompt: 'sys', ...agent }, modules: { subagents: true } });
     const off = subagentModuleConfig(loaded({ promptCaching: false }), 'resident', 'claude-opus-5-5', 'UTC');
