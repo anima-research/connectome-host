@@ -14,6 +14,8 @@
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
+import type { CompressionInstructions } from '@animalabs/context-manager';
+import { BUILTIN_STRATEGY_KEYS, validateBuiltinStrategy } from './recipe-strategy.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -166,6 +168,10 @@ export interface RecipeStrategy {
   // participant surfaces in the compiled prompt as another voice speaking in
   // first person about the agent.
   summaryParticipant?: string;
+  /** Per-phase CM summarizer instructions, for the built-in autobiographical
+   * strategy only. Templates need no preset; omitted slots keep built-ins.
+   * See docs/compression-instructions.md. */
+  compressionInstructions?: CompressionInstructions;
   summarySystemPrompt?: string;
   summaryUserPrompt?: string;
   /** The `Context Manager` turn before a summary in the compiled context,
@@ -2267,10 +2273,7 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     }
     const strategy = obj.agent.strategy;
     if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
-      for (const key of Object.keys(strategy)) {
-        const path = `agent.strategy.${key}`;
-        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
-      }
+      check('agent.strategy.', strategy, BUILTIN_STRATEGY_KEYS);
     }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
@@ -2368,6 +2371,13 @@ export function validateRecipe(raw: unknown): Recipe {
   }
   if (!obj.agent || typeof obj.agent !== 'object') {
     throw new Error('Recipe must have an "agent" object');
+  }
+
+  // Validate the built-in strategy boundary before warnings can echo unknown
+  // keys. Template settings and errors are owned by context-manager.
+  const rawStrategy = (obj.agent as Record<string, unknown>).strategy;
+  if (rawStrategy && typeof rawStrategy === 'object' && !Array.isArray(rawStrategy)) {
+    validateBuiltinStrategy(rawStrategy as Record<string, unknown>);
   }
 
   const unknownKeys = unknownRecipeKeys(obj);

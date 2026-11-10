@@ -12,57 +12,7 @@ import { resolvePromptCaching } from './framework-agent-config.js';
 import { defaultRecentWindowTokens, headWindowTokens } from './recipe-fit.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
-
-const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
-  'enforceBudget',
-  'maxSpeculativeL1s',
-  'compressionRefusalCurveFallbacks',
-  'compressionContextBudgetTokens',
-  'compressionSourceOnly',
-  'compressionSourceOnlyFallback',
-  'compressionMergeSourceOnly',
-  'compressionMergeSourceOnlyFallback',
-  'compressionToolProseFallback',
-  'compressionSplitFallback',
-  'compressionSplitPlaceholder',
-  'compressionSplitMaxCallsPerChunk',
-  'compressionSplitMaxCallsPer10Min',
-  'compressionRecallBudgetTokens',
-  'recoverLiteralThinkingWrappedCompression',
-  'positionedRecallPairs',
-  'recallHeaderTemplate',
-  'carrierPolicy',
-  'targetChunkTokens',
-  'mergeThreshold',
-  'mergeMaxSourceSpanMessages',
-  'summaryTargetTokens',
-  'productionBudgetTokens',
-  'l1BudgetTokens',
-  'l2BudgetTokens',
-  'l3BudgetTokens',
-  'toolResultMaxLastN',
-  'toolUseInputMaxTokens',
-  'maxLiveImages',
-  'imageStripDepthTokens',
-  'maxLiveImageBytes',
-  'adaptiveResolution',
-  'kvStableReachTokens',
-  'kvStableQualityGapRatio',
-  'compressionSlackRatio',
-  'overBudgetGraceRatio',
-  'foldingStrategy',
-  'kvUnified',
-  'speculativeProduction',
-  'l1HoldbackChunks',
-  'summaryParticipant',
-  'summarySystemPrompt',
-  'summaryUserPrompt',
-  'summaryContextLabel',
-  'witnessedBeforeSequence',
-  'witnessedInstruction',
-  'identityReminder',
-  'witnessedIdentityReminder',
-];
+import { PASSTHROUGH_KEYS, validateBuiltinStrategy } from './recipe-strategy.js';
 
 /**
  * Cache prices are multiples of the model's base input price, as the
@@ -126,6 +76,7 @@ export function buildFrameworkStrategy(
   agentName?: string,
 ): ContextStrategy {
   const strategyConfig = recipe.agent.strategy;
+  if (strategyConfig) validateBuiltinStrategy(strategyConfig as unknown as Record<string, unknown>);
   const strategyType = strategyConfig?.type ?? 'autobiographical';
 
   if (!isBuiltinStrategyType(strategyType)) {
