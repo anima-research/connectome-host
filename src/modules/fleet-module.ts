@@ -396,7 +396,7 @@ export class FleetModule implements Module {
       );
       return why;
     };
-    const earlier = this.childrenFileEntries();
+    const earlier = this.childrenFileRead();
     if (typeof earlier === 'string') return failed(earlier);
     const children: unknown[] = [];
     const listedDirs = new Set<string>();
@@ -409,7 +409,7 @@ export class FleetModule implements Module {
       if (pid !== null) knownPids.add(pid);
       children.push({ name: c.name, pid, bootId: c.bootId ?? null, dataDir: c.dataDir });
     }
-    for (const entry of earlier) {
+    for (const entry of earlier.children) {
       if (!isChildEntry(entry)) {
         children.push(entry);
         continue;
@@ -424,15 +424,15 @@ export class FleetModule implements Module {
       }
     }
     try {
-      writeJsonAtomic(this.childrenFile, { v: 1, children });
+      writeJsonAtomic(this.childrenFile, { v: 1, children, ...(earlier.boundTo !== undefined ? { boundTo: earlier.boundTo } : {}) });
       return null;
     } catch (err) {
       return failed(err instanceof Error ? err.message : String(err));
     }
   }
 
-  private childrenFileEntries(): unknown[] | string {
-    if (this.childrenFile === null) return [];
+  private childrenFileRead(): { children: unknown[]; boundTo?: string } | string {
+    if (this.childrenFile === null) return { children: [] };
     let file: ChildrenFile | null;
     const fix = 'Replacing it would drop the children it lists, which an update reads to see which may still be ' +
       'running, so every launch that spawns a child fails this way until whoever runs this host fixes it, or ' +
@@ -443,9 +443,9 @@ export class FleetModule implements Module {
     } catch (err) {
       return `${err instanceof Error ? err.message : String(err)} ${fix}`;
     }
-    if (file === null) return [];
+    if (file === null) return { children: [] };
     if (!Array.isArray(file.children)) return `The file at ${this.childrenFile} holds no list of children. ${fix}`;
-    return file.children;
+    return { children: file.children, ...(typeof file.boundTo === 'string' ? { boundTo: file.boundTo } : {}) };
   }
 
   private async adoptPersistedChildren(): Promise<void> {
@@ -460,9 +460,9 @@ export class FleetModule implements Module {
     }
     if (!state?.children) return;
 
-    const listed = this.childrenFileEntries();
+    const listed = this.childrenFileRead();
     const keptAt = (name: string): string[] => {
-      const entries = Array.isArray(listed) ? listed.filter(isChildEntry).filter((entry) => entry.name === name) : [];
+      const entries = typeof listed === 'string' ? [] : listed.children.filter(isChildEntry).filter((entry) => entry.name === name);
       if (entries.length > 0) return entries.map((entry) => entry.dataDir);
       const configured = this.autoStartChildren.find((child) => child.name === name);
       const dir = configured === undefined ? null : fleetChildDataDir(configured);
