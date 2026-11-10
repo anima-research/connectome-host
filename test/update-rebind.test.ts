@@ -642,7 +642,7 @@ describe('the lock across a move or a copy', () => {
     const why = refusal(() => setup(options(moved)));
     expect(why).toContain(`This install's lock (${installPaths(rootOf(moved)).lock}) is held by process ${pid}, since 2026-11-04T00:00:00.000Z, which is running, and there's no lock where the install was, at ${installPaths(rootOf(install)).lock}.`);
     expect(why).toContain('So it may be this install\'s own host, or a lock that came with this install when it was copied while another install\'s host ran.');
-    expect(why).toContain(`If that process is this install's host, stop it and run setup again; if the lock came with a copy, remove ${installPaths(rootOf(moved)).lock} and run setup again.`);
+    expect(why).toContain(`If that process is this install's host, stop it and run setup again; if the lock came with a copy, remove ${installPaths(rootOf(moved)).lock} if it still names process ${pid} since 2026-11-04T00:00:00.000Z, and run setup again.`);
     expect(tree(rootOf(moved))).toEqual(kept);
   });
 
@@ -727,7 +727,7 @@ describe('what a moved or copied install\'s root keeps', () => {
       `Setup has changed nothing. Run it again with --move-aside, which moves each into ${join(root, 'moved-aside')}, ` +
       'under the time it runs, and the areas each Go back keeps inside a place this binding puts under ' +
       `${moved} into that place's .connectome-update/moved-aside, or move them out yourself: each one listed, and in ` +
-      'each directory an update copies, .connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for ' +
+      'each directory an update copies that\'s under this install\'s directory, .connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for ' +
       `each mark listed, with or without .tmp, .filling or .emptying after it. ${afterwards}`);
     expect(tree(moved)).toEqual(kept);
   });

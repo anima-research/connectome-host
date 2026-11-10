@@ -125,8 +125,11 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   'you write, so stop that service first. Where setup then binds a place to a new path, it needs the host stopped, ' +
   'and says so. If this install was moved or copied while its root held copy, copy.prev or set-aside, move them out ' +
   'of its root as well, with each mark\'s areas, .connectome-update/set-aside/<mark> and ' +
-  '.connectome-update/staging/<mark> inside each directory an update copies, since they name the old directory\'s ' +
-  'places, and restoring from them would write those. Don\'t restart or update the host until setup has run again: ' +
+  '.connectome-update/staging/<mark> inside each directory an update copies that\'s under this install\'s ' +
+  'directory, since they name the old directory\'s places, and restoring from them would write those. If a trial ' +
+  'is unfinished, the journal\'s last ok trial-start with no ok commit, fallback or go-back after it, its fallback ' +
+  'restores from them: let it end where the install was, by starting the install there, before moving them. ' +
+  'Don\'t restart or update the host until setup has run again: ' +
   'its next start runs start.js, whose launcher reads the record.';
 
 const NEEDED = "by Restart=always, by Restart=on-failure while it isn't in SuccessExitStatus=, or by RestartForceExitStatus=, and neither in RestartPreventExitStatus=";

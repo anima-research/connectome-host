@@ -2388,7 +2388,7 @@ test('a no to moving them aside stops setup with the install as it was, saying h
   const declined = world(moved, { answers: ['no'] });
   expect(await runSetup(moved, ['discord'], declined)).toBe(1);
   expect(declined.seen.err).toContain('Setup stops here, and the install is as it was. Run setup again and answer yes, or ' +
-    'move them out yourself: each one listed, and in each directory an update copies, ' +
+    'move them out yourself: each one listed, and in each directory an update copies that\'s under this install\'s directory, ' +
     '.connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for each mark listed, with or without ' +
     '.tmp, .filling or .emptying after it, and run setup again.');
   const ended = world(moved);
