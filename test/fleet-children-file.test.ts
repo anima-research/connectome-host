@@ -899,6 +899,17 @@ describe("the fleet's children file", () => {
     expect(listed(childrenFile)[1]).toEqual(earlier);
   });
 
+  test("a write keeps the directory a binding stamped the file with, so the stamp still says where its places were bound", async () => {
+    const parentData = parentDataDir();
+    const childrenFile = childrenFilePath(parentData);
+    writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [], boundTo: '/srv/resident' }));
+    const { fleet, input } = await startedFleet({ childrenFile });
+    expect((await launch(fleet, input())).success).toBe(true);
+    const written = JSON.parse(readFileSync(childrenFile, 'utf-8'));
+    expect(written.children.map((c: { name: string }) => c.name)).toEqual(['leaf']);
+    expect(written.boundTo).toBe('/srv/resident');
+  });
+
   test("a children file this release can't read is left as it is, and a launch whose child it can't list fails, saying why", async () => {
     for (const [kind, text] of [['not JSON', 'not json'], ['no list of children', JSON.stringify({ v: 1 })]] as const) {
       const childrenFile = childrenFilePath(parentDataDir());
