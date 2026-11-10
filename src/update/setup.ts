@@ -446,7 +446,9 @@ export function setup(options: SetupOptions): void {
     }
     bindPlaces = [...placed, ...binding.kept.filter((kept) => !placed.some((given) => given.from === kept.from))];
   }
-  const moving = binding !== null && movesPlaces(binding, placed);
+  const replaced = given !== null && Array.isArray(existing?.extraState) &&
+    existing.extraState.some((path) => !given.includes(path));
+  const moving = binding !== null && (movesPlaces(binding, placed) || replaced);
   if (options.moveAside && !moving) throw new ContractError(MOVE_ASIDE_REFUSED);
   const kept = moving ? keptInRoot(root) : null;
   if (binding !== null && kept !== null && kept.found.length > 0) {
