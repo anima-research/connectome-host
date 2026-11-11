@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { checkUnits, servicePid } from '../src/cli/doctor-service.js';
@@ -274,4 +274,42 @@ test.skipIf(process.getuid?.() === 0)('a unit file this user can\'t look at is s
   } finally {
     chmodSync(dir, 0o755);
   }
+});
+
+test('where the recipe didn\'t load, a shell unit that\'s installed is checked as the host is, a missing one is no problem, and one line says so', () => {
+  const told = (units: ServiceUnits) => `Whether the recipe names a shell can't be told, since it didn't load, so ` +
+    `${units.shell.name} is checked only where it's installed.`;
+  const both = place('linux', ['host', 'shell']);
+  const failed = system(both.home, {
+    [`systemctl ${both.units.host.name}`]: stoppedHost(both.work),
+    [`systemctl ${both.units.shell.name}`]: shellShown('failed', 'failed'),
+  });
+  const unknown = checkUnits(both.units, both.work, null, 'connectome', failed.sys, true);
+  expect([unknown.passed, unknown.stopped]).toEqual([false, undefined]);
+  expect(unknown.lines).toContain(told(both.units));
+  expect(unknown.lines.join('\n')).toContain(`${both.units.shell.name} is failed, not active`);
+  expect(unknown.lines.join('\n')).not.toContain('names no shell');
+  const quiet = system(both.home, {
+    [`systemctl ${both.units.host.name}`]: stoppedHost(both.work),
+    [`systemctl ${both.units.shell.name}`]: shellShown('inactive', 'dead'),
+  });
+  const stopped = checkUnits(both.units, both.work, null, 'connectome', quiet.sys, true);
+  expect([stopped.passed, stopped.stopped]).toEqual([true, true]);
+  expect(stopped.lines).toContain(`${both.units.shell.name} is stopped: systemd shows it inactive (dead).`);
+
+  const host = place('linux', ['host']);
+  const alone = system(host.home, { [`systemctl ${host.units.host.name}`]: activeHost(host.work) });
+  const hostOnly = checkUnits(host.units, host.work, null, 'connectome', alone.sys);
+  expect(hostOnly.passed).toBe(true);
+  expect(hostOnly.lines).toContain(told(host.units));
+  expect(hostOnly.lines.join('\n')).not.toContain('is gone');
+  expect(alone.asked.filter((call) => call.at(-1) === host.units.shell.name)).toEqual([]);
+
+  const looped = place('linux', ['host']);
+  symlinkSync(looped.units.shell.file, looped.units.shell.file);
+  const odd = system(looped.home, { [`systemctl ${looped.units.host.name}`]: activeHost(looped.work) });
+  const unlooked = checkUnits(looped.units, looped.work, null, 'connectome', odd.sys);
+  expect(unlooked.passed).toBe(false);
+  expect(unlooked.lines.join('\n')).toContain(`${looped.units.shell.file}, ${looped.units.shell.name}'s unit file, can't be looked at`);
+  expect(unlooked.lines.join('\n')).not.toContain('The recipe names a shell');
 });

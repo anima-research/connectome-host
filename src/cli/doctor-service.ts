@@ -13,7 +13,7 @@ export interface ServiceCheck {
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
 
-export function checkUnits(units: ServiceUnits, work: string, shell: boolean, cmd: string, sys: ServiceSystem,
+export function checkUnits(units: ServiceUnits, work: string, shell: boolean | null, cmd: string, sys: ServiceSystem,
   stoppedIsFine = false): ServiceCheck {
   const lines: string[] = [];
   let passed = true;
@@ -22,18 +22,23 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean, cm
     lines.push(line);
   };
   const install = `\`${cmd} service install <recipe>\``;
-  const expected = shell ? [units.host, units.shell] : [units.host];
+  const expected = shell === true || (shell === null && pathState(units.shell.file) !== 'gone')
+    ? [units.host, units.shell] : [units.host];
+  if (shell === null) {
+    lines.push(`Whether the recipe names a shell can't be told, since it didn't load, so ${units.shell.name} is checked ` +
+      'only where it\'s installed.');
+  }
   let unseen = 0;
   for (const unit of expected) {
     const state = pathState(unit.file);
     if (state === 'there') continue;
     unseen += 1;
-    const lead = unit === units.shell ? 'The recipe names a shell, and ' : '';
+    const lead = unit === units.shell && shell === true ? 'The recipe names a shell, and ' : '';
     const named = `${unit.file}, ${unit.name}'s ${units.manager === 'systemd-user' ? 'unit file' : 'plist'}`;
     fail(state === 'gone' ? `${lead}${named}, is gone. ${install} writes it, or names what it needs first.`
       : `${lead}${named}, can't be looked at, so whether it's there can't be told: ${state.why}. ${state.repair}`);
   }
-  if (!shell && pathState(units.shell.file) === 'there') {
+  if (shell === false && pathState(units.shell.file) === 'there') {
     lines.push(`The recipe names no shell, and ${units.shell.name} is installed: ${install} stops and removes it.`);
   }
   const env = childEnv(sys);

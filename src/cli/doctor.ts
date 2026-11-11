@@ -39,7 +39,7 @@ const EMPTY_COMPRESSION = 'The recipe\'s agent.strategy.compressionModel is empt
 
 export interface DoctorParts {
   fetch: typeof fetch;
-  checkService: (units: ServiceUnits, work: string, shell: boolean, cmd: string, stoppedIsFine: boolean) =>
+  checkService: (units: ServiceUnits, work: string, shell: boolean | null, cmd: string, stoppedIsFine: boolean) =>
     Promise<ServiceCheck> | ServiceCheck;
   python: string | null;
   hostLimitMs: number;
@@ -278,7 +278,7 @@ export async function doctor(
       const installed = service;
       await checked(report, 'The service check', async () => {
         const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
-        const result = await parts.checkService(installed.units, installed.work, document !== null && recipeHasShell(document.raw),
+        const result = await parts.checkService(installed.units, installed.work, document === null ? null : recipeHasShell(document.raw),
           typedCommand(root), true);
         for (const line of result.lines) report.line(line);
         if (!result.passed) report.problem('The service check above didn\'t pass.');

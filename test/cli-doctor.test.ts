@@ -892,6 +892,16 @@ describe('connectome doctor', () => {
       });
       expect([shell, asked[2]]).toEqual([shell, shell]);
     }
+    const unread = install();
+    rmSync(join(unread.work, 'recipe.json'));
+    let given: unknown[] = [];
+    await run(unread, {
+      checkService: async (...args: unknown[]) => {
+        given = args;
+        return { passed: true, lines: [] };
+      },
+    });
+    expect(given[2]).toBeNull();
   });
 
   test('a service check that doesn\'t pass is a problem, and one that throws is a problem too, with the checks after it made', async () => {
