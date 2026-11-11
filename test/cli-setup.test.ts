@@ -1546,8 +1546,8 @@ test('the agent\'s host takes nothing from the working directory\'s .env that se
   const dir = directory();
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  writeFileSync(join(dir, '.env'), `${readFileSync(join(dir, '.env'), 'utf-8')}MODEL=claude-haiku-4-5\nCONNECTOME_INSTALL_ROOT=/x\n`);
   const launch = made.seen.launched!;
+  writeFileSync(join(launch.cwd, '.env'), 'MODEL=claude-haiku-4-5\nCONNECTOME_INSTALL_ROOT=/x\n');
   const probe = join(directory(), 'probe.ts');
   writeFileSync(probe, 'console.log(JSON.stringify([process.env.MODEL ?? null, process.env.CONNECTOME_INSTALL_ROOT ?? null, process.env.ANTHROPIC_API_KEY ?? null]));\n');
   const argv = launch.argv.map((word) => (word.endsWith(join('src', 'index.ts')) ? probe : word));
