@@ -2869,16 +2869,25 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       : Response.json({ data: [] })) as unknown as typeof fetch;
     const openai = install({ asker: typed('sk-openai-moved'), fetch: redirecting });
     const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, set OPENAI_BASE_URL to it, then call again. Check it again with setup--check_model, or go on with it unchecked.`);
+    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, with setup--ask_secret as OPENAI_BASE_URL, since a base URL can carry a credential, then call again. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, set OPENROUTER_BASE_URL to it, then call again. Check it again with setup--check_model, or go on with it unchecked.');
+    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, with setup--ask_secret as OPENROUTER_BASE_URL, since a base URL can carry a credential, then call again. Check it again with setup--check_model, or go on with it unchecked.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, set ANTHROPIC_BASE_URL to it, then call again.');
+    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, with setup--ask_secret as ANTHROPIC_BASE_URL, since a base URL can carry a credential, then call again.');
+  });
+
+  test('a base URL is taken by setup--ask_secret, as the redirect\'s remedy asks, and stored as a secret is', async () => {
+    const made = install({ asker: typed('https://proxy.example/private-token/v1') });
+    const result = await askSecret(made.module, { name: 'OPENAI_BASE_URL', purpose: 'the base URL its API is under' });
+    expect(result.success, result.error).toBe(true);
+    expect(String(result.data)).toBe(`stored as OPENAI_BASE_URL in ${join(made.dir, '.env')}`);
+    expect(readEnvFile(join(made.dir, '.env')).get('OPENAI_BASE_URL')).toBe('https://proxy.example/private-token/v1');
+    expect(made.module.storedSecrets.names()).toContain('OPENAI_BASE_URL');
   });
 
   test('a redirect whose Location is relative names the server that was asked, and none of a credential its base URL carries, for a key, a token and a model', async () => {

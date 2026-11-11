@@ -921,7 +921,8 @@ function answererOf(name: string, env: ReadonlyMap<string, string>): string {
 function redirectRemedy(service: string, name?: string): string {
   const base = baseUrlOf(name);
   return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
-      `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
+      `API is under, the one its own instructions give for ${base}, with setup--ask_secret as ${base}, since a base URL ` +
+      'can carry a credential, then call again'
     : `. Something between this machine and ${service} may have sent it, or ${service} itself: tell the person, and that ` +
       `if it wasn't ${service}, their connection is theirs to check`;
 }
