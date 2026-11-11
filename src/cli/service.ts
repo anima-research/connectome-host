@@ -8,7 +8,7 @@ import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ContractError, INSTALL_ROOT_ENV, RESTART_EXIT_CODE, installPaths, pendingGoBack, readCurrent, readJournal, readMark,
+  ContractError, INSTALL_ROOT_ENV, RESTART_EXIT_CODE, SUPERVISED_ENV, installPaths, pendingGoBack, readCurrent, readJournal, readMark,
   readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type JournalLine, type Mark,
 } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
@@ -22,8 +22,6 @@ import {
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-
-export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
 const SHELL_BIN = 'session-server';
