@@ -835,8 +835,6 @@ test('a Linux same-directory unit that is not a host is offered another working 
   expect(f.err.join('\n')).toContain('another working directory');
 });
 
-
-
 for (const platform of ['linux', 'darwin'] as const) for (const action of ['start', 'stop', 'install', 'status', 'check']) {
   test(platform + ' a foreign service record cannot supply ordinary ' + action, async () => {
     const at = install('Original', { shell: true });
@@ -1009,9 +1007,6 @@ test('service identity accepts an alias of the same directory', async () => {
   const at = install();
   const alias = join(at.home, 'Alias');
   symlinkSync(at.work, alias);
-  writeFileSync(join(at.root, 'install.json'), JSON.stringify({
-    v: 1, dataDir: at.data, extraState: [],
-  }));
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   const record = readServiceRecord(at.root)!;
@@ -4916,7 +4911,6 @@ test('a service record whose shellSettings hold a name this release doesn\'t kno
   expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
   expect(f.err).toEqual([]);
 });
-
 
 test('a systemctl that refuses --timestamp=, as systemd before 247 does, still answers every check', async () => {
   const at = install();
