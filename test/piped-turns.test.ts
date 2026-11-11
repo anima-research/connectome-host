@@ -184,7 +184,6 @@ describe('the wait for a line\'s turn', () => {
       emit(settledTrace);
       expect(await settled(wait)).toBe(false);
       emit('inference:started');
-      await takeIn('tui');
       emit(settledTrace);
       expect(await settled(wait)).toBe(true);
     } finally {
