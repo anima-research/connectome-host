@@ -582,7 +582,8 @@ export function setup(options: SetupOptions): void {
     }
   };
   const mappedData = existing === null ? null : placeHere(existing.dataDir);
-  if (existing !== null && mappedData !== null && !sameDirectory(mappedData, dataDir)) {
+  if (existing !== null && mappedData !== null &&
+    (binding === null ? !sameDirectory(mappedData, dataDir) : realOrResolved(mappedData) !== dataDir)) {
     const holder = binding?.places.find((place) => place.data)?.path ?? existing.dataDir;
     throw new ContractError(binding === null
       ? `The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an install of its own: ` +
