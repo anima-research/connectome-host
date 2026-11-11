@@ -1187,8 +1187,10 @@ describe('setup--run', () => {
     const first = askSecret(made.module, { name: 'FIRST_TOKEN', purpose: 'a token' });
     const ran = runCall(made.module, 'touch ran');
     const second = askSecret(made.module, { name: 'SECOND_TOKEN', purpose: 'a token' });
+    const reached = heldAt(made.module);
     while (answers.length < 1) await Bun.sleep(1);
     answers[0]!('first-value');
+    await Promise.race([reached, ran.then(() => { throw new Error('the command ran without waiting for the second question'); })]);
     while (answers.length < 2) await Bun.sleep(1);
     expect(made.shown.filter((line) => line.startsWith('Setup\'s agent runs'))).toEqual([]);
     answers[1]!('second-value');
