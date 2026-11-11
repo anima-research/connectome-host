@@ -1709,12 +1709,6 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   return storeTransition(cm, summary, metadata);
 }
 
-/** The summary on one line, its line breaks folded to spaces, for the
- *  readline and piped modes, which take a command from one line: a
- *  `/newtopic` given back with its line breaks, pasted there, would go to
- *  the agent as text on a terminal that brackets a paste, and elsewhere
- *  would store its first line alone and send the rest as messages or
- *  commands. */
 function oneLine(summary: string): string {
   return summary.split(/\r\n|\r|\n/).map((line) => line.trim()).filter(Boolean).join(' ');
 }

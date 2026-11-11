@@ -305,7 +305,6 @@ interface Span {
   names: string[];
 }
 
-// ASCII letters fold one to one, so a match in the folded bytes is at the same offsets in the bytes.
 const foldAscii = (bytes: Buffer): Buffer => Buffer.from(bytes.map((byte) => (byte >= 0x41 && byte <= 0x5a ? byte + 0x20 : byte)));
 
 function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {

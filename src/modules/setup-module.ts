@@ -425,8 +425,6 @@ export class SetupModule implements Module {
     const { names: current, guessed } = secretNames(join(this.config.dir, '.setup'), envFile);
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
-    // The read gets the command's own environment, which leaves out a variable holding a secret's value. A value the
-    // read finds can leave out another, so it reads again until the environment it read with is the command's.
     for (let env = this.commandEnv(names, this.seen.values); ;) {
       for (const read of secretValues(names, envFile, this.config.env, env)) addSecret(this.seen.values, read);
       const next = this.commandEnv(names, this.seen.values);

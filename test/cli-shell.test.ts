@@ -28,8 +28,6 @@ function directory(): string {
   return dir;
 }
 
-// The directory that holds an install, as setup leaves it: its root with the install's own command, and a
-// package.json naming Bun's default trusted list and term-sessions-mcp.
 function installed(): { dir: string; root: string; line: string } {
   const dir = directory();
   const root = join(dir, 'connectome-host');

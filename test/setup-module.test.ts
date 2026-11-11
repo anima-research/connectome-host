@@ -538,8 +538,6 @@ describe('setup--run', () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'stubborn.pid');
     const termFile = join(dir, 'term-at');
-    // Each turn of its loop stamps its uptime, through a rename, so a kill mid-write leaves the last whole stamp: the
-    // last one dates the kill to within a turn whenever the test itself gets to look.
     const aliveFile = join(dir, 'alive-at');
     const answering = run(module, `(trap 'cut -d" " -f1 /proc/uptime > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do cut -d" " -f1 /proc/uptime > ${aliveFile}.new && mv ${aliveFile}.new ${aliveFile}; sleep 0.1 & wait $!; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
     const stubborn = Number(await waitForFile(pidFile));

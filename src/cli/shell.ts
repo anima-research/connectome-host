@@ -123,7 +123,6 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
       `this installs it again, keeping the copy it has at ${aside} until the new one works, and putting it back if ` +
       'it doesn\'t:');
-    // Setup's own directory, which a person may have taken away once setup finished.
     mkdirSync(dirname(aside), { recursive: true, mode: 0o700 });
     if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
     else if (existsSync(ptyDir)) renameSync(ptyDir, aside);
