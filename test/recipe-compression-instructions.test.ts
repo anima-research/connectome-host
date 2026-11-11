@@ -19,6 +19,14 @@ function errorMessage(run: () => unknown): string {
   try { run(); } catch (error) { return (error as Error).message; }
   throw new Error('Expected validation to reject the recipe');
 }
+// R2-4: CM diagnostics add fixed paths/reasons, never caller-controlled values.
+function expectInvalidCompression(run: () => unknown): void {
+  const message = errorMessage(run);
+  expect(message).toStartWith('Invalid compressionInstructions configuration: ');
+  for (const value of ['VALUE_SENTINEL', 'SECRET', 'secret', 'unknown-preset', 'unregistered-preset', 'CUSTOM']) {
+    expect(message).not.toContain(value);
+  }
+}
 const text = (value: string): ContentBlock => ({ type: 'text', text: value });
 const instruction = (request: NormalizedRequest) => request.messages.at(-1)!.content
   .filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -113,12 +121,30 @@ describe('recipe compression instructions: admission before construction/provide
   ];
   for (const [i, value] of invalid.entries()) {
     test(`malformed nested settings ${i} fail with a fixed, value-free error`, () => {
-      expect(errorMessage(() => recipe({ compressionInstructions: value })))
-        .toBe('Invalid compressionInstructions configuration');
-      expect(errorMessage(() => buildFrameworkStrategy(raw({ compressionInstructions: value }), 'mock-only', 'UTC')))
-        .toBe('Invalid compressionInstructions configuration');
+      expectInvalidCompression(() => recipe({ compressionInstructions: value }));
+      expectInvalidCompression(() => buildFrameworkStrategy(raw({ compressionInstructions: value }), 'mock-only', 'UTC'));
     });
   }
+
+  test('representative diagnostics use fixed paths and reasons rather than input values', () => {
+    const cases: [unknown, string][] = [
+      [null, 'configuration: expected object'],
+      [{ VALUE_SENTINEL: 'SECRET' }, 'configuration: unknown key'],
+      [{ preset: 'VALUE_SENTINEL' }, 'preset: unsupported preset'],
+      [{ participant: { VALUE_SENTINEL: 'SECRET' } }, 'participant: expected nonblank string'],
+      [{ templates: { VALUE_SENTINEL: 'SECRET' } }, 'templates: unknown key'],
+      [{ templates: { chunk: 'SECRET {' } }, 'templates.chunk: malformed braces'],
+      [{ templates: { chunk: 'SECRET {SECRET}' } }, 'templates.chunk: unsupported placeholder'],
+      [{ templates: { transition: 'SECRET' } }, 'templates.transition: context must appear once'],
+    ];
+    for (const [value, diagnostic] of cases) {
+      for (const run of [() => recipe({ compressionInstructions: value }),
+        () => buildFrameworkStrategy(raw({ compressionInstructions: value }), 'mock-only', 'UTC')]) {
+        expectInvalidCompression(run);
+        expect(errorMessage(run)).toBe(`Invalid compressionInstructions configuration: ${diagnostic}`);
+      }
+    }
+  });
 
   test('all documented slots are admitted and forwarded without host defaults', () => {
     const settings = { participant: 'Participant', templates: {
@@ -194,7 +220,7 @@ describe('recipe compression instructions: admission before construction/provide
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(errorMessage(() => recipe({ identityReminderSilent: false, VALUE_SENTINEL: 'SECRET', compressionInstructions: { templates: { VALUE_SENTINEL: 'SECRET' } } })))
-        .toBe('Invalid compressionInstructions configuration');
+        .toBe('Invalid compressionInstructions configuration: templates: unknown key');
       expect(warn).not.toHaveBeenCalled();
     } finally { warn.mockRestore(); }
   });
