@@ -83,6 +83,18 @@ function heldAt(module: SetupModule): Promise<void> {
   });
 }
 
+// A question asked while a model check is under way waits on that check with Promise.all, which calls its then.
+function heldOnChecks(module: SetupModule): Promise<void> {
+  const { checks } = module as unknown as { checks: Set<Promise<void>> };
+  if (checks.size === 0) throw new Error('no model check is under way');
+  return new Promise((reached) => {
+    for (const check of checks) {
+      const then = check.then.bind(check);
+      check.then = ((onDone, onFailed) => { reached(); return then(onDone, onFailed); }) as typeof check.then;
+    }
+  });
+}
+
 // For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
 const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
 
@@ -394,8 +406,9 @@ describe('setup--run', () => {
     checked = made.module.handleToolCall(
       { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall);
     await sent;
+    const held = heldOnChecks(made.module);
     const asked = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
-    await Promise.race([open, new Promise<void>((done) => setImmediate(done))]);
+    await Promise.race([open, held]);
     reply(Response.json({ data: [{ id: 'gpt-6.1-terra' }] }));
     expect((await checked).success).toBe(true);
     expect((await asked).success).toBe(true);
