@@ -2681,6 +2681,12 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const second = await askSecret(unasked.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
     expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>). Check it again with setup--check_model, or go on with it unchecked.`);
     expect(said(unasked, second)).not.toContain('key-two');
+    const otherwise = install({
+      asker: typed('key-three'),
+      fetch: (async () => Response.json({ error: { message: 'bad request' } }, { status: 400 })) as unknown as typeof fetch,
+    });
+    const third = await askSecret(otherwise.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
+    expect(String(third.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(otherwise.dir, '.env')}, but it isn't known to work: Anthropic answered 400: bad request. Check it again with setup--check_model, or go on with it unchecked.`);
   });
 
   test('a provider key a request header can\'t carry is refused unsent and unstored', async () => {
@@ -2739,7 +2745,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     for (const body of ['{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}', '{"data":[{"name":"error"}]}']) {
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-      expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200.`);
+      expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
       expect(made.shown, body).toEqual(['Checking it with OpenAI.', 'OpenAI didn\'t say whether it works: it answered 200.']);
     }
   });
@@ -2749,7 +2755,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String((await askSecret(accepted.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(accepted.dir, '.env')}. Anthropic accepted it: it listed the models the key can use, which shows the key is accepted, not that a call to one of them succeeds.`);
     for (const body of ['{"data":null}', '{"data":{}}', '{}', '{"data":[{"name":"error"}]}']) {
       const made = install({ asker: typed('sk-ant-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
-      expect(String((await askSecret(made.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as ANTHROPIC_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: Anthropic answered 200.`);
+      expect(String((await askSecret(made.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as ANTHROPIC_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: Anthropic answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
     }
   });
 
@@ -2758,7 +2764,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String((await askSecret(accepted.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' })).data)).toBe(`stored as OPENROUTER_API_KEY in ${join(accepted.dir, '.env')}. OpenRouter accepted it: it answered for the key.`);
     for (const body of ['{"data":null}', '{"data":[]}', '{}']) {
       const made = install({ asker: typed('sk-or-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
-      expect(String((await askSecret(made.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as OPENROUTER_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenRouter answered 200.`);
+      expect(String((await askSecret(made.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as OPENROUTER_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenRouter answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
     }
   });
 
@@ -2826,7 +2832,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(guessed.shown).toContain('Anthropic didn\'t say whether it works: it answered 429 (busy). It asks for a wait setup can\'t show without what may be a secret.');
     const other = install({ asker: typed('sk-ant-other'), fetch: answering(400) });
     expect(String((await askSecret(other.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
-      'but it isn\'t known to work: Anthropic answered 400: busy.');
+      'but it isn\'t known to work: Anthropic answered 400: busy. Check it again with setup--check_model, or go on with it unchecked.');
   });
 
   test('a refusal whose type isn\'t JSON is said not to say it\'s JSON, and a 2xx typed JSON whose body isn\'t is said not to be JSON', async () => {
@@ -2848,11 +2854,11 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const portal = (async () => new Response('<html>Sign in to this network</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const key = install({ asker: typed('sk-ant-portal'), fetch: portal });
     const stored = await askSecret(key.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Anthropic's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
+    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Anthropic's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(key.shown).toContain('It couldn\'t be checked: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer.');
     const token = install({ asker: typed('a-portal-token'), fetch: portal });
     const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
+    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
   });
@@ -2863,14 +2869,14 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       : Response.json({ data: [] })) as unknown as typeof fetch;
     const openai = install({ asker: typed('sk-openai-moved'), fetch: redirecting });
     const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, set OPENAI_BASE_URL to it, then call again.`);
+    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, set OPENAI_BASE_URL to it, then call again. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, set OPENROUTER_BASE_URL to it, then call again.');
+    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, set OPENROUTER_BASE_URL to it, then call again. Check it again with setup--check_model, or go on with it unchecked.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check.');
+    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, set ANTHROPIC_BASE_URL to it, then call again.');
   });

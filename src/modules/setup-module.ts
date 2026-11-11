@@ -868,13 +868,16 @@ function keyNote(name: string, asked: string, answer: ProviderAnswer<unknown>, a
           : ` It asks for ${waitAsked(after)}` +
             `${passing ? ', so when setup--check_model can check the key again isn\'t known' : ''}.`;
       return `, but it isn't known to work: ${asked} answered ${answer.status}` +
-        `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
+        `${answer.said === null ? '' : `: ${answer.said}`}.${next}${again && !passing ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     }
     case 'unanswered':
       return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
-    case 'redirected': return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.`;
+    case 'redirected':
+      return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.` +
+        `${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     case 'unrecognized':
-      return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}`;
+      return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}` +
+        `${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     case 'unsendable': return ', but it can\'t be a key: it holds a character a request header can\'t carry.';
     default: return '';
   }
@@ -887,8 +890,10 @@ function tokenNote(token: TokenCheck): string {
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
         ASK_TOKEN_AGAIN;
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
-    case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
-    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${CONNECTION}`;
+    case 'redirected':
+      return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
+    case 'unrecognized':
+      return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${CONNECTION} ${ASK_TOKEN_AGAIN}`;
     default: return '';
   }
 }
