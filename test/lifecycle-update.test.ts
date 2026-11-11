@@ -214,7 +214,7 @@ test('the update tool is listed only when its grant is on, beside the restart to
 });
 
 const CONTRACT = ['`CONNECTOME_SUPERVISED=1`', 'when it exits with 75 and when it exits with 1',
-  '`connectome service install` writes one', 'docs/DEPLOYMENTS.md, "Updating an install"', 'Asking again'];
+  '`connectome service install` writes such a service', 'docs/DEPLOYMENTS.md, "Updating an install"', 'Asking again'];
 for (const [what, options, says] of [
   ['without CONNECTOME_SUPERVISED=1 at its start', { supervisedLine: false }, ['Ask whoever runs your host']],
   ['run in a terminal, whatever its environment', { mode: 'terminal' as const }, ['runs in a terminal, not headless']],

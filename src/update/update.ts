@@ -790,8 +790,8 @@ const NO_INSTALL_OF_ITS_OWN = 'Nothing was armed: this host has no install of it
   'child is updated with its parent\'s install where its parent has one, and any other host, or a child whose parent has ' +
   'none, by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
   ASK_AGAIN;
-const WRITES_ONE = '`connectome service install` writes one; docs/DEPLOYMENTS.md, "Updating an install", says what one ' +
-  'written by hand needs.';
+const WRITES_ONE = '`connectome service install` writes such a service; docs/DEPLOYMENTS.md, "Updating an install", says ' +
+  'what one written by hand needs.';
 const IN_A_TERMINAL = 'Nothing was armed: this host runs in a terminal, not headless under a service, so a restart would ' +
   'stop it until someone started it again. A restart needs a headless host whose service sets ' +
   '`CONNECTOME_SUPERVISED=1` in its environment and starts it again when it exits with 75 and when it exits with 1. ' +
