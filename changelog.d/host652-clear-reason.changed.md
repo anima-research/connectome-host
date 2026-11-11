@@ -1,0 +1,1 @@
+- Forward known optional quarantine episode-end reasons to operator alert data. Operator waiver requests remain explicitly distinct from compression coverage or debt payment; absent and unknown reasons retain the neutral empty-record message.

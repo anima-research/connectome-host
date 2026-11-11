@@ -9,6 +9,7 @@ import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/u
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND } from './install-command.js';
+import { quarantine, QUARANTINE_USAGE } from './quarantine.js';
 
 export interface CliContext {
   root: string | null;
@@ -33,6 +34,13 @@ const UPDATE_USAGE = 'connectome update [check | install | restart [wait | now |
   'back [(keep | restore) [<version>]]]';
 
 export const COMMANDS: CliCommand[] = [
+  {
+    name: 'quarantine',
+    usage: QUARANTINE_USAGE,
+    summary: 'Local-only selected L1 hold inspection/waiver on the loaded strategy. Explicit full-key confirmation required; ' +
+      'not human authentication, scheduling, L1 coverage or debt payment. Never automatically retries an uncertain operation.',
+    run: quarantine,
+  },
   {
     name: 'send',
     usage: 'connectome send <text>',

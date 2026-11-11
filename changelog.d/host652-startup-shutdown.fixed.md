@@ -1,0 +1,1 @@
+- Headless shutdown now cancels optional quarantine listener startup and waits for its owned socket/claim cleanup, including IPC shutdown or SIGTERM/SIGINT received before a listen callback completes. Ordinary IPC startup and client takeover remain independent of the optional channel.
