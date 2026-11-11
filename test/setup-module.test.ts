@@ -509,6 +509,30 @@ describe('setup--run', () => {
     expect(readFileSync(marker, 'utf-8')).toBe('once\n');
   }, 30_000);
 
+  linuxTest('a command stopped at its limit that left a dotenv file unreadable is said to have been stopped, though its output isn\'t shown', async () => {
+    const { module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
+    const result = await runCall(module, 'mkfifo .env.local; echo word-it-printed; sleep 30', 500);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('It was still running at its 500 ms limit, so its process group was sent SIGTERM, and all of it ended within 5 s.');
+    expect(result.error).toContain('.env.local can\'t be read (it isn\'t a file)');
+    expect(JSON.stringify(result)).not.toContain('word-it-printed');
+  }, 20_000);
+
+  linuxTest('a command that left a dotenv file unreadable and a process holding its output is said to have left it, though its output isn\'t shown', async () => {
+    const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
+    const pidFile = join(dir, 'holder.pid');
+    try {
+      const result = await runCall(module, `mkfifo .env.local; sleep 30 & echo $! > ${pidFile}; echo word-it-printed`);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Its output was cut 1 s after it ended, since a process it started still holds the output open, and is still running.');
+      expect(result.error).toContain('.env.local can\'t be read (it isn\'t a file)');
+      expect(JSON.stringify(result)).not.toContain('word-it-printed');
+    } finally {
+      const pid = Number(readFileSync(pidFile, 'utf-8'));
+      if (pid > 0) try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+  }, 20_000);
+
   test('where the environment sets BUN_OPTIONS and a dotenv file expands it, a command runs nothing, since setup reads the files without it', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
     writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=prefix${BUN_OPTIONS}suffix\n');

@@ -536,17 +536,6 @@ export class SetupModule implements Module {
         : `setup--run couldn't start bash: the install directory it runs commands in, ${this.config.dir}, isn't there ` +
           'now, so calling it again runs nothing until it is. Tell the person.');
     }
-    let secrets: Secret[];
-    let guessed: string[];
-    try {
-      ({ values: secrets, guessed } = this.secrets());
-    } catch (error) {
-      const what = `setup--run's command ended (exit ${ended.code ?? ended.signal}), and its output isn't shown`;
-      if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
-      return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
-        'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
-        'runs out of time again, ask the person to look at the dotenv files there.');
-    }
     const notes: string[] = [];
     if (stoppedAtLimit) {
       notes.push(`It was still running at its ${limit} ms limit, so its process group was sent SIGTERM, and ` +
@@ -556,6 +545,19 @@ export class SetupModule implements Module {
     if (heldOpen) {
       notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still ` +
         (stoppedAtLimit ? 'held the output open.' : 'holds the output open, and is still running.'));
+    }
+    let secrets: Secret[];
+    let guessed: string[];
+    try {
+      ({ values: secrets, guessed } = this.secrets());
+    } catch (error) {
+      const ending = `setup--run's command ended (exit ${ended.code ?? ended.signal})`;
+      const what = notes.length > 0 ? `${ending}. ${notes.join(' ')} Its output isn't shown`
+        : `${ending}, and its output isn't shown`;
+      if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
+      return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
+        'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
+        'runs out of time again, ask the person to look at the dotenv files there.');
     }
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
