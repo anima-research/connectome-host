@@ -119,8 +119,6 @@ export interface UnitRead {
   workingDirectory: string;
 }
 
-/** What `service install` wrote into a unit, read back by the exact rules its writer quotes by: a unit it couldn't have
- *  written is refused, with the line that isn't its. */
 export function readUnit(manager: Manager, text: string): UnitRead | { why: string } {
   return manager === 'systemd-user' ? readSystemdUnit(text) : readPlist(text);
 }

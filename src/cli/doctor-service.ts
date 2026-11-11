@@ -13,8 +13,6 @@ export interface ServiceCheck {
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
 
-/** The units install writes for this directory, as their manager shows them. A shell unit is expected where the
- *  recipe names a shell. No log text is quoted: each unit that isn't running names the manager's line that shows it. */
 export function checkUnits(units: ServiceUnits, work: string, shell: boolean, cmd: string, sys: ServiceSystem,
   stoppedIsFine = false): ServiceCheck {
   const lines: string[] = [];
@@ -116,7 +114,6 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean, cm
   return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}) };
 }
 
-/** The pid of the host unit's main process, 0 where it has none. */
 export function servicePid(units: ServiceUnits, sys: ServiceSystem): { pid: string } | { why: string } {
   const env = childEnv(sys);
   if (units.manager === 'systemd-user') {
