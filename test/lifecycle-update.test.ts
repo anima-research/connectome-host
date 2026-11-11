@@ -213,20 +213,20 @@ test('the update tool is listed only when its grant is on, beside the restart to
   expect(names({ selfRestart: true, selfUpdate: true })).toEqual(['restart', 'update']);
 });
 
+const CONTRACT = ['`CONNECTOME_SUPERVISED=1`', 'when it exits with 75 and when it exits with 1',
+  '`connectome service install` writes one', 'docs/DEPLOYMENTS.md, "Updating an install"', 'Asking again'];
 for (const [what, options, says] of [
-  ['without CONNECTOME_SUPERVISED=1 at its start', { supervisedLine: false }, ['Ask whoever runs your host for a service that ' +
-    'starts it again when it stops, such as one `connectome service install` writes; docs/DEPLOYMENTS.md says what one needs.']],
-  ['run in a terminal, whatever its environment', { mode: 'terminal' as const }, ['terminal', 'headless']],
+  ['without CONNECTOME_SUPERVISED=1 at its start', { supervisedLine: false }, ['Ask whoever runs your host']],
+  ['run in a terminal, whatever its environment', { mode: 'terminal' as const }, ['runs in a terminal, not headless']],
 ] as const) {
-  test(`on a host ${what}, restart and back refuse, saying what a restart needs and that asking again won't help, and arm nothing`, async () => {
+  test(`on a host ${what}, restart and back refuse, naming the line and both restarts a restart needs, that asking again won't help, and arm nothing`, async () => {
     const { root, dataDir } = installRunning0141(['0.15.0']);
     placeCopyOf0140(root, dataDir);
     const host = residentHost({ root, ...options });
     for (const input of [{ action: 'restart' }, { action: 'back', data: 'keep' }]) {
       const answer = await host.call(input);
       expect(answer.success).toBe(false);
-      for (const words of [...says, 'connectome service install', 'Asking again']) expect(text(answer)).toContain(words);
-      expect(text(answer)).not.toContain('exits with');
+      for (const words of [...says, ...CONTRACT]) expect(text(answer)).toContain(words);
     }
     expect(host.update.armedSwitch()).toBeNull();
     expect(text(await host.call({ action: 'check' }))).not.toContain('armed');
