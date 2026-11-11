@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { checkUnits, servicePid } from '../src/cli/doctor-service.js';
 import type { ServiceSystem } from '../src/cli/service.js';
 import { serviceUnits, type ServiceUnits } from '../src/cli/service-unit.js';
@@ -25,7 +25,7 @@ function place(platform: NodeJS.Platform, files: Array<'host' | 'shell'>): { uni
   return { units, home, work };
 }
 
-function system(home: string, answers: Record<string, string | { status: number; stdout?: string }>):
+function system(home: string, answers: Record<string, string | { status: number; stdout?: string; stderr?: string }>):
   { sys: ServiceSystem; asked: string[][] } {
   const asked: string[][] = [];
   const sys = {
@@ -36,7 +36,7 @@ function system(home: string, answers: Record<string, string | { status: number;
       const answer = answers[key];
       if (answer === undefined) return { status: 1, stdout: '', stderr: `no stand-in for ${key}` };
       return typeof answer === 'string' ? { status: 0, stdout: answer, stderr: '' }
-        : { status: answer.status, stdout: answer.stdout ?? '', stderr: '' };
+        : { status: answer.status, stdout: answer.stdout ?? '', stderr: answer.stderr ?? '' };
     },
   } as unknown as ServiceSystem;
   return { sys, asked };
@@ -139,4 +139,133 @@ test('the service\'s pid is its host unit\'s main process, under systemd and lau
   const mac = place('darwin', ['host']);
   expect(servicePid(mac.units, system(mac.home, { [`launchctl ${mac.units.host.name}`]: { status: 113 } }).sys))
     .toEqual({ pid: '0' });
+});
+
+const stoppedHost = (work: string) => activeHost(work).replace('ActiveState=active', 'ActiveState=inactive')
+  .replace('SubState=running', 'SubState=dead');
+const shellShown = (active: string, sub: string) => shown({
+  LoadState: 'loaded', ActiveState: active, SubState: sub, NRestarts: '0', ExecMainStatus: '0', ExecMainStartTimestamp: '',
+  ConditionResult: 'yes', ConditionTimestamp: '',
+});
+
+test('a host and its shell both stopped read as stopped where doctor asks, each said so, and fail the check that doesn\'t ask', () => {
+  const at = place('linux', ['host', 'shell']);
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: stoppedHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: shellShown('inactive', 'dead'),
+  });
+  const fine = checkUnits(at.units, at.work, true, 'connectome', sys, true);
+  expect([fine.passed, fine.stopped]).toEqual([true, true]);
+  expect(fine.lines).toContain(`${at.units.host.name} is stopped: systemd shows it inactive (dead).`);
+  expect(fine.lines).toContain(`${at.units.shell.name} is stopped: systemd shows it inactive (dead).`);
+  const strict = checkUnits(at.units, at.work, true, 'connectome', sys);
+  expect([strict.passed, strict.stopped]).toEqual([false, undefined]);
+});
+
+test('one unit stopped while another runs fails even where stopped is fine, naming the journal line of the stopped one', () => {
+  const at = place('linux', ['host', 'shell']);
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: shellShown('inactive', 'dead'),
+  });
+  const fine = checkUnits(at.units, at.work, true, 'connectome', sys, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`${at.units.shell.name} is inactive (dead), not active: journalctl --user -u ` +
+    `${at.units.shell.name} shows its log.`);
+  expect(fine.lines.join('\n')).not.toContain('is stopped');
+});
+
+test('a failed unit fails even where stopped is fine', () => {
+  const at = place('linux', ['host', 'shell']);
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: stoppedHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: shellShown('failed', 'failed'),
+  });
+  const fine = checkUnits(at.units, at.work, true, 'connectome', sys, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines.join('\n')).toContain(`${at.units.shell.name} is failed, not active`);
+});
+
+test('a stopped service whose check finds a fault isn\'t stopped, so nothing promises that starting it will do', () => {
+  const at = place('linux', ['host']);
+  const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: stoppedHost('/srv/other/My Resident') });
+  const fine = checkUnits(at.units, at.work, false, 'connectome', sys, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`systemd runs ${at.units.host.name} in /srv/other/My Resident, not ${at.work}.`);
+});
+
+test('a unit file that\'s gone leaves a stopped service not stopped, under systemd and launchd', () => {
+  const linux = place('linux', []);
+  const one = system(linux.home, { [`systemctl ${linux.units.host.name}`]: stoppedHost(linux.work) });
+  const systemd = checkUnits(linux.units, linux.work, false, 'connectome', one.sys, true);
+  expect([systemd.passed, systemd.stopped]).toEqual([false, undefined]);
+  expect(systemd.lines.join('\n')).toContain(`${linux.units.host.file}, ${linux.units.host.name}'s unit file, is gone.`);
+  expect(systemd.lines.join('\n')).not.toContain('is stopped');
+  const mac = place('darwin', []);
+  const two = system(mac.home, { [`launchctl ${mac.units.host.name}`]: { status: 113 } });
+  const launchd = checkUnits(mac.units, mac.work, false, 'connectome', two.sys, true);
+  expect([launchd.passed, launchd.stopped]).toEqual([false, undefined]);
+  expect(launchd.lines.join('\n')).toContain(`${mac.units.host.file}, ${mac.units.host.name}'s plist, is gone.`);
+  expect(launchd.lines.join('\n')).not.toContain('is stopped');
+});
+
+test('under launchd a shell unloaded beside a loaded host fails, and both unloaded is stopped, each said so', () => {
+  const at = place('darwin', ['host', 'shell']);
+  const partial = system(at.home, {
+    [`launchctl ${at.units.host.name}`]: '{\n\t"PID" = 501;\n};\n',
+    [`launchctl ${at.units.shell.name}`]: { status: 113 },
+  });
+  const some = checkUnits(at.units, at.work, true, 'connectome', partial.sys, true);
+  expect([some.passed, some.stopped]).toEqual([false, undefined]);
+  expect(some.lines).toContain(`launchd has no ${at.units.shell.name} loaded.`);
+  const whole = system(at.home, {
+    [`launchctl ${at.units.host.name}`]: { status: 113 },
+    [`launchctl ${at.units.shell.name}`]: { status: 113 },
+  });
+  const both = checkUnits(at.units, at.work, true, 'connectome', whole.sys, true);
+  expect([both.passed, both.stopped]).toEqual([true, true]);
+  expect(both.lines).toEqual([`${at.units.host.name} is stopped: launchd has it unloaded.`,
+    `${at.units.shell.name} is stopped: launchd has it unloaded.`]);
+});
+
+test('under launchd an agent launchctl can\'t say is loaded or not leaves the service not stopped, and the check says it can\'t tell', () => {
+  const at = place('darwin', ['host']);
+  const { sys } = system(at.home, {
+    [`launchctl ${at.units.host.name}`]: { status: 1, stderr: 'Could not communicate with launchd\n' },
+  });
+  const fine = checkUnits(at.units, at.work, false, 'connectome', sys, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`Whether launchd has ${at.units.host.name} loaded can't be told: Could not communicate with launchd.`);
+});
+
+test('a unit systemd skipped for an unmet condition fails, naming how to see which, while one never checked is stopped', () => {
+  const at = place('linux', ['host']);
+  const skipped = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: stoppedHost(at.work).replace('ConditionResult=yes', 'ConditionResult=no'),
+  });
+  const fine = checkUnits(at.units, at.work, false, 'connectome', skipped.sys, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`${at.units.host.name} is inactive (dead): systemd skipped its last start, since a condition ` +
+    `its unit or a drop-in sets wasn't met: \`systemctl --user status ${at.units.host.name}\` names it.`);
+  const never = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: stoppedHost(at.work).replace('ConditionResult=yes', 'ConditionResult=no')
+      .replace(/ConditionTimestamp=.*/, 'ConditionTimestamp='),
+  });
+  expect(checkUnits(at.units, at.work, false, 'connectome', never.sys, true).stopped).toBe(true);
+});
+
+test.skipIf(process.getuid?.() === 0)('a unit file this user can\'t look at is said as that, not as gone', () => {
+  const at = place('linux', ['host']);
+  const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: stoppedHost(at.work) });
+  const dir = dirname(at.units.host.file);
+  chmodSync(dir, 0o000);
+  try {
+    const fine = checkUnits(at.units, at.work, false, 'connectome', sys, true);
+    expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+    expect(fine.lines.join('\n')).toMatch(new RegExp(`${at.units.host.name}'s unit file, can't be looked at, so whether it's ` +
+      'there can\'t be told: .*\\. Give this user search on each directory on the way to it, and run this again\\.'));
+    expect(fine.lines.join('\n')).not.toContain('is gone');
+  } finally {
+    chmodSync(dir, 0o755);
+  }
 });
