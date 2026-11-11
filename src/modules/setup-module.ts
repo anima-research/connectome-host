@@ -131,6 +131,16 @@ function watchHostEnd(): void {
   for (const signal of ENDING_SIGNALS) process.on(signal, onEndingSignal);
 }
 
+async function endGroups(groups: Group[]): Promise<boolean> {
+  for (const group of groups) group.signal('SIGTERM');
+  for (const until = performance.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && performance.now() < until;) {
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  const left = groups.filter((group) => group.alive());
+  for (const group of left) group.signal('SIGKILL');
+  return left.length > 0;
+}
+
 function groupOf(pid: number | undefined): Group {
   return {
     signal(signal) {
@@ -263,11 +273,7 @@ export class SetupModule implements Module {
   async stop(): Promise<void> {
     this.stopping = true;
     const groups = [...this.groups];
-    for (const group of groups) group.signal('SIGTERM');
-    for (const until = performance.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && performance.now() < until;) {
-      await new Promise((done) => setTimeout(done, 50));
-    }
-    for (const group of groups) if (group.alive()) group.signal('SIGKILL');
+    await endGroups(groups);
     for (const group of groups) running.delete(group);
   }
 
@@ -495,14 +501,13 @@ export class SetupModule implements Module {
     running.add(group);
     watchHostEnd();
     let stoppedAtLimit = false;
+    let atLimit: Promise<boolean> | undefined;
     const limitTimer = setTimeout(() => {
       stoppedAtLimit = true;
-      group.signal('SIGTERM');
-      setTimeout(() => {
-        if (group.alive()) group.signal('SIGKILL');
+      atLimit = endGroups([group]).finally(() => {
         this.groups.delete(group);
         running.delete(group);
-      }, KILL_GRACE_MS).unref();
+      });
     }, limit);
     let heldOpen = false;
     const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null } | { error: Error }>((done) => {
@@ -530,6 +535,7 @@ export class SetupModule implements Module {
     });
     child.stdout!.destroy();
     child.stderr!.destroy();
+    const killedAtLimit = await atLimit;
     if ('error' in ended) {
       if ((ended.error as NodeJS.ErrnoException).code !== 'ENOENT') {
         return failed(`setup--run couldn't start bash: ${ended.error.message}`);
@@ -553,12 +559,13 @@ export class SetupModule implements Module {
     }
     const notes: string[] = [];
     if (stoppedAtLimit) {
-      notes.push(`It was still running at its ${limit} ms limit, so its process group was sent SIGTERM, and is sent ` +
-        'SIGKILL 5 s later if any of it is left. A process it started in a group of its own isn\'t stopped.');
+      notes.push(`It was still running at its ${limit} ms limit, so its process group was sent SIGTERM, and ` +
+        (killedAtLimit ? 'SIGKILL 5 s later, since some of it was still running then.' : 'all of it ended within 5 s.') +
+        ' A process it started in a group of its own isn\'t stopped.');
     }
     if (heldOpen) {
-      notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still holds the ` +
-        'output open, and is still running.');
+      notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still ` +
+        (stoppedAtLimit ? 'held the output open.' : 'holds the output open, and is still running.'));
     }
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
