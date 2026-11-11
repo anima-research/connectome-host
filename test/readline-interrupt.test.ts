@@ -356,7 +356,7 @@ linux('setup--finished records setup finished, the host ends once that turn is d
     const dir = mkdtempSync(join(tmpdir(), 'readline-setup-finished-'));
     dirs.push(dir);
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false }));
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
     const finishes = (body: Body, bodies: Body[]) => {
       const tool = body.tools?.find((each) => each.name.endsWith('finished'))?.name;
       if (bodies.length === 1 && tool) {
@@ -368,9 +368,8 @@ linux('setup--finished records setup finished, the host ends once that turn is d
     const first = startHost(dir, { setup: true }, finishes, ['setup--finished']);
     expect(await first.exit).toBe(0);
     expect(first.seen.output).toContain('All set, goodbye.');
-    const state = JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')) as { v: number; shell: boolean; finished?: string };
+    const state = JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')) as { v: number; finished?: string };
     expect(state.v).toBe(1);
-    expect(state.shell).toBe(false);
     expect(Number.isNaN(Date.parse(state.finished ?? ''))).toBe(false);
 
     const again = startHost(dir, { setup: true }, said('What would you like to change?'), ['setup--finished']);
@@ -488,7 +487,7 @@ linux('a line still waiting to go in when the person switches session isn\'t sen
     const dir = mkdtempSync(join(tmpdir(), 'readline-setup-switch-'));
     dirs.push(dir);
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false }));
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
     let output = (): string => '';
     const answers = async (body: Body, bodies: Body[]) => {
       if (bodies.length === 2) await until(() => /\/session new\r*\n/.test(output()), 30_000, 'the switch\'s Enter, echoed by readline');
