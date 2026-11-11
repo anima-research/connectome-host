@@ -366,6 +366,43 @@ describe('setup--run', () => {
     expect(result.success).toBe(true);
   });
 
+  test('a model check already under way when a question is asked shows nothing while the question is open', async () => {
+    let requested = () => {};
+    const sent = new Promise<void>((done) => { requested = done; });
+    let reply: (response: Response) => void = () => {};
+    const fetchModels = (() => {
+      requested();
+      return new Promise<Response>((done) => { reply = done; });
+    }) as unknown as typeof fetch;
+    let opened = () => {};
+    const open = new Promise<void>((done) => { opened = done; });
+    let checked: Promise<ToolResult> = Promise.resolve({ success: false } as ToolResult);
+    const shownWhileOpen: string[] = [];
+    const made = install({
+      envFile: 'OPENAI_API_KEY="sk-stored-value"\n',
+      fetch: fetchModels,
+      asker: {
+        ask: async () => {
+          const at = made.shown.length;
+          opened();
+          await checked;
+          shownWhileOpen.push(...made.shown.slice(at));
+          return 'other-value';
+        },
+      },
+    });
+    checked = made.module.handleToolCall(
+      { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall);
+    await sent;
+    const asked = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
+    await Promise.race([open, new Promise<void>((done) => setImmediate(done))]);
+    reply(Response.json({ data: [{ id: 'gpt-6.1-terra' }] }));
+    expect((await checked).success).toBe(true);
+    expect((await asked).success).toBe(true);
+    expect(made.shown.some((line) => line.includes('lists gpt-6.1-terra'))).toBe(true);
+    expect(shownWhileOpen).toEqual([]);
+  });
+
   test('a timeoutMs out of its range is refused, naming the value given', async () => {
     const { module } = install();
     const result = await runCall(module, 'true', -5);
@@ -1265,13 +1302,13 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     expect(said(made, result)).not.toContain('a-refused-token');
   });
 
-  test('stores a token Discord answered otherwise, or couldn\'t be asked about, saying it isn\'t known to work and why, never with the token in the words', async () => {
+  test('stores a token Discord answered otherwise, or couldn\'t be asked about, saying it isn\'t known to work and why, and to ask for it again or go on with it unchecked, never with the token in the words', async () => {
     const answered = install({
       asker: typed('token-one'),
       fetch: (async () => Response.json({ message: 'Service Unavailable' }, { status: 503 })) as unknown as typeof fetch,
     });
     const first = await askSecret(answered.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 503: Service Unavailable.`);
+    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 503: Service Unavailable. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 503 (Service Unavailable).']);
     expect(readEnvFile(join(answered.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-one');
     const unasked = install({
@@ -1279,7 +1316,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
       fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bot token-two'); }) as unknown as typeof fetch,
     });
     const second = await askSecret(unasked.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(second.data)).toBe(`stored as DISCORD_TOKEN in ${join(unasked.dir, '.env')}, but it isn't known to work: Discord couldn't be asked (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).`);
+    expect(String(second.data)).toBe(`stored as DISCORD_TOKEN in ${join(unasked.dir, '.env')}, but it isn't known to work: Discord couldn't be asked (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>). Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     expect(unasked.shown).toEqual(['Checking it with Discord.', 'Discord couldn\'t be asked whether it works (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).']);
     expect(readEnvFile(join(unasked.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-two');
     expect(said(unasked, second)).not.toContain('token-two');
@@ -2128,9 +2165,11 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('whether a line holds an answer given hidden is told with ASCII letters in any case, as a line queued for the conversation is', () => {
+  test('whether a line holds an answer given hidden is told with ASCII letters in any case and other letters as given, as a line queued for the conversation is', () => {
     expect(terminalSecret.holdsAnswer('my TOK-abcdef', ['tok-ABCDEF'])).toBe(true);
     expect(terminalSecret.holdsAnswer('my token', ['tok-abcdef', 'other'])).toBe(false);
+    expect(terminalSecret.holdsAnswer('my ΟΣA', ['ΟΣ'])).toBe(true);
+    expect(terminalSecret.holdsAnswer('my CAFÉ', ['café'])).toBe(false);
   });
 
   test('a draft that holds the answer isn\'t given back where the answer came with spaces around it', async () => {
@@ -2550,7 +2589,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a provider key the provider answered otherwise, or couldn\'t be asked about, is stored as not known to work, never with the key in the words', async () => {
+  test('a provider key the provider answered otherwise, or couldn\'t be asked about, is stored as not known to work, with what to do next, never with the key in the words', async () => {
     const answered = install({
       asker: typed('key-one'),
       fetch: (async () => Response.json({ error: { message: 'overloaded' } }, { status: 529 })) as unknown as typeof fetch,
@@ -2563,7 +2602,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bearer key-two'); }) as unknown as typeof fetch,
     });
     const second = await askSecret(unasked.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>).`);
+    expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>). Check it again with setup--check_model, or go on with it unchecked.`);
     expect(said(unasked, second)).not.toContain('key-two');
   });
 

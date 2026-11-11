@@ -2691,6 +2691,22 @@ test('the line saying where the key is checked shows a stored secret the base UR
   expect(shown.toLowerCase()).not.toContain('tok-in-host');
 });
 
+test('the line saying where the key is checked shows by its name a stored secret the agent\'s side reads from another dotenv file or the environment', async () => {
+  for (const where of ['.env.local', 'the environment'] as const) {
+    const dir = directory();
+    mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+    writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n`);
+    if (where === '.env.local') writeFileSync(join(dir, '.env.local'), 'DISCORD_TOKEN=tok-in-host\n');
+    const made = where === '.env.local' ? world(dir, { answers: [''] })
+      : world(dir, { answers: [''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, DISCORD_TOKEN: 'tok-in-host' } });
+    expect(await runSetup(dir, ['discord'], made), where).toBe(0);
+    const shown = text([...made.seen.out, ...made.seen.err]);
+    expect(shown, where).toContain('one call at https://<DISCORD_TOKEN>.gateway.example to ');
+    expect(shown.toLowerCase(), where).not.toContain('tok-in-host');
+  }
+});
+
 test('the question for a key names the base URL\'s origin with a stored secret its host carries shown by its name', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
