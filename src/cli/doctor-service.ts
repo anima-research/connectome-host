@@ -30,7 +30,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean, cm
     unseen += 1;
     const lead = unit === units.shell ? 'The recipe names a shell, and ' : '';
     const named = `${unit.file}, ${unit.name}'s ${units.manager === 'systemd-user' ? 'unit file' : 'plist'}`;
-    fail(state === 'gone' ? `${lead}${named}, is gone. ${install} writes it.`
+    fail(state === 'gone' ? `${lead}${named}, is gone. ${install} writes it, or names what it needs first.`
       : `${lead}${named}, can't be looked at, so whether it's there can't be told: ${state.why}. ${state.repair}`);
   }
   if (!shell && pathState(units.shell.file) === 'there') {
@@ -56,7 +56,8 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean, cm
         fail(RUNNING.has(shown.get('ActiveState') ?? '')
           ? `${unit.name} is running, but systemd can't load its unit (${shown.get('LoadState') ?? 'no load state'}), so ` +
             `which install it runs can't be told. If it's this install's, stop it, then run ${install}.`
-          : `systemd has no ${unit.name} loaded (${shown.get('LoadState') ?? 'no load state'}): ${install} writes it.`);
+          : `systemd has no ${unit.name} loaded (${shown.get('LoadState') ?? 'no load state'}): ${install} writes it, or ` +
+            'names what it needs first.');
         continue;
       }
       const state = stateOf(shown);

@@ -71,11 +71,17 @@ test('a host unit file that is gone fails, naming the file and the install that 
 
 test('a recipe that names a shell with no shell unit fails, and a shell unit the recipe doesn\'t name is said to go at the next install', () => {
   const expected = place('linux', ['host']);
-  const one = system(expected.home, { [`systemctl ${expected.units.host.name}`]: activeHost(expected.work) });
+  const one = system(expected.home, {
+    [`systemctl ${expected.units.host.name}`]: activeHost(expected.work),
+    [`systemctl ${expected.units.shell.name}`]: 'LoadState=not-found\nActiveState=inactive\n',
+  });
   const missing = checkUnits(expected.units, expected.work, true, 'connectome', one.sys);
   expect(missing.passed).toBe(false);
-  expect(missing.lines.join('\n')).toContain(`The recipe names a shell, and ${expected.units.shell.file}, ` +
-    `${expected.units.shell.name}'s unit file, is gone.`);
+  expect(missing.lines).toContain(`The recipe names a shell, and ${expected.units.shell.file}, ` +
+    `${expected.units.shell.name}'s unit file, is gone. \`connectome service install <recipe>\` writes it, or names what it ` +
+    'needs first.');
+  expect(missing.lines).toContain(`systemd has no ${expected.units.shell.name} loaded (not-found): \`connectome service ` +
+    'install <recipe>\` writes it, or names what it needs first.');
 
   const extra = place('linux', ['host', 'shell']);
   const two = system(extra.home, { [`systemctl ${extra.units.host.name}`]: activeHost(extra.work) });
