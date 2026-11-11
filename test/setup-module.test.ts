@@ -527,9 +527,9 @@ describe('setup--run', () => {
     const answer = await run(module, `sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
     const ran = performance.now() - called;
     expect(ran, 'the answer came sooner after the call than the limit').toBeGreaterThanOrEqual(490);
-    expect(ran).toBeLessThan(15_000);
+    expect(ran, 'the answer waited out the 5 s grace, though the whole group ended of its SIGTERM').toBeLessThan(4_500);
     expect(answer.stoppedAtLimit).toBe(true);
-    expect(answer.note).toContain('500 ms limit');
+    expect(answer.note).toContain('500 ms limit, so its process group was sent SIGTERM, and all of it ended within 5 s.');
     expect(answer.stdout.text).toBe('begun\n');
     expect(await waitForEnd(Number(readFileSync(pidFile, 'utf-8')), 3_000)).toBe(true);
   }, 20_000);
@@ -555,16 +555,22 @@ describe('setup--run', () => {
     expect(Math.round((Number(readFileSync(aliveFile, 'utf-8')) - termAt) * 1000)).toBeGreaterThanOrEqual(4_400);
   }, 30_000);
 
-  linuxTest('stopping the module within 5 s of a limit still stops what that command left in its group, a SIGTERM-ignoring process too', async () => {
-    const { dir, module } = install();
-    const pidFile = join(dir, 'stubborn.pid');
-    const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
-    expect(answer.stoppedAtLimit).toBe(true);
-    const stubborn = Number(readFileSync(pidFile, 'utf-8'));
-    expect(processEnded(stubborn)).toBe(false);
-    await module.stop();
-    expect(await waitForEnd(stubborn, 1_000)).toBe(true);
-  }, 20_000);
+  linuxTest('answers a command stopped at its limit only once what it left in its group has ended, a SIGTERM-ignoring process too, whether or not that holds the output', async () => {
+    for (const [holds, redirect] of [[true, ''], [false, ' > /dev/null 2>&1']] as const) {
+      const { dir, module } = install();
+      const pidFile = join(dir, 'stubborn.pid');
+      const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60${redirect}) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
+      const stubborn = Number(readFileSync(pidFile, 'utf-8'));
+      try {
+        expect(answer.stoppedAtLimit).toBe(true);
+        expect(await waitForEnd(stubborn, 1_000), `holding the output: ${holds}`).toBe(true);
+        expect(answer.note).toContain('500 ms limit, so its process group was sent SIGTERM, and SIGKILL 5 s later, since some of it was still running then.');
+        expect(answer.note).not.toContain('and is still running');
+      } finally {
+        try { process.kill(stubborn, 'SIGKILL'); } catch {}
+      }
+    }
+  }, 40_000);
 
   linuxTest('a command that ends before its limit is not stopped at it while its output drains, nor is what it left running', async () => {
     let clear = false;
