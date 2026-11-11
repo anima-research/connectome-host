@@ -213,9 +213,9 @@ run is removed before the next run ("Re-runs"), while a store that was there bef
 you seeded, or a `sessions/` without `sessions.json`, is the resident's own history. If
 it refuses, stop and decide with the person. Where an import wrote `sessions.json`,
 moving it aside moves the import too. Where a host's start wrote it and that start held nothing worth
-keeping, such as only a hello, stop the service with the install's command by its full
-path,
-`'/home/<agent>/<agent>-cm/connectome-host/connectome' service stop`, move `sessions.json`
+keeping, such as only a hello, stop the service with the stop line that the install's
+command, run alone by its full path, shows,
+`'/home/<agent>/<agent>-cm/connectome-host/connectome'`, move `sessions.json`
 and `sessions/` out of the data directory, seed it, and leave the service stopped: its
 next start, in stage 4, is the seed's first boot, after this stage's copy of the store
 and stage 3's check (it stays installed, so a restart of the machine, or on macOS a new
@@ -473,9 +473,9 @@ The first start on a data directory with no `sessions.json` migrates `data/store
 `data/sessions/<id>/` and, with `autoTickOnNewMessage` on, starts minting L1 summaries
 of the seed immediately. A claude.ai import into the same data directory comes after
 that start: the importer writes `sessions.json`, and a data directory that has one
-migrates nothing. Stop the service for the import, with
-`'/home/<agent>/<agent>-cm/connectome-host/connectome' service stop`, and start it again
-after it with `'/home/<agent>/<agent>-cm/connectome-host/connectome' service start`: the
+migrates nothing. Stop the service for the import, with the stop line that
+`'/home/<agent>/<agent>-cm/connectome-host/connectome'`, run alone, shows, and start it
+again after it with its start line: the
 importer writes the session index, which a running host reads as it goes. The seed's
 session is the one that opens afterwards, and `/session switch <id>`, with the id the
 import printed, bare, opens the import's,
