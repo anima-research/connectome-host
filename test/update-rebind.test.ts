@@ -529,6 +529,19 @@ bindMounted('a DATA_DIR that is the recorded data directory through a bind mount
   expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: install });
 });
 
+bindMounted('a binding given a DATA_DIR that is the mapped data directory through a bind mount is refused, naming the mapped one, since the record keeps the spelling it can map (where this user may bind-mount, as in a user namespace)', () => {
+  setup(options(install));
+  const copy = join(dir, 'copy');
+  copyOf(install, copy);
+  const alias = join(dir, 'alias');
+  mkdirSync(alias);
+  expect(setupThroughMounts([[copy, alias]], copy, { dataDir: join(alias, 'data') })).toContain(`Bound to ${copy}, the ` +
+    `install at ${rootOf(copy)} serves ${join(copy, 'data')}, the place of the data directory its record names, ` +
+    `${join(install, 'data')}, and setup was given DATA_DIR ${join(alias, 'data')}. Setup has changed nothing. Run it ` +
+    `with DATA_DIR ${join(copy, 'data')}`);
+  expect(record(copy)!.workingDir).toBe(install);
+});
+
 describe('what setup read before it held the lock', () => {
   const changedMeanwhile = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
     'backs, or the trial or Go back its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
