@@ -454,6 +454,13 @@ async function installAndStart(
       return 1;
     }
   }
+  let dataDir = join(dir, 'data');
+  let placeArgs: string[] = [];
+  if (recorded !== null) {
+    const bound = await bindingAnswers(world, root, recorded.record, recorded.binding, { out, err });
+    if (typeof bound === 'number') return bound === -1 ? stopped() : bound;
+    ({ dataDir, placeArgs } = bound);
+  }
 
   const trusted = await defaultTrusted(async (_manager, args, cwd) => {
     const ran = await world.run([world.bun.path, '--no-env-file', ...args], { cwd, env: programEnv });
@@ -494,16 +501,7 @@ async function installAndStart(
   }
 
   const settingUp = record === null;
-  let dataDir: string;
-  let placeArgs: string[] = [];
-  if (recorded === null) {
-    dataDir = join(dir, 'data');
-    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } else {
-    const bound = await bindingAnswers(world, root, recorded.record, recorded.binding, { out, err });
-    if (typeof bound === 'number') return bound === -1 ? stopped() : bound;
-    ({ dataDir, placeArgs } = bound);
-  }
+  if (settingUp) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const copySetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(settingUp
     ? `Making ${root} an install that can take newer releases. Its first release is a copy of what's installed here. ` +
