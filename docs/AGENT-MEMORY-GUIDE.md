@@ -252,11 +252,13 @@ impressionistic with age and depth.
   off, treat aged detail as "remembered," not "look-up-able," unless you wrote
   it down. (`modules.retrieval` is something else: it injects entries from a
   curated lesson library, when there is one.)
-- **Images age out faster than text.** Only the most recent images stay live
-  (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
-  tail (default 30000). Inline images also share a cumulative base64 byte
-  budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond
-  these limits become an `[image not shown: this context keeps only some images]`
+- **Images can age out faster than text, where your recipe limits them.** By
+  default none does (context-manager 0.25.2 and later): an image stays until
+  its message is folded. A recipe can keep only the most recent images live
+  (`maxLiveImages`), only within `imageStripDepthTokens` of the tail, and
+  within a cumulative base64 byte budget (`maxLiveImageBytes`), kept
+  newest-first. Images beyond a limit that is set become an
+  `[image not shown: this context keeps only some images]`
   placeholder *even while the surrounding words remain verbatim*. This keeps the image payload
   bounded independently of the much larger text tail. Your recipe may change
   all three limits under `agent.strategy` for autobiographical and frontdesk
@@ -287,9 +289,9 @@ KV-continuity work described above.
 | `summaryTargetTokens` | 2 000 | — | target length of a memory |
 | `mergeThreshold` | 6 | 6 | how many memories at one level consolidate into one at the next |
 | `compressionModel` | your own model | your own model | the voice that forms your memories |
-| `maxLiveImages` | 6 | 6 | most images kept live at once |
-| `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
-| `maxLiveImageBytes` | 20 MiB | 20 MiB | cumulative base64 size of inline images kept live, newest-first |
+| `maxLiveImages` | 0 (no limit) | 0 (no limit) | most images kept live at once |
+| `imageStripDepthTokens` | 0 (no limit) | 0 (no limit) | depth past which images drop to a placeholder (text stays verbatim) |
+| `maxLiveImageBytes` | 0 (no limit) | 0 (no limit) | cumulative base64 size of inline images kept live, newest-first |
 
 The headline numbers are the tail and the budget. A small tail means rewriting
 reaches recent material sooner; a large tail (hundreds of thousands of tokens)

@@ -394,6 +394,21 @@ test('the package\'s bin, in a directory with an install, runs that install\'s o
     'happened isn\'t known here.');
 });
 
+test('the package\'s bin runs the install\'s own command under the Bun flags it was started with, so an --env-file reaches that command\'s refusal', async () => {
+  const { work, root } = install();
+  writeInstallCommand(root, '');
+  release(root, '0.15.0', stubPackage(root, 'export async function main() { ' +
+    'console.log(JSON.stringify(process.execArgv)); return 0; }\n'));
+  moveCurrent(root, '0.15.0');
+  const file = join(work, 'private.env');
+  writeFileSync(file, 'PRIVATE_NAME=private-value\n');
+  for (const flags of [[`--env-file=${file}`], ['--env-file', file]]) {
+    const ran = await run(process.execPath, [...flags, BIN, 'shell', 'install'], work);
+    expect(ran.status).toBe(0);
+    expect(JSON.parse(ran.out.trim())).toEqual(flags);
+  }
+});
+
 test('the package\'s bin, by an install without its own command, says so and how setup writes it', async () => {
   const { work, root, data } = install();
   const setup = join(REPO, 'src', 'update', 'setup.ts');
