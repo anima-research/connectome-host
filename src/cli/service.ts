@@ -195,7 +195,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
   } else if (wantsShell) {
     ctx.out("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this directory, " +
-      'so no shell daemon was set up. Doctor can check whether the shell is served.');
+      `so no shell daemon was set up. To set one up, run ${cmd} shell install, then this service install command ` +
+      'again with the same recipe.');
   } else {
     ctx.out('No shell daemon is set up: the recipe names no shell client or shell setting.');
   }
@@ -217,6 +218,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
   };
   if (shell !== null) keepShellSettings(ctx, sys, work, shell);
+  const shellLive = () => ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and ` +
+    'whoever talks to it on Discord can ask it to.');
   if (manager === 'systemd-user') {
     const wants = shell === null ? null : names.shell.name;
     if (shell !== null) {
@@ -261,6 +264,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       const running = RUNNING.has(shown.get('ActiveState') ?? '');
       systemctl(sys, env, cmd, ['restart', unit.name]);
       ctx.out(running ? `Restarted ${unit.name}.` : `Started ${unit.name}.`);
+      if (unit === names.shell) shellLive();
     }
   } else {
     mkdirSync(dirname(logPath), { recursive: true });
@@ -293,6 +297,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           `${consequence}${host} Repeat this service install command with the same recipe to load it.`);
       }
       ctx.out(`${loaded ? 'Reloaded' : 'Loaded'} ${unit.name} from ${unit.file}.`);
+      if (unit === names.shell) shellLive();
     }
     ctx.out(`launchd loads ${units.length === 1 ? 'this agent' : 'these agents'}, and so starts ` +
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
@@ -302,7 +307,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const commands = serviceCommands(root, sys);
   if (typeof ready === 'string') {
     ctx.err(`connectome: ${ready}`);
-    ctx.out(`Its log says why: ${commands?.log ?? 'none is written yet'}. Put that right, then run ${cmd} service ` +
+    ctx.out(`Its log shows what happened${commands === null ? '' : `: ${commands.log}`}. Put that right, then run ${cmd} service ` +
       `install ${shellWord(recipe)} again. Until then ${manager === 'systemd-user'
       ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
         'run clears that limit'
@@ -549,7 +554,7 @@ async function removeShell(ctx: CliContext, sys: ServiceSystem, env: Record<stri
     }
     rmSync(unit.file, { force: true });
   }
-  ctx.out(`Stopped and removed ${unit.name}, the shell daemon this recipe doesn't have. Its settings stay in ` +
+  ctx.out(`Stopped and removed ${unit.name}: this install has no shell daemon now. Its settings stay in ` +
     `${join(work, '.env')}.`);
 }
 
@@ -862,11 +867,7 @@ function stateOf(shown: Map<string, string>): string {
 
 export function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
   properties: string[]): Map<string, string> | string {
-  const timestamp = properties.includes('ExecMainStartTimestamp');
-  // TZ and LC_ALL give show's default timestamp style in UTC, in C's words. systemctl's --timestamp= only exists
-  // from systemd 247, which ignores it for show, and on 257 it changes nothing under them.
-  const ran = sys.run('systemctl', ['--user', 'show', `--property=${properties.join(',')}`, '--', name],
-    timestamp ? { ...env, TZ: 'UTC', LC_ALL: 'C' } : env);
+  const ran = sys.run('systemctl', ['--user', 'show', `--property=${properties.join(',')}`, '--', name], env);
   if (ran.status !== 0) {
     return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
       `(${systemctlLine(sys, `show ${name}`)})`;
