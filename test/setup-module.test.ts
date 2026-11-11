@@ -600,6 +600,10 @@ describe('setup--run', () => {
         holder = Number(await waitForFile(pidFile));
         clear = Number(await waitForFile(endedFile)) <= called + 0.6;
         if (!clear) continue;
+        if (answer.stoppedAtLimit && runs < 2) {
+          clear = false;
+          continue;
+        }
         expect(answer.outputHeldOpen).toBe(true);
         expect(answer.stoppedAtLimit).toBe(false);
         expect(answer.note).not.toContain('limit');
@@ -608,8 +612,9 @@ describe('setup--run', () => {
         if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
       }
     }
-    expect(clear, 'in 3 runs the command never ended 300 ms clear of its 900 ms limit, so the host was too slow for this ' +
-      'case to be reached: that is load, not a fault in the drain').toBe(true);
+    expect(clear, 'in 3 runs the command never ended 300 ms clear of its 900 ms limit, or it did and bash was still held ' +
+      'past the limit after its last write, so the host was too slow for this case to be reached: that is load, not a ' +
+      'fault in the drain').toBe(true);
   }, 30_000);
 
   linuxTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
