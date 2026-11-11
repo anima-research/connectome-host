@@ -523,10 +523,10 @@ describe('setup--run', () => {
   linuxTest('stops a command at its limit with every process in its group, says so, and answers', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'child.pid');
-    const startedFile = join(dir, 'started-at');
-    const answer = await run(module, `cut -d" " -f1 /proc/uptime > ${startedFile}; sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
-    const ran = Math.round((uptime() - Number(readFileSync(startedFile, 'utf-8'))) * 1000);
-    expect(ran).toBeGreaterThanOrEqual(400);
+    const called = performance.now();
+    const answer = await run(module, `sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
+    const ran = performance.now() - called;
+    expect(ran, 'the answer came sooner after the call than the limit').toBeGreaterThanOrEqual(490);
     expect(ran).toBeLessThan(15_000);
     expect(answer.stoppedAtLimit).toBe(true);
     expect(answer.note).toContain('500 ms limit');
@@ -567,20 +567,29 @@ describe('setup--run', () => {
   }, 20_000);
 
   linuxTest('a command that ends before its limit is not stopped at it while its output drains, nor is what it left running', async () => {
-    const { dir, module } = install();
-    const pidFile = join(dir, 'holder.pid');
-    let holder = 0;
-    try {
-      const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & echo begun`, 900);
-      holder = Number(await waitForFile(pidFile));
-      expect(answer.outputHeldOpen).toBe(true);
-      expect(answer.stoppedAtLimit).toBe(false);
-      expect(answer.note).not.toContain('limit');
-      expect(processEnded(holder)).toBe(false);
-    } finally {
-      if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
+    let clear = false;
+    for (let runs = 0; !clear && runs < 3; runs += 1) {
+      const { dir, module } = install();
+      const pidFile = join(dir, 'holder.pid');
+      const endedFile = join(dir, 'ended-up');
+      let holder = 0;
+      try {
+        const called = uptime();
+        const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & echo begun; read -r up _ < /proc/uptime; echo $up > ${endedFile}`, 900);
+        holder = Number(await waitForFile(pidFile));
+        clear = Number(await waitForFile(endedFile)) <= called + 0.6;
+        if (!clear) continue;
+        expect(answer.outputHeldOpen).toBe(true);
+        expect(answer.stoppedAtLimit).toBe(false);
+        expect(answer.note).not.toContain('limit');
+        expect(processEnded(holder)).toBe(false);
+      } finally {
+        if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
+      }
     }
-  }, 20_000);
+    expect(clear, 'in 3 runs the command never ended 300 ms clear of its 900 ms limit, so the host was too slow for this ' +
+      'case to be reached: that is load, not a fault in the drain').toBe(true);
+  }, 30_000);
 
   linuxTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
     const { dir, module } = install();
