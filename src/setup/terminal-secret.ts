@@ -16,8 +16,6 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
     .map((key) => [key, Array.isArray(held[key]) ? [...held[key] as unknown[]] : held[key]]);
 }
 
-/** Whether text holds a line of an answer given hidden, its ASCII letters in any case, as setup matches a stored secret
- *  everywhere it hides or cleans one out. */
 export function holdsAnswer(text: string, given: readonly string[]): boolean {
   const folded = foldAscii(text);
   return given.some((line) => folded.includes(foldAscii(line)));

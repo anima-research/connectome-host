@@ -169,8 +169,6 @@ async function ask<T>(
   };
 }
 
-/** The words with each secret, whole or trimmed, its ASCII letters in any case, shown by its name. One pass, longest
- *  first, so a short secret isn't found again inside a name that took a longer one's place. */
 export function shownByName(words: string, secrets: readonly { name: string; value: string }[]): string {
   const forms = secrets.flatMap(({ name, value }) => [...new Set([value, value.trim()])].map((form) => ({ name, form })))
     .filter(({ form }) => form.trim() !== '').sort((a, b) => b.form.length - a.form.length);

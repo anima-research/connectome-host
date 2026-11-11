@@ -26,7 +26,6 @@ export interface PipedTurns {
   running(): boolean;
   takenIn(): void;
   owed(): boolean;
-  /** A turn is running, or a line is owed one: what setup's close asks. */
   unanswered(): boolean;
 }
 

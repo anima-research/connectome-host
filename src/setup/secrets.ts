@@ -359,9 +359,6 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-/** The values the agent's side takes as secrets, by secretNames, from .env, the dotenv files beside it and env, each
- *  with its name: what setup's own lines show by its name, as a URL's host can carry one. The base URLs are left out,
- *  since such a line says where one leads. */
 export function storedSecretsIn(setupDir: string, envFile: string, env: Record<string, string | undefined>): Secret[] {
   let taken: string[];
   try {

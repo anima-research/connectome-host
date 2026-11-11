@@ -28,7 +28,6 @@ import { INSTALL_COMMAND, installCommandOf, typedCommand } from './install-comma
 
 export const SETUP_USAGE = 'connectome setup discord';
 
-/** The setup agent's recipe, in a release. */
 export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own setup agent, in the directory that ' +
   'holds the install (from bunx, the directory it runs in). ' +

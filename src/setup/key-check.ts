@@ -12,7 +12,6 @@ export interface KeyCheckOptions {
   timeoutMs?: number;
   fetch?: typeof fetch;
   envFile?: string;
-  /** Other stored secrets, shown by name wherever the check's words could carry one. */
   hide?: readonly Secret[];
 }
 
