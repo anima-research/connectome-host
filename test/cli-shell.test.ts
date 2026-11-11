@@ -270,7 +270,7 @@ test('where package.json doesn\'t name term-sessions-mcp in trustedDependencies,
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty'] }));
   const made = world(dir);
   expect(await runShell(root, ['install'], made)).toBe(0);
-  expect(made.seen.out[0]).toBe(`${join(dir, 'package.json')} doesn't name term-sessions-mcp in its trustedDependencies, so Bun runs no install script of term-sessions-mcp's, and through a mirror or a company registry it may run none of the others', node-pty's among them. Setup writes that list each time it runs.`);
+  expect(made.seen.out[0]).toBe(`${join(dir, 'package.json')} doesn't name term-sessions-mcp in its trustedDependencies, so Bun runs no install script of term-sessions-mcp's, and through a mirror or a company registry it may run none of the others', node-pty's among them. Setup tries to write that list each time it runs, and says so when it can't.`);
   const named = installed();
   const fine = world(named.dir);
   expect(await runShell(named.root, ['install'], fine)).toBe(0);

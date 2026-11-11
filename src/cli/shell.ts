@@ -88,7 +88,8 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   const untrusted = notTrusted(manifest);
   if (untrusted !== null) {
     out(`${manifest} ${untrusted}, so Bun runs no install script of ${SHELL}'s, and through a mirror or a company ` +
-      'registry it may run none of the others\', node-pty\'s among them. Setup writes that list each time it runs.');
+      'registry it may run none of the others\', node-pty\'s among them. Setup tries to write that list each time it ' +
+      'runs, and says so when it can\'t.');
   }
 
   // A package counts as there once package.json declares it: a bun add that fails partway leaves packages in
