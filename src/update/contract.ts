@@ -26,9 +26,7 @@
  * - the launcher: every other journal line, the lock, the copy and its label,
  *   and what a restore sets aside; and, run from a shell with `--go-back`, a
  *   Go back's mark (writeMark);
- * - setup: the install record; and, binding an install moved or copied
- *   (rebind.ts), its plan and the paths of the copy's labels and the Go
- *   backs' lists, only while it holds the lock;
+ * - setup: the install record;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
@@ -38,8 +36,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync,
-  symlinkSync, truncateSync, unlinkSync, writeSync,
+  closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync,
+  renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -186,10 +184,7 @@ export interface InstallRecord {
   dataDir: string;
   /** State kept outside the data directory, which each update copies with it. */
   extraState: string[];
-  workingDir?: string;
 }
-
-export const REBIND_PLAN = 'rebind.json';
 
 /** How the block setup prints each run with the state kept outside the data directory opens, which the remedy
  *  below names. */
@@ -236,12 +231,8 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
-  'records only those. A record written this way doesn\'t say which directory the install was set up in, so setup ' +
-  'takes each place under the directory that holds the record\'s directory as this install\'s, unless another ' +
-  'install\'s root lies between, and asks where each other place is in this install: `connectome setup discord` ' +
-  'asks about each in turn, and a setup run by hand lists them, each to be given with --place PATH PLACE. Then it ' +
-  'writes the record, start.js and connectome again, ' +
-  'or says what else stops it first, such as a current that names no release. Its service can keep running ' +
+  'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
+  'as a current that names no release. Its service can keep running ' +
   'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
   'again: its next start runs start.js, whose launcher reads the record.';
 
@@ -368,7 +359,6 @@ export interface CopyLabel {
    *  switch to the same release left can't stand in for this one's; a label
    *  without it is no switch's copy a fallback can use. */
   mark?: string;
-  rebound?: string;
 }
 
 /** What a place an update copies or restores holds: a directory, a file, or
@@ -385,7 +375,6 @@ export type PlaceKind = typeof PLACE_KINDS[number];
 export interface GoBackList {
   v: 1;
   places: Array<{ path: string; name: string; before: PlaceKind; target: PlaceKind }>;
-  rebound?: string;
 }
 
 /** Where the Go back under `markId` lists its places (GoBackList). */
@@ -488,6 +477,18 @@ export function syncDir(dir: string): void {
 function writeAll(fd: number, text: string): void {
   const bytes = Buffer.from(text, 'utf-8');
   for (let done = 0; done < bytes.length;) done += writeSync(fd, bytes, done, bytes.length - done);
+}
+
+export function readWithoutWaiting(path: string): string {
+  // O_NONBLOCK: opening a named pipe that no process writes to otherwise waits for one.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error('it isn\'t a file');
+    return readFileSync(fd, 'utf-8');
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Write `value` as JSON at `path`, as writeTextAtomic writes. */

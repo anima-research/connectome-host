@@ -1,5 +1,13 @@
 import { expect, test } from 'bun:test';
 import { handleCommand } from '../src/commands.js';
+import { validateRecipe } from '../src/recipe.js';
+
+test('a recipe\'s modules.setup is true or false, and anything else is refused as the recipe loads', () => {
+  const recipe = (setup: unknown) => ({ name: 'setup', agent: { systemPrompt: 'sys' }, modules: { setup } });
+  expect(() => validateRecipe(recipe('true'))).toThrow('modules.setup must be true or false');
+  expect(validateRecipe(recipe(true)).modules?.setup).toBe(true);
+  expect(validateRecipe(recipe(false)).modules?.setup).toBe(false);
+});
 
 type App = Parameters<typeof handleCommand>[1];
 
@@ -23,5 +31,5 @@ test('in setup, /help lists what a person needs there: leaving, a new conversati
 test('a host that isn\'t setup\'s still lists its commands', () => {
   const lines = handleCommand('/help', app({})).lines.map((line) => line.text);
   expect(lines[0]).toBe('--- Commands ---');
-  expect(lines).toContain('  /undo                  Revert last agent turn');
+  expect(lines.some((line) => line.startsWith('  /undo '))).toBe(true);
 });

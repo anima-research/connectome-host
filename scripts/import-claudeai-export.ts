@@ -34,9 +34,6 @@
  *                     `agent.name` to. The chosen value is written into the
  *                     per-session import-source sidecar, so warmup and conhost
  *                     can read it back without re-passing the flag.
- *   --person <name>   The name the person's turns carry, as a channel
- *                     message names its author. Default: the name in the
- *                     export's users.json.
  *   --filter <regex>  Only import conversations whose name matches (case-insens.)
  *   --dry-run         Parse and report; don't write
  */
@@ -46,7 +43,6 @@ import { join, resolve } from 'node:path';
 import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
-import { ANONYMOUS_PARTICIPANT, presentAuthor } from '@animalabs/agent-framework';
 import { SessionManager } from '../src/session-manager.js';
 import { createLineReader } from './lib/line-reader.js';
 
@@ -54,7 +50,6 @@ interface Opts {
   exportDir: string;
   outDir: string;
   agentName: string;
-  personName: string;
   filter?: RegExp;
   dryRun: boolean;
   interactive: boolean;
@@ -64,14 +59,13 @@ function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--person <name>] [--filter <regex>] [--dry-run] [--no-interactive]',
+      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive]',
     );
     process.exit(1);
   }
   const exportDir = resolve(args[0]!);
   let outDir = resolve(process.cwd(), 'data');
   let agentName = 'Claude';
-  let personName: string | undefined;
   let filter: RegExp | undefined;
   let dryRun = false;
   // Interactive by default if stdin is a TTY; --no-interactive forces off.
@@ -80,13 +74,6 @@ function parseArgs(argv: string[]): Opts {
     const a = args[i]!;
     if (a === '--out') outDir = resolve(args[++i]!);
     else if (a === '--agent') agentName = args[++i]!;
-    else if (a === '--person') {
-      personName = args[++i];
-      if (personName === undefined || personName.startsWith('--')) {
-        console.error('--person needs the name to give the person\'s turns: --person <name>');
-        process.exit(1);
-      }
-    }
     else if (a === '--filter') filter = new RegExp(args[++i]!, 'i');
     else if (a === '--dry-run') dryRun = true;
     else if (a === '--no-interactive') interactive = false;
@@ -96,46 +83,7 @@ function parseArgs(argv: string[]): Opts {
       process.exit(1);
     }
   }
-  const named = personName === undefined ? exportedName(exportDir) : personName.trim() || null;
-  if (named === ANONYMOUS_PARTICIPANT) {
-    console.error(`${personName === undefined ? 'The export\'s users.json names its one user' : '--person names the person'} ` +
-      `"${ANONYMOUS_PARTICIPANT}", which is the name the host gives a turn whose author has no name, so their turns ` +
-      'would go in unnamed. Give the name to use with --person <name>.');
-    process.exit(1);
-  }
-  return { exportDir, outDir, agentName, personName: named ?? ANONYMOUS_PARTICIPANT, filter, dryRun, interactive };
-}
-
-function exportedName(exportDir: string): string | null {
-  let users: unknown;
-  try {
-    users = JSON.parse(readFileSync(join(exportDir, 'users.json'), 'utf-8'));
-  } catch {
-    return null;
-  }
-  const name = Array.isArray(users) && users.length === 1 ? (users[0] as { full_name?: unknown } | null)?.full_name : undefined;
-  return typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
-}
-
-export function personNameOf(exportDir: string): string {
-  return exportedName(exportDir) ?? ANONYMOUS_PARTICIPANT;
-}
-
-export function importedMessages(
-  blocks: ContentBlock[],
-  sender: string,
-  names: { agent: string; person: string },
-): Array<{ participant: string; content: ContentBlock[]; author?: { name: string } }> {
-  if (sender === 'assistant') return splitMixedToolMessages(blocks, names.agent);
-  if (names.person === ANONYMOUS_PARTICIPANT || blocks.some((block) => block.type === 'tool_result')) {
-    return splitMixedToolMessages(blocks, ANONYMOUS_PARTICIPANT);
-  }
-  const author = { name: names.person };
-  return splitMixedToolMessages(blocks, ANONYMOUS_PARTICIPANT).map((message) => ({
-    participant: message.participant,
-    content: presentAuthor({ participant: message.participant, content: message.content, metadata: { author } }).content,
-    author,
-  }));
+  return { exportDir, outDir, agentName, filter, dryRun, interactive };
 }
 
 interface ExportTextBlock {
@@ -435,7 +383,8 @@ async function importConversation(
       for (const msg of path) {
         const blocks = transformContent(msg);
         if (blocks.length === 0) continue;
-        const messages = importedMessages(blocks, msg.sender, { agent: opts.agentName, person: opts.personName });
+        const sourceParticipant = msg.sender === 'assistant' ? opts.agentName : 'user';
+        const messages = splitMixedToolMessages(blocks, sourceParticipant);
         for (const [idx, m] of messages.entries()) {
           cm.addMessage(m.participant, m.content, {
             sourceId: messages.length > 1 ? `${msg.uuid}#${idx}` : msg.uuid,
@@ -447,7 +396,6 @@ async function importConversation(
               originalSender: msg.sender,
               ...(messages.length > 1 ? { splitIndex: idx, splitTotal: messages.length } : {}),
             },
-            ...(m.author ? { author: m.author } : {}),
           });
         }
       }

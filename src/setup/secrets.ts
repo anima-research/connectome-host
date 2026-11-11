@@ -1,13 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, mkdirSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
-import { writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
+import { readWithoutWaiting, writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
 
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
   'OPENROUTER_API_KEY', 'OPENAI_COMPATIBLE_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
-  'CODEX_GATE_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'BEDROCK_BASE_URL', 'CODEX_BASE_URL',
+  'CODEX_GATE_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'BEDROCK_BASE_URL', 'CODEX_BASE_URL', 'OPENROUTER_BASE_URL',
 ] as const;
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -88,7 +88,7 @@ export class EnvFormError extends Error {
 
 function envText(path: string): string {
   try {
-    return readFileSync(path, 'utf-8');
+    return readWithoutWaiting(path);
   } catch (error) {
     const { code } = error as NodeJS.ErrnoException;
     if (code === 'ENOENT') return '';
@@ -110,26 +110,31 @@ function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
-function dotenvAssignments(dir: string, file: string): Assignment[] {
-  const path = join(dir, file);
-  if (file === '.env') return envAssignments(path);
-  return Object.entries(parseEnv(envText(path))).map(([name, value]) => ({ name, value: value ?? '' }));
-}
-
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
-    for (const { name } of dotenvAssignments(dir, file)) names.add(name);
+    for (const name of Object.keys(parseEnv(envText(join(dir, file))))) names.add(name);
   }
   return [...names];
 }
 
 const READ_LIMIT_MS = 10_000;
 
+export class DotenvTimeoutError extends Error {}
+
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
   const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
   if (names.length === 0) return values;
+  if (env.BUN_OPTIONS) {
+    const naming = [...new Set(DOTENV_MODES.flatMap(dotenvFiles))]
+      .find((file) => /\$\{?BUN_OPTIONS\b/.test(envText(join(dir, file))));
+    if (naming !== undefined) {
+      throw new Error(`${join(dir, naming)} expands BUN_OPTIONS, which the environment sets, and setup reads the ` +
+        'dotenv files without it, since Bun would apply it to that read, so what a value built from it holds ' +
+        'can\'t be told: take the expansion out of it, or start the host without BUN_OPTIONS');
+    }
+  }
   const given: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined && name !== 'BUN_OPTIONS' && name !== 'NODE_ENV') given[name] = value;
@@ -146,7 +151,7 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
       encoding: 'utf-8', maxBuffer: Infinity,
     });
     if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
-      throw new Error(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
+      throw new DotenvTimeoutError(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
     }
     if (ran.error || ran.status !== 0) {
       const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);
@@ -237,7 +242,7 @@ export class StoredSecrets {
   read(): string[] | null {
     let text: string;
     try {
-      text = readFileSync(this.file, 'utf-8');
+      text = readWithoutWaiting(this.file);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !lstatSync(this.file, { throwIfNoEntry: false })) {
         return null;
@@ -329,13 +334,17 @@ interface Span {
   names: string[];
 }
 
+// ASCII letters fold one to one, so a match in the folded bytes is at the same offsets in the bytes.
+const foldAscii = (bytes: Buffer): Buffer => Buffer.from(bytes.map((byte) => (byte >= 0x41 && byte <= 0x5a ? byte + 0x20 : byte)));
+
 function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   const candidates: Span[] = [];
+  const folded = foldAscii(bytes);
   for (const { name, value } of secrets) {
-    for (const form of new Set([value, JSON.stringify(value).slice(1, -1)])) {
-      const needle = Buffer.from(form, 'utf-8');
+    for (const form of new Set([value, value.trim(), JSON.stringify(value).slice(1, -1)])) {
+      const needle = foldAscii(Buffer.from(form, 'utf-8'));
       if (needle.length === 0) continue;
-      for (let at = bytes.indexOf(needle); at >= 0; at = bytes.indexOf(needle, at + 1)) {
+      for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + 1)) {
         candidates.push({ start: at, end: at + needle.length, names: [name] });
       }
     }
@@ -424,4 +433,19 @@ export function storedSecretRedactor(
     const { text: redacted, replaced, guessed } = redact(bytes, 0, bytes.length);
     return { text: redacted, replaced, guessed };
   };
+}
+
+/** The .env values the agent's side takes as secrets, by secretNames, each with its name: what setup's own lines show
+ *  by its name, as a URL's host can carry one. The base URLs are left out, since such a line says where one leads. */
+export function storedSecretsIn(setupDir: string, envFile: string): Secret[] {
+  let taken: string[];
+  try {
+    taken = secretNames(setupDir, envFile).names;
+  } catch {
+    // An unreadable list is said where setup reads it for its agent. Here every name it could hold is hidden.
+    taken = [...KNOWN_SECRETS, ...guessedNames(envFile)];
+  }
+  const names = new Set(taken.filter((name) => !name.endsWith('_BASE_URL')));
+  return [...readEnvFile(envFile)].filter(([name, value]) => names.has(name) && value.trim() !== '')
+    .map(([name, value]) => ({ name, value }));
 }
