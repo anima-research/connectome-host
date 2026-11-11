@@ -2554,7 +2554,7 @@ function SidebarResizeHandle(props: {
       aria-valuenow={props.width}
       tabIndex={0}
       title="Drag to resize; double-click for the default width"
-      class="absolute -left-1 top-0 bottom-0 w-2 z-10 cursor-col-resize hover:bg-cyan-700/40 focus-visible:bg-cyan-700/60 focus:outline-none"
+      class="absolute left-0 top-0 bottom-0 w-1.5 z-10 cursor-col-resize touch-none hover:bg-cyan-700/40 focus-visible:bg-cyan-700/60 focus:outline-none"
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         e.preventDefault();
