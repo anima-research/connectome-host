@@ -237,14 +237,20 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       out(`Setup began here before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's agent ` +
         'picks up where it stopped, and can change with you what it set up.');
     }
-    const lost = existsSync(root) ? null
+    let emptied = false;
+    try {
+      emptied = readdirSync(root).length === 0;
+    } catch {
+    }
+    const lost = existsSync(root) && !emptied ? null
       : state?.finished !== undefined
-        ? `This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
+        ? `This directory's install root, ${root}, ` +
+          `${emptied ? 'is empty, so its record is gone' : 'is gone, and its record with it'}: the places of state kept ` +
           'outside the data directory, its releases and its Go back.'
         : 'unreadable' in read
-          ? `This directory's install root, ${root}, isn't there, and setup can't tell whether a setup finished here, ` +
-            'since its kept answers can\'t be read. If one did, the root\'s record went with it: the places of state ' +
-            'kept outside the data directory, its releases and its Go back.'
+          ? `This directory's install root, ${root}, ${emptied ? 'is empty' : 'isn\'t there'}, and setup can't tell ` +
+            'whether a setup finished here, since its kept answers can\'t be read. If one did, the root\'s record went ' +
+            'with it: the places of state kept outside the data directory, its releases and its Go back.'
           : null;
     if (lost !== null) {
       out(lost);

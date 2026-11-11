@@ -988,6 +988,57 @@ test('setup answers that can\'t be read, with no install root, say setup can\'t 
   expect(existsSync(join(root, 'install.json'))).toBe(true);
 });
 
+test('an install root that is there but empty, after a setup that finished or whose answers can\'t be read, takes the same warning and question as a root that\'s gone; after a setup that didn\'t finish, setup goes on to install there', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  const state = JSON.stringify({ v: 1, finished: '2026-10-01T00:00:00.000Z' });
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), state);
+  const root = join(dir, 'connectome-host');
+  mkdirSync(root);
+  const emptied = world(dir, { answers: ['no'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], emptied)).toBe(0);
+  expect(emptied.seen.out).toContain(`This directory's install root, ${root}, is empty, so its record is gone: the places of ` +
+    'state kept outside the data directory, its releases and its Go back.');
+  expect(emptied.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
+  expect(readdirSync(root)).toEqual([]);
+  expect(existsSync(join(dir, 'data'))).toBe(false);
+  expect(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).toBe(state);
+  const made = world(dir, { answers: ['yes'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(existsSync(join(root, 'install.json'))).toBe(true);
+
+  const unread = directory();
+  mkdirSync(join(unread, '.setup'), { recursive: true });
+  writeFileSync(join(unread, '.setup', 'setup-state.json'), 'not json');
+  mkdirSync(join(unread, 'connectome-host'));
+  const unknown = world(unread, { answers: ['no'], secrets: [KEY] });
+  expect(await runSetup(unread, ['discord'], unknown)).toBe(0);
+  expect(unknown.seen.out).toContain(`This directory's install root, ${join(unread, 'connectome-host')}, is empty, and setup ` +
+    'can\'t tell whether a setup finished here, since its kept answers can\'t be read. If one did, the root\'s record went ' +
+    'with it: the places of state kept outside the data directory, its releases and its Go back.');
+  expect(unknown.seen.asked).toEqual([`Make a new install on ${join(unread, 'data')}? (yes/no) `]);
+
+  const unfinished = directory();
+  mkdirSync(join(unfinished, '.setup'), { recursive: true });
+  writeFileSync(join(unfinished, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
+  mkdirSync(join(unfinished, 'connectome-host'));
+  const goes = world(unfinished, { secrets: [KEY] });
+  expect(await runSetup(unfinished, ['discord'], goes)).toBe(0);
+  expect(goes.seen.asked).not.toContain(`Make a new install on ${join(unfinished, 'data')}? (yes/no) `);
+  expect(existsSync(join(unfinished, 'connectome-host', 'install.json'))).toBe(true);
+});
+
+test('a file where the install root goes, after a finished setup, is named as a record setup can\'t read, as before', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, finished: '2026-10-01T00:00:00.000Z' }));
+  writeFileSync(join(dir, 'connectome-host'), 'not a directory');
+  const filed = world(dir, { secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], filed)).toBe(1);
+  expect(text(filed.seen.err)).toContain(`${join(dir, 'connectome-host', 'install.json')} can't be read (ENOTDIR`);
+  expect(filed.seen.asked).toEqual([]);
+});
+
 test('a setup whose install keeps no state outside the data directory shows no list of it once its agent has ended, only the line that goes on with setup', async () => {
   const dir = directory();
   const none = [
