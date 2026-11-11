@@ -470,7 +470,7 @@ function insideNeither(sys: ServiceSystem, manager: Manager,
     'service, such as over ssh.');
 }
 
-function runsHere(directory: string | null, work: string): boolean {
+export function runsHere(directory: string | null, work: string): boolean {
   return directory !== null && realOrResolved(directory) === realOrResolved(work);
 }
 
@@ -584,7 +584,7 @@ function insideOf(sys: ServiceSystem, manager: Manager, units: ServiceUnit[]): S
 type AgentState = { kind: 'unloaded' } | { kind: 'loaded'; exit?: string } |
   { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
 
-function agentState(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit): AgentState {
+export function agentState(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit): AgentState {
   const listed = sys.run('launchctl', ['list', unit.name], env);
   if (listed.status === 113) return { kind: 'unloaded' };
   if (listed.status !== 0) return { kind: 'unknown', why: launchctlFailure(listed) };
@@ -623,7 +623,7 @@ function plistField(sys: ServiceSystem, env: Record<string, string>, path: strin
 
 /** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
  *  ! and the home, its default. */
-function runsFrom(shown: string, home: string): string | null {
+export function runsFrom(shown: string, home: string): string | null {
   const set = shown.replace(/^[-!+@:]+/, '');
   if (set === '' || (shown.startsWith('!') && realOrResolved(set) === realOrResolved(home))) return null;
   return realOrResolved(set === '~' ? home : set);
@@ -823,7 +823,7 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-function childEnv(sys: ServiceSystem): Record<string, string> {
+export function childEnv(sys: ServiceSystem): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(sys.env)) if (value !== undefined) env[key] = value;
   if (sys.platform === 'linux' && !env.XDG_RUNTIME_DIR) env.XDG_RUNTIME_DIR = `/run/user/${sys.uid}`;

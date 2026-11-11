@@ -1,7 +1,8 @@
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { RESTART_EXIT_CODE, SUPERVISED_ENV } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy } from '../update/setup.js';
-import { agentState, childEnv, pathState, runsFrom, runsHere, showUnit, type ServiceSystem } from './service.js';
+import { agentState, childEnv, runsFrom, runsHere, showUnit, type ServiceSystem } from './service.js';
 import type { ServiceUnit, ServiceUnits } from './service-unit.js';
 
 export interface ServiceCheck {
@@ -134,4 +135,24 @@ function logOf(units: ServiceUnits, unit: ServiceUnit, work: string): string {
 function stateOf(shown: Map<string, string>): string {
   const [active, sub] = [shown.get('ActiveState') || '?', shown.get('SubState') || '?'];
   return sub === active ? active : `${active} (${sub})`;
+}
+
+export function pathState(path: string): 'there' | 'gone' | { why: string; repair: string } {
+  try {
+    statSync(path);
+    return 'there';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'gone';
+    return {
+      why: errorText(error).replace(/\.$/, ''),
+      repair: code === 'EACCES' || code === 'EPERM'
+        ? 'Give this user search on each directory on the way to it, and run this again.'
+        : 'Repair what that path runs through, and run this again.',
+    };
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
