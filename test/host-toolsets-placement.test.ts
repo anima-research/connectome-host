@@ -110,6 +110,18 @@ describe('the retired surface keys', () => {
     expect(deprecatedSurfaceNotices(validateRecipe(recipe({ mcplAdmin: true })).modules)).toEqual([]);
     expect(deprecatedSurfaceNotices(undefined)).toEqual([]);
   });
+
+  test('modules.instructions.position "beforeUser" still loads, and startup says it is deprecated and what it costs; the other positions get no line', () => {
+    // On a default mount, so the path check doesn't need a workspace block.
+    const notices = deprecatedSurfaceNotices(validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md', position: 'beforeUser' } })).modules);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('modules.instructions.position "beforeUser" is deprecated');
+    expect(notices[0]).toContain('agent-framework#171');
+    expect(notices[0]).toContain('misses the prompt cache');
+    for (const position of ['system', 'afterUser', undefined]) {
+      expect(deprecatedSurfaceNotices(validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md', ...(position ? { position } : {}) } })).modules)).toEqual([]);
+    }
+  });
 });
 
 describe('a spawn\'s prompt-size check (issue #511)', () => {
