@@ -2167,13 +2167,17 @@ describe("the terminal's hidden question", () => {
     await Bun.sleep(30);
     input.write('typed TOK-abcdef');
     await Bun.sleep(20);
+    const history = (rl as unknown as { history: string[] }).history;
+    const ringKey = Object.getOwnPropertySymbols(rl).find((key) => key.description === '_killRing');
+    const ring = (rl as unknown as Record<symbol, unknown[]>)[ringKey!]!;
+    expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef')), 'the history held the token first').toBe(true);
+    expect(ring.some((entry) => String(entry).toLowerCase().includes('tok-abcdef')), 'the kill ring held the token first').toBe(true);
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
     input.write('tok-abcdef\r');
     expect(await answer).toBe('tok-abcdef');
     expect(rl.line).toBe('');
     expect(shown()).toContain('What you\'d typed held what you just entered hidden, so it was taken out.');
     expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out. Enter sends the rest.\n');
-    const history = (rl as unknown as { history: string[] }).history;
     expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef'))).toBe(false);
     const yanked = new Promise<void>((resolve) => rl.once('line', () => resolve()));
     input.write('\x19\r');
