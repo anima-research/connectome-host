@@ -12,6 +12,7 @@ import { priceAnthropicCall } from '../call-pricing.js';
 import { ANTHROPIC_API, checkKey, originOf, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
 import {
   EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, storedSecretsIn, unwritableValue, writeEnvValue,
+  type Secret,
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
@@ -592,8 +593,15 @@ async function installAndStart(
   out(`The installed host (${running}) starts.`);
 
   const stored = readEnvFile(envFile);
-  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile, env);
-  const shownOrigin = (url: string, key: string) => withSecretsHidden(String(originOf(url)), key, hide());
+  const hide = (keyHeld: string): Secret[] | null => {
+    try {
+      return storedSecretsIn(join(dir, '.setup'), envFile, env);
+    } catch (error) {
+      err(`connectome setup: ${(error as Error).message}.${keyHeld} Put that right, then run setup again.`);
+      return null;
+    }
+  };
+  const shownOrigin = (url: string, key: string, hidden: Secret[]) => withSecretsHidden(String(originOf(url)), key, hidden);
   const baseIn = (): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
     if (url === undefined || originOf(url) !== null) return url;
@@ -606,9 +614,11 @@ async function installAndStart(
   const exportedWins = 'A host started from a shell that exports another takes the exported one, since Bun gives an ' +
     'exported variable precedence over .env.';
   if (shell.ANTHROPIC_BASE_URL !== undefined && (shell.ANTHROPIC_BASE_URL || undefined) !== baseUrl) {
+    const hidden = baseUrl === undefined ? [] : hide('');
+    if (hidden === null) return 1;
     out(`Setup checks the key at, and gives its agent, ${baseUrl === undefined
       ? `Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL`
-      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${shownOrigin(baseUrl, '')}`}, ` +
+      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${shownOrigin(baseUrl, '', hidden)}`}, ` +
       `not the one exported in this shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
   }
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
@@ -622,8 +632,10 @@ async function installAndStart(
   }
   for (;;) {
     if (key === null) {
+      const hidden = baseUrl === undefined ? [] : hide('');
+      if (hidden === null) return 1;
       key = await world.askHidden(`${baseUrl === undefined ? 'An Anthropic API key, from console.anthropic.com\'s API keys'
-        : `An API key that ${shownOrigin(baseUrl, '')} accepts`}, typed hidden (Enter alone stops setup)`);
+        : `An API key that ${shownOrigin(baseUrl, '', hidden)} accepts`}, typed hidden (Enter alone stops setup)`);
       fromDotEnv = false;
       if (!key) return stopped();
     }
@@ -635,17 +647,21 @@ async function installAndStart(
       fromDotEnv = false;
       continue;
     }
+    const fate = fromDotEnv ? ` The ANTHROPIC_API_KEY in ${envFile} wasn't checked.`
+      : ' The key wasn\'t checked or stored.';
     try {
       baseUrl = baseIn();
     } catch (error) {
-      err(`connectome setup: ${(error as Error).message}. Put that right, then run setup again.`);
+      err(`connectome setup: ${(error as Error).message}.${fate} Put that right, then run setup again.`);
       return 1;
     }
     if (baseUrl === null) return 1;
+    const hidden = hide(fate);
+    if (hidden === null) return 1;
     out(`Checking ${fromDotEnv ? `the ANTHROPIC_API_KEY in ${envFile}` : 'the key'}: one call at ` +
-      `${baseUrl === undefined ? ANTHROPIC_API : shownOrigin(baseUrl, key)} to ${model}, the model setup's ` +
+      `${baseUrl === undefined ? ANTHROPIC_API : shownOrigin(baseUrl, key, hidden)} to ${model}, the model setup's ` +
       'agent runs on, which the key\'s account has to be able to use.');
-    const checked = await world.checkKey({ key, model, envFile, hide: hide(), ...(baseUrl === undefined ? {} : { baseUrl }) });
+    const checked = await world.checkKey({ key, model, envFile, hide: hidden, ...(baseUrl === undefined ? {} : { baseUrl }) });
     if (checked.ok) break;
     err(checked.cause);
     if (checked.anotherKeyMayHelp) {

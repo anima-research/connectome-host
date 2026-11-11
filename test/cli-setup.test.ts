@@ -563,7 +563,56 @@ modeTest('a key typed while .env became unreadable isn\'t checked, and setup say
     chmodSync(join(dir, '.env'), 0o600);
   }
   expect(made.seen.checked).toEqual([]);
-  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env')} can't be read (EACCES). Put that right, then run setup again.`);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env')} can't be read (EACCES). The key wasn't checked or stored. Put that right, then run setup again.`);
+});
+
+test('a key typed while a dotenv file became unreadable isn\'t checked or stored, and setup says so', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  const made = world(dir, { answers: [''] }, {
+    askHidden: async () => { Bun.spawnSync(['mkfifo', join(dir, '.env.local')]); return KEY; },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.checked).toEqual([]);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). The key wasn't checked or stored. Put that right, then run setup again.`);
+  expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBeUndefined();
+});
+
+test('a key from .env tried again after a dotenv file became unreadable isn\'t checked again, and setup says so', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\n`, { mode: 0o600 });
+  const down = { ok: false as const, cause: 'api.anthropic.com is overloaded (529).', anotherKeyMayHelp: false };
+  const made = world(dir, { answers: [''], keys: [down] });
+  const { ask } = made.world;
+  made.world.ask = async (question) => {
+    if (!question.startsWith('Try this key again')) return ask(question);
+    Bun.spawnSync(['mkfifo', join(dir, '.env.local')]);
+    return 'yes';
+  };
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.checked.map((each) => each.key)).toEqual([KEY]);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). The ANTHROPIC_API_KEY in ${join(dir, '.env')} wasn't checked. Put that right, then run setup again.`);
+});
+
+test('a dotenv file that became unreadable before the key question stops setup with nothing asked, and setup says to put it right', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
+  const made = world(dir, { answers: [''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_API_KEY: 'sk-ant-exported' } });
+  const { ask } = made.world;
+  made.world.ask = async (question) => {
+    if (!question.includes('exported in this shell')) return ask(question);
+    Bun.spawnSync(['mkfifo', join(dir, '.env.local')]);
+    return 'no';
+  };
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.asked.some((question) => question.includes('typed hidden'))).toBe(false);
+  expect(made.seen.checked).toEqual([]);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). Put that right, then run setup again.`);
 });
 
 test('a first run with a gateway in .env says the gateway may charge otherwise than the list prices', async () => {
