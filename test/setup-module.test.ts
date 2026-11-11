@@ -643,9 +643,8 @@ describe('setup--run', () => {
       expect(answer.note).toContain('still holds the output open');
       if (answer.stdout.text !== 'begun\nlate\n') {
         const lateBeforeAnswer = answeredUp - Number(await waitForFile(join(dir, 'late-up')));
-        expect(lateBeforeAnswer, `${said}: a drain that keeps what comes until it cuts the output loses "late" only ` +
-          'when the holder wrote it at about the cut or after, and the answer comes just after the cut, so the write ' +
-          'must be within 0.5 s of the answer').toBeLessThanOrEqual(0.5);
+        expect(lateBeforeAnswer, `${said}: the answer left out "late", which this test allows only where the ` +
+          'holder\'s stamp, read just after it wrote "late", is within 0.5 s of the answer').toBeLessThanOrEqual(0.5);
         expect(answer.stdout.text).toBe('begun\n');
       }
     } finally {
