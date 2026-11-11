@@ -142,6 +142,7 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     out(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
   }
   if (pty !== null) {
+    const prebuilt = world.platform === 'darwin' && existsSync(join(nodePtyDir(dir), 'prebuilds'));
     const untrustedNote = untrusted === null ? ''
       : `${manifest} ${untrusted}, so Bun may not have run node-pty's install script at all. `;
     const linux = world.platform !== 'linux' ? '' : 'On Linux, its native part is built as it\'s installed, with ' +
@@ -149,13 +150,13 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
       `\`${world.hasSudo ? 'sudo ' : ''}apt install build-essential python3\` installs them, run ` +
       `${world.hasSudo ? 'by you if you can use sudo here, or by whoever administers this machine'
         : 'as root, by you or by whoever administers this machine'}. Then ${again}, which installs node-pty again. `;
-    const mac = world.platform !== 'darwin' ? '' : helper === null
-      ? 'On macOS, node-pty runs from binaries it ships prebuilt rather than building them, and this command makes ' +
-        'their spawn-helper executable after each install, which node-pty\'s own install doesn\'t. '
-      : `On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ` +
-        `${helper}. Run \`${line}\` again once that's put right, which installs node-pty again. `;
+    const mac = helper !== null
+      ? `On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ` +
+        `${helper}. Run \`${line}\` again once that's put right, which installs node-pty again. `
+      : prebuilt ? 'On macOS, node-pty runs from binaries it ships prebuilt rather than building them, and this command makes ' +
+        'their spawn-helper executable after each install, which node-pty\'s own install doesn\'t. ' : '';
     err(`The resident's shell runs on node-pty, and here it doesn't work: ${pty.replace(/\.+$/, '')}. ` +
-      `${world.platform === 'darwin' ? '' : untrustedNote}${linux}${mac}A resident without a shell needs none of this.`);
+      `${prebuilt ? '' : untrustedNote}${linux}${mac}A resident without a shell needs none of this.`);
     return 1;
   }
   out(`A pty opens in ${dir}: node-pty ran /bin/echo in one, and what it printed came back. The resident's shell can ` +
