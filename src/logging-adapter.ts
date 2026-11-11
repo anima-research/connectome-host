@@ -266,7 +266,7 @@ function guarded<T>(get: () => T): T | undefined {
   try { return get(); } catch { return undefined; }
 }
 
-function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): boolean {
+export function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): boolean {
   if (value === undefined) return false;
   const normalized = value.trim().toLowerCase();
   if (normalized === '1' || normalized === 'true') return true;

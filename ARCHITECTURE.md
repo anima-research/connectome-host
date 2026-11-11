@@ -387,7 +387,15 @@ queued.
   instead of `rawRequestOmitted`, and is tried whole again at the run's next
   failure of that kind. The first failing
   request the budget has no room for, since the last one written, prints
-  one stderr line.
+  one stderr line. The generic wrapper (OpenAI, Codex, OpenRouter, the
+  compatible lane, mock) has a simpler rule: the raw request on every
+  non-cancelled failure, each retry attempt in full, with no run, no hash
+  dedup and no budget; on refusals; on anomalous responses, including a
+  client tool call whose arguments didn't parse as an object (any provider)
+  or one in a Responses response with status `incomplete` (the row's
+  `anomaly` only; no stderr line); and on a cancelled call only with
+  `LLM_CALLS_FULL_PAYLOADS=1`, which keeps the request on every call.
+  Bedrock's keeps it on errors only.
 - **Ops alerts** (agent-framework) — compression quarantine, refusal streaks,
   inference exhaustion, context refusals, GC closes: an `ops:alert` trace
   (shown as banners in both UIs), a record in `logs/failures.log`, and a
