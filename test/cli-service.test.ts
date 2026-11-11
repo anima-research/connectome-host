@@ -2045,7 +2045,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a recipe 
   }
   expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(env);
   expect(f.out).toContain('No shell daemon is set up: the recipe names no shell client or shell setting.');
-  expect(f.out).toContain(`Stopped and removed ${name}, the shell daemon this recipe doesn't have. Its settings stay in ` +
+  expect(f.out).toContain(`Stopped and removed ${name}: this install has no shell daemon now. Its settings stay in ` +
     `${join(at.work, '.env')}.`);
 });
 
@@ -2057,4 +2057,17 @@ test('serviceCommands is null until the host\'s unit file is there, and names th
   expect(serviceCommands(at.root, f.system)!.start).toBe(`systemctl --user start ${SHELL} ${HOST}`);
   rmSync(shellUnit(at));
   expect(serviceCommands(at.root, f.system)!.start).toBe(`systemctl --user start ${HOST}`);
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host that doesn\'t answer fails the install, which gives the line that shows its log and the command to run again', async () => {
+  const at = install();
+  const f = fake(at, { platform, ready: false });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
+  const log = platform === 'darwin' ? `tail -f '${join(at.work, 'logs', 'agent.log')}'` : `journalctl --user -u ${HOST} -f`;
+  expect(f.out).toContain(`Its log shows what happened: ${log}. Put that right, then run connectome service install ` +
+    `'${at.recipe}' again. Until then ${platform === 'darwin'
+      ? 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'
+      : 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the run ' +
+        'clears that limit'}.`);
 });

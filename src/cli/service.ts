@@ -302,7 +302,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const commands = serviceCommands(root, sys);
   if (typeof ready === 'string') {
     ctx.err(`connectome: ${ready}`);
-    ctx.out(`Its log says why: ${commands?.log ?? 'none is written yet'}. Put that right, then run ${cmd} service ` +
+    ctx.out(`Its log shows what happened${commands === null ? '' : `: ${commands.log}`}. Put that right, then run ${cmd} service ` +
       `install ${shellWord(recipe)} again. Until then ${manager === 'systemd-user'
       ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
         'run clears that limit'
@@ -549,7 +549,7 @@ async function removeShell(ctx: CliContext, sys: ServiceSystem, env: Record<stri
     }
     rmSync(unit.file, { force: true });
   }
-  ctx.out(`Stopped and removed ${unit.name}, the shell daemon this recipe doesn't have. Its settings stay in ` +
+  ctx.out(`Stopped and removed ${unit.name}: this install has no shell daemon now. Its settings stay in ` +
     `${join(work, '.env')}.`);
 }
 
