@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync,
-  writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
+  statSync, writeFileSync,
 } from 'node:fs';
 import { constants, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -272,6 +272,11 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       const answered = await ownUserStep(world, out);
       if (typeof answered === 'number') return answered === -1 ? stopped() : answered;
       state = answered;
+    }
+    if ('unreadable' in read) {
+      const aside = join(setupDir, `setup-state.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      renameSync(statePath, aside);
+      out(`Setup moved the answers it couldn't read to ${aside}, and keeps its new ones in ${statePath}.`);
     }
     writeJsonAtomic(statePath, state, 0o600);
     kept = true;

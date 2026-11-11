@@ -1104,6 +1104,21 @@ test('kept answers setup can\'t read are asked again', async () => {
   expect(text(made.seen.err)).toContain(`Setup's kept answers in ${join(dir, '.setup', 'setup-state.json')} can't be read`);
 });
 
+test('kept answers setup can\'t read are moved aside as they were, before setup writes new ones, and setup says where', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  const damaged = '{"v": 1, "finished": "2026-10-01T00:00:00.0';
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), damaged);
+  const made = world(dir, { answers: ['yes', ''], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const aside = readdirSync(join(dir, '.setup')).filter((name) => name.startsWith('setup-state.unreadable-'));
+  expect(aside).toHaveLength(1);
+  expect(readFileSync(join(dir, '.setup', aside[0]!), 'utf-8')).toBe(damaged);
+  expect(made.seen.out).toContain(`Setup moved the answers it couldn't read to ${join(dir, '.setup', aside[0]!)}, and ` +
+    `keeps its new ones in ${join(dir, '.setup', 'setup-state.json')}.`);
+  expect(JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).v).toBe(1);
+});
+
 async function script(body: string): Promise<{ status: number | null; out: string; err: string }> {
   const load = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'cli', 'setup.ts'))});`;
   const child = spawn(process.execPath, ['-e', `${load}\n${body}`], { cwd: directory(), stdio: ['pipe', 'pipe', 'pipe'] });
