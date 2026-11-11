@@ -217,11 +217,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       throw new Refusal(`${unit.file} can't be written: ${errorText(error)}. Nothing was started or restarted.`);
     }
   };
-  if (shell !== null) {
-    keepShellSettings(ctx, sys, work, shell);
-    ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and whoever talks to it on ` +
-      'Discord can ask it to.');
-  }
+  if (shell !== null) keepShellSettings(ctx, sys, work, shell);
+  const shellLive = () => ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and ` +
+    'whoever talks to it on Discord can ask it to.');
   if (manager === 'systemd-user') {
     const wants = shell === null ? null : names.shell.name;
     if (shell !== null) {
@@ -266,6 +264,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       const running = RUNNING.has(shown.get('ActiveState') ?? '');
       systemctl(sys, env, cmd, ['restart', unit.name]);
       ctx.out(running ? `Restarted ${unit.name}.` : `Started ${unit.name}.`);
+      if (unit === names.shell) shellLive();
     }
   } else {
     mkdirSync(dirname(logPath), { recursive: true });
@@ -298,6 +297,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           `${consequence}${host} Repeat this service install command with the same recipe to load it.`);
       }
       ctx.out(`${loaded ? 'Reloaded' : 'Loaded'} ${unit.name} from ${unit.file}.`);
+      if (unit === names.shell) shellLive();
     }
     ctx.out(`launchd loads ${units.length === 1 ? 'this agent' : 'these agents'}, and so starts ` +
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);

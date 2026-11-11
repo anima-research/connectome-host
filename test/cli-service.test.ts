@@ -1989,12 +1989,16 @@ test('an install reached through a link to its directory runs again through it',
 const shellSentence = (user: string) => `With a shell, the resident can read and change whatever ${user} can, and whoever ` +
   'talks to it on Discord can ask it to.';
 
-for (const platform of ['linux', 'darwin'] as const) test(platform + ' where install writes a shell daemon, it says once what a shell lets the resident and its Discord reach', async () => {
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' where install starts a shell daemon, it says once, as the shell goes live, what a shell lets the resident and its Discord reach', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at, { platform });
   f.system.user = 'ana';
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.out.filter((line) => line === shellSentence('ana'))).toHaveLength(1);
+  const live = platform === 'darwin'
+    ? `Loaded com.animalabs.connectome.my-resident.shell from ${agentPlist(at, 'com.animalabs.connectome.my-resident.shell')}.`
+    : `Started ${SHELL}.`;
+  expect(f.out.indexOf(shellSentence('ana'))).toBe(f.out.indexOf(live) + 1);
 });
 
 test('without a shell daemon, install says nothing of what a shell reaches', async () => {
@@ -2012,4 +2016,15 @@ test('a recipe that names a shell, without the shell\'s package here, gets the c
   expect(f.out).toContain("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this " +
     'directory, so no shell daemon was set up. To set one up, run connectome shell install, then this service install ' +
     'command again with the same recipe.');
+});
+
+test('a refusal after the shell\'s settings are kept, such as the restart policy\'s, starts nothing and says nothing of what a shell reaches', async () => {
+  const at = install('My Resident', { shell: true });
+  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
+  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(true);
+  expect(f.systemd.starts).toEqual([]);
+  expect([...f.out, ...f.err].join('\n')).not.toContain('With a shell');
 });
