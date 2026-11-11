@@ -22,6 +22,9 @@ import {
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import {
+  Refusal, plain, plist, serviceUnits, slugOf, systemdUnit, type Manager, type ServiceUnit,
+} from './service-unit.js';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
 const SHELL_BIN = 'session-server';
@@ -52,17 +55,12 @@ const serviceRepair = (cmd: string) =>
   `Run ${cmd} service install to check and repair the service for its recorded recipe. ` +
   'If it asks you to stop a loaded unit whose file is gone, follow its conditional stop instruction, then repeat install.';
 
-export interface ServiceUnit {
-  name: string;
-  file: string;
-}
-
 const SHELL_SETTING_NAMES = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'] as const;
 type ShellSettings = Partial<Record<(typeof SHELL_SETTING_NAMES)[number], string>>;
 
 export interface ServiceRecord {
   v: 1;
-  manager: 'systemd-user' | 'launchd';
+  manager: Manager;
   units: { host: ServiceUnit; shell?: ServiceUnit };
   hostArgs: string[];
   workingDirectory: string;
@@ -230,8 +228,6 @@ export const serviceCommand: CliCommand = {
   ],
   run: (ctx) => runService(ctx),
 };
-
-class Refusal extends Error {}
 
 export async function runService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
   const [verb, ...rest] = ctx.argv;
@@ -402,7 +398,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       'Nothing was written.');
   }
   const env = childEnv(sys);
-  const names = unitNames(manager, slug, sys);
+  const names = serviceUnits(root, sys.platform, sys.home)!;
   const node = sys.which('node');
   const path = [...new Set([dirname(sys.bun), ...(node ? [dirname(node)] : []), '/usr/local/bin', '/usr/bin', '/bin',
     '/usr/sbin', '/sbin'])].join(':');
@@ -698,7 +694,7 @@ function unitsOf(record: ServiceRecord): ServiceUnit[] {
   return [record.units.host, ...(record.units.shell === undefined ? [] : [record.units.shell])];
 }
 
-function fileOf(manager: ServiceRecord['manager']): string {
+function fileOf(manager: Manager): string {
   return manager === 'launchd' ? 'launch agent\'s file' : 'unit file';
 }
 
@@ -985,7 +981,7 @@ function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: Servic
   return sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
 }
 
-function insideOf(sys: ServiceSystem, manager: ServiceRecord['manager'], units: ServiceUnit[]): ServiceUnit | undefined {
+function insideOf(sys: ServiceSystem, manager: Manager, units: ServiceUnit[]): ServiceUnit | undefined {
   const cgroups = (sys.cgroup() ?? '').split('\n').map((line) => line.split('/'))
     .filter((path) => path.includes(`user@${sys.uid}.service`));
   return units.find((unit) => manager === 'systemd-user'
@@ -993,7 +989,7 @@ function insideOf(sys: ServiceSystem, manager: ServiceRecord['manager'], units: 
     : sys.env.XPC_SERVICE_NAME === unit.name);
 }
 
-function insideNeither(sys: ServiceSystem, manager: ServiceRecord['manager'],
+function insideNeither(sys: ServiceSystem, manager: Manager,
   names: { host: ServiceUnit; shell: ServiceUnit }, units: ServiceUnit[], cmd: string): void {
   const inside = insideOf(sys, manager, [names.host, names.shell]);
   if (inside === undefined) return;
@@ -1031,7 +1027,7 @@ function recipeProblem(loaded: Exclude<RecipeLoad, { loads: true }>, work: strin
     (redacted.guessed.length > 0 ? ` ${guessedSecretsNotice(work)}` : ''));
 }
 
-function managerOf(sys: ServiceSystem): ServiceRecord['manager'] {
+function managerOf(sys: ServiceSystem): Manager {
   if (sys.platform === 'darwin') return 'launchd';
   if (sys.platform !== 'linux') {
     throw new Refusal('service install writes systemd user units on Linux and launch agents on macOS, and this is ' +
@@ -1051,28 +1047,7 @@ function managerOf(sys: ServiceSystem): ServiceRecord['manager'] {
   return 'systemd-user';
 }
 
-export function slugOf(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-}
-
-function unitNames(manager: ServiceRecord['manager'], slug: string, sys: ServiceSystem):
-  { host: ServiceUnit; shell: ServiceUnit } {
-  if (manager === 'systemd-user') {
-    const dir = join(sys.home, '.config', 'systemd', 'user');
-    return {
-      host: { name: `connectome-${slug}.service`, file: join(dir, `connectome-${slug}.service`) },
-      shell: { name: `connectome-${slug}-shell.service`, file: join(dir, `connectome-${slug}-shell.service`) },
-    };
-  }
-  const dir = join(sys.home, 'Library', 'LaunchAgents');
-  const label = `com.animalabs.connectome.${slug}`;
-  return {
-    host: { name: label, file: join(dir, `${label}.plist`) },
-    shell: { name: `${label}.shell`, file: join(dir, `${label}.shell.plist`) },
-  };
-}
-
-function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
+function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
   unit: ServiceUnit, text: string): string | null {
   const set = manager === 'systemd-user'
     ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%') ?? null
@@ -1109,7 +1084,7 @@ function runsFrom(shown: string, home: string): string | null {
 type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string } | { kind: 'untold' }
   | { kind: 'unshown'; shown: string };
 
-function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
+function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
   env: Record<string, string>): Owner {
   const text = readOr(unit.file);
   if (text !== null) {
@@ -1132,7 +1107,7 @@ function ownerOf(unit: ServiceUnit, manager: ServiceRecord['manager'], work: str
     : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
 }
 
-function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work: string, sys: ServiceSystem,
+function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
   env: Record<string, string>, afterWrite?: string): void {
   const owner = ownerOf(unit, manager, work, sys, env);
   const effect = afterWrite === undefined ? 'Nothing was written.'
@@ -1151,12 +1126,12 @@ function ownedOrFree(unit: ServiceUnit, manager: ServiceRecord['manager'], work:
   }
 }
 
-function untold(sys: ServiceSystem, manager: ServiceRecord['manager'], unit: ServiceUnit): string {
+function untold(sys: ServiceSystem, manager: Manager, unit: ServiceUnit): string {
   return `${unit.name} is still ${manager === 'systemd-user' ? 'running' : 'loaded'}, but its file, ${unit.file}, is ` +
     'gone, so which install it runs can\'t be told';
 }
 
-function renamedStopped(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
+function renamedStopped(sys: ServiceSystem, manager: Manager, env: Record<string, string>,
   unit: ServiceUnit, host: boolean): void {
   const whose = `${unit.name}, this install's own ${host ? 'host' : 'shell daemon'} under its earlier name,`;
   let live: boolean;
@@ -1181,7 +1156,7 @@ function renamedStopped(sys: ServiceSystem, manager: ServiceRecord['manager'], e
     'retires its files once the new host passes its checks. Nothing was written.');
 }
 
-function stopLine(sys: ServiceSystem, manager: ServiceRecord['manager'], name: string): string {
+function stopLine(sys: ServiceSystem, manager: Manager, name: string): string {
   return manager === 'systemd-user' ? systemctlLine(sys, `stop ${name}`) : `launchctl bootout gui/${sys.uid}/${name}`;
 }
 
@@ -1289,7 +1264,7 @@ function noOtherAgent(ctx: CliContext, work: string, names: { host: ServiceUnit;
   }
 }
 
-async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: ServiceRecord['manager'],
+async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: Manager,
   unit: ServiceUnit, work: string, cmd: string, recordedHere = false): Promise<boolean> {
   const text = readOr(unit.file);
   let runsIn = text === null ? (recordedHere ? realOrResolved(work) : undefined) : fileDirectory(sys, env, manager, unit, text);
@@ -1342,7 +1317,7 @@ async function removeUnit(ctx: CliContext, sys: ServiceSystem, env: Record<strin
 }
 
 function retainedShellNotice(ctx: CliContext, root: string, sys: ServiceSystem, env: Record<string, string>,
-  manager: ServiceRecord['manager'], unit: ServiceUnit, cmd: string): void {
+  manager: Manager, unit: ServiceUnit, cmd: string): void {
   let state = 'may still be running';
   if (manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['ActiveState']);
@@ -1419,7 +1394,7 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
   return resolve(pkg, bin);
 }
 
-function shellRunning(sys: ServiceSystem, manager: ServiceRecord['manager'], env: Record<string, string>,
+function shellRunning(sys: ServiceSystem, manager: Manager, env: Record<string, string>,
   unit: ServiceUnit): boolean {
   if (manager === 'launchd') {
     const state = agentState(sys, env, unit);
@@ -1555,74 +1530,6 @@ function systemctl(sys: ServiceSystem, env: Record<string, string>, cmd: string,
     throw new Refusal(`systemctl --user ${args.join(' ')} failed: ${stderrOf(ran)}. Run ` +
       `${cmd} service install again once that's put right.`);
   }
-}
-
-function plain(value: string, what: string): string {
-  if (/[\u0000-\u001f\u007f]/.test(value)) {
-    throw new Refusal(`${what} holds a line break or another control character, so it can't go in a unit. Nothing was ` +
-      'written.');
-  }
-  return value;
-}
-
-function word(value: string): string {
-  return `"${plain(value, `The command's word ${JSON.stringify(value)}`).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    .replace(/%/g, '%%').replace(/\$/g, '$$$$')}"`;
-}
-
-function assignment(name: string, value: string): string {
-  return `Environment="${`${name}=${plain(value, name)}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
-}
-
-function systemdUnit(description: string, work: string, argv: string[], env: Array<[string, string]>,
-  wants: string | null): string {
-  const named = `The working directory ${JSON.stringify(work)}`;
-  const unit = [`Description=${plain(description, named).replace(/%/g, '%%')}`,
-    ...(wants === null ? [] : [`Wants=${wants}`, `After=${wants}`])];
-  const service = [`WorkingDirectory=${plain(work, named).replace(/%/g, '%%')}`, `ExecStart=${argv.map(word).join(' ')}`,
-    ...env.map(([name, value]) => assignment(name, value)), 'Restart=on-failure'];
-  return `[Unit]\n${unit.join('\n')}\n\n[Service]\n${service.join('\n')}\n\n[Install]\nWantedBy=default.target\n`;
-}
-
-function xml(value: string, what: string): string {
-  return plain(value, what).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function plist(label: string, work: string, args: string[], env: Array<[string, string]>, logPath: string): string {
-  const as = (value: string) => xml(value, JSON.stringify(value));
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0">',
-    '<dict>',
-    '  <key>Label</key>',
-    `  <string>${as(label)}</string>`,
-    '  <key>ProgramArguments</key>',
-    '  <array>',
-    ...args.map((arg) => `    <string>${as(arg)}</string>`),
-    '  </array>',
-    '  <key>WorkingDirectory</key>',
-    `  <string>${as(work)}</string>`,
-    '  <key>EnvironmentVariables</key>',
-    '  <dict>',
-    ...env.flatMap(([name, value]) => [`    <key>${as(name)}</key>`, `    <string>${xml(value, name)}</string>`]),
-    '  </dict>',
-    '  <key>KeepAlive</key>',
-    '  <dict>',
-    '    <key>SuccessfulExit</key>',
-    '    <false/>',
-    '  </dict>',
-    '  <key>RunAtLoad</key>',
-    '  <true/>',
-    '  <key>StandardOutPath</key>',
-    `  <string>${as(logPath)}</string>`,
-    '  <key>StandardErrorPath</key>',
-    `  <string>${as(logPath)}</string>`,
-    '</dict>',
-    '</plist>',
-    '',
-  ].join('\n');
 }
 
 function pidOf(listed: string): string | undefined {

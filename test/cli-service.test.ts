@@ -9,9 +9,9 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   checkService, installService, loadRecipeAsHost, portFree, readRecipeAsHost, readServiceRecord, runService, serviceLines,
-  slugOf,
   type RecipeLoad, type ServiceSystem,
 } from '../src/cli/service.js';
+import { slugOf } from '../src/cli/service-unit.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
 import { holdFileLock } from './helpers/held-file-lock.js';
 
