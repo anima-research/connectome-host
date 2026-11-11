@@ -6,6 +6,168 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.25.0 — 2026-11-10
+
+### Breaking
+
+- **Recipe authors and operators:** a recipe whose `modules.fleet`
+  `readyTimeoutMs`, `gracefulShutdownMs` or `sigtermEscalationMs` is a
+  fraction, or 2147483648 or more, loaded before, and now stops the load,
+  naming the field and the value: each must be a whole number of
+  milliseconds from 0 to 2147483647, the longest delay a timer keeps.
+  Before, Bun and Node set a longer delay to 1 ms, so such a wait ended at
+  once, and a fraction ran about as written. Set each to a whole number in
+  that range. A start without a recipe argument, in a data directory whose
+  saved recipe holds such a value, stops, naming it: start once with the
+  corrected recipe as its argument, which saves it in the saved one's
+  place. A whole number in that range loads as it did, and
+  `socketWaitTimeoutMs` has no upper bound.
+
+### Added
+
+- Claude Fable 5.2 and Claude Mythos 5.2 (`claude-fable-5-2`, `claude-mythos-5-2`):
+  the operator ledger and `priceCall` price them at $8 input, $40 output, $10
+  and $16 for 5-minute and 1-hour cache writes, and $0.20 for a cache read per
+  million tokens, where each was priced as Fable 5 or Mythos 5 ($10/$50, reads
+  at 0.1x), under pricing version `anthropic-public-2026-10-19-5-2`, and
+  kv-unified's standard block prices their cache reads at 0.025x of input,
+  where it took 0.1x; the start's fit check reads their 1,000,000-token window
+  and 128,000 tokens of output; Fable 5.2's thinking is
+  recorded as binding, taking the drop control, thinking with no config and
+  showing its window, and Mythos 5.2's as Mythos 5.1's; and through
+  Anthropic's API, on both an 'omitted' thinking display is sent as
+  'updates', so the notes they write between tool calls are kept as text.
+  That those notes come back as thinking blocks rests, on Fable 5.2, on
+  Anthropic's prompting guide for it and the API taking 'updates'; on Mythos
+  5.2, untried, on the same guide, which says its patterns are specific to
+  both models, and on the release notes, which say it offers the same
+  capabilities.
+  - **Cache:** `agent_settings`' `reasoning_display` description no longer
+    names models. It is part of the `agent_settings` tool, and tools come
+    first in a request, so where a request carries that tool in its tool
+    list, whatever its model, on any provider whose prompt cache covers the
+    tools, the first such request after upgrading writes its whole cached
+    prompt again, once. An agent already on Fable 5.2 or Mythos 5.2 with
+    kv-unified's standard block can pick another layout once after the
+    upgrade, which rewrites its prompt cache once.
+
+- **A recipe can set what a change of layout costs kv-unified**
+  (context-manager 0.25.3): `agent.strategy.kvUnified.policy.rewriteLambda`
+  prices the tokens a change rewrites, linearly, in place of the quadratic
+  `cacheLambda` term; `agent.strategy.kvUnified.thinkingLambda`, with
+  `thinkingHalfLifeTokens` (50,000 unless set), prices the thinking a change
+  would make a model that binds thinking drop, so a layout holds while
+  recent thinking is live and moves once it is gone anyway. All three are
+  optional and off unless set. Each must be a finite number of 0 or more
+  (above 0 for the half-life), and a recipe with another value is refused at
+  load. Until now the host reported `rewriteLambda` as a key it does not
+  read and passed it on unchecked.
+
+### Changed
+
+- **`modules.instructions` at `position: "beforeUser"` is deprecated.** It's
+  spliced in again before the newest user message at every compile, so it
+  moves: a request misses the cache from there on, and it can split a tool
+  call from its result (anima-research/agent-framework#171). Use
+  `"afterUser"` or `"system"`; both stay supported. The recipe type and the
+  README now say what each position costs: at `"system"`, the default, an edit
+  to the file misses the cache from the system prompt on; at `"afterUser"`, the
+  block is placed again at each start, so it moves, and on a model that binds a
+  reply's thinking to everything before it, later replies lose their thinking.
+  Neither calls `"afterUser"` cache-cheap any more.
+
+- **connectome-host takes context-manager 0.25.3 or later in the 0.25
+  line** (it took 0.25.0). With it, every host gets what 0.25.2 and 0.25.3
+  changed: no live image is stripped by default (`maxLiveImages`,
+  `imageStripDepthTokens` and `maxLiveImageBytes` default to 0, so an image
+  stays until its message is folded or leaves the window; set them to keep
+  the old limits); the head and recent windows keep their edges where the
+  chunks were cut when token estimates are recalibrated; and kv-unified can
+  price what a change of layout costs, which a recipe sets with the keys
+  above.
+
+### Fixed
+
+- **While an agent has a turn under way, the Web UI's alert for three or more consecutive inference failures says a
+  turn is under way, not that the agent is down,** and keeps the count. `/status` words each agent as its Health row
+  does (`retrying · overloaded · try 7 of 13 · in 2m`), where it printed `idle` through the wait. Both need an
+  agent-framework that reports `turnAlive` and `retrying` (agent-framework#992); with an earlier one, nothing changes.
+
+- **The Health panel no longer reads `idle` for an agent whose turn is retrying.** Between a failed call and its
+  retry, agent-framework's agent state reads `idle`, and the panel showed that word, in green, for as long as the
+  retries took: a resident whose provider answered `overloaded_error` for eight minutes read `idle` throughout, while
+  a newer message waited in the gate's buffer. With an agent-framework that reports `retrying` and `turnAlive` in
+  `healthSnapshot()` (agent-framework#992), the panel reads `retrying`, with what the error policy retries the
+  failure as, which try is next of how many, and when (`overloaded · try 7 of 13 · in 2m`); an idle state with a
+  turn alive reads `idle+turn-alive`. The agent's state is the word's tooltip. Health clients get the retry's class
+  name (`HEALTH_STRINGS`), never the failure's text. With an earlier agent-framework the row reads `status` as before.
+
+- A recipe number that must be positive or non-negative must also be finite:
+  `agent.maxStreamTokens`, `agent.thinking.budgetTokens`,
+  `agent.responses.compactThreshold`, `agent.cacheKeepalive.maxIdleHours`
+  and `modules.fleet`'s four timeouts. JSON `1e309` parses to `Infinity`,
+  which passed the sign check; `saveRecipe()` then wrote it back as `null`,
+  and the next start, resuming from the saved recipe, refused a field it had
+  accepted the day before. The first load refuses it now, naming the field
+  and the value.
+- `/budget` refuses a token count that overflows to `Infinity`, such as
+  `1e309k`, where it set every agent's stream budget to `Infinity`.
+
+## 0.24.1 — 2026-11-09
+
+### Added
+
+- Claude Fable 5.2 and Claude Mythos 5.2 (`claude-fable-5-2`, `claude-mythos-5-2`):
+  the operator ledger and `priceCall` price them at $8 input, $40 output, $10
+  and $16 for 5-minute and 1-hour cache writes, and $0.20 for a cache read per
+  million tokens, where each was priced as Fable 5 or Mythos 5 ($10/$50, reads
+  at 0.1x), under pricing version `anthropic-public-2026-10-19-5-2`, and
+  kv-unified's standard block prices their cache reads at 0.025x of input,
+  where it took 0.1x; the start's fit check reads their 1,000,000-token window
+  and 128,000 tokens of output; Fable 5.2's thinking is
+  recorded as binding, taking the drop control, thinking with no config and
+  showing its window, and Mythos 5.2's as Mythos 5.1's; and through
+  Anthropic's API, on both an 'omitted' thinking display is sent as
+  'updates', so the notes they write between tool calls are kept as text.
+  That those notes come back as thinking blocks rests, on Fable 5.2, on
+  Anthropic's prompting guide for it and the API taking 'updates'; on Mythos
+  5.2, untried, on the same guide, which says its patterns are specific to
+  both models, and on the release notes, which say it offers the same
+  capabilities.
+  - **Cache:** `agent_settings`' `reasoning_display` description no longer
+    names models. An agent that may call `toolsets--open` and
+    `toolsets--act` finds `agent_settings`, if it may call it, in the
+    built-in `settings` toolset, outside its tool list, so the new
+    description doesn't rewrite its prompt cache. An agent that may not call
+    both has no such toolset. Where such an agent has `agent_settings` in its
+    tool list, tools come first in a request, so its first request after
+    upgrading writes its whole cached prompt again, once, whatever its model,
+    on any provider whose prompt cache covers the tools. An agent already on
+    Fable 5.2 or Mythos 5.2 with kv-unified's standard block can pick another
+    layout once after the upgrade, which rewrites its prompt cache once.
+
+### Changed
+
+- **Dependencies:** `@animalabs/membrane` `^0.8.1` (was `^0.8.0`).
+  `package-lock.json` and `bun.lock` move membrane and nothing else.
+  `connectome update` keeps the running release's lockfile, so under
+  `^0.8.0` an updated host would keep membrane 0.8.0. membrane 0.8.0 names
+  neither Claude Fable 5.2 nor Claude Mythos 5.2, and 0.8.1 names both:
+  - Its Anthropic adapter leaves `temperature`, `top_p` and `top_k` out for
+    both, as it does for Fable 5.1 and Mythos 5.1, including values given in
+    a request's provider parameters. 0.8.0 already left a request config's
+    sampling out for both. Without a thinking config, sampling given in
+    provider parameters reached the API. With one, only a `top_p` of 0.95 or
+    more did. This host's provider parameters carry no sampling (it sets
+    them only for `openai-responses` and `openai-codex`), so it sends
+    neither model any sampling, on 0.8.0 or 0.8.1. membrane's source records
+    that Fable 5.2 refuses a `temperature` of 0.2, a `top_k` of 40 and a
+    `top_p` of 0.9 with a 400.
+  - Its own cost estimate for a response prices both at $8 input, $40
+    output, $10 for a cache write and $0.20 for a cache read per million
+    tokens. 0.8.0 priced them as Fable 5 or Mythos 5. A prefix in its pricing
+    table no longer names a model id that goes on from it with a digit.
+
 ## 0.24.0 — 2026-11-09
 
 ### Added
