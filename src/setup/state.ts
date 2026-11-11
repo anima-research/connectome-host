@@ -24,7 +24,6 @@ export function readSetupState(path: string): KeptState {
   if (state?.v !== 1 || (state.finished !== undefined && !isStamp(state.finished))) {
     return { unreadable: 'it isn\'t the answers this setup keeps' };
   }
-  // An answer an earlier setup kept beside these, such as whether the resident gets a shell, isn't read.
   return { state: { v: 1, ...(state.finished === undefined ? {} : { finished: state.finished }) } };
 }
 

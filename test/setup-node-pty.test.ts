@@ -18,7 +18,6 @@ function directory(prefix: string): string {
   return dir;
 }
 
-// A copy of node-pty with its macOS spawn-helpers as it ships them, not executable.
 function nodePty(at: string): void {
   mkdirSync(at, { recursive: true });
   writeFileSync(join(at, 'package.json'), JSON.stringify({ name: 'node-pty', version: '1.1.0', main: 'index.js' }));
@@ -40,14 +39,10 @@ const modes = (at: string) => HELPERS.map((prebuild) => statSync(join(at, 'prebu
 test('the node-pty made executable is the copy node loads from term-sessions-mcp, not the one in Bun\'s global cache, in a Bun process that started before the directory had node_modules', () => {
   const dir = directory('node-pty-');
   const cache = directory('bun-cache-');
-  // Bun's global cache, holding a copy of node-pty as an earlier install leaves it there.
   nodePty(join(cache, 'node-pty@1.1.0@@@1'));
-  // What the add brings, made ready elsewhere and copied in by the process once it has started.
   const brought = directory('brought-');
   termSessions(join(brought, 'node_modules', 'term-sessions-mcp'));
   nodePty(join(brought, 'node_modules', 'node-pty'));
-  // The process starts where there's no node_modules, and the install's packages arrive after it has started, as
-  // `connectome shell install`'s own bun add brings them where the directory's node_modules was gone.
   const script = `
     const { cpSync } = await import('node:fs');
     cpSync(${JSON.stringify(join(brought, 'node_modules'))}, ${JSON.stringify(join(dir, 'node_modules'))}, { recursive: true });

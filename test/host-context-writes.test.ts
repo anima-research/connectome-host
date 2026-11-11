@@ -390,9 +390,6 @@ describe('a bare /newtopic', () => {
     }
   });
 
-  // The readline and piped modes take a command from one line, so the summary
-  // is given back there on one line, its line breaks folded to spaces,
-  // which they take as one command (#485 bot review 3, finding 1).
   test('whose summary has line breaks gives it back, in the readline and piped modes, as one /newtopic line, which stores it whole', async () => {
     const summary = 'Done:\n- the ledger\n\n  Next: the release.';
     const { h, app, summarized, releaseSummary } = await bare('newtopic-bare-lines-', summary);

@@ -88,7 +88,8 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   const untrusted = notTrusted(manifest);
   if (untrusted !== null) {
     out(`${manifest} ${untrusted}, so Bun runs no install script of ${SHELL}'s, and through a mirror or a company ` +
-      'registry it may run none of the others\', node-pty\'s among them. Setup writes that list each time it runs.');
+      'registry it may run none of the others\', node-pty\'s among them. Setup tries to write that list each time it ' +
+      'runs, and says so when it can\'t.');
   }
 
   // A package counts as there once package.json declares it: a bun add that fails partway leaves packages in
@@ -116,13 +117,12 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
 
   let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
   let pty = await ptyWorks(world, dir, env);
+  const aside = join(dir, '.setup', 'node-pty-aside');
   if (pty !== null) {
     const ptyDir = nodePtyDir(dir);
-    const aside = join(dir, '.setup', 'node-pty-aside');
     out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
       `this installs it again, keeping the copy it has at ${aside} until the new one works, and putting it back if ` +
       'it doesn\'t:');
-    // Setup's own directory, which a person may have taken away once setup finished.
     mkdirSync(dirname(aside), { recursive: true, mode: 0o700 });
     if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
     else if (existsSync(ptyDir)) renameSync(ptyDir, aside);
@@ -137,6 +137,9 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
       renameSync(aside, ptyDir);
       helper = makeSpawnHelperExecutable(ptyDir, world.platform);
     }
+  } else if (existsSync(aside)) {
+    rmSync(aside, { recursive: true, force: true });
+    out(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
   }
   if (pty !== null) {
     const untrustedNote = untrusted === null ? ''
@@ -179,9 +182,12 @@ const PTY_CHECK = "let p;try{p=require('module').createRequire(require('fs').rea
   ".split('\\n')[0]);process.exit(1)}let o='';p.onData(d=>{o+=d});p.onExit(()=>{if(o.includes('pty-ok'))process.exit(0);" +
   "console.error('a pty it opened gave back nothing');process.exit(1)})";
 
+const PTY_CHECK_MS = 30_000;
+
 async function ptyWorks(world: ShellWorld, dir: string, env: Record<string, string>): Promise<string | null> {
-  const ran = await world.run(['node', '-e', PTY_CHECK], { cwd: dir, env, timeoutMs: 30_000 });
+  const ran = await world.run(['node', '-e', PTY_CHECK], { cwd: dir, env, timeoutMs: PTY_CHECK_MS });
   if (ran.status === 0) return null;
+  if (ran.timedOut) return `its check ran past its ${PTY_CHECK_MS / 1000} s limit and was stopped`;
   const said = `${ran.stderr}${ran.stdout}`.trim().split('\n').at(-1);
   return said ? said : `node exited without saying why (${ended(ran)})`;
 }
