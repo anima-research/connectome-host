@@ -249,9 +249,11 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   '.connectome-update/staging/<mark> inside each directory an update copies that\'s under this install\'s ' +
   'directory, since they name the old directory\'s places, and restoring from them would write those. If a trial ' +
   'is unfinished, the journal\'s last ok trial-start with no ok commit, fallback or go-back after it, its fallback ' +
-  'restores from them: let it end where the install was, by starting the install there, moving it back first if it ' +
-  'was moved, before moving them. ' +
-  'Don\'t restart or update the host until setup has run again: ' +
+  'restores from them, and if a Go back is, the journal\'s last ok go-back with no ok trial-start, commit or ' +
+  'fallback after it, the next start goes on with it from them: let it end where the install was before moving ' +
+  'them. If the install was moved, move it back first, write the record there, with the data directory its host is ' +
+  'started with there, and start it there; once that has ended, move the install again, and run setup in its new ' +
+  'directory. Otherwise, don\'t restart or update the host until setup has run again: ' +
   'its next start runs start.js, whose launcher reads the record.';
 
 /** mark.json, written by the host's Restart, or by the launcher's Go back

@@ -314,7 +314,9 @@ root directly in the working directory, as the default root is.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
-the arguments it gives the host now, and restart it. Setup says whether the
+the arguments it gives the host now, and restart it. In a systemd unit,
+write each `%` in a path as `%%`, since systemd reads `%` as a specifier even
+between quotes. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
@@ -377,14 +379,17 @@ copied from the directory its record names, or a binding gives any place of
 the install another place, setup refuses while any of these is in the root,
 naming each. `connectome setup` then asks whether to move them aside, and by
 hand `--move-aside` does: it moves each into `<root>/moved-aside/<time>/`,
-and the areas inside each place under the new directory into that place's
-`.connectome-update/moved-aside/<time>/`, saying each move, and it names an
-area in a place outside the new directory and leaves it. Or move them out of
+and each area a Go back kept that lies under the new directory once its
+links are followed into its place's `.connectome-update/moved-aside/<time>/`,
+saying each move, and it names an area that lies outside the new directory
+and leaves it. It looks for areas in each place the record and the children
+file name, and in each place a Go back's own list names. Or move them out of
 the root yourself, with each mark's areas in a place under the new
-directory, leaving any outside it, which may be another install's. Setup refuses while a trial is
-unfinished, since that trial's fallback restores from them: let the
-trial end where the install was, moving it back first if it was moved,
-and then move or copy it again. Nothing
+directory, leaving any outside it, which may be another install's. Setup refuses while a trial or
+a Go back is unfinished, since that trial's fallback restores from them, and
+the next start goes on with that Go back from them: let it end where the
+install was, moving it back first if it was moved, and then move or copy it
+again. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
 move out what you want of it rather than deleting it. Until the next update
 takes a new copy, `/update back restore` isn't there, and each update

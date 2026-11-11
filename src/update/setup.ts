@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ContractError, ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, RESTART_EXIT_CODE, WRITE_RECORD_AGAIN, installPaths, moveCurrent,
   copyShows, readCurrent, readJournal,
-  readRecord, realOrResolved, releaseDir, unfinishedTrial, writeJsonAtomic, writeTextAtomic,
+  readRecord, realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic,
   type InstallRecord, type JournalLine,
 } from './contract.js';
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
@@ -49,8 +49,8 @@ import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launcher.js';
 import {
   MOVE_ASIDE_BY_HAND, MOVE_ASIDE_REFUSED, MOVED_ASIDE_AFTERWARDS, bindChildren, bindingCheckLines, bindingOf, childPathsOf,
-  childrenIn, childrenMove, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, movesPlaces, movingAside,
-  sameDirectory, unfinishedTrialWords, workingDirOf, type Moved, type Place,
+  childrenIn, childrenRewrite, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, movesPlaces, movingAside,
+  sameDirectory, unfinishedWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 
@@ -297,7 +297,7 @@ function setupsOwn(root: string): boolean {
 }
 
 const CHANGED_MEANWHILE = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
-  'backs, or the trial its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
+  'backs, or the trial or Go back its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
   'changed none of them. Run it again, and it reads them afresh.';
 
 function errorText(error: unknown): string {
@@ -446,8 +446,7 @@ export function setup(options: SetupOptions): void {
         `${unanswered.map(placeLine).join('\n')}\nGive each with --place PATH PLACE, PLACE being PATH again where it's ` +
         'this install\'s, or the path of this install\'s own. Setup has changed nothing.');
     }
-    bindPlaces = [...placed.filter((place) => !done(place)),
-      ...binding.kept.filter((kept) => !placed.some((given) => given.from === kept.from))];
+    bindPlaces = [...placed, ...binding.kept.filter((kept) => !placed.some((given) => given.from === kept.from))];
   }
   const replaced = given !== null && Array.isArray(existing?.extraState) &&
     existing.extraState.some((path) => !given.includes(path));
@@ -456,8 +455,8 @@ export function setup(options: SetupOptions): void {
   const kept = moving ? keptInRoot(root) : null;
   if (binding !== null && kept !== null && kept.found.length > 0) {
     const account = keptAccount(root, binding.from, kept);
-    const trial = unfinishedTrial(readJournal(root), readCurrent(root));
-    if (trial !== null) throw new ContractError(`${account}\n${unfinishedTrialWords(trial)}`);
+    const unfinished = unfinishedWords(root);
+    if (unfinished !== null) throw new ContractError(`${account}\n${unfinished}`);
     if (!options.moveAside) {
       throw new ContractError(`${account}\nSetup has changed nothing. Run it again with --move-aside, which ` +
         `${movingAside(root, binding.to)}, or move them out yourself: ${MOVE_ASIDE_BY_HAND}. ${MOVED_ASIDE_AFTERWARDS}`);
@@ -468,7 +467,7 @@ export function setup(options: SetupOptions): void {
   const writtenAfterRecord: [string, string][] = [
     [paths.journal, `${basename(paths.journal)}, its update journal,`],
     ...[ENTRY_POINT, INSTALL_COMMAND, `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`].map((name): [string, string] =>
-      [join(root, name), `${name}, which setup writes only after the record,`]),
+      [join(root, name), `${name}, which setup writes only once the install has a record,`]),
   ];
   const shown = existing !== null ? undefined : writtenAfterRecord.find(([path]) => exists(path))?.[1];
   if (shown !== undefined && exists(paths.releases)) {
@@ -583,7 +582,7 @@ export function setup(options: SetupOptions): void {
     }
   };
   const mappedData = existing === null ? null : placeHere(existing.dataDir);
-  if (existing !== null && mappedData !== null && realOrResolved(mappedData) !== dataDir) {
+  if (existing !== null && mappedData !== null && !sameDirectory(mappedData, dataDir)) {
     const holder = binding?.places.find((place) => place.data)?.path ?? existing.dataDir;
     throw new ContractError(binding === null
       ? `The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an install of its own: ` +
@@ -765,7 +764,7 @@ export function setup(options: SetupOptions): void {
   };
   let command: { path: string; pathLine: string | null };
   if (binding !== null && bindShape !== null) {
-    const rewrite = childrenMove(binding.children, bindShape);
+    const rewrite = childrenRewrite(binding.children, bindShape);
     const locked = moving || rewrite;
     if (locked) lockForBinding(root, binding.from, ops);
     try {
@@ -775,7 +774,7 @@ export function setup(options: SetupOptions): void {
         if (JSON.stringify(readRecord<InstallRecord>(paths.install, 'install record')) !== JSON.stringify(existing) ||
           JSON.stringify(now?.value ?? null) !== JSON.stringify(binding.children?.value ?? null) ||
           JSON.stringify(keptNow) !== JSON.stringify(kept) ||
-          (keptNow !== null && keptNow.found.length > 0 && unfinishedTrial(readJournal(root), readCurrent(root)) !== null)) {
+          (keptNow !== null && keptNow.found.length > 0 && unfinishedWords(root) !== null)) {
           throw new ContractError(CHANGED_MEANWHILE);
         }
       }
@@ -783,7 +782,7 @@ export function setup(options: SetupOptions): void {
       if (kept !== null && kept.found.length > 0) {
         const children = binding.children?.bound ? binding.children.paths
           : childPathsOf(binding).map((was) => mapPath(was, bindShape) ?? was);
-        const places = [dataDir, ...extraState, ...children];
+        const places = [dataDir, ...extraState, ...children, ...kept.listed.map((was) => mapPath(was, bindShape) ?? was)];
         const { moved, outside } = moveAside(root, binding.to, [...new Set(places)], kept, new Date());
         say('Moved aside what this install\'s updates and Go backs kept, which names places that aren\'t this install\'s now:');
         for (const { from, to } of moved) say(`  ${from} → ${to}`);

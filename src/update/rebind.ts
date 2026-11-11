@@ -1,8 +1,9 @@
 import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  ContractError, ITEM_UPDATE_DIR, VersionError, childrenFilePath, installPaths, isChildEntry, itemSetAsideDir, readRecord,
-  syncDir, writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
+  ContractError, ITEM_UPDATE_DIR, VersionError, childrenFilePath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir,
+  pendingGoBack, readCurrent, readGoBackList, readJournal, readRecord, realOrResolved, syncDir, unfinishedTrial,
+  writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
 } from './contract.js';
 import { makeDirs } from './data-swap.js';
 import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
@@ -63,6 +64,9 @@ export function childrenIn(dataDir: string, from: string | null, to: string): Ch
   const { children, boundTo } = value;
   if (!Array.isArray(children) || (boundTo !== undefined && typeof boundTo !== 'string')) {
     throw unbindable(`${path} names its places in a form this release can't read`, true);
+  }
+  if (!children.every(isChildEntry)) {
+    throw unbindable(`${path} names a child in a form this release can't read`, true);
   }
   const bound = boundTo !== undefined && !(from !== null && (boundTo === from || sameDirectory(boundTo, from)));
   if (bound && !sameDirectory(boundTo, to)) {
@@ -176,8 +180,9 @@ export function bindingOf(root: string, record: InstallRecord, placed: Moved[] =
   };
 }
 
-export function childrenMove(children: Children | null, mapping: Mapping): boolean {
-  return children !== null && !children.bound && children.paths.some((path) => mapPath(path, mapping) !== path);
+export function childrenRewrite(children: Children | null, mapping: Mapping): boolean {
+  return children !== null && !children.bound &&
+    (children.value.boundTo !== undefined || children.paths.some((path) => mapPath(path, mapping) !== path));
 }
 
 export function bindChildren(children: Children, mapping: Mapping): void {
@@ -204,6 +209,7 @@ export function movesPlaces(binding: Bind, places: Moved[]): boolean {
 export interface KeptInRoot {
   found: string[];
   marks: string[];
+  listed: string[];
 }
 
 export function keptInRoot(root: string): KeptInRoot {
@@ -217,8 +223,20 @@ export function keptInRoot(root: string): KeptInRoot {
         'Go back kept anything there. Setup has changed nothing. Make it readable to this user, and run setup again.');
     }
   }
+  const listed = marks.flatMap((mark) => {
+    const list = goBackListPath(root, mark);
+    if (lstatSync(list, { throwIfNoEntry: false }) === undefined) return [];
+    try {
+      return readGoBackList(root, mark).map((place) => place.path);
+    } catch (error) {
+      throw new ContractError(`${list} can't be read (${(error as Error).message.replace(/\.+$/, '')}), so setup can't ` +
+        'tell which places hold what that Go back kept. Setup has changed nothing. Put it right, or move ' +
+        `${join(setAside, mark)} out of the root yourself with that Go back's areas (${MOVE_ASIDE_BY_HAND}), and run ` +
+        'setup again.');
+    }
+  });
   const copies = [copy, copyPrev].filter((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined);
-  return { found: [...copies, ...marks.map((mark) => join(setAside, mark))], marks };
+  return { found: [...copies, ...marks.map((mark) => join(setAside, mark))], marks, listed };
 }
 
 export const MOVE_ASIDE_REFUSED = '--move-aside moves aside what an install\'s updates and Go backs keep once the ' +
@@ -248,11 +266,28 @@ export function movingAside(root: string, to: string): string {
     `inside a place this binding puts under ${to} into that place's ${ITEM_UPDATE_DIR}/moved-aside`;
 }
 
-export function unfinishedTrialWords(trial: JournalLine): string {
+function unfinishedTrialWords(trial: JournalLine): string {
   return `A trial is unfinished: the journal's last ok trial-start, to ${trial.to}, has no ok commit, ` +
     'fallback or go-back after it, and if it ends before its commit, its fallback puts the places back from what\'s ' +
     'listed here. Setup has changed nothing. Let that trial end where the install was, by starting it there, moving ' +
     'it back first if it was moved, and then move or copy it again.';
+}
+
+function unfinishedGoBackWords(goBack: JournalLine): string {
+  return `A Go back is unfinished: the journal's last ok go-back, to ${goBack.to}, has no ok trial-start, commit or ` +
+    'fallback after it, and the next start goes on with it from what\'s listed here. Setup has changed nothing. Let ' +
+    'that Go back end where the install was, by starting it there, moving it back first if it was moved, and then ' +
+    'move or copy it again.';
+}
+
+/** What a binding that moves aside what the root keeps must wait for: a trial its journal leaves unfinished, whose
+ *  fallback restores from that, or a Go back it leaves unfinished, which the next start goes on with from it. */
+export function unfinishedWords(root: string): string | null {
+  const lines = readJournal(root);
+  const trial = unfinishedTrial(lines, readCurrent(root));
+  if (trial !== null) return unfinishedTrialWords(trial);
+  const goBack = pendingGoBack(lines);
+  return goBack === null ? null : unfinishedGoBackWords(goBack);
 }
 
 export interface MovedAside {
@@ -262,17 +297,26 @@ export interface MovedAside {
 
 export function moveAside(root: string, to: string, places: string[], kept: KeptInRoot, now: Date): MovedAside {
   const time = now.toISOString().replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
-  const there = (path: string) => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  const there = (path: string) => {
+    try {
+      return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') return false;
+      throw error;
+    }
+  };
   const aside = join(root, 'moved-aside', time);
   const moves: Moved[] = [];
   const outside: string[] = [];
+  const here = realOrResolved(to);
   for (const mark of kept.marks) {
     for (const place of places) {
       for (const area of [itemSetAsideDir(place, mark), itemStagingDir(place, mark)]) {
         for (const path of ['', '.tmp', '.filling', '.emptying'].map((suffix) => area + suffix).filter(there)) {
           const update = join(place, ITEM_UPDATE_DIR);
-          if (isUnder(place, to)) moves.push({ from: path, to: join(update, 'moved-aside', time, relative(update, path)) });
-          else outside.push(path);
+          const real = realOrResolved(path);
+          if (isUnder(real, here)) moves.push({ from: path, to: join(update, 'moved-aside', time, relative(update, path)) });
+          else outside.push(real);
         }
       }
     }
@@ -388,12 +432,15 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     "const bound = record?.v === 1 && typeof record.workingDir === 'string' ? record.workingDir : null;",
     "const recorded = record?.v === 1 ? record.dataDir : null;",
     "const under = bound === null || bound.endsWith('/') ? bound : `${bound}/`;",
-    "const served = typeof recorded !== 'string' ? null : bound !== null &&",
-    "  (recorded === bound || recorded.startsWith(under)) ? join(dirname(root), recorded.slice(bound.length)) : recorded;",
-    'const byHand = ownSetup !== null && existsSync(ownSetup) && served !== null',
-    "  ? `the setup of ${writer}, the release whose setup wrote this file: \\`cd ${quoted(dirname(root))} && ` +",
-    "    `DATA_DIR=${quoted(served)} bun --no-env-file ${quoted(ownSetup)} --root ${quoted(root)}\\``",
-    "  : 'its setup by hand again, as docs/DEPLOYMENTS.md shows';",
+    "const inside = typeof recorded === 'string' && bound !== null && (recorded === bound || recorded.startsWith(under));",
+    "const now = '<where its data directory is now>';",
+    "const served = typeof recorded !== 'string' ? null : inside ? join(dirname(root), recorded.slice(bound.length)) : now;",
+    "const place = typeof recorded === 'string' && !inside ? ` --place ${quoted(recorded)} ${quoted(now)}` : '';",
+    "const byHand = served === null || writer === null ? 'its setup by hand again, as docs/DEPLOYMENTS.md shows'",
+    "  : existsSync(ownSetup) ? `the setup of ${writer}, the release whose setup wrote this file: \\`cd ${quoted(dirname(root))} && ` +",
+    "    `DATA_DIR=${quoted(served)} bun --no-env-file ${quoted(ownSetup)} --root ${quoted(root)}${place}\\``",
+    "  : `the setup of ${writer}, the release whose setup wrote this file, which this install's releases don't hold now: ` +",
+    "    `install exactly ${writer} in ${quoted(dirname(root))} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand`;",
     '{',
     '  const sameDirectory = (a, b) => {',
     '    try {',

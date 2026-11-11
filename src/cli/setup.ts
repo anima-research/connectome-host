@@ -20,13 +20,13 @@ import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readJournal, readRecord, releaseDir,
-  unfinishedTrial, writeJsonAtomic, writeTextAtomic, type InstallRecord,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
+  writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import {
   MOVE_ASIDE_BY_HAND, MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, movesPlaces, movingAside,
-  unfinishedTrialWords, type Binding, type Place,
+  unfinishedWords, type Binding, type Place,
 } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
@@ -867,8 +867,13 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
       if (typed === null) return -1;
       const path = typed.trim();
       const home = homeDirectory(world.env.HOME);
-      const given = path === '' ? place.path
-        : resolve(dirname(root), home !== null && (path === '~' || path.startsWith('~/')) ? join(home, path.slice(1)) : path);
+      const tilde = path === '~' || path.startsWith('~/');
+      if (tilde && home === null) {
+        out('~ means your home directory, and HOME isn\'t an absolute path to a directory here, so setup can\'t tell ' +
+          'where that is: type the whole path.');
+        continue;
+      }
+      const given = path === '' ? place.path : resolve(dirname(root), tilde && home !== null ? join(home, path.slice(1)) : path);
       if (place.data) {
         const data = mapPath(record.dataDir, { from: null, to, places: [{ from: place.path, to: given }] })!;
         if (!existsSync(data) || !statSync(data).isDirectory()) {
@@ -905,9 +910,9 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
   const kept = movesPlaces(asking, places) ? keptInRoot(root) : null;
   if (kept !== null && kept.found.length > 0) {
     const account = keptAccount(root, from, kept);
-    const trial = unfinishedTrial(readJournal(root), readCurrent(root));
-    if (trial !== null) {
-      bindingStopped(root, `${account}\n${unfinishedTrialWords(trial)}`, err);
+    const unfinished = unfinishedWords(root);
+    if (unfinished !== null) {
+      bindingStopped(root, `${account}\n${unfinished}`, err);
       return 1;
     }
     out(`${account}\nMoving them aside ${movingAside(root, to)}. ${MOVED_ASIDE_AFTERWARDS}`);
