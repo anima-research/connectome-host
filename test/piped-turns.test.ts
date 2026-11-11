@@ -106,7 +106,7 @@ describe('the wait for a line\'s turn', () => {
     expect(await settled(wait)).toBe(true);
   });
 
-  test('a line is unanswered while its turn runs, and while it\'s owed one, even one whose wait ran out before it was taken in, as batch mode and the setup close both ask', async () => {
+  test('a line is unanswered while its turn runs, and while it\'s owed one, even one whose wait ran out before it was taken in, as setup\'s close asks', async () => {
     await onFakeTimers(async (advance) => {
       const { turns, emit } = setUp();
       const settledTrace = [...TURN_SETTLED_TRACES][0]!;
