@@ -73,10 +73,10 @@ describe('quarantineAlarm', () => {
     }
   });
 
-  test('none held: the all-clear, under its own kind', () => {
+  test('none held: record absence under its own kind, never proof of coverage/debt payment', () => {
     expect(quarantineAlarm({ count: 0, keys: [] })).toEqual({
       kind: 'compression-quarantine-clear',
-      message: 'compression quarantine EMPTY — all debt paid; alarm stands down.',
+      message: 'compression quarantine EMPTY — no records held; coverage and debt payment not established by this count; alarm stands down.',
       data: { count: 0 },
     });
     expect(quarantineAlarm({ count: 0, keys: [], spans: [] }).kind).toBe('compression-quarantine-clear');

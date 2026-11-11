@@ -17,7 +17,8 @@
  * its parent opened.  PID lives at {DATA_DIR}/headless.pid for parent-side
  * liveness.
  *
- * One client at a time.  Client disconnect does NOT exit the process —
+ * One interactive client at a time; finite quarantine controls use DATA_DIR/q/s.
+ * Client disconnect does NOT exit the process —
  * children stay up across parent restarts and accept the next connection.
  *
  * See docs/fleet-protocol.md for the protocol reference.
@@ -42,6 +43,8 @@ import {
   PANEL_OPS_THAT_CHANGE_THE_SESSION, operatorWorkRunning, refusedWhileSwitching, switchLeftForStop, trackOperatorWork,
 } from './session-switch.js';
 import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
+import type { QuarantineOperator } from './quarantine-operator.js';
+import { listenQuarantineSocket } from './quarantine-socket.js';
 
 interface HeadlessOptions {
   socketPath?: string;
@@ -86,6 +89,7 @@ export function endHeadlessLog(): Promise<void> {
 export async function runHeadless(app: AppContext, argv: string[] = [], testing: { stoppedReadingMs?: number } = {}): Promise<void> {
   const opts = parseHeadlessArgs(argv);
   const dataDir = resolve(process.env.DATA_DIR || './data');
+  let quarantine: QuarantineOperator | undefined;
   const socketPath = opts.socketPath ?? join(dataDir, 'ipc.sock');
   const logPath = join(dataDir, 'headless.log');
   const pidPath = join(dataDir, 'headless.pid');
@@ -318,6 +322,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   const followers = [forwarding, idling];
   const followFramework = (): void => {
     if (app.framework === traced) return;
+    quarantine?.invalidate();
     traced = app.framework;
     treeReducer.reset();
     seedTree();
@@ -741,11 +746,29 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     server.once('error', rejectListen);
   });
 
+  // Independent finite control channel: never currentClient, emit(), replay,
+  // subscription or text accounting. Lazy CM loading preserves old-CM startup.
+  let control: { close(): void } | undefined;
+  try {
+    control = await listenQuarantineSocket(dataDir, {
+      ready: { pid: process.pid, recipe: app.recipe.name }, log,
+      async handle(cmd) {
+        const { QuarantineOperator } = await import('./quarantine-operator.js');
+        quarantine ??= new QuarantineOperator(app, dataDir);
+        const work = quarantine.handle(cmd);
+        return cmd.type === 'quarantine-release'
+          ? trackOperatorWork(app, 'selected L1 quarantine waiver', work) : work;
+      },
+    });
+  } catch (error) { log(`quarantine control unavailable (interactive IPC unchanged): ${String(error)}`); }
+
   async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
     if (app.stopping) return;
     // The host is stopping: a session switch under way goes no further, and
     // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
+    control?.close();
+    quarantine?.invalidate();
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
     emit({ type: 'lifecycle', phase: 'exiting', reason });
