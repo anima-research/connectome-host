@@ -4,9 +4,9 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, REBIND_PLAN, appendJournal, childrenFilePath,
-  connectedWhenMarked, copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy,
-  pendingGoBack, readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, connectedWhenMarked,
+  copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy, pendingGoBack,
+  readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
   unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
   type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type JournalLine, type LockRecord, type Mark,
   type PlaceKind,
@@ -153,11 +153,6 @@ function unwritableDirectory(dirs: string[]): string | null {
 
 export class LockHeld extends ContractError {}
 
-export function lockLive(holder: LockRecord, ops: LauncherOps): boolean {
-  const bootId = ops.bootId();
-  return ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId);
-}
-
 export function takeLock(root: string, ops: LauncherOps): void {
   const { lock } = installPaths(root);
   const bootId = ops.bootId();
@@ -180,18 +175,11 @@ export function takeLock(root: string, ops: LauncherOps): void {
         syncPath(dirname(lock));
         return;
       }
-      if (lockLive(holder, ops)) {
+      if (ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId)) {
         throw new LockHeld(
           `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
-          `An install runs one host at a time, and \`ps -o args= -p ${holder.pid}\` shows what that process runs. ` +
-          `If it runs this install's start.js, ${join(root, ENTRY_POINT)}, or a release in this install's ` +
-          `${join(root, 'releases')}, it's this install's host: stop it first. ` +
-          'If it runs setup, it\'s binding an install: start this one again once that setup has ended. ' +
-          'If it runs another install\'s start.js or a release in another install\'s releases, this install is a copy ' +
-          'made while that host ran, and the lock came ' +
-          'with the copy: run setup here first, which binds the copy to its own places and removes a lock it can show ' +
-          'came with it, and then remove the lock file if it\'s still there. If it\'s something else that reused the ' +
-          'number, remove the lock file.',
+          'An install runs one host at a time. If that process is this install\'s host, stop it first; if it\'s ' +
+          'something else that reused the number, remove the lock file.',
         );
       }
       if (attempt > 0) {
@@ -1035,13 +1023,6 @@ function clearLeftovers(root: string, lines: JournalLine[], ops: LauncherOps): v
 
 export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   takeLock(root, ops);
-  const plan = join(root, REBIND_PLAN);
-  if (exists(plan)) {
-    throw new ContractError(`Nothing runs in this install, since a setup binding this install was cut off before it ` +
-      `finished (${plan} is its plan), so the places it names may be half bound. Setup, run again, finishes it from ` +
-      `its plan without asking about its places again, or says what stops it: run \`${join(root, 'connectome')} ` +
-      'setup discord`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows.');
-  }
   settleCopy(root, ops);
   const record = readInstall(root, ops);
   // A start cut between a line's write and its sync leaves it in the page
@@ -1201,7 +1182,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
   }
 }
 
-export function releaseLock(root: string): void {
+function releaseLock(root: string): void {
   const { lock } = installPaths(root);
   try {
     if (readRecord<LockRecord>(lock, 'lock')?.pid === process.pid) rmSync(lock, { force: true });

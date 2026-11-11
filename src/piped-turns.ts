@@ -1,10 +1,8 @@
 /**
- * The framework's traces don't say which events started a turn, so a line's wait counts from when the host's own
- * module takes the line in (TuiModule.onProcess): a turn of the primary's that starts after that has the line in its
- * context, a wake's included, and the first one's end ends the wait. A line taken in while a turn runs waits for the
- * turn after that one, which the framework starts for every request queued while the agent was busy. At
- * `inference:failed` the wait goes on, since the framework may retry the turn, or hold it and run it again, and either
- * answers the line.
+ * agent-framework 0.32.0's traces don't say which events started a turn, so a line's wait counts from when the host
+ * takes the line in. Lines the host queued while a turn ran are answered together, in the turn after it, so a line
+ * taken in during a turn waits for the turn after it. The framework may retry a failed turn, or hold it and run it
+ * again, so `inference:failed` doesn't end a wait.
  */
 
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES, traceError } from './state/turn-trace.js';
@@ -27,9 +25,11 @@ export interface PipedTurns {
   endAll(): void;
   running(): boolean;
   takenIn(): void;
+  owed(): boolean;
+  /** A turn is running, or a line is owed one: what batch mode's last notice and setup's close both ask. */
+  unanswered(): boolean;
 }
 
-/** The longest a line waits for its turn. */
 export const PIPED_TURN_CAP_MS = 120_000;
 
 export function createPipedTurns(
@@ -42,11 +42,14 @@ export function createPipedTurns(
   const streams = new Map<string, 'open' | 'failed'>();
   let failures = createTurnFailures();
   let turnsStarted = 0;
+  let lastTakenIn: number | null = null;
   let turnRunning = false;
-  const waits: Array<{ after: number; arm: () => void; hold: () => void; done: () => void }> = [];
+  const waits: Array<{ after: number; taken: boolean; arm: () => void; hold: () => void; done: () => void }> = [];
   let held = 0;
-  const end = (wait: (typeof waits)[number]): void => {
+  let lateTakeIns = 0;
+  const end = (wait: (typeof waits)[number], takeInComing = !wait.taken): void => {
     waits.splice(waits.indexOf(wait), 1);
+    if (takeInComing) lateTakeIns++;
     wait.done();
   };
 
@@ -107,7 +110,7 @@ export function createPipedTurns(
     streams.delete(agent);
     if (primary) {
       turnRunning = false;
-      const ending = waits.filter((wait) => wait.after < turnsStarted);
+      const ending = waits.filter((wait) => wait.taken && wait.after < turnsStarted);
       for (const wait of ending) end(wait);
       waits[0]?.arm();
       if (ending.length === 0 && waits.length === 0) settledUnwaited();
@@ -124,12 +127,13 @@ export function createPipedTurns(
       let since = 0;
       const wait = {
         after: turnsStarted,
+        taken: false,
         arm: (): void => {
           if (capMs === null || left === null || timer !== undefined || held > 0) return;
           since = performance.now();
           timer = setTimeout(() => {
             if (!waits.includes(wait)) return;
-            out.error(`(no answer after ${capMs / 1000} s: going on without it)`);
+            out.error(`(no answer after ${capMs / 1000} s: going on; it prints here when it comes)`);
             end(wait);
             waits[0]?.arm();
           }, left);
@@ -151,13 +155,15 @@ export function createPipedTurns(
       cancel: (): void => {
         if (!waits.includes(wait)) return;
         const first = waits[0] === wait;
-        end(wait);
+        end(wait, false);
         if (first) waits[0]?.arm();
       },
     });
   }
 
   function switched(): void {
+    lastTakenIn = null;
+    lateTakeIns = 0;
     streams.clear();
     failures = createTurnFailures();
     turnRunning = false;
@@ -181,11 +187,22 @@ export function createPipedTurns(
   }
 
   function takenIn(): void {
-    const wait = waits.at(-1);
-    if (wait !== undefined) wait.after = turnsStarted;
+    lastTakenIn = turnsStarted;
+    if (lateTakeIns > 0) {
+      lateTakeIns--;
+      return;
+    }
+    const wait = waits.find((each) => !each.taken);
+    if (wait === undefined) return;
+    wait.taken = true;
+    wait.after = turnsStarted;
   }
 
-  return { onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn };
+  const owed = (): boolean => lateTakeIns > 0 || (lastTakenIn !== null && turnsStarted <= lastTakenIn);
+  return {
+    onTrace, waitForTurn, switched, holdCaps, endAll, running: () => turnRunning, takenIn, owed,
+    unanswered: () => turnRunning || owed(),
+  };
 }
 
 export interface TraceSource {
@@ -214,8 +231,10 @@ export async function switchFollowing<T>(
   traces: { follow(source: TraceSource): void; stop(): void },
   switchSession: () => Promise<T>,
   framework: () => TraceSource,
+  stopped: () => void = () => {},
 ): Promise<T> {
   traces.stop();
+  stopped();
   try {
     return await switchSession();
   } finally {

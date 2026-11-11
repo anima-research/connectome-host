@@ -13,15 +13,13 @@ import {
   PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, redactWindow, secretNames, storedSecrets, type Secret,
 } from '../setup/secrets.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
-import { INSTALL_ROOT_ENV } from '../update/contract.js';
+import { INSTALL_ROOT_ENV, SUPERVISED_ENV } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
-import {
-  SUPERVISED_ENV, checkService, readServiceRecord, serviceLines, servicePid, pathState, type ServiceRecord,
-} from './service.js';
+import { checkService, readServiceRecord, serviceLines, servicePid, pathState, type ServiceRecord } from './service.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
 const LADDER_LIMIT_MS = 60_000;

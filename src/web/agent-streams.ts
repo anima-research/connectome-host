@@ -1,6 +1,6 @@
 import { STREAM_END_TRACES } from '../state/turn-trace.js';
 import type { AgentNode } from '../state/agent-tree-reducer.js';
-import { AGENT_TREE_SCOPES } from './protocol.js';
+import { AGENT_TREE_SCOPES, isChildScope, type UndoneMarksMessage } from './protocol.js';
 
 export interface TraceViewHooks {
   appendStreamToken(token: string, blockType?: string): void;
@@ -81,6 +81,115 @@ export function applyTrace(
     return;
   }
   if (e.type.startsWith('host:')) hooks.requestHostMode();
+}
+
+/** The panels the page shows: their scope ('local' or a fleet child's
+ *  name), and the agent they answer for, which the page asks for by scope
+ *  alone: the conversation agent locally, and for a fleet child the agent
+ *  its latest pins or settings answer named, undefined before one has. */
+export interface ShownPanels {
+  scope: string;
+  agent: string | undefined;
+}
+
+/** What WindowFrames does with a frame that moves an agent's window. */
+export interface WindowFrameHooks {
+  /** Mark the transcript's rows as an undone-marks frame says. */
+  applyUndoneMarks(marks: UndoneMarksMessage): void;
+  /** The panels built from the shown agent's window (Context's makeup and
+   *  coverage, the compiled context, the pins, whose candidates leave an
+   *  undone row out) read it again. */
+  readPanels(): void;
+  /** Ask a fleet child which agent its panels answer for (its pins and
+   *  settings, which name it): one of its agents other than the one they
+   *  named moved its window. */
+  askPanelsAgent(): void;
+}
+
+/**
+ * The frames that move an agent's window, agent-framework #291's undo, redo
+ * and shed (DQ-4), each taken in order. The transcript shows the record,
+ * which keeps the rows, and an `undone-marks` frame marks them. The shown
+ * panels read the window again when the frame is for the agent they answer
+ * for, in their scope, once:
+ *
+ * - locally, at the conversation agent's `window:undone` trace (an undo or a
+ *   redo), and at an undone-marks frame for it that doesn't come right after
+ *   that trace (a shed's, which has no trace): the host sends one after each
+ *   such trace, and both reading them would read each twice (a makeup read
+ *   posts the window to count_tokens). Nor does the one the host sends right
+ *   after each welcome, which marks the rows the page kept and moved no
+ *   window;
+ * - in any scope, at the welcome of a socket that follows one that closed
+ *   (disconnected): the frames sent while the page was away are missed, so
+ *   a window moved then (another client's undo, say) is read again once.
+ *   The page's first welcome reads nothing, as no panel has read yet, and
+ *   nor does one sent again on the same socket;
+ * - for a fleet child, at a `child-event` of its `window:undone` or its
+ *   shed (`presentation:retracted`, reason `shed`): for the agent the child's
+ *   panels named, or for any of its agents before they have named one. For
+ *   another of its agents they ask which agent they answer for, since the
+ *   child may have restarted under the same scope with that one, and read
+ *   again once an answer names another than before (`named`).
+ *
+ * Another resident's window, a subagent's, and a scope the panels don't
+ * show read nothing.
+ */
+export class WindowFrames {
+  private tracedJustBefore: string | undefined;
+  private welcomedJustBefore = false;
+  private reconnecting = false;
+
+  /** The page's socket closed, and the page will connect again. */
+  disconnected(): void {
+    this.reconnecting = true;
+  }
+
+  take(
+    msg: { type: string; [k: string]: unknown },
+    shown: ShownPanels,
+    hooks: WindowFrameHooks,
+  ): void {
+    const traced = this.tracedJustBefore;
+    const welcomed = this.welcomedJustBefore;
+    this.tracedJustBefore = undefined;
+    this.welcomedJustBefore = msg.type === 'welcome';
+    const local = !isChildScope(shown.scope);
+    if (msg.type === 'welcome') {
+      if (this.reconnecting) hooks.readPanels();
+      this.reconnecting = false;
+      return;
+    }
+    if (msg.type === 'trace') {
+      const event = msg.event as { type?: unknown; agentName?: unknown } | undefined;
+      if (event?.type !== 'window:undone' || typeof event.agentName !== 'string') return;
+      this.tracedJustBefore = event.agentName;
+      if (local && event.agentName === shown.agent) hooks.readPanels();
+      return;
+    }
+    if (msg.type === 'undone-marks') {
+      const marks = msg as unknown as UndoneMarksMessage;
+      hooks.applyUndoneMarks(marks);
+      if (local && marks.agent === shown.agent && marks.agent !== traced && !welcomed) hooks.readPanels();
+      return;
+    }
+    if (msg.type === 'child-event' && !local && msg.childName === shown.scope) {
+      const event = msg.event as { type?: unknown; agentName?: unknown; reason?: unknown } | undefined;
+      const moved = event?.type === 'window:undone' || (event?.type === 'presentation:retracted' && event.reason === 'shed');
+      if (!moved) return;
+      if (shown.agent === undefined || event.agentName === shown.agent) hooks.readPanels();
+      else hooks.askPanelsAgent();
+    }
+  }
+
+  /** An answer that names the panels' agent (pins, settings) came: `before`
+   *  and `after` are the panels as it found and left them. When it names
+   *  another agent than they named before, in the same scope, a fleet child
+   *  that restarted with another agent say, they read again. */
+  named(before: ShownPanels, after: ShownPanels, hooks: Pick<WindowFrameHooks, 'readPanels'>): void {
+    if (before.scope !== after.scope || before.agent === undefined || after.agent === undefined) return;
+    if (before.agent !== after.agent) hooks.readPanels();
+  }
 }
 
 export type StreamSource =

@@ -1396,7 +1396,8 @@ describe('a name means one subagent until its result has come back', () => {
         expect(secondLead).not.toBe(firstLead);
         releaseChild();
         await until(() => written.length > 0);
-        expect(written).toEqual([{ text: "[Subagent 'child' returned, for 'lead', which has ended]\n\nchild done" }]);
+        // Written for the primary, lead's launcher, not for every resident.
+        expect(written).toEqual([{ text: "[Subagent 'child' returned, for 'lead', which has ended]\n\nchild done", forAgent: 'parent' }]);
         expect(woken).toEqual([]);
       } finally {
         h.subagent.cancelSubagent('lead');

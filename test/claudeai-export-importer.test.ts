@@ -1,19 +1,11 @@
 import { describe, test, expect } from 'bun:test';
 import {
-  importedMessages,
   linearize,
-  personNameOf,
   transformContent,
   parseToggleSpec,
   splitMixedToolMessages,
 } from '../scripts/import-claudeai-export.js';
 import type { ContentBlock } from '@animalabs/membrane';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { JsStore } from '@animalabs/chronicle';
-import { ContextManager } from '@animalabs/context-manager';
-import { SessionManager } from '../src/session-manager.js';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 const ROOT = '00000000-0000-4000-8000-000000000000';
 
@@ -383,129 +375,4 @@ describe('parseToggleSpec', () => {
     expect(parseToggleSpec('', 10).size).toBe(0);
     expect(parseToggleSpec('   ', 10).size).toBe(0);
   });
-});
-
-describe('the person\'s name', () => {
-  const exportWith = (users: string | null): string => {
-    const dir = mkdtempSync(join(tmpdir(), 'claudeai-export-'));
-    if (users !== null) writeFileSync(join(dir, 'users.json'), users);
-    return dir;
-  };
-
-  test('is the full_name of the one user the export\'s users.json gives, trimmed', () => {
-    expect(personNameOf(exportWith(JSON.stringify([{ uuid: 'u1', full_name: ' Walk Three ', email_address: 'w@example.invalid', verified_phone_number: null }])))).toBe('Walk Three');
-  });
-
-  test('--person with no name after it is refused, writing nothing, rather than taking the next option as the name', () => {
-    const dir = exportWith(null);
-    writeFileSync(join(dir, 'conversations.json'), '[]');
-    const out = join(dir, 'out');
-    const ran = Bun.spawnSync([process.execPath, join(import.meta.dir, '..', 'scripts', 'import-claudeai-export.ts'), dir,
-      '--out', out, '--no-interactive', '--person', '--dry-run'], { stdin: 'ignore' });
-    expect(ran.exitCode).toBe(1);
-    expect(ran.stderr.toString()).toContain('--person needs the name to give the person\'s turns: --person <name>');
-    expect(existsSync(out)).toBe(false);
-  });
-
-  test('"user", given with --person or named in users.json, is refused, saying why and to give another, writing nothing', () => {
-    for (const [users, extra, said] of [
-      [null, ['--person', 'user'], '--person names the person "user"'],
-      [JSON.stringify([{ uuid: 'u1', full_name: ' user ' }]), [], 'The export\'s users.json names its one user "user"'],
-    ] as const) {
-      const dir = exportWith(users);
-      writeFileSync(join(dir, 'conversations.json'), '[]');
-      const out = join(dir, 'out');
-      const ran = Bun.spawnSync([process.execPath, join(import.meta.dir, '..', 'scripts', 'import-claudeai-export.ts'), dir,
-        '--out', out, '--no-interactive', ...extra], { stdin: 'ignore' });
-      expect(ran.exitCode, said).toBe(1);
-      expect(ran.stderr.toString()).toContain(`${said}, which is the name the host gives a turn whose author has no name, so their turns would go in unnamed. Give the name to use with --person <name>.`);
-      expect(existsSync(out)).toBe(false);
-    }
-  });
-
-  test('is "user" where users.json is missing, isn\'t JSON, names no one, more than one, or a blank name', () => {
-    for (const users of [null, '{not json', '[]', JSON.stringify([{ full_name: 'A' }, { full_name: 'B' }]), JSON.stringify([{ full_name: '  ' }]), JSON.stringify([{}])]) {
-      expect(personNameOf(exportWith(users)), String(users)).toBe('user');
-    }
-  });
-
-  test('names the person\'s turns as a channel message names its author, under "user", and leaves the agent\'s, and the tool results its turns carry, as they were', () => {
-    const said: ContentBlock[] = [{ type: 'text', text: 'Hello' }];
-    expect(importedMessages(said, 'human', { agent: 'Claude', person: 'Walk Three' })).toEqual([
-      { participant: 'user', content: [{ type: 'text', text: 'Walk Three: Hello' }], author: { name: 'Walk Three' } },
-    ]);
-    expect(said).toEqual([{ type: 'text', text: 'Hello' }]);
-    expect(importedMessages(said, 'human', { agent: 'Claude', person: 'user' })).toEqual([{ participant: 'user', content: said }]);
-    const returned = [{ type: 'tool_result', toolUseId: 't1', content: 'found' }] as ContentBlock[];
-    expect(importedMessages(returned, 'human', { agent: 'Claude', person: 'Walk Three' })).toEqual([{ participant: 'user', content: returned }]);
-    const mixed = [{ type: 'text', text: 'and this' }, { type: 'tool_result', toolUseId: 't1', content: 'found' }] as ContentBlock[];
-    const unnamed = importedMessages(mixed, 'human', { agent: 'Claude', person: 'Walk Three' });
-    expect(unnamed.map((message) => message.participant)).toEqual(unnamed.map(() => 'user'));
-    expect(unnamed.flatMap((message) => message.content)).toEqual(mixed);
-    expect(JSON.stringify(unnamed)).not.toContain('Walk Three');
-    const turn: ContentBlock[] = [
-      { type: 'tool_use', id: 't1', name: 'search', input: {} },
-      { type: 'tool_result', toolUseId: 't1', content: 'found' },
-      { type: 'text', text: 'Done.' },
-    ] as ContentBlock[];
-    expect(importedMessages(turn, 'assistant', { agent: 'Claude', person: 'Walk Three' })).toEqual(splitMixedToolMessages(turn, 'Claude'));
-    expect(importedMessages([], 'human', { agent: 'Claude', person: 'Walk Three' })).toEqual([]);
-  });
-});
-
-describe('an import, run as a person runs it', () => {
-  const message = (uuid: string, parent: string, sender: 'human' | 'assistant', text: string) => ({
-    uuid, parent_message_uuid: parent, sender, text, content: [{ type: 'text', text }], attachments: [], files: [],
-    created_at: '2026-08-02T09:30:00Z', updated_at: '2026-08-02T09:30:00Z',
-  });
-  const exportOf = (users: unknown) => {
-    const dir = mkdtempSync(join(tmpdir(), 'claudeai-export-run-'));
-    writeFileSync(join(dir, 'users.json'), JSON.stringify(users));
-    writeFileSync(join(dir, 'conversations.json'), JSON.stringify([{
-      uuid: '8c9a0ab7-96c6-4a36-87fa-7e27c0c4be88', name: 'Lisbon', summary: '', created_at: '2026-08-02T09:30:00Z',
-      updated_at: '2026-08-02T09:31:00Z', account: { uuid: 'u1' },
-      chat_messages: [
-        message('cc2f4b0a-e85f-4062-abe3-6ecdb88f55f4', ROOT, 'human', 'Four days in Lisbon?'),
-        message('dd2f4b0a-e85f-4062-abe3-6ecdb88f55f4', 'cc2f4b0a-e85f-4062-abe3-6ecdb88f55f4', 'assistant', 'Plenty of time.'),
-      ],
-    }]));
-    return dir;
-  };
-  const imported = async (exportDir: string, extra: string[]) => {
-    const out = join(mkdtempSync(join(tmpdir(), 'claudeai-import-out-')), 'data');
-    mkdirSync(out, { recursive: true });
-    const ran = Bun.spawnSync(['bun', join(import.meta.dir, '..', 'scripts', 'import-claudeai-export.ts'), exportDir, '--out', out, '--no-interactive', ...extra]);
-    expect(ran.exitCode, ran.stderr.toString()).toBe(0);
-    const sessions = new SessionManager(out);
-    const [meta] = Object.values((sessions.load() as { sessions: Record<string, { id: string }> }).sessions);
-    const store = JsStore.openOrCreate({ path: sessions.getStorePath(meta!.id) });
-    const cm = await ContextManager.open({ store });
-    return cm.queryMessages({}).messages.map((m) => ({
-      participant: m.participant,
-      author: (m.metadata as { author?: unknown } | undefined)?.author ?? null,
-      text: (m.content as Array<{ type: string; text?: string }>).find((b) => b.type === 'text')?.text,
-    }));
-  };
-
-  test('names the person by users.json\'s one name, or by --person, as a channel message names its author, and leaves the agent\'s turns as they were', async () => {
-    const dir = exportOf([{ uuid: 'u1', full_name: 'Walk Three', email_address: 'w@example.invalid', verified_phone_number: null }]);
-    expect((await imported(dir, [])).slice(0, 2)).toEqual([
-      { participant: 'user', author: { name: 'Walk Three' }, text: 'Walk Three: Four days in Lisbon?' },
-      { participant: 'Claude', author: null, text: 'Plenty of time.' },
-    ]);
-    expect((await imported(dir, ['--person', 'ra']))[0]).toEqual({ participant: 'user', author: { name: 'ra' }, text: 'ra: Four days in Lisbon?' });
-  }, 60_000);
-
-  test('takes --person trimmed, and an empty one leaves the person\'s turns as before', async () => {
-    const dir = exportOf([]);
-    expect((await imported(dir, ['--person', ' ra ']))[0]).toEqual({ participant: 'user', author: { name: 'ra' }, text: 'ra: Four days in Lisbon?' });
-    for (const empty of ['', '  ']) {
-      expect((await imported(dir, ['--person', empty]))[0]).toEqual({ participant: 'user', author: null, text: 'Four days in Lisbon?' });
-    }
-  }, 60_000);
-
-  test('leaves the person\'s turns as before where the export names no one and no --person is given', async () => {
-    const dir = exportOf([]);
-    expect((await imported(dir, []))[0]).toEqual({ participant: 'user', author: null, text: 'Four days in Lisbon?' });
-  }, 60_000);
 });

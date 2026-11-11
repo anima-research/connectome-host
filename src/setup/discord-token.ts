@@ -1,5 +1,6 @@
 import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { hostVersionOf } from '../update/update.js';
+import { JSON_TYPE, redirectTarget } from './provider-key.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
@@ -49,10 +50,13 @@ export async function checkDiscordToken(
     return unanswered(error);
   }
   const type = response.headers.get('content-type');
-  if (response.status === 401 && (type === null || /^application\/json\b/i.test(type.trim()))) return { kind: 'refused' };
+  if (response.status === 401) {
+    return type === null || JSON_TYPE.test(type.trim())
+      ? { kind: 'refused' } : { kind: 'unrecognized', status: response.status };
+  }
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
-    return { kind: 'redirected', status: response.status, to: to === null ? null : hidden(to, token) };
+    return { kind: 'redirected', status: response.status, to: to === null ? null : redirectTarget(hidden(to, token), DISCORD_API) };
   }
   let text: string;
   try {
@@ -77,8 +81,11 @@ export async function checkDiscordToken(
     : { kind: 'answered', status: response.status, said };
 }
 
+// Its ASCII letters in any case, since a server that puts the token in a URL's host gives it back lowercased.
 function hidden(words: string, token: string): string {
   const forms = [...new Set([token, token.trim()])].filter((form) => form !== '').sort((a, b) => b.length - a.length);
-  for (const form of forms) words = words.split(form).join('<DISCORD_TOKEN>');
+  for (const form of forms) {
+    words = words.replace(new RegExp(form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<DISCORD_TOKEN>');
+  }
   return words;
 }

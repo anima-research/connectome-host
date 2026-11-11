@@ -1,20 +1,20 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync,
-  writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
+  statSync, writeFileSync,
 } from 'node:fs';
 import { constants, tmpdir, userInfo } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { takeFileLock } from '../setup/file-lock.js';
 import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
-import { ANTHROPIC_API, checkKey, originOf, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
+import { ANTHROPIC_API, checkKey, originOf, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
 import {
-  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, unwritableValue, writeEnvValue,
+  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, storedSecretsIn, unwritableValue, writeEnvValue,
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
-import { readSetupState, type SetupState } from '../setup/state.js';
+import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
@@ -24,13 +24,13 @@ import {
   writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
-import { bindingOf, mapPath, type Binding } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_RECIPE, SETUP_SURFACE, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, SETUP_SURFACE, installCommandOf, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
-export { SETUP_RECIPE };
+/** The setup agent's recipe, in a release. */
+export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own setup agent, in the directory that ' +
   'holds the install (from bunx, the directory it runs in). ' +
   'Run again, it goes on where it stopped. Unlike the other commands, it runs this package\'s own setup unless ' +
@@ -44,7 +44,7 @@ const SHELL_NODE_TOP = 24;
 const BOOT_TIMEOUT_MS = 60_000;
 // Bun 1.4.3's `bun add --no-env-file` still gives a package's install script the working directory's .env, where
 // 1.4.4's gives none (probed), and setup's bun add runs where the resident's secrets are.
-const SETUP_BUN_FLOOR = '>=1.4.4';
+export const SETUP_BUN_FLOOR = '>=1.4.4';
 const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',
@@ -109,6 +109,7 @@ export interface SetupWorld {
   user: string;
   env: Record<string, string | undefined>;
   cwd: string;
+  execArgv: string[];
   bun: { path: string; version: string };
   hasSudo: boolean;
   lingerOf(user: string): boolean | null;
@@ -142,15 +143,30 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const pkg = packageJson();
   const version = pkg.version;
 
+  const command = existsSync(join(root, INSTALL_COMMAND)) && existsSync(join(root, 'current', SETUP_RECIPE))
+    ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}` : firstLine();
   if (ctx.argv.length !== 1 || ctx.argv[0] !== SURFACE) {
-    err(`Usage: ${existsSync(join(root, INSTALL_COMMAND)) ? `${typedCommand(root, world.env.PATH)} setup ${SURFACE}`
-      : firstLine()}`);
+    err(`Usage: ${command}`);
     err('Discord is the one surface setup sets a resident up on.');
     return 2;
   }
   if (!world.terminal) {
     err('connectome setup needs a person at a terminal: it asks questions, and its agent talks with you in this ' +
       'terminal. Run it in one.');
+    return 1;
+  }
+  if (world.env.BUN_OPTIONS?.includes('--env-file')) {
+    err('connectome setup: BUN_OPTIONS holds --env-file, and Bun loads the file such a flag names into setup\'s own ' +
+      'environment as setup starts, where setup can\'t keep that file\'s values from its agent. Run setup again ' +
+      'without BUN_OPTIONS:');
+    err(`  env -u BUN_OPTIONS ${command}`);
+    err('or with only its --env-file taken out of BUN_OPTIONS.');
+    return 1;
+  }
+  if (world.execArgv.some((word) => word === '--env-file' || word.startsWith('--env-file='))) {
+    err('connectome setup: Bun was started with --env-file, and loads the file it names into setup\'s own environment ' +
+      'as setup starts, where setup can\'t keep that file\'s values from its agent. Run setup again without it:');
+    err(`  ${command}`);
     return 1;
   }
   const setupDir = join(dir, '.setup');
@@ -235,13 +251,34 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     const read = readSetupState(statePath);
     if ('unreadable' in read) {
-      err(`Setup's kept answers in ${statePath} can't be read (${read.unreadable}), so it asks them again.`);
+      err(`Setup's kept answers in ${statePath} can't be read (${read.unreadable}), so setup doesn't go by them.`);
     }
     let state = 'state' in read ? read.state : null;
     if (state !== null) {
       out(`Setup keeps its answers here: the resident ${state.shell ? 'gets' : 'doesn\'t get'} a shell, ` +
         `and runs as this user, ${world.user}. They aren't asked again; setup's agent picks up where it stopped, and ` +
         'can change with you what it set up.');
+    }
+    const lost = existsSync(root) ? null
+      : state?.finished !== undefined
+        ? `This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
+          'outside the data directory, its releases and its Go back.'
+        : 'unreadable' in read
+          ? `This directory's install root, ${root}, isn't there, and setup can't tell whether a setup finished here, ` +
+            'since its kept answers can\'t be read. If one did, the root\'s record went with it: the places of state ' +
+            'kept outside the data directory, its releases and its Go back.'
+          : null;
+    if (lost !== null) {
+      out(lost);
+      const fresh = await yesNo(world, `Make a new install on ${join(dir, 'data')}? (yes/no) `);
+      if (fresh === null) {
+        out('Setup stopped. Run it again in this directory to go on.');
+        return 1;
+      }
+      if (!fresh) {
+        out('Put the root\'s backup back, if you have one, and run setup again.');
+        return 0;
+      }
     }
     if (state === null) {
       out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. Setup asks a few ` +
@@ -368,18 +405,20 @@ async function installAndStart(
     }
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      'when an ssh session ends.');
+      `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +
+      'one logged in to the Mac, it can\'t start until they are.');
   }
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {
     err(`connectome-host ${version} needs Bun ${pkg.engines.bun.replace('>=', '')} or later, and this is Bun ` +
-      `${world.bun.version}. \`bun upgrade\` upgrades it; then run setup again.`);
+      `${world.bun.version}. \`bun upgrade\` upgrades it, or the package manager that installed it does; then run setup ` +
+      'again.');
     return 1;
   }
   if (bunBelowFloor(SETUP_BUN_FLOOR, world.bun.version) === true) {
     err(`Setup needs Bun ${SETUP_BUN_FLOOR.replace('>=', '')} or later, whose \`bun add --no-env-file\` keeps .env's ` +
-      `values from the packages' install scripts, and this is Bun ${world.bun.version}. \`bun upgrade\` upgrades it; ` +
-      'then run setup again.');
+      `values from the packages' install scripts, and this is Bun ${world.bun.version}. \`bun upgrade\` upgrades it, or ` +
+      'the package manager that installed it does; then run setup again.');
     return 1;
   }
   const programEnv = withoutKeys(env, []);
@@ -403,18 +442,49 @@ async function installAndStart(
     return 1;
   }
 
+  let record: InstallRecord | null;
+  try {
+    record = readRecord<InstallRecord>(join(root, 'install.json'), 'install record');
+  } catch (error) {
+    const why = (error as Error).message.replace(/\.+$/, '');
+    const said = `${error instanceof ContractError ? why : `${join(root, 'install.json')} can't be read (${why})`}, so ` +
+      'setup can\'t tell which data the install serves';
+    let version: unknown;
+    try {
+      version = (JSON.parse(readFileSync(join(root, 'install.json'), 'utf-8')) as { v?: unknown } | null)?.v;
+    } catch {
+    }
+    if (error instanceof ContractError && (version === undefined || version === 1)) {
+      err(`${said}. ${WRITE_RECORD_AGAIN}`);
+    } else {
+      err(`${said}, and goes no further.`);
+    }
+    return 1;
+  }
+  if (record !== null && (typeof record.dataDir !== 'string' || record.dataDir === '')) {
+    err(`The install record at ${join(root, 'install.json')} names no data directory, so setup can't tell which ` +
+      `data the install serves. ${WRITE_RECORD_AGAIN}`);
+    return 1;
+  }
+
   const trusted = await defaultTrusted(async (_manager, args, cwd) => {
     const ran = await world.run([world.bun.path, '--no-env-file', ...args], { cwd, env: programEnv });
     return { status: ran.status, output: `${ran.stdout}${ran.stderr}` };
   }, dir);
-  const untrusted = Array.isArray(trusted)
+  const listed = Array.isArray(trusted)
     ? addTrusted(join(dir, 'package.json'), [...trusted, ...HOST_TRUSTED])
-    : trusted.reason;
-  if (untrusted !== null) {
+    : { reason: trusted.reason };
+  if ('reason' in listed) {
     out(`Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} ` +
-      `(${untrusted}), so unless it already names ${SERVERS.shell} among its trustedDependencies, Bun runs no install ` +
-      `script of ${SERVERS.shell}'s, and through a mirror or a company ` +
+      `(${listed.reason}), so unless it already names ${SERVERS.shell} among its trustedDependencies, Bun runs no ` +
+      `install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
       'registry it may run none of the others\'.');
+  } else if (listed.added.length > 0) {
+    const fromBun = listed.added.filter((name) => !HOST_TRUSTED.includes(name)).length;
+    const what = [fromBun > 0 ? `${fromBun} name${fromBun === 1 ? '' : 's'} from Bun's default trusted list` : null,
+      ...listed.added.filter((name) => HOST_TRUSTED.includes(name))].filter((part) => part !== null).join(' and ');
+    out(`Setup added ${what} to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package's install ` +
+      'scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.');
   }
 
   // A package counts as installed once package.json declares it: a bun add that fails partway leaves packages in
@@ -440,20 +510,31 @@ async function installAndStart(
     let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
     let pty = await ptyWorks(world, dir, programEnv);
     if (pty !== null) {
+      const ptyDir = nodePtyDir(dir);
+      const aside = join(dir, '.setup', 'node-pty-aside');
       out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
-        'setup installs it again:');
-      rmSync(nodePtyDir(dir), { recursive: true, force: true });
+        `setup installs it again, keeping the copy it has at ${aside} until the new one works, and putting it ` +
+        'back if it doesn\'t:');
+      if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
+      else if (existsSync(ptyDir)) renameSync(ptyDir, aside);
       const again = await world.run([world.bun.path, '--no-env-file', 'install'], { cwd: dir, env: programEnv, show: true });
-      if (again.status === 0) helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
-      pty = again.status === 0 ? await ptyWorks(world, dir, programEnv)
-        : `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
+      if (again.status === 0) {
+        helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
+        pty = await ptyWorks(world, dir, programEnv);
+      } else pty = `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
+      if (pty === null) rmSync(aside, { recursive: true, force: true });
+      else if (existsSync(aside)) {
+        rmSync(ptyDir, { recursive: true, force: true });
+        renameSync(aside, ptyDir);
+        helper = makeSpawnHelperExecutable(ptyDir, world.platform);
+      }
     }
     if (pty !== null) {
       const noShell = `Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where ` +
         'setup keeps its answers, and run setup again to answer no.';
-      const untrustedNote = untrusted === null ? '' : 'Setup couldn\'t add the packages whose install scripts Bun runs ' +
-        `by default to ${join(dir, 'package.json')} (${untrusted}), so through a mirror or a company registry Bun may ` +
-        'not have run node-pty\'s install script at all. ';
+      const untrustedNote = !('reason' in listed) ? '' : 'Setup couldn\'t add the packages whose install scripts Bun ' +
+        `runs by default to ${join(dir, 'package.json')} (${listed.reason}), so through a mirror or a company registry ` +
+        'Bun may not have run node-pty\'s install script at all. ';
       const linux = world.platform !== 'linux' ? '' : 'On Linux, its native part is built as it\'s ' +
         'installed, with python3, make and a C++ compiler; on Debian and Ubuntu, ' +
         `\`${world.hasSudo ? 'sudo ' : ''}apt install build-essential python3\` installs them, run ` +
@@ -472,46 +553,20 @@ async function installAndStart(
     }
   }
 
-  let record: InstallRecord | null;
-  try {
-    record = readRecord<InstallRecord>(join(root, 'install.json'), 'install record');
-  } catch (error) {
-    const why = (error as Error).message.replace(/\.+$/, '');
-    const said = `${error instanceof ContractError ? why : `${join(root, 'install.json')} can't be read (${why})`}, so ` +
-      'setup can\'t tell which data the install serves';
-    let version: unknown;
-    try {
-      version = (JSON.parse(readFileSync(join(root, 'install.json'), 'utf-8')) as { v?: unknown } | null)?.v;
-    } catch {
-    }
-    if (error instanceof ContractError && (version === undefined || version === 1)) {
-      err(`${said}. ${WRITE_RECORD_AGAIN}`);
-    } else {
-      err(`${said}, and goes no further.`);
-    }
-    return 1;
-  }
   const settingUp = record === null;
   let dataDir: string;
-  let placeArgs: string[] = [];
   if (record === null) {
     dataDir = join(dir, 'data');
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } else if (typeof record.dataDir !== 'string' || record.dataDir === '') {
-    err(`The install record at ${join(root, 'install.json')} names no data directory, so setup can't tell which ` +
-      `data the install serves. ${WRITE_RECORD_AGAIN}`);
-    return 1;
   } else {
-    const bound = await bindingAnswers(world, root, record, { out, err });
-    if (typeof bound === 'number') return bound === -1 ? stopped() : bound;
-    ({ dataDir, placeArgs } = bound);
+    dataDir = record.dataDir;
   }
   const copySetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(settingUp
     ? `Making ${root} an install that can take newer releases. Its first release is a copy of what's installed here. ` +
       'Making it can take a minute or more.'
     : `Checking the install at ${root}.`);
-  const made = await world.run([world.bun.path, '--no-env-file', copySetup, '--root', root, ...placeArgs], {
+  const made = await world.run([world.bun.path, '--no-env-file', copySetup, '--root', root], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
   });
   if (made.status !== 0) {
@@ -565,8 +620,10 @@ async function installAndStart(
       if (env.SHELL === undefined || ['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(basename(env.SHELL))) {
         out(`${needs} For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it there:`);
         out(`  ${command.pathLine}`);
+        out(`That line is for ${env.SHELL === undefined ? 'a Bourne shell, such as sh or bash, since SHELL names no shell'
+          : `${basename(env.SHELL)}, the login shell SHELL names`}; another shell sets PATH its own way.`);
       } else {
-        out(`${needs} For that, put ${root} on your PATH as your shell sets it, and in its startup file to keep it there.`);
+        out(`${needs} For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
       }
     }
   }
@@ -608,6 +665,9 @@ async function installAndStart(
   out(`The installed host (${running}) starts.`);
 
   const stored = readEnvFile(envFile);
+  // Read again at each use, since the person can change .env while setup waits on a question.
+  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile);
+  const shownOrigin = (url: string, key: string) => withSecretsHidden(String(originOf(url)), key, hide());
   const baseIn = (): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
     if (url === undefined || originOf(url) !== null) return url;
@@ -622,8 +682,8 @@ async function installAndStart(
   if (shell.ANTHROPIC_BASE_URL !== undefined && (shell.ANTHROPIC_BASE_URL || undefined) !== baseUrl) {
     out(`Setup checks the key at, and gives its agent, ${baseUrl === undefined
       ? `Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL`
-      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${originOf(baseUrl)}`}, not the one exported in this ` +
-      `shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
+      : `the ANTHROPIC_BASE_URL in ${envFile}, which leads to ${shownOrigin(baseUrl, '')}`}, ` +
+      `not the one exported in this shell. ${exportedWins} To use the exported one, put it in ${envFile}.`);
   }
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
   let key: string | null = storedKey ?? null;
@@ -637,7 +697,7 @@ async function installAndStart(
   for (;;) {
     if (key === null) {
       key = await world.askHidden(`${baseUrl === undefined ? 'An Anthropic API key, from console.anthropic.com\'s API keys'
-        : `An API key that ${originOf(baseUrl)} accepts`}, typed hidden (Enter alone stops setup)`);
+        : `An API key that ${shownOrigin(baseUrl, '')} accepts`}, typed hidden (Enter alone stops setup)`);
       fromDotEnv = false;
       if (!key) return stopped();
     }
@@ -657,9 +717,9 @@ async function installAndStart(
     }
     if (baseUrl === null) return 1;
     out(`Checking ${fromDotEnv ? `the ANTHROPIC_API_KEY in ${envFile}` : 'the key'}: one call at ` +
-      `${baseUrl === undefined ? ANTHROPIC_API : originOf(baseUrl)} to ${model}, the model setup's agent runs on, which ` +
-      'the key\'s account has to be able to use.');
-    const checked = await world.checkKey({ key, model, ...(baseUrl === undefined ? {} : { baseUrl }) });
+      `${baseUrl === undefined ? ANTHROPIC_API : shownOrigin(baseUrl, key)} to ${model}, the model setup's ` +
+      'agent runs on, which the key\'s account has to be able to use.');
+    const checked = await world.checkKey({ key, model, envFile, hide: hide(), ...(baseUrl === undefined ? {} : { baseUrl }) });
     if (checked.ok) break;
     err(checked.cause);
     if (checked.anotherKeyMayHelp) {
@@ -724,97 +784,39 @@ async function installAndStart(
   out(commandsShownNote(dir));
   out(`Starting setup's agent. It speaks first. /quit leaves the conversation, and ` +
     `\`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\` picks it up where it stopped.`);
-  const finishedAt = () => {
-    const read = readSetupState(join(dir, '.setup', 'setup-state.json'));
-    return 'state' in read ? read.state.finished : undefined;
-  };
-  const before = finishedAt();
+  const statePath = join(dir, '.setup', 'setup-state.json');
+  const finishedAt = (read: KeptState) => 'state' in read ? read.state.finished : undefined;
+  const before = finishedAt(readSetupState(statePath));
   const agentStatus = await world.startAgent(launch);
-  const after = finishedAt();
+  const readAfter = readSetupState(statePath);
+  const after = finishedAt(readAfter);
   const finished = after !== undefined && after !== before;
+  const goOn = `To go on with setup where it stopped: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`;
   out(finished
     ? `Setup is finished. To change something it set up, run setup again: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`
-    : `To go on with setup where it stopped: \`${shellWord(join(root, INSTALL_COMMAND))} setup ${SURFACE}\`.`);
+    : after !== undefined ? `Setup finished in an earlier run, at ${after}, and this run didn't finish it again. ${goOn}` : goOn);
+  if (!('state' in readAfter)) {
+    out(`Whether setup finished isn't known: ${statePath}, where setup keeps its answers, ` +
+      `${'absent' in readAfter ? 'is gone' : `can't be read (${readAfter.unreadable})`}.`);
+  }
   const printed = keptOutside.filter((line) => line.startsWith('  ') && line !== '  none').map((line) => line.slice(2));
-  if (printed.length > 0) {
-    const recordPath = join(root, 'install.json');
-    let why = '';
-    try {
-      const now = readRecord<InstallRecord>(recordPath, 'install record');
-      if (now === null) why = `${recordPath}, the install record, is gone`;
-      else if (!Array.isArray(now.extraState) || now.extraState.some((place) => typeof place !== 'string')) {
-        why = `${recordPath}, the install record, holds no list of places under "extraState"`;
-      } else if (now.extraState.length !== printed.length || printed.some((place, at) => now.extraState[at] !== place)) {
-        why = `they changed during the conversation, and ${recordPath}, the install record, holds them now, under ` +
-          '"extraState"';
-      }
-    } catch (error) {
-      why = `${recordPath}, the install record, can't be read: ${(error as Error).message.replace(/\.+$/, '')}`;
-    }
-    if (why === '') for (const line of keptOutside) out(line);
-    else {
-      out(`The places outside the data directory that an update copies aren't listed here: ${why}.`);
-    }
-  }
-  return agentStatus;
-}
-
-async function bindingAnswers(world: SetupWorld, root: string, record: InstallRecord, { out, err }: Io):
-  Promise<{ dataDir: string; placeArgs: string[] } | number> {
-  let binding: Binding;
+  const recordPath = join(root, 'install.json');
+  let why = '';
   try {
-    binding = bindingOf(root, record);
-  } catch (error) {
-    err(`connectome setup: ${(error as Error).message}`);
-    return 1;
-  }
-  if (binding.kind === 'bound') return { dataDir: record.dataDir, placeArgs: [] };
-  if (binding.kind === 'resume') {
-    out(`A setup run binding this install to ${binding.plan.to} was cut off before it finished. Setup finishes it from ` +
-      'its plan, with the places that run was given, or says what stops it.');
-    return { dataDir: binding.plan.record.dataDir, placeArgs: [] };
-  }
-  const { from, to, ask, kept } = binding;
-  const answer = ask.length === 0 ? '' : ' Press Enter where a place is this install\'s, or type the path of this ' +
-    'install\'s own, as after a copy.';
-  out(from === null
-    ? 'This install\'s record is from a release that didn\'t record which directory an install is in. Setup binds it ' +
-      `here: each place under ${to}, other than inside another install's directory, stays as it is.` +
-      (ask.length === 0 ? '' : ' It asks about each place outside it, or inside another install\'s directory ' +
-        'within it, since it can\'t tell whether that came with the install, as after a move, or is still another ' +
-        `install's, as after a copy. A place inside another goes with it.${answer}`)
-    : `This install's record is bound to ${from}, and the install is in ${to}, so it was moved or copied here. Setup ` +
-      `binds it here: each place under ${from} becomes the same place under ${to}.` +
-      (ask.length === 0 ? '' : ` It asks about each place outside ${from}, since it can't tell whether that came ` +
-        `with the install, as after a move, or is still the other install's, as after a copy. A place inside another ` +
-        `goes with it.${answer}`));
-  const places: Array<{ from: string; to: string }> = [];
-  for (const place of ask) {
-    const what = place.data ? 'its data directory' : place.extra ? 'state kept outside its data directory'
-      : 'a place its updates copy';
-    for (;;) {
-      const typed = await world.ask(`${place.path} (${what}${existsSync(place.path) ? '' : ', not there now'}): `);
-      if (typed === null) return -1;
-      const path = typed.trim();
-      const home = homeDirectory(world.env.HOME);
-      const given = path === '' ? place.path
-        : resolve(dirname(root), home !== null && (path === '~' || path.startsWith('~/')) ? join(home, path.slice(1)) : path);
-      if (place.data) {
-        const data = mapPath(record.dataDir, { from: null, to, places: [{ from: place.path, to: given }] })!;
-        if (!existsSync(data) || !statSync(data).isDirectory()) {
-          out(`${data} isn't a directory, and the data directory has to be one that's there: type where this ` +
-            'install\'s data is, or put it there first.');
-          continue;
-        }
-      }
-      places.push({ from: place.path, to: given });
-      break;
+    const now = readRecord<InstallRecord>(recordPath, 'install record');
+    if (now === null) why = `${recordPath}, the install record, is gone`;
+    else if (!Array.isArray(now.extraState) || now.extraState.some((place) => typeof place !== 'string')) {
+      why = `${recordPath}, the install record, holds no list of places under "extraState"`;
+    } else if (now.extraState.length !== printed.length || printed.some((place, at) => now.extraState[at] !== place)) {
+      why = `they changed during the conversation, and ${recordPath}, the install record, holds them now, under ` +
+        '"extraState"';
     }
+  } catch (error) {
+    why = `${recordPath}, the install record, can't be read: ${(error as Error).message.replace(/\.+$/, '')}`;
   }
-  return {
-    dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...kept] })!,
-    placeArgs: places.flatMap((place) => ['--place', place.from, place.to]),
-  };
+  if (why !== '') out(`The places outside the data directory that an update copies aren't listed here: ${why}.`);
+  else if (printed.length > 0) for (const line of keptOutside) out(line);
+  return agentStatus;
 }
 
 function takeSetupLock(file: string): { release(): void } | null {
@@ -839,15 +841,28 @@ function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Re
 }
 
 // Bun keeps an exported value over a dotenv file's, so a name the files give, holding a value none of them gives, was
-// exported.
+// exported. A file's value can be built from such a name, so each name judged so is judged again with the others put
+// back as exported, until none changes: a name the environment holds isn't read from the files, so each is judged
+// without itself.
 function exportedOf(given: Record<string, string | undefined>, rest: Record<string, string | undefined>, cwd: string):
   Record<string, string> {
   const fromFiles = dotenvValues(cwd, rest);
   const exported: Record<string, string> = {};
+  let fileNamed: string[] = [];
   for (const [name, value] of Object.entries(given)) {
     if (value === undefined) continue;
-    if (Object.hasOwn(rest, name) || !fromFiles.get(name)?.has(value)) exported[name] = value;
+    if (Object.hasOwn(rest, name)) exported[name] = value;
+    else if (!fromFiles.get(name)?.has(value)) fileNamed.push(name);
   }
+  for (let pass = 0, passes = fileNamed.length; pass < passes; pass++) {
+    const kept = fileNamed.filter((name) => {
+      const others = Object.fromEntries(fileNamed.filter((other) => other !== name).map((other) => [other, given[other]]));
+      return !dotenvValues(cwd, { ...rest, ...others }).get(name)?.has(given[name]!);
+    });
+    if (kept.length === fileNamed.length) break;
+    fileNamed = kept;
+  }
+  for (const name of fileNamed) exported[name] = given[name]!;
   return exported;
 }
 
@@ -913,27 +928,31 @@ async function userName(world: SetupWorld, out: (line: string) => void): Promise
   }
 }
 
-function addTrusted(file: string, names: string[]): string | null {
+function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {
   let manifest: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf-8'));
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return `${file} holds no JSON object`;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { reason: `${file} holds no JSON object` };
+    }
     manifest = parsed as Record<string, unknown>;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return `${file} can't be read (${(error as Error).message})`;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { reason: `${file} can't be read (${(error as Error).message})` };
+    }
   }
   const held = Array.isArray(manifest.trustedDependencies)
     ? manifest.trustedDependencies.filter((name): name is string => typeof name === 'string') : [];
   const added = names.filter((name) => !held.includes(name));
-  if (added.length === 0 && Array.isArray(manifest.trustedDependencies)) return null;
+  if (added.length === 0 && Array.isArray(manifest.trustedDependencies)) return { added };
   manifest.trustedDependencies = [...held, ...added];
   try {
     const was = lstatSync(file, { throwIfNoEntry: false });
     writeTextAtomic(file, `${JSON.stringify(manifest, null, 2)}\n`, was?.isFile() ? was.mode & 0o777 : 0o644);
   } catch (error) {
-    return `${file} can't be written (${(error as Error).message})`;
+    return { reason: `${file} can't be written (${(error as Error).message})` };
   }
-  return null;
+  return { added };
 }
 
 function declaredDependencies(dir: string): Set<string> | null {
@@ -1050,6 +1069,7 @@ export function realWorld(): SetupWorld {
     user: userInfo().username,
     env: process.env,
     cwd: process.cwd(),
+    execArgv: process.execArgv,
     bun: { path: process.execPath, version: Bun.version },
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),

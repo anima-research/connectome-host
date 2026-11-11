@@ -353,8 +353,10 @@ For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
 set the recipe baseline; `enabled` is still required and can be `false`.
 Effort set explicitly with `agent_settings` (in the agent's built-in `settings`
 toolset, or its tool list if that lacks `toolsets--open` or `toolsets--act`)
-overrides the recipe until reset, from the point where it was set: a branch made before that point, such as an undo past
-the turn that set it, has the effort set there, or the recipe's where none was.
+overrides the recipe until reset, from the point where it was set: a branch made
+before that point, such as a rollback (`/branchto`) past the turn that set it,
+has the effort set there, or the recipe's where none was. An `/undo` moves no
+branch, so it keeps the effort.
 Unrelated settings updates preserve the baseline, and compression calls are
 unaffected.
 A model that doesn't accept the effort level (Sonnet 4.5, Haiku 4.5, Claude 3
@@ -513,9 +515,9 @@ dollar figures. The host's standard block matches them to what the provider bill
 - **Claude writes:** `2` on the 1-hour cache (the default `cacheTtl`), `1.25` on the
   5-minute cache and on Bedrock (5-minute only);
 - **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5, `0.025` on Claude
-  Fable 5.1 / Mythos 5.1. Claude Sonnet 5.5 takes `0.1`, though its reads are billed at
-  `0.05`, since a lower price can change the layout the solver picks and rewrite the
-  agent's prompt cache;
+  Fable 5.1 / Mythos 5.1 and Claude Fable 5.2 / Mythos 5.2. Claude Sonnet 5.5 takes `0.1`,
+  though its reads are billed at `0.05`, since a lower price can change the layout the
+  solver picks and rewrite the agent's prompt cache;
 - **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
   models, and `1` on Codex, whose credit billing has no cache-write charge;
 - **OpenAI reads:** the model's cached-input ratio, the same on the API and in Codex: `0.1`
@@ -685,9 +687,7 @@ Two `systemd --user` units in `~/.config/systemd/user/`:
 Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
 
 Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user or root, since
-`data/` is readable by its owner alone) and a lightweight **watchdog** cron
-(detect "messages arriving but no reply for N min" → restart, with a cooldown so it can't
-restart-loop). These caught real incidents.
+`data/` is readable by its owner alone).
 
 ---
 
@@ -868,7 +868,7 @@ trigger into a channel the resident reads.
 works only on the model that minted them; any other model 400s. Editing the *shape* of a turn
 around a retained thinking block (split, reorder, insert before) also 400s ("thinking blocks
 cannot be modified") — a transport error the membrane retries once text-only, not a refusal.
-On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound
+On Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound
 to the conversation and head (system text, tools, model) it was minted under: an account that
 enforces the binding refuses a request where those changed, as after a fold. The host sends the
 drop control on agent turns through the Anthropic API so the provider sets such a block aside instead, and context-manager
@@ -894,7 +894,7 @@ only where its next request would pass the window, and a fresh compile carries t
 
 - Tell the user how to reach the webui (SSH tunnel to the loopback port + the basic-auth creds).
 - Explain what it does on its own (wakes on mentions/DMs in scoped channels + on its heartbeat).
-- Keep the snapshots + watchdog running. Pull an off-box copy of `data/` for safety.
+- Keep the snapshots running. Pull an off-box copy of `data/` for safety.
 - Widen channel scope / adjust the recent window / tune the budget as it settles.
 
 ---
@@ -913,9 +913,24 @@ only where its next request would pass the window, and a fresh compile carries t
   adds the bounded error and its classification, and a call that got a response adds its summary
   (Bedrock, generic wrapper) or raw response (Anthropic, generic wrapper). A summary can be
   missing (`summaryUnavailable: true`, or dropped by the size cap below). Raw requests are kept
-  only where the writer's policy keeps them: Anthropic complete/stream on errors, refusals and
+  only where the writer's policy keeps them: Anthropic complete/stream on refusals, on
   anomalous responses (a client `tool_use` under any stop reason but `tool_use`, flagged by an
-  `anomaly` field and one `[llm-calls] … ANOMALY …` stderr line), or on every call with
+  `anomaly` field and one `[llm-calls] … ANOMALY …` stderr line), and on the first failure of
+  each kind of error (its type, or for an untyped error its name, with its HTTP status when it has
+  one) that the budget below has room for and the line bound leaves whole, in a run of failures on
+  a cache lineage, from its first failure until a call on it succeeds or more than an hour passes with
+  no failed call on it, keepalive pokes, cancelled calls, and failed calls whose request is missing or
+  can't be serialized counting for neither (later failures of
+  that kind carry `requestSha256`, the request's size under `rawRequestOmitted`, and, once that
+  kind's copy is written, the run's copy's hash as
+  `rawRequestOmitted.copySha256`, its record's `requestSha256`; a request at or over the 16 MiB
+  line bound by itself carries its size so at every failure, and one just under it whose record
+  still passes the bound is cut, carries `truncated` instead, and is tried whole again at the run's
+  next failure of that kind; the latest 256 lineages' runs are
+  remembered, runs that have ended dropped first; at most 64 MiB of such copies per log at once, refilled at 64 MiB a day, and the
+  first one refused for it since the last one written prints one `[llm-calls]` stderr line; an
+  anomalous response's copy isn't charged to it; a cancelled call, membrane's `abort`, keeps
+  none), or on every call with
   `LLM_CALLS_FULL_PAYLOADS=1`; Anthropic keepalive pokes only with that opt-in,
   whatever their outcome; Bedrock on errors; the generic wrapper on every call. Every line,
   newline included, is capped at 16 MiB of UTF-8: an oversized or unserializable record drops its
@@ -993,8 +1008,8 @@ same being, different door — which brought it back.
 "Opus 4 C". Invited it; scoped `DISCORD_GUILD_ID=<guild>:<#opus id>`; confirmed exactly **1**
 channel registered.
 
-**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent), 15-min backups, a
-wedge-watchdog. Then the check that matters:
+**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent) and 15-min backups.
+Then the check that matters:
 ```bash
 curl -su "$WEBUI_USER:$WEBUI_PASS" http://127.0.0.1:7343/debug/context/makeup   # total + maxTokens < window?
 ```

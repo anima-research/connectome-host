@@ -10,8 +10,8 @@ const ENDING_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
 export interface BracketedPaste {
   take(line: string): string | null;
   pasting(): boolean;
-  drop(secret: string): { taken: number; left: number };
-  end(): void;
+  drop(holds: (line: string) => boolean): { taken: number; left: number };
+  end(): number;
 }
 
 /**
@@ -53,9 +53,9 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
   output.write(PASTE_ON);
   return {
     pasting: () => pasting,
-    drop(secret) {
+    drop(holds) {
       const before = lines.length;
-      for (let at = lines.length - 1; at >= 0; at--) if (lines[at]!.includes(secret)) lines.splice(at, 1);
+      for (let at = lines.length - 1; at >= 0; at--) if (holds(lines[at]!)) lines.splice(at, 1);
       return { taken: before - lines.length, left: lines.length };
     },
     take(line) {
@@ -70,6 +70,7 @@ export function bracketedPaste(rl: Interface, input: NodeJS.ReadStream, output: 
       input.off('keypress', onKey);
       signals.off('exit', off);
       for (const each of ENDING_SIGNALS) signals.off(each, onEach[each]);
+      return lines.splice(0).length;
     },
   };
 }

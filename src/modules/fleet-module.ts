@@ -34,7 +34,11 @@ import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
-const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated'];
+/** Events every child sends whatever its subscription asks for, for the
+ *  host's own readers: its usage, and an undo, a redo or a shed on one of
+ *  its agents' windows, at which the Web UI reads the child's panels again
+ *  (agent-streams.ts WindowFrames). */
+const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated', 'window:undone', 'presentation:retracted'];
 export const CLOCK_SLACK_MS = 60_000;
 const ADOPTION_UNRESOLVED = 'adoption unresolved;';
 
@@ -151,7 +155,7 @@ interface FleetChild {
   groupSignal?: string;
   spawnError?: unknown;
   env?: Record<string, string>;
-  lastCompletedSpeech: string;
+  lastCompletedSpeech?: string;
   saidExiting?: boolean;
   reopening?: Promise<void>;
   reopenedAt?: number;
@@ -522,7 +526,6 @@ export class FleetModule implements Module {
       ...(p.groupEnded === true ? { groupEnded: true } : {}),
       killRequested: false,
       restartAttempts: [],
-      lastCompletedSpeech: '',
     };
     // Resolved env values may contain secrets. Chronicle stores historical
     // snapshots, so env is runtime-only and legacy persisted env is ignored.
@@ -955,7 +958,8 @@ export class FleetModule implements Module {
         description:
           "Forward the source child's most recent completed speech since this host's connection to it last opened " +
           'to the target child as a text message. ' +
-          'Speech is the text from an inference round that did not end in tool calls (the child\'s "final answer" from its last turn). ' +
+          'Speech is the text of the source\'s latest inference round that ended without tool calls, outside a silent ' +
+          'heartbeat, so after a silent heartbeat it is an earlier turn\'s. When that round had no text, nothing is relayed. ' +
           'A source that has exited can still be relayed (useful for "pass on the dead child\'s last findings"). ' +
           'A running source this host can\'t reach isn\'t, since a reply this host holds from it may not be its latest. ' +
           'Target child must be running. ' +
@@ -1363,7 +1367,6 @@ export class FleetModule implements Module {
       bootId: this.bootId(),
       killRequested: false,
       restartAttempts: [...(opts.autoRestartOf?.restartAttempts ?? [])],
-      lastCompletedSpeech: '',
     };
     if (input.env !== undefined) child.env = { ...input.env };
     if (existing) this.cancelAutoRestart(existing);
@@ -1575,7 +1578,7 @@ export class FleetModule implements Module {
           `string; ${got(input.command)}.`,
       };
     }
-    this.sendToChild(ok.child, { type: 'command', command: input.command });
+    this.sendToChild(ok.child, { type: 'command', command: input.command, from: 'fleet' });
     return { success: true, data: { name: input.name, sent: 'command', command: input.command } };
   }
 
@@ -1690,6 +1693,18 @@ export class FleetModule implements Module {
 
     const speech = fromChild.lastCompletedSpeech;
     const unreachable = this.unreachable(fromChild);
+    if (speech === '') {
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was relayed: the latest inference round this host saw from '${input.from}' ended without ` +
+          'tool calls, outside a silent heartbeat, and had no text in it, so there was nothing to pass on. ' +
+          (unreachable === null
+            ? `fleet--send gives '${input.from}' something to answer, and fleet--relay passes on its reply once such a ` +
+              'round has text in it.'
+            : `'${input.from}' ${unreachable}.`),
+      };
+    }
     if (speech && unreachable !== null && (fromChild.status === 'ready' || fromChild.status === 'starting')) {
       return {
         success: false,
@@ -1710,8 +1725,9 @@ export class FleetModule implements Module {
             'opened' +
             (unreachable !== null
               ? `, and it ${unreachable}.`
-              : `. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay ` +
-                `passes it on then; if '${input.from}' has nothing to answer, fleet--send gives it something.`)
+              : `. A reply counts once one of its inference rounds ends without tool calls, outside a silent ` +
+                `heartbeat, and fleet--relay passes it on then if that round has text in it; if '${input.from}' ` +
+                `has nothing to answer, fleet--send gives it something.`)
           : `Nothing was relayed: '${input.from}' has no finished reply on record, since its subscription ` +
             `(${fromChild.subscription.join(', ') || 'empty'}) leaves out inference:speech, so its replies never ` +
             `reach this host. fleet--restart keeps that subscription, ` +
@@ -1927,7 +1943,7 @@ export class FleetModule implements Module {
       c.reopenedAt = Date.now();
       c.closingAgainUntil = undefined;
       c.reopenFailure = undefined;
-      c.lastCompletedSpeech = '';
+      c.lastCompletedSpeech = undefined;
       this.takeChecked(c, checked, c.subscription);
       console.error(`[fleet] child "${c.name}" closed this host's connection while it ran, and this host ` +
         `connected to it again (pid ${c.pid}).`);

@@ -1,12 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
-import { CLI_IN_RELEASE, installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
-
-const SETUP_RECIPE = join('node_modules', '@animalabs', 'connectome-host', 'recipes', 'setup.json');
+import { delimiter, join } from 'node:path';
+import { installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -48,72 +44,6 @@ test('a `connectome` a shell can\'t run, or a directory of that name, earlier on
   writeFileSync(join(plainFile, 'connectome'), 'not a program\n');
   chmodSync(join(plainFile, 'connectome'), 0o644);
   expect(typedCommand(root, pathOf(unrunnable, plainFile, root))).toBe('connectome');
-});
-
-function withCommands(recipe: boolean) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
-  dirs.push(dir);
-  const root = join(dir, 'connectome-host');
-  const marker = join(dir, 'ran.json');
-  const cli = (at: string, who: string) => {
-    mkdirSync(join(at, ...CLI_IN_RELEASE.slice(0, -1)), { recursive: true });
-    writeFileSync(join(at, ...CLI_IN_RELEASE), "import { writeFileSync } from 'node:fs';\n" +
-      `export async function main(root, argv) { writeFileSync(process.env.MARKER, JSON.stringify({ who: '${who}', root, argv })); return 0; }\n`);
-  };
-  const release = join(root, 'releases', '1.0.0');
-  cli(release, 'current');
-  cli(dir, 'package');
-  if (recipe) {
-    mkdirSync(dirname(join(release, SETUP_RECIPE)), { recursive: true });
-    writeFileSync(join(release, SETUP_RECIPE), '{}');
-  }
-  symlinkSync(join('releases', '1.0.0'), join(root, 'current'));
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir }));
-  writeInstallCommand(root, '');
-  const run = (...argv: string[]) => {
-    rmSync(marker, { force: true });
-    const ran = Bun.spawnSync([process.execPath, join(root, 'connectome'), ...argv], {
-      env: { ...process.env, MARKER: marker }, stderr: 'pipe',
-    });
-    return {
-      exitCode: ran.exitCode, stderr: ran.stderr.toString(),
-      ran: existsSync(marker) ? JSON.parse(readFileSync(marker, 'utf-8')) as { who: string; root: string; argv: string[] } : null,
-    };
-  };
-  return { dir, root, run };
-}
-
-test('the command sends setup to current\'s CLI when its release has the setup agent\'s recipe, and otherwise to the working directory\'s package\'s; every other word to current\'s', () => {
-  const has = withCommands(true);
-  expect(has.run('setup', 'discord').ran).toEqual({ who: 'current', root: has.root, argv: ['setup', 'discord'] });
-  const lacks = withCommands(false);
-  expect(lacks.run('setup', 'discord').ran).toEqual({ who: 'package', root: lacks.root, argv: ['setup', 'discord'] });
-  expect(lacks.run('update').ran).toEqual({ who: 'current', root: lacks.root, argv: ['update'] });
-});
-
-test('a record bound to another directory, or a binding\'s plan standing, refuses every word but setup before any CLI loads', () => {
-  const { dir, root, run } = withCommands(true);
-  const elsewhere = join(dirname(dir), 'elsewhere');
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(elsewhere, 'data'), extraState: [], workingDir: elsewhere }));
-  for (const argv of [[], ['update'], ['send', 'hi']]) {
-    const refused = run(...argv);
-    expect(refused.exitCode).toBe(1);
-    expect(refused.ran).toBeNull();
-    expect(refused.stderr).toContain(`connectome: nothing runs in this install, since its record is bound to ${elsewhere}, and it's in ${dir}, so it was moved or copied here`);
-  }
-  expect(run('setup', 'discord').ran?.argv).toEqual(['setup', 'discord']);
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir }));
-  writeFileSync(join(root, 'rebind.json'), '{}');
-  const refused = run('update');
-  expect(refused.ran).toBeNull();
-  expect(refused.stderr).toContain(`connectome: nothing runs in this install, since a setup binding this install was cut off before it finished (${join(root, 'rebind.json')} is its plan), so the places it names may be half bound. Setup, run again, finishes it from its plan without asking about its places again, or says what stops it`);
-  expect(run('setup', 'discord').ran?.who).toBe('current');
-});
-
-test('a record from before workingDir runs every word as it did', () => {
-  const { dir, root, run } = withCommands(true);
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  expect(run('update').ran?.who).toBe('current');
 });
 
 test('setup\'s line that puts the install\'s directory on PATH is shown exactly where plain `connectome` wouldn\'t run it', () => {

@@ -7,7 +7,7 @@ import {
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { bare, send } from '../src/cli/connectome.js';
+import { bare, COMMANDS, send } from '../src/cli/connectome.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { installPaths } from '../src/update/contract.js';
@@ -393,10 +393,10 @@ test('help names no command by the install\'s path, and its usage lines and send
   const { path } = writeInstallCommand(root, '');
   serviceRecord(root, work);
   const help = await run(path, ['help'], root, undefined, root);
-  expect(help.out).toContain('\n  connectome\n');
-  expect(help.out).toContain('\n  connectome send <text>\n');
+  const usageLines = help.out.split('\n').filter((line) => /^  \S/.test(line));
+  expect(usageLines).toEqual(['  connectome', ...COMMANDS.map((command) => `  ${command.usage}`), '  connectome help']);
+  for (const line of usageLines) expect(line).toMatch(/^  connectome(?: |$)/);
   expect(help.out).toContain('\n  connectome service install [<recipe>] | stop | start\n');
-  expect(help.out).toContain('\n  connectome help\n');
   expect(help.out).not.toContain(path);
   const sent = await run(path, ['send', 'hello'], root, undefined, root);
   expect(sent.err).toContain('If no host is running, start it with `connectome service start`, then send again.');

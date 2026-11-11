@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test';
-import { plist, systemdUnit } from '../src/cli/service.js';
-import { readUnit } from '../src/cli/service-unit.js';
+import { plist, readUnit, systemdUnit } from '../src/cli/service-unit.js';
 
 const awkward = ['/opt/bun 1/bin/bun', '/srv/a "quoted" dir/start.js', 'C:\\path\\recipe 100%.json',
   'https://example.test/r.json?a=1&b=<2>', '$HOME and $$ and ${X}', "it's", '--headless'];

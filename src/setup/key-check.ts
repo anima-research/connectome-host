@@ -1,5 +1,7 @@
 import { Stream } from '@anthropic-ai/sdk/streaming';
 import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
+import { JSON_TYPE, redirectTarget, shownByName } from './provider-key.js';
+import type { Secret } from './secrets.js';
 
 export type KeyCheck = { ok: true } | { ok: false; cause: string; anotherKeyMayHelp: boolean };
 
@@ -9,9 +11,19 @@ export interface KeyCheckOptions {
   baseUrl?: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
+  envFile?: string;
+  /** Other stored secrets, shown by name wherever the check's words could carry one. */
+  hide?: readonly Secret[];
 }
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
+
+/** The words with the key shown as <ANTHROPIC_API_KEY> and each secret of hide by its name, trimmed or whole, their
+ *  ASCII letters in any case: fetch sends a header's value trimmed, so a server can quote the key that way, and one that
+ *  puts a secret in a URL's host gets it back lowercased. */
+export function withSecretsHidden(words: string, key: string, hide: readonly Secret[] = []): string {
+  return shownByName(words, [{ name: 'ANTHROPIC_API_KEY', value: key }, ...hide]);
+}
 
 export function originOf(baseUrl: string): string | null {
   try {
@@ -22,12 +34,15 @@ export function originOf(baseUrl: string): string | null {
   }
 }
 
-function apiMessage(body: string): string | null {
+function apiError(body: string): { message: string | null; type: string | null } {
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
-    return typeof parsed.error?.message === 'string' ? parsed.error.message : null;
+    const parsed = JSON.parse(body) as { error?: { message?: unknown; type?: unknown } };
+    return {
+      message: typeof parsed.error?.message === 'string' ? parsed.error.message : null,
+      type: typeof parsed.error?.type === 'string' ? parsed.error.type : null,
+    };
   } catch {
-    return null;
+    return { message: null, type: null };
   }
 }
 
@@ -70,26 +85,23 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
   const { key, model } = options;
   const failed = (cause: string, anotherKeyMayHelp: boolean): KeyCheck => ({ ok: false, cause, anotherKeyMayHelp });
   const set = options.baseUrl !== undefined;
+  const dotenv = options.envFile ?? '.env';
   const base = options.baseUrl ?? ANTHROPIC_API;
-  const origin = originOf(base);
-  if (origin === null) {
+  const reached = originOf(base);
+  if (reached === null) {
     return failed('ANTHROPIC_BASE_URL isn\'t an http:// or https:// URL, so nothing was called. Set it to one, ' +
       `such as ${ANTHROPIC_API}, or unset it for Anthropic's own API, and run setup again.`, false);
   }
+  const origin = withSecretsHidden(reached, key, options.hide);
   // As @anthropic-ai/sdk 0.52.0's buildURL joins the base URL and the path, so the check calls where the agent will.
   const url = base + (base.endsWith('/') ? 'v1/messages' : '/v1/messages');
-  const host = new URL(url).host;
+  const host = withSecretsHidden(new URL(url).host, key, options.hide);
   const urls = [...new Set([url, new URL(url).href, base, new URL(base).href])].sort((a, b) => b.length - a.length);
   const path = new URL(base).pathname.replace(/\/+$/, '') === '' ? null : new URL(url).pathname;
-  // fetch sends a header's value trimmed, so a server can quote the key that way, and one that puts it in a URL's
-  // host gets it back lowercased, so the key is matched in any letter case.
-  const keys = [...new Set([key, key.trim()])].filter((each) => each.trim() !== '').sort((a, b) => b.length - a.length)
-    .map((each) => new RegExp(each.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
   const quote = (words: string) => {
     for (const each of urls) words = words.split(each).join(origin);
     if (path !== null) words = words.split(path).join('<the request\'s path>');
-    for (const each of keys) words = words.replace(each, '<ANTHROPIC_API_KEY>');
-    return sentence(words);
+    return sentence(withSecretsHidden(words, key, options.hide));
   };
   const notAllowed = set
     ? `Ask whoever runs ${origin}, or manages the key's account there, to allow it, or use a key that can make that call.`
@@ -97,7 +109,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       'key from an account that can.';
   const where = set
     ? `and ANTHROPIC_BASE_URL, which leads to ${origin} now`
-    : `ANTHROPIC_BASE_URL is empty or absent in .env, so the call went to Anthropic's own ${origin}`;
+    : `ANTHROPIC_BASE_URL is empty or absent in ${dotenv}, so the call went to Anthropic's own ${origin}`;
   const check = set
     ? `Check this machine's network and any proxy it goes through (HTTPS_PROXY), ${where}.`
     : `Check this machine's network and any proxy it goes through (HTTPS_PROXY). ${where}.`;
@@ -113,7 +125,7 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     if (code && /CERT|SSL|TLS|SIGNATURE|^EPROTO$/i.test(code)) {
       const at = new URL(base);
       const plain = set && code === 'EPROTO' && at.protocol === 'https:'
-        ? ` If the server at ${origin} speaks plain HTTP, change ANTHROPIC_BASE_URL in .env to begin http:// in place ` +
+        ? ` If the server at ${origin} speaks plain HTTP, change ANTHROPIC_BASE_URL in ${dotenv} to begin http:// in place ` +
           'of https://, adding :443 after its host if it names no port, though the key and everything the agent ' +
           'sends and receives then cross the network unencrypted.' : '';
       return `The TLS connection to ${host} failed${why}. ${check}${plain}`;
@@ -170,10 +182,10 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       return failed(`${host} answered, but its stream ended in an error.${words} So the key isn't known to work. ` +
         (streamed.type === 'overloaded_error' ? 'Try again in a few minutes.' : 'Try again shortly.'), false);
     }
-    if (/^application\/json\b/i.test(type ?? '')) {
+    if (type !== null && JSON_TYPE.test(type.trim())) {
       return failed(`${host} answered ${response.status} with ${kind} where the check asked for an event stream, so the ` +
         `key isn't known to work. ${STREAMS}, so a ${set ? 'gateway' : 'server'} that answers only unstreamed calls ` +
-        `can't serve it.${set ? ' Point ANTHROPIC_BASE_URL in .env at one that streams (a URL put right there is read ' +
+        `can't serve it.${set ? ` Point ANTHROPIC_BASE_URL in ${dotenv} at one that streams (a URL put right there is read ` +
           'at the next try), or take it out for Anthropic\'s own API.' : ` Something on the way to Anthropic's API, ` +
           `such as a proxy, may have answered in its place. ${check}`}`, false);
     }
@@ -183,6 +195,14 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       `${set ? ' Check that ANTHROPIC_BASE_URL leads to that API.' : ` Something on the way to it, such as a proxy or ` +
         `a captive portal, may have answered in its place. ${check}`}`, false);
   }
+  const elsewhere = `${set ? `ANTHROPIC_BASE_URL in ${dotenv} may not lead to that API (a URL put right there is read at ` +
+    'the next try), or something ' : 'Something '}on the way to it, such as a proxy or a captive portal, may have answered ` +
+    `in its place. ${check}`;
+  const type = response.headers.get('content-type');
+  if ([401, 403, 404].includes(response.status) && type !== null && !JSON_TYPE.test(type.trim())) {
+    return failed(`${host} answered ${response.status} with ${quote(type)}, where Anthropic's Messages API refuses in ` +
+      `JSON, so it isn't known whose answer it is, or whether the key works. ${elsewhere}`, set);
+  }
   let body = '';
   try {
     body = await response.text();
@@ -190,25 +210,30 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
     body = '';
   }
   // A 3xx's words are never the Messages API's, which sends none, so they're the server's alone, as its Location is.
-  const apiSaid = response.status >= 300 && response.status < 400 ? null : apiMessage(body);
-  const quoted = apiSaid ? ` It said: "${quote(apiSaid)}".` : '';
+  const api = response.status >= 300 && response.status < 400 ? { message: null, type: null } : apiError(body);
+  const quoted = api.message ? ` It said: "${quote(api.message)}".` : '';
   switch (response.status) {
     case 401:
       return failed(`${host} refused the key (401).${quoted} Check that it was copied whole` +
         `${set ? `, and that it's a key ${origin} accepts` : ', from console.anthropic.com\'s API keys'}.`, true);
     case 403:
-      return failed(`${host} refused this call, one message to ${model} (403).${quoted} ${notAllowed}`, true);
+      return failed(`${host} refused this call, one message to ${model} (403).${quoted} ` + (set || api.type === 'permission_error'
+        ? notAllowed
+        : 'Its answer doesn\'t name a permission_error, so setup can\'t tell from it whether this key is allowed to make it. ' +
+          'If the key\'s account isn\'t allowed the call, ask whoever manages it at console.anthropic.com to allow it, or use ' +
+          'a key from an account that can.'), true);
     case 404:
       return failed(set
         ? `${host} found nothing for ${model} (404).${quoted} Either this key can't use ` +
           `${model}, or ANTHROPIC_BASE_URL doesn't lead to Anthropic's Messages API. If it's the URL, put it right in ` +
-          '.env and type the key again: each try reads it there.'
+          `${dotenv} and type the key again: each try reads it there.`
         : `${host} has no model ${model} for this key (404).${quoted}`, true);
     case 429: {
-      const after = quote(response.headers.get('retry-after') ?? '') || null;
-      const wait = after === null ? 'Try again shortly.'
-        : /^\d+$/.test(after) ? `It asks for a wait of ${after} s before the next call.`
-          : `It asks for no call before ${after}.`;
+      const raw = (response.headers.get('retry-after') ?? '').trim();
+      const seconds = /^\d+$/.test(raw);
+      const wait = !seconds && Number.isNaN(Date.parse(raw)) ? 'Try again shortly.'
+        : quote(raw) !== sentence(raw) ? 'It asks for a wait setup can\'t show without the key. Try again shortly.'
+        : seconds ? `It asks for a wait of ${raw} s before the next call.` : `It asks for no call before ${quote(raw)}.`;
       return failed(`${host} is limiting this key's requests (429).${quoted} ${wait}`, false);
     }
     case 529:
@@ -218,17 +243,17 @@ export async function checkKey(options: KeyCheckOptions): Promise<KeyCheck> {
       const next = response.status >= 500 ? ' Its side had a problem: try again shortly.'
         : response.status === 408 ? ' It stopped waiting for the call: try again shortly.'
           : response.status < 400 ? ' Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so ' +
-            `the key went no further. ${set ? 'ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right ' +
-              'there is read at the next try), or something '
-              : 'Something '}on the way to it, such as a proxy or a captive portal, may have answered in its place. ` +
-            check
+            `the key went no further. ${elsewhere}`
             : set ? ' It may be about this key or its account there, or ANTHROPIC_BASE_URL may not lead to ' +
-              'Anthropic\'s Messages API: a URL put right in .env is read at the next try.'
+              `Anthropic's Messages API: a URL put right in ${dotenv} is read at the next try.`
               : ' It may be about this key or its account: another key, or the account put right at ' +
                 'console.anthropic.com, can help.';
       const streamed = set && refused ? ` ${STREAMS}, as this check did, so a gateway that answers only unstreamed calls ` +
         'can\'t serve it.' : '';
-      return failed(`${host} answered ${response.status}.${quoted} So the key isn't known to work.${next}${streamed}`, refused);
+      const location = response.status < 400 ? response.headers.get('location') : null;
+      const to = location === null ? null : originOf(redirectTarget(location, url));
+      return failed(`${host} answered ${response.status}${to === null ? '' : `, a redirect to ${quote(to)}`}.${quoted} So the ` +
+        `key isn't known to work.${next}${streamed}`, refused);
     }
   }
 }

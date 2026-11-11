@@ -249,11 +249,15 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     }
     emit(event);
   };
-  // `inference:speech` fires once per "final" inference round — the round
-  // that completed without yielding tool calls.  It carries the accumulated
-  // speech text, letting the parent implement fleet--relay without having
-  // to subscribe to the whole token stream.
+  // agent-framework traces inference:completed also when an end-turn tool
+  // ends a stream after its tool round, traces inference:stream_resumed only
+  // when it gives a live stream its tool results, marks a start `silent`
+  // for a wake that must not surface prose (a silent heartbeat), and traces
+  // an empty text token of its own to discard a refused attempt's text;
+  // membrane's streams give no empty text chunk.
   let currentSpeech = '';
+  let roundOpen = false;
+  let silentStream = false;
 
   const idleTrace = (event: unknown): void => {
     const t = (event as { type?: string }).type;
@@ -270,17 +274,23 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         turnWorkDoneSince = 0;
       }
       exitSince = 0;
-      if (agentName === primaryAgentName) currentSpeech = '';
+      if (agentName === primaryAgentName) {
+        currentSpeech = '';
+        silentStream = (event as { silent?: unknown }).silent === true;
+        roundOpen = !silentStream;
+      }
     } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
-      const content = (event as { content?: string }).content;
-      if (content) currentSpeech += content;
+      const { content, blockType } = event as { content?: string; blockType?: string };
+      if (blockType === 'text') currentSpeech = content === '' ? '' : currentSpeech + (content ?? '');
+    } else if (t === 'inference:stream_resumed' && agentName === primaryAgentName) {
+      roundOpen = !silentStream;
     } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
       currentSpeech = '';
+      roundOpen = false;
     } else if (t === 'inference:completed' && agentName === primaryAgentName) {
-      if (currentSpeech) {
-        emit({ type: 'inference:speech', agentName, content: currentSpeech });
-      }
+      if (roundOpen) emit({ type: 'inference:speech', agentName, content: currentSpeech });
       currentSpeech = '';
+      roundOpen = false;
     }
   };
   let traced = app.framework;
@@ -395,7 +405,9 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         let refused = false;
         try {
           const { handleCommand } = await import('./commands.js');
-          const result = handleCommand(cmd.command, app);
+          // A fleet parent's fleet--command says so; any other comes from a
+          // client of this socket. The operator log names which.
+          const result = handleCommand(cmd.command, app, { requester: { via: cmd.from === 'fleet' ? 'fleet' : 'headless' } });
           for (const line of result.lines) output(line.text, line.style);
           refused = result.refused === true;
           if (result.asyncWork) {
@@ -732,6 +744,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
 
   async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
     if (app.stopping) return;
+    // The host is stopping: a session switch under way goes no further, and
+    // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);

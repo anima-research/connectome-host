@@ -97,11 +97,14 @@ and `connectome` alone shows how to follow its log.
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
-`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To avoid it, stop the
-resident first, then drain the debt offline with `bun scripts/warmup-session.ts
+`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To make fewer of them,
+stop the resident first, then drain what the warmup can offline with `bun scripts/warmup-session.ts
 <session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
-`--merge-threshold` must pass the same values to the warmup command.
+`--merge-threshold` must pass the same values to the warmup command. The warmup
+leaves the work that waits on the agent's tool definitions to the restarted host;
+[Stage 3 of `claudeai-evacuation.md`](./claudeai-evacuation.md#stage-3--warmup-compress-the-message-history)
+says which work that is and when the host compresses it.
 
 **Logs / observability** (`data/` below is `DATA_DIR`, default `./data` under
 the working directory):
@@ -329,42 +332,23 @@ below says. A clone updates by hand.
 `DATA_DIR` as the service gives the host:
 
 ```bash
-DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]... [--place PATH PLACE]...
+DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
 ```
 
 It copies the install as the first release of an install root,
 `./connectome-host` unless `--root` names another, and writes the entry point
 `start.js` there, with the install's own command, `connectome`, beside it.
+That command's `connectome setup` works in the directory that holds the
+install root, reading and writing its `.env`, `.setup`, `package.json` and
+`node_modules` there. So for a root anywhere but directly in the service's
+working directory, it sets up the root's parent instead: to use it, keep the
+root directly in the working directory, as the default root is.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun <root>/start.js`, followed by
 the arguments it gives the host now, and restart it. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
-
-**Moving or copying an install.** Setup records the directory that holds the
-install root, and `start.js` and `connectome` refuse to run an install moved
-or copied away from it, since its record still names the places of the
-install it was. Run setup again in the new directory, the line above with
-the new `DATA_DIR`, or `<root>/connectome setup discord` for an install
-`connectome setup` made. It binds the install there: each place under the
-old directory becomes the same place under the new one, in the record, in
-the copy labels and in each Go back's list. Each place outside the
-old directory needs its place in this install: `connectome setup` asks, and
-by hand setup names each one and takes it as `--place PATH PLACE`, with
-`PLACE` the same path after a move, or the copy's own after a copy; a
-place inside another goes with it. An
-install set up before setup recorded its directory is checked for a move or
-a copy only after setup next runs there. That run takes each place under the
-directory that holds the install root as this install's, unless another
-install's root lies between, and asks the same of every other place it
-names. A binding that changes
-the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
-root first; if it's cut off, nothing starts until setup, run again, finishes
-it from the plan, or says what stops it. A Go back to a release from before
-this one keeps that refusal only until that release's own setup runs there,
-since that setup writes `start.js`, and `connectome` where it has one,
-without it, and the record without `workingDir`.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.
@@ -632,6 +616,7 @@ repo**:
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
   `scripts/warmup-session.ts <session>`, which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
-  not read from the recipe).
+  not read from the recipe), except for work that waits on tool definitions,
+  which it names and leaves.
 - `scripts/strip-oversized-images.mjs` — remove >5 MB image blocks from the
   chronicle (agent must be stopped). No shipped equivalent.
