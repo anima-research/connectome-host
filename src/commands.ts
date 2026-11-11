@@ -294,9 +294,10 @@ function stillRunning(app: AppContext): CommandResult | null {
 
 /** How the command was given. `lineByLine`: by a mode that takes a command
  *  from one line (the readline and piped modes, where each line goes alone,
- *  but for a message of several lines pasted into readline mode on a
- *  terminal that brackets a paste, which goes to the agent as text), so an
- *  answer that gives a command back gives it on one line. `requester`: who
+ *  except that, where stdin and stdout are both terminals and the terminal
+ *  brackets a paste, a message of several lines pasted into readline mode
+ *  goes to the agent as text), so an answer that gives a command back gives
+ *  it on one line. `requester`: who
  *  gave it, as the framework's operator log records a branch move, a
  *  rollback, an undo, a redo or a nudge the command makes: the Web UI's
  *  user, a headless host's socket or a fleet parent; the host's console
@@ -1713,12 +1714,6 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   return storeTransition(cm, summary, metadata);
 }
 
-/** The summary on one line, its line breaks folded to spaces, for the
- *  readline and piped modes, which take a command from one line: a
- *  `/newtopic` given back with its line breaks, pasted there, would go to
- *  the agent as text on a terminal that brackets a paste, and elsewhere
- *  would store its first line alone and send the rest as messages or
- *  commands. */
 function oneLine(summary: string): string {
   return summary.split(/\r\n|\r|\n/).map((line) => line.trim()).filter(Boolean).join(' ');
 }

@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync,
-  writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
+  statSync, writeFileSync,
 } from 'node:fs';
 import { constants, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -44,7 +44,8 @@ const BOOT_TIMEOUT_MS = 60_000;
 // Bun 1.4.3's `bun add --no-env-file` still gives a package's install script the working directory's .env, where
 // 1.4.4's gives none (probed), and setup's bun add runs where the resident's secrets are.
 export const SETUP_BUN_FLOOR = '>=1.4.4';
-const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
+// The user that setup's line for a user of the resident's own makes.
+const OWN_USER = 'connectome';
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',
   'MCPL_AGENT_OVERLAY_FILE',
@@ -167,10 +168,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       : 'Setup stopped before keeping its answers. Run it again in this directory to answer its questions again.');
     return 1;
   };
-  const stoppedElsewhere = () => {
-    out('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer them.');
-    return 1;
-  };
   if (!ours && entries.length > 0) {
     const home = homeDirectory(world.env.HOME);
     const what = home !== null && dir === home ? `${dir} is your home directory`
@@ -190,16 +187,11 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       err(`  ${firstLine()}`);
       return 1;
     };
-    if (!ownUserPossible(world) || home === null) return elsewhere();
-    out(`${RESIDENT} ${what}, so setup won't install there. It asks first who the resident runs as, since that says ` +
-      'where setup runs next.');
-    const answered = await askWho(world, out);
-    if (typeof answered === 'number') return answered === -1 ? stoppedElsewhere() : answered;
-    out('Then make a new directory for the resident in your home, and run this same version of setup there, where its ' +
-      'questions come again. Its service takes the directory\'s name, so choose another than resident if you like, or ' +
-      'if ~/resident is already there:');
-    out('  mkdir ~/resident && cd ~/resident');
-    out(`  ${firstLine()}`);
+    if (!offersOwnUser(world) || home === null) return elsewhere();
+    out(`${RESIDENT} ${what}, so setup won't install there.`);
+    adviseOwnUser(world, out);
+    goOnAsOwnUser(out);
+    out(`To run the resident as this user, ${world.user}, run those two lines in a shell of yours instead.`);
     out('Nothing was installed here.');
     return 0;
   }
@@ -242,17 +234,23 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     let state = 'state' in read ? read.state : null;
     if (state !== null) {
-      out(`Setup keeps its answer here: the resident runs as this user, ${world.user}. It isn't asked again; setup's ` +
-        'agent picks up where it stopped, and can change with you what it set up.');
+      out(`Setup began here before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's agent ` +
+        'picks up where it stopped, and can change with you what it set up.');
     }
-    const lost = existsSync(root) ? null
+    let emptied = false;
+    try {
+      emptied = readdirSync(root).length === 0;
+    } catch {
+    }
+    const lost = existsSync(root) && !emptied ? null
       : state?.finished !== undefined
-        ? `This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
+        ? `This directory's install root, ${root}, ` +
+          `${emptied ? 'is empty, so its record is gone' : 'is gone, and its record with it'}: the places of state kept ` +
           'outside the data directory, its releases and its Go back.'
         : 'unreadable' in read
-          ? `This directory's install root, ${root}, isn't there, and setup can't tell whether a setup finished here, ` +
-            'since its kept answers can\'t be read. If one did, the root\'s record went with it: the places of state ' +
-            'kept outside the data directory, its releases and its Go back.'
+          ? `This directory's install root, ${root}, ${emptied ? 'is empty' : 'isn\'t there'}, and setup can't tell ` +
+            'whether a setup finished here, since its kept answers can\'t be read. If one did, the root\'s record went ' +
+            'with it: the places of state kept outside the data directory, its releases and its Go back.'
           : null;
     if (lost !== null) {
       out(lost);
@@ -267,14 +265,18 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       }
     }
     if (state === null) {
-      out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. Setup asks a few ` +
-        `questions first, among them who the resident runs as. When it runs as this user, ${world.user}, setup then ` +
-        `installs connectome-host ${version} here (about 0.8 GB of disk with the install's own copy of it), unless that ` +
-        'version is there already, checks an API key, and starts the host\'s setup agent, which talks with you in ' +
-        'this terminal to set up the resident.');
-      const answered = await askWho(world, out);
+      out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. As this user, ` +
+        `${world.user}, setup installs connectome-host ${version} here (about 0.8 GB of disk with the install's own ` +
+        'copy of it), unless that version is there already, checks an API key, and starts the host\'s setup agent, ' +
+        'which talks with you in this terminal to set up the resident.');
+      const answered = await ownUserStep(world, out);
       if (typeof answered === 'number') return answered === -1 ? stopped() : answered;
       state = answered;
+    }
+    if ('unreadable' in read) {
+      const aside = join(setupDir, `setup-state.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      renameSync(statePath, aside);
+      out(`Setup moved the answers it couldn't read to ${aside}, and keeps its new ones in ${statePath}.`);
     }
     writeJsonAtomic(statePath, state, 0o600);
     kept = true;
@@ -294,59 +296,53 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
 }
 
-async function askWho(world: SetupWorld, out: (line: string) => void): Promise<SetupState | number> {
-  const later = 'Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell to run ' +
-    `commands on this machine. With a shell, the resident can read and change whatever ${world.user} can, and whoever ` +
-    'talks to it on Discord can ask it to.';
-  if (!ownUserPossible(world)) {
-    const why = world.platform === 'darwin' ? 'On macOS, setup has no root lines for a user of its own'
-      : !world.hasSudo ? 'There\'s no sudo on this machine'
-        : 'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running';
-    out(`${why}, so the resident runs as this user, ${world.user}. ${later}`);
-    const go = await yesNo(world, `Go on as ${world.user}? (yes/no) `);
-    if (go === null) return -1;
-    if (!go) {
-      out('Nothing was installed.');
-      return 0;
-    }
-    return { v: 1 };
-  }
+// Where setup can offer the resident a user of its own, it advises one before it installs, and asks only whether to
+// continue here. Elsewhere there's nothing to offer, and the step is skipped.
+async function ownUserStep(world: SetupWorld, out: (line: string) => void): Promise<SetupState | number> {
+  if (!offersOwnUser(world)) return { v: 1 };
+  adviseOwnUser(world, out);
+  const go = await yesNo(world, 'Continue with current installation (yes/no) [yes] ', true);
+  if (go === null) return -1;
+  if (go) return { v: 1 };
+  goOnAsOwnUser(out);
+  out('Nothing was installed here.');
+  return 0;
+}
+
+function adviseOwnUser(world: SetupWorld, out: (line: string) => void): void {
   out(`The resident runs as the user that runs setup, here ${world.user}, and changing that later means starting over ` +
-    `as another user. ${later} So if this is your own account and the resident may get a shell, give it a user of its ` +
-    'own now.');
-  out('Who does the resident run as?');
-  out('  1. a user of its own, as setup recommends if the resident may get a shell: setup shows the lines that make it, ' +
-    'which need sudo, yours if you can use it here or else an admin\'s, and you run setup again as that user, where ' +
-    'its questions come again');
-  out(`  2. this user, ${world.user}: for a resident with no shell, or where ${world.user} already is the resident's ` +
-    `own user${world.lingerOf(world.user) === false ? `; linger, which keeps ${world.user}'s services running while ` +
-      `${world.user} is logged out, is off, so its service needs one sudo line too, run once, by you or an admin` : ''}`);
-  const choice = await pick(world, 'Choose 1 or 2: ');
-  if (choice === null) return -1;
-  if (choice === '1') {
-    const name = await userName(world, out);
-    if (name === null) return -1;
-    // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
-    out('Run this line where you can use sudo: it makes its user, unless one by that name is there already, keeps ' +
-      'its services running while it\'s logged out, and gives it Bun on its PATH. If a step fails, put right what ' +
-      'it names and run the line again.');
-    // bun.sh/install exits before adding Bun to PATH, or linking bunx, wherever a bun is on PATH already.
-    out(`  id -u ${name} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${name} && ` +
-      `sudo loginctl enable-linger ${name} && ` +
-      `sudo -iu ${name} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`);
-    out(`Setup needs Node ${packageJson().engines.node.replace('>=', '')} or later there too, and at most Node ` +
-      `${SHELL_NODE_TOP} if the resident may get a shell: if this machine's Node is installed for your user alone, as ` +
-      `one from nvm is, install Node for ${name} as well. \`command -v node\` shows where yours is: one in your home is ` +
-      'yours alone.');
-    out(`Then open a shell as ${name}, with \`sudo -iu ${name}\` where you can use sudo, or by whoever ran the line, and ` +
-      'run this same version of setup there, in a new directory for the resident. Its service takes the directory\'s ' +
-      'name, so choose another than resident if you like, or if ~/resident is already there:');
-    out('  mkdir ~/resident && cd ~/resident');
-    out(`  ${firstLine()}`);
-    out(`There, choose "this user" when setup asks who the resident runs as. Nothing was installed here.`);
-    return 0;
+    'as another user. Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell ' +
+    `to run commands on this machine. With a shell, the resident can read and change whatever ${world.user} can, and ` +
+    'whoever talks to it on Discord can ask it to. So if this is your own account and the resident may get a shell, ' +
+    `give it a user of its own. This line makes one, named ${OWN_USER}, unless a user by that name is there already, ` +
+    'keeps its services running while it\'s logged out, and gives it Bun on its PATH. Run it where you can use sudo, ' +
+    'and if a step fails, put right what it names and run the line again:');
+  // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
+  // bun.sh/install exits before adding Bun to PATH, or linking bunx, wherever a bun is on PATH already.
+  out(`  id -u ${OWN_USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${OWN_USER} && ` +
+    `sudo loginctl enable-linger ${OWN_USER} && ` +
+    `sudo -iu ${OWN_USER} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`);
+  const exists = world.userExists(OWN_USER);
+  if (exists === true) {
+    out(`This machine already has a user named ${OWN_USER}. If an earlier line of setup's made it for the resident, ` +
+      `open a shell as ${OWN_USER} and run setup there. Otherwise, for a user of the resident's own, put a name no ` +
+      `account here has in place of ${OWN_USER}, in the line and in what setup says after it.`);
+  } else if (exists === null) {
+    out(`Setup couldn't check whether this machine already has a user named ${OWN_USER}. The line makes it only where ` +
+      'there\'s none: where there is one, the resident runs as that account.');
   }
-  return { v: 1 };
+}
+
+function goOnAsOwnUser(out: (line: string) => void): void {
+  out(`Setup needs Node ${packageJson().engines.node.replace('>=', '')} or later there too, and at most Node ` +
+    `${SHELL_NODE_TOP} if the resident may get a shell: if this machine's Node is installed for your user alone, as ` +
+    `one from nvm is, install Node for ${OWN_USER} as well. \`command -v node\` shows where yours is: one in your home ` +
+    'is yours alone.');
+  out(`Then open a shell as ${OWN_USER}, with \`sudo -iu ${OWN_USER}\` where you can use sudo, or by whoever ran the ` +
+    'line, and run this same version of setup there, in a new directory for the resident. Its service takes the ' +
+    'directory\'s name, so choose another than resident if you like, or if ~/resident is already there:');
+  out('  mkdir ~/resident && cd ~/resident');
+  out(`  ${firstLine()}`);
 }
 
 async function installAndStart(
@@ -597,8 +593,7 @@ async function installAndStart(
   out(`The installed host (${running}) starts.`);
 
   const stored = readEnvFile(envFile);
-  // Read again at each use, since the person can change .env while setup waits on a question.
-  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile);
+  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile, env);
   const shownOrigin = (url: string, key: string) => withSecretsHidden(String(originOf(url)), key, hide());
   const baseIn = (): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
@@ -852,48 +847,20 @@ function setupModel(path: string): { model: string } | { damage: string | null }
   return typeof model === 'string' && model !== '' ? { model } : { damage: 'names no agent.model' };
 }
 
-async function yesNo(world: SetupWorld, question: string): Promise<boolean | null> {
+async function yesNo(world: SetupWorld, question: string, enter?: boolean): Promise<boolean | null> {
   for (;;) {
     const answer = await world.ask(question);
     if (answer === null) return null;
     const word = answer.trim().toLowerCase();
+    if (word === '' && enter !== undefined) return enter;
     if (word === 'yes' || word === 'y') return true;
     if (word === 'no' || word === 'n') return false;
   }
 }
 
-function ownUserPossible(world: SetupWorld): boolean {
-  return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null;
-}
-
-async function pick(world: SetupWorld, question: string): Promise<'1' | '2' | null> {
-  for (;;) {
-    const answer = await world.ask(question);
-    if (answer === null) return null;
-    const word = answer.trim();
-    if (word === '1' || word === '2') return word;
-  }
-}
-
-async function userName(world: SetupWorld, out: (line: string) => void): Promise<string | null> {
-  for (;;) {
-    const answer = await world.ask('Its user\'s name [connectome]: ');
-    if (answer === null) return null;
-    const name = answer.trim() || 'connectome';
-    if (!USER_NAME.test(name)) {
-      out('A user\'s name here is lowercase letters, digits, - and _, starting with a letter or _, at most 32.');
-      continue;
-    }
-    const exists = world.userExists(name);
-    if (exists === null) {
-      out(`Setup couldn't check whether this machine already has a user named ${name}. The line below makes it only ` +
-        'where there\'s none: where there is one, the resident runs as that account.');
-    }
-    if (exists !== true) return name;
-    out(`This machine already has a user named ${name}, and the resident gets a user of its own, so choose a name no ` +
-      `account here has. If an earlier line of setup's made ${name} for the resident, open a shell as ${name} and run ` +
-      'setup there instead.');
-  }
+// Linux with sudo and systemd, run as another user than the one its line makes.
+function offersOwnUser(world: SetupWorld): boolean {
+  return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null && world.user !== OWN_USER;
 }
 
 function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {

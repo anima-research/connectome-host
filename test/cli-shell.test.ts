@@ -28,8 +28,6 @@ function directory(): string {
   return dir;
 }
 
-// The directory that holds an install, as setup leaves it: its root with the install's own command, and a
-// package.json naming Bun's default trusted list and term-sessions-mcp.
 function installed(): { dir: string; root: string; line: string } {
   const dir = directory();
   const root = join(dir, 'connectome-host');
@@ -270,7 +268,7 @@ test('where package.json doesn\'t name term-sessions-mcp in trustedDependencies,
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty'] }));
   const made = world(dir);
   expect(await runShell(root, ['install'], made)).toBe(0);
-  expect(made.seen.out[0]).toBe(`${join(dir, 'package.json')} doesn't name term-sessions-mcp in its trustedDependencies, so Bun runs no install script of term-sessions-mcp's, and through a mirror or a company registry it may run none of the others', node-pty's among them. Setup writes that list each time it runs.`);
+  expect(made.seen.out[0]).toBe(`${join(dir, 'package.json')} doesn't name term-sessions-mcp in its trustedDependencies, so Bun runs no install script of term-sessions-mcp's, and through a mirror or a company registry it may run none of the others', node-pty's among them. Setup tries to write that list each time it runs, and says so when it can't.`);
   const named = installed();
   const fine = world(named.dir);
   expect(await runShell(named.root, ['install'], fine)).toBe(0);
@@ -375,6 +373,41 @@ test('a repair that finds a copy a stopped repair set aside keeps that copy, and
   expect(await runShell(root, ['install'], made)).toBe(1);
   expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy the command found');
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+});
+
+test('a first pty check that passes removes a copy a stopped repair left aside, says so, and leaves the working copy as it is', async () => {
+  const { dir, root } = installed();
+  const aside = join(dir, '.setup', 'node-pty-aside');
+  mkdirSync(aside, { recursive: true });
+  writeFileSync(join(aside, 'pty.node'), 'the copy a stopped repair set aside');
+  const made = world(dir, {
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy that works');
+    },
+  });
+  expect(await runShell(root, ['install'], made)).toBe(0);
+  expect(existsSync(aside)).toBe(false);
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy that works');
+  expect(made.seen.out).toContain(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
+  expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(false);
+  const none = installed();
+  const clean = world(none.dir);
+  expect(await runShell(none.root, ['install'], clean)).toBe(0);
+  expect(text(clean.seen.out)).not.toContain('set aside');
+});
+
+test('a pty check stopped at its 30 s limit says so, in the repair\'s line and in the stop, whatever it printed first', async () => {
+  for (const printed of ['', '(node:4242) Warning: something slow\n']) {
+    const { dir, root } = installed();
+    const stopped: Ran = { status: null, stdout: '', stderr: printed, timedOut: true };
+    const made = world(dir, { pty: [stopped, stopped] });
+    expect(await runShell(root, ['install'], made)).toBe(1);
+    const check = made.seen.ran.findIndex((argv) => argv[0] === 'node' && argv[1] === '-e');
+    expect(made.seen.options[check]!.timeoutMs).toBe(30_000);
+    expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (its check ran past its 30 s limit and was stopped), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
+    expect(made.seen.err[0]).toStartWith('The resident\'s shell runs on node-pty, and here it doesn\'t work: its check ran past its 30 s limit and was stopped. ');
+  }
 });
 
 test('on Linux, a node-pty that still opens no pty once installed again stops the command, naming the build tools and the line that tries again', async () => {

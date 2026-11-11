@@ -37,7 +37,7 @@ export interface SetupModuleConfig {
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream's head and tail, so both streams' together, with what the answer adds, stay under agent-framework
-// 0.32.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its
+// 0.33.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its
 // src/tool-result-history.ts:253, which the package doesn't export), past which it cuts the answer, and stderr's tail
 // with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
 // for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
@@ -129,6 +129,16 @@ function watchHostEnd(): void {
   watching = true;
   process.on('exit', endRunning);
   for (const signal of ENDING_SIGNALS) process.on(signal, onEndingSignal);
+}
+
+async function endGroups(groups: Group[]): Promise<boolean> {
+  for (const group of groups) group.signal('SIGTERM');
+  for (const until = performance.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && performance.now() < until;) {
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  const left = groups.filter((group) => group.alive());
+  for (const group of left) group.signal('SIGKILL');
+  return left.length > 0;
 }
 
 function groupOf(pid: number | undefined): Group {
@@ -249,6 +259,7 @@ export class SetupModule implements Module {
   private readonly groups = new Set<Group>();
   private stopping = false;
   private asking: Promise<unknown> = Promise.resolve();
+  private readonly checks = new Set<Promise<void>>();
   private readonly seen: Seen;
   finishRequested = false;
 
@@ -262,11 +273,7 @@ export class SetupModule implements Module {
   async stop(): Promise<void> {
     this.stopping = true;
     const groups = [...this.groups];
-    for (const group of groups) group.signal('SIGTERM');
-    for (const until = performance.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && performance.now() < until;) {
-      await new Promise((done) => setTimeout(done, 50));
-    }
-    for (const group of groups) if (group.alive()) group.signal('SIGKILL');
+    await endGroups(groups);
     for (const group of groups) running.delete(group);
   }
 
@@ -388,12 +395,19 @@ export class SetupModule implements Module {
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
     if (call.name === 'run') return this.run(call.input as { command?: unknown; timeoutMs?: unknown });
     if (call.name === 'ask_secret') {
-      const turn = this.asking.then(() => this.askSecret(call.input as { name?: unknown; purpose?: unknown }));
+      const turn = this.asking.then(() => Promise.all(this.checks))
+        .then(() => this.askSecret(call.input as { name?: unknown; purpose?: unknown }));
       this.asking = turn.catch(() => {});
       return turn;
     }
     if (call.name === 'check_model') {
-      return this.afterAsked(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
+      return this.afterAsked(() => {
+        const check = this.checkModel(call.input as { name?: unknown; model?: unknown });
+        const ended = check.then(() => {}, () => {});
+        this.checks.add(ended);
+        void ended.then(() => { this.checks.delete(ended); });
+        return check;
+      });
     }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
@@ -411,8 +425,6 @@ export class SetupModule implements Module {
     const { names: current, guessed } = secretNames(join(this.config.dir, '.setup'), envFile);
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
-    // The read gets the command's own environment, which leaves out a variable holding a secret's value. A value the
-    // read finds can leave out another, so it reads again until the environment it read with is the command's.
     for (let env = this.commandEnv(names, this.seen.values); ;) {
       for (const read of secretValues(names, envFile, this.config.env, env)) addSecret(this.seen.values, read);
       const next = this.commandEnv(names, this.seen.values);
@@ -487,14 +499,13 @@ export class SetupModule implements Module {
     running.add(group);
     watchHostEnd();
     let stoppedAtLimit = false;
+    let atLimit: Promise<boolean> | undefined;
     const limitTimer = setTimeout(() => {
       stoppedAtLimit = true;
-      group.signal('SIGTERM');
-      setTimeout(() => {
-        if (group.alive()) group.signal('SIGKILL');
+      atLimit = endGroups([group]).finally(() => {
         this.groups.delete(group);
         running.delete(group);
-      }, KILL_GRACE_MS).unref();
+      });
     }, limit);
     let heldOpen = false;
     const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null } | { error: Error }>((done) => {
@@ -522,6 +533,7 @@ export class SetupModule implements Module {
     });
     child.stdout!.destroy();
     child.stderr!.destroy();
+    const killedAtLimit = await atLimit;
     if ('error' in ended) {
       if ((ended.error as NodeJS.ErrnoException).code !== 'ENOENT') {
         return failed(`setup--run couldn't start bash: ${ended.error.message}`);
@@ -545,12 +557,13 @@ export class SetupModule implements Module {
     }
     const notes: string[] = [];
     if (stoppedAtLimit) {
-      notes.push(`It was still running at its ${limit} ms limit, so its process group was sent SIGTERM, and is sent ` +
-        'SIGKILL 5 s later if any of it is left. A process it started in a group of its own isn\'t stopped.');
+      notes.push(`It was still running at its ${limit} ms limit, so its process group was sent SIGTERM, and ` +
+        (killedAtLimit ? 'SIGKILL 5 s later, since some of it was still running then.' : 'all of it ended within 5 s.') +
+        ' A process it started in a group of its own isn\'t stopped.');
     }
     if (heldOpen) {
-      notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still holds the ` +
-        'output open, and is still running.');
+      notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still ` +
+        (stoppedAtLimit ? 'held the output open.' : 'holds the output open, and is still running.'));
     }
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
@@ -864,7 +877,8 @@ function keyNote(name: string, asked: string, answer: ProviderAnswer<unknown>, a
       return `, but it isn't known to work: ${asked} answered ${answer.status}` +
         `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
     }
-    case 'unanswered': return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).`;
+    case 'unanswered':
+      return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     case 'redirected': return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.`;
     case 'unrecognized':
       return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}`;
@@ -877,8 +891,9 @@ function tokenNote(token: TokenCheck): string {
   switch (token.kind) {
     case 'accepted': return `. Discord accepted it: the bot is ${token.name} (${token.id}).`;
     case 'answered':
-      return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}.`;
-    case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}).`;
+      return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
+        ASK_TOKEN_AGAIN;
+    case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
     case 'unrecognized':
       return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${busy(token.status) ? BUSY : CONNECTION}`;
@@ -887,6 +902,8 @@ function tokenNote(token: TokenCheck): string {
 }
 
 const CONNECTION = 'Tell the person: their connection to it is theirs to check.';
+const CHECK_KEY_AGAIN = 'Check it again with setup--check_model, or go on with it unchecked.';
+const ASK_TOKEN_AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
 
 const BUSY = 'It may be busy: `connectome doctor` checks the token again when it runs.';
 
