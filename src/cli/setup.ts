@@ -44,7 +44,6 @@ const BOOT_TIMEOUT_MS = 60_000;
 // Bun 1.4.3's `bun add --no-env-file` still gives a package's install script the working directory's .env, where
 // 1.4.4's gives none (probed), and setup's bun add runs where the resident's secrets are.
 export const SETUP_BUN_FLOOR = '>=1.4.4';
-// The user that setup's line for a user of the resident's own makes.
 const OWN_USER = 'connectome';
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',
@@ -299,8 +298,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
 }
 
-// Where setup can offer the resident a user of its own, it advises one before it installs, and asks only whether to
-// continue here. Elsewhere there's nothing to offer, and the step is skipped.
 async function ownUserStep(world: SetupWorld, out: (line: string) => void): Promise<SetupState | number> {
   if (!offersOwnUser(world)) return { v: 1 };
   adviseOwnUser(world, out);
@@ -861,7 +858,6 @@ async function yesNo(world: SetupWorld, question: string, enter?: boolean): Prom
   }
 }
 
-// Linux with sudo and systemd, run as another user than the one its line makes.
 function offersOwnUser(world: SetupWorld): boolean {
   return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null && world.user !== OWN_USER;
 }
