@@ -846,6 +846,11 @@ describe('connectome doctor', () => {
     const nowhere = await withHost(at, HEALTHY_HOST, () => run(at, { platform: 'win32' }));
     expect(nowhere.out).toContain('✗ No service is installed for this install: `connectome service install` writes one only ' +
       'on Linux and macOS, for a directory whose name has a letter or digit.');
+    rmSync(dirname(at.unit), { recursive: true });
+    writeFileSync(dirname(at.unit), '');
+    const through = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(through.out).toContain(`✗ No service is installed for this install: ${at.unit} isn't there. `);
+    expect(through.out).not.toContain(`${at.unit}, connectome-test.service's unit file, can't be read`);
   });
 
   test('a unit file install couldn\'t have written, or one that can\'t be read, is a problem naming how to write it anew, and the ladder says why it didn\'t run', async () => {
@@ -855,19 +860,23 @@ describe('connectome doctor', () => {
     expect(r.out).toContain(`✗ ${at.unit} isn't the unit file service install writes: `);
     expect(r.out).toContain('`connectome service install <recipe>` writes it anew, or says why it can\'t.');
     expect(r.out).not.toContain('ladder args');
-    expect(r.out).toContain('The ladder reads the service\'s unit, so it doesn\'t run while that unit can\'t be read.');
-    expect(r.out).toMatch(/Discord isn't checked: .*that unit can't be read/);
+    const ladder = 'The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.';
+    expect(r.out).toContain(ladder);
+    expect(r.out).toMatch(/Discord isn't checked: .*the service's unit names, and doctor can't use that unit/);
+    expect(r.out).not.toContain('that unit can\'t be read');
     expect(r.status).toBe(1);
     writeUnit(at, join(at.work, 'recipe.json'));
     writeFileSync(at.unit, readFileSync(at.unit, 'utf-8').replace(/"[^"]*start\.js" /, ''));
     const other = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(other.out).toContain(`✗ ${at.unit} doesn't run start.js with a recipe after it, as the one service install writes does.`);
     expect(other.out).not.toContain('ladder args');
+    expect(other.out).toContain(ladder);
     rmSync(at.unit);
     mkdirSync(at.unit);
     const unread = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(unread.out).toContain(`✗ ${at.unit}, connectome-test.service's unit file, can't be read: `);
     expect(unread.out).not.toContain('No service is installed');
+    expect(unread.out).toContain(ladder);
     expect(unread.status).toBe(1);
   });
 

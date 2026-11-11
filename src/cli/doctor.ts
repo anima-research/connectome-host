@@ -118,7 +118,8 @@ export async function doctor(
     try {
       text = readFileSync(units.host.file, 'utf-8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
         serviceError = `${units.host.file}, ${units.host.name}'s ${fileWord(units.manager)}, can't be read: ` +
           `${errorText(error).replace(/\.$/, '')}.`;
       }
@@ -463,7 +464,7 @@ export async function doctor(
       });
     }
     let unknown = serviceError !== null
-      ? 'which servers run is in the recipe the service\'s unit names, and that unit can\'t be read'
+      ? 'which servers run is in the recipe the service\'s unit names, and doctor can\'t use that unit'
       : service === null ? 'which servers run is in the recipe the service\'s unit names, and there\'s no unit'
         : 'which servers run is in the recipe, which didn\'t load';
     if (serversError !== null) {
@@ -517,8 +518,7 @@ export async function doctor(
 
   let ladderRan = false;
   if (serviceError !== null) {
-    report.section('The ladder reads the service\'s unit, so it doesn\'t run while that unit ' +
-      'can\'t be read.');
+    report.section('The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.');
   } else if (service === null) {
     report.section('The ladder reads the service\'s unit and log, so it runs once a service is installed.');
   } else if (service.units.manager !== 'systemd-user') {
