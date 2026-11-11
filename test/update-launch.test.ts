@@ -212,6 +212,17 @@ describe('the binding check, before any release loads', () => {
     expect(run.stderr).toContain(`DATA_DIR=${join(copy, 'data')} bun --no-env-file `);
   });
 
+  test('a copy of an install whose data directory is outside the directory it was bound to is sent to a setup command that gives that data directory its place', () => {
+    const outside = join(dir, 'outside-data');
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: outside, extraState: [], workingDir: install });
+    const copy = join(dir, 'copy');
+    copyTo(copy);
+    const run = startIn(copy);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(`DATA_DIR='<where its data directory is now>' bun --no-env-file `);
+    expect(run.stderr).toContain(` --root ${join(copy, 'connectome-host')} --place ${outside} '<where its data directory is now>'\``);
+  });
+
   test('a copy of an install serving a data directory other than ./data is sent to a setup command that, run as printed, binds it to its own data directory', () => {
     const state = join(install, 'state');
     mkdirSync(join(state, 'sessions'), { recursive: true });
@@ -266,7 +277,7 @@ describe('the binding check, before any release loads', () => {
     copyTo(copy);
     const run = startIn(copy);
     expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. ${RESTARTS}`);
+    expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, the setup of 0.10.2, the release whose setup wrote this file, which this install's releases don't hold now: install exactly 0.10.2 in ${copy} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand. ${RESTARTS}`);
   });
 
   test('a record from before workingDir starts as it did', () => {

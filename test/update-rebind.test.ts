@@ -531,7 +531,7 @@ bindMounted('a DATA_DIR that is the recorded data directory through a bind mount
 
 describe('what setup read before it held the lock', () => {
   const changedMeanwhile = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
-    'backs, or the trial its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
+    'backs, or the trial or Go back its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
     'changed none of them. Run it again, and it reads them afresh.';
 
   test('a children file replaced after setup read it, before the lock, is refused as changed meanwhile, and nothing is rewritten', () => {
@@ -1007,6 +1007,23 @@ describe('what a moved or copied install\'s root keeps', () => {
     setup(options(copy, { moveAside: true }));
     expect(record(copy)).toEqual({ v: 1, dataDir: join(copy, 'data'), extraState: [join(copy, 'state.json')], workingDir: copy });
     expect(readdirSync(join(rootOf(copy), 'set-aside'))).toEqual([]);
+  });
+
+  test('a Go back\'s list that this release can\'t read stops a binding before it changes anything, naming the list; with no list, the binding goes on', () => {
+    setup(options(install));
+    updated(install);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const list = join(rootOf(copy), 'set-aside', 'm2', 'places.json');
+    writeFileSync(list, '{ not json');
+    const kept = tree(copy);
+    for (const moveAside of [false, true]) {
+      expect(refusal(() => setup(options(copy, { moveAside })))).toStartWith(`${list} can't be read (`);
+    }
+    expect(tree(copy)).toEqual(kept);
+    rmSync(list);
+    setup(options(copy, { moveAside: true }));
+    expect(record(copy)!.workingDir).toBe(copy);
   });
 
   test('parseArgs reads --move-aside, which takes no value', () => {

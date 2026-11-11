@@ -133,7 +133,7 @@ test('where its release has no setup and the directory\'s package has none it ca
     `one is ${other.root}, so run the setup of 1.0.0, the release whose setup wrote this file: \`cd ${dir} && ` +
     `DATA_DIR=${join(dir, 'data')} bun --no-env-file ${other.ownSetup} --root ${other.root}\`.`);
   const gone = refusal('another-root', false);
-  expect(gone.stderr).toContain(`and this one is ${gone.root}, so run its setup by hand again, as docs/DEPLOYMENTS.md shows.`);
+  expect(gone.stderr).toContain(`and this one is ${gone.root}, so run the setup of 1.0.0, the release whose setup wrote this file, which this install's releases don't hold now: install exactly 1.0.0 in ${dir} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand.`);
 });
 
 test('a record bound to another directory refuses the bare command, update and send, each before any CLI loads, while setup runs', () => {
