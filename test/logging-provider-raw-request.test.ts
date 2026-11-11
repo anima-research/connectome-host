@@ -7,8 +7,12 @@ import { LoggingProviderAdapter } from '../src/logging-provider-wrapper.js';
 
 // #341: the generic wrapper kept the raw request on every call. On the OpenAI
 // Responses path that is the whole compiled context (about 3 MB per call on a
-// Codex host), so a success now keeps it only with LLM_CALLS_FULL_PAYLOADS=1,
-// as the Anthropic writer does; a failure keeps the request that was refused.
+// Codex host). Now it keeps the request on a failure that isn't a cancellation
+// (every attempt, with no run dedup and no budget: #642), on a refusal, on an
+// anomalous response (a client tool_use under another stop reason, a tool
+// call cut under a Responses `incomplete` status, or one whose arguments
+// didn't parse), and on every call, cancellations included, only with
+// LLM_CALLS_FULL_PAYLOADS=1.
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -139,20 +143,51 @@ describe('LoggingProviderAdapter and the raw request', () => {
     expect(record!.type).toBe('call');
     expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
     expect(record!.anomaly).toEqual({
-      kind: 'tool_use_cut_off', toolNames: ['zz_tool'], unparseableInput: ['zz_tool'],
+      kind: 'tool_use_cut_off', toolNames: ['zz_tool'], unparseableToolNames: ['zz_tool'],
       status: 'incomplete', reason: 'max_output_tokens', providerStopReason: 'max_output_tokens',
     });
-    // Either sign alone counts.
+    // The status alone counts.
     const path2 = logFile();
     const incompleteOnly = { ...cut, content: [{ type: 'tool_use', id: 'fc_2', name: 'zz_tool', input: { path: '/' } }] } as unknown as ProviderResponse;
     await new LoggingProviderAdapter(answering(incompleteOnly), path2, { fullPayloads: false }).complete(request);
     expect(records(path2)[0]!.anomaly).toMatchObject({ kind: 'tool_use_cut_off', status: 'incomplete' });
+    expect(records(path2)[0]!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
     // A completed tool round is not flagged.
     const path3 = logFile();
     const whole = { ...incompleteOnly, raw: { id: 'resp_w', status: 'completed', output: [] } } as unknown as ProviderResponse;
     await new LoggingProviderAdapter(answering(whole), path3, { fullPayloads: false }).complete(request);
     expect('anomaly' in records(path3)[0]!).toBe(false);
     expect('rawRequest' in records(path3)[0]!).toBe(false);
+  });
+
+  test('a tool call whose arguments did not parse, on a completed response, is its own kind and keeps the request', async () => {
+    const path = logFile();
+    // membrane marks arguments that aren't a JSON object (R2-1: a model's
+    // malformed JSON on any adapter, not only a cut), so the kind says so.
+    const malformed = {
+      content: [{ type: 'tool_use', id: 'fc_3', name: 'zz_tool', input: {}, unparseableInput: "{'path': '/'}" }],
+      stopReason: 'tool_use',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      raw: { id: 'resp_m', status: 'completed', output: [] },
+    } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(malformed), path, { fullPayloads: false }).complete(request);
+    const [record] = records(path);
+    expect(record!.anomaly).toEqual({ kind: 'tool_use_unparseable_input', toolNames: ['zz_tool'], unparseableToolNames: ['zz_tool'] });
+    expect(record!.rawRequest).toEqual(request as unknown as Record<string, unknown>);
+  });
+
+  test('a text or reasoning cut-off with no tool call is an ordinary row: no anomaly, no request', async () => {
+    const path = logFile();
+    const textCut = {
+      content: [{ type: 'text', text: 'the answer is' }],
+      stopReason: 'max_tokens',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      raw: { id: 'resp_t', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] },
+    } as unknown as ProviderResponse;
+    await new LoggingProviderAdapter(answering(textCut), path, { fullPayloads: false }).complete(request);
+    const [record] = records(path);
+    expect('anomaly' in record!).toBe(false);
+    expect('rawRequest' in record!).toBe(false);
   });
 
   test('an anomalous response (a client tool_use under end_turn) keeps the raw request and carries anomaly', async () => {

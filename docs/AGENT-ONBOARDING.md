@@ -932,7 +932,7 @@ only where its next request would pass the window, and a fresh compile carries t
   anomalous response's copy isn't charged to it; a cancelled call, membrane's `abort`, keeps
   none), or on every call with
   `LLM_CALLS_FULL_PAYLOADS=1`; Anthropic keepalive pokes only with that opt-in,
-  whatever their outcome; Bedrock on errors; the generic wrapper (OpenAI, Codex, OpenRouter, the compatible lane, mock) by its own, simpler rule: on every non-cancelled failure, each retry attempt in full (no run dedup, no copy budget), on refusals, on anomalous responses (a Responses tool call the provider cut off included), never on a cancelled call, and on every call, cancellations included, with that opt-in. Every line,
+  whatever their outcome; Bedrock on errors; the generic wrapper (OpenAI, Codex, OpenRouter, the compatible lane, mock) by its own, simpler rule: on every non-cancelled failure, each retry attempt in full (no run dedup, no copy budget); on refusals; on anomalous responses (a client tool call whose arguments didn't parse as an object, on any provider, or one in a Responses response with status `incomplete`, included; the row's `anomaly` only, no stderr line); on a cancelled call only with that opt-in, which keeps the request on every call. Every line,
   newline included, is capped at 16 MiB of UTF-8: an oversized or unserializable record drops its
   raw request first, its raw response only if the line still doesn't fit, then its summaries, keeping at least its type, kind,
   timing, error classification, `anomaly`, `messageId` and `requestId`, and `truncated` says what was dropped. Treat the log as diagnostics, not as a

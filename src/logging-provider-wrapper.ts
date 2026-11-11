@@ -9,10 +9,14 @@
 //     retry attempt included: unlike the Anthropic writer, this wrapper
 //     keeps no run of failures per lineage, dedups nothing by hash and has
 //     no copy budget, so a host whose calls fail repeatedly writes the full
-//     request once per attempt (#341 keeps the shared policy as a follow-up);
-//   - on a refusal, and on an anomalous response (responseAnomaly, and on
-//     the Responses path a tool call the provider cut off: cutOffToolCall);
-//   - on every call, cancellations included, with LLM_CALLS_FULL_PAYLOADS=1.
+//     request once per attempt (#642 tracks sharing the Anthropic writer's policy);
+//   - on a refusal, and on an anomalous response (responseAnomaly, and
+//     anomalousToolCall: a client tool call whose arguments didn't parse as
+//     an object, on any provider, or one in a Responses response whose
+//     status is `incomplete`); the row carries `anomaly` and nothing is
+//     printed to stderr for it, unlike the Anthropic writer's ANOMALY line;
+//   - on a cancelled call only with LLM_CALLS_FULL_PAYLOADS=1, which keeps
+//     the request on every call.
 // On the OpenAI Responses path a request carries the whole compiled context,
 // so keeping it on every success put ~3 MB per call into the file whose last
 // ~64 MiB /bug reads on these hosts (#341); the call ledger reads the file
@@ -20,7 +24,7 @@
 // directory is later served by one.
 //
 // Each line: { type: 'call'|'error', provider, kind: 'complete'|'stream',
-//   timestamp, durationMs, requestSummary?, response?, rawRequest?,
+//   timestamp, durationMs, requestSummary?, response?, anomaly?, rawRequest?,
 //   rawResponse?, error?, errorType?, httpStatus?, providerErrorCode?,
 //   retryable?, errorChars?, truncated?, summaryUnavailable? }
 // A record whose request or response couldn't be summarized keeps only the
@@ -99,14 +103,20 @@ function isRefusal(response: ProviderResponse): boolean {
 }
 
 /**
- * A tool call the provider cut off, which responseAnomaly can't see on the
- * Responses path: membrane reports `tool_use` whenever the output holds a
- * function_call, before it reads `status: 'incomplete'`, so the cut
- * survives only as the response's `status` (and `incomplete_details`) or
- * as a tool_use block whose arguments didn't parse (`unparseableInput`).
- * Provider-agnostic: either sign counts, on any adapter.
+ * A client tool call the response shows was not what the model meant to send,
+ * which responseAnomaly can't see: on the Responses path membrane reports
+ * `tool_use` whenever the output holds a function_call, before it reads
+ * `status: 'incomplete'`, so a call cut under max_output_tokens survives only
+ * as the response's `status` (and `incomplete_details`); and on any adapter a
+ * tool_use block whose arguments didn't parse as an object carries membrane's
+ * `unparseableInput` marker, which a cut and a model's malformed JSON both
+ * produce. The two signs get their own kinds, since an operator reads them
+ * differently: `tool_use_cut_off` when the response's status says so (with or
+ * without the marker), `tool_use_unparseable_input` when only the marker fired.
+ * A response with no tool_use block is never one of these: a text or reasoning
+ * cut-off at the token limit is an ordinary row.
  */
-function cutOffToolCall(response: ProviderResponse): Record<string, unknown> | undefined {
+function anomalousToolCall(response: ProviderResponse): Record<string, unknown> | undefined {
   const r = response as {
     content?: unknown;
     providerStopReason?: unknown;
@@ -115,14 +125,15 @@ function cutOffToolCall(response: ProviderResponse): Record<string, unknown> | u
   const blocks = Array.isArray(r.content) ? r.content as Array<{ type?: unknown; name?: unknown; unparseableInput?: unknown } | null> : [];
   const tools = blocks.filter((b) => !!b && typeof b === 'object' && b.type === 'tool_use');
   if (tools.length === 0) return undefined;
-  const unparseable = tools.filter((b) => b!.unparseableInput !== undefined).map((b) => (typeof b!.name === 'string' ? b!.name : '?'));
+  const nameOf = (b: { name?: unknown } | null): string => (typeof b?.name === 'string' ? b.name : '?');
+  const unparseableToolNames = tools.filter((b) => b!.unparseableInput !== undefined).map(nameOf);
   const raw = r.raw && typeof r.raw === 'object' ? r.raw : undefined;
   const incomplete = raw?.status === 'incomplete';
-  if (unparseable.length === 0 && !incomplete) return undefined;
+  if (unparseableToolNames.length === 0 && !incomplete) return undefined;
   return {
-    kind: 'tool_use_cut_off',
-    toolNames: tools.map((b) => (typeof b!.name === 'string' ? b!.name : '?')),
-    ...(unparseable.length > 0 ? { unparseableInput: unparseable } : {}),
+    kind: incomplete ? 'tool_use_cut_off' : 'tool_use_unparseable_input',
+    toolNames: tools.map(nameOf),
+    ...(unparseableToolNames.length > 0 ? { unparseableToolNames } : {}),
     ...(incomplete ? { status: 'incomplete', reason: typeof raw?.incomplete_details?.reason === 'string' ? raw.incomplete_details.reason : null } : {}),
     ...('providerStopReason' in r ? { providerStopReason: typeof r.providerStopReason === 'string' ? r.providerStopReason : null } : {}),
   };
@@ -193,7 +204,7 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     let record: Record<string, unknown>;
     try {
       const errorFields = failed ? describeError(outcome.error) : undefined;
-      const anomaly = failed ? undefined : (responseAnomaly(outcome.response) ?? cutOffToolCall(outcome.response));
+      const anomaly = failed ? undefined : (responseAnomaly(outcome.response) ?? anomalousToolCall(outcome.response));
       // Which calls keep the raw request (the header has the rule): every
       // failure except a cancellation (membrane types it `abort`), which is
       // never the request's doing; a refusal; an anomalous response; and,

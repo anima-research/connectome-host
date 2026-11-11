@@ -2,8 +2,9 @@
   the compatible lane, mock) no longer keep the raw request on every call: they
   keep it on a failure (every attempt, a cancelled call excepted), on a
   refusal, on an anomalous response (its row carries `anomaly`: a client
-  `tool_use` under another stop reason, or on the Responses path a tool call
-  the provider cut off), and on every call, cancellations included, with
+  `tool_use` under another stop reason, a tool call in a Responses response
+  with status `incomplete`, or one whose arguments didn't parse as an object,
+  on any provider), and on every call, cancellations included, with
   `LLM_CALLS_FULL_PAYLOADS=1` (#341, the core of #83). Unlike the Anthropic
   writer, the wrapper keeps no run of failures per lineage, dedups nothing by
   hash and has no copy budget, so a host whose calls fail repeatedly still
