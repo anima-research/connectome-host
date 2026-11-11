@@ -536,6 +536,7 @@ agents: [agentConfig],
     // Passed by spread, as the heartbeat is: an agent-framework without the
     // option (agent-framework#856) reads nothing it doesn't know.
     ...(recipe.messageQuietPeriod !== undefined ? { messageQuietPeriod: recipe.messageQuietPeriod } : {}),
+    toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -732,7 +733,7 @@ async function runPiped(app: AppContext) {
     const trimmed = line.trim();
     if (!trimmed) return false;
     if (trimmed.startsWith('/')) {
-      const result = handleCommand(trimmed, app);
+      const result = handleCommand(trimmed, app, { lineByLine: true });
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
       if (result.asyncWork) {
@@ -949,6 +950,7 @@ async function main() {
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;
@@ -968,7 +970,7 @@ async function main() {
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
-    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+    const name = fw?.getPrimaryAgentName()
       ?? (agents.length === 1 ? agents[0]!.name : undefined);
     if (!name) return null;
     const agent = agents.find((a) => a.name === name);

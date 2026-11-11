@@ -93,11 +93,14 @@ to stop, `kickstart -k` to restart.)
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
-`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To avoid it, stop the
-resident first, then drain the debt offline with `bun scripts/warmup-session.ts
+`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To make fewer of them,
+stop the resident first, then drain what the warmup can offline with `bun scripts/warmup-session.ts
 <session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
-`--merge-threshold` must pass the same values to the warmup command.
+`--merge-threshold` must pass the same values to the warmup command. The warmup
+leaves the work that waits on the agent's tool definitions to the restarted host;
+[Stage 3 of `claudeai-evacuation.md`](./claudeai-evacuation.md#stage-3--warmup-compress-the-message-history)
+says which work that is and when the host compresses it.
 
 **Logs / observability** (`data/` below is `DATA_DIR`, default `./data` under
 the working directory):
@@ -542,10 +545,13 @@ ambient channel chatter enters context without waking.
 ## Known pending fixes (forward work)
 
 1. **Image handling** — discord-mcpl base64-inlines attachments. What exists
-   now: context-manager's compile keeps at most 6 live images
-   (`maxLiveImages`), strips images deeper than 30 000 tokens
-   (`imageStripDepthTokens`) and keeps cumulative inline image base64 under
-   20 MiB (`maxLiveImageBytes`), replacing the rest with placeholders; membrane
+   now: context-manager's compile can keep only so many live images
+   (`maxLiveImages`), strip images deeper than a token depth
+   (`imageStripDepthTokens`) and keep cumulative inline image base64 under a
+   byte budget (`maxLiveImageBytes`), replacing the rest with placeholders;
+   all three are off unless a recipe sets them (context-manager 0.25.2; they
+   were 6 images, 30 000 tokens and 20 MiB), and its ceilings of 500 images
+   and 24 MiB still apply; membrane
    degrades API-rejected media types (SVG, TIFF, …) to a visible placeholder
    and fails loudly, before the API call, when a request exceeds its byte cap
    (28 MB, `MEMBRANE_MAX_REQUEST_BYTES`); agent-framework's `read_image`
@@ -573,6 +579,7 @@ repo**:
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
   `scripts/warmup-session.ts <session>`, which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
-  not read from the recipe).
+  not read from the recipe), except for work that waits on tool definitions,
+  which it names and leaves.
 - `scripts/strip-oversized-images.mjs` — remove >5 MB image blocks from the
   chronicle (agent must be stopped). No shipped equivalent.

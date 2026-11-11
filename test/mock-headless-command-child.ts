@@ -36,6 +36,11 @@ await runHeadless({
     },
     onTrace: () => {},
     stop: async () => {},
+    // /nudge's requester, one line per nudge (test/commands-requester.test.ts).
+    nudgeAgent: (_agent: string | undefined, by: string) => {
+      appendFileSync(join(process.env.DATA_DIR!, 'nudged'), `${by}\n`);
+      return { ok: true, agentName: 'fixture', agentStatus: 'idle' };
+    },
     puppetToolCall: async (_agent: string, _tool: string, input: Record<string, string>) => {
       while (!existsSync(input.release!)) await Bun.sleep(10);
       // The command's promise continuations (including reply writes) drain

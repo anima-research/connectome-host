@@ -166,6 +166,9 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.proseRouting !== undefined
       ? { proseRouting: recipe.agent.proseRouting }
       : {}),
+    ...(recipe.agent.proseLock !== undefined
+      ? { proseLock: recipe.agent.proseLock }
+      : {}),
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
       : {}),
