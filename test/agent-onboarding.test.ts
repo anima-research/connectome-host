@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { COMMANDS } from '../src/cli/connectome.ts';
 import { parseHandWrittenJson } from '../src/hand-written-json.ts';
-import { WHOLE_OUTPUT_BYTES } from '../src/modules/setup-module.ts';
+import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, WHOLE_OUTPUT_BYTES } from '../src/modules/setup-module.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const GUIDE = readFileSync(join(ROOT, 'docs', 'AGENT-ONBOARDING.md'), 'utf-8');
@@ -198,5 +198,27 @@ describe('what the guide names ships, or is the install\'s own', () => {
       }
     }
     expect(named).toBeGreaterThan(0);
+  });
+});
+
+describe('the resident\'s shell is decided with the person', () => {
+  const STEP = 'The resident\'s shell';
+
+  it('in a step of its own, before the recipe\'s servers, the grants and the backups, which each go by its answer', () => {
+    const at = (heading: string) => HEADINGS.indexOf(heading);
+    expect(at(STEP)).toBeGreaterThanOrEqual(0);
+    for (const later of ['The recipe\'s servers', 'What the resident may do to itself', 'Backups']) {
+      expect({ later, after: at(later) > at(STEP) }).toEqual({ later, after: true });
+    }
+  });
+
+  it('and on a yes, runs `connectome shell install` with a time limit above setup--run\'s default and within its most', () => {
+    const step = PIECES.find((piece) => piece.heading === STEP)?.text ?? '';
+    expect(step).toContain('`connectome shell install`');
+    const limits = [...step.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
+    expect(limits.length).toBeGreaterThan(0);
+    for (const limit of limits) {
+      expect({ limit, within: limit > DEFAULT_TIMEOUT_MS && limit <= MAX_TIMEOUT_MS }).toEqual({ limit, within: true });
+    }
   });
 });
