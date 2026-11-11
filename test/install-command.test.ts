@@ -105,7 +105,7 @@ test('setup refuses, before any CLI loads, where neither current\'s release nor 
   expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host@latest setup discord\` runs setup from the registry.`);
 });
 
-test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone; for an install bound where it is, that command gives no --place', () => {
+test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone; for an install bound where it is, that command gives its recorded data directory and no --place', () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
   dirs.push(dir);
   const refusal = (name: string, withSetup: boolean, dataDir = join(dir, 'data')) => {
@@ -137,7 +137,7 @@ test('where its release has no setup and the directory\'s package has none it ca
   const outside = join(dirname(dir), 'outside-data');
   const here = refusal('bound-here', true, outside);
   expect(here.stderr).toContain(`so run the setup of 1.0.0, the release whose setup wrote this file: \`cd ${dir} && ` +
-    `DATA_DIR='<where its data directory is now>' bun --no-env-file ${here.ownSetup} --root ${here.root}\`.`);
+    `DATA_DIR=${outside} bun --no-env-file ${here.ownSetup} --root ${here.root}\`.`);
 });
 
 test('a record bound to another directory refuses the bare command, update and send, each before any CLI loads, while setup runs', () => {
