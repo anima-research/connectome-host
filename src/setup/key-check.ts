@@ -1,7 +1,7 @@
 import { Stream } from '@anthropic-ai/sdk/streaming';
 import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
-import { JSON_TYPE, redirectTarget, shownByName } from './provider-key.js';
-import type { Secret } from './secrets.js';
+import { JSON_TYPE, redirectTarget } from './provider-key.js';
+import { shownByName, type Secret } from './secrets.js';
 
 export type KeyCheck = { ok: true } | { ok: false; cause: string; anotherKeyMayHelp: boolean };
 

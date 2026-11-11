@@ -358,6 +358,17 @@ function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   return spans;
 }
 
+export function shownByName(words: string, secrets: readonly Secret[]): string {
+  const bytes = Buffer.from(words, 'utf-8');
+  let text = '';
+  let at = 0;
+  for (const span of spansOf(bytes, secrets.filter(({ value }) => value.trim() !== ''))) {
+    text += `${bytes.toString('utf-8', at, span.start)}<${span.names[0]}>`;
+    at = span.end;
+  }
+  return text + bytes.toString('utf-8', at);
+}
+
 export function redactWindow(
   bytes: Buffer,
   from: number,

@@ -1,3 +1,5 @@
+import { shownByName } from './secrets.js';
+
 const REQUEST_LIMIT_MS = 15_000;
 
 export type ProviderAnswer<T> =
@@ -167,17 +169,6 @@ async function ask<T>(
     ...(seconds || !Number.isNaN(Date.parse(after))
       ? { retryAfter: { shown: hidden(after, key, name, options.hide) === after ? after : null, seconds } } : {}),
   };
-}
-
-export function shownByName(words: string, secrets: readonly { name: string; value: string }[]): string {
-  const forms = secrets.flatMap(({ name, value }) => [...new Set([value, value.trim()])].map((form) => ({ name, form })))
-    .filter(({ form }) => form.trim() !== '').sort((a, b) => b.form.length - a.form.length);
-  if (forms.length === 0) return words;
-  const any = new RegExp(forms.map(({ form }) => `(${form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`).join('|'), 'gi');
-  return words.replace(any, (...found: unknown[]) => {
-    const at = found.slice(1, forms.length + 1).findIndex((one) => one !== undefined);
-    return `<${forms[at]!.name}>`;
-  });
 }
 
 // Every secret, its ASCII letters in any case, since a server that puts one in a URL's host gives it back lowercased.
