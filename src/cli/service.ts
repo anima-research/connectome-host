@@ -195,7 +195,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
   } else if (wantsShell) {
     ctx.out("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this directory, " +
-      'so no shell daemon was set up.');
+      `so no shell daemon was set up. To set one up, run ${cmd} shell install, then this service install command ` +
+      'again with the same recipe.');
   } else {
     ctx.out('No shell daemon is set up: the recipe names no shell client or shell setting.');
   }
@@ -216,7 +217,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       throw new Refusal(`${unit.file} can't be written: ${errorText(error)}. Nothing was started or restarted.`);
     }
   };
-  if (shell !== null) keepShellSettings(ctx, sys, work, shell);
+  if (shell !== null) {
+    keepShellSettings(ctx, sys, work, shell);
+    ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and whoever talks to it on ` +
+      'Discord can ask it to.');
+  }
   if (manager === 'systemd-user') {
     const wants = shell === null ? null : names.shell.name;
     if (shell !== null) {

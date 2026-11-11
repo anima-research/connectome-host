@@ -1985,3 +1985,31 @@ test('an install reached through a link to its directory runs again through it',
   }
   expect(readFileSync(join(unitsDir(at), 'connectome-alias.service'), 'utf-8')).toContain(`WorkingDirectory=${alias}\n`);
 });
+
+const shellSentence = (user: string) => `With a shell, the resident can read and change whatever ${user} can, and whoever ` +
+  'talks to it on Discord can ask it to.';
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' where install writes a shell daemon, it says once what a shell lets the resident and its Discord reach', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  f.system.user = 'ana';
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.filter((line) => line === shellSentence('ana'))).toHaveLength(1);
+});
+
+test('without a shell daemon, install says nothing of what a shell reaches', async () => {
+  const at = install();
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out.join('\n')).not.toContain('With a shell');
+});
+
+test('a recipe that names a shell, without the shell\'s package here, gets the command that installs it and the run to repeat', async () => {
+  const at = install();
+  writeFileSync(at.recipe, JSON.stringify({ mcpServers: { shell: { command: 'terminal-sessions-mcp' } } }));
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.out).toContain("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this " +
+    'directory, so no shell daemon was set up. To set one up, run connectome shell install, then this service install ' +
+    'command again with the same recipe.');
+});
