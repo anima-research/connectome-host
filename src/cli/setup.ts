@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
-  statSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync,
+  writeFileSync,
 } from 'node:fs';
 import { constants, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -15,7 +15,6 @@ import {
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
-import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
@@ -38,9 +37,9 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
 
 const PACKAGE = '@animalabs/connectome-host';
 const SURFACE = 'discord';
-const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
+export const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
-const SHELL_NODE_TOP = 24;
+export const SHELL_NODE_TOP = 24;
 const BOOT_TIMEOUT_MS = 60_000;
 // Bun 1.4.3's `bun add --no-env-file` still gives a package's install script the working directory's .env, where
 // 1.4.4's gives none (probed), and setup's bun add runs where the resident's secrets are.
@@ -57,7 +56,7 @@ interface PackageJson {
   bugs: { url: string };
 }
 
-function packageJson(): PackageJson {
+export function packageJson(): PackageJson {
   return JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf-8')) as PackageJson;
 }
 
@@ -121,11 +120,6 @@ export interface SetupWorld {
   startAgent(launch: AgentLaunch): Promise<number>;
 }
 
-interface Io {
-  out: (line: string) => void;
-  err: (line: string) => void;
-}
-
 export async function setup(ctx: CliContext & { root: string }, world: SetupWorld = realWorld()): Promise<number> {
   const { err } = ctx;
   try {
@@ -155,18 +149,12 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       'terminal. Run it in one.');
     return 1;
   }
-  if (world.env.BUN_OPTIONS?.includes('--env-file')) {
-    err('connectome setup: BUN_OPTIONS holds --env-file, and Bun loads the file such a flag names into setup\'s own ' +
-      'environment as setup starts, where setup can\'t keep that file\'s values from its agent. Run setup again ' +
-      'without BUN_OPTIONS:');
-    err(`  env -u BUN_OPTIONS ${command}`);
-    err('or with only its --env-file taken out of BUN_OPTIONS.');
-    return 1;
-  }
-  if (world.execArgv.some((word) => word === '--env-file' || word.startsWith('--env-file='))) {
-    err('connectome setup: Bun was started with --env-file, and loads the file it names into setup\'s own environment ' +
-      'as setup starts, where setup can\'t keep that file\'s values from its agent. Run setup again without it:');
-    err(`  ${command}`);
+  const refused = envFileRefusal(world, {
+    name: 'connectome setup', command, again: 'Run setup again',
+    environment: 'setup\'s own environment as setup starts, where setup can\'t keep that file\'s values from its agent',
+  });
+  if (refused !== null) {
+    for (const said of refused) err(said);
     return 1;
   }
   const setupDir = join(dir, '.setup');
@@ -180,8 +168,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   };
   const stoppedElsewhere = () => {
-    out('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer its ' +
-      'two questions.');
+    out('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer them.');
     return 1;
   };
   if (!ours && entries.length > 0) {
@@ -204,9 +191,9 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       return 1;
     };
     if (!ownUserPossible(world) || home === null) return elsewhere();
-    out(`${RESIDENT} ${what}, so setup won't install there. It asks first whether the resident gets a shell and who it ` +
-      'runs as, since those say where setup runs next.');
-    const answered = await askWhoAndShell(world, { out, err });
+    out(`${RESIDENT} ${what}, so setup won't install there. It asks first who the resident runs as, since that says ` +
+      'where setup runs next.');
+    const answered = await askWho(world, out);
     if (typeof answered === 'number') return answered === -1 ? stoppedElsewhere() : answered;
     out('Then make a new directory for the resident in your home, and run this same version of setup there, where its ' +
       'questions come again. Its service takes the directory\'s name, so choose another than resident if you like, or ' +
@@ -255,9 +242,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     let state = 'state' in read ? read.state : null;
     if (state !== null) {
-      out(`Setup keeps its answers here: the resident ${state.shell ? 'gets' : 'doesn\'t get'} a shell, ` +
-        `and runs as this user, ${world.user}. They aren't asked again; setup's agent picks up where it stopped, and ` +
-        'can change with you what it set up.');
+      out(`Setup keeps its answer here: the resident runs as this user, ${world.user}. It isn't asked again; setup's ` +
+        'agent picks up where it stopped, and can change with you what it set up.');
     }
     const lost = existsSync(root) ? null
       : state?.finished !== undefined
@@ -283,10 +269,10 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     if (state === null) {
       out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. Setup asks a few ` +
         `questions first, among them who the resident runs as. When it runs as this user, ${world.user}, setup then ` +
-        `installs connectome-host ${version} here (about 0.8 GB of disk with the install's own copy of it, or 1.1 GB ` +
-        'with a shell for the resident), unless that version is there already, checks an API key, and starts the ' +
-        'host\'s setup agent, which talks with you in this terminal to set up the resident.');
-      const answered = await askWhoAndShell(world, { out, err });
+        `installs connectome-host ${version} here (about 0.8 GB of disk with the install's own copy of it), unless that ` +
+        'version is there already, checks an API key, and starts the host\'s setup agent, which talks with you in ' +
+        'this terminal to set up the resident.');
+      const answered = await askWho(world, out);
       if (typeof answered === 'number') return answered === -1 ? stopped() : answered;
       state = answered;
     }
@@ -302,40 +288,40 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
         'its agent, so it must read them: put that right, and run setup again.');
       return 1;
     }
-    return await installAndStart(ctx, world, { dir, root, pkg, version, state, env, shell, stopped });
+    return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped });
   } finally {
     lock.release();
   }
 }
 
-async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupState | number> {
-  out('A shell lets the resident run commands on this machine as the user it runs as, which setup settles next: it ' +
-    'can read and change whatever that user can, and whoever talks to it on Discord can ask it to.');
-  const shell = await yesNo(world, 'Does the resident get a shell? (yes/no) ');
-  if (shell === null) return -1;
-  const isolation = `With a shell, the resident can read and change whatever ${world.user} can (${world.user}'s ` +
-    'files, keys and other programs), and whoever talks to it on Discord can ask it to.';
+async function askWho(world: SetupWorld, out: (line: string) => void): Promise<SetupState | number> {
+  const later = 'Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell to run ' +
+    `commands on this machine. With a shell, the resident can read and change whatever ${world.user} can, and whoever ` +
+    'talks to it on Discord can ask it to.';
   if (!ownUserPossible(world)) {
     const why = world.platform === 'darwin' ? 'On macOS, setup has no root lines for a user of its own'
       : !world.hasSudo ? 'There\'s no sudo on this machine'
         : 'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running';
-    out(`${why}, so the resident runs as this user, ${world.user}.${shell ? ` ${isolation}` : ''}`);
+    out(`${why}, so the resident runs as this user, ${world.user}. ${later}`);
     const go = await yesNo(world, `Go on as ${world.user}? (yes/no) `);
     if (go === null) return -1;
     if (!go) {
       out('Nothing was installed.');
       return 0;
     }
-    return { v: 1, shell };
+    return { v: 1 };
   }
+  out(`The resident runs as the user that runs setup, here ${world.user}, and changing that later means starting over ` +
+    `as another user. ${later} So if this is your own account and the resident may get a shell, give it a user of its ` +
+    'own now.');
   out('Who does the resident run as?');
-  out(`  1. a user of its own${shell ? ', as setup recommends with a shell' : ''}: setup shows the lines that make it, ` +
+  out('  1. a user of its own, as setup recommends if the resident may get a shell: setup shows the lines that make it, ' +
     'which need sudo, yours if you can use it here or else an admin\'s, and you run setup again as that user, where ' +
     'its questions come again');
   out(`  2. this user, ${world.user}: for a resident with no shell, or where ${world.user} already is the resident's ` +
     `own user${world.lingerOf(world.user) === false ? `; linger, which keeps ${world.user}'s services running while ` +
       `${world.user} is logged out, is off, so its service needs one sudo line too, run once, by you or an admin` : ''}`);
-  const choice = shell ? await pick(world, 'Choose 1 or 2: ', null) : await pick(world, 'Choose 1 or 2 [2]: ', '2');
+  const choice = await pick(world, 'Choose 1 or 2: ');
   if (choice === null) return -1;
   if (choice === '1') {
     const name = await userName(world, out);
@@ -348,10 +334,10 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
     out(`  id -u ${name} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${name} && ` +
       `sudo loginctl enable-linger ${name} && ` +
       `sudo -iu ${name} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`);
-    out(`Setup needs Node ${packageJson().engines.node.replace('>=', '')} or later there too` +
-      `${shell ? `, and at most Node ${SHELL_NODE_TOP}` : ''}: if this machine's Node is installed for your user ` +
-      `alone, as one from nvm is, install Node for ${name} as well. \`command -v node\` shows where yours is: one ` +
-      'in your home is yours alone.');
+    out(`Setup needs Node ${packageJson().engines.node.replace('>=', '')} or later there too, and at most Node ` +
+      `${SHELL_NODE_TOP} if the resident may get a shell: if this machine's Node is installed for your user alone, as ` +
+      `one from nvm is, install Node for ${name} as well. \`command -v node\` shows where yours is: one in your home is ` +
+      'yours alone.');
     out(`Then open a shell as ${name}, with \`sudo -iu ${name}\` where you can use sudo, or by whoever ran the line, and ` +
       'run this same version of setup there, in a new directory for the resident. Its service takes the directory\'s ' +
       'name, so choose another than resident if you like, or if ~/resident is already there:');
@@ -360,15 +346,14 @@ async function askWhoAndShell(world: SetupWorld, { out }: Io): Promise<SetupStat
     out(`There, choose "this user" when setup asks who the resident runs as. Nothing was installed here.`);
     return 0;
   }
-  if (shell) out(isolation);
-  return { v: 1, shell };
+  return { v: 1 };
 }
 
 async function installAndStart(
   ctx: CliContext & { root: string },
   world: SetupWorld,
-  { dir, root, pkg, version, state, env, shell, stopped }: {
-    dir: string; root: string; pkg: PackageJson; version: string; state: SetupState;
+  { dir, root, pkg, version, env, shell, stopped }: {
+    dir: string; root: string; pkg: PackageJson; version: string;
     env: Record<string, string | undefined>; shell: Record<string, string>; stopped: () => number;
   },
 ): Promise<number> {
@@ -425,7 +410,7 @@ async function installAndStart(
   const node = await world.run(['node', '--version'], { cwd: dir, env: programEnv });
   const nodeVersion = node.status === 0 ? node.stdout.trim().replace(/^v/, '') : null;
   const nodeFloor = pkg.engines.node.replace('>=', '');
-  const getNode = `Install Node ${nodeFloor} or later${state.shell ? `, and at most Node ${SHELL_NODE_TOP}` : ''}, ` +
+  const getNode = `Install Node ${nodeFloor} or later, and at most Node ${SHELL_NODE_TOP} if the resident may get a shell, ` +
     'from nodejs.org or your system\'s package manager, and run setup again.';
   if (nodeVersion === null) {
     err(`connectome-host needs Node as well as Bun, and \`node --version\` didn't answer here ` +
@@ -434,11 +419,6 @@ async function installAndStart(
   }
   if (bunBelowFloor(pkg.engines.node, nodeVersion) !== false) {
     err(`connectome-host needs Node ${nodeFloor} or later, and this is Node ${nodeVersion}. ${getNode}`);
-    return 1;
-  }
-  if (state.shell && Number(nodeVersion.split('.')[0]) > SHELL_NODE_TOP) {
-    err(`The resident's shell, ${SERVERS.shell}, runs on Node ${SHELL_NODE_TOP} at most, and this is Node ` +
-      `${nodeVersion}. ${getNode}`);
     return 1;
   }
 
@@ -494,7 +474,6 @@ async function installAndStart(
   const wanted: string[] = [];
   if (has(PACKAGE) !== version) wanted.push(`${PACKAGE}@${version}`);
   if (has(SERVERS.discord) === null) wanted.push(SERVERS.discord);
-  if (state.shell && has(SERVERS.shell) === null) wanted.push(SERVERS.shell);
   if (wanted.length > 0) {
     out(`Installing ${wanted.join(', ')} in ${dir}, with Bun:`);
     const added = await world.run([world.bun.path, '--no-env-file', 'add', ...wanted], { cwd: dir, env: programEnv, show: true });
@@ -502,53 +481,6 @@ async function installAndStart(
       err(`\`bun --no-env-file add ${wanted.join(' ')}\` didn't finish (${ended(added)}), so setup stops here.` +
         (added.status === null ? ' Run setup again to try once more.'
           : ' Its own lines above say why. Run setup again once that\'s put right.'));
-      return 1;
-    }
-  }
-
-  if (state.shell) {
-    let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
-    let pty = await ptyWorks(world, dir, programEnv);
-    if (pty !== null) {
-      const ptyDir = nodePtyDir(dir);
-      const aside = join(dir, '.setup', 'node-pty-aside');
-      out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
-        `setup installs it again, keeping the copy it has at ${aside} until the new one works, and putting it ` +
-        'back if it doesn\'t:');
-      if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
-      else if (existsSync(ptyDir)) renameSync(ptyDir, aside);
-      const again = await world.run([world.bun.path, '--no-env-file', 'install'], { cwd: dir, env: programEnv, show: true });
-      if (again.status === 0) {
-        helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
-        pty = await ptyWorks(world, dir, programEnv);
-      } else pty = `\`bun --no-env-file install\` didn't finish (${ended(again)})`;
-      if (pty === null) rmSync(aside, { recursive: true, force: true });
-      else if (existsSync(aside)) {
-        rmSync(ptyDir, { recursive: true, force: true });
-        renameSync(aside, ptyDir);
-        helper = makeSpawnHelperExecutable(ptyDir, world.platform);
-      }
-    }
-    if (pty !== null) {
-      const noShell = `Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where ` +
-        'setup keeps its answers, and run setup again to answer no.';
-      const untrustedNote = !('reason' in listed) ? '' : 'Setup couldn\'t add the packages whose install scripts Bun ' +
-        `runs by default to ${join(dir, 'package.json')} (${listed.reason}), so through a mirror or a company registry ` +
-        'Bun may not have run node-pty\'s install script at all. ';
-      const linux = world.platform !== 'linux' ? '' : 'On Linux, its native part is built as it\'s ' +
-        'installed, with python3, make and a C++ compiler; on Debian and Ubuntu, ' +
-        `\`${world.hasSudo ? 'sudo ' : ''}apt install build-essential python3\` installs them, run ` +
-        `${world.hasSudo ? 'by you if you can use sudo here, or by whoever administers this machine'
-          : 'as root, by you or by whoever administers this machine'}. Then run setup again, which installs node-pty ` +
-        'again. ';
-      const mac = world.platform !== 'darwin' ? '' : helper === null
-        ? 'On macOS, node-pty runs from binaries it ships prebuilt rather than building them, and setup makes their ' +
-          'spawn-helper executable after each install, which node-pty\'s own install doesn\'t. '
-        : `On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ` +
-          `${helper}. Run setup again once that's put right, which installs node-pty again. `;
-      err(`The resident's shell runs on node-pty, and here it doesn't work: ${pty.replace(/\.+$/, '')}. ` +
-        `${world.platform === 'darwin' ? '' : untrustedNote}${linux}${mac}` +
-        noShell);
       return 1;
     }
   }
@@ -775,7 +707,6 @@ async function installAndStart(
       CONNECTOME_SETUP_DIR: dir,
       CONNECTOME_SETUP_SURFACE: 'Discord',
       CONNECTOME_SETUP_GUIDE: join(host, 'docs', 'AGENT-ONBOARDING.md'),
-      CONNECTOME_SETUP_SHELL: state.shell ? 'gets a shell' : 'gets no shell',
       CONNECTOME_SETUP_USER: world.user,
       CONNECTOME_SETUP_COMMAND: shellWord(join(root, INSTALL_COMMAND)),
       CONNECTOME_UPDATE_CHECK: '0',
@@ -819,6 +750,34 @@ async function installAndStart(
   return agentStatus;
 }
 
+export interface EnvFileWords {
+  name: string;
+  command: string;
+  again: string;
+  environment: string;
+}
+
+// Bun loads a file --env-file names into the process's own environment as it starts, where a name of it can't be told
+// from one exported, so nothing of it can be kept from what that process runs.
+export function envFileRefusal(world: Pick<SetupWorld, 'env' | 'execArgv'>, words: EnvFileWords): string[] | null {
+  if (world.env.BUN_OPTIONS?.includes('--env-file')) {
+    return [
+      `${words.name}: BUN_OPTIONS holds --env-file, and Bun loads the file such a flag names into ${words.environment}. ` +
+        `${words.again} without BUN_OPTIONS:`,
+      `  env -u BUN_OPTIONS ${words.command}`,
+      'or with only its --env-file taken out of BUN_OPTIONS.',
+    ];
+  }
+  if (world.execArgv.some((word) => word === '--env-file' || word.startsWith('--env-file='))) {
+    return [
+      `${words.name}: Bun was started with --env-file, and loads the file it names into ${words.environment}. ` +
+        `${words.again} without it:`,
+      `  ${words.command}`,
+    ];
+  }
+  return null;
+}
+
 function takeSetupLock(file: string): { release(): void } | null {
   let db: Database | undefined;
   try {
@@ -844,7 +803,7 @@ function takeSetupLock(file: string): { release(): void } | null {
 }
 
 // By name, since Bun puts in $NAME as it reads a dotenv file, so a value it read there needn't match the file's text.
-function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Record<string, string | undefined> {
+export function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Record<string, string | undefined> {
   const names = new Set(dotenvNames(cwd));
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
@@ -907,11 +866,11 @@ function ownUserPossible(world: SetupWorld): boolean {
   return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null;
 }
 
-async function pick(world: SetupWorld, question: string, fallback: '1' | '2' | null): Promise<'1' | '2' | null> {
+async function pick(world: SetupWorld, question: string): Promise<'1' | '2' | null> {
   for (;;) {
     const answer = await world.ask(question);
     if (answer === null) return null;
-    const word = answer.trim() || fallback;
+    const word = answer.trim();
     if (word === '1' || word === '2') return word;
   }
 }
@@ -964,7 +923,7 @@ function addTrusted(file: string, names: string[]): { added: string[] } | { reas
   return { added };
 }
 
-function declaredDependencies(dir: string): Set<string> | null {
+export function declaredDependencies(dir: string): Set<string> | null {
   let text: string;
   try {
     text = readFileSync(join(dir, 'package.json'), 'utf-8');
@@ -979,19 +938,7 @@ function declaredDependencies(dir: string): Set<string> | null {
   }
 }
 
-const PTY_CHECK = "let p;try{p=require('module').createRequire(require('fs').realpathSync('node_modules/term-sessions-mcp')+'/package.json')('node-pty')" +
-  ".spawn('/bin/echo',['pty-ok'],{})}catch(e){console.error(String(e.message)" +
-  ".split('\\n')[0]);process.exit(1)}let o='';p.onData(d=>{o+=d});p.onExit(()=>{if(o.includes('pty-ok'))process.exit(0);" +
-  "console.error('a pty it opened gave back nothing');process.exit(1)})";
-
-async function ptyWorks(world: SetupWorld, dir: string, env: Record<string, string>): Promise<string | null> {
-  const ran = await world.run(['node', '-e', PTY_CHECK], { cwd: dir, env, timeoutMs: 30_000 });
-  if (ran.status === 0) return null;
-  const said = `${ran.stderr}${ran.stdout}`.trim().split('\n').at(-1);
-  return said ? said : `node exited without saying why (${ended(ran)})`;
-}
-
-function installedVersion(dir: string, name: string): string | null {
+export function installedVersion(dir: string, name: string): string | null {
   try {
     return (JSON.parse(readFileSync(join(dir, 'node_modules', name, 'package.json'), 'utf-8')) as { version?: string })
       .version ?? null;
@@ -1000,13 +947,13 @@ function installedVersion(dir: string, name: string): string | null {
   }
 }
 
-function withoutKeys(env: Record<string, string | undefined>, keys: string[]): Record<string, string> {
+export function withoutKeys(env: Record<string, string | undefined>, keys: string[]): Record<string, string> {
   const kept: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined && !keys.includes(name)) kept[name] = value;
   return kept;
 }
 
-function ended(ran: Ran): string {
+export function ended(ran: Ran): string {
   if (ran.startError) return `it couldn't be started (${ran.startError.message})`;
   if (ran.signal) return `it was ended by ${ran.signal}`;
   return `exit ${ran.status}`;

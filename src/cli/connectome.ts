@@ -15,6 +15,7 @@ import { openHost, type HostClient, type HostEvent, type NoHost } from './host-s
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { serviceCommand, serviceCommands, serviceLines } from './service.js';
 import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup } from './setup.js';
+import { shellCommand } from './shell.js';
 
 export interface CliContext {
   root: string | null;
@@ -45,6 +46,7 @@ export const COMMANDS: CliCommand[] = [
     summary: SETUP_SUMMARY,
     run: (ctx) => setup({ ...ctx, root: ctx.root ?? resolve(ROOT_IN_WORKDIR) }),
   },
+  shellCommand,
   {
     name: 'send',
     usage: 'connectome send <text>',
