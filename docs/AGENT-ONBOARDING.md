@@ -7,9 +7,9 @@ Read the guide a section at a time. `grep -n '^## ' '<this file>'` lists its sec
 Below, `<dir>` is the working directory your prompt names, where your commands run, and `<host>` is the host's package directory, the one this guide's `docs/` is in. `connectome` names the install's own command, `./connectome-host/connectome` from `<dir>`. Every line you give the person to type works as you give it, the one that brings them back to setup included: spell the install's command as your prompt does. In a shell command, put each path or value you fill in between single quotes, as this guide's examples do, so that a space or a shell character in it stays part of it, and write each `'` inside one as `'\''`: a folder named `Alice's export` goes in as `'Alice'\''s export'`.
 
 **What setup did before you started,** so don't do it again or undo it:
-- It asked the person whether the resident gets a shell and which user it runs as. Your prompt gives both answers, and you run as that user.
+- It asked the person which user the resident runs as, having told them what a shell would reach in that user's account. Your prompt gives their answer, and you run as that user. It didn't ask whether the resident gets a shell: the person decides that with you ("The resident's shell").
 - On Linux, where linger was off for that user, it showed the person the root line that turns it on and asked whether they could have it run. They may have gone on without it, knowing the resident can't go live as a service until it's on. Linger is on once `/var/lib/systemd/linger/<user>` exists.
-- It checked Bun and Node, then installed connectome-host in `<dir>` with Bun, along with discord-mcpl (`node_modules/@animalabs/discord-mcpl`) and, when the resident gets a shell, term-sessions-mcp (`node_modules/term-sessions-mcp`).
+- It checked Bun and Node, then installed connectome-host in `<dir>` with Bun, along with discord-mcpl (`node_modules/@animalabs/discord-mcpl`). It installed nothing for a shell.
 - It made the install root, `<dir>/connectome-host`: the releases, `start.js` (the entry the service runs), the install's record and the `connectome` command. Updates manage what's there, so write nothing of yours under it.
 - It started the installed host once, on a mock recipe, to see that it starts.
 - It checked an API key with one real call to your model, and keeps it in `<dir>/.env`, readable by this user alone. The resident uses that key unless the person chooses otherwise, or unless `.env`, or an earlier source ("Secrets"), holds `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_OAUTH_CREDENTIALS_FILE`, or the shell a host is started from by hand exports one: such a host signs in through OAuth instead. A host takes another `ANTHROPIC_API_KEY` where the shell it's started from by hand exports one, or where an earlier source sets one ("Secrets").
@@ -17,12 +17,14 @@ Below, `<dir>` is the working directory your prompt names, where your commands r
 
 **What's left,** in order, each with its section:
 1. Talk with the person about who the resident is: "Working with the person".
-2. The Discord bot, its invite and where it can be reached: "Discord".
-3. A history to bring, if they have one: "Importing a history".
-4. The recipe, with its servers and what the resident may do to itself: "The recipe", "The recipe's servers", "What the resident may do to itself".
-5. The service, which the person installs, and `connectome doctor`: "Going live".
-6. Backups, which the person sets up or declines: "Backups", and "Backups run by root" where root runs them.
-7. `SETUP.md` for the person, then the person's own hello ("Going live"); after the hello, tell them plainly that you aren't the resident, and once they have nothing more, call `setup--finished`: "SETUP.md".
+2. Whether the resident gets a shell, decided with the person, and on a yes its install: "The resident's shell".
+3. The Discord bot, its invite and where it can be reached: "Discord".
+4. A history to bring, if they have one: "Importing a history".
+5. The recipe, with its servers and what the resident may do to itself: "The recipe", "The recipe's servers", "What the resident may do to itself".
+6. The service, which the person installs, and `connectome doctor`: "Going live".
+7. Backups, which the person sets up or declines: "Backups", and "Backups run by root" where root runs them.
+8. `SETUP.md` for the person, then the person's own hello ("Going live"): "SETUP.md".
+9. After the hello, tell them plainly that you aren't the resident, and once they have nothing more, call `setup--finished`: "After the hello".
 
 "Secrets" holds for every step. "Gateways and other providers" and "Gotchas" are for when they apply.
 
@@ -75,6 +77,27 @@ In the recipe, map each secret into its server's `env` as `"DISCORD_TOKEN": "${D
 Never read `.env`, and never print a secret. `setup--run`'s commands run without the variables that hold stored secrets in their environment, though a Bun program reads `<dir>`'s dotenv files itself unless it's run with `--no-env-file`. Their output comes back with each stored value replaced by its name, but a value that's encoded or split isn't recognised. To check a secret once the service is installed, run `connectome doctor`: it reads `.env` itself, prints names only, and names any stored secret, other than a provider's credentials or base URL, that no server gets and the recipe names nowhere outside its servers.
 
 Later, the person changes a secret where the host takes it from, `.env` unless an earlier source sets the name ("Secrets"), and runs `connectome service install` again. `SETUP.md` tells them so.
+
+## The resident's shell
+
+Setup didn't ask whether the resident gets a shell: the person decides that with you here, before the Discord bot is set up. A shell is a server in the recipe, term-sessions-mcp, with a daemon beside the resident's service. Through it the resident runs commands on this machine, as the user it runs as.
+
+**Look first at whose account it is.** Your prompt names the user the resident runs as, as the person's answer. Setup can't tell you whether that account is the person's own or one made for the resident, so ask them.
+
+**Tell them, before they choose:**
+- With a shell, the resident can read and change whatever that user can: its files, `.env` with the keys in it, and its other programs. Whoever talks to it on Discord can ask it to, so who can reach it, which you talked about ("Working with the person"), is part of this choice.
+- Without one, it can't run commands on this machine. It acts through its tools alone, such as Discord's and its workspace's, whose files stay in its memory until it writes them out to `<dir>/output`.
+- They can change it later, either way, as `SETUP.md` will say ("SETUP.md").
+
+**What to recommend.** In an account made for the resident: a shell, if they want it to act on this machine, and none if they don't. In the person's own account: say plainly what a shell would reach there, their own files, keys and programs, for anyone who talks to the resident. Then offer no shell, a shell there with that said, or, where setup has the lines for it, starting over as a user of its own.
+
+**Starting over as a user of its own.** Setup has lines for one only on Linux, with systemd running and `sudo` on the PATH: `uname -s`, `test -d /run/systemd/system` and `command -v sudo` show whether that's so here. Elsewhere, don't offer it. Where it has them, say what it costs before they choose: they run the line they started setup with, in a new empty directory, and choose a user of its own there; someone who can use sudo runs the line setup then shows; and they run setup again as that user, in a directory of its own, where it checks a key again and asks its questions again. This conversation doesn't carry over to it. If they choose it, they can leave this conversation with `/quit`.
+
+**Record their answer** as theirs, with whose account it is, in `SETUP.md`'s record of what was decided.
+
+**On a yes,** run `connectome shell install` with `setup--run`, giving it a `timeoutMs` of `600000`, ten minutes, since on Linux it can build node-pty's native part from source. It adds the shell's package to `<dir>` and checks that a terminal opens through it. It writes no recipe and no service. The person sees the command line and nothing it prints, so tell them what it said. When it fails, it says what's missing on this machine: tell them, put it right with them, which can need root ("Working with the person"), and run it again. Or they can go on without a shell, and nothing the command left needs undoing. Once it has passed, the recipe gets the shell's entry ("The recipe's servers").
+
+**On a no,** write no shell entry. Nothing else is needed: `connectome service install` sets up a shell's daemon only for a recipe that names one.
 
 ## Discord
 
@@ -199,7 +222,7 @@ Leave out `DISCORD_DM_USERS` for anyone, and `DISCORD_ADMIN_USERS` with `allowHo
 
 **Its state goes in the data directory.** Each `DISCORD_*_FILE` above is a file discord-mcpl keeps state in: where it can be reached, where each channel's catch-up stands, muted channels, where reactions are shown, and DM notices. Unset, some are kept only in memory and lost at a restart, and the DM notices go under `$XDG_STATE_HOME/discord-mcpl/<the bot's user id>/`, or `~/.local/state/discord-mcpl/<the bot's user id>/` when that's unset. Inside `<dir>/data`, each is in the copy an update takes before it switches release, with the resident's memory, so nothing of discord-mcpl's needs recording as state kept outside the data directory. Tell the person so. The "Stored state" table in discord-mcpl's README (`<dir>/node_modules/@animalabs/discord-mcpl/README.md`) lists the files the installed release reads and writes; point every file it writes there. `DISCORD_SUBSCRIPTIONS_FILE` is only read, a legacy list of channels to open at start, so leave it out.
 
-**The shell**, only when the resident gets one:
+**The shell**, only when the person said yes and `connectome shell install` passed ("The resident's shell"):
 
 ```json
 "shell": {
@@ -212,7 +235,7 @@ Leave out `DISCORD_DM_USERS` for anyone, and `DISCORD_ADMIN_USERS` with `allowHo
 }
 ```
 
-This is the resident's side of its shell. The other side is a daemon `connectome service install` sets up as a service of its own, beside the resident's: it picks a free port and makes a token, writes both to `.env` as `SESSION_SERVER_PORT` and `SESSION_SERVER_TOKEN` (where `.env` already holds one, install keeps it, and doesn't check that a kept port is free), and keeps the token out of your answers like any stored secret. Install gives the daemon `.env`'s values, so where an earlier source sets either ("Secrets"), take it out there: the host would take that one instead. The daemon listens on localhost only. Without a shell, write no shell entry: then term-sessions-mcp isn't installed, and `connectome service install` writes no daemon.
+This is the resident's side of its shell. The other side is a daemon `connectome service install` sets up as a service of its own, beside the resident's: it picks a free port and makes a token, writes both to `.env` as `SESSION_SERVER_PORT` and `SESSION_SERVER_TOKEN` (where `.env` already holds one, install keeps it, and doesn't check that a kept port is free), and keeps the token out of your answers like any stored secret. Install gives the daemon `.env`'s values, so where an earlier source sets either ("Secrets"), take it out there: the host would take that one instead. The daemon listens on localhost only. Without a shell, write no shell entry, and `connectome service install` writes no daemon: it goes by the recipe.
 
 ## What the resident may do to itself
 
@@ -310,7 +333,10 @@ Once the service is installed, `connectome doctor` has run and the person has se
 - **Its backups,** as set up ("Backups"): restic, the repository's place, how often and what's kept, the unit, launch agent or launch daemon that runs it and its log, which user runs it, and its files by path, never by value: `backup.env`, `backup.sh`, `backup-secret` and, where it's there, `backup-secret.env`, in `<dir>`, or in `/etc/connectome-<slug>-backup` where root runs it. A restore needs the password, so keep it somewhere off this machine too: a lost disk would take the only key with it. Where the resident has a shell and its own user runs the backup, the resident can read and remove its backups. To restore, run `connectome service stop`, restore the snapshot they want into a scratch directory, check it with the host's store audit as `<dir>/connectome-host/current/node_modules/@animalabs/connectome-host/docs/AGENT-ONBOARDING.md`'s "Backups" does, put its files back in place, then run `connectome service start`. Before an upgrade or a repair, take a snapshot with the host stopped. Each update also copies the data directory once, just before it switches release, into `<dir>/connectome-host/copy`, kept until the next switch. If they declined backups, it says instead that **its memory isn't backed up:** nothing copies the data directory on a schedule, beside the update's copy. To take a copy by hand, run `connectome service stop`, copy `<dir>/data`, `.env` and any other env file Bun reads in `<dir>`, the recipe, and, where they exist, `<dir>/mcpl-servers.json`, `<dir>/mcpl-servers.agent.json` (or the file `MCPL_AGENT_OVERLAY_FILE` names, where `.env`, or an earlier source ("Secrets"), sets it), each fleet child's data directory and each place `<dir>/connectome-host/install.json` lists under `extraState`, whole, then run `connectome service start`; a copy taken while the host runs can tear. Keep the copy off this machine, since one on its disk is lost with it.
 - **Running it by hand:** `cd '<dir>' && DATA_DIR='<data directory>' bun connectome-host/start.js '<name>.json'`, with the terminal interface. It runs from `<dir>`, since the host takes its `.env` from where it starts. A variable the shell it's started from exports wins over `.env`'s, and an exported `MODEL` over the recipe's `agent.model` too, so run it from a shell that exports none of the variables its provider reads (such as `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` for Anthropic) and no `MODEL`, or with `env -u NAME` for each before `bun`. `<data directory>` is the one the install's record, `<dir>/connectome-host/install.json`, names as `dataDir`, `<dir>/data` unless setup recorded another: given on the command line, it wins over a `DATA_DIR` an env file or the shell sets, which the host refuses when it isn't the record's. The host refuses it while the service holds the install, so run `connectome service stop` first, and `connectome service start` after. `service stop` stops the shell's daemon too, so a resident with a shell, run by hand, has no working shell until `connectome service start`.
 - **Its shell,** if it has one: the resident can read and change whatever its user can, and whoever talks to it on Discord can ask it to. The shell's daemon has a token in `.env`; to change it, take `SESSION_SERVER_TOKEN` out of `.env`, and out of any earlier source that sets it ("Secrets"), and run `connectome service install` again, which makes a new one. Run that from a terminal outside the resident's service, such as over ssh: run from inside it, it would stop itself partway, so it refuses, and a resident that needs it asks whoever runs the machine.
-- **What was decided, and by whom:** the name, the model, the system prompt, any history imported and which voice is the resident, the server, channels, DMs and admins, its time zone, whether it wakes on its own, both grants with the person's answer, the user it runs as, and anything you decided yourself.
+- **Giving it a shell, or taking it away:** to give it one, run setup again, `connectome setup discord`: its agent talks it through with you, runs `connectome shell install` and writes the shell's entry, and then you run `connectome service install`. To take it away, take the shell's entry out of the recipe, then run `connectome service install`, which removes the shell's daemon.
+- **What was decided, and by whom:** the name, the model, the system prompt, any history imported and which voice is the resident, the server, channels, DMs and admins, its time zone, whether it wakes on its own, both grants with the person's answer, the user it runs as and whether that's the person's own account, whether it has a shell, as the person's answer, and anything you decided yourself.
+
+## After the hello
 
 After the hello, tell the person plainly that you aren't the resident, that the resident is the one who answers them on Discord, and ask whether there's anything more they'd like to set up. Once they have nothing more, call `setup--finished` in the turn where you say goodbye: the conversation ends after that turn, once anything they typed meanwhile has come to you as further turns, and setup then tells them how to change something later. If setup starts again after that, your opening says so: they've come back for something, so check where things stand, tell them what you see, and ask what they'd like to change.
 
