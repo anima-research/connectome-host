@@ -334,6 +334,20 @@ the arguments it gives the host now, and restart it. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
+**A resident's own update.** An agent with `lifecycle--update` arms a
+restart or a Go back only on a headless host whose environment at its start
+holds `CONNECTOME_SUPERVISED=1`. Whoever writes the host's service sets that
+line, and by setting it says that the service starts the host again when it
+exits with 75, as a switch's restart does, and when it exits with 1, as a
+trial that ends before its commit does, so its fallback runs. Under systemd,
+`Restart=on-failure` does both, unless `SuccessExitStatus=` or
+`RestartPreventExitStatus=` names 75 or 1. Under launchd, `KeepAlive` with
+`SuccessfulExit` false does both. `connectome service install` writes such
+a service, and sets the line only for one that restarts the host on both. A
+service written by hand needs the line and both restarts. A host without
+the line, or run in a terminal, refuses the agent's restart and Go back and
+says why; the person's own `/update` and buttons don't need the line.
+
 **Moving or copying an install.** Setup records the directory that holds the
 install root, and `start.js` and `connectome` refuse to run an install moved
 or copied away from it, since its record still names the places of the

@@ -790,13 +790,16 @@ const NO_INSTALL_OF_ITS_OWN = 'Nothing was armed: this host has no install of it
   'child is updated with its parent\'s install where its parent has one, and any other host, or a child whose parent has ' +
   'none, by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
   ASK_AGAIN;
+const WRITES_ONE = '`connectome service install` writes one; docs/DEPLOYMENTS.md, "Updating an install", says what one ' +
+  'written by hand needs.';
 const IN_A_TERMINAL = 'Nothing was armed: this host runs in a terminal, not headless under a service, so a restart would ' +
-  'stop it until someone started it again. A host that `connectome service install` sets up runs headless under a ' +
-  `service. ${ASK_AGAIN}`;
+  'stop it until someone started it again. A restart needs a headless host whose service sets ' +
+  '`CONNECTOME_SUPERVISED=1` in its environment and starts it again when it exits with 75 and when it exits with 1. ' +
+  `${WRITES_ONE} ${ASK_AGAIN}`;
 const NO_SERVICE = 'Nothing was armed: nothing shows that a service starts this host again when it stops, so a restart ' +
-  'could leave it down until someone starts it by hand. Ask whoever runs your host for a service that starts it again ' +
-  'when it stops, such as one `connectome service install` writes; docs/DEPLOYMENTS.md says what one needs. ' +
-  ASK_AGAIN;
+  'could leave it down until someone starts it by hand. Ask whoever runs your host for a service that sets ' +
+  '`CONNECTOME_SUPERVISED=1` in its environment, which says the service starts the host again when it exits with 75 ' +
+  `and when it exits with 1. ${WRITES_ONE} ${ASK_AGAIN}`;
 const NO_STOP = 'Nothing was armed: this host has no stop a restart can use, as in a batch run, which ends on its own. ' +
   ASK_AGAIN;
 const STOPPING_FIRST = 'the host began stopping for another reason first.';
