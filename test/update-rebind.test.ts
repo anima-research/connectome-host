@@ -136,6 +136,14 @@ const mountsAllowed = (() => {
 })();
 const bindMounted = test.skipIf(!mountsAllowed);
 
+function throughMounts(mounts: Array<[string, string]>, code: string, given: unknown): string {
+  const mount = mounts.map(([from, to]) => `mount --bind '${from}' '${to}'`).join(' && ');
+  const run = Bun.spawnSync(['unshare', '-rm', 'sh', '-c', `${mount} && exec "$0" -e "$SETUP_CODE"`, process.execPath], {
+    env: { ...process.env, SETUP_CODE: code, SETUP_OPTIONS: JSON.stringify(given) }, stdout: 'pipe', stderr: 'pipe',
+  });
+  return run.stdout.toString() + run.stderr.toString();
+}
+
 function setupThroughMounts(mounts: Array<[string, string]>, at: string, over: Partial<SetupOptions> = {}): string {
   const code = `import { setup } from ${JSON.stringify(SETUP_MODULE)};\n` +
     'const given = JSON.parse(process.env.SETUP_OPTIONS);\n' +
@@ -146,12 +154,21 @@ function setupThroughMounts(mounts: Array<[string, string]>, at: string, over: P
     '  console.log(error.message);\n' +
     '}\n';
   const { cwd, dataDir, root, extraState, hostRoot, places, moveAside } = options(at, over);
-  const given = { cwd, dataDir, root, extraState, hostRoot, places, moveAside };
-  const mount = mounts.map(([from, to]) => `mount --bind '${from}' '${to}'`).join(' && ');
-  const run = Bun.spawnSync(['unshare', '-rm', 'sh', '-c', `${mount} && exec "$0" -e "$SETUP_CODE"`, process.execPath], {
-    env: { ...process.env, SETUP_CODE: code, SETUP_OPTIONS: JSON.stringify(given) }, stdout: 'pipe', stderr: 'pipe',
-  });
-  return run.stdout.toString() + run.stderr.toString();
+  return throughMounts(mounts, code, { cwd, dataDir, root, extraState, hostRoot, places, moveAside });
+}
+
+const LAUNCHER_MODULE = join(import.meta.dir, '..', 'src', 'update', 'launcher.ts');
+
+function startCheckThroughMounts(mounts: Array<[string, string]>, root: string, dataDir: string): string {
+  const code = `import { machineOps, readInstall } from ${JSON.stringify(LAUNCHER_MODULE)};\n` +
+    'const { root, dataDir } = JSON.parse(process.env.SETUP_OPTIONS);\n' +
+    'try {\n' +
+    '  readInstall(root, { ...machineOps(), dataDir: () => dataDir });\n' +
+    '  console.log("starts");\n' +
+    '} catch (error) {\n' +
+    '  console.log(error.message);\n' +
+    '}\n';
+  return throughMounts(mounts, code, { root, dataDir });
 }
 
 beforeEach(() => {
@@ -501,6 +518,24 @@ describe('binding an install to the directory it is in', () => {
     expect(record(moved)!.workingDir).toBe(install);
   });
 
+  test('a record whose workingDir is there but isn\'t a path is refused by its start and by setup, each naming it, and setup saying how to write the record again; nothing changes', () => {
+    setup(options(install));
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const recordAt = installPaths(rootOf(copy)).install;
+    writeFileSync(recordAt, JSON.stringify({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: null }));
+    const kept = tree(copy);
+    const start = startOf(copy);
+    expect(start.exitCode).toBe(1);
+    expect(start.stderr).toContain(`nothing runs in this install, since its record, ${recordAt}, holds a "workingDir" that ` +
+      'isn\'t a path, so whether it was moved or copied here, and whose places its record names, can\'t be told.');
+    const why = refusal(() => setup(options(copy)));
+    expect(why).toStartWith(`This install's record (${recordAt}) holds a "workingDir" that isn't a path (null), so setup ` +
+      'can\'t tell whether the install was moved or copied here, or whose places its record names. Setup has changed ' +
+      'nothing. To put it right, write the record again as\n');
+    expect(tree(copy)).toEqual(kept);
+  });
+
   test.skipIf(process.getuid?.() === 0)('a set-aside directory this user can\'t list, in an install that was moved, is refused, saying why, and nothing changes', () => {
     setup(options(install));
     updated(install);
@@ -521,12 +556,19 @@ describe('binding an install to the directory it is in', () => {
   });
 });
 
-bindMounted('a DATA_DIR that is the recorded data directory through a bind mount is the data directory the install serves (where this user may bind-mount, as in a user namespace)', () => {
+bindMounted('a DATA_DIR that is the recorded data directory through a bind mount is refused by setup, naming the recorded one, as a start with it is refused (where this user may bind-mount, as in a user namespace)', () => {
   setup(options(install));
   const alias = join(dir, 'alias');
   mkdirSync(alias);
-  expect(setupThroughMounts([[install, alias]], alias)).toContain('set up');
-  expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: install });
+  const recorded = join(install, 'data');
+  const before = tree(install);
+  expect(setupThroughMounts([[install, alias]], alias)).toContain(`The install at ${rootOf(alias)} serves ${recorded}, ` +
+    `and setup was given DATA_DIR ${join(alias, 'data')}, which leads to that same directory by another path, as through ` +
+    'a bind mount. A start compares the two paths once links are followed, so its host wouldn\'t start with that ' +
+    `DATA_DIR. Setup has changed nothing. Run it, and have the service start the host, with DATA_DIR ${recorded}.`);
+  expect(startCheckThroughMounts([[install, alias]], rootOf(alias), join(alias, 'data'))).toContain(`This install ` +
+    `serves the data directory ${recorded}, and this start would serve ${join(alias, 'data')}.`);
+  expect(tree(install)).toEqual(before);
 });
 
 bindMounted('a binding given a DATA_DIR that is the mapped data directory through a bind mount is refused, naming the mapped one, since the record keeps the spelling it can map (where this user may bind-mount, as in a user namespace)', () => {
@@ -720,11 +762,43 @@ describe('the lock across a move or a copy', () => {
       realRename(from, to);
     }) as typeof fs.renameSync);
     try {
-      expect(refusal(() => setup(options(copy)))).toContain(`Another start of this install holds its lock (${lock}): process ${other}`);
+      expect(refusal(() => setup(options(copy)))).toContain(`Another process holds this install's lock (${lock}): process ${other}`);
     } finally {
       renames.mockRestore();
     }
     expect(readRecord<LockRecord>(lock, 'lock')!.pid).toBe(other);
+  });
+
+  test('a copied lock replaced before its setting aside, and taken again before it can go back, is left where it was set aside, and setup refuses naming both locks', () => {
+    setup(options(install));
+    lockHeldBy(install, live());
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const lock = installPaths(rootOf(copy)).lock;
+    const aside = `${lock}.${process.pid}.copied`;
+    const second = live();
+    const third = live();
+    const realRename = fs.renameSync;
+    const realLink = fs.linkSync;
+    const renames = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from) === lock) lockHeldBy(copy, second, '2026-11-04T00:00:02.000Z');
+      realRename(from, to);
+    }) as typeof fs.renameSync);
+    const links = spyOn(fs, 'linkSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from) === aside && String(to) === lock) lockHeldBy(copy, third, '2026-11-04T00:00:03.000Z');
+      realLink(from, to);
+    }) as typeof fs.linkSync);
+    let why: string;
+    try {
+      why = refusal(() => setup(options(copy)));
+    } finally {
+      renames.mockRestore();
+      links.mockRestore();
+    }
+    expect(why).toContain(`setup moved that process's lock to ${aside}, and couldn't put it back, since ${lock} is there again.`);
+    expect(readRecord<LockRecord>(aside, 'lock')!.pid).toBe(second);
+    expect(readRecord<LockRecord>(lock, 'lock')!.pid).toBe(third);
+    expect(record(copy)!.workingDir).toBe(install);
   });
 
   test('a binding takes the lock from a holder whose process has ended, and binds', () => {
@@ -1031,12 +1105,103 @@ describe('what a moved or copied install\'s root keeps', () => {
     writeFileSync(list, '{ not json');
     const kept = tree(copy);
     for (const moveAside of [false, true]) {
-      expect(refusal(() => setup(options(copy, { moveAside })))).toStartWith(`${list} can't be read (`);
+      const why = refusal(() => setup(options(copy, { moveAside })));
+      expect(why).toStartWith(`${list} can't be read (`);
+      expect(why).toContain(`with or without .tmp, .filling or .emptying after it, and the same in each place ${list} ` +
+        'names, which can\'t be named here while it can\'t be read), and run setup again.');
     }
     expect(tree(copy)).toEqual(kept);
     rmSync(list);
     setup(options(copy, { moveAside: true }));
     expect(record(copy)!.workingDir).toBe(copy);
+  });
+
+  test('a binding refused for what the root keeps names, among what to move by hand, each place a Go back\'s list names that the record doesn\'t and that is a directory under this install\'s directory', () => {
+    const old = join(install, 'old-state');
+    mkdirSync(old);
+    setup(options(install, { extraState: [old] }));
+    updated(install, [old]);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    expect(refusal(() => setup(options(copy, { extraState: [] })))).toContain('with or without .tmp, .filling or ' +
+      `.emptying after it, and the same in each of these, which a Go back's list names: ${join(copy, 'old-state')}. ` +
+      'Nothing removes what\'s moved aside');
+  });
+
+  test.skipIf(process.getuid?.() === 0)('a Go back\'s mark this user can\'t search stops a binding before it changes anything, naming its list', () => {
+    setup(options(install));
+    updated(install);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const mark = join(rootOf(copy), 'set-aside', 'm2');
+    const kept = tree(copy);
+    fs.chmodSync(mark, 0o000);
+    let why: string;
+    try {
+      why = refusal(() => setup(options(copy, { moveAside: true })));
+    } finally {
+      fs.chmodSync(mark, 0o755);
+    }
+    expect(why).toStartWith(`${join(mark, 'places.json')} can't be read (EACCES`);
+    expect(tree(copy)).toEqual(kept);
+  });
+
+  test.skipIf(process.getuid?.() === 0)('a journal this user can\'t read stops a binding whose root keeps something, naming the journal and saying setup can\'t tell whether a trial or a Go back is unfinished, and nothing changes', () => {
+    setup(options(install));
+    updated(install);
+    writeFileSync(installPaths(rootOf(install)).journal, '');
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const journal = installPaths(rootOf(moved)).journal;
+    const kept = tree(moved);
+    fs.chmodSync(journal, 0o000);
+    let why: string;
+    try {
+      why = refusal(() => setup(options(moved, { moveAside: true })));
+    } finally {
+      fs.chmodSync(journal, 0o644);
+    }
+    expect(why).toContain(`\n  ${join(rootOf(moved), 'set-aside', 'm2')}\nThe journal at ${journal} can't be read (EACCES`);
+    expect(why).toEndWith('so setup can\'t tell whether a trial or a Go back is unfinished there. Setup has changed ' +
+      'nothing. Make it readable to this user, or put it right, and run setup again.');
+    expect(tree(moved)).toEqual(kept);
+  });
+
+  test('--move-aside moves an area once where two of the places it looks in are one directory by two paths', () => {
+    setup(options(install));
+    symlinkSync('data', join(install, 'alias'));
+    updated(install, [join(install, 'alias')]);
+    mkdirSync(area(join(install, 'data'), 'set-aside', 'm2'), { recursive: true });
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    said = [];
+    setup(options(copy, { moveAside: true }));
+    expect(said.filter((line) => line.includes(`${join('.connectome-update', 'set-aside', 'm2')} → `))).toHaveLength(1);
+    expect(existsSync(area(join(copy, 'data'), 'set-aside', 'm2'))).toBe(false);
+    expect(record(copy)!.workingDir).toBe(copy);
+  });
+
+  test('--move-aside refuses where the place it would move an area to leads outside that area\'s place, as a link into the original does, and the original is as it was', () => {
+    setup(options(install));
+    updated(install);
+    const held = area(join(install, 'data'), 'set-aside', 'm2');
+    mkdirSync(held, { recursive: true });
+    const theirs = join(install, 'data', '.connectome-update', 'moved-aside');
+    mkdirSync(theirs);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const ours = join(copy, 'data', '.connectome-update', 'moved-aside');
+    rmSync(ours, { recursive: true });
+    symlinkSync(theirs, ours);
+    const original = tree(install);
+    const why = refusal(() => setup(options(copy, { moveAside: true })));
+    expect(why).toContain(`, where setup would move ${area(join(copy, 'data'), 'set-aside', 'm2')}, leads to ${theirs}/`);
+    expect(why).toContain(`outside ${join(copy, 'data')}, which holds it, so setup stops there. Setup has moved nothing ` +
+      `else, removes nothing it moved, and hasn't bound the install. Put ${ours} right, as a directory in ` +
+      `${join(copy, 'data')} or not there at all, and run setup again (by hand, with --move-aside again).`);
+    expect(tree(install)).toEqual(original);
+    expect(existsSync(area(join(copy, 'data'), 'set-aside', 'm2'))).toBe(true);
+    expect(record(copy)!.workingDir).toBe(install);
   });
 
   test('parseArgs reads --move-aside, which takes no value', () => {
@@ -1203,6 +1368,32 @@ describe('the fleet\'s children file', () => {
     expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
   });
 
+  test('a --place known only by its place, a child\'s in the stamped children file, is refused where it holds a place the record or a Go back\'s list names, naming both, and nothing changes', () => {
+    const state = join(install, 'state');
+    mkdirSync(state);
+    writeFileSync(join(state, 'settings.json'), '{}');
+    const old = join(install, 'old');
+    mkdirSync(old);
+    setup(options(install, { extraState: [join(state, 'settings.json')] }));
+    updated(install, [old]);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const child = join(copy, 'data', 'child');
+    mkdirSync(child);
+    writeJsonAtomic(join(copy, 'data', 'fleet-children.json'),
+      { v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: child }], boundTo: copy } satisfies ChildrenFile);
+    const kept = tree(copy);
+    expect(refusal(() => setup(options(copy, { places: [{ from: state, to: child }], moveAside: true })))).toBe(
+      `--place ${state} names no place this install's record names, and it holds ${join(state, 'settings.json')}, ` +
+      `which this install's record names, so the binding would put that at ${join(child, 'settings.json')}. Setup has ` +
+      'changed nothing. Run it again without that --place.');
+    expect(refusal(() => setup(options(copy, { places: [{ from: old, to: child }], moveAside: true })))).toBe(
+      `--place ${old} names no place this install's record names, and it holds ${old}, which a Go back's list in this ` +
+      `install's root names, so the binding would put that at ${child}. Setup has changed nothing. Run it again ` +
+      'without that --place.');
+    expect(tree(copy)).toEqual(kept);
+  });
+
   test('cut after the children file, before the record: a --place for state the record lists that is also a child\'s data directory, run again, still gives that state its place in the record', () => {
     const state = join(dir, 'state');
     mkdirSync(state);
@@ -1227,7 +1418,7 @@ describe('the fleet\'s children file', () => {
     setup(options(install));
     const kid = join(install, 'data', 'kids', 'c');
     withChild(install, kid, null);
-    updated(install, [kid]);
+    updated(install);
     const copy = join(dir, 'copy');
     copyOf(install, copy);
     const copiedKid = join(copy, 'data', 'kids', 'c');

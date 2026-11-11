@@ -2434,6 +2434,49 @@ test('while a Go back is unfinished, a moved install whose root keeps a copy is 
   expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
 });
 
+test.skipIf(process.getuid?.() === 0)('a journal or a Go back\'s list setup can\'t read, in a moved install whose root keeps a Go back, stops it under the binding\'s line, naming the file, and nothing is asked', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  keptInRoot(dir);
+  writeFileSync(join(dir, 'connectome-host', 'journal.jsonl'), '');
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const root = join(moved, 'connectome-host');
+  const mark = join(root, 'set-aside', 'm2');
+  for (const [locked, named] of [[join(root, 'journal.jsonl'), `The journal at ${join(root, 'journal.jsonl')} can't be read (EACCES`],
+    [mark, `  ${join(mark, 'places.json')} can't be read (EACCES`]] as const) {
+    chmodSync(locked, 0o000);
+    const again = world(moved);
+    try {
+      expect(await runSetup(moved, ['discord'], again)).toBe(1);
+    } finally {
+      chmodSync(locked, locked === mark ? 0o755 : 0o644);
+    }
+    const lead = again.seen.err.indexOf(`Binding the install at ${root} stopped, with nothing in it changed:`);
+    expect(lead).toBeGreaterThanOrEqual(0);
+    expect(text(again.seen.err.slice(lead))).toContain(named);
+    expect(again.seen.asked).toEqual([]);
+    expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
+  }
+});
+
+test('a no to moving them aside names, among what to move by hand, each place a Go back\'s list names that the record doesn\'t and that is a directory under this install\'s directory', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = keptInRoot(dir);
+  const old = join(dir, 'old-state');
+  mkdirSync(old);
+  writeFileSync(join(root, 'set-aside', 'm2', 'places.json'), JSON.stringify({
+    v: 1, places: [{ path: old, name: '0-old-state', before: 'dir', target: 'dir' }],
+  }));
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const declined = world(moved, { answers: ['no'] });
+  expect(await runSetup(moved, ['discord'], declined)).toBe(1);
+  expect(text(declined.seen.err)).toContain('with or without .tmp, .filling or .emptying after it, and the same in each ' +
+    `of these, which a Go back's list names: ${join(moved, 'old-state')}, and run setup again.`);
+});
+
 test('with no usable HOME, a place answered with ~ is asked again, saying to type the whole path', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);

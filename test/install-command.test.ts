@@ -105,10 +105,10 @@ test('setup refuses, before any CLI loads, where neither current\'s release nor 
   expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host@latest setup discord\` runs setup from the registry.`);
 });
 
-test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone', () => {
+test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone; for an install bound where it is, that command gives no --place', () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
   dirs.push(dir);
-  const refusal = (name: string, withSetup: boolean) => {
+  const refusal = (name: string, withSetup: boolean, dataDir = join(dir, 'data')) => {
     const root = join(dir, name);
     const release = join(root, 'releases', '1.0.0');
     mkdirSync(join(release, ...CLI_IN_RELEASE.slice(0, -1)), { recursive: true });
@@ -119,7 +119,7 @@ test('where its release has no setup and the directory\'s package has none it ca
       writeFileSync(ownSetup, '// setup\n');
     }
     symlinkSync(join('releases', '1.0.0'), join(root, 'current'));
-    writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir }));
+    writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState: [], workingDir: dir }));
     writeInstallCommand(root, '', '1.0.0');
     const ran = Bun.spawnSync([process.execPath, join(root, 'connectome'), 'setup', 'discord'], { stderr: 'pipe' });
     return { exitCode: ran.exitCode, stderr: ran.stderr.toString(), root, ownSetup };
@@ -134,6 +134,10 @@ test('where its release has no setup and the directory\'s package has none it ca
     `DATA_DIR=${join(dir, 'data')} bun --no-env-file ${other.ownSetup} --root ${other.root}\`.`);
   const gone = refusal('another-root', false);
   expect(gone.stderr).toContain(`and this one is ${gone.root}, so run the setup of 1.0.0, the release whose setup wrote this file, which this install's releases don't hold now: install exactly 1.0.0 in ${dir} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand.`);
+  const outside = join(dirname(dir), 'outside-data');
+  const here = refusal('bound-here', true, outside);
+  expect(here.stderr).toContain(`so run the setup of 1.0.0, the release whose setup wrote this file: \`cd ${dir} && ` +
+    `DATA_DIR='<where its data directory is now>' bun --no-env-file ${here.ownSetup} --root ${here.root}\`.`);
 });
 
 test('a record bound to another directory refuses the bare command, update and send, each before any CLI loads, while setup runs', () => {
