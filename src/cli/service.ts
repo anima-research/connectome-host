@@ -1603,7 +1603,7 @@ function assignment(name: string, value: string): string {
   return `Environment="${`${name}=${plain(value, name)}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
 }
 
-function systemdUnit(description: string, work: string, argv: string[], env: Array<[string, string]>,
+export function systemdUnit(description: string, work: string, argv: string[], env: Array<[string, string]>,
   wants: string | null): string {
   const named = `The working directory ${JSON.stringify(work)}`;
   const unit = [`Description=${plain(description, named).replace(/%/g, '%%')}`,
@@ -1618,7 +1618,7 @@ function xml(value: string, what: string): string {
     .replace(/'/g, '&apos;');
 }
 
-function plist(label: string, work: string, args: string[], env: Array<[string, string]>, logPath: string): string {
+export function plist(label: string, work: string, args: string[], env: Array<[string, string]>, logPath: string): string {
   const as = (value: string) => xml(value, JSON.stringify(value));
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
