@@ -431,7 +431,7 @@ export class FleetModule implements Module {
     }
   }
 
-  private childrenFileRead(): { children: unknown[]; boundTo?: string } | string {
+  private childrenFileRead(): { children: unknown[]; boundTo?: unknown } | string {
     if (this.childrenFile === null) return { children: [] };
     let file: ChildrenFile | null;
     const fix = 'Replacing it would drop the children it lists, which an update reads to see which may still be ' +
@@ -445,7 +445,7 @@ export class FleetModule implements Module {
     }
     if (file === null) return { children: [] };
     if (!Array.isArray(file.children)) return `The file at ${this.childrenFile} holds no list of children. ${fix}`;
-    return { children: file.children, ...(typeof file.boundTo === 'string' ? { boundTo: file.boundTo } : {}) };
+    return { children: file.children, ...(file.boundTo !== undefined ? { boundTo: file.boundTo } : {}) };
   }
 
   private async adoptPersistedChildren(): Promise<void> {

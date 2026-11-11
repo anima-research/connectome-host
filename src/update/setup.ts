@@ -48,8 +48,8 @@ import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js
 import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder, machineOps, releaseLock } from './launcher.js';
 import {
-  MOVE_ASIDE_BY_HAND, MOVE_ASIDE_REFUSED, MOVED_ASIDE_AFTERWARDS, bindChildren, bindingCheckLines, bindingOf, childPathsOf,
-  childrenIn, childrenRewrite, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, movesPlaces, movingAside,
+  MOVE_ASIDE_REFUSED, MOVED_ASIDE_AFTERWARDS, bindChildren, bindingCheckLines, bindingOf, childPathsOf, childrenIn,
+  childrenRewrite, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, moveAsideByHand, movesPlaces, movingAside,
   sameDirectory, unfinishedWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
@@ -453,16 +453,35 @@ export function setup(options: SetupOptions): void {
   const moving = binding !== null && (movesPlaces(binding, placed) || replaced);
   if (options.moveAside && !moving) throw new ContractError(MOVE_ASIDE_REFUSED);
   const kept = moving ? keptInRoot(root) : null;
-  if (binding !== null && kept !== null && kept.found.length > 0) {
+  const bindShape = binding === null ? null : { from: binding.from, to: binding.to, places: bindPlaces };
+  if (binding !== null && bindShape !== null) {
+    const named = [
+      ...[existing!.dataDir, ...given === null ? existing!.extraState : []]
+        .map((path) => ({ path, by: 'this install\'s record' })),
+      ...(kept?.listed ?? []).map((path) => ({ path, by: 'a Go back\'s list in this install\'s root' })),
+    ];
+    for (const place of placed.filter((one) => !binding.places.some((known) => known.path === one.from))) {
+      const over = named.find(({ path }) => isUnder(path, place.from));
+      if (over !== undefined) {
+        throw new ContractError(`--place ${place.from} names no place this install's record names, and it holds ` +
+          `${over.path}, which ${over.by} names, so the binding would put that at ${mapPath(over.path, bindShape)}. ` +
+          'Setup has changed nothing. Run it again without that --place.');
+      }
+    }
+  }
+  if (binding !== null && bindShape !== null && kept !== null && kept.found.length > 0) {
     const account = keptAccount(root, binding.from, kept);
     const unfinished = unfinishedWords(root);
     if (unfinished !== null) throw new ContractError(`${account}\n${unfinished}`);
     if (!options.moveAside) {
+      const listed = kept.listed.map((was) => mapPath(was, bindShape) ?? was);
+      const named = [...binding.places.map((place) => mapPath(place.path, bindShape) ?? place.path), ...given ?? [],
+        ...binding.children?.bound ? binding.children.paths : []];
       throw new ContractError(`${account}\nSetup has changed nothing. Run it again with --move-aside, which ` +
-        `${movingAside(root, binding.to)}, or move them out yourself: ${MOVE_ASIDE_BY_HAND}. ${MOVED_ASIDE_AFTERWARDS}`);
+        `${movingAside(root, binding.to)}, or move them out yourself: ${moveAsideByHand(binding.to, listed, named)}. ` +
+        MOVED_ASIDE_AFTERWARDS);
     }
   }
-  const bindShape = binding === null ? null : { from: binding.from, to: binding.to, places: bindPlaces };
   const placeHere = (path: string): string => bindShape === null ? path : mapPath(path, bindShape) ?? path;
   const writtenAfterRecord: [string, string][] = [
     [paths.journal, `${basename(paths.journal)}, its update journal,`],
@@ -582,12 +601,16 @@ export function setup(options: SetupOptions): void {
     }
   };
   const mappedData = existing === null ? null : placeHere(existing.dataDir);
-  if (existing !== null && mappedData !== null &&
-    (binding === null ? !sameDirectory(mappedData, dataDir) : realOrResolved(mappedData) !== dataDir)) {
+  if (existing !== null && mappedData !== null && realOrResolved(mappedData) !== dataDir) {
     const holder = binding?.places.find((place) => place.data)?.path ?? existing.dataDir;
     throw new ContractError(binding === null
-      ? `The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an install of its own: ` +
-        'give this one another --root.'
+      ? sameDirectory(mappedData, dataDir)
+        ? `The install at ${root} serves ${existing.dataDir}, and setup was given DATA_DIR ${dataDir}, which leads to ` +
+          'that same directory by another path, as through a bind mount. A start compares the two paths once links are ' +
+          'followed, so its host wouldn\'t start with that DATA_DIR. Setup has changed nothing. Run it, and have the ' +
+          `service start the host, with DATA_DIR ${existing.dataDir}.`
+        : `The install at ${root} serves ${existing.dataDir}, not ${dataDir}. Each service needs an install of its own: ` +
+          'give this one another --root.'
       : `Bound to ${binding.to}, the install at ${root} serves ${mappedData}, the place of the data directory its ` +
         `record names, ${existing.dataDir}, and setup was given DATA_DIR ${dataDir}. Setup has changed nothing. Run it ` +
         `with DATA_DIR ${mappedData}, or with --place giving ${holder === existing.dataDir

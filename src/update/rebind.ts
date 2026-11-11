@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import {
   ContractError, ITEM_UPDATE_DIR, VersionError, childrenFilePath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir,
   pendingGoBack, readCurrent, readGoBackList, readJournal, readRecord, realOrResolved, syncDir, unfinishedTrial,
-  writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
+  WRITE_RECORD_AGAIN, writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
 } from './contract.js';
 import { makeDirs } from './data-swap.js';
 import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
@@ -146,6 +146,11 @@ export function childPathsOf(binding: Bind): string[] {
 }
 
 export function bindingOf(root: string, record: InstallRecord, placed: Moved[] = []): Binding {
+  if (record.workingDir !== undefined && typeof record.workingDir !== 'string') {
+    throw new ContractError(`This install's record (${installPaths(root).install}) holds a "workingDir" that isn't a ` +
+      `path (${JSON.stringify(record.workingDir)}), so setup can't tell whether the install was moved or copied here, ` +
+      `or whose places its record names. Setup has changed nothing. ${WRITE_RECORD_AGAIN}`);
+  }
   const to = workingDirOf(root);
   if (boundHere(record, root)) return { kind: 'bound', to };
   const from = typeof record.workingDir === 'string' ? record.workingDir : null;
@@ -225,14 +230,14 @@ export function keptInRoot(root: string): KeptInRoot {
   }
   const listed = marks.flatMap((mark) => {
     const list = goBackListPath(root, mark);
-    if (lstatSync(list, { throwIfNoEntry: false }) === undefined) return [];
     try {
+      if (lstatSync(list, { throwIfNoEntry: false }) === undefined) return [];
       return readGoBackList(root, mark).map((place) => place.path);
     } catch (error) {
       throw new ContractError(`${list} can't be read (${(error as Error).message.replace(/\.+$/, '')}), so setup can't ` +
         'tell which places hold what that Go back kept. Setup has changed nothing. Put it right, or move ' +
-        `${join(setAside, mark)} out of the root yourself with that Go back's areas (${MOVE_ASIDE_BY_HAND}), and run ` +
-        'setup again.');
+        `${join(setAside, mark)} out of the root yourself with that Go back's areas (${MOVE_ASIDE_BY_HAND}, and the ` +
+        `same in each place ${list} names, which can't be named here while it can't be read), and run setup again.`);
     }
   });
   const copies = [copy, copyPrev].filter((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined);
@@ -248,9 +253,23 @@ export const MOVED_ASIDE_AFTERWARDS = 'Nothing removes what\'s moved aside: it t
   'Until the next update takes a new copy, /update back restore isn\'t there, and each update says it removes no older ' +
   'release.';
 
-export const MOVE_ASIDE_BY_HAND = 'each one listed, and in each directory an update copies that\'s under this install\'s directory, ' +
+const MOVE_ASIDE_BY_HAND = 'each one listed, and in each directory an update copies that\'s under this install\'s directory, ' +
   '.connectome-update/set-aside/<mark> and .connectome-update/staging/<mark> for each mark listed, with or without ' +
   '.tmp, .filling or .emptying after it';
+
+export function moveAsideByHand(to: string, listed: string[], named: string[]): string {
+  const places = [...new Set(listed)].filter((path) => !named.includes(path) && isUnder(path, to) && isDirectory(path));
+  return MOVE_ASIDE_BY_HAND + (places.length === 0 ? ''
+    : `, and the same in each of these, which a Go back's list names: ${places.join(', ')}`);
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 export function keptAccount(root: string, from: string | null, kept: KeptInRoot): string {
   return (from === null
@@ -281,9 +300,17 @@ function unfinishedGoBackWords(goBack: JournalLine): string {
 }
 
 /** What a binding that moves aside what the root keeps must wait for: a trial its journal leaves unfinished, whose
- *  fallback restores from that, or a Go back it leaves unfinished, which the next start goes on with from it. */
+ *  fallback restores from that, or a Go back it leaves unfinished, which the next start goes on with from it; or a
+ *  journal it can't read, which can't show either. */
 export function unfinishedWords(root: string): string | null {
-  const lines = readJournal(root);
+  let lines: JournalLine[];
+  try {
+    lines = readJournal(root);
+  } catch (error) {
+    return `The journal at ${installPaths(root).journal} can't be read (${(error as Error).message.replace(/\.+$/, '')}), ` +
+      'so setup can\'t tell whether a trial or a Go back is unfinished there. Setup has changed nothing. Make it ' +
+      'readable to this user, or put it right, and run setup again.';
+  }
   const trial = unfinishedTrial(lines, readCurrent(root));
   if (trial !== null) return unfinishedTrialWords(trial);
   const goBack = pendingGoBack(lines);
@@ -308,15 +335,33 @@ export function moveAside(root: string, to: string, places: string[], kept: Kept
   const aside = join(root, 'moved-aside', time);
   const moves: Moved[] = [];
   const outside: string[] = [];
+  const moved: Moved[] = [];
+  const stopped = (what: string, then: string) => new ContractError(`${what}, so setup stops there. Setup has moved ` +
+    `${moved.length === 0 ? 'nothing else'
+      : `only these:\n${moved.map((one) => `  ${one.from} → ${one.to}`).join('\n')}\nand nothing else`}, removes ` +
+    `nothing it moved, and hasn't bound the install. ${then}`);
   const here = realOrResolved(to);
+  const scheduled = new Set<string>();
   for (const mark of kept.marks) {
     for (const place of places) {
       for (const area of [itemSetAsideDir(place, mark), itemStagingDir(place, mark)]) {
         for (const path of ['', '.tmp', '.filling', '.emptying'].map((suffix) => area + suffix).filter(there)) {
-          const update = join(place, ITEM_UPDATE_DIR);
           const real = realOrResolved(path);
-          if (isUnder(real, here)) moves.push({ from: path, to: join(update, 'moved-aside', time, relative(update, path)) });
-          else outside.push(real);
+          if (scheduled.has(real)) continue;
+          scheduled.add(real);
+          if (!isUnder(real, here)) {
+            outside.push(real);
+            continue;
+          }
+          const update = join(place, ITEM_UPDATE_DIR);
+          const target = join(update, 'moved-aside', time, relative(update, path));
+          const lands = realOrResolved(dirname(target));
+          if (!isUnder(lands, realOrResolved(place))) {
+            throw stopped(`${dirname(target)}, where setup would move ${path}, leads to ${lands}, outside ${place}, ` +
+              'which holds it', `Put ${join(update, 'moved-aside')} right, as a directory in ${place} or not there at ` +
+              'all, and run setup again (by hand, with --move-aside again).');
+          }
+          moves.push({ from: path, to: target });
         }
       }
     }
@@ -324,11 +369,6 @@ export function moveAside(root: string, to: string, places: string[], kept: Kept
   }
   const { copy, copyPrev } = installPaths(root);
   for (const path of [copyPrev, copy].filter(there)) moves.push({ from: path, to: join(aside, basename(path)) });
-  const moved: Moved[] = [];
-  const stopped = (what: string, then: string) => new ContractError(`${what}, so setup stops there. Setup has moved ` +
-    `${moved.length === 0 ? 'nothing else'
-      : `only these:\n${moved.map((one) => `  ${one.from} → ${one.to}`).join('\n')}\nand nothing else`}, removes ` +
-    `nothing it moved, and hasn't bound the install. ${then}`);
   for (const move of moves) {
     try {
       makeDirs(dirname(move.to));
@@ -409,6 +449,10 @@ function setAsideCopied(lock: string, holder: LockRecord): void {
       linkSync(aside, lock);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      throw new ContractError(`While setup set aside the lock that came with this copy, another process took this ` +
+        `install's lock, and setup moved that process's lock to ${aside}, and couldn't put it back, since ${lock} is ` +
+        'there again. Setup has changed nothing else, and hasn\'t bound the install. Each of the two files names a ' +
+        'process that may be running in this install: stop each that is, remove both files, and run setup again.');
     }
   }
   rmSync(aside, { force: true });
@@ -430,35 +474,44 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     '};',
     "const record = readJson(join(root, 'install.json'));",
     "const bound = record?.v === 1 && typeof record.workingDir === 'string' ? record.workingDir : null;",
+    "const damaged = record?.v === 1 && record.workingDir !== undefined && bound === null;",
     "const recorded = record?.v === 1 ? record.dataDir : null;",
     "const under = bound === null || bound.endsWith('/') ? bound : `${bound}/`;",
     "const inside = typeof recorded === 'string' && bound !== null && (recorded === bound || recorded.startsWith(under));",
     "const now = '<where its data directory is now>';",
     "const served = typeof recorded !== 'string' ? null : inside ? join(dirname(root), recorded.slice(bound.length)) : now;",
-    "const place = typeof recorded === 'string' && !inside ? ` --place ${quoted(recorded)} ${quoted(now)}` : '';",
+    "const sameDirectory = (a, b) => {",
+    '  try {',
+    '    const one = statSync(a, { bigint: true });',
+    '    const other = statSync(b, { bigint: true });',
+    '    return one.dev === other.dev && one.ino === other.ino;',
+    '  } catch {',
+    '    return false;',
+    '  }',
+    '};',
+    "const elsewhere = bound !== null && !sameDirectory(bound, dirname(root));",
+    "const place = typeof recorded === 'string' && !inside && (bound === null || elsewhere) ? " +
+      "` --place ${quoted(recorded)} ${quoted(now)}` : '';",
     "const byHand = served === null || writer === null ? 'its setup by hand again, as docs/DEPLOYMENTS.md shows'",
     "  : existsSync(ownSetup) ? `the setup of ${writer}, the release whose setup wrote this file: \\`cd ${quoted(dirname(root))} && ` +",
     "    `DATA_DIR=${quoted(served)} bun --no-env-file ${quoted(ownSetup)} --root ${quoted(root)}${place}\\``",
     "  : `the setup of ${writer}, the release whose setup wrote this file, which this install's releases don't hold now: ` +",
     "    `install exactly ${writer} in ${quoted(dirname(root))} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand`;",
-    '{',
-    '  const sameDirectory = (a, b) => {',
-    '    try {',
-    '      const one = statSync(a, { bigint: true });',
-    '      const other = statSync(b, { bigint: true });',
-    '      return one.dev === other.dev && one.ino === other.ino;',
-    '    } catch {',
-    '      return false;',
-    '    }',
-    '  };',
-    `  if (bound !== null && !sameDirectory(bound, dirname(root))${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
-    `    console.error(\`${said}: nothing runs in this install, since its record is bound to \${bound}, and it's in \` +`,
-    "      `${dirname(root)}, so it was moved or copied here, and the places its record names may be another install's. ` +",
-    "      `Setup binds it to this directory, asking about any place outside ${bound}: run ` +",
-    "      `\\`${quoted(join(root, 'connectome'))} setup discord\\`, or, for an install set up by hand, ${byHand}. A ` +",
-    "      'service that restarts the host will keep meeting this until setup has run: stop it first, and start it again after.');",
-    '    process.exit(1);',
-    '  }',
+    `if (damaged${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
+    `  console.error(\`${said}: nothing runs in this install, since its record, \${join(root, 'install.json')}, holds a \` +`,
+    "    '\"workingDir\" that isn\\'t a path, so whether it was moved or copied here, and whose places its record names, ' +",
+    "    `can't be told. Setup says how to write the record again: run \\`${quoted(join(root, 'connectome'))} setup discord\\`, ` +",
+    "    'or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. A service that ' +",
+    "    'restarts the host will keep meeting this until the record is written again: stop it first, and start it again after.');",
+    '  process.exit(1);',
+    '}',
+    `if (elsewhere${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
+    `  console.error(\`${said}: nothing runs in this install, since its record is bound to \${bound}, and it's in \` +`,
+    "    `${dirname(root)}, so it was moved or copied here, and the places its record names may be another install's. ` +",
+    "    `Setup binds it to this directory, asking about any place outside ${bound}: run ` +",
+    "    `\\`${quoted(join(root, 'connectome'))} setup discord\\`, or, for an install set up by hand, ${byHand}. A ` +",
+    "    'service that restarts the host will keep meeting this until setup has run: stop it first, and start it again after.');",
+    '  process.exit(1);',
     '}',
   ];
 }

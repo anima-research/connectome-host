@@ -25,8 +25,8 @@ import {
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import {
-  MOVE_ASIDE_BY_HAND, MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, movesPlaces, movingAside,
-  unfinishedWords, type Binding, type Place,
+  MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
+  unfinishedWords, type Binding, type KeptInRoot, type Place,
 } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND, SETUP_RECIPE, installCommandOf, typedCommand } from './install-command.js';
@@ -907,10 +907,18 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
     }
   }
   const placeArgs = places.flatMap((place) => ['--place', place.from, place.to]);
-  const kept = movesPlaces(asking, places) ? keptInRoot(root) : null;
+  const mapping = { from, to, places: [...places, ...asking.kept] };
+  let kept: KeptInRoot | null = null;
+  let unfinished: string | null = null;
+  try {
+    kept = movesPlaces(asking, places) ? keptInRoot(root) : null;
+    if (kept !== null && kept.found.length > 0) unfinished = unfinishedWords(root);
+  } catch (error) {
+    bindingStopped(root, (error as Error).message, err);
+    return 1;
+  }
   if (kept !== null && kept.found.length > 0) {
     const account = keptAccount(root, from, kept);
-    const unfinished = unfinishedWords(root);
     if (unfinished !== null) {
       bindingStopped(root, `${account}\n${unfinished}`, err);
       return 1;
@@ -919,13 +927,16 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
     const yes = await yesNo(world, 'Move them aside now? (yes/no) ');
     if (yes === null) return -1;
     if (!yes) {
+      const listed = kept.listed.map((was) => mapPath(was, mapping) ?? was);
+      const named = [...asking.places.map((place) => mapPath(place.path, mapping) ?? place.path),
+        ...asking.children?.bound ? asking.children.paths : []];
       err('Setup stops here, and the install is as it was. Run setup again and answer yes, or move them out ' +
-        `yourself: ${MOVE_ASIDE_BY_HAND}, and run setup again.`);
+        `yourself: ${moveAsideByHand(to, listed, named)}, and run setup again.`);
       return 1;
     }
     placeArgs.push('--move-aside');
   }
-  return { dataDir: mapPath(record.dataDir, { from, to, places: [...places, ...asking.kept] })!, placeArgs };
+  return { dataDir: mapPath(record.dataDir, mapping)!, placeArgs };
 }
 
 function takeSetupLock(file: string): { release(): void } | null {

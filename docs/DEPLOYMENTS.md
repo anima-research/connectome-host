@@ -382,7 +382,9 @@ hand `--move-aside` does: it moves each into `<root>/moved-aside/<time>/`,
 and each area a Go back kept that lies under the new directory once its
 links are followed into its place's `.connectome-update/moved-aside/<time>/`,
 saying each move, and it names an area that lies outside the new directory
-and leaves it. It looks for areas in each place the record and the children
+and leaves it. It refuses before it moves anything where a place's
+`.connectome-update/moved-aside` leads outside that place. It looks for
+areas in each place the record and the children
 file name, and in each place a Go back's own list names. Or move them out of
 the root yourself, with each mark's areas in a place under the new
 directory, leaving any outside it, which may be another install's. Setup refuses while a trial or
