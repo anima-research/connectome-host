@@ -7,6 +7,7 @@ import type { Module } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { cacheSettingsFor, subagentModuleConfig } from '../src/framework-agent-config.js';
 import { SubagentModule, describeSubagentLaunch } from '../src/modules/subagent-module.js';
+import type { SubagentModuleConfig } from '../src/modules/subagent-module.js';
 import { validateRecipe } from '../src/recipe.js';
 
 // #339: spawn and fork built their agent config without promptCaching or
@@ -18,8 +19,8 @@ import { validateRecipe } from '../src/recipe.js';
 const BEDROCK_CACHED = 'anthropic.claude-sonnet-4-5-20250929-v1:0';
 const BEDROCK_UNCACHED = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 
-describe('cacheSettingsFor', () => {
-  test('the module the host builds carries the recipe\'s settings, as a loaded recipe has them', () => {
+describe('subagentModuleConfig', () => {
+  test('carries a loaded recipe\'s cache settings', () => {
     const loaded = (agent: Record<string, unknown>) => validateRecipe({ name: 'r', agent: { systemPrompt: 'sys', ...agent }, modules: { subagents: true } });
     const off = subagentModuleConfig(loaded({ promptCaching: false }), 'resident', 'claude-opus-5-5', 'UTC');
     expect(off.promptCaching).toBe(false);
@@ -32,14 +33,17 @@ describe('cacheSettingsFor', () => {
     const bedrock = subagentModuleConfig(loaded({ provider: 'bedrock', cacheTtl: '5m' }), 'resident', BEDROCK_CACHED, 'UTC');
     expect(bedrock.provider).toBe('bedrock');
     expect(bedrock.cacheTtl).toBe('5m');
-    // Through the module, with the model each child sends.
+    // With the model each child sends.
     expect(cacheSettingsFor(off, 'claude-opus-5-5')).toEqual({ promptCaching: false, cacheTtl: '1h' });
     expect(cacheSettingsFor(bedrock, BEDROCK_UNCACHED)).toEqual({ promptCaching: false });
+    // Bedrock's gate is Bedrock's alone: off Bedrock, a Claude id it denies
+    // keeps agent-framework's default.
+    expect(cacheSettingsFor(says, 'claude-3-5-sonnet-20241022')).toEqual({ cacheTtl: '1h' });
   });
 });
 
 describe('subagents', () => {
-  async function harness(config: { provider?: string; promptCaching?: boolean; cacheTtl?: string }) {
+  async function harness(config: Pick<SubagentModuleConfig, 'provider' | 'promptCaching' | 'cacheTtl'>) {
     const membrane = new Membrane(new MockAdapter({ defaultResponse: 'ok' }), { formatter: new NativeFormatter() });
     const subagent = new SubagentModule({
       ...config,
