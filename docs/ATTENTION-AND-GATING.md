@@ -208,7 +208,9 @@ action.
   Ownership resolution and cleanup:
   1. Read module state from the current Chronicle branch on each call. A saved
      live debounced owner binds **both modes**. Without an explicit `serverId`,
-     it takes precedence over fresh inference, including after restart.
+     it takes precedence over fresh inference, including after restart. A branch
+     move can forget owner bindings while leaving the host-wide rule and open
+     channel in place; bindings do not protect owner changes across rollbacks.
   2. Without a saved owner or explicit selection, prefer the channel registry.
      For an unregistered id, use a prefix before the first `:` when it names a
      known server, even if disconnected. `modules.channelMode.serverId` is the
@@ -222,23 +224,32 @@ action.
      cleanup completes. One mode/rule is kept per exact channel id; switching
      server is not an implicit migration.
   4. Mentions removes the rule and unpins, even when ownership cannot be resolved.
-     It closes a known owner even when disconnected: the framework records the
-     close for re-registration. For a still-registered owner, a successful or
+     It closes a known owner even when disconnected: when the channel still
+     has a registry entry, the framework records the close for re-registration.
+     If the saved owner is still configured but disconnected or has registered
+     no channels yet, a missing channel entry is inconclusive: plain mentions
+     keeps the binding and says to retry the close after registration. Debounced
+     refuses without effects and asks to retry once connected and registered.
+     For a still-registered owner, a successful or
      durably recorded close plus successful rule removal deletes the matching
      owner record. Unpin failures are reported separately and do not retain that
      record. If subscription GC
      is absent (`modules.subscriptionGc: false`, or removed after a successful
-     debounced setup), unpin is a successful no-op, reported as
-     "no subscription-gc module; nothing to unpin", not an error. This does not
+     debounced setup), pin and unpin are successful no-ops: nothing auto-closes
+     the channel, and there is no pin to release, respectively. This does not
      edit saved GC state: re-adding subscription GC later restores any pin
      persisted earlier. With GC present again, call mentions to unpin if needed.
      Only a sole
      answered close failure suppresses the tool's generic retry advice; the
      registry explains deferred closes. Skipped, failed, or unanswered steps are reported individually.
-  5. If the saved owner no longer registers the channel (deregistered via
-     `channels/changed` or removed entirely), **mentions**, plain or with an
-     explicit `serverId`, attempts close on that **old owner**, never the selected
-     replacement. Successful rule removal and unpin clear the saved record even
+  5. A missing channel entry confirms an orphan only if the saved owner is no
+     longer configured, or is connected and has registered other channels but
+     not this one. In those cases **mentions**, plain or with an explicit
+     `serverId`, attempts close on that **old owner**, never the selected
+     replacement. An explicit `serverId` naming the saved owner also permits
+     deliberate abandonment while disconnected or awaiting registration; naming
+     a replacement does not bypass the retained binding in that transient state.
+     Successful rule removal and unpin clear the saved record even
      if close fails or gets no answer. No replacement is needed. The result
      reports an unconfirmed old-owner close plainly, without claiming the channel
      was closed; close failure still makes the overall result partial/failure.

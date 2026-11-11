@@ -114,6 +114,38 @@ describe('channel-mode server ownership', () => {
     });
   }
 
+  for (const connected of [false, true]) {
+    test(`R3-1 configured owner awaiting registration retains binding (connected: ${connected})`, async () => {
+      const id = 'zulip:g';
+      const w = registryWired(['a', 'b']);
+      const m = await w.createModule();
+      await w.register('a', id);
+      await w.set(m, id);
+      w.channels.removeServer('a');
+      w.servers[0].isConnected = connected;
+      // Even other entries do not prove absence while disconnected.
+      if (!connected) await w.register('a', 'zulip:other');
+      await w.register('b', id);
+      const calls = w.calls.length;
+      const refused = await w.set(m, id);
+      expect(refused.error).toContain(connected ? 'registered its channels yet' : 'disconnected');
+      expect(refused.error).not.toContain('clear the record');
+      expect(w.calls).toHaveLength(calls);
+      const cleanup = await w.set(m, id, 'mentions');
+      expect(cleanup.success).toBe(false);
+      expect(cleanup.error).toContain('Retry mentions after');
+      expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
+      expect(w.calls[calls]).toMatchObject({ name: 'channel_close', input: { serverId: 'a' } });
+      expect(w.rules.size).toBe(0);
+      expect((await w.set(m, id, 'mentions', 'b')).success).toBe(false);
+      expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
+      // Explicitly naming the saved owner deliberately abandons it.
+      await w.set(m, id, 'mentions', 'a');
+      expect(w.saved()).toEqual({ owners: {} });
+      await m.stop();
+    });
+  }
+
   test('R2-1 sequence 3: removed saved owner cannot silently move to a replacement', async () => {
     const w = registryWired(['a', 'b']);
     const m = await w.createModule();
@@ -145,6 +177,7 @@ describe('channel-mode server ownership', () => {
       const id = 'zulip:g';
       await w.register('a', id);
       expect((await w.set(m, id)).success).toBe(true);
+      await w.register('a', 'zulip:other');
       await w.channels.handleChanged('a', { removed: [id] });
       await w.register('b', id);
       expect(w.servers[0].isConnected).toBe(true);
@@ -208,6 +241,7 @@ describe('channel-mode server ownership', () => {
       const id = 'zulip:g';
       await w.register('a', id);
       await w.set(m, id);
+      await w.register('a', 'zulip:other');
       await w.channels.handleChanged('a', { removed: [id] });
       await w.register('b', id);
       const remove = w.framework.removeGatePolicy;
@@ -217,10 +251,7 @@ describe('channel-mode server ownership', () => {
       expect(cleanup.success).toBe(false);
       expect(cleanup.error).not.toContain('saved owner record was cleared');
       expect((cleanup.data as { steps: Array<{ detail: string }> }).steps[1].detail).toBe(
-        "Old owner a's close could not be confirmed. The saved owner record was retained. Cleanup: " +
-        (failing === 'rule'
-          ? "the channel's debounce gate rule failed (rule removal failed); it isn't pinned. "
-          : 'its debounce rule was removed; releasing its pin failed (injected failure). ') +
+        "Old owner a's close could not be confirmed. The saved owner record was retained. " +
         'This does not confirm a close. Close attempt: ' +
         'No channel "zulip:g" is on server "a", so nothing ran. ' +
         'It\'s on server "b": call again with serverId "b", or leave serverId out.',
@@ -350,8 +381,8 @@ describe('channel-mode server ownership', () => {
             const state = () => fw.getStore().getStateJson('modules/channel-mode/state') as { owners: Record<string, string> };
             await w.register('a', id);
             const setup = await w.set(m, id);
-            expect(setup.success).toBe(gcMode !== 'off');
-            if (gcMode === 'off') expect(setup.error).toContain('Module not found: subscription-gc');
+            expect(setup.success).toBe(true);
+            if (gcMode === 'off') expect((setup.data as { steps: unknown[] }).steps[2]).toMatchObject({ step: 'gc-pin', ok: true });
             else expect(gc.getAgentSettingsExtension().get('test').channel_idle_pinned).toEqual([id]);
             expect(state()).toMatchObject({ owners: { [id]: 'a' } });
             if (gcMode === 'removed') await fw.removeModule('subscription-gc');
@@ -359,7 +390,10 @@ describe('channel-mode server ownership', () => {
               // Even this wording is a real failure when the module exists.
               gc.handleToolCall = async () => ({ success: false, error: 'Module not found: subscription-gc, so nothing was done' });
             }
-            if (ownerStatus === 'deregistered') await w.channels.handleChanged('a', { removed: [id] });
+            if (ownerStatus === 'deregistered') {
+              await w.register('a', 'zulip:other');
+              await w.channels.handleChanged('a', { removed: [id] });
+            }
             if (ownerStatus === 'removed') {
               w.servers.shift();
               w.channels.removeServer('a');
@@ -385,13 +419,12 @@ describe('channel-mode server ownership', () => {
               expect(gc.getAgentSettingsExtension().get('test').channel_idle_pinned).toEqual([id]);
             } else {
               const closeDetail = "Old owner a's close could not be confirmed. " +
-                'The saved owner record was cleared. Cleanup: its debounce rule was removed; ' +
-                'no subscription-gc module; nothing to unpin. This does not confirm a close. ' +
+                'The saved owner record was cleared. This does not confirm a close. ' +
                 'Close attempt: No channel "zulip:g" is on server "a", so nothing ran. ' +
                 'It\'s on server "b": call again with serverId "b", or leave serverId out.';
               const message = ownerStatus === 'live' ? 'Channel zulip:g set to mentions mode.' :
                 'Channel zulip:g is only partly in mentions mode: its debounce rule was removed and ' +
-                `no subscription-gc module; nothing to unpin, and closing the channel failed (${closeDetail}).`;
+                `there was no pin to release (no subscription-gc module), and closing the channel failed (${closeDetail}).`;
               // Assert all text, including nested step details: a correct
               // summary must not hide a false claim that an unpin ran.
               expect(cleanup).toEqual({
@@ -414,12 +447,12 @@ describe('channel-mode server ownership', () => {
               if (ownerStatus === 'live') expect(w.channels.getDesiredState('a', id)).toBe('closed');
               else {
                 expect(cleanup.error).toContain('saved owner record was cleared');
-                expect(cleanup.error).toContain('no subscription-gc module; nothing to unpin');
+                expect(cleanup.error).toContain('there was no pin to release (no subscription-gc module)');
                 expect(cleanup.error).not.toContain('the channel is closed');
-                // A fresh pin still fails with GC off, but the replacement's
-                // open/rule/record must no longer be refused by the old binding.
+                // GC absence is harmless; the old binding no longer blocks
+                // the replacement's open/rule/record.
                 const replacement = await w.set(m, id, 'debounced', 'b');
-                expect((replacement.data as { steps: Array<{ ok: boolean }> }).steps.slice(0, 2).every(s => s.ok)).toBe(true);
+                expect(replacement.success).toBe(true);
                 expect(state().owners).toEqual({ [id]: 'b' });
                 expect(w.channels.getDesiredState('b', id)).toBe('open');
               }
@@ -796,7 +829,16 @@ describe('channel-mode server ownership', () => {
       expect(w.calls.filter(c => c.name === 'channel_close').map(c => c.input.serverId))
         .toEqual(['realm-a']);
       expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
-      expect(result.error).toContain("Old owner realm-a's close could not be confirmed");
+      if (!removeKnownServer) {
+        expect(result.error).toContain('Retry mentions after');
+        expect(w.saved()).toEqual({ owners: { 'zulip:general': 'realm-a' } });
+        expect((await w.set(restarted, 'zulip:general', 'debounced', 'realm-b')).success).toBe(false);
+        // Once registration arrives, a retried close completes normal cleanup.
+        w.servers[0].isConnected = true;
+        await w.register('realm-a', 'zulip:general');
+        expect((await w.set(restarted, 'zulip:general', 'mentions')).success).toBe(true);
+        expect(w.channels.getDesiredState('realm-a', 'zulip:general')).toBe('closed');
+      } else expect(result.error).toContain("Old owner realm-a's close could not be confirmed");
       expect(w.saved()).toEqual({ owners: {} });
       // No replacement close occurred; the released binding permits its use.
       expect((await w.set(restarted, 'zulip:general', 'debounced', 'realm-b')).success).toBe(true);

@@ -2,13 +2,16 @@
   MCPL owner, not always Discord. Optional `serverId` disambiguates shared ids;
   saved owners bind both modes until mentions cleanup completes. Invalid
   debounced ownership is refused before changes; disconnected closes remain
-  durable. Owner records follow branch switches and free after rule/close
-  cleanup even without subscription GC. Reapply affected modes to replace or
+  durable. Configured owners awaiting connection or registration retain their
+  binding and request a close retry, unless explicitly abandoned by naming the
+  saved owner. Owner records follow branch switches and free after rule/close
+  cleanup even without subscription GC. Branch moves can forget bindings but
+  leave the host-wide rule and open channel in place. Reapply affected modes to replace or
   remove old wrong-source rules, and remove hand-written workaround rules.
   Mentions can release deregistered or removed owners after rule removal and
   unpin, without a replacement or confirmed close; unconfirmed old-owner closes
-  are reported, not claimed as closed. Without subscription GC, unpin is a
-  successful no-op and does not strand orphan records; results distinguish it
+  are reported, not claimed as closed. Without subscription GC, pin and unpin are
+  successful no-ops and does not strand orphan records; results distinguish it
   from an actual unpin. Re-adding GC restores any previously persisted pin;
   call mentions with GC present to unpin if needed. See
   `docs/ATTENTION-AND-GATING.md`.

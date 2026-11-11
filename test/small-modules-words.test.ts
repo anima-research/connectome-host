@@ -185,7 +185,7 @@ describe('channel-mode', () => {
 
     const m2 = new ChannelModeModule();
     m2.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
-    await m2.start({ getState: () => undefined, setState: () => {},
+    await m2.start({ getModule: () => m2, getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: true };
