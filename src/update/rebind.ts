@@ -479,7 +479,6 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     "const under = bound === null || bound.endsWith('/') ? bound : `${bound}/`;",
     "const inside = typeof recorded === 'string' && bound !== null && (recorded === bound || recorded.startsWith(under));",
     "const now = '<where its data directory is now>';",
-    "const served = typeof recorded !== 'string' ? null : inside ? join(dirname(root), recorded.slice(bound.length)) : now;",
     "const sameDirectory = (a, b) => {",
     '  try {',
     '    const one = statSync(a, { bigint: true });',
@@ -490,6 +489,8 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     '  }',
     '};',
     "const elsewhere = bound !== null && !sameDirectory(bound, dirname(root));",
+    "const served = typeof recorded !== 'string' ? null : inside ? join(dirname(root), recorded.slice(bound.length))",
+    "  : bound !== null && !elsewhere ? recorded : now;",
     "const place = typeof recorded === 'string' && !inside && (bound === null || elsewhere) ? " +
       "` --place ${quoted(recorded)} ${quoted(now)}` : '';",
     "const byHand = served === null || writer === null ? 'its setup by hand again, as docs/DEPLOYMENTS.md shows'",
