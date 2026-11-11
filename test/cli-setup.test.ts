@@ -2135,6 +2135,20 @@ test('a check failing for a reason another key can\'t mend offers the same key a
   expect(stopping.seen.launched).toBeNull();
 });
 
+test('a stored secret a dotenv file builds from an exported copy of another is shown by its name in setup\'s lines, in the form a command reads it', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.setup', 'stored-secrets.json'), JSON.stringify(['MY_TOKEN']));
+  writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN="discord-token-value"\nANTHROPIC_BASE_URL=https://hostpart.gateway.example/anthropic\n', { mode: 0o600 });
+  writeFileSync(join(dir, '.env.production'), 'MY_TOKEN=${ALIAS}hostpart\n');
+  const made = world(dir, { answers: [''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ALIAS: 'discord-token-value' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = [...made.seen.out, ...made.seen.asked].join('\n');
+  expect(shown).toContain('https://<MY_TOKEN>.gateway.example');
+  expect(shown).not.toContain('hostpart');
+});
+
 test('the key is checked where the resident will call: at the ANTHROPIC_BASE_URL .env has, read again at each try', async () => {
   const dir = directory();
   const envFile = join(dir, '.env');

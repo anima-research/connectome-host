@@ -276,6 +276,31 @@ export function secretValues(
   return found;
 }
 
+export function addSecret(secrets: Secret[], secret: Secret): void {
+  if (!secrets.some((had) => had.name === secret.name && had.value === secret.value)) secrets.push(secret);
+}
+
+export function commandEnvOf(
+  env: Record<string, string | undefined>, names: string[], values: readonly Secret[],
+): Record<string, string> {
+  const out = withoutSecrets(env, names);
+  for (const [name, value] of Object.entries(out)) {
+    if (value !== '' && values.some((secret) => value === secret.value || value === secret.value.trim())) delete out[name];
+  }
+  return out;
+}
+
+export function readSecrets(
+  names: string[], envFile: string, env: Record<string, string | undefined>, found: Secret[], leftOut: string[] = [],
+): Secret[] {
+  for (let read = commandEnvOf(env, [...names, ...leftOut], found); ;) {
+    for (const secret of secretValues(names, envFile, env, read)) addSecret(found, secret);
+    const next = commandEnvOf(env, [...names, ...leftOut], found);
+    if (Object.keys(next).length === Object.keys(read).length) return found;
+    read = next;
+  }
+}
+
 export const DISCORD_TOKEN = 'DISCORD_TOKEN';
 
 const KNOWN_SECRETS: string[] = [...PROVIDER_SECRETS, DISCORD_TOKEN];
@@ -366,6 +391,6 @@ export function storedSecretsIn(setupDir: string, envFile: string, env: Record<s
   } catch {
     taken = [...KNOWN_SECRETS, ...guessedNames(envFile)];
   }
-  return secretValues(taken.filter((name) => !name.endsWith('_BASE_URL')), envFile, env)
+  return readSecrets(taken.filter((name) => !name.endsWith('_BASE_URL')), envFile, env, [])
     .filter(({ value }) => value.trim() !== '');
 }

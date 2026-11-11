@@ -12,8 +12,9 @@ import type {
   ToolResult,
 } from '@animalabs/agent-framework';
 import {
-  DISCORD_TOKEN, StoredSecrets, isSecretName, readEnvFile, redactWindow, secretNames, secretValues,
-  unwritableValue, withoutSecrets, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
+  DISCORD_TOKEN, StoredSecrets, addSecret, commandEnvOf, isSecretName, readEnvFile, readSecrets, redactWindow,
+  secretNames, secretValues, unwritableValue, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm,
+  envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
 import { originOf } from '../setup/key-check.js';
@@ -249,10 +250,6 @@ function seenIn(dir: string): Seen {
   return seen;
 }
 
-function addSecret(secrets: Secret[], secret: Secret): void {
-  if (!secrets.some((had) => had.name === secret.name && had.value === secret.value)) secrets.push(secret);
-}
-
 export class SetupModule implements Module {
   readonly name = SETUP_MODULE;
   readonly storedSecrets: StoredSecrets;
@@ -425,22 +422,17 @@ export class SetupModule implements Module {
     const { names: current, guessed } = secretNames(join(this.config.dir, '.setup'), envFile);
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
-    for (let env = this.commandEnv(names, this.seen.values); ;) {
-      for (const read of secretValues(names, envFile, this.config.env, env)) addSecret(this.seen.values, read);
-      const next = this.commandEnv(names, this.seen.values);
-      if (Object.keys(next).length === Object.keys(env).length) break;
-      env = next;
-    }
+    readSecrets(names, envFile, this.config.env, this.seen.values, this.notForCommands());
     return { names, values: [...this.seen.values], guessed };
   }
 
-  private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
+  private notForCommands(): string[] {
     const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
-    const env = withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
-    for (const [name, value] of Object.entries(env)) {
-      if (value !== '' && values.some((secret) => value === secret.value || value === secret.value.trim())) delete env[name];
-    }
-    return env;
+    return ['BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own];
+  }
+
+  private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
+    return commandEnvOf(this.config.env, [...secrets, ...this.notForCommands()], values);
   }
 
   private damaged(error: unknown, what: string): ToolResult {
