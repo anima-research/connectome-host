@@ -21,7 +21,7 @@ A claude.ai data export (`Settings → Privacy → Export data`) gives you a zip
 
 | Block / artifact | Round-trips? | How it's handled |
 |---|---|---|
-| `text` | Yes | Kept as written, with the person's turns opening `Name: ` when their name is known (see `--person`) |
+| `text` | Yes | Identity |
 | `tool_use`, `tool_result` | Yes structurally | Kept verbatim; inert at replay because no module advertises the claude.ai-internal tools |
 | `thinking` | **No — signatures are unrecoverable** | Wrapped as `<recovered_thinking>…</recovered_thinking>` text inside the same assistant turn |
 | Attachments with `extracted_content` (text-ish files) | Yes | Inlined as `<attachment …>…</attachment>` text |
@@ -59,8 +59,8 @@ Four stages. The first two (import, recipe compose) are independent and can be r
                        ┌────────────────────────────┐
                        │ warmup-session.ts          │
                        │   drives autobio strategy  │
-                       │   to convergence using the │
-                       │   same model that will     │
+                       │   toward convergence, with │
+                       │   the same model that will │
                        │   read summaries back      │
                        └────────────┬───────────────┘
                                     ▼
@@ -86,7 +86,6 @@ Useful flags:
 |---|---|
 | `--out <dir>` | Conhost data dir (default `./data`) |
 | `--agent <name>` | Participant name for assistant turns (default `Claude`). The import-source sidecar carries it to warmup. The evacuator reads a selected warmup session's sidecar before pinning its recipe name; otherwise use its `--agent` flag for custom names. The bundled `claude-export-revive.json` recipe pins `Claude`. |
-| `--person <name>` | Name for the person's turns (default: the one user `users.json` names). Each of their turns opens with `Name: `. With no name there, their turns are imported as written, and a turn that returns a tool result always is. |
 | `--filter <regex>` | Case-insensitive name regex; combines with the interactive picker |
 | `--dry-run` | Parse + report, don't write |
 | `--no-interactive` | Skip the picker; import everything (after `--filter`) |
@@ -140,7 +139,7 @@ The evacuator can chain straight into Stage 3: it asks "Start a warmup pass now?
 
 ### Stage 3 — Warmup (compress the message history)
 
-Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes L1/L2/L3 summaries offline. It gives the strategy no tool definitions, so a chunk holding tool calls stays uncompressed, and with a Fable or Mythos compression model every chunk does.
+Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes the L1/L2/L3 summaries before the session is opened: all of them for history with no tool calls on a compression model outside the Fable and Mythos families, and what it can without the agent's tool definitions otherwise (below).
 
 ```
 bun scripts/warmup-session.ts '<conversation name or session id>'
@@ -150,7 +149,9 @@ The name or id goes between single quotes, so the shell passes it as it is, an a
 
 Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
-Resumable: autobio persists its compression and merge queues to Chronicle, so re-running picks up where it left off. The progress bar shows L1 chunks remaining, queued merges, running token totals, USD cost, elapsed, and ETA.
+The warmup declares no tool definitions, so the first chunk whose compression request carries a tool call or result waits, as does each later chunk whose request carries that one too, and everything on a Fable- or Mythos-family compression model. An export keeps claude.ai's tool calls (`scripts/import-claudeai-export.ts`). The warmup names the work it left. The host compresses that work once it declares tool definitions for the agent: its context maintenance does so before each pass, the first at the host's start, or with `maintenanceIntervalMs: 0` the agent's first request does. An agent with no tools leaves it waiting.
+
+Resumable: autobio persists its compression and merge queues to Chronicle, so re-running picks up where it left off. A re-run reports the work that waits on tool definitions again and makes no progress on it, since only the host, once it declares them, compresses it. The progress bar shows L1 chunks remaining, queued merges, running token totals, USD cost, elapsed, and ETA.
 
 Useful warmup flags:
 
@@ -227,7 +228,7 @@ No evacuator, no warmup. The canned `claude-export-revive.json` is sufficient fo
 |---|---|---|
 | `400 invalid_request_error … signature: Field required` | A native `thinking` block reached the API without a signature | Confirm the importer was run; check that historical assistant turns contain `<recovered_thinking>` wrapped text, not raw thinking blocks |
 | Assistant turns appear as user role (startup may warn `agent name disagreement`) | `--agent` mismatch between import and recipe — including a recipe from an earlier evacuator left at `agent.name: "agent"` | Set the recipe's `agent.name` to the import's `--agent` value (default `Claude`), or re-import with `--agent <name>` matching the recipe |
-| First compile blows the context window | Warmup wasn't run on a large conversation | Run `bun scripts/warmup-session.ts '<name>'` to convergence, with the session's id in place of a name several sessions share, ignoring case, since that warms only one of them. It leaves a chunk holding tool calls uncompressed, and every chunk with a Fable or Mythos compression model, since it gives no tool definitions, so where those chunks alone pass the window, this won't bring it under |
+| First compile blows the context window | Warmup wasn't run on a large conversation | Run `bun scripts/warmup-session.ts '<name>'`, with the session's id in place of a name several sessions share, ignoring case, since that warms only one of them. Work it reports as waiting on tool definitions is the host's to compress once it declares them (Stage 3) |
 | Warmup hangs at near-100% CPU on subsequent prompts | Bun 1.3 readline-on-pipe bug | Already worked around in both scripts via a persistent line reader; if you hit it elsewhere, ensure stdin isn't being multiplexed |
 | Evacuator's adjustment step fails | No `ANTHROPIC_API_KEY` set, or model unreachable | Set the env var, or skip step 3 (the raw leaked prompt is also a fine starting point — step 4's editor pass lets you do the trimming by hand) |
 | Repeat run of the evacuator aborts with `Found existing checkpoint …` | A checkpoint exists and neither `--resume` nor `--reset` was passed | `bun scripts/evacuator.ts <export-dir> --resume` to continue (or `--reset` to start over) |

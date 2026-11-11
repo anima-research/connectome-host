@@ -10,6 +10,12 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 
+let takenIn: (() => void) | null = null;
+
+export function onHostLineTakenIn(listener: (() => void) | null): void {
+  takenIn = listener;
+}
+
 export class TuiModule implements Module {
   readonly name = 'tui';
 
@@ -61,6 +67,7 @@ export class TuiModule implements Module {
       response.requestInference = targetAgents ?? true;
     }
 
+    if (source === 'cli' || source === 'system') takenIn?.();
     return response;
   }
 }

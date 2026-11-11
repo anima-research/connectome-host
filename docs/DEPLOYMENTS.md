@@ -93,15 +93,14 @@ Labels/units follow `cc.<agent>.agent` (launchd) / `<agent>-agent.service`
 (systemd). (launchd: a plain `kill`/`stop` respawns via KeepAlive — use `bootout`
 to stop, `kickstart -k` to restart.) A service `connectome service install`
 writes is named after the install's working directory instead:
-`com.animalabs.connectome.<name>` / `connectome-<name>.service`.
-`connectome service stop` and `connectome service start` stop and start it,
-and `connectome` alone shows how to follow its log.
+`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and
+`connectome` alone shows its own stop and start commands, and how to follow its log.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
-`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To drain what it can before the restart, stop the
-resident first, then drain the debt offline with `bun scripts/warmup-session.ts
+`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To make fewer of them,
+stop the resident first, then drain what the warmup can offline with `bun scripts/warmup-session.ts
 '<session>' --agent '<recipe agent.name>' --data-dir '<DATA_DIR>' --model '<compressionModel>'`,
 where in an install setup made the script is
 `<install>/current/node_modules/@animalabs/connectome-host/scripts/warmup-session.ts`,
@@ -109,10 +108,11 @@ where in an install setup made the script is
 Give the session's id as `<session>` where its name begins with `-`, which warmup takes
 for an option, or where several sessions share it, ignoring case, since warmup then
 warms only one of them.
-The script gives the strategy no tool definitions, so a chunk holding tool calls stays
-uncompressed, and with a Fable or Mythos compression model every chunk does.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
-`--merge-threshold` must pass the same values to the warmup command.
+`--merge-threshold` must pass the same values to the warmup command. The warmup
+leaves the work that waits on the agent's tool definitions to the restarted host;
+[Stage 3 of `claudeai-evacuation.md`](./claudeai-evacuation.md#stage-3--warmup-compress-the-message-history)
+says which work that is and when the host compresses it.
 
 **Moving a resident off heartbeat-mcpl.** The heartbeat is agent-framework's now, `modules.heartbeat`, and a recipe that turns it on can't also name `mcpServers.heartbeat`: the host refuses it at load, since both would wake the agent and their tools share the names `heartbeat--…`. To move a resident over, replace its `mcpServers.heartbeat` with `"heartbeat": { "importFrom": { "configPath": "<its HEARTBEAT_CONFIG_FILE>", "remindersPath": "<its HEARTBEAT_REMINDERS_FILE>" } }` under `modules`, which brings the server's schedule and reminders along on the first start that finds no heartbeat state of the framework's own; once the framework has kept its own state, it reads that and imports nothing. Its wake rules for `source: "heartbeat"` keep applying, since the framework's ticks and reminders reach the gate as the server's pushes did ([ATTENTION-AND-GATING.md](./ATTENTION-AND-GATING.md)).
 
@@ -171,8 +171,8 @@ the working directory):
   `invalid_request` rejections of the history itself, a poison-history breaker
   sheds the newest complete exchange and retries, capped by
   `refusalHandling.maxRewinds` (default 3) per episode.
-- **`scripts/connectome-doctor [--no-signal] [--data-dir DIR] [--findings-json]
-  [INSTALL_DIR] [UNIT]`** — one-shot "why isn't the agent responding?"
+- **`scripts/connectome-doctor [--data-dir DIR] [--findings-json] [INSTALL_DIR]
+  [UNIT]`** — one-shot "why isn't the agent responding?"
   (python3; systemd-user boxes). Prints service state, disk, a last-seen
   ladder per pipeline stage (discord event → chronicle ingest → `llm-calls` →
   delivery), recent failures, and a live gate dump via `SIGUSR2`.
@@ -184,29 +184,37 @@ the working directory):
   host's lines from the first `StandardOutput=` or `StandardError=` `file:` or
   `append:` path in the unit file's text, a commented line included, else from
   `INSTALL_DIR/logs/agent.log` unless that was last written before the unit
-  started, else from the unit's journal (its last 2,000 lines). Recent
-  failures also come from `INSTALL_DIR/logs/failures.log`, every record but
-  the subscription GC's `subscription-gc-close`, which `connectome doctor`
-  names apart. Chronicle ingest
+  started, else from the unit's journal: its lines since the unit's latest
+  start that hold a delivery or a failure, which journalctl's `-g` picks
+  out, and the time of its last entry. A journalctl that refuses `-g` leaves
+  those stages unseen, saying so. An earlier start's inference failures are
+  in `INSTALL_DIR/logs/failures.log`. Recent failures also come from that
+  file: its records in its last 400 KB, of every kind but the subscription
+  GC's `subscription-gc-close`, which `connectome doctor` names apart. It
+  shows the last five failures from each place it reads. Chronicle ingest
   comes from the active session's `records.log`, as `sessions.json` names it,
   and the Discord stages from `DATA_DIR/discord-mcpl-debug.log`, which
   discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. A stage the
   ladder can't see reads "can't be seen here", with the reason. `SIGUSR2` goes
   only to a host whose `/proc/PID/status` says it catches the signal: a host
   that hasn't built its framework yet has no listener, and the signal's
-  default action ends it. `--no-signal` leaves the dump out. `--data-dir`
+  default action ends it. It waits up to 5 s for the host's `[diagnostics]`
+  line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   `CONNECTOME_DOCTOR_WITHHOLD`, a JSON list of `[name, value]` pairs, has each
-  value replaced by `<name>` in what the ladder reads and in a failed
-  command's error. `--findings-json` prints the findings, once the ladder
-  finishes, as its last line, `connectome-doctor findings: ` and a JSON list
-  of `{"text", "counts"}`, with no findings block or closing line, leaves the
-  service's own state (its row, a unit that isn't active, or a recent start)
-  to its caller, and exits 0. `counts` is false for a finding about what the
-  ladder can't see, and for the resident's own sleep. `connectome doctor` runs
-  the ladder with `--data-dir`, `--findings-json` and
-  `CONNECTOME_DOCTOR_WITHHOLD` for a service `connectome service install` set
-  up under systemd.
+  value replaced by `<name>` in what the ladder cuts short before it prints
+  it: a message's preview, a model call's error and a failure line. It parses
+  what it reads as it was read, and leaves a whole value in anything else it
+  prints to its caller, as `connectome doctor` replaces each stored value in
+  every line of the ladder's it shows. `--findings-json`
+  prints the findings, once the ladder finishes, as its last line,
+  `connectome-doctor findings: ` and a JSON list of `{"text", "counts"}`, with
+  no findings block or closing line, leaves the service's own state (its row,
+  a unit that isn't active, or a recent start) to its caller, and exits 0.
+  `counts` is false for a finding about what the ladder can't see, and for the
+  resident's own sleep. `connectome doctor` runs the ladder with `--data-dir`,
+  `--findings-json` and `CONNECTOME_DOCTOR_WITHHOLD` for a service `connectome
+  service install` set up under systemd.
 
 ---
 
@@ -287,7 +295,7 @@ Two traps: any open of a store with a normal strategy configuration chunks its n
 
 **Signed thinking is bound to its model.** A transcript's signed thinking blocks replay only on the model that made them; any other model refuses the request. The API also refuses a request that changes the shape of a turn around a thinking block it keeps (split, reordered, or with something inserted before it): "thinking blocks cannot be modified".
 
-**On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, a block is bound to its request too:** to the conversation and head (system text, tools, model) it was minted under. Once those differ, as after a fold, an account that enforces the binding refuses a request that carries it. context-manager leaves out the thinking a fold invalidates (anima-research/context-manager#155). Through the Anthropic API, the host also sends the first four the drop control on agent turns, so the provider drops such a block rather than refusing the request, and passes each one's window. With both, agent-framework doesn't break a turn's stream at `maxStreamTokens` (or the `/budget` command's value): the stream breaks mid-turn for its size only where its next request would pass the window, and a fresh compile carries the turn on.
+**On Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, a block is bound to its request too:** to the conversation and head (system text, tools, model) it was minted under. Once those differ, as after a fold, an account that enforces the binding refuses a request that carries it. context-manager leaves out the thinking a fold invalidates (anima-research/context-manager#155). Through the Anthropic API, the host also sends the first five the drop control on agent turns, so the provider drops such a block rather than refusing the request, and passes each one's window. With both, agent-framework doesn't break a turn's stream at `maxStreamTokens` (or the `/budget` command's value): the stream breaks mid-turn for its size only where its next request would pass the window, and a fresh compile carries the turn on.
 
 Not every account binds: some still show the model such a block. At start, for each such model the recipe uses (the agent's and its subagents' default), unless the recipe's `agent.formatter` is `anthropic-xml`, the provider is the mock, or `THINKING_BINDING_PROBE` is `off`, `0`, `false` or `no`, the host mints one block and replays it under a changed system text, a few small requests that `[thinking-binding]` lines in its log report on. Where the account showed the block, the agent and its subagents send their thinking as stored, without the drop control, which would have the block dropped. That holds only on the Anthropic route for a model that takes the control: if a gateway later moves the agent to an account that refuses such a block, the first refusal turns the control on for the rest of the run and the request is sent again. Where the account refused or dropped the block they leave such thinking out as above. A start at which the check can't tell uses what it last found on the same route (`$DATA_DIR/thinking-binding.json`), or leaves such thinking out. `THINKING_BINDING_PROBE=off` skips the check.
 
@@ -426,12 +434,17 @@ below says. A clone updates by hand.
 `DATA_DIR` as the service gives the host:
 
 ```bash
-DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]... [--place PATH PLACE]...
+DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
 ```
 
 It copies the install as the first release of an install root,
 `./connectome-host` unless `--root` names another, and writes the entry point
 `start.js` there, with the install's own command, `connectome`, beside it.
+That command's `connectome setup` works in the directory that holds the
+install root, reading and writing its `.env`, `.setup`, `package.json` and
+`node_modules` there. So for a root anywhere but directly in the service's
+working directory, it sets up the root's parent instead: to use it, keep the
+root directly in the working directory, as the default root is.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun <root>/start.js`, followed by
@@ -439,23 +452,19 @@ the arguments it gives the host now, and restart it. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
-**Moving or copying an install.** Setup records the directory that holds the
-install root, and `start.js` and `connectome` refuse to run an install moved
-or copied away from it, since its record still names the places of the
-install it was. Run setup again in the new directory, the line above with
-the new `DATA_DIR`, or `<root>/connectome setup discord` for an install
-`connectome setup` made. It binds the install there: each place under the
-old directory becomes the same place under the new one, in the record, in
-the copy labels and in each Go back's list. Each place outside the
-old directory needs its place in this install: `connectome setup` asks, and
-by hand setup names each one and takes it as `--place PATH PLACE`, with
-`PLACE` the same path after a move, or the copy's own after a copy. An
-install set up before setup recorded its directory is checked for a move or
-a copy only after setup next runs there, and that run asks the same of
-every place it names, its data directory included. A binding that changes
-the paths of a copy label or of a Go back writes its plan, `rebind.json`, in the
-root first; if it's cut off, nothing starts until setup, run again, finishes
-it from the plan.
+**A resident's own update.** An agent with `lifecycle--update` arms a
+restart or a Go back only on a headless host whose environment at its start
+holds `CONNECTOME_SUPERVISED=1`. Whoever writes the host's service sets that
+line, and by setting it says that the service starts the host again when it
+exits with 75, as a switch's restart does, and when it exits with 1, as a
+trial that ends before its commit does, so its fallback runs. Under systemd,
+`Restart=on-failure` does both, unless `SuccessExitStatus=` or
+`RestartPreventExitStatus=` names 75 or 1. Under launchd, `KeepAlive` with
+`SuccessfulExit` false does both. `connectome service install` writes such
+a service, and sets the line only for one that restarts the host on both. A
+service written by hand needs the line and both restarts. A host without
+the line, or run in a terminal, refuses the agent's restart and Go back and
+says why; the person's own `/update` and buttons don't need the line.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.
@@ -733,8 +742,7 @@ repo**:
   `scripts/warmup-session.ts '<session>'` (in an install setup made, under
   `<install>/current/node_modules/@animalabs/connectome-host/`), which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
-  not read from the recipe). It gives the strategy no tool definitions, so a
-  chunk holding tool calls stays uncompressed, and with a Fable or Mythos
-  compression model every chunk does.
+  not read from the recipe), except for work that waits on tool definitions,
+  which it names and leaves.
 - `scripts/strip-oversized-images.mjs` — remove >5 MB image blocks from the
   chronicle (agent must be stopped). No shipped equivalent.

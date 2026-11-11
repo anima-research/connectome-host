@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 /**
- * Warmup a conhost session: drive its AutobiographicalStrategy to convergence
- * before the session is opened for real continuation.
+ * Warmup a conhost session: drive its AutobiographicalStrategy toward
+ * convergence before the session is opened for real continuation.
  *
  * Bulk-imported sessions (from claude.ai exports, etc.) land in Chronicle with
  * thousands of raw messages and no L1/L2/L3 summaries. This script
- * pre-computes summaries offline. It gives the strategy no tool definitions,
- * so a chunk holding tool calls stays uncompressed, and with a Fable or
- * Mythos compression model every chunk does.
+ * pre-computes the summaries it can without the agent's tool definitions, and
+ * names the work that waits for them.
  *
  * Resumable: if interrupted, re-running this script picks up where it left
  * off.
@@ -112,16 +111,18 @@ function renderProgress(
   const elapsedMs = Date.now() - startedAt;
   const elapsedSec = elapsedMs / 1000;
 
-  const l1Done = initialL1Queue - s.l1QueueLength;
+  const l1Done = initialL1Queue - s.l1QueueLength - s.l1WaitingOnTools;
   const l1Pct = initialL1Queue > 0 ? (l1Done / initialL1Queue) * 100 : 100;
   const throughput = l1Done > 0 ? l1Done / elapsedSec : 0;
   const remainingL1 = s.l1QueueLength;
   const etaSec = throughput > 0 ? remainingL1 / throughput : 0;
 
-  const phase = s.l1QueueLength > 0 ? 'L1' : s.mergeQueueLength > 0 ? 'merges' : 'done';
+  const waiting = s.l1WaitingOnTools + s.mergesWaitingOnTools;
+  const phase = s.l1QueueLength > 0 ? 'L1' : s.mergeQueueLength > 0 ? 'merges' : waiting > 0 ? 'waiting' : 'done';
   const line =
     `[${phase}] L1 ${l1Done}/${initialL1Queue} (${l1Pct.toFixed(1)}%) │ ` +
     `merges ${s.mergeQueueLength} queued │ ` +
+    (waiting > 0 ? `${waiting} waiting on tool definitions │ ` : '') +
     `L1/L2/L3 ${s.summaryCounts.l1}/${s.summaryCounts.l2}/${s.summaryCounts.l3} │ ` +
     `tok ${(spend.inputTokens / 1000).toFixed(0)}k in / ${(spend.outputTokens / 1000).toFixed(0)}k out │ ` +
     `$${spend.cost.toFixed(2)} │ ` +
@@ -274,11 +275,22 @@ async function main() {
   }
 
   const finalStats = strategy.getProgressSnapshot();
+  const waiting = cm.getWaitingWork();
   console.error('');
   if (aborted) {
     console.error(
       `Halted at $${spend.cost.toFixed(2)} (--max-spend $${opts.maxSpend?.toFixed(2)}). ` +
         `Re-run to resume — autobio state persists in Chronicle.`,
+    );
+  } else if (waiting) {
+    console.error(
+      `Not converged: ${waiting.description}. This script declares no tool definitions, and this work waits ` +
+        `for them; docs/claudeai-evacuation.md, Stage 3, says which work waits. The host compresses it once it ` +
+        `declares tool definitions for the agent: its context maintenance does so before each pass, the first at ` +
+        `the host's start, unless the recipe sets maintenanceIntervalMs to 0, when the agent's first request does. ` +
+        `An agent with no tools leaves it waiting. ` +
+        `${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
+        `Total: ${spend.inputTokens.toLocaleString()} in / ${spend.outputTokens.toLocaleString()} out, $${spend.cost.toFixed(2)}.`,
     );
   } else if (finalStats.l1QueueLength === 0 && finalStats.mergeQueueLength === 0) {
     console.error(

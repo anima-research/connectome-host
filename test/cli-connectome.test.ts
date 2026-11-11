@@ -7,7 +7,8 @@ import {
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { bare, send, update } from '../src/cli/connectome.js';
+import { bare, COMMANDS, send, update } from '../src/cli/connectome.js';
+import { serviceUnits } from '../src/cli/service-unit.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { installPaths } from '../src/update/contract.js';
@@ -58,11 +59,11 @@ function stubPackage(root: string, body: string | null): string {
   return dir;
 }
 
-async function run(file: string, args: string[], cwd: string, spawned?: (child: ChildProcess) => void, first?: string):
-  Promise<{ status: number | null; out: string; err: string }> {
+async function run(file: string, args: string[], cwd: string, spawned?: (child: ChildProcess) => void, first?: string,
+  env: Record<string, string> = {}): Promise<{ status: number | null; out: string; err: string }> {
   const path = `${dirname(process.execPath)}:${process.env.PATH ?? ''}`;
   const child = spawn(file, args, {
-    cwd, env: { ...process.env, PATH: first === undefined ? path : `${first}:${path}` },
+    cwd, env: { ...process.env, PATH: first === undefined ? path : `${first}:${path}`, ...env },
   });
   spawned?.(child);
   let out = '';
@@ -189,93 +190,92 @@ test('a PATH entry that leads to the root through a link counts as the root on P
   expect(writeInstallCommand(root, `/usr/bin:${join(work, 'linked-root')}`).pathLine).toBeNull();
 });
 
-function serviceRecord(root: string, work: string): void {
-  writeFileSync(join(root, 'service.json'), JSON.stringify({
-    v: 1, manager: 'systemd-user', units: { host: { name: 'connectome-x.service', file: '/u/connectome-x.service' } },
-    hostArgs: [join(work, 'r.json'), '--headless'], workingDirectory: work, logs: { kind: 'journal' },
-  }));
+/** Writes the host unit service install would write for this install, in a home of the test's own, and gives the
+ *  environment that has a command look there. */
+function serviceUnit(root: string): { env: Record<string, string>; name: string; file: string; start: string } {
+  const home = join(dirname(root), 'home');
+  const units = serviceUnits(root, process.platform, home)!;
+  mkdirSync(dirname(units.host.file), { recursive: true });
+  writeFileSync(units.host.file, '');
+  const uid = process.getuid!();
+  return { env: { HOME: home, XDG_RUNTIME_DIR: `/run/user/${uid}` }, name: units.host.name, file: units.host.file,
+    start: process.platform === 'darwin' ? `launchctl bootstrap gui/${uid} ${shellWord(units.host.file)}`
+      : `systemctl --user start ${units.host.name}` };
 }
 
-function expectServiceLines(out: string, command: string): void {
-  expect(out).toContain('journalctl --user -u connectome-x.service -f');
-  expect(out).toContain(`  stop it: ${command} service stop`);
-  expect(out).toContain(`  start it: ${command} service start`);
+function expectServiceLines(out: string, unit: { name: string; file: string; start: string }): void {
+  if (process.platform === 'darwin') {
+    expect(out).toContain(`  stop it until the next login: launchctl bootout gui/${process.getuid!()} ${shellWord(unit.file)}`);
+  } else {
+    expect(out).toContain(`  follow its log: journalctl --user -u ${unit.name} -f`);
+    expect(out).toContain(`  stop it until the next boot: systemctl --user stop ${unit.name}`);
+  }
+  expect(out).toContain(`  start it: ${unit.start}`);
 }
 
-test('bare shows the recorded service\'s log, stop and start lines, and with none recorded, how to set one up', async () => {
+test('bare shows the service manager\'s own lines for the unit service install wrote, and with none, how to set one up', async () => {
   const { root, work } = install();
   const { path } = writeInstallCommand(root, '');
-  const none = await run(path, [], root);
+  const none = await run(path, [], root, undefined, undefined, { HOME: join(work, 'no-units') });
   expect(none.status).toBe(0);
-  expect(none.out).toContain(`No service is recorded for it yet: \`${path} service install <recipe>\` sets one up.`);
-  serviceRecord(root, work);
-  const ran = await run(path, [], root);
+  expect(none.out).toContain(`No service is set up for it here: \`${path} service install <recipe>\` sets one up.`);
+  const unit = serviceUnit(root);
+  const ran = await run(path, [], root, undefined, undefined, unit.env);
   expect(ran.status).toBe(0);
-  expectServiceLines(ran.out, path);
-  const onPath = await run(path, [], root, undefined, root);
-  expectServiceLines(onPath.out, 'connectome');
+  expectServiceLines(ran.out, unit);
 });
 
-test('bare with its host running shows the recorded service\'s lines too', async () => {
-  const { root, work, data } = install();
+test('bare with its host running shows the service\'s lines too', async () => {
+  const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
-  serviceRecord(root, work);
+  const unit = serviceUnit(root);
   await fakeHost(data, (message, reply) => {
     if (message.type === 'panel-request' && message.op === 'health') {
       reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: STATUS } });
     }
   });
-  const ran = await run(path, [], root);
+  const ran = await run(path, [], root, undefined, undefined, unit.env);
   expect(ran.status).toBe(0);
   expect(ran.out).toContain('Its host is running: pid 4242');
-  expectServiceLines(ran.out, path);
+  expectServiceLines(ran.out, unit);
 });
 
-test('with a service recorded and no host running, bare, send and update say to start it with the install\'s own service start, by its full path', async () => {
-  const { root, work } = install();
+test('with the service\'s unit there and no host running, bare, send and update give the service manager\'s line that starts it', async () => {
+  const { root } = install();
   const { path } = writeInstallCommand(root, '');
-  serviceRecord(root, work);
-  const bare = await run(path, [], root);
-  expect(bare.out).toContain(`If no host is running, start it with \`${path} service start\`, then ask again.`);
-  expect(bare.out).not.toContain('have its service start it with');
-  const sent = await run(path, ['send', 'hello'], root);
+  const unit = serviceUnit(root);
+  const bareRun = await run(path, [], root, undefined, undefined, unit.env);
+  expect(bareRun.out).toContain(`If no host is running, start its service with \`${unit.start}\`, then ask again.`);
+  expect(bareRun.out).not.toContain('have its service start it with');
+  const sent = await run(path, ['send', 'hello'], root, undefined, undefined, unit.env);
   expect(sent.status).toBe(1);
-  expect(sent.err).toContain(`If no host is running, start it with \`${path} service start\`, then send again.`);
-  expect(sent.err).not.toContain('have its service start it with');
-  const asked = await run(path, ['update'], root);
+  expect(sent.err).toContain(`If no host is running, start its service with \`${unit.start}\`, then send again.`);
+  const asked = await run(path, ['update'], root, undefined, undefined, unit.env);
   expect(asked.status).toBe(1);
-  expect(asked.err).toContain(`If no host is running, start it with \`${path} service start\`, then ask again.`);
-  writeFileSync(join(root, 'service.json'), 'not json');
-  const unread = await run(path, ['send', 'hello'], root);
-  expect(unread.status).toBe(1);
-  expect(unread.err).toContain(`${path} service install <recipe>. Then send again.`);
-  expect(unread.err).not.toContain('If no host is running, have its service start it with');
-  expect(unread.err).not.toContain('    at ');
+  expect(asked.err).toContain(`If no host is running, start its service with \`${unit.start}\`, then ask again.`);
 });
 
 test('bare whose host can\'t be looked for still shows the service\'s lines, and exits 1', async () => {
-  const { root, work } = install();
+  const { root } = install();
   const { path } = writeInstallCommand(root, '');
-  serviceRecord(root, work);
+  const unit = serviceUnit(root);
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: 'data', extraState: [] }));
-  const ran = await run(path, [], root);
+  const ran = await run(path, [], root, undefined, undefined, unit.env);
   expect(ran.status).toBe(1);
   expect(ran.err).toContain('not an absolute path');
-  expectServiceLines(ran.out, path);
+  expectServiceLines(ran.out, unit);
 });
 
 test('bare writes the service\'s lines through the context it\'s given', async () => {
-  const { root, work } = install();
-  serviceRecord(root, work);
+  const { root } = install();
   const out: string[] = [];
   const status = await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => out.push(line) }, 300);
   expect(status).toBe(0);
-  expectServiceLines(out.join('\n'), join(root, 'connectome'));
+  expect(out.join('\n')).toContain('No service is set up for it here: ');
 });
 
 test('bare whose current release can\'t be read still shows the service\'s lines, and exits 1', async () => {
-  const { root, work } = install();
-  serviceRecord(root, work);
+  const { root } = install();
   rmSync(installPaths(root).current, { force: true });
   writeFileSync(installPaths(root).current, 'not a link');
   const out: string[] = [];
@@ -283,35 +283,7 @@ test('bare whose current release can\'t be read still shows the service\'s lines
   const status = await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => err.push(line) }, 300);
   expect(status).toBe(1);
   expect(err.join('\n')).toContain('current release can\'t be read');
-  expectServiceLines(out.join('\n'), join(root, 'connectome'));
-});
-
-test('bare whose host answers, with a service record it can\'t read, names the file and exits 1', async () => {
-  const { root, data } = install();
-  writeFileSync(join(root, 'service.json'), 'not json');
-  await fakeHost(data, (message, reply) => {
-    if (message.type === 'panel-request' && message.op === 'health') {
-      reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: STATUS } });
-    }
-  });
-  const out: string[] = [];
-  const err: string[] = [];
-  const status = await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => err.push(line) }, 300);
-  expect(status).toBe(1);
-  expect(out.join('\n')).toContain('Its host is running: pid 4242');
-  expect(err.join('\n')).toContain(join(root, 'service.json'));
-  expect(err.join('\n')).toContain('service install <recipe>');
-});
-
-test('bare with a service record it can\'t read names the file and exits 1', async () => {
-  const { root } = install();
-  const { path } = writeInstallCommand(root, '');
-  writeFileSync(join(root, 'service.json'), 'not json');
-  const ran = await run(path, [], root);
-  expect(ran.status).toBe(1);
-  expect(ran.err).toContain(join(root, 'service.json'));
-  expect(ran.err).toContain(`${path} service install <recipe>`);
-  expect(ran.err).not.toContain('    at ');
+  expect(out.join('\n')).toContain('No service is set up for it here: ');
 });
 
 test('an install\'s own command, or a link to it, runs the release its current names, with the words given', async () => {
@@ -377,31 +349,29 @@ test('help lists the commands, and a word that isn\'t one is a usage error', asy
   expect(wrong.err).toContain('there\'s no command frobnicate');
 });
 
-test('service is one of the commands: help lists its install, stop and start, and service with none of them is its usage error', async () => {
+test('service is one of the commands: help lists its install, and service without it is its usage error', async () => {
   const { root } = install();
   const { path } = writeInstallCommand(root, '');
   const help = await run(path, ['help'], root);
-  expect(help.out).toContain(`  ${path} service install [<recipe>] | stop | start\n`);
-  for (const word of ['install: writes and starts', 'stop: stops', 'start: starts']) {
-    expect(help.out).toContain(`\n        ${word} `);
-  }
+  expect(help.out).toContain(`  ${path} service install <recipe>\n`);
+  expect(help.out).toContain('\n        install: writes this install\'s service ');
   const wrong = await run(path, ['service'], root);
   expect(wrong.status).toBe(2);
-  expect(wrong.err).toBe(`Usage: ${path} service install [<recipe>] | stop | start\n`);
+  expect(wrong.err).toBe(`Usage: ${path} service install <recipe>\n`);
 });
 
-test('every command help and the hints print is plain `connectome` once the install\'s own command is the first on PATH', async () => {
-  const { root, work } = install();
+test('help names no command by the install\'s path, and its usage lines and send\'s hint and usage name plain `connectome`, once the install\'s own command is the first on PATH', async () => {
+  const { root } = install();
   const { path } = writeInstallCommand(root, '');
-  serviceRecord(root, work);
+  const unit = serviceUnit(root);
   const help = await run(path, ['help'], root, undefined, root);
-  expect(help.out).toContain('\n  connectome\n');
-  expect(help.out).toContain('\n  connectome send <text>\n');
-  expect(help.out).toContain('\n  connectome service install [<recipe>] | stop | start\n');
-  expect(help.out).toContain('\n  connectome help\n');
+  const usageLines = help.out.split('\n').filter((line) => /^  \S/.test(line));
+  expect(usageLines).toEqual(['  connectome', ...COMMANDS.map((command) => `  ${command.usage}`), '  connectome help']);
+  for (const line of usageLines) expect(line).toMatch(/^  connectome(?: |$)/);
+  expect(help.out).toContain('\n  connectome service install <recipe>\n');
   expect(help.out).not.toContain(path);
-  const sent = await run(path, ['send', 'hello'], root, undefined, root);
-  expect(sent.err).toContain('If no host is running, start it with `connectome service start`, then send again.');
+  const sent = await run(path, ['send', 'hello'], root, undefined, root, unit.env);
+  expect(sent.err).toContain(`If no host is running, start its service with \`${unit.start}\`, then send again.`);
   const empty = await run(path, ['send', ' '], root, undefined, root);
   expect(empty.err).toBe('connectome: usage: connectome send <text>\n');
 });
@@ -660,7 +630,7 @@ test('bare, before the host has read the registry, says how to read it', async (
     `  The registry hasn't been read yet: ${path} update check reads it.\n`);
 });
 
-test('bare gives a reason the host stored, such as an armed try\'s, in the words this shell takes', async () => {
+test('bare gives a reason the host stored, such as an armed try\'s, as the host wrote it', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   const waited = 'turns were still going. Ending the switch\'s quiesce didn\'t reach every host: kid: it didn\'t say why. ' +
@@ -675,8 +645,7 @@ test('bare gives a reason the host stored, such as an armed try\'s, in the words
   });
   const ran = await run(path, [], root);
   expect(ran.status).toBe(0);
-  expect(ran.out).toContain(`An operator's ${path} update restart resume ends it`);
-  expect(ran.out).not.toContain('/update restart resume');
+  expect(ran.out).toContain(waited);
 });
 
 test('send isn\'t ended by an idle from before its line (texts 0), and ends at the idle that covers it', async () => {
@@ -1029,9 +998,11 @@ test('update runs /update with the same words in the host and prints its answer 
   const asked: string[] = [];
   let child: ChildProcess | undefined;
   let runningAtDone = false;
+  const typed: unknown[] = [];
   await fakeHost(data, async (message, reply, socket) => {
     if (message.type !== 'command') return;
     asked.push(String(message.command));
+    typed.push(message.typed);
     if (typeof message.corrId !== 'string') {
       socket.end();
       return;
@@ -1052,8 +1023,9 @@ test('update runs /update with the same words in the host and prints its answer 
   const ran = await run(path, ['update', 'install'], root, (spawned) => { child = spawned; });
   expect(ran.status).toBe(0);
   expect(asked).toEqual(['/update install']);
+  expect(typed).toEqual([path]);
   expect(ran.out).toBe('Reading the registry, then installing…\nSee /update-log and /updates.\n' +
-    `Installed 0.15.0: ${path} update restart switches to it.\n`);
+    'Installed 0.15.0: /update restart switches to it.\n');
   expect(runningAtDone).toBe(true);
   const checked = await run(path, ['update', 'check'], root);
   expect(checked.status).toBe(0);
@@ -1084,7 +1056,7 @@ test('update spells the install\'s command as plain `connectome` in its usage an
   expect(wrong.err).toStartWith('connectome: usage: connectome update [check');
   await fakeHost(data, (message, reply) => {
     if (message.type !== 'command') return;
-    reply({ type: 'command-output', text: 'Installed 0.15.0: /update restart switches to it.', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-output', text: `Installed 0.15.0: ${String(message.typed)} update restart switches to it.`, style: 'system', corrId: message.corrId });
     reply({ type: 'command-done', corrId: message.corrId });
   });
   const ran = await run(path, ['update', 'install'], root, undefined, root);
@@ -1109,7 +1081,7 @@ test('update whose command fails in the host says so and exits 1', async () => {
   });
   const ran = await run(path, ['update'], root);
   expect(ran.status).toBe(1);
-  expect(ran.err).toContain(`registry unreachable: try ${path} update again`);
+  expect(ran.err).toContain('registry unreachable: try /update again');
   expect(ran.out).toBe('');
 });
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { checkDiscordToken, DISCORD_API, discordUserAgent } from '../setup/discord-token.js';
 
@@ -24,6 +24,12 @@ class DiscordAnswer extends Error {}
 
 export const BEFORE_ENV_FILE = 'another of the files Bun reads there, such as .env.local or .env.development, or the ' +
   'service\'s own environment, comes before .env where it sets the name';
+
+const LISTED = 'Discord listed that server for the bot a moment before, so if the bot has been removed from it since, ' +
+  'invite it again, and otherwise run connectome doctor again.';
+
+const waited = (unchecked: string, seconds: number): string =>
+  `${unchecked}: Discord asked for ${Math.ceil(seconds)} s before the next request, so run connectome doctor again after that`;
 
 export function sentToken(given: string): string {
   return given.replace(/^(Bot|Bearer)\s*/i, '');
@@ -56,12 +62,16 @@ export async function checkDiscord(
   if (token !== token.trimEnd()) {
     lines.push('DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it ' +
       'isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which ' +
-      'doctor can\'t check. Store it without the whitespace: `connectome setup discord` stores it trimmed.');
+      'doctor can\'t check. Store it without the whitespace where the server\'s value comes from. ' +
+      `\`connectome setup discord\` stores it trimmed in ${join(options.workingDir, '.env')}, which is that place unless ` +
+      `the server's entry gives DISCORD_TOKEN a value itself, or ${BEFORE_ENV_FILE}.`);
   }
   const userAgent = discordUserAgent();
   const limitMs = options.requestLimitMs ?? REQUEST_LIMIT_MS;
   const unchecked = 'so the Discord checks after it weren\'t made';
   const again = `${unchecked}: run connectome doctor again`;
+  const reach = `${unchecked}: check that this machine can resolve and reach discord.com, then run connectome doctor again`;
+  const between = 'Something between this machine and Discord, such as a proxy, may be answering in its place.';
   const source = 'Where the recipe alone defines the server and maps "${DISCORD_TOKEN}" in its env, or the server is handed ' +
     'the host\'s whole environment ("inheritEnv": true, in the recipe or mcpl-servers.json) with no DISCORD_TOKEN ' +
     'of its own, the token is the service\'s DISCORD_TOKEN. `connectome setup discord` stores it in ' +
@@ -83,7 +93,7 @@ export async function checkDiscord(
       text = await res.text();
     } catch (error) {
       const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      throw new DiscordAnswer(`Discord ${timedOut ? `didn't answer GET ${path} within ${limitMs / 1000} s` : `couldn't be asked GET ${path}: ${errorText(error)}`}, ${again}.`);
+      throw new DiscordAnswer(`Discord ${timedOut ? `didn't answer GET ${path} within ${limitMs / 1000} s` : `couldn't be asked GET ${path}: ${errorText(error)}`}, ${reach}.`);
     }
     let body: unknown;
     try {
@@ -91,23 +101,33 @@ export async function checkDiscord(
     } catch {
       body = undefined;
     }
-    if (res.status === 401) throw new DiscordAnswer(refused);
     if (res.status >= 300 && res.status < 400) {
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}, a redirect, which doctor doesn't follow with ` +
-        `the token, ${unchecked}.`);
+        `the token, ${unchecked}. ${between}`);
     }
-    const said = body as { message?: unknown; code?: unknown } | undefined;
+    if (body === undefined) {
+      throw new DiscordAnswer(res.ok
+        ? `Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`
+        : `Discord answered ${res.status} to GET ${path} with something other than JSON, ` +
+          `${res.status === 429 || res.status >= 500 ? again : unchecked}. ${between}`);
+    }
+    if (res.status === 401) throw new DiscordAnswer(refused);
+    const said = body as { message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
     if (!res.ok) {
+      const wait = res.status === 429 && typeof said?.retry_after === 'number' && Number.isFinite(said.retry_after)
+        ? waited(unchecked, said.retry_after) : undefined;
       throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}` +
         (typeof said?.message === 'string' ? `: ${said.message}${said.code !== undefined ? ` (code ${String(said.code)})` : ''}` : ', with no message') +
-        `, ${res.status === 429 || res.status >= 500 ? again : unchecked}.`);
+        `, ${wait ?? (res.status === 429 || res.status >= 500 ? again : unchecked)}.` +
+        (res.status === 403 || res.status === 404
+          ? path.startsWith('/guilds/') ? ` ${LISTED}` : path === '/applications/@me' ? ` ${between}` : ''
+          : ''));
     }
-    if (body === undefined) throw new DiscordAnswer(`Discord answered GET ${path} with something other than JSON, ${unchecked}.`);
     return body as T;
   };
 
   try {
-    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, refused, source });
+    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source });
     lines.push(`✓ The token in DISCORD_TOKEN works: the bot is ${bot.name} (${bot.id}).`);
 
     const app = await get<{ flags?: number }>('/applications/@me');
@@ -118,7 +138,7 @@ export async function checkDiscord(
         'its text. Turn it on in the Developer Portal, under Bot, Privileged Gateway Intents.');
     }
 
-    const joined: Array<{ id: string; name: string }> = [];
+    const joined: Array<{ id: string; name: string; owner?: boolean }> = [];
     for (;;) {
       const after = joined.length === 0 ? '' : `&after=${joined[joined.length - 1]!.id}`;
       const page = await get<typeof joined>(`/users/@me/guilds?limit=${GUILD_PAGE}${after}`);
@@ -126,13 +146,13 @@ export async function checkDiscord(
       if (page.length < GUILD_PAGE) break;
     }
     const guilds: Guild[] = [];
-    for (const { id, name } of joined) {
+    for (const { id, name, owner } of joined) {
       const roles = new Map((await get<Array<{ id: string; permissions: string }>>(`/guilds/${id}/roles`))
         .map((r) => [r.id, BigInt(r.permissions)] as const));
       const member = await get<{ roles: string[] }>(`/guilds/${id}/members/${bot.id}`);
       const channels = await get<Channel[]>(`/guilds/${id}/channels`);
       guilds.push({
-        id, name, visible: channels.filter((c) => canView(id, bot.id, roles, member.roles, c)), ids: new Set(channels.map((c) => c.id)),
+        id, name, visible: channels.filter((c) => canView(owner === true, id, bot.id, roles, member.roles, c)), ids: new Set(channels.map((c) => c.id)),
       });
     }
     lines.push(guilds.length === 0
@@ -145,8 +165,7 @@ export async function checkDiscord(
 
     for (const line of scopeLines(env, options.workingDir, guilds, problem)) lines.push(line);
   } catch (error) {
-    if (!(error instanceof DiscordAnswer)) throw error;
-    problem(error.message);
+    problem(error instanceof DiscordAnswer ? error.message : `The Discord check stopped: ${errorText(error)}`);
   }
   return { lines, problems };
 }
@@ -154,7 +173,7 @@ export async function checkDiscord(
 async function whoseToken(
   token: string,
   options: { fetch: typeof fetch; limitMs: number },
-  words: { unchecked: string; again: string; refused: string; source: string },
+  words: { unchecked: string; again: string; reach: string; between: string; refused: string; source: string },
 ): Promise<{ name: string; id: string }> {
   const path = '/users/@me';
   const check = await checkDiscordToken(token, options);
@@ -164,18 +183,25 @@ async function whoseToken(
     case 'unsendable':
       throw new DiscordAnswer('The bot token the server is given as DISCORD_TOKEN holds a character a request header ' +
         `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source}`);
-    case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.again}.`);
+    case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.reach}.`);
+    case 'redirected':
+      throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
+        `with the token, ${words.unchecked}. ${words.between}`);
+    case 'unrecognized':
     case 'answered':
-      if (check.status >= 300 && check.status < 400) {
-        throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
-          `with the token, ${words.unchecked}.`);
+      if (check.kind === 'unrecognized' && (check.status < 200 || check.status >= 300)) {
+        throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path} with something other than JSON, ` +
+          `${check.status === 429 || check.status >= 500 ? words.again : words.unchecked}. ${words.between}`);
       }
-      if (check.status >= 200 && check.status < 300) {
-        throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}.`);
+      if (check.kind === 'unrecognized' || (check.status >= 200 && check.status < 300)) {
+        throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +
+          words.between);
       }
       throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
         (check.said === null ? ', with no message' : `: ${check.said}`) +
-        `, ${check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.`);
+        `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter)
+          : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.` +
+        (check.status === 403 || check.status === 404 ? ` ${words.between}` : ''));
   }
 }
 
@@ -192,7 +218,8 @@ export function mappingRemedy(name: string, envOnly = false): string {
     'whichever then defines it. Then restart the service.';
 }
 
-function canView(guildId: string, botId: string, roles: Map<string, bigint>, botRoles: string[], channel: Channel): boolean {
+function canView(owner: boolean, guildId: string, botId: string, roles: Map<string, bigint>, botRoles: string[], channel: Channel): boolean {
+  if (owner) return true;
   let base = roles.get(guildId) ?? 0n;
   for (const role of botRoles) base |= roles.get(role) ?? 0n;
   if ((base & ADMINISTRATOR) !== 0n) return true;
@@ -231,9 +258,10 @@ function scopeLines(
   let atStart = false;
   if (env.DISCORD_FILTERS_FILE) {
     const path = resolve(workingDir, env.DISCORD_FILTERS_FILE);
-    if (!existsSync(path)) {
+    if (missing(path)) {
       lines.push(`${path} (DISCORD_FILTERS_FILE) isn't there. discord-mcpl writes it from DISCORD_GUILD_ID when it ` +
-        'starts, so that is the scope it starts with.');
+        'starts, so that is the scope it starts with. If a running discord-mcpl had read it, and it was removed since, ' +
+        'the last filters it read stay in force until the file is back.');
       atStart = true;
     } else {
       const read = filtersFromFile(path);
@@ -333,4 +361,14 @@ function filtersFromFile(path: string): Filters | null {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function missing(path: string): boolean {
+  try {
+    statSync(path);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
 }

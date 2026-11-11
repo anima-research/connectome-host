@@ -8,13 +8,14 @@ import {
   KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord, type LauncherOps,
 } from '../update/launcher.js';
 import {
-  COMMAND_WAYS, cliWays, inShellWords, statusLines, type UpdateStatus,
+  COMMAND_WAYS, cliWays, statusLines, type UpdateStatus,
 } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { readServiceRecord, serviceCommand, serviceLines } from './service.js';
+import { serviceCommand, serviceCommands, serviceLines } from './service.js';
 import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup } from './setup.js';
+import { shellCommand } from './shell.js';
 
 export interface CliContext {
   root: string | null;
@@ -45,6 +46,7 @@ export const COMMANDS: CliCommand[] = [
     summary: SETUP_SUMMARY,
     run: (ctx) => setup({ ...ctx, root: ctx.root ?? resolve(ROOT_IN_WORKDIR) }),
   },
+  shellCommand,
   {
     name: 'send',
     usage: 'connectome send <text>',
@@ -223,21 +225,15 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     const shell = host.ready.turnWork !== undefined;
     const typed = typedCommand(root);
     const ways = shell ? cliWays(typed) : COMMAND_WAYS;
-    for (const line of statusLines(update, ways)) ctx.out(`  ${shell ? inShellWords(line, typed) : line}`);
+    for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
   }
   return Math.max(status, service(ctx));
 }
 
 function service(ctx: CliContext): number {
-  let lines: string[] | null;
-  try {
-    lines = serviceLines(ctx.root!);
-  } catch (error) {
-    ctx.err(`connectome: ${errorText(error)}`);
-    return 1;
-  }
+  const lines = serviceLines(ctx.root!);
   if (lines === null) {
-    ctx.out(`No service is recorded for it yet: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
+    ctx.out(`No service is set up for it here: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
   }
   for (const line of lines ?? []) ctx.out(line);
   return 0;
@@ -376,7 +372,7 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
     return 1;
   }
   const typed = typedCommand(ctx.root!);
-  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inShellWords(line, typed)));
+  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(line), typed);
   host.close();
   if (answer.how === 'closed') {
     ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
@@ -385,7 +381,7 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
     return 1;
   }
   if (answer.error !== undefined) {
-    ctx.err(`connectome: the host's update command failed: ${inShellWords(answer.error, typed)}`);
+    ctx.err(`connectome: the host's update command failed: ${answer.error}`);
     return 1;
   }
   if (answer.refused) return 1;
@@ -446,7 +442,7 @@ function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: No
   }
   const typed = typedCommand(root);
   return goBackFromShell(root, choice === 'keep' ? [KEEP_DATA_FLAG] : [],
-    { ...launcher, report: (text) => ctx.err(inShellWords(text, typed)) }, release);
+    { ...launcher, report: (text) => ctx.err(text) }, release, cliWays(typed).back);
 }
 
 function noHost(ctx: CliContext, host: NoHost): number {
@@ -455,14 +451,9 @@ function noHost(ctx: CliContext, host: NoHost): number {
 }
 
 function startHost(root: string, then: string): string {
-  let recorded: boolean;
-  try {
-    recorded = readServiceRecord(root) !== null;
-  } catch (error) {
-    return `${errorText(error).replace(/\.+$/, '')}. Then ${then}.`;
-  }
-  return recorded
-    ? `If no host is running, start it with \`${typedCommand(root)} service start\`, then ${then}.`
+  const start = serviceCommands(root)?.start;
+  return start !== undefined
+    ? `If no host is running, start its service with \`${start}\`, then ${then}.`
     : `If no host is running, have its service start it with \`${startCommand(root)}\`, followed by the arguments it ` +
       `gives the host now, then ${then}.`;
 }
@@ -487,7 +478,7 @@ async function reach(ctx: CliContext): Promise<HostClient | NoHost | null> {
 
 type Answer = { how: 'done'; error?: string; refused?: true } | { how: 'closed' };
 
-async function command(host: HostClient, text: string, print: (line: string) => void): Promise<Answer> {
+async function command(host: HostClient, text: string, print: (line: string) => void, typed?: string): Promise<Answer> {
   host.subscribe([]);
   const corrId = `connectome-command-${process.pid}`;
   const ended = new Promise<Answer>((done) => {
@@ -504,7 +495,9 @@ async function command(host: HostClient, text: string, print: (line: string) => 
     });
     void host.closed.then(() => done({ how: 'closed' }));
   });
-  host.send({ type: 'command', command: text, corrId });
+  // `typed` asks the host to name each update way as this command is typed. A host older than this command ignores it
+  // and answers in its terminal's /update spelling.
+  host.send({ type: 'command', command: text, corrId, ...(typed === undefined ? {} : { typed }) });
   return ended;
 }
 

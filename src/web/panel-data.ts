@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentFramework } from '@animalabs/agent-framework';
+import { audienceOf, residentViewFilter, type AgentFramework } from '@animalabs/agent-framework';
+import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
-import { recipeDigest, recipeModel, resolveProvider, type Recipe } from '../recipe.js';
+import { loadedRecipeDigest, recipeModel, resolveProvider, type Recipe } from '../recipe.js';
 import { anthropicXmlFormatter, xmlToolsInSystem } from '../recipe-formatter.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
@@ -28,6 +29,7 @@ export interface PanelAppRef {
   quotaMeter?: QuotaMeter | null;
   credentials?: CredentialMonitor | null;
   subscriptionUnmetered?: boolean;
+  switching?: boolean;
 }
 
 export const PANEL_OPS = [
@@ -418,6 +420,13 @@ export function applySettingsCancelTransition(app: PanelAppRef, agentName: strin
   fw.cancelAgentRuntimeSettingsTransition(agentName);
 }
 
+/**
+ * The operator's settings notice is written through the settings module's
+ * context for the agent (SettingsModule.noteForAgent), so it is stamped for
+ * that agent and enters its window at the agent's presentation points
+ * (agent-framework #291); a host without the module (SettingsModule is in
+ * every host this one builds) gets no notice.
+ */
 export function notifyAgentOfSettingsChange(
   app: PanelAppRef,
   agentName: string,
@@ -434,8 +443,10 @@ export function notifyAgentOfSettingsChange(
         + (budget !== undefined ? ` — budget ${budget}` : '')
         + (tail !== undefined ? `, tail ${tail}` : '')
         + (transition === 'converging' ? ' (converging gradually)' : '');
-    const cm = app.framework.getAgent(agentName)?.getContextManager();
-    cm?.addMessage('Context Manager', [{ type: 'text', text }], { system: true });
+    const settings = app.framework.getModule('settings') as { noteForAgent?: (agent: string, text: string) => boolean } | null;
+    if (typeof settings?.noteForAgent !== 'function' || !settings.noteForAgent(agentName, text)) {
+      console.warn(`[settings] notify skipped (change still applied): no started settings module to write ${agentName}'s notice through`);
+    }
   } catch (err) {
     console.warn('[settings] notify failed (change still applied):', err);
   }
@@ -457,6 +468,8 @@ export interface PinsSnapshotData {
   levelHonored: boolean;
   deepestLevel?: number;
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 function pinnableCm(app: PanelAppRef, agentName: string): {
@@ -531,49 +544,91 @@ export function buildPinsSnapshot(
     pinsSupported: supported,
     levelHonored,
     ...(deepestLevel !== undefined ? { deepestLevel } : {}),
-    ...(opts.withCandidates ? { candidates: buildPinCandidates(app, agentName) } : {}),
+    ...(opts.withCandidates ? buildPinCandidates(app, agentName) : {}),
   };
 }
 
+/**
+ * A row an undo took out of the agent's window (agent-framework #291,
+ * windowStatusOf 'undone') isn't a pin candidate: the fold plan a pin
+ * constrains is the window's, so a pin on it would hold nothing. Nor is a
+ * row whose audience stamp leaves the agent out (another resident's row on
+ * a shared store, or one a tune-out held from every resident), which never
+ * enters that window. A legacy window (windowMode 'legacy') is the record
+ * through the resident's view, which reads no stamp: there a row is a
+ * candidate when that view keeps it (residentViewFilter: not held traffic,
+ * a suppressed row or another agent's stored injection), another
+ * resident's row included. A row with no stamp (stored before it existed) and a
+ * stored arrival the agent's window doesn't hold yet (status 'out'), which
+ * enters it at the agent's next turn, are candidates. A message stored in
+ * parts (context-manager's shards of one body) is one candidate, as it is one
+ * row in the transcript: its first part's id, with the parts' text joined,
+ * the first part included when the last 200 rows start after it. A pin on
+ * any part of it covers the whole message. A read that fails gives its
+ * reason, not an empty list, so the picker doesn't say there are none.
+ */
 function buildPinCandidates(
   app: PanelAppRef,
   agentName: string,
-): Array<{ id: string; index: number; participant: string; text: string }> {
+): Pick<PinsSnapshotData, 'candidates' | 'candidatesError'> {
   try {
     const agent = app.framework.getAgent(agentName);
     const cm = agent?.getContextManager() as unknown as {
       getMessageCount?: () => number;
       getMessageWindow?: (
-        offset: number, limit: number, opts?: { resolveBlobs?: boolean },
-      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown }>; startIndex: number };
+        offset: number, limit: number, opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
+      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown } & BodyShard>; startIndex: number };
+      windowStatusOf?: (id: string) => string;
+      windowMode?: () => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
-      return [];
+      return { candidates: [] };
     }
+    const legacyView = cm.windowMode?.() === 'legacy' ? residentViewFilter(agentName) : undefined;
     const total = cm.getMessageCount();
     const start = Math.max(0, total - PIN_CANDIDATE_LIMIT);
-    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false });
+    // Rows that start inside a message stored in parts reach back to its
+    // first part, as the transcript's pages do.
+    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false, alignToBodyGroups: true });
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
-    win.messages.forEach((m, i) => {
-      if (!m.id) return;
+    const textOf = (content: unknown): string => {
+      if (typeof content === 'string') return content;
       let text = '';
-      if (Array.isArray(m.content)) {
-        for (const b of m.content as Array<Record<string, unknown>>) {
+      if (Array.isArray(content)) {
+        for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type === 'text') text += String(b.text ?? '');
         }
-      } else if (typeof m.content === 'string') {
-        text = m.content;
+      }
+      return text;
+    };
+    for (let i = 0; i < win.messages.length; i++) {
+      const m = win.messages[i]!;
+      const first = i;
+      // A message stored in parts: they join back with no separator.
+      let text = textOf(m.content);
+      while (i + 1 < win.messages.length && continuesBody(win.messages[i], win.messages[i + 1])) {
+        i++;
+        text += textOf(win.messages[i]!.content);
+      }
+      if (!m.id) continue;
+      if (cm.windowStatusOf?.(String(m.id)) === 'undone') continue;
+      if (legacyView) {
+        if (!legacyView(m as unknown as Parameters<typeof legacyView>[0])) continue;
+      } else {
+        const stamp = audienceOf(m.metadata);
+        if (stamp && !stamp.audience.includes(agentName)) continue;
       }
       out.push({
         id: String(m.id),
-        index: win.startIndex + i,
+        index: win.startIndex + first,
         participant: String(m.participant ?? '?'),
         text: text.slice(0, PIN_CANDIDATE_TEXT_CAP),
       });
-    });
-    return out;
-  } catch {
-    return [];
+    }
+    return { candidates: out };
+  } catch (err) {
+    console.warn(`[pins] couldn't read ${agentName}'s pin candidates:`, err);
+    return { candidatesError: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -854,6 +909,7 @@ export interface ContextCoverageSnapshot {
   queue: {
     inFlight: boolean;
     pending: string | null;
+    waiting: string | null;
     l1: number[];
     merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
   };
@@ -865,6 +921,7 @@ export function buildContextCoverageSnapshot(
     currentBranch: () => { name: string };
     getStrategy: () => unknown;
     getPendingWork?: () => { description?: string } | null;
+    getWaitingWork?: () => { description?: string } | null;
   },
 ): ContextCoverageSnapshot {
   const strategy = cm.getStrategy() as CoverageStrategy;
@@ -919,6 +976,7 @@ export function buildContextCoverageSnapshot(
   });
   const covered = projectedChunks.filter(chunk => chunk.maxLevel > 0);
   const pending = cm.getPendingWork?.()?.description ?? null;
+  const waiting = cm.getWaitingWork?.()?.description ?? null;
 
   return {
     agent: agentName,
@@ -937,6 +995,7 @@ export function buildContextCoverageSnapshot(
     queue: {
       inFlight: strategy.pendingCompression != null,
       pending,
+      waiting,
       l1: [...compressionQueue],
       merges: mergeQueue.map(merge => ({
         targetLevel: merge.level,
@@ -1072,7 +1131,7 @@ function agentCountModel(agent: unknown): string | null {
   return process.env.COUNT_TOKENS_MODEL || anthropicCountModel((agent as { model?: string }).model);
 }
 
-const COUNT_LIMIT_MS = 30_000;
+export const COUNT_LIMIT_MS = 30_000;
 
 async function countTokens(
   app: PanelAppRef,
@@ -1104,10 +1163,11 @@ async function countTokens(
       const source = res.status === 401 && !bearer && !key ? 'count_tokens_no_credential' : `count_tokens_failed_${res.status}`;
       return { tokens: null, source };
     }
-    const j = (await res.json()) as { input_tokens?: number };
-    return { tokens: j.input_tokens ?? null, source: 'count_tokens' };
-  } catch {
-    return { tokens: null, source: 'count_tokens_error' };
+    const j = (await res.json()) as { input_tokens?: unknown } | null;
+    return typeof j?.input_tokens === 'number' ? { tokens: j.input_tokens, source: 'count_tokens' }
+      : { tokens: null, source: 'count_tokens_error' };
+  } catch (error) {
+    return { tokens: null, source: (error as Error | undefined)?.name === 'TimeoutError' ? 'count_tokens_timeout' : 'count_tokens_error' };
   }
 }
 
@@ -1124,6 +1184,8 @@ const COUNT_CHECK_PAYLOAD = { messages: [{ role: 'user', content: 'ping' }] };
 const COUNT_CHECK_MESSAGE: NormalizedMessage = { participant: 'User', content: [{ type: 'text', text: 'ping' }] };
 
 export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS): Promise<CountCheck> {
+  const framework = app.framework;
+  const switchedAtStart = app.switching === true;
   const agentName = resolveAgent(app);
   const agent = requireAgent(app, agentName);
   const model = (agent as { model?: string }).model ?? null;
@@ -1136,7 +1198,7 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
   let sent: CountTokensPayload | { error: string } | null = null;
   if (countModel) {
     try {
-      const request = await app.framework.previewActivation(agentName);
+      const request = await framework.previewActivation(agentName);
       sent = countablePayload(app, agentName, { ...(request as unknown as CountablePreview), messages: [COUNT_CHECK_MESSAGE] });
     } catch (error) {
       sent = { error: error instanceof Error ? error.message : String(error) };
@@ -1147,11 +1209,13 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
     compressionModel === null ? null : count(compressionCountModel),
     sent === null || 'error' in sent ? null : count(countModel, sent),
   ]);
-  const beside: CountCheck['beside'] = sent === null ? unsupported
+  const beside: CountCheck['beside'] = switchedAtStart || app.switching === true || app.framework !== framework
+    ? { tokens: null, source: 'session_switched' }
+    : sent === null ? unsupported
     : 'error' in sent ? { tokens: null, source: 'preview_failed', error: sent.error }
     : withSent!.tokens !== null && ping.tokens !== null ? { tokens: withSent!.tokens - ping.tokens, source: 'count_tokens' }
     : { tokens: null, source: withSent!.source !== 'count_tokens' ? withSent!.source : ping.source };
-  const live = (app.framework as unknown as {
+  const live = (framework as unknown as {
     getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number };
   }).getAgentRuntimeSettings?.(agentName)?.contextBudgetTokens;
   return {
@@ -1160,7 +1224,7 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
       : { model: compressionModel, countModel: compressionCountModel, source: compression!.source },
     beside,
     budget: typeof live === 'number' && live > 0 ? live : null,
-    recipeDigest: recipeDigest(app.recipe),
+    recipeDigest: loadedRecipeDigest(app.recipe),
   };
 }
 
@@ -1170,23 +1234,35 @@ export type ShellCheckRow =
 
 export interface ShellCheck {
   shells: ShellCheckRow[];
+  unchecked: string[];
   notConnected: Array<{ id: string; retrying: boolean; refused: string | null }>;
   closedTabs: string[];
 }
 
 export async function buildShellCheck(app: PanelAppRef): Promise<ShellCheck> {
+  const framework = app.framework;
   const agentName = resolveAgent(app);
-  const servers = app.framework.listMcplServers();
+  const servers = framework.listMcplServers();
   const shells: ShellCheckRow[] = [];
+  const unchecked: string[] = [];
+  const switched = (): boolean => app.switching === true || app.framework !== framework;
   for (const server of servers) {
     const tool = server.toolClasses.find((t) => t.serverTool === 'listSessions');
     if (!tool) continue;
-    const result = await app.framework.executeToolCall({
+    if (switched()) {
+      unchecked.push(server.id);
+      continue;
+    }
+    const result = await framework.executeToolCall({
       id: `shell-check-${randomUUID()}`,
       name: tool.tool,
       input: {},
       callerAgentName: agentName,
     });
+    if (!result.success && switched()) {
+      unchecked.push(server.id);
+      continue;
+    }
     shells.push(result.success
       ? { server: server.id, answered: true, sessions: sessionCount(result.data) }
       : { server: server.id, answered: false, error: result.error ?? '' });
@@ -1194,6 +1270,7 @@ export async function buildShellCheck(app: PanelAppRef): Promise<ShellCheck> {
   const unopenedTab = (s: (typeof servers)[number]): boolean => s.closedTab && s.refused === null;
   return {
     shells,
+    unchecked,
     notConnected: servers.filter((s) => !s.connected && !unopenedTab(s))
       .map((s) => ({ id: s.id, retrying: s.retrying, refused: s.refused })),
     closedTabs: servers.filter((s) => !s.connected && unopenedTab(s)).map((s) => s.id),

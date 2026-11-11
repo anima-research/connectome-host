@@ -153,12 +153,6 @@ function unwritableDirectory(dirs: string[]): string | null {
 
 export class LockHeld extends ContractError {}
 
-/** Whether a lock's holder still runs: its pid is alive on this boot, or on a boot neither side can name. */
-export function lockLive(holder: LockRecord, ops: LauncherOps): boolean {
-  const bootId = ops.bootId();
-  return ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId);
-}
-
 export function takeLock(root: string, ops: LauncherOps): void {
   const { lock } = installPaths(root);
   const bootId = ops.bootId();
@@ -181,14 +175,11 @@ export function takeLock(root: string, ops: LauncherOps): void {
         syncPath(dirname(lock));
         return;
       }
-      if (lockLive(holder, ops)) {
+      if (ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId)) {
         throw new LockHeld(
           `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
-          'An install runs one host at a time. If that process is this install\'s host, stop it first. If this ' +
-          'install is a copy, made while another install\'s host ran, the lock came with the copy: run setup here ' +
-          'first, which binds the copy to its own places and removes a lock it can show came with it, and then ' +
-          'remove the lock file if it\'s still there. If it\'s something else that reused the number, remove the ' +
-          'lock file.',
+          'An install runs one host at a time. If that process is this install\'s host, stop it first; if it\'s ' +
+          'something else that reused the number, remove the lock file.',
         );
       }
       if (attempt > 0) {
@@ -1107,9 +1098,11 @@ export function shellWord(word: string): string {
 }
 
 /**
- * `start.js --go-back [--keep-data]`, run from a shell: ask the next start to
- * go back, for an operator whose host doesn't stay up to ask it, as when the
- * release it committed keeps exiting. Returns the exit status.
+ * Ask the next start to go back, from a shell, for an operator whose host
+ * doesn't stay up to ask it, as when the release it committed keeps exiting.
+ * Two callers run it: `start.js --go-back [--keep-data]` (GO_BACK_FLAG, in
+ * `launch`), and the install's `connectome update back keep|restore` when no
+ * host answers (`backWithNoHost`). Returns the exit status.
  *
  * It waits up to GO_BACK_LOCK_WAIT_MS for the install's lock, which the
  * install's host holds while it runs. A host that keeps exiting gives it up
@@ -1117,10 +1110,12 @@ export function shellWord(word: string): string {
  * that a Go back is offered, to `expected` when that's given, and that no
  * request is under way, writes the mark, and gives the lock up: the
  * service's next start goes back. A host that holds the lock the whole time
- * is up, so its own Go back, which
- * quiesces first, is the way.
+ * is up, so its own Go back, which quiesces first, is the way. `back` is how
+ * this caller's reader asks that host: `/update back` by default, and the
+ * install's typed command for `connectome update back`.
  */
-export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string): number {
+export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string,
+  back = '/update back'): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
   if (unknown.length > 0) {
     ops.report(`[update] ${GO_BACK_FLAG} takes only ${KEEP_DATA_FLAG}, and was given ${unknown.join(' ')}. Nothing ` +
@@ -1140,7 +1135,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
       }
       if (ops.now().getTime() >= until) {
         ops.report(`[update] Nothing was asked for: this install's lock has been held for the last ` +
-          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`/update back\`, ` +
+          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`${back}\`, ` +
           'which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
         return 1;
       }
@@ -1191,7 +1186,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
   }
 }
 
-export function releaseLock(root: string): void {
+function releaseLock(root: string): void {
   const { lock } = installPaths(root);
   try {
     if (readRecord<LockRecord>(lock, 'lock')?.pid === process.pid) rmSync(lock, { force: true });

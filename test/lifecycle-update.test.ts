@@ -213,20 +213,20 @@ test('the update tool is listed only when its grant is on, beside the restart to
   expect(names({ selfRestart: true, selfUpdate: true })).toEqual(['restart', 'update']);
 });
 
+const CONTRACT = ['`CONNECTOME_SUPERVISED=1`', 'when it exits with 75 and when it exits with 1',
+  '`connectome service install` writes such a service', 'docs/DEPLOYMENTS.md, "Updating an install"', 'Asking again'];
 for (const [what, options, says] of [
-  ['without CONNECTOME_SUPERVISED=1 at its start', { supervisedLine: false }, ['Ask whoever runs your host for a service that ' +
-    'starts it again when it stops, such as one `connectome service install` writes; docs/DEPLOYMENTS.md says what one needs.']],
-  ['run in a terminal, whatever its environment', { mode: 'terminal' as const }, ['terminal', 'headless']],
+  ['without CONNECTOME_SUPERVISED=1 at its start', { supervisedLine: false }, ['Ask whoever runs your host']],
+  ['run in a terminal, whatever its environment', { mode: 'terminal' as const }, ['runs in a terminal, not headless']],
 ] as const) {
-  test(`on a host ${what}, restart and back refuse, saying what a restart needs and that asking again won't help, and arm nothing`, async () => {
+  test(`on a host ${what}, restart and back refuse, naming the line and both restarts a restart needs, that asking again won't help, and arm nothing`, async () => {
     const { root, dataDir } = installRunning0141(['0.15.0']);
     placeCopyOf0140(root, dataDir);
     const host = residentHost({ root, ...options });
     for (const input of [{ action: 'restart' }, { action: 'back', data: 'keep' }]) {
       const answer = await host.call(input);
       expect(answer.success).toBe(false);
-      for (const words of [...says, 'connectome service install', 'Asking again']) expect(text(answer)).toContain(words);
-      expect(text(answer)).not.toContain('exits with');
+      for (const words of [...says, ...CONTRACT]) expect(text(answer)).toContain(words);
     }
     expect(host.update.armedSwitch()).toBeNull();
     expect(text(await host.call({ action: 'check' }))).not.toContain('armed');
@@ -234,57 +234,82 @@ for (const [what, options, says] of [
   });
 }
 
-test('on a headless host, the update tool says so, and names for each action the person\'s connectome update, typed in a shell', () => {
+const toolDescription = (host: ReturnType<typeof residentHost>): string =>
+  (host.module.getTools().find((tool) => tool.name === 'update')?.description ?? '').replace(/\s+/g, ' ');
+
+const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs as: check is `connectome update check`, ' +
+  'install is `connectome update install`, restart is `connectome update restart`, and back is `connectome update back`, ' +
+  'then `connectome update back keep` or `connectome update back restore`. Their restart and back begin at once, ' +
+  'without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, ' +
+  'their command says who is still busy and how to wait longer, stop now or call it off. notes and cancel have no ' +
+  'command of theirs: their check gives them a link to the notes, and only your cancel disarms a restart or Go back you asked for, though their own restart or back ' +
+  'goes ahead in its place.';
+
+for (const [kind, options] of [
+  ['headless with an install', {}],
+  ['headless with no install of its own', { root: null }],
+  ['run in a terminal', { mode: 'terminal' as const }],
+] as const) {
+  test(`on a host ${kind}, the update tool's description holds what choosing an action needs, in at most 1,600 characters`, () => {
+    const root = 'root' in options ? null : installRunning0141(['0.15.0']).root;
+    const description = toolDescription(residentHost({ ...options, root }));
+    expect(description.length).toBeLessThanOrEqual(1_600);
+    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:', 'so you lose nothing',
+      'set aside, not deleted', '`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
+      'The person who runs your host can\'t call this tool']) {
+      expect(description).toContain(words);
+    }
+    for (const words of ['SIGKILL', '2 min', 'operator\'s work or credential action']) expect(description).not.toContain(words);
+  });
+}
+
+test('on a headless host, the update tool names the person\'s own command, and check says how they type each action and what theirs do', async () => {
   const { root } = installRunning0141(['0.15.0']);
-  const description = residentHost({ root }).module.getTools().find((tool) => tool.name === 'update')?.description ?? '';
-  expect(description.replace(/\s+/g, ' ')).toContain('The person who runs your install can\'t call this tool, so ' +
-    'never give them its name or an action of it to type. This host runs headless, so their own command for ' +
-    'each is typed in a shell, as the user your host runs as: check is `connectome update check`, install is ' +
-    '`connectome update install`, restart is `connectome update restart`, and back is `connectome update back`, ' +
-    'then `connectome update back keep` or `connectome update back restore`. Their restart and back begin at ' +
-    'once, without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, ' +
-    'and if any don\'t, their command says who is still busy and how to wait longer, stop now or call it off. ' +
-    'notes and cancel have no command of theirs: check gives them a link to the notes, and only your cancel ' +
-    'disarms a restart or Go back you armed, though their own restart or back goes ahead in its place.');
-  expect(description).not.toContain('/update');
-  expect(description.replace(/\s+/g, ' ')).toContain('If the host stops for any other reason first, nothing stays ' +
-    'armed, and from its next start check says the restart didn\'t go ahead, with that stop as the reason, though a ' +
-    'crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it.');
+  const host = residentHost({ root });
+  expect(toolDescription(host)).toContain('so never give them its name to type: their own command is `connectome update`, ' +
+    'typed in a shell, and check says how they use it.');
+  expect(toolDescription(host)).not.toContain('/update');
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain(`The person who runs your host updates it with their own command, not this tool. ${HEADLESS_COMMANDS}`);
+  expect(check).not.toContain('/update');
 });
 
-test('on a headless host with no install of its own, the update tool names no command of the person\'s, and says how such a host is updated', () => {
-  const description = residentHost({ root: null }).module.getTools().find((tool) => tool.name === 'update')?.description ?? '';
-  expect(description.replace(/\s+/g, ' ')).toContain('This host runs headless with no install of its own, so it has no ' +
-    'command of theirs to update it: a fleet child is updated with its parent\'s install where its parent has one, and ' +
-    'any other host by hand');
-  expect(description).not.toContain('connectome update');
+test('on a headless host with no install of its own, the update tool names no command of the person\'s, and check says how such a host is updated', async () => {
+  const host = residentHost({ root: null });
+  expect(toolDescription(host)).toContain('This host has no command of theirs to update it: check says how it\'s updated.');
+  expect(toolDescription(host)).not.toContain('connectome update');
+  expect(text(await host.call({ action: 'check' }))).toContain('This host runs headless with no install of its own, so it ' +
+    'has no command of theirs to update it: a fleet child is updated with its parent\'s install where its parent has one, ' +
+    'and any other host by hand (docs/DEPLOYMENTS.md, "Updating an install"), and your restart and back refuse here, ' +
+    'saying so.');
 });
 
-test('on a host run in a terminal, the update tool says so, and names for each action the person\'s /update, typed there', () => {
+test('on a host run in a terminal, the update tool names the person\'s /update, and check says how they type each action there and what theirs do', async () => {
   const { root } = installRunning0141(['0.15.0']);
-  const description = residentHost({ root, mode: 'terminal' }).module.getTools().find((tool) => tool.name === 'update')
-    ?.description ?? '';
-  expect(description.replace(/\s+/g, ' ')).toContain('The person who runs your install can\'t call this tool, so ' +
-    'never give them its name or an action of it to type. This host runs in a terminal, so their own command ' +
-    'for each is typed there: check is `/update check`, install is `/update install`, restart is `/update ' +
-    'restart`, and back is `/update back`, then `/update back keep` or `/update back restore`. `connectome ' +
-    'update` in another shell doesn\'t reach this host. Their restart and back begin at once, without waiting ' +
-    'for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, its ' +
-    'answer says who is still busy and how to wait longer, stop now or call it off. Once it stops, they start ' +
-    'the host again themselves, and that start switches. notes and cancel have no command of theirs: check ' +
-    'gives them a link to the notes, and only your cancel disarms a restart or Go back you armed, though their ' +
-    'own restart or back goes ahead in its place.');
-  expect(description).not.toContain('connectome update check');
+  const host = residentHost({ root, mode: 'terminal' });
+  expect(toolDescription(host)).toContain('so never give them its name to type: their own command is `/update`, typed in the ' +
+    'host\'s terminal, and check says how they use it.');
+  expect(toolDescription(host)).not.toContain('connectome update');
+  expect(text(await host.call({ action: 'check' }))).toContain('The person who runs your host updates it with their own ' +
+    'command, not this tool. They type it in the host\'s terminal: check is `/update check`, install is `/update install`, ' +
+    'restart is `/update restart`, and back is `/update back`, then `/update back keep` or `/update back restore`. ' +
+    '`connectome update` in another shell doesn\'t reach this host. Their restart and back begin at once, without waiting ' +
+    'for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, its answer says ' +
+    'who is still busy and how to wait longer, stop now or call it off. Once it stops, they start the host again ' +
+    'themselves, and that start switches. notes and cancel have no command of theirs: their check gives them a link ' +
+    'to the notes, and only your cancel disarms a ' +
+    'restart or Go back you asked for, though their own restart or back goes ahead in its place.');
 });
 
-test('on a host started from an install, the update tool names the person\'s commands by the install\'s own command', async () => {
+test('on a host started from an install, the update tool and check name the person\'s commands by the install\'s own command', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const typed = shellWord('/opt/x y/connectome');
   const host = residentHost({ root, holders: ['alice'], installCommand: typed });
-  const description = host.module.getTools().find((tool) => tool.name === 'update')?.description.replace(/\s+/g, ' ') ?? '';
-  expect(description).toContain(`check is \`${typed} update check\`, install is \`${typed} update install\``);
-  expect(description).not.toContain('`connectome update');
-  expect(description).not.toContain('as setup printed it');
+  expect(toolDescription(host)).toContain(`their own command is \`${typed} update\``);
+  expect(toolDescription(host)).not.toContain('`connectome update');
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain(`check is \`${typed} update check\`, install is \`${typed} update install\``);
+  expect(check).not.toContain('`connectome update');
   await host.update.restartToInstalled();
   expect(text(await host.call({ action: 'check' }))).toContain(`the person's ${typed} update restart wait, the person's ` +
     `${typed} update restart now or the person's ${typed} update restart resume.`);
@@ -303,7 +328,7 @@ test('when the newest release needs a newer Bun, the update tool says the person
   expect(text(await host.call({ action: 'check' }))).toContain('0.15.0 needs Bun >=1.5.0: the person who runs your host ' +
     'upgrades Bun first, and lifecycle--update install installs nothing until then.');
   expect((await host.update.install()).lines.join('\n')).toContain('so nothing was installed. Upgrade Bun (`bun upgrade`, ' +
-    'or the package manager that installed it), start the host again, then Update.');
+    'or the package manager that installed it), start the host again, then /update install.');
 });
 
 test('on a host with no install, the update tool says nothing the agent calls changes that, where /update tells the person how', async () => {
@@ -334,10 +359,11 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(true);
   for (const words of ['0.15.0', 'quiet', QUIET, 'cancel', 'check', RETRY]) expect(text(answer)).toContain(words);
-  for (const words of [QUIET, RETRY]) {
-    expect(host.module.getTools().find((tool) => tool.name === 'update')?.description.replace(/\s+/g, ' '))
-      .toContain(words);
-  }
+  expect(text(answer)).toContain('If the host stops for any other reason first, nothing stays armed, and from its next ' +
+    'start check says the restart didn\'t go ahead, with that stop as the reason, though a crash, a forced kill (SIGKILL) ' +
+    'or a record the host can\'t write leaves no word of it. An operator\'s own Restart or Go back also takes its place.');
+  expect(toolDescription(host)).toContain('first quiet moment');
+  for (const words of [QUIET, RETRY, 'SIGKILL']) expect(toolDescription(host)).not.toContain(words);
   expect(host.stops).toEqual([]);
   expect(readMark(root)).toBeNull();
   const check = text(await host.call({ action: 'check' }));
@@ -610,7 +636,7 @@ test('a child that doesn\'t take its resume after a try is named, in the try\'s 
     expect(said).not.toContain('so the switch\'s quiesce ended');
     expect(said).toContain('kid');
   }
-  expect(check).toContain('An operator\'s connectome update restart resume ends it');
+  expect(check).toContain(`An operator's ${shellWord(join(root, 'connectome'))} update restart resume ends it`);
   expect(check).not.toContain('/update');
 });
 

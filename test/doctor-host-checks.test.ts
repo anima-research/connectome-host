@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
@@ -12,6 +12,7 @@ import { buildCountCheck, buildShellCheck, type PanelAppRef } from '../src/web/p
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = join(resolve(TEST_DIR, '..'), 'src', 'index.ts');
+const LADDER = join(resolve(TEST_DIR, '..'), 'scripts', 'connectome-doctor');
 
 // Shaped like terminal-sessions-mcp 1.7.3 as it answered when probed:
 // `listSessions` answers its sessions as JSON text, and with a missing or
@@ -64,6 +65,20 @@ function lineReader(socket: Socket): Array<Record<string, unknown>> {
   return events;
 }
 
+// As journald keeps a unit's output: each line of either stream, stamped with when it came.
+function journalOf(stream: NodeJS.ReadableStream, path: string, pid: number): void {
+  let buf = '';
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk: string) => {
+    buf += chunk;
+    let i: number;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      appendFileSync(path, `${(Date.now() / 1000).toFixed(6)} host bun[${pid}]: ${buf.slice(0, i)}\n`);
+      buf = buf.slice(i + 1);
+    }
+  });
+}
+
 async function waitFor(check: () => boolean, timeoutMs: number, label: string): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -80,6 +95,8 @@ describe('doctor host checks over the socket', () => {
   let events: Array<Record<string, unknown>>;
   let countServer: ReturnType<typeof Bun.serve>;
   let recipePath: string;
+  let journalPath: string;
+  let started: number;
   const countedModels: string[] = [];
   const countedBodies: Array<{ model?: string; system?: unknown; tools?: unknown[]; messages?: unknown[] }> = [];
   let seq = 0;
@@ -139,7 +156,12 @@ describe('doctor host checks over the socket', () => {
     };
     delete env.COUNT_TOKENS_MODEL;
     delete env.MODEL;
-    child = spawn('bun', [INDEX_PATH, recipePath, '--headless'], { cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'] });
+    journalPath = join(dir, 'journal.txt');
+    writeFileSync(journalPath, '');
+    started = Math.floor(Date.now() / 1000);
+    child = spawn('bun', [INDEX_PATH, recipePath, '--headless'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    journalOf(child.stdout!, journalPath, child.pid!);
+    journalOf(child.stderr!, journalPath, child.pid!);
     const socketPath = join(dir, 'ipc.sock');
     await waitFor(() => existsSync(socketPath), 20_000, 'socket file appears');
     sock = await connectWhenAccepting(socketPath);
@@ -159,13 +181,13 @@ describe('doctor host checks over the socket', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('shell-check calls listSessions with no arguments on each connected server that offers it, leaves the agent\'s context as it was, and names those not connected, with whether the host still retries them', async () => {
+  test('shell-check calls listSessions with no arguments on each connected server that offers it, leaves the agent\'s next request as it was, whole, and names those not connected, with whether the host still retries them', async () => {
     const live = async () => ((await panel('mcpl')).data as { live: Array<{ id: string; connected: boolean }> }).live;
     for (let i = 0; i < 100 && (await live()).find((s) => s.id === 'dying')?.connected !== false; i++) {
       await new Promise((r) => setTimeout(r, 100));
     }
     expect((await live()).find((s) => s.id === 'dying')?.connected).toBe(false);
-    const nextRequest = async () => ((await panel('debug-context')).data as { request: { messages: unknown } }).request.messages;
+    const nextRequest = async () => ((await panel('debug-context')).data as { request: unknown }).request;
     const seed = 'a message from before the shell check';
     const idles = events.filter((e) => e.type === 'lifecycle' && e.phase === 'idle').length;
     sock.write(JSON.stringify({ type: 'text', content: seed }) + '\n');
@@ -236,6 +258,48 @@ describe('doctor host checks over the socket', () => {
     };
     expect((data as { recipeDigest?: unknown }).recipeDigest).toBe(recipeDigest((await loadRecipeDetailed(recipePath)).recipe));
   }, 30_000);
+
+  test('the ladder reads this host\'s own gate dump from its journal, with the gate and active streams it reads', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'chost-doctor-ladder-'));
+    const bins = join(work, 'bin');
+    mkdirSync(bins);
+    mkdirSync(join(work, 'logs'));
+    writeFileSync(join(work, 'unit.txt'), '');
+    const tool = (name: string, lines: string[]): void => {
+      writeFileSync(join(bins, name), ['#!/bin/sh', ...lines, ''].join('\n'));
+      chmodSync(join(bins, name), 0o755);
+    };
+    const startStamp = new Date(started * 1000).toUTCString().replace('GMT', 'UTC');
+    tool('systemctl', [
+      'case "$*" in',
+      `  *FragmentPath*) echo ${join(work, 'unit.txt')} ;;`,
+      `  *--value*) echo ${child.pid} ;;`,
+      `  *) printf "ActiveState=active\\nSubState=running\\nNRestarts=0\\nExecMainStartTimestamp=${startStamp}\\nMainPID=${child.pid}\\n" ;;`,
+      'esac',
+    ]);
+    tool('journalctl', [
+      'unit="--user -u connectome-test.service"',
+      'case "$*" in',
+      `  "$unit -q --no-pager -n 1 -o short-unix") tail -n 1 ${journalPath} ;;`,
+      `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") awk -v since="\${7#@}" '$1 + 0 >= since' ${journalPath} | grep -P -- "$9" ;;`,
+      `  "$unit -o cat --no-pager --since @"*) awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journalPath} ;;`,
+      '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
+      'esac',
+    ]);
+    const ladder = spawn('python3', [LADDER, '--data-dir', dir, work, 'connectome-test.service'], {
+      env: { ...process.env, PATH: `${bins}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    ladder.stdout!.on('data', (chunk) => { out += chunk; });
+    ladder.stderr!.on('data', (chunk) => { out += chunk; });
+    await new Promise<void>((done) => ladder.once('close', () => done()));
+    rmSync(work, { recursive: true, force: true });
+    const said = out.split('\n').find((line) => line.startsWith('live gate dump'));
+    expect(said ?? out).toStartWith('live gate dump (SIGUSR2): {');
+    const dump = JSON.parse(said!.slice(said!.indexOf('{'))) as Record<string, unknown>;
+    expect({ gate: 'gate' in dump ? dump.gate : 'missing', activeStreams: Array.isArray(dump.activeStreams) })
+      .toEqual({ gate: null, activeStreams: true });
+    expect({ exitCode: child.exitCode, signalCode: child.signalCode }).toEqual({ exitCode: null, signalCode: null });
+  }, 30_000);
 });
 
 describe('count-check, with a stand-in for the framework', () => {
@@ -252,6 +316,27 @@ describe('count-check, with a stand-in for the framework', () => {
     }
   };
   afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+
+  test('the recipe\'s digest is the one taken as it loaded, so a config changed after the load, as an extension\'s register can, leaves it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chost-digest-'));
+    try {
+      const path = join(dir, 'recipe.json');
+      writeFileSync(path, JSON.stringify({ name: 'r', agent: { name: 'resident', model: 'claude-agent-test', systemPrompt: 'hello', strategy: { type: 'passthrough' } } }));
+      const { loadRecipeDetailed, recipeDigest } = await import('../src/recipe.js');
+      const { recipe } = await loadRecipeDetailed(path, { fetchSystemPrompt: false });
+      const atLoad = recipeDigest(recipe);
+      (recipe.agent.strategy as unknown as Record<string, unknown>).filledAfterLoad = true;
+      expect(recipeDigest(recipe)).not.toBe(atLoad);
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' });
+      const check = await buildCountCheck({
+        recipe,
+        framework: { getAgent: () => ({ model: 'claude-agent-test' }), getAllAgents: () => [{ name: 'resident' }] } as unknown as PanelAppRef['framework'],
+      }, 300);
+      expect(check.recipeDigest).toBe(atLoad);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('an empty compressionModel is reported as that model, not as a strategy with no compression, and only the agent\'s model is counted', async () => {
     const seen: string[] = [];
@@ -349,14 +434,14 @@ describe('count-check, with a stand-in for the framework', () => {
     }
   });
 
-  test('a count that doesn\'t answer within its limit is reported as failed when the limit runs out', async () => {
+  test('a count that doesn\'t answer within its limit is reported as timed out when the limit runs out', async () => {
     let asked = 0;
     const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => { asked += 1; return new Promise<Response>(() => undefined); } });
     try {
       setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
       const check = await buildCountCheck(appWith('claude-agent-test', { type: 'passthrough' }), 300);
       expect(asked).toBe(1);
-      expect(check.agent.source).toBe('count_tokens_error');
+      expect(check.agent.source).toBe('count_tokens_timeout');
     } finally {
       server.stop(true);
     }
@@ -520,5 +605,175 @@ describe('compressionModelOf', () => {
   test('passthrough and an extension\'s strategy have no compression model the host chooses', () => {
     expect(compressionModelOf(withStrategy({ type: 'passthrough', compressionModel: 'claude-c' }), 'claude-x')).toBeNull();
     expect(compressionModelOf(withStrategy({ type: 'my-ext', compressionModel: 'claude-c' }), 'claude-x')).toBeNull();
+  });
+});
+
+describe('count-check, in the round on the review of 4a79597ff', () => {
+  const appWith = (): PanelAppRef => ({
+    recipe: { name: 'r', agent: { name: 'resident', systemPrompt: '', strategy: { type: 'autobiographical', compressionModel: 'claude-compress-test' } } } as unknown as Recipe,
+    framework: {
+      getAgent: () => ({ model: 'claude-agent-test' }),
+      getAllAgents: () => [{ name: 'resident' }],
+      previewActivation: async () => ({ system: '', tools: [], messages: [{ participant: 'Ann', content: [{ type: 'text', text: 'hi' }] }] }),
+      getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456 }),
+    } as unknown as PanelAppRef['framework'],
+  });
+  const saved: Record<string, string | undefined> = {};
+  const setEnv = (values: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(values)) {
+      if (!(k in saved)) saved[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+
+  test('a count answered 200 with no input_tokens is no count: each source says it failed, and nothing reads as counted', async () => {
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(req) { await req.text(); return Response.json({}); } });
+    try {
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
+      const check = await buildCountCheck(appWith(), 2_000);
+      expect([check.agent.source, check.compression?.source, check.beside]).toEqual(
+        ['count_tokens_error', 'count_tokens_error', { tokens: null, source: 'count_tokens_error' }]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('a session switched while the counts were asked is said as that, not counted against the new session', async () => {
+    const app = appWith();
+    const next = { ...app.framework } as PanelAppRef['framework'];
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        await req.text();
+        app.framework = next;
+        return Response.json({ input_tokens: 10 });
+      },
+    });
+    try {
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
+      const check = await buildCountCheck(app, 2_000);
+      expect(check.beside).toEqual({ tokens: null, source: 'session_switched' });
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe('count-check and shell-check, in the round on the review of e9bb852cc', () => {
+  const server = (id: string) => ({
+    id, connected: true, closedTab: false, refused: null, retrying: false,
+    toolClasses: [{ serverTool: 'listSessions', tool: `${id}--listSessions` }],
+  });
+  const frameworkFor = (calls: string[], label: string, then?: () => void) => ({
+    getAgent: () => ({ model: 'claude-agent-test' }),
+    getAllAgents: () => [{ name: 'resident' }],
+    previewActivation: async () => ({ system: '', tools: [], messages: [{ participant: 'Ann', content: [{ type: 'text', text: 'hi' }] }] }),
+    getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456 }),
+    listMcplServers: () => [server('one'), server('two')],
+    executeToolCall: async (call: { name: string }) => {
+      calls.push(`${label}:${call.name}`);
+      then?.();
+      return { success: true, data: 'no sessions' };
+    },
+  }) as unknown as PanelAppRef['framework'];
+  const appFor = (framework: PanelAppRef['framework']): PanelAppRef & { switching?: boolean } => ({
+    recipe: { name: 'r', agent: { name: 'resident', systemPrompt: '', strategy: { type: 'passthrough' } } } as unknown as Recipe,
+    framework,
+  });
+
+  test('a count that comes in while the host is switching sessions is said as that, not counted for the session it\'s leaving', async () => {
+    const app = appFor(frameworkFor([], 'first'));
+    const saved = { key: process.env.ANTHROPIC_API_KEY, base: process.env.ANTHROPIC_BASE_URL, model: process.env.COUNT_TOKENS_MODEL, token: process.env.ANTHROPIC_AUTH_TOKEN };
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        await req.text();
+        app.switching = true;
+        return Response.json({ input_tokens: 10 });
+      },
+    });
+    try {
+      process.env.ANTHROPIC_API_KEY = 'sk-count-test';
+      process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.port}`;
+      delete process.env.COUNT_TOKENS_MODEL;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      const check = await buildCountCheck(app, 2_000);
+      expect(check.beside).toEqual({ tokens: null, source: 'session_switched' });
+    } finally {
+      server.stop(true);
+      for (const [name, value] of [['ANTHROPIC_API_KEY', saved.key], ['ANTHROPIC_BASE_URL', saved.base],
+        ['COUNT_TOKENS_MODEL', saved.model], ['ANTHROPIC_AUTH_TOKEN', saved.token]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test('a count that starts while a session switch is under way is said as switched, though the switch ends before the counts answer', async () => {
+    const app = appFor(frameworkFor([], 'first'));
+    app.switching = true;
+    const saved = { key: process.env.ANTHROPIC_API_KEY, base: process.env.ANTHROPIC_BASE_URL, model: process.env.COUNT_TOKENS_MODEL, token: process.env.ANTHROPIC_AUTH_TOKEN };
+    let asked = 0;
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        await req.text();
+        asked += 1;
+        app.switching = false;
+        return Response.json({ input_tokens: 10 });
+      },
+    });
+    try {
+      process.env.ANTHROPIC_API_KEY = 'sk-count-test';
+      process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.port}`;
+      delete process.env.COUNT_TOKENS_MODEL;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      const check = await buildCountCheck(app, 2_000);
+      expect(asked).toBe(2);
+      expect(check.beside).toEqual({ tokens: null, source: 'session_switched' });
+    } finally {
+      server.stop(true);
+      for (const [name, value] of [['ANTHROPIC_API_KEY', saved.key], ['ANTHROPIC_BASE_URL', saved.base],
+        ['COUNT_TOKENS_MODEL', saved.model], ['ANTHROPIC_AUTH_TOKEN', saved.token]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test('shell-check makes no call once the session has switched, keeps the answer it had, and names each server after the switch as unchecked', async () => {
+    const calls: string[] = [];
+    const next = frameworkFor(calls, 'next');
+    const app = appFor(frameworkFor(calls, 'first', () => { app.framework = next; }));
+    const check = await buildShellCheck(app);
+    expect(calls).toEqual(['first:one--listSessions']);
+    expect({ shells: check.shells.map((row) => row.server), unchecked: check.unchecked }).toEqual({ shells: ['one'], unchecked: ['two'] });
+  });
+
+  test('shell-check makes no call while a session switch is under way, and names every server as unchecked', async () => {
+    const calls: string[] = [];
+    const app = appFor(frameworkFor(calls, 'first'));
+    app.switching = true;
+    const check = await buildShellCheck(app);
+    expect(calls).toEqual([]);
+    expect({ shells: check.shells, unchecked: check.unchecked }).toEqual({ shells: [], unchecked: ['one', 'two'] });
+  });
+
+  test('a call that fails as the host switches sessions names its server as unchecked, not as a server whose call failed', async () => {
+    const calls: string[] = [];
+    const app = appFor(frameworkFor(calls, 'first'));
+    (app.framework as unknown as { executeToolCall: (call: { name: string }) => Promise<unknown> }).executeToolCall = async (call) => {
+      calls.push(`first:${call.name}`);
+      app.switching = true;
+      return { success: false, error: 'Connection closed' };
+    };
+    const check = await buildShellCheck(app);
+    expect(calls).toEqual(['first:one--listSessions']);
+    expect({ shells: check.shells, unchecked: check.unchecked }).toEqual({ shells: [], unchecked: ['one', 'two'] });
   });
 });

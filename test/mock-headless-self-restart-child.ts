@@ -9,7 +9,7 @@ import { join } from 'node:path';
 const MODES = ['self-restart', 'sigterm-first', 'exit-when-idle', 'held', 'cancel-in-wait', 'arm-after-idle', 'late-arm-gap', 'unseen-turn',
   'quiet-exit', 'quiet-idle', 'text-exit'];
 const HOLDS = ['turn', 'gated', 'parked', 'script', 'late-script', 'script-until-released', 'queue', 'subagent-active', 'subagent-queued', 'subagent-streaming', 'wake-gap',
-  'command', 'credential'];
+  'command', 'credential', 'shell-check'];
 const TURN_WORK = ['turn', 'gated', 'parked', 'queue', 'wake-gap'];
 const mode = process.argv[2];
 if (!MODES.includes(mode)) throw new Error('Unknown self-restart fixture mode');
@@ -243,6 +243,14 @@ const framework = (agents: Array<{ name: string; state: { status: string } }> = 
       };
     },
     getQueueDepth: () => (holding('queue') ? 1 : 0),
+    listMcplServers: () => hold === 'shell-check'
+      ? [{ id: 'shell', connected: true, closedTab: false, refused: null, retrying: false,
+          toolClasses: [{ serverTool: 'listSessions', tool: 'shell--listSessions' }] }]
+      : [],
+    executeToolCall: async () => {
+      await operatorWorkSettles();
+      return { success: true, data: 'no sessions' };
+    },
     pushEvent,
     getAllModules: () => hold?.startsWith('subagent') || hold === 'wake-gap'
       ? [{
@@ -278,7 +286,7 @@ const app: {
 if (mode === 'quiet-idle') {
   whenWritten('speak', () => {
     trace({ type: 'inference:started', agentName: app.agentName });
-    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.' });
+    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.', blockType: 'text', blockIndex: 0 });
     trace({ type: 'inference:completed', agentName: app.agentName });
   });
 }

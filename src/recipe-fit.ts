@@ -212,7 +212,8 @@ const AT_AN_END = 'At an end of a named range, the compile can have no room left
   'fails once its conversation fills the compile.';
 
 const AT_AN_END_COUNTED = 'At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
-  'with the system prompt and tools as counted, can fill the window, leaving nothing for what modules add at each turn.';
+  'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
+  'each turn.';
 
 function full(f: Fit): boolean {
   const budget = budgetOf(f);
@@ -295,7 +296,7 @@ function waysOut(f: Fit, problem: Problem): { floor: string; ways: string[]; atA
     const budgetMoves = f.budget === undefined && f.window - f.system - TOOLS_ROOM_TOKENS < DEFAULT_CONTEXT_BUDGET_TOKENS;
     ways.push(`bring ${SENT} to ${from === to ? `about ${n(to)} tokens`
       : from > 0 ? `between about ${n(from)} and ${n(to)} tokens` : `about ${n(to)} tokens or fewer`}, with ` +
-      (budgetMoves ? 'fewer tools, since a shorter system prompt raises the budget the host gives this recipe by as much'
+      (budgetMoves ? 'fewer tools, or a shorter system prompt only where it counts more than the estimate the budget is worked out from'
         : 'a shorter system prompt or fewer tools'));
   }
   const system = f.beside !== undefined ? undefined : nearestRange(f.system, (value) => ({ ...f, system: value }));

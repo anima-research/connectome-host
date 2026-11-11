@@ -213,8 +213,10 @@ impressionistic with age and depth.
   folds.
 - **Very large messages are trimmed in the live view.** A single message over
   `maxMessageTokens` (10000 by default here) is truncated in your context, and
-  a tool result over its inline cap (24000 characters by default, yours to
-  change as `tool_result_inline_max_chars`) is written in full to a
+  a tool result over its inline cap (24000 characters unless your
+  residence's recipe sets another, yours to change as
+  `tool_result_inline_max_chars`; `agent_settings get` reports the cap in
+  effect as `tool_result_inline_max_chars_effective`) is written in full to a
   `tool-results/` file in the first writable workspace mount with no
   `include` that isn't configured direct. The inline result contains a
   preview and a reference to that file. With no such mount, or if the spill

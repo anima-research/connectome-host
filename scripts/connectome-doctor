@@ -2,7 +2,9 @@
 import json
 import os
 import re
+import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -18,6 +20,7 @@ if not sys.stdout.isatty():
 
 NOW = time.time()
 WARNINGS = []
+DUMP_WAIT = 5
 
 
 def sh(cmd, timeout=15):
@@ -94,16 +97,20 @@ def withheld(text):
     return "".join(out)
 
 
-def run(cmd, timeout=15):
+def run(cmd, timeout=15, no_match=None, cut_is_end=False):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return (None, None) if cut_is_end else (None, str(e))
     except Exception as e:
-        return None, withheld(str(e))
+        return None, str(e)
+    if r.returncode == no_match and not r.stderr.strip():
+        return "", None
     if r.returncode != 0:
-        said = withheld(r.stderr).strip().splitlines()
+        said = r.stderr.strip().splitlines()
         return None, said[-1] if said else f"exit {r.returncode}"
-    return withheld(r.stdout), None
+    return r.stdout, None
 
 
 def read_text(path, last=None, start=0):
@@ -115,21 +122,18 @@ def read_text(path, last=None, start=0):
             f.seek(start)
             text = f.read().decode("utf-8", "replace")
     except Exception as e:
-        return None, withheld(getattr(e, "strerror", None) or str(e))
+        return None, getattr(e, "strerror", None) or str(e)
     if last is not None and start > 0:
         text = text.split("\n", 1)[1] if "\n" in text else ""
-    return withheld(text), None
+    return text, None
 
 
 args = []
-no_signal = False
 data_dir = None
 findings_json = False
 argv = iter(sys.argv[1:])
 for a in argv:
-    if a == "--no-signal":
-        no_signal = True
-    elif a == "--data-dir":
+    if a == "--data-dir":
         data_dir = next(argv, None)
     elif a == "--findings-json":
         findings_json = True
@@ -180,17 +184,44 @@ if len(df) >= 5:
     if pct >= 88:
         warn(f"disk at {pct}% — agents corrupt stores when writes fail (see 2026-07-02)")
 
-journal_text, journal_error = run(f"journalctl --user -u {unit} -q --no-pager -n 2000 -o short-unix")
-journal = []
-for ln in (journal_text or "").split("\n"):
-    m = re.match(r"^(\d+)\.\d+ \S+ [^:]*: (.*)$", ln)
-    if m:
-        journal.append((float(m.group(1)), m.group(2)))
-jts = journal[-1][0] if journal else None
+DELIVERY = "routeSpeech delivery"
+DELIVERED = r"\[routeSpeech\] .*: routed \d+ chars -> \S"
+UNCONFIRMED = r"\[routeSpeech\] .*speech delivery NOT confirmed"
+ROUTE_SAID = DELIVERED + r"|\[routeSpeech\] .*speech (NOT routed|delivery NOT confirmed)"
+FAILURE = r"\[inference-(failed|hard-down|dropped)\]|\[push-event-rejected\]|Error"
+
+
+def journal_entries(text):
+    entries = []
+    for ln in (text or "").split("\n"):
+        m = re.match(r"^(\d+(?:\.\d+)?) \S+ [^:]*: (.*)$", ln)
+        if m:
+            entries.append((float(m.group(1)), m.group(2)))
+    return entries
+
+
+unit_q = shlex.quote(unit)
+last_entry, last_error = run(f"journalctl --user -u {unit_q} -q --no-pager -n 1 -o short-unix")
+journal_text, search_error = "", None
+if last_error is None and start_ts is None:
+    search_error = "the unit's start time isn't known"
+elif last_error is None:
+    journal_text, search_error = run(
+        f"journalctl --user -u {unit_q} -q --no-pager --since @{int(start_ts)} -g {shlex.quote(f'{ROUTE_SAID}|{FAILURE}')} "
+        "-o short-unix", no_match=1)
+journal_error = last_error if last_error is not None else search_error
+journal_unread = ("can't be read" if last_error is not None else "wasn't searched" if start_ts is None
+                  else "couldn't be searched by pattern")
+journal = journal_entries(journal_text)
+jts = (journal_entries(last_entry) or [(None, None)])[-1][0]
 log_redirect = None
 frag = sh(f"systemctl --user show {unit} -p FragmentPath --value")
 if frag and os.path.exists(frag):
-    m = re.search(r"Standard(?:Output|Error)=(?:append|file):(\S+)", open(frag).read())
+    frag_text, frag_why = read_text(frag)
+    if frag_text is None:
+        warn(f"{unit}'s unit file, {frag}, can't be read ({frag_why}), so whether it sends the host's output to a file "
+             "isn't known", counts=False)
+    m = re.search(r"Standard(?:Output|Error)=(?:append|file):(\S+)", frag_text or "")
     if m:
         log_redirect = m.group(1)
 
@@ -201,15 +232,18 @@ elif os.path.exists(agent_log):
     journal_log = start_ts is not None and os.path.getmtime(agent_log) < start_ts
 else:
     journal_log = True
-if journal_error is not None:
-    print(f"journal    : {C_RED}can't be read: {journal_error}{C_OFF}")
-    if journal_log:
-        warn(f"{unit}'s journal can't be read ({journal_error}), so its failures, deliveries and gate dump "
-             "aren't shown", counts=False)
+if last_error is not None:
+    print(f"journal    : {C_RED}can't be read: {last_error}{C_OFF}")
 else:
-    print(f"journal    : last entry {age(jts)}" + ("" if journal_log else f"  {C_DIM}(stdout/err -> {agent_log}){C_OFF}"))
+    print(f"journal    : last entry {age(jts)}" + ("" if journal_log else f"  {C_DIM}(stdout/err -> {agent_log}){C_OFF}")
+          + (f"  {C_RED}its search by pattern failed: {search_error}{C_OFF}"
+             if journal_log and search_error is not None and start_ts is not None else ""))
     if not journal_log and (jts is None or (start_ts and jts < start_ts)):
         warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}", counts=False)
+if journal_log and journal_error is not None:
+    warn(f"{unit}'s journal {journal_unread} ({journal_error}), so its failures"
+         + (", deliveries and gate dump" if last_error is not None else " and deliveries") + " aren't shown",
+         counts=False)
 
 stages = []
 
@@ -243,15 +277,15 @@ else:
     ln = last_in_dbg(r"handleDiscordMessage:enter")
     if ln:
         enter_ts = parse_iso(ln.split(" ", 1)[0])
-        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"(.{0,40})', ln)
+        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"((?:[^"\\]|\\.)*)', ln)
         if mm:
-            enter_detail = f"#{mm.group(1)}: {mm.group(2)}…"
+            enter_detail = f"#{mm.group(1)}: {withheld(mm.group(2))[:40]}…"
     ln = last_in_dbg(r'gateway:message-create-drop (?!.*"reason":"self-authored")')
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
         reason = dbg_fields(ln).get("reason")
         if dts and NOW - dts < 3600 and isinstance(reason, str):
-            enter_detail = f"{enter_detail}  last filter drop {age(dts)}: {withheld(reason)}".strip()
+            enter_detail = f"{enter_detail}  last filter drop {age(dts)}: {reason}".strip()
     ln = last_in_dbg(r"handleDiscordMessage:(sent|forwarding)")
     if ln:
         fwd_ts = parse_iso(ln.split(" ", 1)[0])
@@ -284,21 +318,29 @@ if os.path.lexists(session_index):
             raise ValueError("it isn't a JSON object")
     except Exception as e:
         ingest_unknown = True
-        why = withheld(getattr(e, "strerror", None) or str(e))
+        why = getattr(e, "strerror", None) or str(e)
         rec_detail = f"sessions.json can't be read as the host's session index ({why}), so which session is active isn't known"
     else:
         active_session = index.get("activeSessionId")
         if not isinstance(active_session, str) or not active_session:
-            rec_detail = "sessions.json names no active session"
+            ingest_unknown = True
+            rec_detail = ("sessions.json names no active session, which no start of the host leaves, so which session "
+                          "is active isn't known")
         else:
             path = os.path.join(sessions_dir, active_session, "records.log")
             try:
                 os.stat(path)
             except (FileNotFoundError, NotADirectoryError):
-                rec_detail = f"the active session, {withheld(active_session)}, has no records.log"
+                store = os.path.join(sessions_dir, active_session)
+                if os.path.lexists(store):
+                    ingest_unknown = True
+                    rec_detail = (f"the active session's store, {store}, is there without a records.log, which the host "
+                                  "writes when it opens the store, so what was ingested isn't known")
+                else:
+                    rec_detail = f"the active session, {active_session}, has no records.log"
             except OSError as e:
                 ingest_unknown = True
-                rec_detail = f"{withheld(path)} can't be read ({withheld(e.strerror or str(e))})"
+                rec_detail = f"{path} can't be read ({e.strerror or str(e)})"
             else:
                 records = path
 else:
@@ -309,7 +351,7 @@ else:
     except OSError as e:
         held = []
         ingest_unknown = True
-        rec_detail = f"{sessions_dir} can't be listed ({withheld(e.strerror or str(e))})"
+        rec_detail = f"{sessions_dir} can't be listed ({e.strerror or str(e)})"
     if held:
         ingest_unknown = True
         rec_detail = "no sessions.json names the active session"
@@ -317,7 +359,7 @@ if records:
     data, why = read_text(records, last=8_000_000)
     if why is not None:
         ingest_unknown = True
-        rec_detail = f"{withheld(records)} can't be read ({why})"
+        rec_detail = f"{records} can't be read ({why})"
     data = data or ""
     last_msg = None
     for mm in re.finditer(r'\{"record_id":\d+,"global_sequence":\d+,"state_id":"messages".*?"timestamp":(\d+)\}', data):
@@ -328,14 +370,14 @@ if records:
         size = 0
     if last_msg is None and why is None and size > 0:
         ingest_unknown = True
-        rec_detail = (f"the last 8 MB of {withheld(records)} hold no message record in the JSON-lines form this "
+        rec_detail = (f"the last 8 MB of {records} hold no message record in the JSON-lines form this "
                       "ladder reads")
     if last_msg:
         rec_ts = int(last_msg.group(1)) / 1_000_000  # store stamps in microseconds
         arr = re.search(r"\[([0-9,]{40,})\]", last_msg.group(0))
         if arr:
             try:
-                payload = withheld(bytes(int(x) for x in arr.group(1).split(",")).decode("utf-8", "replace"))
+                payload = bytes(int(x) for x in arr.group(1).split(",")).decode("utf-8", "replace")
                 trig = '"triggered":true' in payload
                 pm = re.search(r'"participant":"([^"]*)"', payload)
                 cm = re.search(r'"channelName":"([^"]*)"', payload)
@@ -363,20 +405,34 @@ turn_ok = False
 llm_window_from = None
 llm_written_at = None
 llm_unsure = False
+newer_unread = False
 llm_unread = None
 LLM_WINDOW = 30_000_000
-if not os.path.isdir(data_dir):
-    warn(f"there's no data directory at {data_dir}, so the discord, mcpl, chronicle and inference stages read nothing"
+try:
+    data_dir_why = (None if stat.S_ISDIR(os.stat(data_dir).st_mode)
+                    else f"{data_dir}, the data directory, isn't a directory")
+except (FileNotFoundError, NotADirectoryError):
+    data_dir_why = f"there's no data directory at {data_dir}"
+except OSError as e:
+    data_dir_why = f"the data directory at {data_dir} can't be looked at ({e.strerror or e})"
+if data_dir_why is not None:
+    warn(f"{data_dir_why}, so the discord, mcpl, chronicle and inference stages read nothing"
          + ("" if findings_json else "; if the host keeps it elsewhere, run this script with --data-dir DIR"),
          counts=False)
-llm_files = sorted(
-    (f for f in (os.listdir(data_dir) if os.path.isdir(data_dir) else []) if f.startswith("llm-calls.")),
-    key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
-)
+try:
+    llm_files = sorted(
+        (f for f in (os.listdir(data_dir) if data_dir_why is None else []) if f.startswith("llm-calls.")),
+        key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
+    )
+    if llm_files:
+        newest = os.path.join(data_dir, llm_files[-1])
+        size = os.path.getsize(newest)
+        llm_written_at = os.path.getmtime(newest)
+except OSError as e:
+    llm_files, llm_written_at = [], None
+    llm_unread = e.strerror or str(e)
+    llm_detail = f"{e.filename or data_dir} can't be read ({llm_unread})"
 if llm_files:
-    newest = os.path.join(data_dir, llm_files[-1])
-    size = os.path.getsize(newest)
-    llm_written_at = os.path.getmtime(newest)
     where = "the newest file's last 30 MB" if size > LLM_WINDOW + 1 else "the newest file"
     # Split at newlines only: splitlines() also splits at U+2028, U+2029 and
     # U+0085, which JSON.stringify leaves unescaped inside a row.
@@ -419,6 +475,7 @@ if llm_files:
             turn_resp = r.get("rawResponse") or {}
             turn_resp = turn_resp.get("response") or turn_resp
             turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
+            newer_unread = incomplete or unreadable > 0
             llm_window_from = None
             break
     if call is not None:
@@ -429,7 +486,7 @@ if llm_files:
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
-            llm_detail = f"{stop}{C_RED}err={err_text(err)[:80] or '(no text)'}{C_OFF}"
+            llm_detail = f"{stop}{C_RED}err={withheld(err_text(err))[:80] or '(no text)'}{C_OFF}"
         else:
             llm_detail = stop.strip() or "answered"
         if sr == "refusal":
@@ -444,21 +501,19 @@ if llm_files:
         llm_detail += f"  {C_YEL}{unreadable} row(s){' since the last turn' if turn_ts else ''} unreadable{C_OFF}"
     if incomplete:
         llm_detail += f"  {C_YEL}last row incomplete (being written, or cut off){C_OFF}"
+elif llm_unread is None and data_dir_why is None:
+    llm_detail = f"no call log in {data_dir}"
 INFERENCE = "inference (llm call)"
 stages.append((INFERENCE, llm_ts, llm_detail))
 
-DELIVERY = "routeSpeech delivery"
-DELIVERED = r"\[routeSpeech\] .*: routed \d+ chars -> \S"
-UNCONFIRMED = r"\[routeSpeech\] .*speech delivery NOT confirmed"
-ROUTE_SAID = DELIVERED + r"|\[routeSpeech\] .*speech (NOT routed|delivery NOT confirmed)"
 unknown = {INGEST} if ingest_unknown else set()
 if llm_unread is not None:
     unknown.add(INFERENCE)
 if discord_unknown:
     unknown |= {DISCORD_SEEN, DISCORD_FORWARD}
-if not os.path.isdir(data_dir):
-    unknown |= {INGEST, INFERENCE}
-    stages = [(name, ts, f"there's no data directory at {withheld(data_dir)}" if name in (INGEST, INFERENCE) else detail)
+if data_dir_why is not None:
+    unknown |= {DISCORD_SEEN, DISCORD_FORWARD, INGEST, INFERENCE}
+    stages = [(name, ts, data_dir_why if name in (DISCORD_SEEN, DISCORD_FORWARD, INGEST, INFERENCE) else detail)
               for name, ts, detail in stages]
 unsure = set()
 failed = set()
@@ -476,7 +531,9 @@ if journal_log:
             unknown.add(DELIVERY)
     else:
         unknown.add(DELIVERY)
-        del_detail = "none in the journal's last 2000 lines" if journal_error is None else "the journal can't be read"
+        del_detail = ("the unit has no start time, so no run's journal is read" if last_error is None and start_ts is None
+                      else f"the journal {journal_unread}" if journal_error is not None
+                      else "none in the journal since the unit's latest start")
 else:
     text, why = read_text(agent_log, last=2_000_000)
     said = [ln for ln in (text or "").split("\n") if re.search(ROUTE_SAID, ln)]
@@ -511,6 +568,61 @@ elif last is not None:
         warn(f"the last reply wasn't delivered: {line}")
 stages.append((DELIVERY, del_ts, del_detail))
 
+
+def file_failures(path, is_failure):
+    text, why = read_text(path, last=400_000)
+    if text is None:
+        return path, None, f"it can't be read ({why})", f"{path} can't be read ({why}), so its failures aren't shown"
+    return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None, None
+
+
+def record_of(ln, kind):
+    try:
+        record = json.loads(ln)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) and record.get("kind") == kind else None
+
+
+def exhausted(ln):
+    return record_of(ln, "inference-exhausted")
+
+
+sources = []
+if journal_log:
+    sources.append((f"{unit}'s journal", None if journal_error is not None
+                    else [msg for _, msg in journal if re.search(FAILURE, msg)],
+                    f"it {journal_unread} ({journal_error})", None))
+else:
+    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
+failures_log = os.path.join(logs_dir, "failures.log")
+try:
+    os.lstat(failures_log)
+    failures_there = True
+except (FileNotFoundError, NotADirectoryError):
+    failures_there = False
+except OSError:
+    failures_there = True
+if failures_there:
+    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
+times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
+untimed = False
+for index, (_, found, _, _) in enumerate(sources):
+    for ln in found or []:
+        record = exhausted(ln)
+        if record is not None:
+            ts = parse_iso(record["at"]) if isinstance(record.get("at"), str) else None
+            if ts is None:
+                untimed = True
+            else:
+                times.append(ts)
+        elif "inference-failed" in ln and not (journal_log and index == 0):
+            untimed = True
+unseen_why = "the call log can't be read here"
+if (times or untimed) and not llm_files and llm_unread is None and data_dir_why is None:
+    unknown.add(INFERENCE)
+    unseen_why = f"there's no call log in {data_dir}"
+
 print()
 print("pipeline ladder (last seen per stage):")
 prev_ts = None
@@ -535,7 +647,7 @@ for name, ts, detail in stages:
 NO_TURN = "NO turn was recorded after it"
 no_turn_after = turn_ts is None or (rec_ts is not None and turn_ts < rec_ts - 120)
 window_from = llm_window_from if llm_window_from is not None else llm_written_at
-turn_unknown = bool(llm_files) and (llm_unsure or (turn_ts is None and (
+turn_unknown = (bool(llm_files) or llm_unread is not None) and (llm_unsure or (turn_ts is None and (
     window_from is None or (rec_ts is not None and rec_ts < window_from))))
 if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not turn_unknown:
     warn(f"a gate-TRIGGERED event was ingested but {NO_TURN} — events may be "
@@ -543,66 +655,29 @@ if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not 
          "budget failures / [diagnostics] dump below)")
 
 print()
-FAILURE = r"\[inference-(failed|hard-down|dropped)\]|\[push-event-rejected\]|Error"
-
-
-def file_failures(path, is_failure):
-    text, why = read_text(path, last=400_000)
-    if text is None:
-        warn(f"{path} can't be read ({why}), so its failures aren't shown", counts=False)
-        return path, None, why
-    return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None
-
-
-def record_of(ln, kind):
-    try:
-        record = json.loads(ln)
-    except ValueError:
-        return None
-    return record if isinstance(record, dict) and record.get("kind") == kind else None
-
-
-def exhausted(ln):
-    return record_of(ln, "inference-exhausted")
-
-
-sources = []
-if journal_log:
-    sources.append((f"{unit}'s journal", None if journal_error is not None
-                    else [msg for _, msg in journal if re.search(FAILURE, msg)], journal_error))
-else:
-    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
-failures_log = os.path.join(logs_dir, "failures.log")
-if os.path.exists(failures_log):
-    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
-for where, found, why in sources:
+for where, found, why, unread in sources:
+    if unread is not None:
+        warn(unread, counts=False)
     if found is None:
-        print(f"recent failures in {where}: {C_YEL}not known: it can't be read ({why}){C_OFF}")
+        print(f"recent failures in {where}: {C_YEL}not known: {why}{C_OFF}")
     elif found:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:
-            print(f"  {C_RED}{ln[:150]}{C_OFF}")
+            print(f"  {C_RED}{withheld(ln)[:150]}{C_OFF}")
     else:
         print(f"recent failures in {where}: {C_GRN}none found{C_OFF}")
-times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
-untimed = False
-for index, (_, found, _) in enumerate(sources):
-    for ln in found or []:
-        record = exhausted(ln)
-        if record is not None:
-            ts = parse_iso(record["at"]) if isinstance(record.get("at"), str) else None
-            if ts is None:
-                untimed = True
-            else:
-                times.append(ts)
-        elif "inference-failed" in ln and not (journal_log and index == 0):
-            untimed = True
 if times or untimed:
     failed_at = max(times) if times else None
     timed = " whose time is known" if untimed else ""
     if failed_at is not None and turn_ok and turn_ts is not None and turn_ts > failed_at:
         warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
-             "doesn't say whose, so whether the agent that failed has recovered isn't known", counts=False)
+             "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
+                 "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
+                 if newer_unread else ""), counts=False)
+    elif failed_at is not None and (INFERENCE in unknown or newer_unread):
+        why = unseen_why if INFERENCE in unknown else "newer rows of the call log can't be read"
+        warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
+             f"since {why}", counts=False)
     elif failed_at is not None:
         warn(f"inference failures, the last{timed} {age(failed_at)}, with no successful turn found since — if the reason "
              "repeats identically, the agent is hard-down until config changes (e.g. budget)")
@@ -624,11 +699,8 @@ def usr2_listener(pid):
     return None
 
 
-if no_signal:
-    print()
-    print(f"live gate dump: {C_DIM}left out (--no-signal), so the host got no SIGUSR2{C_OFF}")
-elif pid not in ("0", "", None) and active in ("active", "running"):
-    pid = sh(f"systemctl --user show {unit} -p MainPID --value") or "0"
+if pid not in ("0", "", None) and active in ("active", "running"):
+    pid = sh(f"systemctl --user show {unit_q} -p MainPID --value") or "0"
     listening = usr2_listener(pid) if pid != "0" else None
     print()
     if pid == "0":
@@ -636,30 +708,51 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
     elif listening is None:
         print(f"live gate dump: {C_DIM}not asked: /proc/{pid}/status can't be read, so whether SIGUSR2 would end "
               f"the host isn't known{C_OFF}")
+        warn(f"the gate dump wasn't asked for, since /proc/{pid}/status can't be read, so the gate dump isn't known",
+             counts=False)
     elif not listening:
         print(f"live gate dump: {C_DIM}not asked: the host (pid {pid}) has no SIGUSR2 listener, and the signal "
               f"would end it. A host still starting installs one once its framework is built, so run this check "
               f"again in a minute; one whose agent-framework predates the dump never does{C_OFF}")
+        warn(f"the gate dump wasn't asked for, since the host (pid {pid}) has no SIGUSR2 listener, so the gate dump "
+             "isn't known", counts=False)
     else:
         before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
         signalled = int(time.time())
-        sh(f"kill -USR2 {pid} 2>/dev/null")
-        time.sleep(0.7)
-        dump = None
-        if journal_log:
-            said, why = run(f"journalctl --user -u {unit} -o cat --no-pager --since @{signalled}")
-            where = f"{unit}'s journal"
-        else:
-            said, why = read_text(agent_log, start=before)
-            where = agent_log
-        # Split at newlines only: the dump is JSON, which can hold U+2028.
-        for ln in (said or "").split("\n"):
-            if "[diagnostics]" in ln:
-                dump = ln
-        if why is not None:
+        _, refused = run(f"kill -USR2 {pid}")
+        dump = why = None
+        finished = False
+        where = f"{unit}'s journal" if journal_log else agent_log
+        if refused is None:
+            deadline = time.monotonic() + DUMP_WAIT
+            while dump is None and why is None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                if journal_log:
+                    said, why = run(f"journalctl --user -u {unit_q} -o cat --no-pager --since @{signalled}", timeout=left,
+                                    cut_is_end=True)
+                else:
+                    said, why = read_text(agent_log, start=before)
+                finished = finished or said is not None
+                # Split at newlines only: the dump is JSON, which can hold U+2028.
+                for ln in (said or "").split("\n"):
+                    if "[diagnostics]" in ln:
+                        dump = ln
+                if dump is None and why is None:
+                    time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        if refused is not None:
+            print(f"live gate dump: {C_RED}SIGUSR2 couldn't be sent ({refused}){C_OFF}")
+            warn(f"SIGUSR2 couldn't be sent ({refused}), so the gate dump isn't known", counts=False)
+        elif why is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but {where} can't be read ({why}), so whether a "
                   f"[diagnostics] line came isn't known{C_OFF}")
             warn(f"SIGUSR2 was sent, but {where} can't be read ({why}), so the gate dump isn't known", counts=False)
+        elif not finished:
+            print(f"live gate dump: {C_RED}SIGUSR2 sent, but no read of {where} finished within {DUMP_WAIT} s, so whether "
+                  f"a [diagnostics] line came isn't known{C_OFF}")
+            warn(f"SIGUSR2 was sent, but no read of {where} finished within {DUMP_WAIT} s, so the gate dump isn't known",
+                 counts=False)
         elif dump:
             print(f"live gate dump (SIGUSR2): {dump.split('[diagnostics] ',1)[-1]}")
             try:
@@ -675,8 +768,10 @@ elif pid not in ("0", "", None) and active in ("active", "running"):
             except Exception:
                 pass
         else:
-            print(f"live gate dump: {C_DIM}no [diagnostics] line came within 0.7 s of SIGUSR2, which the host "
-                  f"catches{C_OFF}")
+            print(f"live gate dump: {C_DIM}no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, which the host "
+                  f"catches and answers by writing that line{C_OFF}")
+            warn(f"no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, so the gate dump isn't known",
+                 counts=False)
 
 if findings_json:
     print("connectome-doctor findings: " + json.dumps([{"text": w, "counts": counts} for w, counts in WARNINGS]))

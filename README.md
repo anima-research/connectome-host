@@ -33,9 +33,9 @@ depends on, showing its own progress, before setup says anything.
 The host's own agent sets the resident up from there, and asks you only what
 only you can answer. Afterwards the install's own `connectome` command looks
 after it: `./connectome-host/connectome` in that directory, or plain
-`connectome` once its directory is on your PATH, as setup shows. With nothing
-after it, it says how the install is. Type the package's whole name,
-`bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
+`connectome` once its directory comes first on your PATH, as setup shows.
+With nothing after it, it says how the install is. Type the package's whole
+name, `bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
 another package on npm.
 
 ## What people run on it
@@ -221,6 +221,17 @@ agent-framework's README, which its package ships
 doesn't know, or a value that isn't a finite number above 0, stops the load,
 naming it.
 
+`toolResultInlineMaxChars`, at the recipe's top level, is the residence's
+inline cap for tool results, in characters, passed to agent-framework as its
+`FrameworkConfig.toolResultInlineMaxChars`. Left out, agent-framework's
+default stands. A resident's own `agent_settings` value
+`tool_result_inline_max_chars` wins over it for that agent. The default,
+what becomes of a result over the cap and how the cap in effect is reached
+are in that option's doc in agent-framework's types, which its package ships
+(`node_modules/@animalabs/agent-framework/dist/src/types/framework.d.ts` in
+an install). A value that isn't a finite number of at least 1000,
+agent-framework's own minimum, stops the load, naming it.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is
@@ -232,6 +243,7 @@ delivered by Agent Framework according to `agent.proseRouting`:
 | `"hybrid"` | Like `locus`, but a leading `>>>destination` envelope routes that segment elsewhere through the authorized channel resolver. |
 | `"explicit"` | Text must start with `>>#channel` / `>>@person` / `>>skip_reply`; unprefixed text is never delivered and bounces to a clipboard for a prefixed resend. |
 | `"disabled"` | Text is never auto-published. The only way anything reaches a channel is an explicit send tool (`send_message`, `channel_publish`, `reply_message`, `send_dm`, ...). Authored text stays in Chronicle and the turn-end `[delivered] nothing` receipt tells the agent how many segments were withheld. |
+| `"locked"` | Text goes to one destination the agent chose, on every turn, heartbeats included. Nothing moves it automatically: not the channel a message comes from, an addressed message, or `channel_open`. The agent's `prose_locus` tool moves it, to a channel or to `"drafts"` (held, posted nowhere unless resent). An `allowedTools` list must name `prose_locus` for the agent to move it, and `drafts` for it to resend drafts; without `agent.proseLock`, a list that doesn't name `prose_locus` is refused at load. The choice survives restarts. Subagents it launches run `"disabled"`. `agent.proseLock` (`"#channel"`, `"@person"`, an id or `"drafts"`) is the destination until the agent first chooses; without it, text is held as drafts, and a `proseLock` that doesn't resolve holds text as drafts and logs why at each turn's start. Once the agent has chosen, editing `agent.proseLock` changes nothing, even when it chose the recipe's own default, and the choice survives leaving `"locked"` and coming back; an operator's `/puppet prose_locus {"to": …}` moves it for later turns, unless an `allowedTools` list leaves `prose_locus` out. Refused beside `conversations`: per-channel conversation forks speak in their own channel, as in `"locus"`. |
 
 From agent-framework 0.29.0, a turn the heartbeat opens (a tick or a reminder) takes no fallback to the channel that last had a message for its plain speech; an explicit send reaches someone from it. agent-framework's notes say where such text goes in each mode.
 
@@ -241,7 +253,10 @@ channel: in `locus` mode a stray one-line narration between two tool calls
 the only mitigation is behavioral (never narrate in tool rounds, always end
 tool-only turns with `skip_reply`). With `"disabled"` the agent replies by
 calling a send tool, and nothing else leaks. Ephemeral subagents inherit the
-caller's mode.
+caller's mode, except that subagents a `"locked"` resident launches run `"disabled"`:
+a subagent has no lock of its own, so it publishes no plain text, and its
+result still reaches its parent (through `subagent--return`, or its final
+text).
 
 `agent.sameRoundThinkTextPolicy` (`"public"` default, or `"private"`) governs
 only text emitted **beside a `think()` call** in the same round. It does not
@@ -262,8 +277,8 @@ process lifetime.
 ```
 
 See Agent Framework's `docs/disabled-prose-routing.md`,
-`docs/explicit-prose-routing.md`, and `docs/hybrid-prose-routing.md` for the
-full semantics of each mode.
+`docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
+`docs/locked-prose-routing.md` for the full semantics of each mode.
 
 `agent.autoContinue` (off when omitted) keeps an agent going until it says
 it's done: a turn the model ends itself, with prose or with nothing, is
@@ -279,7 +294,7 @@ channel that last had a message either),
 so keep the cap low. Ephemeral subagents don't inherit it: their streams run
 with it off, and a fork's or spawn's orientation lists `auto-continue` beside
 the parent's. It rests on `AgentConfig.autoContinue` (agent-framework#744),
-which agent-framework 0.29.0, this host's floor, has. See Agent Framework's
+which every agent-framework this host can install has. See Agent Framework's
 `docs/auto-continue.md`.
 
 ```json
@@ -641,7 +656,7 @@ depend on what the endpoint reports.
 |---|---|---|
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (default `us-west-2`) | Claude on AWS — including models retired from the first-party API. `BEDROCK_BASE_URL` routes through an inference gateway. Prompt caching is enabled per model where Bedrock supports it; `agent.promptCaching` overrides. |
 | `openai-responses` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` optional) | OpenAI Platform, Responses API. |
-| `openrouter` | `OPENROUTER_API_KEY` | |
+| `openrouter` | `OPENROUTER_API_KEY` (`OPENROUTER_BASE_URL` optional) | |
 | `mock` | none | Echoes the last user message by default; scripted replies and timing are set under `agent.mock` ([below](#mock-provider)). Calls are still logged. |
 
 Every provider's calls are logged to `$DATA_DIR/llm-calls.<iso>.jsonl`.
@@ -707,10 +722,14 @@ unknown-key warning, like those at the other levels.
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
   (read-only `./input`) and `products` (read-write `./output`). A mount with
   `"backend": "direct"` reads disk as it is, and writes it as it is if it's
-  writable, with no store, undo or watcher: it names its mode, `"read-only"`,
-  or `"read-write"` from agent-framework 0.27.0, and a mount whose changes
-  should wake the agent, or whose writes should be undoable, leaves `backend`
-  out. A direct mount that names no `ignore` passes over `node_modules`,
+  writable, with no store or watcher, so a branch switch or a rollback
+  (`/checkout`, `/restore`, `/branchto`) leaves its files as they are: it
+  names its mode, `"read-only"`, or `"read-write"` from agent-framework
+  0.27.0, and a mount whose changes should wake the agent, or whose writes a
+  branch switch or a rollback should take back, leaves `backend` out.
+  `/undo` moves no branch, so it takes back no mount's writes, a
+  Chronicle-backed mount's included. A direct mount that names no `ignore`
+  passes over `node_modules`,
   `.git`, `dist`, `build`, `coverage`, `target`, `__pycache__` and `.venv`,
   and one that names any passes over only what it names. While its store
   holds changes from when it ran as Chronicle, it runs as Chronicle, taking no
@@ -764,8 +783,8 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
-- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it or a Go back for the host's first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, subagent run, background script, session switch, operator's work or credential action, and each fleet child says nothing is going there, such as a turn, background script, operator's work or credential action. A restart or Go back arms only on a headless host started with `CONNECTOME_SUPERVISED=1`, which `connectome service install` sets only for a service that restarts the host when it exits with 75 and with 1; anywhere else it refuses and says why. The changelog's entry has the rest
-- **Time-travel** — Chronicle-backed undo/redo, checkpoints, branch exploration; in the web UI, rolling back to a message and suppressing messages
+- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it or a Go back for the host's first quiet moment. A restart or Go back arms only on a headless host started with `CONNECTOME_SUPERVISED=1`, which `connectome service install` sets only for a service that restarts the host when it exits with 75 and with 1; anywhere else it refuses and says why. The changelog's entry has the rest
+- **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
 - **Importers** — claude.ai exports, Claude Code transcripts and Codex rollouts become sessions ([guides above](#what-people-run-on-it))
@@ -825,10 +844,24 @@ reached through a linked directory), and on any mount one whose canonical
 path lies outside it isn't either, a link that leads out included: either
 raises the alert instead.
 
-**Cache note**: at `position: "system"` the block lives in every agent's
-prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next
-turn — curate in batches, or use `afterUser` for cache-cheap, lower-salience
-injection. Compared to **lessons** (`modules.lessons`): lessons are a
+**Where the block lands, and what that costs**:
+
+- `"system"`, the default, puts it in every agent's system prompt. An edit to
+  the file misses the cache from the system prompt on, for every agent, at its
+  next turn, so curate in batches.
+- `"afterUser"` places it after the newest user message at each start, so it
+  stays near the end. Unlike another module's `afterUser` block, which
+  agent-framework stores where it lands, it isn't stored. It moves: a request
+  misses the cache from its old place on, and on a model that binds a reply's
+  thinking to everything before it, every reply after its old place loses its
+  thinking.
+- `"beforeUser"` is deprecated
+  ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)).
+  It's spliced in again before the newest user message at every compile, so
+  it moves, at `afterUser`'s cost, and it can split a tool call from its
+  result. Use `"afterUser"` or `"system"`.
+
+Compared to **lessons** (`modules.lessons`): lessons are a
 structured, confidence-scored store with model-driven retrieval; instructions
 are one free-form curated document, always present verbatim.
 
@@ -857,6 +890,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `OPENROUTER_API_KEY` | — | `openrouter` recipes |
+| `OPENROUTER_BASE_URL` | OpenRouter API (`https://openrouter.ai/api/v1`) | Route OpenRouter calls through a gateway |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | region `us-west-2` | `bedrock` recipes |
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
@@ -961,7 +995,7 @@ headless socket.
 
 | Command | Effect |
 |---------|--------|
-| `/help` | List all commands |
+| `/help` | List all commands (in `connectome setup`'s conversation, the three setup uses: `/quit`, `/session new` and `/help`) |
 | `/quit`, `/q` | Exit (exports lessons if the lessons module is loaded; asks first if fleet children are running) |
 | `/recipe` | Show current recipe info |
 | `/status` | Show agent state, branch, queue depth |
@@ -972,13 +1006,13 @@ headless socket.
 | `/newtopic [context]` | Reset the head window for a new topic |
 | `/nudge [agent]` | Run inference on the current context without a new event |
 | `/puppet <tool> [json]` | Admin: execute a tool as the agent and store the call/result pair |
-| `/undo` | Revert to state before last agent turn |
-| `/redo` | Re-apply undone action |
-| `/checkpoint [name]` | Save current state (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Restore to checkpoint |
+| `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
+| `/redo` | Put the turn `/undo` took out back in the agent's window |
+| `/checkpoint [name]` | Save the record's position: its last row, an undone one included (no name: list checkpoints; held for this session) |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts back the agent's latest undo, which holds that turn only if that undo took it out); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
-| `/branchto <msgId>` | Branch from a specific message |
+| `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
 | `/history [n]` | Show the last n messages (20 by default) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
@@ -993,10 +1027,41 @@ headless socket.
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 | `/update [check\|install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs (`check`, or `/update` alone); on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
-Commands that move the head are refused while a turn is in flight: `/undo`,
-`/redo`, `/checkout`, `/restore` and `/branchto` while any agent sharing the
-store is mid-turn, the subconscious included, and `/newtopic` while the main
-agent is.
+The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
+those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
+refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
+while any agent sharing the store is mid-turn, the subconscious included, and
+`/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
+`/newtopic` stores its transition only while the agent has no turn alive, and
+is refused while a continuation or a retry of the agent's turn is on its way.
+A bare `/newtopic` writes its summary first. If the branch or the strategy
+changes meanwhile, the summary can't be written: it stores nothing, and its
+answer says why. If a turn of the agent starts, rows enter or leave the
+agent's window (a whole turn, another `/newtopic`'s transition, an undo, a
+redo or a shed), or the session is switched or the host stops, meanwhile, it
+stores nothing. Its answer says which: rows entered the window, left it,
+both, or entered it and left it, or left it and entered it again, which
+leave it holding what it held. It gives the
+summary it wrote back as a `/newtopic …` to run: in the TUI, the Web UI and
+headless mode as written, line breaks included, and in the readline and
+piped modes as one line, its line breaks folded to spaces: each line goes
+alone there, but for a message of several lines pasted into readline mode
+on a terminal that brackets a paste, which goes to the agent whole, as
+text. A `/newtopic <text>` on several lines needs the
+TUI or the Web UI, which send a pasted text whole, or headless mode's
+`command`, which carries its text whole.
+`/checkout`, `/restore` and `/branchto` go through agent-framework's branch
+switch and rollback, which are refused unless every agent sharing the store is
+idle, take every agent's context to the new branch, and are written to the
+operator log (as a `checkout` or a `rollback`). A rollback says which rows
+after its message it kept: rows one write showed the agent together with the
+message stay in its window after it (suppress or hide them to take them out),
+and rows stored before the message was shown and shown after it stay in the
+record and enter the window at the agent's next turn, or at a restart of the
+host before then. `/undo` and `/redo` are
+its undo and redo on the agent's window; the TUI's history and the Web UI's
+transcript mark an undone turn's rows, and the Web UI's context panels read
+the window again.
 
 While a session switch is under way, these are refused, each saying
 nothing changed: `/undo`, `/redo`, `/checkout`, `/branchto`, `/newtopic`,

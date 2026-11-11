@@ -135,9 +135,9 @@ describe("why the Context page's next request wasn't counted", () => {
     const { notCounted } = await words();
     expect(notCounted('count_tokens_unsupported_model')).toBe("not counted: count_tokens doesn't take this agent's model");
     expect(notCounted('count_tokens_failed_429')).toBe('not counted: count_tokens answered 429');
-    expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed');
+    expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed, or answered with what couldn\'t be read or with no count');
+    expect(notCounted('count_tokens_timeout')).toBe('not counted: the count_tokens call didn\'t answer in time');
     expect(notCounted('count_tokens_no_credential')).toBe('not counted: count_tokens answered 401, with no Anthropic credential sent by the host');
-    expect(notCounted('count_tokens')).toBe('not counted: count_tokens answered with no count');
     expect(notCounted('something_new')).toBe('not counted (something_new)');
   });
 });
@@ -195,14 +195,18 @@ describe('the makeup endpoint', () => {
   }
 });
 
-test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a count that carried no credential', async () => {
+test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a count that carried no credential, and sends no credential\'s value', async () => {
   const realFetch = globalThis.fetch;
   const prior = { model: process.env.COUNT_TOKENS_MODEL, key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
   const restore = (name: string, value: string | undefined) => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   };
-  globalThis.fetch = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch;
+  const sent: Array<Record<string, string>> = [];
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    sent.push(Object.fromEntries(new Headers(init?.headers).entries()));
+    return new Response('{}', { status: 401 });
+  }) as unknown as typeof fetch;
   try {
     process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
     delete process.env.ANTHROPIC_API_KEY;
@@ -216,6 +220,9 @@ test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a 
     } as unknown as PanelAppRef;
     const makeup = await buildContextMakeup(app, 'agent');
     expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_no_credential', null]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.authorization).toBeUndefined();
+    expect(sent[0]!['x-api-key'] ?? '').toBe('');
   } finally {
     globalThis.fetch = realFetch;
     restore('COUNT_TOKENS_MODEL', prior.model);
@@ -280,4 +287,35 @@ describe("the health snapshot's contextComposition and contextCompositionNotKept
     expect(sent.readFailures.broken.contextComposition).toBe('');
     expect(healthComposition(sent, 'broken')).toBeNull();
   });
+});
+
+test('the makeup gives count_tokens_error, and no total, for a count answered 200 with no input_tokens', async () => {
+  const realFetch = globalThis.fetch;
+  const prior = { model: process.env.COUNT_TOKENS_MODEL, key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  let asked = 0;
+  globalThis.fetch = (async () => { asked += 1; return Response.json({}); }) as unknown as typeof fetch;
+  try {
+    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    process.env.ANTHROPIC_API_KEY = 'sk-makeup-test';
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    const app = {
+      recipe: { agent: { name: 'agent' } },
+      framework: {
+        getAgent: () => ({ model: 'claude-haiku-4-5', getContextManager: () => cmWith(null, true) }),
+        previewActivation: async () => ({ messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'hi' }] }] }),
+      },
+    } as unknown as PanelAppRef;
+    const makeup = await buildContextMakeup(app, 'agent');
+    expect(asked).toBe(1);
+    expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_error', null]);
+  } finally {
+    globalThis.fetch = realFetch;
+    restore('COUNT_TOKENS_MODEL', prior.model);
+    restore('ANTHROPIC_API_KEY', prior.key);
+    restore('ANTHROPIC_AUTH_TOKEN', prior.token);
+  }
 });

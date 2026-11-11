@@ -18,7 +18,8 @@ import type {
 import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { workspaceReadFields } from '../workspace-read-result.js';
-import { storedInjectionMarkOf } from '@animalabs/agent-framework';
+import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
+import { continuesBody } from '@animalabs/context-manager';
 import { storedInjectionLabel } from '../stored-injection.js';
 import { speakerOf } from '../speaker.js';
 import type { ServerWebSocket } from 'bun';
@@ -29,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
-import type { BranchState } from '../commands.js';
+import type { BranchState, CommandResult } from '../commands.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import type { CredentialMonitor } from '../credential-state.js';
@@ -42,6 +43,7 @@ import {
   trackOperatorWork,
 } from '../session-switch.js';
 import { parseCommand } from '../command-name.js';
+import { AgentPhases } from '../state/agent-phases.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
 import { TurnInterrupts, interruptAgents, interruptSubagents } from '../state/turn-interrupt.js';
@@ -70,6 +72,7 @@ import {
   type HostResumeMessage,
   type RequestOperatorLogMessage,
   type OperatorLogEntryWire,
+  type UndoneMarksMessage,
 } from '../web/protocol.js';
 import {
   readMcplServersFile,
@@ -100,6 +103,7 @@ import {
   applyPinAdd,
   applyPinRemove,
   PanelError,
+  COUNT_LIMIT_MS,
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
@@ -309,6 +313,8 @@ interface SurgeryCapableFramework {
     targetBranch: string;
     messagesRemoved: number;
     lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+    returnedToArrivals?: number;
+    keptInWindowAfterTarget?: number;
   }>;
   suppressMessages?: (
     agentName: string,
@@ -335,6 +341,8 @@ interface WindowCapableCm {
     opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
   ): { messages: unknown[]; startIndex: number; totalCount: number };
   onMessage?(listener: (event: { type: string; message?: unknown }) => void): () => void;
+  /** Where a row stands in the agent's window (#291): 'in', 'out', 'undone' or 'absent'. */
+  windowStatusOf?(id: string): string;
 }
 
 const DEFAULT_HOST = '0.0.0.0';
@@ -343,6 +351,21 @@ const NOT_LOOPBACK = 'Forbidden: without basicAuth this Web UI answers only loop
   'localhost, [::1]). Set basicAuth to serve it under another name.';
 
 const HOST_FORM = /^(\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d+)?$/i;
+
+/** `/files/`'s policy, as two policies a browser enforces both of: the first
+ *  sandboxes the page without scripts and lets it load images, media, fonts
+ *  and styles only from `'self'` (this origin, or its https form), `data:` or
+ *  inline; the second only from a path under `/files/`. So a load must be from
+ *  `/files/` on this host.
+ *  The second names its schemes, since WebKit doesn't match a `*` host source
+ *  without one. serveWorkspaceFile says why. */
+const FILES_PATH = 'http://*:*/files/ https://*:*/files/';
+const WORKSPACE_FILE_CSP = [
+  "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; "
+    + "style-src 'self' 'unsafe-inline'; sandbox allow-same-origin",
+  `default-src 'none'; img-src ${FILES_PATH} data:; media-src ${FILES_PATH} data:; `
+    + `font-src ${FILES_PATH} data:; style-src ${FILES_PATH} 'unsafe-inline'`,
+].join(', ');
 
 const unbracketed = (name: string) => name.replace(/^\[(.*)\]$/, '$1');
 
@@ -379,6 +402,7 @@ interface SharedServerState {
   childUsage: Map<string, TokenUsage>;
   latestPerAgentCost: import('../web/protocol.js').PerAgentCost[];
   latestCallLedger?: CallLedgerSnapshot;
+  agentPhases: AgentPhases;
   callLedgerDetacher: (() => void) | null;
   app: WebUiAppRef | null;
   treeAggregator: FleetTreeAggregator | null;
@@ -473,6 +497,7 @@ export class WebUiModule implements Module {
       childUsage: new Map(),
       latestPerAgentCost: [],
       latestCallLedger: this.config.callLedger?.snapshot(),
+      agentPhases: new AgentPhases(),
       callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
       childRecipeCache: new Map(),
@@ -567,6 +592,7 @@ export class WebUiModule implements Module {
     ss.treeAggregator = null;
     ss.autoStartRecords = null;
     ss.bindGeneration++;
+    ss.agentPhases = new AgentPhases(app.framework.getAllAgents().map((agent) => agent.name));
 
     // agent-framework traces `message:added` only for messages added from
     // outside a turn, never for an agent's turns or its tool results, so the
@@ -782,6 +808,7 @@ export class WebUiModule implements Module {
 
   private fanOutTrace(event: TraceEvent): void {
     sharedServer!.interrupts?.onTrace(event as unknown as { type: string; agentName?: unknown });
+    const phaseChanges = sharedServer!.agentPhases.apply(event);
     if (event.type === 'usage:updated') {
       const totalsObj = (event as unknown as { totals?: unknown }).totals;
       const parsed = parseUsageTotals(totalsObj);
@@ -800,6 +827,7 @@ export class WebUiModule implements Module {
       type: 'trace',
       event: event as unknown as { type: string; [k: string]: unknown },
     }, streamEndedFor(event as unknown as { type: string; agentName?: unknown }));
+    for (const change of phaseChanges) this.broadcast({ type: 'agent-phase', ...change });
     if (event.type === 'usage:updated') {
       this.broadcast({
         type: 'usage',
@@ -808,6 +836,48 @@ export class WebUiModule implements Module {
           ? { perAgentCost: sharedServer!.latestPerAgentCost }
           : {}),
       });
+    }
+    // An undo or a redo on the window of the agent whose record the
+    // transcript shows, or a shed from it, which takes rows out as an undone
+    // turn's: the transcript's rows are marked again.
+    if (event.type === 'window:undone' || (event.type === 'presentation:retracted' && (event as { reason?: unknown }).reason === 'shed')) {
+      this.broadcastUndoneMarks((event as { agentName?: unknown }).agentName);
+    }
+  }
+
+  /** After an undo or a redo on `agentName`'s window (agent-framework #291,
+   *  the `window:undone` trace), or a refusal rewind's or a failed
+   *  inference's shed from it (`presentation:retracted`, reason `shed`),
+   *  when that agent's record is the transcript's: every row of the record
+   *  now out of its window as undone (UndoneMarksMessage), from index 0. A
+   *  page marks each row it holds that the frame names and clears the mark
+   *  of each it doesn't, however far back its history reaches: the reply an
+   *  undo took out with 200 rows stored after it, which no welcome's tail
+   *  holds, and a row a redo put back after it left the tail. It reads the
+   *  record's listing (undoneRowIds) at each undo, redo or shed while a
+   *  client the frame goes to (one that holds messages) is connected, and
+   *  reads nothing while none is; and once at each welcome of such a
+   *  client (welcomeAndJoinStream). */
+  private broadcastUndoneMarks(agentName: unknown): void {
+    if (!sharedServer) return;
+    if (![...sharedServer.clients.values()].some((c) => c.welcomed && clientHolds(c, UNDONE_MARKS_SCOPES))) return;
+    const frame = this.undoneMarks(agentName);
+    if (frame) this.broadcast(frame);
+  }
+
+  /** The undone-marks frame of the transcript agent's record, when that
+   *  agent is `agentName` (any agent when it's undefined) and its context
+   *  tells which rows are undone. */
+  private undoneMarks(agentName?: unknown): UndoneMarksMessage | undefined {
+    const agent = sharedServer?.app?.framework.getAllAgents()[0];
+    if (!agent || (agentName !== undefined && agent.name !== agentName)) return undefined;
+    const cmw = agent.getContextManager() as unknown as Partial<UndoneReadableCm> | undefined;
+    if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.ordinalOf !== 'function' || typeof cmw.getAllMessages !== 'function') return undefined;
+    try {
+      return { type: 'undone-marks', agent: agent.name, fromIndex: 0, undone: undoneRowIds(cmw as UndoneReadableCm, agent.name) };
+    } catch (err) {
+      console.error('[webui] undone marks failed:', err instanceof Error ? err.message : err);
+      return undefined;
     }
   }
 
@@ -1053,7 +1123,7 @@ export class WebUiModule implements Module {
       const app = this.panelApp();
       if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
       try {
-        const snapshot = buildHealthSnapshot(app);
+        const snapshot = { ...buildHealthSnapshot(app), agentPhases: sharedServer!.agentPhases.snapshot() };
         return Response.json(keptStrings ? keepNamedStrings(snapshot, keptStrings) : snapshot);
       } catch (err) {
         const status = err instanceof PanelError ? err.status : 500;
@@ -1124,7 +1194,7 @@ export class WebUiModule implements Module {
         { status: 404 },
       );
     }
-    const result = await fleet.requestPanel(childName, op, params);
+    const result = await fleet.requestPanel(childName, op, params, op === 'context-makeup' ? COUNT_LIMIT_MS + 15_000 : undefined);
     if (!result.ok) {
       const failed = { error: result.error ?? 'panel request failed' };
       return Response.json(keptStrings ? keepNamedStrings(failed, keptStrings) : failed, { status: result.status ?? 502 });
@@ -1304,7 +1374,28 @@ export class WebUiModule implements Module {
     if (!ws) return new Response('Workspace not mounted', { status: 503 });
     try {
       const { bytes, realPath } = await ws.readFileFromDisk(mountPrefixed);
-      return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': mimeFor(realPath) } });
+      // A workspace file is the agent's to write, and this route serves it on
+      // the Web UI's own origin. The sandbox, without allow-scripts, runs no
+      // script in an HTML or SVG file, and script-src falls back to
+      // default-src 'none', so such a file can't open /ws. Forms, frames
+      // that load a URL, popups and downloads started from the page stay off
+      // too. The page may load images, media, fonts and stylesheets from
+      // /files/ on this host, so a report shows its own pictures and styling. Not
+      // from the rest of the origin: a GET there can do work, as
+      // /debug/context?injections=1 runs inference and hooks, and the page
+      // would send it just by being opened. (A /files/ path spelt with a
+      // percent-escape, such as /%66iles/, passes the policy but reaches the
+      // static route, which only reads the SPA's files.) allow-same-origin
+      // lets those loads carry the operator's session cookie: without it the
+      // page's origin is opaque, its requests are cross-site, and the
+      // SameSite=Lax cookie isn't sent.
+      return new Response(bytes as Uint8Array<ArrayBuffer>, {
+        headers: {
+          'content-type': mimeFor(realPath),
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': WORKSPACE_FILE_CSP,
+        },
+      });
     } catch (err) {
       const read = err instanceof WorkspaceReadError ? err : null;
       if (read && ['unknown_mount', 'traversal', 'outside_include', 'other_mount', 'symlink', 'parent_symlink', 'escape'].includes(read.code)) {
@@ -1430,6 +1521,9 @@ export class WebUiModule implements Module {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
     if (!fw || typeof fw.getHostModeStatus !== 'function') return null;
     try {
+      // HostModeStatus passes through whole as `detail`. Its deferredWrites,
+      // deprecated since agent-framework #291, counts the writes a live
+      // surgery holds in memory: a quiesce no longer queues any.
       const s = (fw.getHostModeStatus() ?? {}) as Record<string, unknown>;
       const mode = typeof s.mode === 'string' ? s.mode
         : s.quiesced === true ? (s.drained === false ? 'quiescing' : 'quiesced')
@@ -1481,6 +1575,7 @@ export class WebUiModule implements Module {
     }
     const requester = this.requesterFor(client);
     const note = req.note?.trim() || undefined;
+    const from = this.transcriptBranchId();
     try {
       const r = op === 'rollback'
         ? await fw.rollbackToMessage!(agentName, {
@@ -1493,21 +1588,52 @@ export class WebUiModule implements Module {
             requester,
             ...(note ? { note } : {}),
           });
+      // A rollback on a presented window (#291) can keep rows after its
+      // target: rows that wait out of the window until the agent's next turn
+      // starts (or a restart before then), and rows one write showed with
+      // the target. The frame says how
+      // many of each, so the panel doesn't call them gone. It comes once the
+      // `_config` mount is written, and says when that failed.
+      const kept = r as { returnedToArrivals?: number; keptInWindowAfterTarget?: number };
+      const mountError = await this.materializeConfigMount();
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,
         sourceBranch: r.sourceBranch, targetBranch: r.targetBranch,
         messagesRemoved: r.messagesRemoved, lastVisible: r.lastVisible ?? null,
+        ...(kept.returnedToArrivals ? { returnedToArrivals: kept.returnedToArrivals } : {}),
+        ...(kept.keptInWindowAfterTarget ? { keptInWindowAfterTarget: kept.keptInWindowAfterTarget } : {}),
+        ...(mountError !== null ? { mountError } : {}),
       });
-      await this.materializeConfigMount();
       this.broadcastBranchChanged();
       this.refreshAllWelcomes();
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
+      // A rollback or a suppression whose switch failed once chronicle had
+      // moved, and whose putting the store back failed too, leaves the store
+      // on the branch it made: the `_config` mount is written from it before
+      // the answer, which says when that failed, and the clients follow it
+      // there, as after one that landed.
+      const moved = from !== undefined && this.transcriptBranchId() !== from;
+      const mountError = moved ? await this.materializeConfigMount() : null;
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName,
         error: err instanceof Error ? err.message : String(err),
         ...(typeof code === 'string' ? { code } : {}),
+        ...(mountError !== null ? { mountError } : {}),
       });
+      if (moved) {
+        this.broadcastBranchChanged();
+        this.refreshAllWelcomes();
+      }
+    }
+  }
+
+  /** The branch the transcript agent's context is on (broadcastBranchChanged's), or undefined where it can't be read. */
+  private transcriptBranchId(): string | undefined {
+    try {
+      return sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager()?.currentBranch().id;
+    } catch {
+      return undefined;
     }
   }
 
@@ -2543,7 +2669,8 @@ export class WebUiModule implements Module {
     const app = sharedServer.app;
     let result;
     try {
-      result = handleCommand(command, app);
+      // The operator log names who typed it, as the surgery dialog's does.
+      result = handleCommand(command, app, { requester: this.requesterFor(client) });
     } catch (err) {
       this.send(client, {
         type: 'error',
@@ -2574,7 +2701,8 @@ export class WebUiModule implements Module {
 
     const commandName = `/${parseCommand(command).name}`;
     if (result.branchChanged) {
-      await trackOperatorWork(app, commandName, this.materializeConfigMount());
+      const mountError = await trackOperatorWork(app, commandName, this.materializeConfigMount());
+      this.sayMountWritten(client, corrId, result, mountError);
       this.broadcastBranchChanged();
       this.refreshAllWelcomes();
     }
@@ -2605,7 +2733,8 @@ export class WebUiModule implements Module {
           switchToSessionId: follow.switchToSessionId,
         });
         if (follow.branchChanged) {
-          await trackOperatorWork(app, commandName, this.materializeConfigMount());
+          const mountError = await trackOperatorWork(app, commandName, this.materializeConfigMount());
+          this.sayMountWritten(client, corrId, follow, mountError);
           this.broadcastBranchChanged();
           this.refreshAllWelcomes();
         }
@@ -2619,13 +2748,39 @@ export class WebUiModule implements Module {
     }
   }
 
-  private async materializeConfigMount(): Promise<void> {
-    if (!sharedServer?.app) return;
+  /** An answer said the `_config` mount wasn't written from a branch
+   *  (`mountNotWrittenFrom`), and the Web UI has since tried to write it:
+   *  one more line says what that did, so the answer's line isn't left
+   *  standing once the mount is written. */
+  private sayMountWritten(client: ClientState, corrId: string | undefined, answer: CommandResult, mountError: string | null): void {
+    const branch = answer.mountNotWrittenFrom;
+    if (branch === undefined) return;
+    this.send(client, {
+      type: 'command-result',
+      corrId,
+      lines: [{
+        text: mountError === null
+          ? `The Web UI has since written the _config mount from ${branch}.`
+          : `The Web UI's refresh of the _config mount failed too: ${mountError}`,
+        style: 'system',
+      }],
+    });
+  }
+
+  /** Write the `_config` mount from the branch the store is on: what went
+   *  wrong, logged, or null once it is written (or there is no workspace
+   *  to write it). */
+  private async materializeConfigMount(): Promise<string | null> {
+    if (!sharedServer?.app) return null;
     const ws = sharedServer?.app.framework.getModule('workspace');
-    if (!ws || !('materializeMount' in ws)) return;
+    if (!ws || !('materializeMount' in ws)) return null;
     try {
       await (ws as { materializeMount: (name: string) => Promise<unknown> }).materializeMount('_config');
-    } catch {
+      return null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[webui] _config refresh failed: ${message}`);
+      return message;
     }
   }
 
@@ -2634,7 +2789,7 @@ export class WebUiModule implements Module {
     if (!app) return;
     try {
       const sessionId = sharedServer!.app!.frameworkSessionId;
-      const snap = buildPinsSnapshot(app, resolveAgent(app, agentName));
+      const snap = buildPinsSnapshot(app, resolveAgent(app, agentName), { withCandidates: true });
       this.send(client, { type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch (err) {
       this.send(client, {
@@ -2673,7 +2828,7 @@ export class WebUiModule implements Module {
     if (!app) return;
     try {
       const sessionId = sharedServer!.app!.frameworkSessionId;
-      const snap = buildPinsSnapshot(app, agentName);
+      const snap = buildPinsSnapshot(app, agentName, { withCandidates: true });
       this.broadcast({ type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch { }
   }
@@ -2778,6 +2933,15 @@ export class WebUiModule implements Module {
     const welcome = this.buildWelcome(childRecipes);
     this.send(client, client.scopes === null ? welcome : this.observerWelcome(welcome, client.scopes));
     client.welcomed = true;
+    // A welcome to the session and branch a page shows keeps the page's rows
+    // older than its tail, marks and all, and marks only its tail: an undo or
+    // a redo while the page was away moved no branch, so every row's mark
+    // follows, from index 0. One read of the record's listing a welcome, for
+    // a client the frame goes to.
+    if (clientHolds(client, UNDONE_MARKS_SCOPES)) {
+      const marks = this.undoneMarks();
+      if (marks) this.send(client, marks);
+    }
   }
 
   private observerWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>): WelcomeMessage {
@@ -2850,12 +3014,12 @@ export class WebUiModule implements Module {
           resolveBlobs: false,
           alignToBodyGroups: true,
         });
-        messages = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+        messages = markUndone(coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex), cmw);
         history = { startIndex: win.startIndex, totalCount: win.totalCount };
       } else {
         const all = cm.getAllMessages() as unknown as MessageLike[];
         const start = Math.max(0, all.length - WELCOME_HISTORY_LIMIT);
-        messages = coalesceAndFlatten(all.slice(start), start);
+        messages = markUndone(coalesceAndFlatten(all.slice(start), start), cmw);
         history = { startIndex: start, totalCount: all.length };
       }
     }
@@ -2912,6 +3076,7 @@ export class WebUiModule implements Module {
       childTrees,
       features: this.hostFeatures(),
       ...(hostMode ? { hostMode } : {}),
+      agentPhases: sharedServer!.agentPhases.snapshot(),
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
         ? { perAgentCost: sharedServer!.latestPerAgentCost }
@@ -3239,12 +3404,13 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
       i++;
       continue;
     }
+    // One body's shards, read as context-manager reads them (continuesBody):
+    // the same text ingested again carries the same bodyGroupId, and starts
+    // its shards again, as another message.
     const runStart = i;
-    while (i < messages.length && messages[i]!.bodyGroupId === m.bodyGroupId) i++;
-    const shards = messages.slice(runStart, i)
-      .map((shard, k) => ({ shard, k }))
-      .sort((a, b) => (a.shard.shardIndex ?? a.k) - (b.shard.shardIndex ?? b.k))
-      .map(({ shard }) => shard);
+    i++;
+    while (i < messages.length && continuesBody(messages[i - 1], messages[i])) i++;
+    const shards = messages.slice(runStart, i);
     // context-manager's shards are substrings of one body that join back with
     // no separator, so their text is merged without one.
     const mergedContent: unknown[] = [];
@@ -3264,6 +3430,54 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
   return out;
 }
 
+/** What undoneRowIds reads of a context manager. */
+export interface UndoneReadableCm {
+  /** The record, in order: the store's listing, kept while it is unchanged. */
+  getAllMessages(): ReadonlyArray<{ id?: unknown; metadata?: unknown }>;
+  /** Undefined for a row not in the window (and for every row in legacy mode). */
+  ordinalOf(id: string): number | undefined;
+  windowStatusOf(id: string): string;
+}
+
+/**
+ * The record's rows, from index 0, out of the agent's window as undone
+ * (windowStatusOf 'undone'), by each row's id, a shard's too: a page's
+ * entry for a sharded body carries its first shard's. An undone row is out
+ * of the window, and a row in it has an ordinal, so only the rows with
+ * none are asked their status: one map lookup a row, where a status read
+ * of every row took 0.4 to 0.7 s of the event loop at 50,000 rows. A row
+ * stamped for other residents only (a co-resident's, in the store the
+ * residents share, which the listing holds whole) never enters the agent's
+ * window, so it isn't asked either.
+ */
+/** The scopes the undone-marks frame needs. */
+const UNDONE_MARKS_SCOPES = frameScopes({ type: 'undone-marks', agent: '', fromIndex: 0, undone: [] });
+
+export function undoneRowIds(cm: UndoneReadableCm, agentName: string): string[] {
+  const undone: string[] = [];
+  for (const { id, metadata } of cm.getAllMessages()) {
+    if (typeof id !== 'string' || cm.ordinalOf(id) !== undefined) continue;
+    const stamp = audienceOf(metadata);
+    if (stamp && !stamp.audience.includes(agentName)) continue;
+    if (cm.windowStatusOf(id) === 'undone') undone.push(id);
+  }
+  return undone;
+}
+
+/**
+ * Mark each entry whose row is out of the transcript agent's window as
+ * undone (agent-framework #291: windowStatusOf 'undone'), in place. A
+ * coalesced shard run goes by its first shard, whose id it carries. A
+ * context-manager without window reads marks none.
+ */
+function markUndone(entries: WelcomeMessageEntry[], cmw: WindowCapableCm | undefined): WelcomeMessageEntry[] {
+  if (typeof cmw?.windowStatusOf !== 'function') return entries;
+  for (const entry of entries) {
+    if (entry.id && cmw.windowStatusOf(entry.id) === 'undone') entry.undone = true;
+  }
+  return entries;
+}
+
 function readHistory(
   cmw: WindowCapableCm,
   beforeIndex: number,
@@ -3276,7 +3490,7 @@ function readHistory(
       resolveBlobs: false,
       alignToBodyGroups: true,
     });
-    let entries = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+    let entries = markUndone(coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex), cmw);
     if (scopes !== null) {
       entries = entries
         .map((e) => filterEntryForScopes(e, scopes))

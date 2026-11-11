@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { readWithoutWaiting } from '../update/contract.js';
 
 export interface SetupState {
   v: 1;
-  shell: boolean;
   finished?: string;
 }
 
@@ -11,7 +10,7 @@ export type KeptState = { state: SetupState } | { unreadable: string } | { absen
 export function readSetupState(path: string): KeptState {
   let text: string;
   try {
-    text = readFileSync(path, 'utf-8');
+    text = readWithoutWaiting(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { absent: true };
     return { unreadable: (error as Error).message };
@@ -22,8 +21,15 @@ export function readSetupState(path: string): KeptState {
   } catch {
     return { unreadable: 'it isn\'t JSON' };
   }
-  if (state?.v !== 1 || typeof state.shell !== 'boolean' || (state.finished !== undefined && typeof state.finished !== 'string')) {
+  if (state?.v !== 1 || (state.finished !== undefined && !isStamp(state.finished))) {
     return { unreadable: 'it isn\'t the answers this setup keeps' };
   }
-  return { state: state as SetupState };
+  // An answer an earlier setup kept beside these, such as whether the resident gets a shell, isn't read.
+  return { state: { v: 1, ...(state.finished === undefined ? {} : { finished: state.finished }) } };
+}
+
+function isStamp(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const time = Date.parse(value);
+  return !Number.isNaN(time) && new Date(time).toISOString() === value;
 }
