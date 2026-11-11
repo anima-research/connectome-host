@@ -2256,10 +2256,11 @@ describe("the terminal's hidden question", () => {
     rl.on('line', (line) => { paste.take(line); });
     input.write('\x1b[200~my token is\r tok-123456 \rthe token is tok-123456\r\x1b[201~');
     await Bun.sleep(30);
+    const history = (rl as unknown as { history: string[] }).history;
+    expect(history.some((entry) => entry.includes('tok-123456')), 'the history held the token first').toBe(true);
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
     input.write('tok-123456\r');
     expect(await answer).toBe('tok-123456');
-    const history = (rl as unknown as { history: string[] }).history;
     expect(history.some((entry) => entry.includes('tok-123456'))).toBe(false);
     expect(history).toContain('my token is');
     paste.end();
@@ -2271,6 +2272,9 @@ describe("the terminal's hidden question", () => {
       const { input, output, rl, lines, nextLine } = terminal();
       input.write(before);
       await Bun.sleep(10);
+      const ringKey = Object.getOwnPropertySymbols(rl).find((key) => key.description === '_killRing');
+      const ring = (rl as unknown as Record<symbol, unknown[]>)[ringKey!]!;
+      expect(ring.some((entry) => String(entry).includes('tok-123456')), 'the kill ring held the token first').toBe(true);
       const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
       input.write('tok-123456\r');
       expect(await answer).toBe('tok-123456');
