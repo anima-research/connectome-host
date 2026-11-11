@@ -377,6 +377,19 @@ test('a repair that finds a copy a stopped repair set aside keeps that copy, and
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
 });
 
+test('a pty check stopped at its 30 s limit says so, in the repair\'s line and in the stop, whatever it printed first', async () => {
+  for (const printed of ['', '(node:4242) Warning: something slow\n']) {
+    const { dir, root } = installed();
+    const stopped: Ran = { status: null, stdout: '', stderr: printed, timedOut: true };
+    const made = world(dir, { pty: [stopped, stopped] });
+    expect(await runShell(root, ['install'], made)).toBe(1);
+    const check = made.seen.ran.findIndex((argv) => argv[0] === 'node' && argv[1] === '-e');
+    expect(made.seen.options[check]!.timeoutMs).toBe(30_000);
+    expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (its check ran past its 30 s limit and was stopped), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
+    expect(made.seen.err[0]).toStartWith('The resident\'s shell runs on node-pty, and here it doesn\'t work: its check ran past its 30 s limit and was stopped. ');
+  }
+});
+
 test('on Linux, a node-pty that still opens no pty once installed again stops the command, naming the build tools and the line that tries again', async () => {
   const { dir, root, line } = installed();
   const made = world(dir, { pty: [BROKEN, BROKEN] });

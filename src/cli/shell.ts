@@ -180,9 +180,12 @@ const PTY_CHECK = "let p;try{p=require('module').createRequire(require('fs').rea
   ".split('\\n')[0]);process.exit(1)}let o='';p.onData(d=>{o+=d});p.onExit(()=>{if(o.includes('pty-ok'))process.exit(0);" +
   "console.error('a pty it opened gave back nothing');process.exit(1)})";
 
+const PTY_CHECK_MS = 30_000;
+
 async function ptyWorks(world: ShellWorld, dir: string, env: Record<string, string>): Promise<string | null> {
-  const ran = await world.run(['node', '-e', PTY_CHECK], { cwd: dir, env, timeoutMs: 30_000 });
+  const ran = await world.run(['node', '-e', PTY_CHECK], { cwd: dir, env, timeoutMs: PTY_CHECK_MS });
   if (ran.status === 0) return null;
+  if (ran.timedOut) return `its check ran past its ${PTY_CHECK_MS / 1000} s limit and was stopped`;
   const said = `${ran.stderr}${ran.stdout}`.trim().split('\n').at(-1);
   return said ? said : `node exited without saying why (${ended(ran)})`;
 }
