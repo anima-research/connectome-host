@@ -741,4 +741,20 @@ describe('where the host knows no window', () => {
       expect(own).toMatchObject({ maxTokens: 200_000, contextBudgetTokens: 900_000, maxStreamTokens: 150_000 });
     });
   }
+
+  test('a token count the fit couldn\'t have read is named in the line all the same, as it is where the window is known', async () => {
+    for (const [agent, sentence] of [
+      [{ maxTokens: '16k' }, 'agent.maxTokens is "16k", not a number of tokens.'],
+      [{ maxTokens: 0 }, 'agent.maxTokens is 0, not a positive number of tokens.'],
+      [{ contextBudgetTokens: '200000' }, 'agent.contextBudgetTokens is "200000", not a number of tokens.'],
+    ] as const) {
+      const loaded = await loadRecipe(recipeFile({ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', ...agent }));
+      const fit = recipeFit(loaded, 'anthropic/claude-haiku-4-5');
+      expect(fit.checked).toBe(false);
+      expect(fit.checked === false && fit.line).toContain('knows windows only on provider "anthropic"');
+      expect(fit.checked === false && fit.line).toContain(sentence);
+    }
+    const fine = recipeFit(await loadRecipe(recipeFile({ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', maxTokens: 16_384 })), 'anthropic/claude-haiku-4-5');
+    expect(fine.checked === false && fine.line).not.toContain('not a');
+  });
 });

@@ -20,6 +20,12 @@ describe('recipe numbers must be finite', () => {
     ['modules.fleet.sigtermEscalationMs', (v) => recipe({}, { modules: { fleet: { sigtermEscalationMs: v } } }), /sigtermEscalationMs must be a whole number of milliseconds from 0 to 2147483647/, (r) => r.modules.fleet.sigtermEscalationMs],
   ];
 
+  cases.push(
+    // 0, a fraction or a string in these two is the fit check's to name (recipe-fit.ts); only a non-finite number is refused here.
+    ['agent.maxTokens', (v) => recipe({ maxTokens: v }), /maxTokens must be a finite number of tokens/, (r) => r.agent.maxTokens],
+    ['agent.contextBudgetTokens', (v) => recipe({ contextBudgetTokens: v }), /contextBudgetTokens must be a finite number of tokens/, (r) => r.agent.contextBudgetTokens],
+  );
+
   for (const [field, build, message, read] of cases) {
     test(`${field}: Infinity, an overflowing JSON number and NaN are refused, naming the field and the value; a finite value is kept`, () => {
       for (const bad of [Infinity, OVERFLOW, Number.NaN]) {

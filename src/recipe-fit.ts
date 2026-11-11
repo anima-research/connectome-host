@@ -318,9 +318,14 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
   const window = modelWindow(recipe, model);
   if (!window) {
     const provider = resolveProvider(recipe);
-    return notChecked(provider === 'anthropic'
+    // A field the fit couldn't have read is named here too: without a
+    // window the check ends before readNumbers, and a recipe on another
+    // provider with maxTokens "16k" or 0 loaded without a word about it.
+    const unreadable = unreadableTokenField(recipe) === undefined ? undefined : readNumbers(recipe);
+    return notChecked((provider === 'anthropic'
       ? `The host has no window for ${show(model)}.`
-      : `The host knows windows only on provider "anthropic", and this recipe's is "${provider}".`);
+      : `The host knows windows only on provider "anthropic", and this recipe's is "${provider}".`)
+      + (typeof unreadable === 'string' ? ` ${unreadable}` : ''));
   }
   const maxTokens: unknown = recipe.agent.maxTokens ?? DEFAULT_MAX_TOKENS;
   const thinking = thinkingOf(recipe);

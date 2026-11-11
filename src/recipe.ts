@@ -2548,6 +2548,17 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
+  // The two token fields the fit check reads (recipe-fit.ts): what it says
+  // about a 0, a fraction or a string stays its business, but a number that
+  // isn't finite is refused here as agent.maxStreamTokens's is, since JSON
+  // 1e309 parses to Infinity, which saveRecipe() writes back as null, so the
+  // next start would run on the default where the operator wrote a number.
+  for (const key of ['maxTokens', 'contextBudgetTokens'] as const) {
+    const value: unknown = agent[key];
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new Error(`Recipe agent.${key} must be a finite number of tokens, got ${shown(value)}.`);
+    }
+  }
   if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || !Number.isFinite(agent.maxStreamTokens) || agent.maxStreamTokens <= 0)) {
     throw new Error(`Recipe agent.maxStreamTokens must be a positive number (finite), got ${shown(agent.maxStreamTokens)}.`);
   }
