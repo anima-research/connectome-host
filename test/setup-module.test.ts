@@ -2568,8 +2568,10 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       fetch: (async () => models('gpt-6.1-terra')) as unknown as typeof fetch,
     });
     const asked = askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-    const checked = checkModel(made.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
     while (answer === undefined) await Bun.sleep(1);
+    const reached = heldAt(made.module);
+    const checked = checkModel(made.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
+    await Promise.race([reached, checked.then(() => { throw new Error('the check ended without waiting for the question'); })]);
     answer('sk-openai-key');
     expect((await asked).success).toBe(true);
     const result = await checked;
