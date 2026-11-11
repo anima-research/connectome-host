@@ -1,9 +1,10 @@
 import { describe, test, expect, afterAll } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { main } from '../src/cli/connectome.js';
 import { doctor, type DoctorParts } from '../src/cli/doctor.js';
+import { plist, serviceUnits, systemdUnit } from '../src/cli/service-unit.js';
 
 const SECRETS = {
   DISCORD_TOKEN: 'tok-secret-value',
@@ -14,7 +15,7 @@ const SECRETS = {
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-interface Install { work: string; root: string; data: string }
+interface Install { work: string; root: string; data: string; platform: NodeJS.Platform; home: string; unit: string }
 
 const RECIPE = (work: string) => ({
   name: 'Ember',
@@ -34,29 +35,36 @@ function install(opts: {
   manager?: 'systemd-user' | 'launchd';
   prefix?: string;
 } = {}): Install {
-  const work = mkdtempSync(join(tmpdir(), opts.prefix ?? 'chost-doctor-'));
-  dirs.push(work);
+  const top = mkdtempSync(join(tmpdir(), opts.prefix ?? 'chost-doctor-'));
+  dirs.push(top);
+  const work = join(top, 'test');
   const root = join(work, 'connectome-host');
   const data = join(work, 'data');
-  mkdirSync(root);
+  mkdirSync(root, { recursive: true });
   mkdirSync(data);
   mkdirSync(join(work, '.setup'));
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
-  writeFileSync(join(root, 'service.json'), JSON.stringify({
-    v: 1,
-    manager: opts.manager ?? 'systemd-user',
-    units: { host: { name: 'connectome-test.service', file: '/nowhere/connectome-test.service' } },
-    hostArgs: [join(work, 'recipe.json')],
-    workingDirectory: work,
-    logs: { kind: 'journal' },
-  }));
+  const platform: NodeJS.Platform = opts.manager === 'launchd' ? 'darwin' : 'linux';
+  const home = join(top, 'home');
+  const at: Install = { work, root, data, platform, home, unit: serviceUnits(root, platform, home)!.host.file };
+  writeUnit(at, join(work, 'recipe.json'));
   const env: Record<string, string> = { ...SECRETS, ...opts.env };
   for (const name of opts.drop ?? []) delete env[name];
   writeFileSync(join(work, '.env'), Object.entries(env).map(([k, v]) => `${k}="${v}"`).join('\n') + '\n');
   writeFileSync(join(work, '.setup', 'stored-secrets.json'), JSON.stringify(opts.stored ?? ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN']));
   writeFileSync(join(work, 'recipe.json'), JSON.stringify(opts.recipe ?? RECIPE(work)));
   if (opts.overlay) writeFileSync(join(work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: opts.overlay }));
-  return { work, root, data };
+  return at;
+}
+
+function writeUnit(at: Install, recipe: string, work = at.work): void {
+  const units = serviceUnits(at.root, at.platform, at.home)!;
+  const argv = [process.execPath, join(at.root, 'start.js'), recipe, '--headless'];
+  const env = Object.entries(unitEnvironment(at));
+  mkdirSync(dirname(units.host.file), { recursive: true });
+  writeFileSync(units.host.file, units.manager === 'systemd-user'
+    ? systemdUnit('Connectome test', work, argv, env, null)
+    : plist(units.host.name, work, argv, env, join(work, 'logs', 'agent.log')));
 }
 
 interface FakeHost { stop: () => void; received: string[] }
@@ -229,6 +237,8 @@ async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[]
     recipeLimitMs: 60_000,
     plutil: fakePlutil(at.work, unitEnvironment(at)),
     servicePid: async () => ({ pid: '4242' }),
+    platform: at.platform,
+    home: at.home,
     ...parts,
   });
   return { status, out: out.join('\n'), err: err.join('\n') };
@@ -383,9 +393,9 @@ describe('connectome doctor', () => {
       },
       python: fakePython(at.work, { end: 'clean' }),
     });
-    expect(asked[2]).toBe(true);
+    expect([asked[2], asked[4]]).toEqual([true, true]);
     expect(r.out).toContain('It\'s stopped.');
-    expect(r.out).toContain(`No host answers, since its service is stopped: \`${join(at.root, 'connectome')} service start\` starts it.`);
+    expect(r.out).toMatch(/No host answers, since its service is stopped: `(XDG_RUNTIME_DIR=\S+ )?systemctl --user start connectome-test\.service` starts it\./);
     expect(r.out).not.toMatch(/✗ (No host answers|The service check)/);
     const failed = await run(at, { checkService: async () => ({ passed: false, lines: ['The unit is failed.'] }) });
     expect(failed.out).toMatch(/✗ The service check above didn't pass/);
@@ -822,42 +832,57 @@ describe('connectome doctor', () => {
     expect(r.out).toMatch(/Discord isn't checked/);
   });
 
-  test('with no service recorded it says so, and the checks that need its recipe or its unit say why they didn\'t run', async () => {
+  test('with no service installed it says so, and the checks that need its recipe or its unit say why they didn\'t run', async () => {
     const at = install();
-    rmSync(join(at.root, 'service.json'));
+    rmSync(at.unit);
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toMatch(/✗ No service is recorded/);
-    expect(r.out).toContain('connectome service install');
-    expect(r.out).toContain('Which recipe the service runs is in its record, so it isn\'t checked without one.');
-    expect(r.out).toContain('The ladder reads the service\'s unit and log, so it runs once a service is recorded.');
+    expect(r.out).toContain(`✗ No service is installed for this install: ${at.unit} isn't there. ` +
+      '`connectome service install <recipe>` writes one and checks it.');
+    expect(r.out).toContain('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
+    expect(r.out).toContain('The ladder reads the service\'s unit and log, so it runs once a service is installed.');
     expect(r.out).not.toContain('ladder args');
     expect(r.out).not.toContain('ember (900)');
     expect(r.status).toBe(1);
+    const nowhere = await withHost(at, HEALTHY_HOST, () => run(at, { platform: 'win32' }));
+    expect(nowhere.out).toContain('✗ No service is installed for this install: `connectome service install` writes one only ' +
+      'on Linux and macOS, for a directory whose name has a letter or digit.');
   });
 
-  test('a service record that can\'t be read is a problem naming how to write it again, and the ladder says why it didn\'t run', async () => {
+  test('a unit file install couldn\'t have written, or one that can\'t be read, is a problem naming how to write it anew, and the ladder says why it didn\'t run', async () => {
     const at = install();
-    writeFileSync(join(at.root, 'service.json'), '{ "v": 1 }');
+    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toMatch(/✗.*service record.*connectome service install <recipe>/);
+    expect(r.out).toContain(`✗ ${at.unit} isn't the unit file service install writes: `);
+    expect(r.out).toContain('`connectome service install <recipe>` writes it anew, or says why it can\'t.');
     expect(r.out).not.toContain('ladder args');
-    expect(r.out).toMatch(/ladder .*record can't be read/);
-    expect(r.out).toMatch(/Discord isn't checked: .*the service's record can't be read/);
+    expect(r.out).toContain('The ladder reads the service\'s unit, so it doesn\'t run while that unit can\'t be read.');
+    expect(r.out).toMatch(/Discord isn't checked: .*that unit can't be read/);
     expect(r.status).toBe(1);
+    writeUnit(at, join(at.work, 'recipe.json'));
+    writeFileSync(at.unit, readFileSync(at.unit, 'utf-8').replace(/"[^"]*start\.js" /, ''));
+    const other = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(other.out).toContain(`✗ ${at.unit} doesn't run start.js with a recipe after it, as the one service install writes does.`);
+    expect(other.out).not.toContain('ladder args');
+    rmSync(at.unit);
+    mkdirSync(at.unit);
+    const unread = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(unread.out).toContain(`✗ ${at.unit}, connectome-test.service's unit file, can't be read: `);
+    expect(unread.out).not.toContain('No service is installed');
+    expect(unread.status).toBe(1);
   });
 
-  test('a service record that goes bad after the service check is a problem in words, and the checks after it are made', async () => {
-    const at = install();
-    const r = await run(at, {
-      checkService: async () => {
-        writeFileSync(join(at.root, 'service.json'), '{ "v": 1 }');
-        return { passed: true, lines: [] };
-      },
-    });
-    expect(r.out).toMatch(/✗ Reading the service record again failed: /);
-    expect(r.out).toContain('ember (900)');
-    expect(r.out).toContain('ladder args');
-    expect(r.status).toBe(1);
+  test('whether the service check expects a shell comes from the recipe the unit runs', async () => {
+    for (const [recipe, shell] of [[RECIPE(''), true], [{ ...RECIPE(''), mcpServers: { discord: RECIPE('').mcpServers.discord } }, false]] as const) {
+      const at = install({ recipe });
+      let asked: unknown[] = [];
+      await run(at, {
+        checkService: async (...args: unknown[]) => {
+          asked = args;
+          return { passed: true, lines: [] };
+        },
+      });
+      expect([shell, asked[2]]).toEqual([shell, shell]);
+    }
   });
 
   test('a service check that doesn\'t pass is a problem, and one that throws is a problem too, with the checks after it made', async () => {
@@ -1491,15 +1516,18 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.status).toBe(1);
   });
 
-  test('the manager the service record names is asked, and no other: without a record, the one a service here would run under', async () => {
+  test('the manager a service here runs under is asked, and no other, with its unit or without one', async () => {
     const none = install();
-    rmSync(join(none.root, 'service.json'));
+    rmSync(none.unit);
     const platform = fakeManager(none.work);
     await run(none, { systemctl: platform.path, launchctl: platform.path });
-    if (process.platform === 'darwin') {
-      expect(platform.calls().length).toBeGreaterThan(0);
-      expect(platform.calls().every((call) => call.startsWith('getenv '))).toBe(true);
-    } else expect(platform.calls()).toEqual(['--user show-environment']);
+    expect(platform.calls()).toEqual(['--user show-environment']);
+    const noPlist = install({ manager: 'launchd' });
+    rmSync(noPlist.unit);
+    const mac = fakeManager(noPlist.work);
+    await run(noPlist, { systemctl: mac.path, launchctl: mac.path });
+    expect(mac.calls().length).toBeGreaterThan(0);
+    expect(mac.calls().every((call) => call.startsWith('getenv '))).toBe(true);
     const launchd = install({ manager: 'launchd' });
     const asked = fakeManager(launchd.work);
     await run(launchd, { systemctl: asked.path, launchctl: asked.path });
@@ -1529,8 +1557,7 @@ describe('connectome doctor: its waits, its remedies and its last line', () => {
     try {
       const url = `http://127.0.0.1:${silent.port}/recipe.json`;
       const at = install();
-      const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8'));
-      writeFileSync(join(at.root, 'service.json'), JSON.stringify({ ...record, hostArgs: [url] }));
+      writeUnit(at, url);
       const r = await withHost(at, HEALTHY_HOST, () => run(at, { recipeLimitMs: 300 }));
       expect(r.out).toContain(`✗ ${url} didn't load within 0.3 s: the fetch of it didn't answer in time.`);
       expect(r.out).toContain('Discord isn\'t checked: which servers run is in the recipe, which didn\'t load.');
@@ -1620,35 +1647,35 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     'shell-check': { shells: [], notConnected: [{ id: 'shell', refused: said, retrying: false }], closedTabs: [] },
   });
 
-  const onLaunchd = process.platform === 'darwin';
-
-  test('with no service record, doctor asks the manager a service here would run under, and withholds what only it gives', async () => {
+  test('with no service installed, doctor asks the manager a service here would run under, and withholds what only it gives', async () => {
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MANAGED_SECRET'] });
-    rmSync(join(at.root, 'service.json'));
+    rmSync(at.unit);
     const manager = fakeManager(at.work, {
       env: ['MANAGED_SECRET=managed-secret-value'], launchd: { MANAGED_SECRET: 'managed-secret-value' },
     });
     const r = await withHost(at, refusing('the token managed-secret-value was refused'),
       () => run(at, { systemctl: manager.path, launchctl: manager.path }));
-    if (onLaunchd) expect(manager.calls()).toContain('getenv MANAGED_SECRET');
-    else expect(manager.calls()).toEqual(['--user show-environment']);
+    expect(manager.calls()).toEqual(['--user show-environment']);
     expect(r.out).toContain('the token <MANAGED_SECRET> was refused');
     expect(r.out).not.toContain('managed-secret-value');
   });
 
-  test('with no service record and a manager that can\'t be read, doctor goes on, naming the step that failed', async () => {
-    const at = install();
-    rmSync(join(at.root, 'service.json'));
-    const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
-    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
-    const asked = onLaunchd ? 'launchd' : 'systemd\'s user manager';
-    const step = onLaunchd ? '`launchctl getenv \\w+`' : '`systemctl --user show-environment`';
-    expect(r.out).toMatch(new RegExp(`With no service record to name its manager, doctor asked ${asked}, which a service installed ` +
-      `here would run under, and couldn't read it \\(${step} failed: Failed to connect to bus: No medium found\\), so a value ` +
-      'only that manager gives isn\'t known to doctor or hidden in what it prints\\.'));
-    expect(r.out).not.toContain('Then run doctor again');
-    expect(r.out).not.toContain('Doctor stops here');
-    expect(r.out).toContain('pid 4242');
+  test('with no service installed and a manager that can\'t be read, doctor goes on, naming the step that failed', async () => {
+    for (const [manager, asked, step] of [
+      ['systemd-user', 'systemd\'s user manager', '`systemctl --user show-environment`'],
+      ['launchd', 'launchd', '`launchctl getenv \\w+`'],
+    ] as const) {
+      const at = install({ manager });
+      rmSync(at.unit);
+      const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+      expect([manager, r.out]).toEqual([manager, expect.stringMatching(new RegExp(`With no service installed, doctor asked ${asked}, ` +
+        `which a service installed here would run under, and couldn't read it \\(${step} failed: Failed to connect to bus: No ` +
+        'medium found\\), so a value only that manager gives isn\'t known to doctor or hidden in what it prints\\.'))]);
+      expect(r.out).not.toContain('Then run doctor again');
+      expect(r.out).not.toContain('Doctor stops here');
+      expect(r.out).toContain('pid 4242');
+    }
   });
 
   test('a host that answers while its service is stopped is a problem naming it, with no advice to start the service until it\'s stopped', async () => {
@@ -1659,8 +1686,8 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
       servicePid: async () => ({ pid: '0' }),
     }));
     expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, though the service is stopped, so it isn\'t the service\'s');
-    expect(r.out).toContain(`Stop it before \`${join(at.root, 'connectome')} service start\`, since a host the service starts takes this install's socket`);
-    expect(r.out).not.toContain(`\`${join(at.root, 'connectome')} service start\` starts it`);
+    expect(r.out).toMatch(/Stop it before `(XDG_RUNTIME_DIR=\S+ )?systemctl --user start connectome-test\.service`, since a host the service starts takes this install's socket/);
+    expect(r.out).not.toMatch(/systemctl --user start connectome-test\.service` starts it/);
     expect(r.out).not.toContain('✓ The host answers');
     expect(r.status).toBe(1);
   });
@@ -1784,8 +1811,6 @@ describe('connectome doctor\'s Discord check, where Discord or the way to it ans
 });
 
 describe('connectome doctor, its round on the review of 4a79597ff', () => {
-  const onLaunchd = process.platform === 'darwin';
-
   test('a host answering while the service runs, with a pid other than the service\'s main process, is a problem naming it', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
@@ -1934,9 +1959,9 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
     chmodSync(plutil, 0o755);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
-    expect(r.out).toContain('connectome-test.service\'s plist, couldn\'t be read for the environment it sets the service ' +
-      '(plutil\'s answer wasn\'t JSON). Fix it (`plutil -lint /nowhere/connectome-test.service` names what\'s wrong), or ' +
-      'move it aside and run `connectome service install`, which writes it anew.');
+    expect(r.out).toContain(`${at.unit}, com.animalabs.connectome.test's plist, couldn't be read for the environment it sets the ` +
+      `service (plutil's answer wasn't JSON). Fix it (\`plutil -lint ${at.unit}\` names what's wrong), or move it aside and run ` +
+      '`connectome service install`, which writes it anew.');
     expect(r.out).toContain('Doctor stops here');
   });
 
@@ -1956,13 +1981,16 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     }
   });
 
-  test('a recipe the record names by a relative path is read from the service\'s working directory, as the host reads it', async () => {
+  test('a recipe the unit names by a relative path is read from the unit\'s working directory, as the host reads it', async () => {
     const at = install();
-    const record = JSON.parse(readFileSync(join(at.root, 'service.json'), 'utf-8')) as { hostArgs: string[] };
-    record.hostArgs = ['recipe.json', '--headless'];
-    writeFileSync(join(at.root, 'service.json'), JSON.stringify(record));
+    writeUnit(at, 'recipe.json');
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✓ ${join(at.work, 'recipe.json')} loads.`);
+    const link = join(dirname(at.work), 'linked');
+    symlinkSync(at.work, link);
+    writeUnit(at, 'recipe.json', link);
+    const linked = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(linked.out).toContain(`✓ ${join(link, 'recipe.json')} loads.`);
   });
 
   test('the closing line names the counts no credential let the host make, and a closed tab, among what wasn\'t checked', async () => {
@@ -2032,15 +2060,13 @@ describe('connectome doctor\'s Discord check, in its round on the review of 4a79
 });
 
 describe('connectome doctor, its round on the review of e9bb852cc', () => {
-  const onLaunchd = process.platform === 'darwin';
-
-  test('with a service record that can\'t be read, a manager doctor can\'t read stops it, as with a readable one', async () => {
+  test('with a unit file install couldn\'t have written, a manager doctor can\'t read stops it, as with a readable one', async () => {
     const at = install();
-    writeFileSync(join(at.root, 'service.json'), '{ not json');
+    writeFileSync(at.unit, '[Service]\nExecStart=bun\n');
     const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
     expect(r.out).toContain('Doctor stops here');
-    expect(r.out).not.toContain('With no service record to name its manager');
+    expect(r.out).not.toContain('With no service installed');
     expect(r.status).toBe(1);
   });
 

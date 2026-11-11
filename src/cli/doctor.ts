@@ -1,6 +1,8 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -19,7 +21,9 @@ import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
-import { checkService, readServiceRecord, serviceLines, servicePid, pathState, type ServiceRecord } from './service.js';
+import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
+import { machine, recipeHasShell, serviceCommands, serviceLines } from './service.js';
+import { managerFor, readUnit, serviceUnits, type Manager, type ServiceUnits } from './service-unit.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
 const LADDER_LIMIT_MS = 60_000;
@@ -35,7 +39,8 @@ const EMPTY_COMPRESSION = 'The recipe\'s agent.strategy.compressionModel is empt
 
 export interface DoctorParts {
   fetch: typeof fetch;
-  checkService: typeof checkService;
+  checkService: (units: ServiceUnits, work: string, shell: boolean, cmd: string, stoppedIsFine: boolean) =>
+    Promise<ServiceCheck> | ServiceCheck;
   python: string | null;
   hostLimitMs: number;
   ladderLimitMs: number;
@@ -44,7 +49,9 @@ export interface DoctorParts {
   envLimitMs: number;
   recipeLimitMs: number;
   plutil: string;
-  servicePid: (record: ServiceRecord) => Promise<{ pid: string } | { why: string }> | { pid: string } | { why: string };
+  servicePid: (units: ServiceUnits) => Promise<{ pid: string } | { why: string }> | { pid: string } | { why: string };
+  platform: NodeJS.Platform;
+  home: string;
 }
 
 type Server = {
@@ -83,7 +90,7 @@ export async function doctor(
   ctx: CliContext,
   parts: DoctorParts = {
     fetch,
-    checkService,
+    checkService: (units, work, shell, cmd, stoppedIsFine) => checkUnits(units, work, shell, cmd, machine(), stoppedIsFine),
     python: Bun.which('python3'),
     hostLimitMs: HOST_ANSWER_LIMIT_MS,
     ladderLimitMs: LADDER_LIMIT_MS,
@@ -92,7 +99,9 @@ export async function doctor(
     envLimitMs: ENV_LIMIT_MS,
     recipeLimitMs: RECIPE_LIMIT_MS,
     plutil: 'plutil',
-    servicePid: (record) => servicePid(record),
+    servicePid: (units) => servicePid(units, machine()),
+    platform: process.platform,
+    home: homedir(),
   },
 ): Promise<number> {
   if (ctx.argv.length > 0) {
@@ -101,16 +110,34 @@ export async function doctor(
   }
   const root = ctx.root!;
 
-  let service: ServiceRecord | null = null;
+  const units = serviceUnits(root, parts.platform, parts.home);
+  let service: { units: ServiceUnits; recipe: string; work: string } | null = null;
   let serviceError: string | null = null;
-  try {
-    service = readServiceRecord(root);
-  } catch (error) {
-    serviceError = errorText(error);
+  if (units !== null) {
+    let text: string | null = null;
+    try {
+      text = readFileSync(units.host.file, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        serviceError = `${units.host.file}, ${units.host.name}'s ${fileWord(units.manager)}, can't be read: ` +
+          `${errorText(error).replace(/\.$/, '')}.`;
+      }
+    }
+    if (text !== null) {
+      const read = readUnit(units.manager, text);
+      const at = 'why' in read ? -1 : read.argv.findIndex((word) => basename(word) === 'start.js');
+      if ('why' in read) {
+        serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
+      } else if (at < 0 || read.argv[at + 1] === undefined) {
+        serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
+      } else {
+        service = { units, recipe: read.argv[at + 1]!, work: read.workingDirectory };
+      }
+    }
   }
-  const work = service?.workingDirectory ?? join(root, '..');
+  const work = service?.work ?? units?.work ?? join(root, '..');
   const recipePath = service === null ? null
-    : /^https?:\/\//.test(service.hostArgs[0]!) ? service.hostArgs[0]! : resolve(work, service.hostArgs[0]!);
+    : /^https?:\/\//.test(service.recipe) ? service.recipe : resolve(work, service.recipe);
   let recipeRead: { document: RecipeDocument } | { error: unknown } | null = null;
   if (recipePath !== null) {
     try {
@@ -137,8 +164,7 @@ export async function doctor(
   };
   let env: Record<string, string | undefined>;
   let storedNames: string[] | null;
-  const manager = service?.manager
-    ?? (process.platform === 'darwin' ? 'launchd' : process.platform === 'linux' ? 'systemd-user' : null);
+  const manager = units?.manager ?? managerFor(parts.platform);
   let managerUnread: string | null = null;
   let envFiles: string[] = [];
   try {
@@ -160,11 +186,11 @@ export async function doctor(
       if (service !== null || serviceError !== null) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
-    const unit = service === null ? null : unitEnv(service, parts);
+    const unit = service === null ? null : unitEnv(service.units, parts);
     if (unit !== null && 'why' in unit) {
       const { name, file } = service!.units.host;
       const why = unit.why.replace(/\.$/, '');
-      throw new Error(service!.manager === 'launchd'
+      throw new Error(service!.units.manager === 'launchd'
         ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
           `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
           '`connectome service install`, which writes it anew.'
@@ -217,7 +243,7 @@ export async function doctor(
   const report = new Report(ctx.out, redact);
   if (managerUnread !== null) {
     const asked = manager === 'launchd' ? 'launchd' : 'systemd\'s user manager';
-    report.line(`With no service record to name its manager, doctor asked ${asked}, which a service installed here would ` +
+    report.line(`With no service installed, doctor asked ${asked}, which a service installed here would ` +
       `run under, and couldn't read it (${managerUnread.replace(/\.$/, '')}), so a value only that manager gives isn't ` +
       'known to doctor or hidden in what it prints.');
   }
@@ -231,7 +257,8 @@ export async function doctor(
   let unanswered = false;
   let closedTabs = false;
   let shellUnchecked = false;
-  const startCommand = `${typedCommand(root)} service start`;
+  const startCommand = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home })?.start
+    ?? `${typedCommand(root)} service install <recipe>`;
   let dataDir: string | null = null;
   try {
     dataDir = dataDirOf(root);
@@ -239,13 +266,19 @@ export async function doctor(
   try {
     report.section('Service');
     if (serviceError !== null) {
-      report.problem(`${serviceError} \`connectome service install <recipe>\` writes it again, and checks it.`);
+      report.problem(`${serviceError} \`connectome service install <recipe>\` writes it anew, or says why it can't.`);
     } else if (service === null) {
-      report.problem(`No service is recorded for this install (${join(root, 'service.json')}): ` +
-        '`connectome service install <recipe>` writes one and checks it.');
+      report.problem(units === null
+        ? 'No service is installed for this install: `connectome service install` writes one only on Linux and macOS, ' +
+          'for a directory whose name has a letter or digit.'
+        : `No service is installed for this install: ${units.host.file} isn't there. ` +
+          '`connectome service install <recipe>` writes one and checks it.');
     } else {
+      const installed = service;
       await checked(report, 'The service check', async () => {
-        const result = await parts.checkService(root, undefined, true);
+        const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
+        const result = await parts.checkService(installed.units, installed.work, document !== null && recipeHasShell(document.raw),
+          typedCommand(root), true);
         for (const line of result.lines) report.line(line);
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         if (result.stopped === true) {
@@ -266,8 +299,8 @@ export async function doctor(
     } else if ('reason' in host) {
       report.problem(`No host answers: ${host.reason}.`);
       if (host.down && service !== null) {
-        await checked(report, 'Reading the service record again', () => {
-          for (const line of serviceLines(root) ?? []) report.line(line);
+        await checked(report, 'Naming the service\'s own lines', () => {
+          for (const line of serviceLines(root, { ...machine(), platform: parts.platform, home: parts.home }) ?? []) report.line(line);
         });
       }
     } else {
@@ -277,7 +310,7 @@ export async function doctor(
       const ownPid = async (): Promise<{ pid: string } | { why: string } | null> => {
         if (service === null) return null;
         try {
-          return await parts.servicePid(service);
+          return await parts.servicePid(service.units);
         } catch (error) {
           return { why: errorText(error) };
         }
@@ -307,7 +340,7 @@ export async function doctor(
               'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
               'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
               `service's own host can't be reached while it does: \`kill ${answering.ready.pid}\` stops it.` +
-              (service!.manager === 'systemd-user'
+              (service!.units.manager === 'systemd-user'
                 ? ` If something starts it again, \`systemctl --user status ${answering.ready.pid}\` names the unit it ` +
                   'runs in, which is what to stop.'
                 : ''));
@@ -358,7 +391,7 @@ export async function doctor(
     let recipe: Recipe | null = null;
     let uses: Map<string, string[]> | null = null;
     if (service === null) {
-      report.line('Which recipe the service runs is in its record, so it isn\'t checked without one.');
+      report.line('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
     } else if (recipeLoad !== null && !('error' in recipeLoad)) {
       recipe = recipeLoad.recipe;
       uses = namedOutsideServers(recipeLoad.persistable);
@@ -430,8 +463,8 @@ export async function doctor(
       });
     }
     let unknown = serviceError !== null
-      ? 'which servers run is in the recipe the service record names, and the service\'s record can\'t be read'
-      : service === null ? 'which servers run is in the recipe the service record names, and there\'s no record'
+      ? 'which servers run is in the recipe the service\'s unit names, and that unit can\'t be read'
+      : service === null ? 'which servers run is in the recipe the service\'s unit names, and there\'s no unit'
         : 'which servers run is in the recipe, which didn\'t load';
     if (serversError !== null) {
       report.problem(`The recipe's server list doesn't resolve: ${errorText(serversError)}`);
@@ -484,11 +517,11 @@ export async function doctor(
 
   let ladderRan = false;
   if (serviceError !== null) {
-    report.section('The ladder reads the service\'s unit, which its record names, so it doesn\'t run while the record ' +
+    report.section('The ladder reads the service\'s unit, so it doesn\'t run while that unit ' +
       'can\'t be read.');
   } else if (service === null) {
-    report.section('The ladder reads the service\'s unit and log, so it runs once a service is recorded.');
-  } else if (service.manager !== 'systemd-user') {
+    report.section('The ladder reads the service\'s unit and log, so it runs once a service is installed.');
+  } else if (service.units.manager !== 'systemd-user') {
     report.section('The ladder reads systemd\'s units and journal, so it doesn\'t run for this install, whose service ' +
       'runs under launchd.');
   } else if (parts.python === null) {
@@ -869,7 +902,7 @@ class ManagerUnread extends Error {
   }
 }
 
-function managerEnv(manager: ServiceRecord['manager'] | null, names: string[], parts: DoctorParts): Record<string, string> {
+function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts): Record<string, string> {
   const out: Record<string, string> = {};
   if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
@@ -949,9 +982,9 @@ function shownWords(text: string): string[] {
   return words;
 }
 
-function unitEnv(service: ServiceRecord, parts: DoctorParts):
+function unitEnv(service: ServiceUnits, parts: DoctorParts):
   { env: Record<string, string>; files: string[] } | { why: string } {
-  const name = service.units.host.name;
+  const name = service.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
     ran = service.manager === 'systemd-user'
@@ -960,7 +993,7 @@ function unitEnv(service: ServiceRecord, parts: DoctorParts):
         timeout: parts.envLimitMs,
         env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
       })
-      : spawnSync(parts.plutil, ['-extract', 'EnvironmentVariables', 'json', '-o', '-', service.units.host.file],
+      : spawnSync(parts.plutil, ['-extract', 'EnvironmentVariables', 'json', '-o', '-', service.host.file],
         { encoding: 'utf-8', timeout: parts.envLimitMs });
   } catch (error) {
     return { why: errorText(error) };
@@ -1107,4 +1140,8 @@ async function besideOf(
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function fileWord(manager: Manager): string {
+  return manager === 'systemd-user' ? 'unit file' : 'plist';
 }
