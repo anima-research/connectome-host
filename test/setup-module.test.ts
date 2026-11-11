@@ -602,8 +602,9 @@ describe('setup--run', () => {
       const nowBefore = Date.now();
       const monoBefore = performance.now();
       // kill -0 succeeds for a zombie, so the holder writes once the module has reaped the command's bash.
-      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}; cut -d' ' -f1 /proc/uptime > ${dir}/ended-up`);
-      const took = Math.round((uptime() - Number(readFileSync(join(dir, 'ended-up'), 'utf-8'))) * 1000);
+      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; read -r up _ < /proc/uptime; echo $up > ${dir}/late-up; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}; cut -d' ' -f1 /proc/uptime > ${dir}/ended-up`);
+      const answeredUp = uptime();
+      const took = Math.round((answeredUp - Number(readFileSync(join(dir, 'ended-up'), 'utf-8'))) * 1000);
       const tookByWallClock = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
       const answeredAfter = Math.round(performance.now() - monoBefore);
       holder = Number(readFileSync(pidFile, 'utf-8'));
@@ -619,7 +620,13 @@ describe('setup--run', () => {
       expect(answer.exitCode).toBe(0);
       expect(answer.outputHeldOpen).toBe(true);
       expect(answer.note).toContain('still holds the output open');
-      expect(answer.stdout.text).toBe('begun\nlate\n');
+      if (answer.stdout.text !== 'begun\nlate\n') {
+        const lateBeforeAnswer = answeredUp - Number(await waitForFile(join(dir, 'late-up')));
+        expect(lateBeforeAnswer, `${said}: a drain that keeps what comes until it cuts the output loses "late" only ` +
+          'when the holder wrote it at about the cut or after, and the answer comes just after the cut, so the write ' +
+          'must be within 0.5 s of the answer').toBeLessThanOrEqual(0.5);
+        expect(answer.stdout.text).toBe('begun\n');
+      }
     } finally {
       if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
     }
