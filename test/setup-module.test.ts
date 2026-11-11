@@ -566,15 +566,19 @@ describe('setup--run', () => {
     expect(Math.round((Number(readFileSync(aliveFile, 'utf-8')) - termAt) * 1000)).toBeGreaterThanOrEqual(4_400);
   }, 30_000);
 
-  linuxTest('answers a command stopped at its limit only once what it left in its group has ended, a SIGTERM-ignoring process too, whether or not that holds the output', async () => {
+  linuxTest('answers a command stopped at its limit only once its 5 s grace is over and SIGKILL has gone to what it left in its group, a SIGTERM-ignoring process too, whether or not that holds the output', async () => {
     for (const [holds, redirect] of [[true, ''], [false, ' > /dev/null 2>&1']] as const) {
       const { dir, module } = install();
       const pidFile = join(dir, 'stubborn.pid');
+      const called = performance.now();
       const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60${redirect}) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
+      const ran = performance.now() - called;
       const stubborn = Number(readFileSync(pidFile, 'utf-8'));
       try {
         expect(answer.stoppedAtLimit).toBe(true);
-        expect(await waitForEnd(stubborn, 1_000), `holding the output: ${holds}`).toBe(true);
+        expect(ran, `holding the output: ${holds}: the answer came before the 5 s grace after the 500 ms limit was over`).toBeGreaterThanOrEqual(5_490);
+        expect(await waitForEnd(stubborn, 200), `holding the output: ${holds}: what the command left was still running ` +
+          '200 ms after the answer, though SIGKILL should have gone to it before the answer').toBe(true);
         expect(answer.note).toContain('500 ms limit, so its process group was sent SIGTERM, and SIGKILL 5 s later, since some of it was still running then.');
         expect(answer.note).not.toContain('and is still running');
       } finally {
