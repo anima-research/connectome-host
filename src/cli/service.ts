@@ -195,7 +195,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
   } else if (wantsShell) {
     ctx.out("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this directory, " +
-      'so no shell daemon was set up. Doctor can check whether the shell is served.');
+      'so no shell daemon was set up.');
   } else {
     ctx.out('No shell daemon is set up: the recipe names no shell client or shell setting.');
   }
