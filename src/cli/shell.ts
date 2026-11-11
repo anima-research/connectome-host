@@ -117,9 +117,9 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
 
   let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
   let pty = await ptyWorks(world, dir, env);
+  const aside = join(dir, '.setup', 'node-pty-aside');
   if (pty !== null) {
     const ptyDir = nodePtyDir(dir);
-    const aside = join(dir, '.setup', 'node-pty-aside');
     out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
       `this installs it again, keeping the copy it has at ${aside} until the new one works, and putting it back if ` +
       'it doesn\'t:');
@@ -138,6 +138,9 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
       renameSync(aside, ptyDir);
       helper = makeSpawnHelperExecutable(ptyDir, world.platform);
     }
+  } else if (existsSync(aside)) {
+    rmSync(aside, { recursive: true, force: true });
+    out(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
   }
   if (pty !== null) {
     const untrustedNote = untrusted === null ? ''

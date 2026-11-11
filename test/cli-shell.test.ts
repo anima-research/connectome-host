@@ -377,6 +377,28 @@ test('a repair that finds a copy a stopped repair set aside keeps that copy, and
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
 });
 
+test('a first pty check that passes removes a copy a stopped repair left aside, says so, and leaves the working copy as it is', async () => {
+  const { dir, root } = installed();
+  const aside = join(dir, '.setup', 'node-pty-aside');
+  mkdirSync(aside, { recursive: true });
+  writeFileSync(join(aside, 'pty.node'), 'the copy a stopped repair set aside');
+  const made = world(dir, {
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy that works');
+    },
+  });
+  expect(await runShell(root, ['install'], made)).toBe(0);
+  expect(existsSync(aside)).toBe(false);
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy that works');
+  expect(made.seen.out).toContain(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
+  expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(false);
+  const none = installed();
+  const clean = world(none.dir);
+  expect(await runShell(none.root, ['install'], clean)).toBe(0);
+  expect(text(clean.seen.out)).not.toContain('set aside');
+});
+
 test('a pty check stopped at its 30 s limit says so, in the repair\'s line and in the stop, whatever it printed first', async () => {
   for (const printed of ['', '(node:4242) Warning: something slow\n']) {
     const { dir, root } = installed();
