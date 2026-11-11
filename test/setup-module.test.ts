@@ -125,14 +125,13 @@ describe('setup--finished', () => {
   test('records when setup finished beside its answers, and asks the host to end the conversation', async () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
     expect(module.finishedAt()).toBeNull();
     const before = Date.now();
     const result = await call(module);
     expect(result.success).toBe(true);
-    const state = JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')) as { v: number; shell: boolean; finished: string };
-    expect(state.v).toBe(1);
-    expect(state.shell).toBe(true);
+    const state = JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')) as { v: number; finished: string };
+    expect(state).toEqual({ v: 1, finished: state.finished });
     expect(Date.parse(state.finished)).toBeGreaterThanOrEqual(before - 1000);
     expect(String(result.data)).toBe(`Recorded that setup finished at ${state.finished}. The conversation ends after this turn, once anything the person typed meanwhile has come to you as further turns.`);
     expect(statSync(join(dir, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
@@ -143,7 +142,7 @@ describe('setup--finished', () => {
   test('a finished time that isn\'t an ISO time reading back the same, such as a stored key or an RFC 1123 date, is read as answers setup doesn\'t keep, and isn\'t told; an ISO time is read as when setup finished', () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    const state = (finished: string) => writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true, finished }));
+    const state = (finished: string) => writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, finished }));
     state('sk-ant-stored-key');
     expect(module.finishedAt()).toBeNull();
     state('Sun, 01 Nov 2026 01:00:00 GMT');
@@ -167,7 +166,7 @@ describe('setup--finished', () => {
   modeTest('where its directory can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
     chmodSync(join(dir, '.setup'), 0o500);
     try {
       const result = await call(module);

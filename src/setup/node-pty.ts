@@ -1,14 +1,19 @@
-import { chmodSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { chmodSync, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+// The copy node loads from term-sessions-mcp, found as node finds it: in the node_modules of each directory from
+// term-sessions-mcp's real path up. Bun's resolver can name the copy in Bun's global install cache instead, in a
+// process that started before the directory had node_modules (probed with Bun 1.4.4).
 export function nodePtyDir(dir: string): string {
   try {
-    const server = realpathSync(join(dir, 'node_modules', 'term-sessions-mcp'));
-    return realpathSync(dirname(createRequire(join(server, 'package.json')).resolve('node-pty/package.json')));
+    for (let at = realpathSync(join(dir, 'node_modules', 'term-sessions-mcp')); ; at = dirname(at)) {
+      const copy = join(at, 'node_modules', 'node-pty');
+      if (existsSync(join(copy, 'package.json'))) return realpathSync(copy);
+      if (dirname(at) === at) break;
+    }
   } catch {
-    return join(dir, 'node_modules', 'node-pty');
   }
+  return join(dir, 'node_modules', 'node-pty');
 }
 
 // node-pty 1.1.0 ships its macOS spawn-helpers without execute bits (microsoft/node-pty#850).
