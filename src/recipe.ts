@@ -1615,6 +1615,13 @@ export function deprecatedSurfaceNotices(modules: RecipeModules | undefined): st
     notices.push('modules.webui.observersSurface is no longer read: the observer tools are in agent-framework\'s built-in ' +
       '"settings" toolset, or in the tool list of an agent that may not call both toolsets--open and toolsets--act.');
   }
+  // Deprecated in 0.25.0 with a cost paid on every compile: said at start,
+  // where the two keys above are, and not only in the changelog.
+  if (typeof modules?.instructions === 'object' && modules.instructions.position === 'beforeUser') {
+    notices.push('modules.instructions.position "beforeUser" is deprecated (agent-framework#171): the block is spliced ' +
+      'in again before the newest user message at every compile, so it moves, a request misses the prompt cache from ' +
+      'there on, and it can split a tool call from its result. Use "afterUser" or "system"; both stay supported.');
+  }
   return notices;
 }
 
