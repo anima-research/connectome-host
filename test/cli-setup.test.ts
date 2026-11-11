@@ -2417,6 +2417,39 @@ test('while a trial is unfinished, a moved install whose root keeps a copy is re
   expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
 });
 
+test('while a Go back is unfinished, a moved install whose root keeps a copy is refused, saying to let the Go back end where it was, and nothing is asked', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const root = keptInRoot(dir);
+  writeFileSync(join(root, 'journal.jsonl'), `${JSON.stringify({
+    v: 1, at: '2026-11-01T00:00:00Z', step: 'go-back', from: '99.0.0', to: VERSION, outcome: 'ok', mark: 'm1',
+  })}\n`);
+  const moved = besideIt(dir, 'moved');
+  renameSync(dir, moved);
+  const again = world(moved);
+  expect(await runSetup(moved, ['discord'], again)).toBe(1);
+  expect(again.seen.asked).toEqual([]);
+  expect(text(again.seen.err)).toContain(`A Go back is unfinished: the journal's last ok go-back, to ${VERSION}, ` +
+    'has no ok trial-start, commit or fallback after it');
+  expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
+});
+
+test('with no usable HOME, a place answered with ~ is asked again, saying to type the whole path', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const state = join(directory(), 'state');
+  mkdirSync(state);
+  writeFileSync(join(dir, 'connectome-host', 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [state] }));
+  const again = world(dir, { answers: ['~/state', ''] }, { env: { PATH: '/usr/bin:/bin' } });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  const question = `${state} (state kept outside its data directory): `;
+  expect(again.seen.asked).toEqual([question, question]);
+  expect(text(again.seen.out)).toContain('~ means your home directory, and HOME isn\'t an absolute path to a directory here, so setup can\'t tell where that is: type the whole path.');
+  expect(ownSetup(again.seen)).toEqual({
+    argv: ['--root', join(dir, 'connectome-host'), '--place', state, state], dataDir: join(dir, 'data'),
+  });
+});
+
 test('a record from before workingDir takes each place under this directory as this install\'s, asking nothing about them; one outside is asked about, Enter keeping it, and a data directory that isn\'t there is asked again', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);

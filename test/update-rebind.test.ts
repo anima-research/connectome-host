@@ -521,6 +521,14 @@ describe('binding an install to the directory it is in', () => {
   });
 });
 
+bindMounted('a DATA_DIR that is the recorded data directory through a bind mount is the data directory the install serves (where this user may bind-mount, as in a user namespace)', () => {
+  setup(options(install));
+  const alias = join(dir, 'alias');
+  mkdirSync(alias);
+  expect(setupThroughMounts([[install, alias]], alias)).toContain('set up');
+  expect(record(install)).toEqual({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: install });
+});
+
 describe('what setup read before it held the lock', () => {
   const changedMeanwhile = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
     'backs, or the trial its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
@@ -619,8 +627,10 @@ describe('the lock across a move or a copy', () => {
     const copyLock = installPaths(rootOf(copy)).lock;
     const bound = [join(copy, 'data', 'fleet-children.json'), installPaths(rootOf(copy)).install];
     const holders: Array<number | undefined> = [];
+    const renamed: string[] = [];
     const realRename = fs.renameSync;
     const renames = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      renamed.push(String(to));
       if (bound.includes(String(to))) holders.push(readRecord<LockRecord>(copyLock, 'lock')?.pid);
       realRename(from, to);
     }) as typeof fs.renameSync);
@@ -629,6 +639,7 @@ describe('the lock across a move or a copy', () => {
     } finally {
       renames.mockRestore();
     }
+    expect(renamed).toContain(`${copyLock}.${process.pid}.copied`);
     expect(holders).toEqual([process.pid, process.pid]);
     expect(record(copy)!.workingDir).toBe(copy);
     expect(existsSync(copyLock)).toBe(false);
@@ -928,6 +939,76 @@ describe('what a moved or copied install\'s root keeps', () => {
     expect(record(moved)!.workingDir).toBe(install);
   });
 
+  test('--move-aside takes a place by where it leads: an area that a copied link reaches in the original is named and left, and the original is as it was', () => {
+    setup(options(install));
+    const real = join(install, 'kid-real');
+    mkdirSync(real);
+    const kid = join(install, 'data', 'kid');
+    symlinkSync(real, kid);
+    writeJsonAtomic(join(install, 'data', 'fleet-children.json'),
+      { v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: kid }] } satisfies ChildrenFile);
+    updated(install, [kid]);
+    const held = area(kid, 'set-aside', 'm2');
+    mkdirSync(held, { recursive: true });
+    writeFileSync(join(held, 'newer.txt'), 'the original\'s');
+    const original = tree(install);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    said = [];
+    setup(options(copy, { moveAside: true }));
+    expect(tree(install)).toEqual(original);
+    expect(said).toContain(`  ${area(real, 'set-aside', 'm2')}`);
+    expect(record(copy)!.workingDir).toBe(copy);
+  });
+
+  test('while a Go back is unfinished, a moved install is refused with --move-aside or without, saying to let it end where the install was, and nothing changes', () => {
+    setup(options(install));
+    updated(install);
+    writeFileSync(installPaths(rootOf(install)).journal, `${JSON.stringify({
+      v: 1, at: '2026-11-01T00:00:00Z', step: 'go-back', from: '0.11.0', to: '0.10.2', outcome: 'ok', mark: 'm2',
+    })}\n`);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const kept = tree(moved);
+    const goBack = 'A Go back is unfinished: the journal\'s last ok go-back, to 0.10.2, has no ok trial-start, commit or ' +
+      'fallback after it, and the next start goes on with it from what\'s listed here. Setup has changed nothing. Let ' +
+      'that Go back end where the install was, by starting it there, moving it back first if it was moved, and then ' +
+      'move or copy it again.';
+    for (const moveAside of [false, true]) {
+      const why = refusal(() => setup(options(moved, { moveAside })));
+      expect(why).toEndWith(`\n  ${join(rootOf(moved), 'copy')}\n  ${join(rootOf(moved), 'set-aside', 'm2')}\n${goBack}`);
+    }
+    expect(tree(moved)).toEqual(kept);
+  });
+
+  test('--move-aside takes the areas a Go back kept in a place its own list names, though this run\'s record no longer names it', () => {
+    const old = join(install, 'old-state');
+    mkdirSync(old);
+    setup(options(install, { extraState: [old] }));
+    updated(install, [old]);
+    mkdirSync(area(old, 'set-aside', 'm2'), { recursive: true });
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    setup(options(copy, { extraState: [], moveAside: true }));
+    const copied = join(copy, 'old-state');
+    expect(existsSync(area(copied, 'set-aside', 'm2'))).toBe(false);
+    const time = aside(rootOf(copy));
+    expect(existsSync(join(copied, '.connectome-update', 'moved-aside', time, 'set-aside', 'm2'))).toBe(true);
+    expect(record(copy)).toEqual({ v: 1, dataDir: join(copy, 'data'), extraState: [], workingDir: copy });
+  });
+
+  test('--move-aside binds an install whose places of state include a file, which holds no area', () => {
+    const state = join(install, 'state.json');
+    writeFileSync(state, '{}');
+    setup(options(install, { extraState: [state] }));
+    updated(install, [state]);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    setup(options(copy, { moveAside: true }));
+    expect(record(copy)).toEqual({ v: 1, dataDir: join(copy, 'data'), extraState: [join(copy, 'state.json')], workingDir: copy });
+    expect(readdirSync(join(rootOf(copy), 'set-aside'))).toEqual([]);
+  });
+
   test('parseArgs reads --move-aside, which takes no value', () => {
     expect(parseArgs(['--move-aside', '--root', 'r']).moveAside).toBe(true);
     expect(parseArgs(['--root', 'r']).moveAside).toBe(false);
@@ -1024,6 +1105,18 @@ describe('the fleet\'s children file', () => {
     expect(tree(rootOf(copy))).toEqual(kept);
   });
 
+  test('a children file with an entry whose fields this release can\'t read stops a binding before it changes anything, naming the file', () => {
+    setup(options(install));
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const children = join(copy, 'data', 'fleet-children.json');
+    writeFileSync(children, JSON.stringify({ v: 1, children: [{ name: 'c', pid: 'x', bootId: null, dataDir: join(install, 'data', 'kid') }] }));
+    const kept = tree(copy);
+    expect(refusal(() => setup(options(copy)))).toEndWith('and has changed nothing. Put ' +
+      `${children} right, and run setup again. If a later release wrote it, run that release's setup instead.`);
+    expect(tree(copy)).toEqual(kept);
+  });
+
   test('a children file a later release may have written, of a later version or naming its places in a form this release can\'t read, is refused saying to put it right or run that release\'s setup', () => {
     setup(options(install));
     const copy = join(dir, 'copy');
@@ -1080,6 +1173,26 @@ describe('the fleet\'s children file', () => {
     expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
   });
 
+  test('cut after the children file, before the record: a --place for state the record lists that is also a child\'s data directory, run again, still gives that state its place in the record', () => {
+    const state = join(dir, 'state');
+    mkdirSync(state);
+    setup(options(install, { extraState: [state] }));
+    writeJsonAtomic(join(install, 'data', 'fleet-children.json'),
+      { v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: state }] } satisfies ChildrenFile);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const own = join(dir, 'own');
+    mkdirSync(own);
+    const placed = { places: [{ from: state, to: own }] };
+    const recordAt = installPaths(rootOf(copy)).install;
+    mkdirSync(`${recordAt}.tmp`);
+    expect(() => setup(options(copy, placed))).toThrow(/install\.json\.tmp/);
+    rmSync(`${recordAt}.tmp`, { recursive: true });
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
+    setup(options(copy, placed));
+    expect(record(copy)).toEqual({ v: 1, dataDir: join(copy, 'data'), extraState: [own], workingDir: copy });
+  });
+
   test('a move aside, where the children file is already stamped for this directory, takes the areas a Go back kept in each child directory it names', () => {
     setup(options(install));
     const kid = join(install, 'data', 'kids', 'c');
@@ -1110,6 +1223,27 @@ describe('the fleet\'s children file', () => {
     setup(options(moved));
     expect(childrenOf(moved)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: join(moved, 'data', 'kids', 'c') }]);
     expect(stampOf(moved)).toBe(moved);
+  });
+
+  test('a move that keeps each child where it is stamps the children file for its new directory, so the next move binds it', () => {
+    setup(options(install));
+    const outside = join(dir, 'kids', 'c');
+    withChild(install, outside, null);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const own = join(dir, 'own', 'c');
+    mkdirSync(own, { recursive: true });
+    setup(options(copy, { places: [{ from: outside, to: own }] }));
+    expect(stampOf(copy)).toBe(copy);
+    const moved = join(dir, 'moved');
+    renameSync(copy, moved);
+    setup(options(moved, { places: [{ from: own, to: own }] }));
+    expect(stampOf(moved)).toBe(moved);
+    const again = join(dir, 'again');
+    renameSync(moved, again);
+    setup(options(again, { places: [{ from: own, to: own }] }));
+    expect(record(again)!.workingDir).toBe(again);
+    expect(childrenOf(again)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
   });
 
   const boundElsewhere = (at: string, to: string) => `The fleet's children file, ${join(at, 'data', 'fleet-children.json')}, ` +
