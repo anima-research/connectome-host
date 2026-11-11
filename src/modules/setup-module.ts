@@ -37,7 +37,7 @@ export interface SetupModuleConfig {
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream's head and tail, so both streams' together, with what the answer adds, stay under agent-framework
-// 0.32.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its
+// 0.33.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its
 // src/tool-result-history.ts:253, which the package doesn't export), past which it cuts the answer, and stderr's tail
 // with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
 // for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
