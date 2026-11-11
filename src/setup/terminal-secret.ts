@@ -19,9 +19,11 @@ function killRingOf(rl: Interface): Array<[symbol, unknown]> {
 /** Whether text holds a line of an answer given hidden, its ASCII letters in any case, as setup matches a stored secret
  *  everywhere it hides or cleans one out. */
 export function holdsAnswer(text: string, given: readonly string[]): boolean {
-  const folded = text.toLowerCase();
-  return given.some((line) => folded.includes(line.toLowerCase()));
+  const folded = foldAscii(text);
+  return given.some((line) => folded.includes(foldAscii(line)));
 }
+
+const foldAscii = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
 export async function askHidden(
   rl: Interface, output: Writable, label: string, paste?: Pick<BracketedPaste, 'pasting' | 'drop'>,
