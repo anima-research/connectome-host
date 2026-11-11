@@ -6,7 +6,7 @@ import {
 import { constants, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
-import { takeFileLock } from '../setup/file-lock.js';
+import { Database } from 'bun:sqlite';
 import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
 import { ANTHROPIC_API, checkKey, originOf, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
@@ -25,7 +25,7 @@ import {
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_SURFACE, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, installCommandOf, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
@@ -37,7 +37,7 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
-const SURFACE = SETUP_SURFACE;
+const SURFACE = 'discord';
 const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
 const SHELL_NODE_TOP = 24;
@@ -820,10 +820,17 @@ async function installAndStart(
 }
 
 function takeSetupLock(file: string): { release(): void } | null {
+  let db: Database | undefined;
   try {
-    return takeFileLock(file, 1000);
+    db = new Database(file, { create: true });
+    db.exec('PRAGMA busy_timeout = 1000');
+    db.exec('PRAGMA synchronous = NORMAL');
+    db.exec('PRAGMA locking_mode = EXCLUSIVE');
+    db.exec('BEGIN EXCLUSIVE');
   } catch (error) {
+    db?.close();
     const { code, message } = error as { code?: string; message?: string };
+    if (code === 'SQLITE_BUSY') return null;
     if (code === 'SQLITE_CANTOPEN') {
       throw new Error(`Setup can't make its lock, ${file} (SQLITE_CANTOPEN: ${message}). Check that this user can ` +
         `write to ${dirname(file)}, and can read and write ${file} if it's there, and that it isn't a directory, then ` +
@@ -832,6 +839,8 @@ function takeSetupLock(file: string): { release(): void } | null {
     throw new Error(`${file} isn't a lock setup can take (${code ?? 'no code'}: ${message}). If no setup is running ` +
       'in this directory, take it away and run setup again.');
   }
+  const held = db;
+  return { release: () => held.close() };
 }
 
 // By name, since Bun puts in $NAME as it reads a dotenv file, so a value it read there needn't match the file's text.

@@ -57,8 +57,6 @@ export const ENTRY_POINT = 'start.js';
  *  show do (systemd's Restart=on-failure, launchd's KeepAlive). */
 export const RESTART_EXIT_CODE = 75;
 
-/** Set to 1 in the host's environment by whatever runs it as a service, which so says that the service starts the
- *  host again when it exits with RESTART_EXIT_CODE and with 1. */
 export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
 /** The install's root, or null when the host wasn't started through the

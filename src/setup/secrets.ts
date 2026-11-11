@@ -211,27 +211,6 @@ export function writeEnvValue(path: string, name: string, value: string): void {
   writeTextAtomic(path, `${kept.join('\n')}\n`, 0o600);
 }
 
-export function removeEnvValues(path: string, names: readonly string[],
-  only: Readonly<Record<string, string | undefined>> = {}): boolean {
-  const link = envLink(path);
-  if (link) throw link;
-  const before = envText(path);
-  const { outside } = envLines(before);
-  if (outside.length > 0) throw new EnvFormError(path, outside);
-  const bom = before.startsWith('\ufeff') ? '\ufeff' : '';
-  const lines = before.slice(bom.length).split('\n');
-  const removed = (line: string) => {
-    const name = ASSIGNMENT.exec(line)?.[1] ?? '';
-    if (!names.includes(name)) return false;
-    const value = line.slice(name.length + 1);
-    return only[name] === undefined || (value[0] === '"' || value[0] === "'" ? value.slice(1, -1) : value) === only[name];
-  };
-  const after = bom + lines.filter((line) => !removed(line)).join('\n');
-  if (after === before) return false;
-  writeTextAtomic(path, after, 0o600);
-  return true;
-}
-
 export class StoredSecrets {
   readonly file: string;
 
@@ -271,14 +250,6 @@ export class StoredSecrets {
     if (names?.includes(name)) return;
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     writeJsonAtomic(this.file, [...(names ?? []), name], 0o600);
-  }
-
-  forget(names: readonly string[]): boolean {
-    const before = this.names();
-    const after = before.filter((name) => !names.includes(name));
-    if (after.length === before.length) return false;
-    writeJsonAtomic(this.file, after, 0o600);
-    return true;
   }
 }
 
@@ -341,7 +312,7 @@ function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   const candidates: Span[] = [];
   const folded = foldAscii(bytes);
   for (const { name, value } of secrets) {
-    for (const form of new Set([value, value.trim(), JSON.stringify(value).slice(1, -1)])) {
+    for (const form of new Set([value, value.trim()])) {
       const needle = foldAscii(Buffer.from(form, 'utf-8'));
       if (needle.length === 0) continue;
       for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + 1)) {
@@ -363,14 +334,12 @@ function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   return spans;
 }
 
-// Buffer replaces partial UTF-8 characters during decoding, so callers keep from and to between characters.
 export function redactWindow(
   bytes: Buffer,
   from: number,
   to: number,
   secrets: Secret[],
   replaced: Set<string>,
-  preserveLineBreaks = false,
 ): { text: string; start: number; end: number } {
   const spans = spansOf(bytes, secrets);
   const crossing = spans.find((span) => span.start < from && from < span.end);
@@ -380,9 +349,7 @@ export function redactWindow(
   for (const span of spans) {
     if (span.end <= at) continue;
     if (span.start >= to) break;
-    const hidden = `<${span.names[0]}>`;
-    text += bytes.toString('utf-8', at, span.start) + (preserveLineBreaks
-      ? bytes.toString('utf-8', span.start, span.end).split('\n').map(() => hidden).join('\n') : hidden);
+    text += `${bytes.toString('utf-8', at, span.start)}<${span.names[0]}>`;
     for (const name of span.names) replaced.add(name);
     at = span.end;
   }
@@ -391,48 +358,6 @@ export function redactWindow(
     at = to;
   }
   return { text, start, end: at };
-}
-
-export interface RedactedWindow {
-  text: string;
-  start: number;
-  end: number;
-  replaced: string[];
-  guessed: string[];
-}
-
-export function storedSecretWindowRedactor(
-  workingDir: string,
-  env: Record<string, string | undefined> = process.env,
-  preserveLineBreaks = false,
-  additionalNames: readonly string[] = [],
-): { contextBytes: number; contextLines: number; redact(bytes: Buffer, from: number, to: number): RedactedWindow } {
-  const envFile = join(workingDir, '.env');
-  const { names, guessed } = secretNames(join(workingDir, '.setup'), envFile);
-  const secrets = secretValues([...names, ...additionalNames], envFile, env);
-  return {
-    contextBytes: Math.max(0, ...secrets.map(({ value }) => Buffer.byteLength(value, 'utf-8'))),
-    contextLines: Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1)),
-    redact(bytes, from, to) {
-      const replaced = new Set<string>();
-      const window = redactWindow(bytes, from, to, secrets, replaced, preserveLineBreaks);
-      return { ...window, replaced: [...replaced], guessed: guessed.filter((name) => replaced.has(name)) };
-    },
-  };
-}
-
-export function storedSecretRedactor(
-  workingDir: string,
-  env: Record<string, string | undefined> = process.env,
-  preserveLineBreaks = false,
-  additionalNames: readonly string[] = [],
-): (text: string) => { text: string; replaced: string[]; guessed: string[] } {
-  const { redact } = storedSecretWindowRedactor(workingDir, env, preserveLineBreaks, additionalNames);
-  return (text) => {
-    const bytes = Buffer.from(text, 'utf-8');
-    const { text: redacted, replaced, guessed } = redact(bytes, 0, bytes.length);
-    return { text: redacted, replaced, guessed };
-  };
 }
 
 /** The .env values the agent's side takes as secrets, by secretNames, each with its name: what setup's own lines show

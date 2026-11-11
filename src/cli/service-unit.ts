@@ -24,8 +24,6 @@ export function managerFor(platform: NodeJS.Platform): Manager | null {
   return platform === 'linux' ? 'systemd-user' : platform === 'darwin' ? 'launchd' : null;
 }
 
-/** The units service install writes for the install at root: a host and a shell daemon, named from the working
- *  directory's name. Null where this platform has no manager install writes for, or that name has no letter or digit. */
 export function serviceUnits(root: string, platform: NodeJS.Platform, home: string): ServiceUnits | null {
   const manager = managerFor(platform);
   const work = dirname(root);
