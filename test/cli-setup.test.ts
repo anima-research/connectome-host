@@ -351,30 +351,6 @@ test('the check for a user by that name runs getent with no variable but PATH, s
   expect(names.filter((name) => name !== 'PWD' && name !== 'SHLVL' && name !== '_')).toEqual(['PATH']);
 });
 
-test('the pty check opens node-pty where term-sessions-mcp\'s own resolution finds it, under a hoisted layout and under an isolated one', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken] });
-  await runSetup(dir, ['discord'], made);
-  const check = made.seen.ran.find((argv) => argv[0] === 'node' && argv[1] === '-e')![2]!;
-  const pty = 'module.exports = { spawn: () => ({ onData: (f) => setTimeout(() => f(\'pty-ok\\r\\n\'), 0), onExit: (f) => setTimeout(f, 5) }) };\n';
-  const layouts = {
-    hoisted: ['node_modules/term-sessions-mcp', 'node_modules/node-pty'],
-    isolated: ['node_modules/.bun/term-sessions-mcp@1/node_modules/term-sessions-mcp', 'node_modules/.bun/term-sessions-mcp@1/node_modules/node-pty'],
-  };
-  for (const [layout, [server, nodePty]] of Object.entries(layouts)) {
-    const at = directory();
-    mkdirSync(join(at, server!), { recursive: true });
-    writeFileSync(join(at, server!, 'package.json'), '{"name":"term-sessions-mcp"}\n');
-    mkdirSync(join(at, nodePty!), { recursive: true });
-    writeFileSync(join(at, nodePty!, 'package.json'), '{"name":"node-pty","main":"index.js"}\n');
-    writeFileSync(join(at, nodePty!, 'index.js'), pty);
-    if (layout === 'isolated') symlinkSync(join(at, server!), join(at, 'node_modules', 'term-sessions-mcp'));
-    const ran = Bun.spawnSync(['node', '-e', check], { cwd: at, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
-    expect({ layout, status: ran.exitCode, stderr: ran.stderr.toString() }).toEqual({ layout, status: 0, stderr: '' });
-  }
-});
-
 test('where a user of its own is possible, a directory holding other files and no install hears who the resident runs as first, then the lines that make its directory and run setup there, and nothing is written', async () => {
   const holding = () => {
     const dir = directory();
@@ -387,10 +363,10 @@ test('where a user of its own is possible, a directory holding other files and n
     expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env']);
     expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o644);
   };
-  const opening = (dir: string) => `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there. It asks first whether the resident gets a shell and who it runs as, since those say where setup runs next.`;
+  const opening = (dir: string) => `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there. It asks first who the resident runs as, since that says where setup runs next.`;
 
   const own = holding();
-  const ownRun = world(own, { answers: ['yes', '1', ''] });
+  const ownRun = world(own, { answers: ['1', ''] });
   expect(await runSetup(own, ['discord'], ownRun)).toBe(0);
   expect(text(ownRun.seen.out)).toContain(opening(own));
   expect(text(ownRun.seen.out)).toContain('id -u connectome >/dev/null 2>&1 || sudo useradd -m -s /bin/bash connectome && sudo loginctl enable-linger connectome');
@@ -400,9 +376,9 @@ test('where a user of its own is possible, a directory holding other files and n
   untouched(own);
 
   const here = holding();
-  const hereRun = world(here, { answers: ['yes', '2'] });
+  const hereRun = world(here, { answers: ['2'] });
   expect(await runSetup(here, ['discord'], hereRun)).toBe(0);
-  expect(hereRun.seen.asked).toEqual(['Does the resident get a shell? (yes/no) ', 'Choose 1 or 2: ']);
+  expect(hereRun.seen.asked).toEqual(['Choose 1 or 2: ']);
   expect(text(hereRun.seen.out)).toContain(opening(here));
   expect(text(hereRun.seen.out)).toContain(`Then make a new directory for the resident in your home, and run this same version of setup there, where its questions come again. Its service takes the directory's name, so choose another than resident if you like, or if ~/resident is already there:\n  mkdir ~/resident && cd ~/resident\n  bunx @animalabs/connectome-host@${VERSION} setup discord\nNothing was installed here.`);
   expect(hereRun.seen.err).toEqual([]);
@@ -410,9 +386,9 @@ test('where a user of its own is possible, a directory holding other files and n
   untouched(here);
 
   const cut = holding();
-  const cutRun = world(cut, { answers: ['no'] });
+  const cutRun = world(cut, { answers: [] });
   expect(await runSetup(cut, ['discord'], cutRun)).toBe(1);
-  expect(cutRun.seen.out.at(-1)).toBe('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer its two questions.');
+  expect(cutRun.seen.out.at(-1)).toBe('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer them.');
   expect(cutRun.seen.err).toEqual([]);
   untouched(cut);
 });
@@ -469,46 +445,17 @@ test('setup names what a directory not its own holds: your home, hidden files al
   expect(text(otherRun.seen.out)).not.toContain('home directory');
 });
 
-test('with a shell, who the resident runs as has no default, so Enter alone asks again; a user of its own gets its root steps as one line and the next ones, and nothing is installed',
-  async () => {
-    const dir = directory();
-    const made = world(dir, { answers: ['yes', '', '1', ''] });
-    expect(await runSetup(dir, ['discord'], made)).toBe(0);
-    expect(made.seen.asked).toEqual(['Does the resident get a shell? (yes/no) ', 'Choose 1 or 2: ', 'Choose 1 or 2: ',
-      'Its user\'s name [connectome]: ']);
-    const out = text(made.seen.out);
-    for (const line of [
-      'Run this line where you can use sudo: it makes its user, unless one by that name is there already, keeps its services running while it\'s logged out, and gives it Bun on its PATH. If a step fails, put right what it names and run the line again.\n' +
-        '  id -u connectome >/dev/null 2>&1 || sudo useradd -m -s /bin/bash connectome && sudo loginctl enable-linger connectome && sudo -iu connectome env PATH=/usr/bin:/bin bash -c \'set -o pipefail; curl -fsSL https://bun.sh/install | bash\'\n',
-      `Setup needs Node ${NODE_FLOOR} or later there too, and at most Node 24: if this machine's Node is installed for your user alone, as one from nvm is, install Node for connectome as well. \`command -v node\` shows where yours is: one in your home is yours alone.`,
-      'Then open a shell as connectome, with `sudo -iu connectome` where you can use sudo, or by whoever ran the line, and run this same version of setup there, in a new directory for the resident. Its service takes the directory\'s name, so choose another than resident if you like, or if ~/resident is already there:\n  mkdir ~/resident && cd ~/resident\n',
-      `bunx @animalabs/connectome-host@${VERSION} setup discord`,
-      '"this user"',
-    ]) expect(`${out}\n`).toContain(line);
-    expect(made.seen.ran).toEqual([]);
-    expect(readdirSync(dir)).toEqual(['.setup']);
-    expect(readdirSync(join(dir, '.setup'))).toEqual(['setup.lock']);
-  });
-
-test('without a shell, a user of its own chosen is told it needs Node at the floor, with no maximum', async () => {
-  const dir = directory();
-  const made = world(dir, { answers: ['no', '1', ''] });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain(`Setup needs Node ${NODE_FLOOR} or later there too: if this machine's Node is installed for your user alone, as one from nvm is, install Node for connectome as well. \`command -v node\` shows where yours is: one in your home is yours alone.`);
-  expect(made.seen.ran).toEqual([]);
-});
-
-test('where setup can\'t offer a user of its own, it offers this user alone and says what that gives up', async () => {
+test('where setup can\'t offer a user of its own, it says why, and what a shell reaches as this user, with no advice to act on, and asks only whether to go on', async () => {
   const whys = ['There\'s no sudo on this machine', 'On macOS, setup has no root lines for a user of its own',
     'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running'];
   for (const [at, over] of [{ hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }].entries()) {
     const dir = directory();
-    const made = world(dir, { answers: ['yes', 'no'] }, over);
+    const made = world(dir, { answers: ['no'] }, over);
     const status = await runSetup(dir, ['discord'], made);
-    expect(text(made.seen.out)).toContain(`${whys[at]}, so the resident runs as this user, alice.`);
-    expect(made.seen.asked[1]).toContain('Go on as alice?');
+    expect(made.seen.out).toContain(`${whys[at]}, so the resident runs as this user, alice. Later, with setup's agent, you decide what the resident may do, such as whether it gets a shell to run commands on this machine. With a shell, the resident can read and change whatever alice can, and whoever talks to it on Discord can ask it to.`);
+    expect(text(made.seen.out)).not.toContain('give it a user of its own now');
+    expect(made.seen.asked).toEqual(['Go on as alice? (yes/no) ']);
     expect(status).toBe(0);
-    expect(text(made.seen.out)).toContain('With a shell, the resident can read and change whatever alice can (alice\'s files, keys and other programs), and whoever talks to it on Discord can ask it to.');
     expect(text(made.seen.out)).toContain('Nothing was installed.');
     expect(made.seen.ran).toEqual([]);
     expect(readdirSync(dir)).toEqual(['.setup']);
@@ -516,21 +463,9 @@ test('where setup can\'t offer a user of its own, it offers this user alone and 
   }
 });
 
-test('on Linux with sudo, a resident with a shell run as this user is told what that gives up, and one without a shell isn\'t', async () => {
-  const isolation = 'With a shell, the resident can read and change whatever alice can (alice\'s files, keys and other programs), and whoever talks to it on Discord can ask it to.';
+test('before its question setup says what it does, then who the resident runs as and what a shell reaches as that user, and its choices; Enter alone asks again, a user of its own gets its root steps as one line and the next ones, and a run after it says first that its answer is kept', async () => {
   const dir = directory();
-  const withShell = world(dir, { answers: ['yes', '2'], secrets: [KEY] });
-  expect(await runSetup(dir, ['discord'], withShell)).toBe(0);
-  expect(text(withShell.seen.out)).toContain(isolation);
-  const other = directory();
-  const without = world(other, { answers: ['no', ''], secrets: [KEY] });
-  expect(await runSetup(other, ['discord'], without)).toBe(0);
-  expect(text(without.seen.out)).not.toContain(isolation);
-});
-
-test('before its first question setup says what it does, the choices of who the resident runs as say whom each fits and what 1 takes, the key\'s question says Enter alone stops, and a run after it says first that its answers are kept', async () => {
-  const dir = directory();
-  const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
+  const made = world(dir, { answers: ['', '2'], secrets: [KEY] });
   let outAtFirstQuestion: number | undefined;
   const { ask } = made.world;
   made.world.ask = async (question) => {
@@ -538,22 +473,42 @@ test('before its first question setup says what it does, the choices of who the 
     return ask(question);
   };
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const opening = made.seen.out.indexOf(`A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. Its directory here is ${dir}, so its service is named after ${basename(dir)}. Setup asks a few questions first, among them who the resident runs as. When it runs as this user, alice, setup then installs connectome-host ${VERSION} here (about 0.8 GB of disk with the install's own copy of it, or 1.1 GB with a shell for the resident), unless that version is there already, checks an API key, and starts the host's setup agent, which talks with you in this terminal to set up the resident.`);
+  const opening = made.seen.out.indexOf(`A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. Its directory here is ${dir}, so its service is named after ${basename(dir)}. Setup asks a few questions first, among them who the resident runs as. When it runs as this user, alice, setup then installs connectome-host ${VERSION} here (about 0.8 GB of disk with the install's own copy of it), unless that version is there already, checks an API key, and starts the host's setup agent, which talks with you in this terminal to set up the resident.`);
   expect(opening).toBeGreaterThanOrEqual(0);
-  expect(opening).toBeLessThan(outAtFirstQuestion!);
-  const shellSaid = made.seen.out.indexOf('A shell lets the resident run commands on this machine as the user it runs as, which setup settles next: it can read and change whatever that user can, and whoever talks to it on Discord can ask it to.');
+  const shellSaid = made.seen.out.indexOf('The resident runs as the user that runs setup, here alice, and changing that later means starting over as another user. Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell to run commands on this machine. With a shell, the resident can read and change whatever alice can, and whoever talks to it on Discord can ask it to. So if this is your own account and the resident may get a shell, give it a user of its own now.');
   expect(shellSaid).toBeGreaterThan(opening);
   expect(shellSaid).toBeLessThan(outAtFirstQuestion!);
-  expect(made.seen.asked[0]).toBe('Does the resident get a shell? (yes/no) ');
-  expect(made.seen.out).toContain('  1. a user of its own: setup shows the lines that make it, which need sudo, yours if you can use it here or else an admin\'s, and you run setup again as that user, where its questions come again');
-  expect(made.seen.out).toContain('  2. this user, alice: for a resident with no shell, or where alice already is the resident\'s own user');
-  expect(made.seen.out).toContain(`Making ${join(dir, 'connectome-host')} an install that can take newer releases. Its first release is a copy of what's installed here. Making it can take a minute or more.`);
+  expect(made.seen.out.slice(shellSaid + 1, outAtFirstQuestion)).toEqual([
+    'Who does the resident run as?',
+    '  1. a user of its own, as setup recommends if the resident may get a shell: setup shows the lines that make it, which need sudo, yours if you can use it here or else an admin\'s, and you run setup again as that user, where its questions come again',
+    '  2. this user, alice: for a resident with no shell, or where alice already is the resident\'s own user',
+  ]);
+  expect(made.seen.asked.slice(0, 2)).toEqual(['Choose 1 or 2: ', 'Choose 1 or 2: ']);
+  expect(made.seen.asked.some((question) => question.includes('shell'))).toBe(false);
   expect(made.seen.asked).toContain('An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)');
-  expect(text(made.seen.out)).not.toContain('Setup keeps its answers here');
+  expect(text(made.seen.out)).not.toContain('Setup keeps its answer');
   const again = world(dir);
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([]);
   expect(text(again.seen.out)).not.toContain('Setup asks a few questions');
-  expect(again.seen.out[0]).toBe('Setup keeps its answers here: the resident doesn\'t get a shell, and runs as this user, alice. They aren\'t asked again; setup\'s agent picks up where it stopped, and can change with you what it set up.');
+  expect(again.seen.out[0]).toBe('Setup keeps its answer here: the resident runs as this user, alice. It isn\'t asked again; setup\'s agent picks up where it stopped, and can change with you what it set up.');
+
+  const other = directory();
+  const own = world(other, { answers: ['1', ''] });
+  expect(await runSetup(other, ['discord'], own)).toBe(0);
+  expect(own.seen.asked).toEqual(['Choose 1 or 2: ', 'Its user\'s name [connectome]: ']);
+  const out = text(own.seen.out);
+  for (const line of [
+    'Run this line where you can use sudo: it makes its user, unless one by that name is there already, keeps its services running while it\'s logged out, and gives it Bun on its PATH. If a step fails, put right what it names and run the line again.\n' +
+      '  id -u connectome >/dev/null 2>&1 || sudo useradd -m -s /bin/bash connectome && sudo loginctl enable-linger connectome && sudo -iu connectome env PATH=/usr/bin:/bin bash -c \'set -o pipefail; curl -fsSL https://bun.sh/install | bash\'\n',
+    `Setup needs Node ${NODE_FLOOR} or later there too, and at most Node 24 if the resident may get a shell: if this machine's Node is installed for your user alone, as one from nvm is, install Node for connectome as well. \`command -v node\` shows where yours is: one in your home is yours alone.`,
+    'Then open a shell as connectome, with `sudo -iu connectome` where you can use sudo, or by whoever ran the line, and run this same version of setup there, in a new directory for the resident. Its service takes the directory\'s name, so choose another than resident if you like, or if ~/resident is already there:\n  mkdir ~/resident && cd ~/resident\n',
+    `bunx @animalabs/connectome-host@${VERSION} setup discord`,
+    '"this user"',
+  ]) expect(`${out}\n`).toContain(line);
+  expect(own.seen.ran).toEqual([]);
+  expect(readdirSync(other)).toEqual(['.setup']);
+  expect(readdirSync(join(other, '.setup'))).toEqual(['setup.lock']);
 });
 
 test('setup runs no sudo, for a resident with a shell and a user of its own, or with no shell as this user', async () => {
@@ -744,108 +699,6 @@ test('a package a bun add that failed partway left in node_modules, never declar
   expect(args(added)).toContain('term-sessions-mcp');
 });
 
-test('with a shell, a node-pty that opens no pty is installed again, and setup goes on with the copy the install made once it works', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const built = (cwd: string) => join(cwd, 'node_modules', 'node-pty', 'pty.node');
-  let leftAtInstall: boolean | null = null;
-  const made = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY],
-    ptyCheck: (cwd) => existsSync(built(cwd)) && readFileSync(built(cwd), 'utf-8') === 'built by the install'
-      ? { status: 0, stdout: '', stderr: '' } : broken,
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(built(cwd), 'the copy setup found');
-    },
-    atInstall: (cwd) => {
-      leftAtInstall = existsSync(join(cwd, 'node_modules', 'node-pty'));
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(built(cwd), 'built by the install');
-    },
-  });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(leftAtInstall).toBe(false);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
-  expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(true);
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
-  expect(readFileSync(built(dir), 'utf-8')).toBe('built by the install');
-  expect(made.seen.launched).not.toBeNull();
-});
-
-test('with a shell, an install again of node-pty that fails stops setup before its agent, naming the install', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy setup found');
-    },
-    atInstall: (cwd) => { writeFileSync(join(cwd, 'node_modules', 'node-pty'), 'what an install that fails left'); },
-  });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(made.seen.launched).toBeNull();
-  expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: `bun --no-env-file install` didn\'t finish (');
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
-});
-
-test('with a shell, an install again of node-pty that finishes but leaves one that still doesn\'t work puts back the copy setup found', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken],
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy setup found');
-    },
-    atInstall: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that finished, and never built');
-    },
-  });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(made.seen.launched).toBeNull();
-  expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: Failed to load native module: pty.node, checked: build/Release.');
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
-});
-
-test('with a shell, a repair that finds a copy a stopped repair set aside keeps that copy, and puts it back when its own install fails', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, '.setup', 'node-pty-aside'), { recursive: true });
-      writeFileSync(join(cwd, '.setup', 'node-pty-aside', 'pty.node'), 'the copy setup found');
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that was stopped, and never built');
-    },
-  });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
-});
-
-test('without sudo, the pty stop\'s build-tools line is one for root to run', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, { answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken] }, { hasSudo: false, lingerOf: () => true });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain('on Debian and Ubuntu, `apt install build-essential python3` installs them, run as root, by you or by whoever administers this machine.');
-  expect(text(made.seen.err)).not.toContain('sudo apt');
-});
-
-test('with a shell, a node-pty that still opens no pty once installed again stops setup before its agent, saying why and both ways on', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken] });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(made.seen.launched).toBeNull();
-  expect(text(made.seen.err)).toContain(`The resident's shell runs on node-pty, and here it doesn't work: Failed to load native module: pty.node, checked: build/Release. On Linux, its native part is built as it's installed, with python3, make and a C++ compiler; on Debian and Ubuntu, \`sudo apt install build-essential python3\` installs them, run by you if you can use sudo here, or by whoever administers this machine. Then run setup again, which installs node-pty again. Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where setup keeps its answers, and run setup again to answer no.`);
-});
-
 test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies before its add, prints no "Blocked" line of its own, and runs no `bun pm untrusted` after its add', async () => {
   const dir = directory();
   let atAdd: unknown = null;
@@ -859,94 +712,6 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(text(made.seen.out)).not.toContain('Blocked');
 });
 
-// Bun's isolated linker: term-sessions-mcp is a link into node_modules/.bun, and its node-pty is there beside it.
-function isolatedNodePty(cwd: string): string {
-  const store = join(cwd, 'node_modules', '.bun');
-  const server = join(store, 'term-sessions-mcp@1.7.3', 'node_modules', 'term-sessions-mcp');
-  const pty = join(store, 'node-pty@1.1.0', 'node_modules', 'node-pty');
-  rmSync(join(cwd, 'node_modules', 'term-sessions-mcp'), { recursive: true, force: true });
-  mkdirSync(server, { recursive: true });
-  writeFileSync(join(server, 'package.json'), '{"name":"term-sessions-mcp","version":"1.7.3"}');
-  mkdirSync(pty, { recursive: true });
-  writeFileSync(join(pty, 'package.json'), '{"name":"node-pty","version":"1.1.0","main":"index.js"}');
-  writeFileSync(join(pty, 'index.js'), '');
-  for (const prebuild of ['darwin-arm64', 'darwin-x64']) {
-    const helper = join(pty, 'prebuilds', prebuild, 'spawn-helper');
-    mkdirSync(dirname(helper), { recursive: true });
-    writeFileSync(helper, '');
-    chmodSync(helper, 0o644);
-  }
-  rmSync(join(dirname(server), 'node-pty'), { force: true });
-  symlinkSync(pty, join(dirname(server), 'node-pty'));
-  symlinkSync(server, join(cwd, 'node_modules', 'term-sessions-mcp'));
-  return pty;
-}
-
-test('under Bun\'s isolated linker, the node-pty installed again is the one term-sessions-mcp loads, and on macOS its spawn-helper is made executable', async () => {
-  const dir = directory();
-  let pty = '';
-  let leftAtInstall: boolean | null = null;
-  const linux = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'Failed to load native module: pty.node\n' }],
-    atAdd: (cwd) => { pty = isolatedNodePty(cwd); },
-    atInstall: (cwd) => { leftAtInstall = existsSync(pty); isolatedNodePty(cwd); },
-  });
-  expect(await runSetup(dir, ['discord'], linux)).toBe(0);
-  expect(leftAtInstall).toBe(false);
-  const mac = directory();
-  const modes: number[][] = [];
-  let helpers: string[] = [];
-  const made = world(mac, {
-    answers: ['yes', 'yes'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' }],
-    atAdd: (cwd) => { const at = isolatedNodePty(cwd); helpers = ['darwin-arm64', 'darwin-x64'].map((prebuild) => join(at, 'prebuilds', prebuild, 'spawn-helper')); },
-    atInstall: (cwd) => { isolatedNodePty(cwd); },
-    atPtyCheck: () => modes.push(helpers.map((helper) => statSync(helper).mode & 0o777)),
-  }, { platform: 'darwin' });
-  expect(await runSetup(mac, ['discord'], made)).toBe(0);
-  expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
-});
-
-const SPAWN_HELPERS = ['darwin-arm64', 'darwin-x64'];
-
-function shipNodePty(cwd: string): string[] {
-  return SPAWN_HELPERS.map((prebuild) => {
-    const helper = join(cwd, 'node_modules', 'node-pty', 'prebuilds', prebuild, 'spawn-helper');
-    mkdirSync(dirname(helper), { recursive: true });
-    writeFileSync(helper, '');
-    chmodSync(helper, 0o644);
-    return helper;
-  });
-}
-
-test('on macOS, node-pty\'s prebuilt spawn-helper is made executable after every install of it, its retry included, before each check', async () => {
-  const dir = directory();
-  const helpers = SPAWN_HELPERS.map((prebuild) => join(dir, 'node_modules', 'node-pty', 'prebuilds', prebuild, 'spawn-helper'));
-  const modes: number[][] = [];
-  const made = world(dir, {
-    answers: ['yes', 'yes'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' }],
-    atPtyCheck: () => modes.push(helpers.map((helper) => statSync(helper).mode & 0o777)), atAdd: shipNodePty, atInstall: shipNodePty,
-  }, { platform: 'darwin' });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
-});
-
-test('on macOS, a spawn-helper already executable by its owner is left as it is', async () => {
-  const dir = directory();
-  let helpers: string[] = [];
-  const made = world(dir, { answers: ['yes', 'yes'], secrets: [KEY], atAdd: (cwd) => { helpers = shipNodePty(cwd); chmodSync(helpers[0]!, 0o700); } }, { platform: 'darwin' });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(helpers.map((helper) => statSync(helper).mode & 0o777)).toEqual([0o700, 0o755]);
-});
-
-test('on Linux, setup leaves node-pty\'s macOS prebuilds as they are', async () => {
-  const dir = directory();
-  let helpers: string[] = [];
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], atAdd: (cwd) => { helpers = shipNodePty(cwd); } });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(helpers.map((helper) => statSync(helper).mode & 0o777)).toEqual([0o644, 0o644]);
-});
-
 test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts only while they\'re logged in there', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', 'yes'], secrets: [KEY] }, { platform: 'darwin' });
@@ -954,87 +719,19 @@ test('on macOS, setup says the service stops when the user logs out of the Mac\'
   expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are.');
 });
 
-test('on macOS, a pty stop names macOS, says setup makes spawn-helper executable, and gives no Linux build lines', async () => {
+test('setup installs the host and discord-mcpl alone: it adds no shell, checks no node-pty, and a Node above 24 doesn\'t stop it, whose words name that ceiling as the shell\'s', async () => {
   const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
-  const made = world(dir, { answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], atAdd: shipNodePty, atInstall: shipNodePty, trusted: { status: 1, stdout: '', stderr: '' } }, { platform: 'darwin' });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  const said = text(made.seen.err);
-  expect(said).not.toContain('Setup couldn\'t add the packages');
-  expect(said).toContain('here it doesn\'t work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt rather than building them, and setup makes their spawn-helper executable after each install, which node-pty\'s own install doesn\'t. Or, for a resident with no shell,');
-  expect(said).not.toContain('Debian');
-  expect(said).not.toContain('failed..');
-});
-
-modeTest('on macOS, a spawn-helper setup can\'t make executable in the copy it leaves in place is named in the stop, with what to do', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
-  let shut = '';
-  const made = world(dir, {
-    answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], atInstall: shipNodePty,
-    atAdd: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
-  }, { platform: 'darwin' });
-  try {
-    expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  } finally {
-    if (shut) chmodSync(shut, 0o755);
-  }
-  expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${join(shut, 'spawn-helper')} couldn't be made executable (EACCES: permission denied, stat '${join(shut, 'spawn-helper')}'). Run setup again once that's put right, which installs node-pty again. Or, for a resident with no shell,`);
-});
-
-test('on a platform that\'s neither Linux nor macOS, a pty stop gives no platform\'s build advice, and keeps the install-script sentence', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node\n' };
-  const made = world(dir, { answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], trusted: { status: 1, stdout: '', stderr: '' } }, { platform: 'freebsd' });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain(`here it doesn't work: Failed to load native module: pty.node. Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} (\`bun pm default-trusted\` exited 1), so through a mirror or a company registry Bun may not have run node-pty's install script at all. Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}`);
-  expect(text(made.seen.err)).not.toContain('On Linux');
-});
-
-test('a pty stop where setup couldn\'t add Bun\'s default trusted list says so, with why, before the build tools', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken], trusted: { status: 1, stdout: '', stderr: '' } });
-  expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain(`here it doesn't work: Failed to load native module: pty.node, checked: build/Release. Setup couldn't add the packages whose install scripts Bun runs by default to ${join(dir, 'package.json')} (\`bun pm default-trusted\` exited 1), so through a mirror or a company registry Bun may not have run node-pty's install script at all. On Linux, its native part is built as it's installed, with python3`);
-  const fine = directory();
-  const told = world(fine, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken] });
-  expect(await runSetup(fine, ['discord'], told)).toBe(1);
-  expect(text(told.seen.err)).not.toContain('Setup couldn\'t add the packages');
-});
-
-test('after a stop at the pty check, removing setup-state.json and running setup again asks the questions again, and with no shell goes on to its agent', async () => {
-  const dir = directory();
-  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const stopped = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken] });
-  expect(await runSetup(dir, ['discord'], stopped)).toBe(1);
-  rmSync(join(dir, '.setup', 'setup-state.json'));
-  const again = world(dir, { answers: ['no', '2'], secrets: [KEY] });
-  const status = await runSetup(dir, ['discord'], again);
-  expect({ status, err: text(again.seen.err) }).toEqual({ status: 0, err: '' });
-  expect(again.seen.asked[0]).toBe('Does the resident get a shell? (yes/no) ');
-  expect(again.seen.launched).not.toBeNull();
-  expect(again.seen.ran.some((argv) => argv[0] === 'node' && argv[1] === '-e')).toBe(false);
-
-  const installed = directory();
-  expect(await runSetup(installed, ['discord'], world(installed, { answers: ['yes', '2'], secrets: [KEY] }))).toBe(0);
-  expect(existsSync(join(installed, 'connectome-host', 'install.json'))).toBe(true);
-  const later = world(installed, { pty: [broken, broken] });
-  expect(await runSetup(installed, ['discord'], later)).toBe(1);
-  rmSync(join(installed, '.setup', 'setup-state.json'));
-  const answered = world(installed, { answers: ['no', '2'] });
-  const after = await runSetup(installed, ['discord'], answered);
-  expect({ status: after, err: text(answered.seen.err) }).toEqual({ status: 0, err: '' });
-  expect(answered.seen.asked[0]).toBe('Does the resident get a shell? (yes/no) ');
-  expect(answered.seen.launched).not.toBeNull();
-});
-
-test('without a shell, setup doesn\'t check node-pty', async () => {
-  const dir = directory();
-  const made = world(dir, { answers: ['no', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'unreached\n' }] });
+  const made = world(dir, { answers: ['2'], secrets: [KEY], node: '25.1.0', pty: [{ status: 1, stdout: '', stderr: 'unreached\n' }] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(made.seen.launched).not.toBeNull();
+  const added = made.seen.ran.find((argv) => args(argv)[0] === 'add')!;
+  expect(args(added).slice(1)).toEqual([`@animalabs/connectome-host@${VERSION}`, '@animalabs/discord-mcpl']);
   expect(made.seen.ran.some((argv) => argv[0] === 'node' && argv[1] === '-e')).toBe(false);
+  expect(made.seen.ran.flat().some((word) => word.includes('term-sessions-mcp'))).toBe(false);
+  const none = directory();
+  const noNode = world(none, { answers: ['2'], node: null });
+  expect(await runSetup(none, ['discord'], noNode)).toBe(1);
+  expect(text(noNode.seen.err)).toContain(`didn't answer here (there's no node on this PATH). Install Node ${NODE_FLOOR} or later, and at most Node 24 if the resident may get a shell, from nodejs.org or your system's package manager, and run setup again.`);
 });
 
 test('from an empty directory, setup installs, writes the install\'s command, checks the key, and starts its agent', async () => {
@@ -1333,29 +1030,20 @@ test('a run that stops before its agent starts shows no list of the state kept o
   expect(text(made.seen.out)).not.toContain(EXTRA_STATE_LINE);
 });
 
-test('without a shell, the resident\'s shell isn\'t installed', async () => {
+test('setup keeps no shell answer: its kept answer holds who the resident runs as by its version alone, its agent is given no shell answer, and an answer an earlier setup kept with one goes on as kept', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const added = made.seen.ran.find((argv) => args(argv)[0] === 'add')!;
-  expect(added).not.toContain('term-sessions-mcp');
-  expect(added).toContain('@animalabs/discord-mcpl');
-});
-
-test('a no-shell answer is kept as no shell for a run again, and the agent is told it gets no shell; a yes, that it gets one', async () => {
-  const dir = directory();
-  const first = world(dir, { answers: ['no', ''], secrets: [KEY] });
+  const first = world(dir, { answers: ['2'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], first)).toBe(0);
-  expect(first.seen.launched!.env.CONNECTOME_SETUP_SHELL).toBe('gets no shell');
-  const again = world(dir);
-  expect(await runSetup(dir, ['discord'], again)).toBe(0);
-  expect(again.seen.asked).toEqual([]);
-  expect(again.seen.launched!.env.CONNECTOME_SETUP_SHELL).toBe('gets no shell');
-  expect(again.seen.ran.flat().some((word) => word.includes('term-sessions-mcp'))).toBe(false);
-  const other = directory();
-  const shell = world(other, { answers: ['yes', '2'], secrets: [KEY] });
-  expect(await runSetup(other, ['discord'], shell)).toBe(0);
-  expect(shell.seen.launched!.env.CONNECTOME_SETUP_SHELL).toBe('gets a shell');
+  expect(JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1 });
+  expect(Object.keys(first.seen.launched!.env).filter((name) => name.includes('SHELL'))).toEqual([]);
+  const earlier = directory();
+  mkdirSync(join(earlier, '.setup'));
+  writeFileSync(join(earlier, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
+  const kept = world(earlier, { secrets: [KEY] });
+  expect(await runSetup(earlier, ['discord'], kept)).toBe(0);
+  expect(kept.seen.asked.filter((question) => !question.includes('Anthropic API key'))).toEqual([]);
+  expect(kept.seen.out[0]).toBe('Setup keeps its answer here: the resident runs as this user, alice. It isn\'t asked again; setup\'s agent picks up where it stopped, and can change with you what it set up.');
+  expect(kept.seen.launched).not.toBeNull();
 });
 
 test('run again, setup asks nothing it was answered, installs nothing that\'s there, and goes on to its agent', async () => {
@@ -1811,34 +1499,22 @@ test('the agent\'s host takes nothing from the working directory\'s .env that se
   expect(JSON.parse(ran.stdout.toString())).toEqual([null, null, KEY]);
 });
 
-test('setup\'s recipe tells its agent who it is, the version, the install, the surface, its guide and SETUP.md', async () => {
+test('setup\'s recipe tells its agent who it is, the version, the install, the surface, its guide, SETUP.md, who the resident runs as by the person\'s answer, and that the shell is the person\'s to decide with it, with the command a yes runs', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY] });
+  const made = world(dir, { answers: ['2'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const { env, argv } = made.seen.launched!;
   const recipePath = argv.find((word) => word.endsWith('setup.json'))!;
-  const other = directory();
-  const noShell = world(other, { answers: ['no', ''], secrets: [KEY] });
-  expect(await runSetup(other, ['discord'], noShell)).toBe(0);
   const child = spawn(process.execPath, ['-e', `
     const { loadRecipeDetailed } = await import(${JSON.stringify(join(REPO, 'src', 'recipe.ts'))});
-    const rendered = [];
-    let before = {};
-    for (const { path, env } of ${JSON.stringify([{ path: recipePath, env }, { path: noShell.seen.launched!.argv.find((word) => word.endsWith('setup.json'))!, env: noShell.seen.launched!.env }])}) {
-      for (const name of Object.keys(before)) delete process.env[name];
-      Object.assign(process.env, env);
-      before = env;
-      const { recipe } = await loadRecipeDetailed(path);
-      rendered.push({ prompt: recipe.agent.systemPrompt, setup: recipe.modules.setup });
-    }
-    console.log(JSON.stringify(rendered));
+    Object.assign(process.env, ${JSON.stringify(env)});
+    const { recipe } = await loadRecipeDetailed(${JSON.stringify(recipePath)});
+    console.log(JSON.stringify({ prompt: recipe.agent.systemPrompt, setup: recipe.modules.setup }));
   `], { stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   child.stdout.on('data', (chunk) => { out += chunk; });
   expect(await new Promise((done) => child.on('close', done))).toBe(0);
-  type Rendered = { prompt: string; setup: boolean };
-  const [{ prompt, setup: enabled }, without] = JSON.parse(out) as [Rendered, Rendered];
-  expect(without.prompt).toContain('the resident gets no shell and runs as alice');
+  const { prompt, setup: enabled } = JSON.parse(out) as { prompt: string; setup: boolean };
   expect(prompt).toContain('setup--run gives back only the first and last 4 KiB of an output longer than 8 KiB, so read the guide in pieces under 8 KiB, by line range. Follow it, and where it differs from this prompt, this prompt holds.');
   expect(enabled).toBe(true);
   expect(prompt).toContain('setup agent');
@@ -1848,7 +1524,9 @@ test('setup\'s recipe tells its agent who it is, the version, the install, the s
   expect(prompt).toContain('Discord');
   expect(prompt).toContain(join(dirname(recipePath), '..', 'docs', 'AGENT-ONBOARDING.md'));
   expect(prompt).toContain(`SETUP.md in ${dir}`);
-  expect(prompt).toContain('At setup\'s questions, the person answered that the resident gets a shell and runs as alice: name both as their answers, not setup\'s.');
+  expect(prompt).toContain('At setup\'s question, the person answered that the resident runs as alice: name that as their answer, not setup\'s.');
+  expect(prompt).toContain(`Whether the resident gets a shell isn't decided: it's the person's to decide with you, once you've told them what a shell lets the resident read and change as alice, and that whoever talks to it on Discord can ask it to. On a yes, run \`${shellWord(join(dir, 'connectome-host', 'connectome'))} shell install\` with a time limit of 10 minutes, then set up the shell as your guide says; on a no, set up no shell; either way, write their answer in SETUP.md as theirs.`);
+  expect(prompt).not.toContain('${');
   expect(prompt).toContain('Answer it by speaking to the person first, in a sentence or two before any tool call, so that they see your words within seconds and not after your reads; then read what you need.');
 });
 
