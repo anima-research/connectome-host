@@ -249,6 +249,7 @@ export class SetupModule implements Module {
   private readonly groups = new Set<Group>();
   private stopping = false;
   private asking: Promise<unknown> = Promise.resolve();
+  private readonly checks = new Set<Promise<void>>();
   private readonly seen: Seen;
   finishRequested = false;
 
@@ -388,12 +389,19 @@ export class SetupModule implements Module {
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
     if (call.name === 'run') return this.run(call.input as { command?: unknown; timeoutMs?: unknown });
     if (call.name === 'ask_secret') {
-      const turn = this.asking.then(() => this.askSecret(call.input as { name?: unknown; purpose?: unknown }));
+      const turn = this.asking.then(() => Promise.all(this.checks))
+        .then(() => this.askSecret(call.input as { name?: unknown; purpose?: unknown }));
       this.asking = turn.catch(() => {});
       return turn;
     }
     if (call.name === 'check_model') {
-      return this.afterAsked(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
+      return this.afterAsked(() => {
+        const check = this.checkModel(call.input as { name?: unknown; model?: unknown });
+        const ended = check.then(() => {}, () => {});
+        this.checks.add(ended);
+        void ended.then(() => { this.checks.delete(ended); });
+        return check;
+      });
     }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
