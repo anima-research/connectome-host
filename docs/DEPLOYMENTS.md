@@ -128,8 +128,9 @@ the working directory):
   `mcpl-stderr/<server>.log` (each MCPL server's stderr plus connect/close/error
   lines; rolls to `.1` at 10 MB).
 - Readline mode (`--no-tui` with stdin on a terminal):
-  `data/readline-error.log`. From readline mode's banner until the host has
-  stopped, it takes what the process writes through `process.stderr.write`,
+  `data/readline-error.log`. From readline mode's banner, or for setup's host
+  from before its extensions load, until the host has stopped, it takes what
+  the process writes through `process.stderr.write`,
   `console.error` and `console.warn`: library diagnostics, `[routeSpeech]`,
   `[routing]` and `[inference-failed]` among them. It is created readable by
   its owner alone, and each line is written to it as it comes. What the person
