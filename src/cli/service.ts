@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync,
-  readSync, renameSync, rmSync, statSync,
+  readSync, realpathSync, renameSync, rmSync, statSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
@@ -9,11 +9,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ContractError, INSTALL_ROOT_ENV, RESTART_EXIT_CODE, installPaths, pendingGoBack, readCurrent, readJournal, readMark,
-  readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type InstallRecord, type JournalLine, type Mark,
+  readRecord, realOrResolved, unfinishedTrial, writeJsonAtomic, writeTextAtomic, type JournalLine, type Mark,
 } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
 import { shellWord } from '../update/launcher.js';
-import { boundHere, sameDirectory, workingDirOf } from '../update/rebind.js';
 import { lingerOf } from '../setup/linger.js';
 import { takeFileLock } from '../setup/file-lock.js';
 import {
@@ -22,7 +21,7 @@ import {
 } from '../setup/secrets.js';
 import { dataDirOf, openHost, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_SURFACE, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 
 export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
@@ -282,11 +281,6 @@ async function installWithRecord(ctx: CliContext, sys: ServiceSystem): Promise<n
   const given = ctx.argv[1];
   const root = ctx.root!;
   const cmd = typedCommand(root, sys.env.PATH);
-  const installed = readRecord<InstallRecord>(installPaths(root).install, 'install record');
-  if (installed === null || !boundHere(installed, root)) {
-    throw new Refusal(`The install record at ${installPaths(root).install} isn't bound to ${workingDirOf(root)}. ` +
-      `Run ${cmd} setup ${SETUP_SURFACE} here to confirm each recorded place, then repeat this service install command.`);
-  }
   let old: ServiceRecord | null = null;
   try {
     old = readServiceRecordFile(root, cmd, given === undefined);
@@ -2130,6 +2124,20 @@ function isFile(path: string): boolean {
 function writeText(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeTextAtomic(path, text, 0o600);
+}
+
+function workingDirOf(root: string): string {
+  return dirname(realpathSync(root));
+}
+
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    const one = statSync(a, { bigint: true });
+    const other = statSync(b, { bigint: true });
+    return one.dev === other.dev && one.ino === other.ino;
+  } catch {
+    return false;
+  }
 }
 
 function errorText(error: unknown): string {
