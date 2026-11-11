@@ -150,13 +150,12 @@ export function passwdHome(name: string, file = '/etc/passwd'): string | null {
  *  Only units systemd has loaded are seen. */
 export function systemdUnits(cwd: string, run = (args: string[]) =>
   Bun.spawnSync(['systemctl', ...args], { stdout: 'pipe', stderr: 'pipe' }), home = homedir(),
-homeOf = passwdHome, isHere?: (directory: string) => boolean): ServiceUnits {
+homeOf = passwdHome): ServiceUnits {
   const found: ServiceUnit[] = [];
   const unasked: string[] = [];
   const unresolved: ServiceUnits['unresolved'] = [];
   const defaulted: string[] = [];
   const here = realOrResolved(cwd);
-  const runsHere = isHere ?? ((directory: string) => directory === here);
   const realOrNull = (path: string) => {
     try {
       return realOrResolved(path);
@@ -194,7 +193,7 @@ homeOf = passwdHome, isHere?: (directory: string) => boolean): ServiceUnits {
         } catch {
           continue;
         }
-        if (runsHere(runsIn)) defaulted.push(id);
+        if (runsIn === here) defaulted.push(id);
         continue;
       }
       const tilde = set === '~' && !user ? homeOf(fields.get('User') || 'root') : home;
@@ -209,7 +208,7 @@ homeOf = passwdHome, isHere?: (directory: string) => boolean): ServiceUnits {
         unresolved.push({ id, scope: user ? 'user' : 'system' });
         continue;
       }
-      if (!runsHere(real)) continue;
+      if (real !== here) continue;
       found.push({ id, scope: user ? 'user' : 'system', file: fields.get('FragmentPath') ?? '', ...restartPolicy(fields) });
     }
   }
@@ -436,7 +435,7 @@ export function setup(options: SetupOptions): void {
       `host was started with if that isn't ${dataDir}, and --extra-state PATH added for each place of state kept ` +
       'outside the data directory that\'s there now: setup then makes the install afresh there, serving that data ' +
       'directory, with no journal or copy, so with no Go back, and starting the service again starts the new install, ' +
-      `since its path is the same, and \`${typedCommand(root)} service install <recipe>\` then records the service ` +
+      `since its path is the same, and \`${typedCommand(root)} service install <recipe>\` then writes the service ` +
       'again, if that\'s what set it up. Those places: a setup run that ' +
       `finished printed them after "${EXTRA_STATE_LINE}" ` +
       '(`connectome setup` shows that block only at its end, only while the record still holds it, and not at all ' +

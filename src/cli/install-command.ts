@@ -4,7 +4,6 @@ import { writeTextAtomic } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 
 export const INSTALL_COMMAND = 'connectome';
-export const SETUP_SURFACE = 'discord';
 
 export const CLI_IN_RELEASE = ['node_modules', '@animalabs', 'connectome-host', 'src', 'cli', 'connectome.ts'];
 
