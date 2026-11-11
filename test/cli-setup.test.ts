@@ -2077,6 +2077,14 @@ test('a copy with a place outside its old directory asks where that place is in 
   expect(text(again.seen.out)).toContain(`It asks about each place outside ${dir}, since it can't tell whether that came with the install, as after a move, or is still the other install's, as after a copy. A place inside another goes with it. Press Enter where a place is this install's, or type the path of this install's own, as after a copy.`);
 });
 
+const unsettled = (dir: string): string => {
+  const file = join(dir, 'package.json');
+  const manifest = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>;
+  delete manifest.trustedDependencies;
+  delete manifest.dependencies;
+  writeFileSync(file, JSON.stringify(manifest));
+  return readFileSync(file, 'utf-8');
+};
 const keptInRoot = (dir: string): string => {
   const root = join(dir, 'connectome-host');
   mkdirSync(join(root, 'copy'));
@@ -2145,7 +2153,7 @@ test('while a trial is unfinished, a moved install whose root keeps a copy is re
   expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
 });
 
-test('while a Go back is unfinished, a moved install whose root keeps a copy is refused, saying to let the Go back end where it was, and nothing is asked', async () => {
+test('while a Go back is unfinished, a moved install whose root keeps a copy is refused before setup changes package.json or installs anything, saying to let the Go back end where it was, and nothing is asked', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
   const root = keptInRoot(dir);
@@ -2154,11 +2162,14 @@ test('while a Go back is unfinished, a moved install whose root keeps a copy is 
   })}\n`);
   const moved = besideIt(dir, 'moved');
   renameSync(dir, moved);
+  const before = unsettled(moved);
   const again = world(moved);
   expect(await runSetup(moved, ['discord'], again)).toBe(1);
   expect(again.seen.asked).toEqual([]);
   expect(text(again.seen.err)).toContain(`A Go back is unfinished: the journal's last ok go-back, to ${VERSION}, ` +
     'has no ok trial-start, commit or fallback after it');
+  expect(readFileSync(join(moved, 'package.json'), 'utf-8')).toBe(before);
+  expect(again.seen.ran.filter((argv) => args(argv)[0] === 'add' || args(argv)[0] === 'install')).toEqual([]);
   expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
 });
 
@@ -2281,7 +2292,7 @@ test('a binding setup refuses, here a children file it can\'t read, stops it bef
   expect(again.seen.ran.filter((argv) => args(argv)[0] === 'add' || args(argv)[0] === 'install')).toEqual([]);
 });
 
-test('a binding refused once its data directory is answered, after setup has changed package.json, comes under the same line, which says only the install is unchanged', async () => {
+test('a binding refused once its data directory is answered stops setup before it changes package.json or installs anything, under the same line', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
@@ -2289,12 +2300,15 @@ test('a binding refused once its data directory is answered, after setup has cha
   mkdirSync(elsewhere);
   writeFileSync(join(elsewhere, 'fleet-children.json'), '{ not json');
   writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
+  const before = unsettled(dir);
   const again = world(dir, { answers: [''] });
   expect(await runSetup(dir, ['discord'], again)).toBe(1);
   const lead = again.seen.err.indexOf(`Binding the install at ${root} stopped, with nothing in it changed:`);
   expect(lead).toBeGreaterThanOrEqual(0);
   expect(again.seen.err[lead + 1]).toStartWith(`  The fleet's children file at ${join(elsewhere, 'fleet-children.json')} isn't JSON`);
   expect(text(again.seen.err)).not.toContain('connectome setup: ');
+  expect(readFileSync(join(dir, 'package.json'), 'utf-8')).toBe(before);
+  expect(again.seen.ran.filter((argv) => args(argv)[0] === 'add' || args(argv)[0] === 'install')).toEqual([]);
 });
 
 test('a fleet child\'s data directory outside every place is asked about after the data directory, from the children file in the data directory answered, and its own setup is given both', async () => {
