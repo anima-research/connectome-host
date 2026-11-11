@@ -59,7 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
-import { TuiModule } from './modules/tui-module.js';
+import { TuiModule, onHostLineTakenIn } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -73,16 +73,16 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { LifecycleModule } from './modules/lifecycle-module.js';
 import {
-  REFUSED_BEFORE, REFUSED_TURN, SETUP_MODULE, SetupModule, lastReplyRefused, openingMessage, showsItself, type SecretAsker,
+  REFUSED_TURN, SETUP_MODULE, SetupModule, lastReplyRefused, openingMessage, showsItself, type SecretAsker,
 } from './modules/setup-module.js';
 import { bracketedPaste } from './readline-paste.js';
 import { speakerOf } from './speaker.js';
-import { askHidden } from './setup/terminal-secret.js';
+import { askHidden, holdsAnswer } from './setup/terminal-secret.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
 import { serversForRecipe, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
-import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
+import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE, BATCH_UNANSWERED_NOTICE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
 import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from './readline-terminal.js';
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
@@ -551,6 +551,7 @@ agents: [agentConfig],
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
     inferenceBounds: recipe.inferenceBounds,
+    toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -736,7 +737,9 @@ async function runPiped(app: AppContext) {
     write: (text) => { atPrompt = false; process.stdout.write(text); },
     log: (line) => { atPrompt = false; console.log(line); },
     error: (line) => { say(line); },
-  }, failureHint(app.recipe, process.env, app.credentials), showsItself, () => { answeredUnwaited(); });
+  }, failureHint(app.recipe, process.env, app.credentials), app.recipe.modules?.setup === true ? showsItself : undefined,
+  () => { answeredUnwaited(); });
+  onHostLineTakenIn(() => turns.takenIn());
   const traces = traceFollower((event) => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
@@ -745,21 +748,30 @@ async function runPiped(app: AppContext) {
   });
   traces.follow(app.framework);
   let afterSwitch = async (_switched: boolean): Promise<void> => {};
-  // agent-framework's processNextEvent starts a turn for each event it pops.
+  // agent-framework starts a turn for an event it pops while the agent is idle; events that come while a turn runs
+  // are answered together, in the turn after it.
   let lastMessage: Promise<void> = Promise.resolve();
   let session = 0;
   let conversationEnded = false;
   let linesWaiting = 0;
+  const waitingLines = new Set<{ line: string; holdsHidden: boolean }>();
   const inOrder = async (send: () => Promise<void>, line?: string): Promise<void> => {
     const before = lastMessage;
     const sentIn = session;
     let done!: () => void;
     lastMessage = new Promise((resolve) => { done = resolve; });
+    const waiting = line === undefined ? undefined : { line, holdsHidden: false };
+    if (waiting !== undefined) waitingLines.add(waiting);
     if (line !== undefined) linesWaiting++;
     try {
       await before;
       if (line !== undefined) linesWaiting--;
+      if (waiting !== undefined) waitingLines.delete(waiting);
       if (conversationEnded) return;
+      if (waiting?.holdsHidden) {
+        say('Not sent, since it holds what you entered hidden.');
+        return;
+      }
       if (sentIn !== session) {
         const first = line?.split('\n')[0];
         if (first !== undefined) {
@@ -770,6 +782,7 @@ async function runPiped(app: AppContext) {
       }
       await send();
     } finally {
+      if (waiting !== undefined) waitingLines.delete(waiting);
       done();
     }
   };
@@ -778,7 +791,7 @@ async function runPiped(app: AppContext) {
     const trimmed = line.trim();
     if (!trimmed) return false;
     if (trimmed.startsWith('/') && !trimmed.includes('\n')) {
-      const result = handleCommand(trimmed, app);
+      const result = handleCommand(trimmed, app, { lineByLine: true });
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
       if (result.asyncWork) {
@@ -801,7 +814,8 @@ async function runPiped(app: AppContext) {
         turns.switched();
         await inOrder(async () => {
           app.switching = false;
-          const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+          const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework,
+            () => turns.switched());
           console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
           await afterSwitch(switched);
         });
@@ -809,10 +823,15 @@ async function runPiped(app: AppContext) {
     } else {
       await inOrder(async () => {
         const answered = turns.waitForTurn();
-        app.framework.pushEvent({
-          type: 'external-message', source: 'cli',
-          content: trimmed, metadata: {}, triggerInference: true,
-        });
+        try {
+          app.framework.pushEvent({
+            type: 'external-message', source: 'cli',
+            content: trimmed, metadata: {}, triggerInference: true,
+          });
+        } catch (error) {
+          answered.cancel();
+          throw error;
+        }
         await answered;
       }, trimmed);
     }
@@ -829,6 +848,7 @@ async function runPiped(app: AppContext) {
       console.log(`> ${batchEchoLine(line)}`);
       if (await processLine(line)) break;
     }
+    if (turns.unanswered()) console.log(BATCH_UNANSWERED_NOTICE);
     app.stopping = true;
     console.log('Done.');
     const serverIds = app.framework.listMcplServers().map((s) => s.id);
@@ -863,7 +883,7 @@ async function runPiped(app: AppContext) {
       setup ? app.framework.getModule(SETUP_MODULE) as SetupModule | undefined : undefined;
     onAlert = (event) => {
       const alert = opsAlertOf(event);
-      if (setup && alert.kind === 'refusal') return;
+      if (setup && alert.kind === 'refusal' && alert.agent === app.agentName) return;
       showAlert(alert);
     };
     // agent-framework logs a turn's last inference, and notes a refusal, after the turn's inference:completed trace in
@@ -879,7 +899,13 @@ async function runPiped(app: AppContext) {
       ask: async (name, purpose) => {
         const release = turns.holdCaps();
         try {
-          return (await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`)) || null;
+          const answer = await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`,
+            paste ?? undefined);
+          const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+          for (const waiting of waitingLines) {
+            if (holdsAnswer(waiting.line, given)) waiting.holdsHidden = true;
+          }
+          return answer || null;
         } finally {
           release();
         }
@@ -896,20 +922,22 @@ async function runPiped(app: AppContext) {
     rl.on('close', () => {
       terminalAsker = null;
       closed = true;
+      turns.endAll();
       conversationEnded = true;
       atPrompt = false;
-      paste?.end();
+      const pasted = paste?.end() ?? 0;
       if (linesWaiting > 0) {
         const lines = linesWaiting === 1 ? 'A line you typed' : `${linesWaiting} lines you typed`;
         say(`${lines} hadn't gone in to the agent yet, and won't now.`);
       }
+      if (pasted > 0) say(pasted === 1 ? 'The line you pasted wasn\'t sent.' : `The ${pasted} lines you pasted weren't sent.`);
     });
     const ended = new Promise<void>((done) => rl.once('close', () => done()));
     let unanswered = 0;
     const promptIfDone = (): void => {
       if (closed || unanswered > 0) return;
       if (setupModule()?.finishRequested) {
-        rl.close();
+        if (!turns.unanswered()) rl.close();
         return;
       }
       rl.prompt();
@@ -918,15 +946,19 @@ async function runPiped(app: AppContext) {
     answeredUnwaited = () => { if (!atPrompt) promptIfDone(); };
     const opening = async (after: 'start' | 'switch'): Promise<void> => {
       const held = app.framework.getAgent(app.agentName)?.getContextManager()?.queryMessages({}).messages ?? [];
-      if (lastReplyRefused(app.framework, app.agentName)) say(REFUSED_BEFORE);
       const opened = turns.waitForTurn(null);
-      app.framework.pushEvent({
-        type: 'external-message', source: 'system',
-        content: openingMessage(
-          held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
-          after, setupModule()?.finishedAt() ?? null),
-        metadata: {}, triggerInference: true,
-      });
+      try {
+        app.framework.pushEvent({
+          type: 'external-message', source: 'system',
+          content: openingMessage(
+            held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
+            after, setupModule()?.finishedAt() ?? null),
+          metadata: {}, triggerInference: true,
+        });
+      } catch (error) {
+        opened.cancel();
+        throw error;
+      }
       await Promise.race([opened, ended]);
     };
     afterSwitch = async (switched) => {
@@ -942,7 +974,7 @@ async function runPiped(app: AppContext) {
       try {
         quit = await processLine(message);
       } catch (error) {
-        say(`That line failed, and nothing more came of it: ${error instanceof Error ? error.message : String(error)}`);
+        say(`That line stopped at an error, and nothing after the error ran: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         unanswered--;
       }
@@ -1089,6 +1121,7 @@ async function main() {
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;
@@ -1108,7 +1141,7 @@ async function main() {
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
-    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+    const name = fw?.getPrimaryAgentName()
       ?? (agents.length === 1 ? agents[0]!.name : undefined);
     if (!name) return null;
     const agent = agents.find((a) => a.name === name);

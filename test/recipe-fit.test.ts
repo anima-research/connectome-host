@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { ContextManager, defaultTokenEstimator } from '@animalabs/context-manager';
 import { DEFAULT_RECIPE, type Recipe, loadRecipe, loadRecipeDetailed, loadSavedRecipe, saveRecipe, savedRecipePath, validateRecipe } from '../src/recipe.js';
 import { effectiveContextBudgetTokens, recipeFit } from '../src/recipe-fit.js';
-import { LIMITS_TABLE } from '../src/model-limits.js';
+import { LIMITS_TABLE, getDefaultModelLimits } from '../src/model-limits.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 
@@ -479,6 +479,13 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     expect(text).not.toContain('or less');
   });
 
+  test('the Fable 5.2 and Mythos 5.2 rows give a 1,000,000-token window and 128,000 tokens of output, by id and dated id; a later version has none', () => {
+    for (const id of ['claude-fable-5-2', 'claude-mythos-5-2', 'claude-fable-5-2-20261109']) {
+      expect([id, getDefaultModelLimits(id)]).toEqual([id, { maxContextTokens: 1_000_000, maxOutputTokens: 128_000 }]);
+    }
+    for (const id of ['claude-fable-5-3', 'claude-mythos-5-3']) expect([id, getDefaultModelLimits(id)]).toEqual([id, undefined]);
+  });
+
   test('the default recipe, which no loader checks, fits every model the table holds', () => {
     for (const { id } of LIMITS_TABLE) expect([id, recipeFit(DEFAULT_RECIPE, id)]).toEqual([id, { checked: true, fits: true }]);
   });
@@ -602,9 +609,10 @@ describe('a count of the system prompt and tools the host sends beside the conve
     expect(over).toContain('the system prompt and tools the host sends, counted at 48,385, come on top.');
     expect(over).toContain('agent.contextBudgetTokens to 167,999 or less, so the system prompt and tools the host sends still fit');
     expect(over).toContain('bring the system prompt and tools the host sends to about 48,384 tokens or fewer, with fewer tools, ' +
-      'since a shorter system prompt raises the budget the host gives this recipe by as much');
+      'or a shorter system prompt only where it counts more than the estimate the budget is worked out from');
     expect(over).toContain('At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
-      'with the system prompt and tools as counted, can fill the window, leaving nothing for what modules add at each turn.');
+      'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
+      'each turn.');
     expect(over).not.toContain('32,000');
     expect(over).not.toContain('less the size of the tools');
     expect(over).not.toContain('leaving none for the tool definitions');

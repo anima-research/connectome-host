@@ -13,7 +13,7 @@ import {
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { readServiceRecord, serviceCommand, serviceLines } from './service.js';
+import { serviceCommand, serviceCommands, serviceLines } from './service.js';
 import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup } from './setup.js';
 
 export interface CliContext {
@@ -229,15 +229,9 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
 }
 
 function service(ctx: CliContext): number {
-  let lines: string[] | null;
-  try {
-    lines = serviceLines(ctx.root!);
-  } catch (error) {
-    ctx.err(`connectome: ${errorText(error)}`);
-    return 1;
-  }
+  const lines = serviceLines(ctx.root!);
   if (lines === null) {
-    ctx.out(`No service is recorded for it yet: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
+    ctx.out(`No service is set up for it here: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
   }
   for (const line of lines ?? []) ctx.out(line);
   return 0;
@@ -455,14 +449,9 @@ function noHost(ctx: CliContext, host: NoHost): number {
 }
 
 function startHost(root: string, then: string): string {
-  let recorded: boolean;
-  try {
-    recorded = readServiceRecord(root) !== null;
-  } catch (error) {
-    return `${errorText(error).replace(/\.+$/, '')}. Then ${then}.`;
-  }
-  return recorded
-    ? `If no host is running, start it with \`${typedCommand(root)} service start\`, then ${then}.`
+  const start = serviceCommands(root)?.start;
+  return start !== undefined
+    ? `If no host is running, start its service with \`${start}\`, then ${then}.`
     : `If no host is running, have its service start it with \`${startCommand(root)}\`, followed by the arguments it ` +
       `gives the host now, then ${then}.`;
 }

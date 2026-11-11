@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type {
   EventResponse,
@@ -12,27 +13,23 @@ import type {
 } from '@animalabs/agent-framework';
 import {
   DISCORD_TOKEN, StoredSecrets, isSecretName, readEnvFile, redactWindow, secretNames, secretValues,
-  unwritableValue, withoutSecrets, writeEnvValue, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
+  unwritableValue, withoutSecrets, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
+import { originOf } from '../setup/key-check.js';
 import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAnswer } from '../setup/provider-key.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { writeJsonAtomic } from '../update/contract.js';
 import { readSetupState } from '../setup/state.js';
 
 export interface SecretAsker {
-  /** The value the person typed, or null when they declined or the terminal closed. */
   ask(name: string, purpose: string): Promise<string | null>;
 }
 
 export interface SetupModuleConfig {
-  /** The install's working directory: where commands run, where .env is, and where setup keeps .setup/. */
   dir: string;
-  /** The environment commands start from, before the secrets are taken out. */
   env: Record<string, string | undefined>;
-  /** The terminal to ask on, once readline mode has one. */
   asker: () => SecretAsker | null;
-  /** Shows the person a line on the terminal the host runs in. */
   show: (line: string) => void;
   fetch?: typeof fetch;
 }
@@ -40,11 +37,12 @@ export interface SetupModuleConfig {
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream's head and tail, so both streams' together, with what the answer adds, stay under agent-framework
-// 0.27.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), past which it
-// cuts the answer, and stderr's tail with it, for ordinary output: one dense in what JSON escapes, or in short
-// secrets under long names, can still pass it.
+// 0.32.0's 24,000-character cap for a tool result's inline text (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its
+// src/tool-result-history.ts:253, which the package doesn't export), past which it cuts the answer, and stderr's tail
+// with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
+// for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
+// of ordinary output. Output dense in what JSON escapes, or in short secrets under long names, can still pass it.
 const KEPT_BYTES = 4 * 1024;
-/** The longest a stream's output comes back whole: past it, setup--run gives its head and tail. */
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
@@ -61,8 +59,6 @@ function isContinuation(bytes: Buffer, at: number): boolean {
 
 class Capture {
   private total = 0;
-  private full: Buffer[] | null = [];
-  private fullBytes = 0;
   private head = Buffer.alloc(0);
   private tail = Buffer.alloc(0);
   private readonly window: number;
@@ -73,11 +69,6 @@ class Capture {
 
   add(chunk: Buffer): void {
     this.total += chunk.length;
-    if (this.full) {
-      this.full.push(chunk);
-      this.fullBytes += chunk.length;
-      if (this.fullBytes > 2 * this.window) this.full = null;
-    }
     if (this.head.length < this.window) {
       this.head = Buffer.concat([this.head, chunk.subarray(0, this.window - this.head.length)]);
     }
@@ -85,11 +76,9 @@ class Capture {
     if (this.tail.length > this.window) this.tail = this.tail.subarray(this.tail.length - this.window);
   }
 
-  /** The stream whole while it's 8 KiB or less, else its first and last 4 KiB, each secret replaced by its name. A
-   *  secret the cut runs through is shown whole on its side, and where that takes the two to meet, the stream comes
-   *  back whole. */
   result(secrets: Secret[], replaced: Set<string>): Stream {
-    const all = this.full ? Buffer.concat(this.full) : null;
+    const all = this.total > 2 * this.window ? null
+      : Buffer.concat([this.head, this.tail.subarray(this.head.length + this.tail.length - this.total)]);
     const whole = (): Stream =>
       ({ bytes: this.total, text: redactWindow(all!, 0, all!.length, secrets, replaced).text, cut: false });
     if (all && all.length <= WHOLE_OUTPUT_BYTES) return whole();
@@ -148,7 +137,6 @@ function groupOf(pid: number | undefined): Group {
       try {
         if (pid !== undefined) process.kill(-pid, signal);
       } catch {
-        // The group has gone.
       }
     },
     alive() {
@@ -170,8 +158,6 @@ function groupOf(pid: number | undefined): Group {
 // fillers, U+034F), and the blank braille cell, U+2800, which is drawn as a space.
 const UNSHOWN = /(?! )[\p{Cc}\p{Cf}\p{Z}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 
-/** A line as the person is shown it: each character UNSHOWN takes as its \u escape, so nothing in it moves, hides or
- *  reorders what's shown. */
 function shown(line: string): string {
   return line.replace(UNSHOWN, (character) => {
     const hex = character.codePointAt(0)!.toString(16);
@@ -203,16 +189,13 @@ export function openingMessage(held: boolean, after: 'start' | 'switch', finishe
   }
   return held
     ? 'From setup, not the person: they\'ve started setup again, and this conversation picks up where it stopped.'
-    : 'From setup, not the person: they\'ve just started setup and are at this terminal.';
+    : 'From setup, not the person: they\'ve started setup, and this conversation holds nothing yet: what setup did ' +
+      'before, if it ran here, stays on disk.';
 }
 
 export const REFUSED_TURN = 'The model refused that turn. This can come from anything in the conversation, not only what ' +
   'you just wrote. Try once more; if it refuses again, /session new starts a new conversation with setup\'s agent, and ' +
   'what setup has done stays on disk.';
-
-export const REFUSED_BEFORE = 'Setup\'s agent\'s last reply was refused by the model. This can come from anything in the ' +
-  'conversation. If it\'s refused again, /session new starts a new conversation with setup\'s agent, and what setup has ' +
-  'done stays on disk.';
 
 export function lastReplyRefused(
   framework: { queryInferenceLogs(query: { agentName: string; limit: number }): { entries: Array<{ summary?: { stopReason?: string } }> } },
@@ -225,11 +208,13 @@ export function showsItself(tool: string): boolean {
   return tool.startsWith(`${SETUP_MODULE}--`);
 }
 
-/** A command's lines as the person is shown them: each secret's value as its name, as in the answer, and each line
- *  as shown() gives it. */
+function redacted(text: string, secrets: Secret[]): string {
+  const bytes = Buffer.from(text);
+  return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text;
+}
+
 function shownCommand(command: string, secrets: Secret[]): string[] {
-  const bytes = Buffer.from(command);
-  return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text.split('\n').map(shown);
+  return redacted(command, secrets).split('\n').map(shown);
 }
 
 function failed(error: string): ToolResult {
@@ -274,13 +259,11 @@ export class SetupModule implements Module {
 
   async start(_ctx: ModuleContext): Promise<void> {}
 
-  /** Stops each command still running, and each one stopped at its limit less than 5 s before: SIGTERM to its
-   *  process group, and SIGKILL to each group with any of it left 5 s on. Commands asked for afterwards are refused. */
   async stop(): Promise<void> {
     this.stopping = true;
     const groups = [...this.groups];
     for (const group of groups) group.signal('SIGTERM');
-    for (const until = Date.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && Date.now() < until;) {
+    for (const until = performance.now() + KILL_GRACE_MS; groups.some((group) => group.alive()) && performance.now() < until;) {
       await new Promise((done) => setTimeout(done, 50));
     }
     for (const group of groups) if (group.alive()) group.signal('SIGKILL');
@@ -299,11 +282,15 @@ export class SetupModule implements Module {
           `Run one command with bash -c in the install's directory, and get its exit status and output back: of an ` +
           `output longer than 8 KiB, its first and last 4 KiB, each widened to take in whole a secret a cut falls ` +
           `in, or the whole output where the two then meet. Its environment is the host's, less the stored secrets, the provider credentials and the ` +
-          `providers' base URLs, and no shell startup file is read. Nothing is kept between calls but what the command ` +
+          `providers' base URLs, under their own names or any other whose whole value is one of theirs, as stored or trimmed (a variable holding ` +
+          `one within a longer value stays), and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
+          `install's directory itself unless it's run with --no-env-file. Nothing is kept between calls but what the command ` +
           `leaves behind: a process it leaves running when it ends, before the host shuts down, keeps running, after ` +
           `the host ends too, so a ` +
           `resident's host started from a command and one its service starts later would be two hosts on one data ` +
-          `directory. A command still running at its time limit, or when the host shuts down (as at /quit), is stopped: its process group gets ` +
+          `directory. Such a process needs output of its own, such as > file 2>&1: the output it shares with the ` +
+          `command closes at most about a second after the command ends, and a write ` +
+          `there after that ends it by SIGPIPE unless it ignores that signal. A command still running at its time limit, or when the host shuts down (as at /quit), is stopped: its process group gets ` +
           `SIGTERM, and SIGKILL 5 s later if any of it is left. The value of a stored secret, a provider credential or ` +
           `a provider's base URL that appears in the output as it was stored comes back as <NAME>; an encoded or split ` +
           `one isn't recognized.`,
@@ -325,7 +312,8 @@ export class SetupModule implements Module {
           'Ask the person for a secret in this terminal, with nothing shown as they type, and store it in the ' +
           "install's .env. You get back only where it was stored, never the value. A DISCORD_TOKEN is checked with " +
           'Discord first, and an OPENAI_API_KEY, OPENROUTER_API_KEY or ANTHROPIC_API_KEY with its provider, at the ' +
-          'OPENAI_BASE_URL or ANTHROPIC_BASE_URL .env names if it names one; one that is refused is not stored. ' +
+          'OPENAI_BASE_URL, OPENROUTER_BASE_URL or ANTHROPIC_BASE_URL .env names if it names one; one that is refused ' +
+          'is not stored. ' +
           'Bedrock\'s keys aren\'t checked, since a request with them needs AWS\'s signing, nor Codex\'s login, which ' +
           'isn\'t a key, nor OPENAI_COMPATIBLE_API_KEY, whose endpoint is the recipe\'s.',
         inputSchema: {
@@ -350,7 +338,8 @@ export class SetupModule implements Module {
         name: 'check_model',
         description:
           'Check with the provider whether it offers a model to the key stored in the install\'s .env as name: ' +
-          'OPENAI_API_KEY (OpenAI, or the OPENAI_BASE_URL .env names), OPENROUTER_API_KEY, or ANTHROPIC_API_KEY ' +
+          'OPENAI_API_KEY (OpenAI, or the OPENAI_BASE_URL .env names), OPENROUTER_API_KEY (OpenRouter, or the ' +
+          'OPENROUTER_BASE_URL .env names), or ANTHROPIC_API_KEY ' +
           '(Anthropic, or the ANTHROPIC_BASE_URL .env names). You get back whether it lists the model, and if not, the ' +
           'models it lists of the same family, the part of the name before its first - or ., or how many it lists ' +
           'where none share it. The key\'s value is never shown. Bedrock, Codex and openai-compatible models aren\'t ' +
@@ -376,11 +365,18 @@ export class SetupModule implements Module {
     const path = join(this.config.dir, '.setup', 'setup-state.json');
     const read = readSetupState(path);
     if (!('state' in read)) {
-      return failed(`${path} doesn't hold setup's answers, so nothing was recorded and the conversation goes on. Tell ` +
-        'the person: running setup again asks its questions again.');
+      return failed(`${path} ${'absent' in read ? 'isn\'t there' : `can't be read (${read.unreadable})`}, so nothing was ` +
+        'recorded and the conversation goes on. Tell the person: ' +
+        `${'absent' in read ? '' : 'while it can\'t be read, '}running setup again asks its questions again.`);
     }
     const when = new Date().toISOString();
-    writeJsonAtomic(path, { ...read.state, finished: when }, 0o600);
+    try {
+      writeJsonAtomic(path, { ...read.state, finished: when }, 0o600);
+    } catch (error) {
+      return failed(`${path} couldn't be written (${(error as Error).message}), so it may not have been recorded, and ` +
+        'the conversation goes on. Tell the person what stopped it, which is theirs to put right, and call setup--finished ' +
+        'again once they have.');
+    }
     this.finishRequested = true;
     return {
       success: true,
@@ -397,11 +393,17 @@ export class SetupModule implements Module {
       return turn;
     }
     if (call.name === 'check_model') {
-      // Once a secret being asked for is stored or refused, so it checks the key stored then.
-      return this.asking.then(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
+      return this.afterAsked(() => this.checkModel(call.input as { name?: unknown; model?: unknown }));
     }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
+  }
+
+  private async afterAsked(work: () => Promise<ToolResult>): Promise<ToolResult> {
+    for (let asking = this.asking; ; asking = this.asking) {
+      await asking;
+      if (asking === this.asking) return work();
+    }
   }
 
   private secrets(): { names: string[]; values: Secret[]; guessed: string[] } {
@@ -409,11 +411,31 @@ export class SetupModule implements Module {
     const { names: current, guessed } = secretNames(join(this.config.dir, '.setup'), envFile);
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
-    for (const read of secretValues(names, envFile, this.config.env)) addSecret(this.seen.values, read);
+    // The read gets the command's own environment, which leaves out a variable holding a secret's value. A value the
+    // read finds can leave out another, so it reads again until the environment it read with is the command's.
+    for (let env = this.commandEnv(names, this.seen.values); ;) {
+      for (const read of secretValues(names, envFile, this.config.env, env)) addSecret(this.seen.values, read);
+      const next = this.commandEnv(names, this.seen.values);
+      if (Object.keys(next).length === Object.keys(env).length) break;
+      env = next;
+    }
     return { names, values: [...this.seen.values], guessed };
   }
 
+  private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
+    const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
+    const env = withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
+    for (const [name, value] of Object.entries(env)) {
+      if (value !== '' && values.some((secret) => value === secret.value || value === secret.value.trim())) delete env[name];
+    }
+    return env;
+  }
+
   private damaged(error: unknown, what: string): ToolResult {
+    if (error instanceof DotenvTimeoutError) {
+      return failed(`${what}: ${error.message}. A slow disk can pass, so call again once; if it runs out of time again, ` +
+        'ask the person to look at the dotenv files there.');
+    }
     if (error instanceof EnvFormError) {
       return failed(`${what}: ${error.message}. While .env holds such a line, what Bun reads from it, and so what a ` +
         'command prints of a secret, isn\'t known, so ask the person to put that right; you can\'t, since setup--run ' +
@@ -429,9 +451,14 @@ export class SetupModule implements Module {
     }
     const limit = input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : input.timeoutMs;
     if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0 || limit > MAX_TIMEOUT_MS) {
-      return failed(`setup--run's timeoutMs is a number of ms above 0 and at most ${MAX_TIMEOUT_MS}.`);
+      const given = typeof limit === 'number' ? String(limit) : JSON.stringify(limit);
+      return failed(`setup--run's timeoutMs was ${given}: it's a number of ms above 0 and at most ${MAX_TIMEOUT_MS}.`);
     }
-    await this.asking;
+    const command = input.command;
+    return this.afterAsked(() => this.launch(command, limit));
+  }
+
+  private async launch(command: string, limit: number): Promise<ToolResult> {
     if (this.stopping) return failed('The host is stopping, so setup--run runs nothing, and calling it again won\'t change that.');
     let atLaunch: { names: string[]; values: Secret[] };
     try {
@@ -440,17 +467,14 @@ export class SetupModule implements Module {
       return this.damaged(error, 'setup--run ran nothing');
     }
     this.config.show('Setup\'s agent runs:');
-    for (const line of shownCommand(input.command, atLaunch.values)) this.config.show(`  ${line}`);
-    // 4 bytes more: the longest UTF-8 character, so a cut can be moved back to fall between characters.
+    for (const line of shownCommand(command, atLaunch.values)) this.config.show(`  ${line}`);
+    // 4 bytes more: UTF-8's longest character (RFC 3629, section 3), so a cut can be moved back to fall between
+    // characters.
     const overlap = Math.max(0, ...atLaunch.values.map((s) => Buffer.byteLength(s.value))) + 4;
     const out = new Capture(overlap);
     const err = new Capture(overlap);
-    // Setup's own variables are for its host alone: a resident started from a command serves its own data directory
-    // and checks for updates as its service would.
-    const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
-    const env = withoutSecrets(this.config.env,
-      [...atLaunch.names, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
-    const child = spawn('bash', ['--norc', '-c', input.command], {
+    const env = this.commandEnv(atLaunch.names, atLaunch.values);
+    const child = spawn('bash', ['--norc', '-c', command], {
       cwd: this.config.dir,
       env,
       detached: true,
@@ -498,13 +522,26 @@ export class SetupModule implements Module {
     });
     child.stdout!.destroy();
     child.stderr!.destroy();
-    if ('error' in ended) return failed(`setup--run couldn't start bash: ${ended.error.message}`);
+    if ('error' in ended) {
+      if ((ended.error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return failed(`setup--run couldn't start bash: ${ended.error.message}`);
+      }
+      return failed(statSync(this.config.dir, { throwIfNoEntry: false })?.isDirectory()
+        ? 'setup--run couldn\'t start bash: no bash this user can run is on the PATH setup started with, so calling it ' +
+          'again runs nothing until one is. Tell the person.'
+        : `setup--run couldn't start bash: the install directory it runs commands in, ${this.config.dir}, isn't there ` +
+          'now, so calling it again runs nothing until it is. Tell the person.');
+    }
     let secrets: Secret[];
     let guessed: string[];
     try {
       ({ values: secrets, guessed } = this.secrets());
     } catch (error) {
-      return this.damaged(error, `setup--run's command ended (exit ${ended.code ?? ended.signal}), and its output isn't shown`);
+      const what = `setup--run's command ended (exit ${ended.code ?? ended.signal}), and its output isn't shown`;
+      if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
+      return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
+        'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
+        'runs out of time again, ask the person to look at the dotenv files there.');
     }
     const notes: string[] = [];
     if (stoppedAtLimit) {
@@ -521,7 +558,8 @@ export class SetupModule implements Module {
     const hidden = guessed.filter((name) => replaced.has(name)).sort();
     if (hidden.length > 0) {
       notes.push(`${join(this.config.dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is ` +
-        `missing, so every name in .env that setup doesn't know counts as secret, and ${hidden.join(', ')} came back ` +
+        `missing, so every name that .env or another dotenv file beside it gives and setup doesn't know counts as secret, ` +
+        `and ${hidden.join(', ')} came back ` +
         'as its name. For values that aren\'t secret to show, the person writes that file as a JSON list of the name ' +
         'of every secret, those in .env and any the host is given through its environment, such as ' +
         '["MY_SERVER_TOKEN"], leaving out only names that aren\'t secret; it takes effect from the host\'s next start.');
@@ -542,7 +580,10 @@ export class SetupModule implements Module {
   private async askSecret(input: { name?: unknown; purpose?: unknown }): Promise<ToolResult> {
     const { name, purpose } = input;
     if (typeof name !== 'string' || !isSecretName(name)) {
-      return failed('setup--ask_secret needs a name an environment variable can have: letters, digits and _, not starting with a digit.');
+      const rule = 'letters, digits and _, not starting with a digit';
+      return failed(typeof name === 'string'
+        ? `setup--ask_secret's name was ${JSON.stringify(name)}, and it needs a name an environment variable can have: ${rule}.`
+        : `setup--ask_secret needs a name an environment variable can have: ${rule}.`);
     }
     if (typeof purpose !== 'string' || purpose.trim() === '') {
       return failed('setup--ask_secret needs a purpose: what the secret is and where the person finds it.');
@@ -556,6 +597,7 @@ export class SetupModule implements Module {
     }
     const envFile = join(this.config.dir, '.env');
     const provider = Object.hasOwn(PROVIDER_KEYS, name) ? PROVIDER_KEYS[name] : undefined;
+    let known: Secret[];
     try {
       const link = envLink(envFile);
       if (link) return linked(`Nothing was asked, so nothing was stored as ${name}`, link);
@@ -564,13 +606,13 @@ export class SetupModule implements Module {
         return failed(`Nothing was asked, so nothing was stored as ${name}: ${outside.message}. Ask the person to put ` +
           'that right, then call again.');
       }
-      this.secrets();
+      known = this.secrets().values;
     } catch (error) {
       return this.damaged(error, `Nothing was asked, so nothing was stored as ${name}`);
     }
     let value: string | null;
     try {
-      value = await asker.ask(name, shown(purpose));
+      value = await asker.ask(name, shown(redacted(purpose, known)));
     } catch (error) {
       return failed(`Nothing was asked, so nothing was stored as ${name}: ${(error as Error).message}. Calling again ` +
         'won\'t change that, so tell the person why.');
@@ -601,6 +643,7 @@ export class SetupModule implements Module {
       }
     }
     let key: ProviderAnswer<null> | null = null;
+    let asked = '';
     if (provider !== undefined) {
       let env: Map<string, string>;
       try {
@@ -616,19 +659,24 @@ export class SetupModule implements Module {
       } catch (error) {
         return this.damaged(error, `Nothing was stored as ${name}`);
       }
-      key = await this.checkKey(name, value, env, hide);
+      asked = answererOf(name, env);
+      key = await this.checkKey(name, value, env, hide, asked);
       if (key.kind === 'refused') {
-        return failed(`${provider.provider} refused this key (${key.status}), so nothing was stored as ${name}, ` +
-          'and what was ' +
-          'stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, ' +
-          'then call again.');
+        return failed(name === 'OPENROUTER_API_KEY'
+          ? `${asked} refused this key (${key.status}), so nothing was stored as ${name}, and what was ` +
+            'stored as it before stays as it was. Tell the person, and ask them to copy it again, or make a new one, ' +
+            'then call again.'
+          : `${asked} refused this key (${key.status}) when setup asked it for its list of models, so ` +
+            `nothing was stored as ${name}, and what was stored as it before stays as it was. ${LISTING_REFUSED} ` +
+            'Tell the person, and ask them to check what the key is allowed, or to copy it again, or to make a new ' +
+            'one, then call again.');
       }
       if (key.kind === 'unsendable') {
         return failed(`What the person typed for ${name} holds a character a request header can't carry, so it can't ` +
           'be a key, and nothing was stored. Ask them to check what they copied, then call again.');
       }
     }
-    const told = token !== null ? tokenNote(token) : key !== null ? keyNote(name, key) : '';
+    const told = token !== null ? tokenNote(token) : key !== null ? keyNote(name, asked, key) : '';
     this.seen.names.add(name);
     addSecret(this.seen.values, { name, value });
     let writing = false;
@@ -655,21 +703,22 @@ export class SetupModule implements Module {
     return { success: true, data: `stored as ${name} in ${envFile}${told}` };
   }
 
-  private async checkKey(name: string, value: string, env: Map<string, string>, hide: Secret[]): Promise<ProviderAnswer<null>> {
-    const provider = PROVIDER_KEYS[name]!.provider;
-    this.config.show(`Checking it with ${provider}.`);
+  private async checkKey(
+    name: string, value: string, env: Map<string, string>, hide: Secret[], asked: string,
+  ): Promise<ProviderAnswer<null>> {
+    this.config.show(`Checking it with ${asked}.`);
     const key = await checkProviderKey(name, value, { fetch: this.config.fetch, env, hide })!;
-    this.config.show(answerLine(provider, key, `${provider} accepted it.`, 'nothing was stored'));
+    this.config.show(answerLine(name, asked, key, `${asked} accepted it.`, 'nothing was stored'));
     return key;
   }
 
   private async checkModel(input: { name?: unknown; model?: unknown }): Promise<ToolResult> {
+    if (this.stopping) return failed('The host is stopping, so setup--check_model checks nothing, and calling it again won\'t change that.');
     const { name, model } = input;
     if (typeof name !== 'string' || typeof model !== 'string' || model.trim() === '') {
       return failed('setup--check_model needs a name, the one the key is stored as, and a model.');
     }
-    const provider = PROVIDER_KEYS[name]?.provider;
-    if (provider === undefined) {
+    if (!Object.hasOwn(PROVIDER_KEYS, name)) {
       return failed(`setup--check_model checks models for the keys stored as ${Object.keys(PROVIDER_KEYS).join(', ')}, ` +
         `not ${name}: Bedrock's requests need AWS's signing, Codex runs on a ChatGPT login, and an openai-compatible ` +
         'endpoint is the recipe\'s.');
@@ -690,13 +739,15 @@ export class SetupModule implements Module {
       return failed(`Nothing is stored as ${name} in ${envFile}, so there's no key to check ${model} with. Ask the ` +
         'person for it with setup--ask_secret first.');
     }
-    this.config.show(`Checking ${shown(model)} with ${provider}.`);
     let hide: Secret[];
     try {
       hide = this.secrets().values;
     } catch (error) {
       return this.damaged(error, 'Nothing was checked');
     }
+    const seen = shown(redacted(model, hide));
+    const asked = answererOf(name, env);
+    this.config.show(`Checking ${seen} with ${asked}.`);
     const listed = await listModels(name, key, { fetch: this.config.fetch, env, hide })!;
     if (listed.kind === 'unsendable') {
       const words = `The key stored as ${name} holds a character a request header can't carry, so it can't be a key`;
@@ -704,23 +755,44 @@ export class SetupModule implements Module {
       return failed(`${words}: ask the person for it again with setup--ask_secret.`);
     }
     if (listed.kind !== 'accepted') {
-      this.config.show(answerLine(provider, listed, '', 'whether it offers the model isn\'t known'));
+      this.config.show(answerLine(name, asked, listed, '', 'whether it offers the model isn\'t known'));
       if (listed.kind === 'refused') {
-        return failed(`${provider} refused the key stored as ${name} (${listed.status}), so whether it offers ${model} ` +
-          'isn\'t known. Ask the person for a new key with setup--ask_secret.');
+        return failed(`${asked} refused the key stored as ${name} (${listed.status}) when setup asked it for its ` +
+          `list of models, so whether it offers ${model} isn't known. ${LISTING_REFUSED} Ask the person to check what ` +
+          'the key is allowed, or for a new key with setup--ask_secret.');
       }
-      return failed(`Whether ${provider} offers ${model} to the key stored as ${name} isn't known: ` +
-        `${keyNote(name, listed).replace(/^, but it isn't known to work: /, '').replace(/\.$/, '')}.`);
+      const why = keyNote(name, asked, listed, false).replace(/^, but (it isn't known to work|it couldn't be checked): /, '');
+      const after = listed.kind === 'answered' ? listed.retryAfter : undefined;
+      return failed(`Whether ${asked} offers ${model} to the key stored as ${name} isn't known: ${why}` +
+        (after === undefined
+          ? (listed.kind === 'answered' || listed.kind === 'unanswered'
+            ? ' Call setup--check_model again in a minute, and if it answers the same, tell the person what it says.' : '')
+          : after.shown !== null
+            ? ` It asks for ${waitAsked(after)}: ` +
+              'call setup--check_model again once that has passed, and if that\'s longer than the person would wait, tell them ' +
+              'what it says and how long it asks them to wait.'
+            : ` It asks for ${waitAsked(after)}, so when to call setup--check_model again isn't known: tell the person ` +
+              'what it says.'));
     }
-    const ids = listed.value;
+    const { ids, shownIds, more } = listed.value;
     if (ids.includes(model)) {
-      this.config.show(`${provider} lists ${shown(model)} for this key.`);
-      return { success: true, data: `${provider} lists ${model} among the ${ids.length} models it offers the key stored as ${name}.` };
+      this.config.show(`${asked} lists ${seen} for this key.`);
+      return {
+        success: true,
+        data: `${asked} lists ${model} among the ${more ? 'first ' : ''}${ids.length} models it offers the key stored as ${name}.`,
+      };
     }
-    this.config.show(`${provider} doesn't list ${shown(model)} for this key.`);
+    if (more) {
+      this.config.show(`${asked} lists more models than one answer holds, and ${seen} isn't among the first ${ids.length}.`);
+      return failed(`Whether ${asked} offers ${model} to the key stored as ${name} isn't known: it lists more models ` +
+        `than one answer holds, and ${model} isn't among the first ${ids.length}. Ask the person whether ${model} is ` +
+        'the one they meant before the recipe names it.');
+    }
+    this.config.show(`${asked} doesn't list ${seen} for this key.`);
     const family = familyOf(model);
-    const kin = ids.filter((id) => id === family || id.startsWith(`${family}-`) || id.startsWith(`${family}.`)).sort();
-    return failed(`${provider} doesn't list ${model} among the ${ids.length} models it offers the key stored as ${name}` +
+    const kin = shownIds.filter((_shown, at) => ids[at] === family || ids[at]!.startsWith(`${family}-`) || ids[at]!.startsWith(`${family}.`))
+      .sort();
+    return failed(`${asked} doesn't list ${model} among the ${ids.length} models it offers the key stored as ${name}` +
       (kin.length > 0 ? `. Of its family, ${family}, it lists: ${kin.join(', ')}.` : `, and none of its family, ${family}.`) +
       ' Ask the person which they meant before the recipe names it.');
   }
@@ -743,32 +815,59 @@ function tokenLine(token: TokenCheck): string {
     case 'answered':
       return `Discord didn't say whether it works: it answered ${token.status}` +
         `${token.said === null ? '' : ` (${shown(token.said)})`}.`;
+    case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
+    case 'unrecognized':
+      return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY}` : '');
     case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
   }
 }
 
-function answerLine(provider: string, answer: ProviderAnswer<unknown>, accepted: string, refusedThen: string): string {
+const LISTING_REFUSED = 'The key may be wrong or revoked, or it may not be allowed to list models, or to be used ' +
+  'from where this machine is.';
+
+function answerLine(name: string, asked: string, answer: ProviderAnswer<unknown>, accepted: string, refusedThen: string): string {
   switch (answer.kind) {
     case 'accepted': return accepted;
-    case 'refused': return `${provider} refused it (${answer.status}): ${refusedThen}.`;
+    case 'refused': return `${asked} refused it (${answer.status}): ${refusedThen}.`;
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a key: nothing was stored.';
     case 'answered':
-      return `${provider} didn't say whether it works: it answered ${answer.status}` +
-        `${answer.said === null ? '' : ` (${shown(answer.said)})`}.`;
-    case 'unanswered': return `${provider} couldn't be asked whether it works (${shown(answer.why)}).`;
+      return `${asked} didn't say whether it works: it answered ${answer.status}` +
+        `${answer.said === null ? '' : ` (${shown(answer.said)})`}.` +
+        (answer.retryAfter === undefined ? '' : ` It asks for ${shown(waitAsked(answer.retryAfter))}.`);
+    case 'redirected': return `It isn't known to work: ${shown(redirect(asked, answer))}.`;
+    case 'unrecognized': return `It couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}.`;
+    case 'unanswered': return `${asked} couldn't be asked whether it works (${shown(answer.why)}).`;
   }
 }
 
-function keyNote(name: string, answer: ProviderAnswer<unknown>): string {
-  const provider = PROVIDER_KEYS[name]!.provider;
+function waitAsked(after: { shown: string | null; seconds: boolean }): string {
+  return after.shown === null ? 'a wait setup can\'t show without what may be a secret'
+    : after.seconds ? `a wait of ${after.shown} s before the next call` : `no call before ${after.shown}`;
+}
+
+function keyNote(name: string, asked: string, answer: ProviderAnswer<unknown>, again = true): string {
   switch (answer.kind) {
     case 'accepted':
-      return name === 'OPENROUTER_API_KEY' ? `. ${provider} accepted it: it answered for the key.`
-        : `. ${provider} accepted it: it listed the models the key can use, which shows the key is accepted, not ` +
+      return name === 'OPENROUTER_API_KEY' ? `. ${asked} accepted it: it answered for the key.`
+        : `. ${asked} accepted it: it listed the models the key can use, which shows the key is accepted, not ` +
           'that a call to one of them succeeds.';
-    case 'answered':
-      return `, but it isn't known to work: ${provider} answered ${answer.status}${answer.said === null ? '' : `: ${answer.said}`}.`;
-    case 'unanswered': return `, but it isn't known to work: ${provider} couldn't be asked (${answer.why}).`;
+    case 'answered': {
+      const passing = answer.status === 429 || answer.status >= 500;
+      const after = answer.retryAfter;
+      const next = !again ? ''
+        : after === undefined ? (passing ? ' Call setup--check_model in a minute, to check the key again.' : '')
+        : after.shown !== null
+          ? ` It asks for ${waitAsked(after)}` +
+            `${passing ? ': call setup--check_model once that has passed, to check the key again' : ''}.`
+          : ` It asks for ${waitAsked(after)}` +
+            `${passing ? ', so when setup--check_model can check the key again isn\'t known' : ''}.`;
+      return `, but it isn't known to work: ${asked} answered ${answer.status}` +
+        `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
+    }
+    case 'unanswered': return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).`;
+    case 'redirected': return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.`;
+    case 'unrecognized':
+      return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}`;
     case 'unsendable': return ', but it can\'t be a key: it holds a character a request header can\'t carry.';
     default: return '';
   }
@@ -780,6 +879,47 @@ function tokenNote(token: TokenCheck): string {
     case 'answered':
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}.`;
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}).`;
+    case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
+    case 'unrecognized':
+      return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${busy(token.status) ? BUSY : CONNECTION}`;
     default: return '';
   }
+}
+
+const CONNECTION = 'Tell the person: their connection to it is theirs to check.';
+
+const BUSY = 'It may be busy: `connectome doctor` checks the token again when it runs.';
+
+function busy(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function redirect(service: string, answer: { status: number; to: string | null }): string {
+  const origin = answer.to === null ? null : originOf(answer.to);
+  return `${service} answered ${answer.status}, a redirect${origin === null ? '' : ` to ${origin}`}, which setup ` +
+    'doesn\'t follow with a secret';
+}
+
+function baseUrlOf(name: string | undefined): string | null {
+  return name === 'OPENAI_API_KEY' ? 'OPENAI_BASE_URL' : name === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_BASE_URL'
+    : name === 'OPENROUTER_API_KEY' ? 'OPENROUTER_BASE_URL' : null;
+}
+
+function answererOf(name: string, env: ReadonlyMap<string, string>): string {
+  const base = baseUrlOf(name);
+  return base !== null && env.get(base) ? `${base}'s server` : PROVIDER_KEYS[name]!.provider;
+}
+
+function redirectRemedy(service: string, name?: string): string {
+  const base = baseUrlOf(name);
+  return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
+      `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
+    : `. Something between this machine and ${service} may have sent it, or ${service} itself: tell the person, and that ` +
+      `if it wasn't ${service}, their connection is theirs to check`;
+}
+
+function unrecognized(service: string, status: number): string {
+  return status >= 200 && status < 300
+    ? `its answer wasn't JSON, as ${service}'s are: a network's sign-in page is one such answer`
+    : `its answer didn't say it was JSON, as ${service}'s do: a network's sign-in page is one such answer`;
 }

@@ -1,9 +1,10 @@
 import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
-import { SUPERVISED_ENV } from '../cli/service.js';
 import {
-  ContractError, installPaths, isSwitchQuiesce, readCurrent, readJournal, releaseDir, unsyncedText, writeMark, writeTextAtomic,
+  ContractError, installPaths, isSwitchQuiesce, readCurrent, readJournal, readWithoutWaiting, releaseDir, SUPERVISED_ENV,
+  unsyncedText, writeMark, writeTextAtomic,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
@@ -881,7 +882,14 @@ export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutco
 }
 
 export function hostVersionOf(packageJson: URL): string {
-  const version = (JSON.parse(readFileSync(packageJson, 'utf-8')) as { version?: unknown }).version;
+  const path = fileURLToPath(packageJson);
+  let text: string;
+  try {
+    text = readWithoutWaiting(path);
+  } catch (error) {
+    throw new Error(`${path} can't be read (${(error as Error).message})`);
+  }
+  const version = (JSON.parse(text) as { version?: unknown }).version;
   if (typeof version !== 'string') throw new Error(`${packageJson.pathname} names no version.`);
   return version;
 }

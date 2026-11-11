@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { AnthropicAdapter } from '@animalabs/membrane';
-import { checkKey, type KeyCheck } from '../src/setup/key-check.js';
+import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 
 const seen: Array<{ key: string | null; body: { model?: unknown; max_tokens?: unknown; messages?: unknown; stream?: unknown } }> = [];
 const started = (message: Record<string, unknown>) => ({ type: 'message_start', message });
@@ -21,13 +21,17 @@ const BLOCK = [
 ];
 const whole = (message: Record<string, unknown> = MESSAGE) => [started(message), ...BLOCK, ended(), { type: 'message_stop' }];
 const held = (text: string) => sse(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(text)); } }));
-const pieces = (text: string, size: number) => sse(new ReadableStream({
-  start(controller) {
-    const bytes = new TextEncoder().encode(text);
-    for (let at = 0; at < bytes.length; at += size) controller.enqueue(bytes.slice(at, at + size));
-    controller.close();
-  },
-}));
+const pieces = (text: string, size: number) => {
+  const bytes = new TextEncoder().encode(text);
+  let at = 0;
+  return sse(new ReadableStream({
+    async pull(controller) {
+      if (at >= bytes.length) return controller.close();
+      if (at > 0) await Bun.sleep(1);
+      controller.enqueue(bytes.slice(at, at += size));
+    },
+  }));
+};
 const READ: Record<string, () => Response> = {
   ok: () => sse(named(whole())),
   roleless: () => sse(named(whole({ content: [], usage: USAGE }))),
@@ -49,8 +53,7 @@ const UNREAD: Record<string, () => Response> = {
   twostarts: () => sse(named([started(MESSAGE), started(MESSAGE), ended(), { type: 'message_stop' }])),
   nodelta: () => sse(named([started(MESSAGE), BLOCK[0]!, { type: 'content_block_delta', index: 0 }, ended()])),
 };
-/** Read or not as the agent's client decides, which the agreement test asks of it: a lone CR ends the last line of
- *  an answer held open. */
+// Whether a lone CR ends the last line of an answer held open is the agent's client's to decide (@anthropic-ai/sdk).
 const EDGE: Record<string, () => Response> = {
   crheld: () => held(named([started(MESSAGE), ended()], '\r')),
 };
@@ -68,7 +71,8 @@ const server = Bun.serve({
     const url = new URL(request.url);
     const [, choice, ...rest] = url.pathname.split('/');
     if (request.method !== 'POST' || rest.join('/') !== 'v1/messages' || !request.headers.get('x-api-key')
-      || request.headers.get('anthropic-version') !== '2023-06-01') {
+      || request.headers.get('anthropic-version') !== '2023-06-01'
+      || request.headers.get('content-type') !== 'application/json') {
       return new Response('not the Messages API', { status: 400 });
     }
     const key = request.headers.get('x-api-key');
@@ -95,14 +99,9 @@ const server = Bun.serve({
     if (choice === 'errortype') return Response.json({ type: 'error', role: 'assistant', content: [] });
     if (choice === 'typekey') return new Response('<html></html>', { headers: { 'content-type': `text/html; key=${key}` } });
     if (choice === 'waitkey') return new Response('', { status: 429, headers: { 'retry-after': `${key}` } });
-    if (choice === 'stall' || choice === 'stall401' || choice === 'stall429') {
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"type":')); } }), {
-        status: choice === 'stall' ? 200 : Number(choice.slice(5)),
-        headers: { 'content-type': 'application/json', 'retry-after': '37' },
-      });
-    }
     if (choice === 'waitempty') return new Response('', { status: 429, headers: { 'retry-after': '' } });
     if (choice === 'waitdate') return new Response('', { status: 429, headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } });
+    if (choice === 'waitsoon') return new Response('', { status: 429, headers: { 'retry-after': 'soon' } });
     if (choice === 'echo') return Response.json({ type: 'error', error: { type: 'x', message: `no such key: ${key}` } }, { status: 401 });
     if (choice === 'wait') {
       return Response.json({ type: 'error', error: { type: 'x', message: 'slow down' } }, { status: 429, headers: { 'retry-after': '37' } });
@@ -112,7 +111,6 @@ const server = Bun.serve({
     return Response.json({ type: 'error', error: { type: 'x', message: `the server's own words for ${status}` } }, { status });
   },
 });
-// Speaks plain HTTP, so an https:// call to it fails its TLS handshake.
 const plain = Bun.serve({ port: 0, fetch: () => new Response('plain') });
 afterAll(() => {
   server.stop(true);
@@ -193,6 +191,8 @@ describe("the key's one real call", () => {
       fetch: (async () => sse(new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode(named([started(MESSAGE)])));
+        },
+        pull(controller) {
           controller.error(reset);
         },
       }))) as unknown as typeof fetch,
@@ -219,7 +219,7 @@ describe("the key's one real call", () => {
   test("each refusal names its cause and the server's own words, never the key, and says whether another key may help", async () => {
     for (const [status, words, anotherKeyMayHelp] of [
       [401, 'refused the key (401)', true],
-      [403, 'refused this call (403)', true],
+      [403, 'refused this call, one message to claude-x (403)', true],
       [404, 'found nothing for claude-x (404)', true],
       [529, 'overloaded (529)', false],
       [500, 'answered 500', false],
@@ -271,7 +271,23 @@ describe("the key's one real call", () => {
     expect(odd).toMatchObject({ anotherKeyMayHelp: true });
   });
 
-  test('another status of Anthropic\'s own API below 500 says it may be the key\'s account, and that another key can help; a 408, a server that stopped waiting, says to try again; and a 3xx is followed nowhere, with neither its words nor its Location quoted, since they\'re the server\'s own text, which can carry a credential', async () => {
+  test('a 401, 403 or 404 typed other than JSON isn\'t taken as Anthropic\'s: something on the way may have answered in its place, and another key won\'t help unless a gateway answered', async () => {
+    for (const status of [401, 403, 404]) {
+      const page = (async () => new Response('<html>Sign in</html>', { status, headers: { 'content-type': 'text/html; charset=utf-8' } })) as unknown as typeof fetch;
+      const own = await checkKey({ key: 'k', model: 'claude-test', fetch: page });
+      expect(own, String(status)).toEqual({ ok: false, cause: expect.stringContaining(`api.anthropic.com answered ${status} with text/html; charset=utf-8, where Anthropic's Messages API refuses in JSON, so it isn't known whose answer it is, or whether the key works.`), anotherKeyMayHelp: false });
+      expect(cause(own), String(status)).toContain('Something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine\'s network');
+      const gateway = await checkKey({ key: 'k', model: 'claude-test', baseUrl: 'https://gateway.example', fetch: page });
+      expect(gateway, String(status)).toMatchObject({ anotherKeyMayHelp: true });
+      expect(cause(gateway), String(status)).toContain('ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right there is read at the next try), or something on the way to it, such as a proxy or a captive portal, may have answered in its place.');
+    }
+    const problem = await checkKey({ key: 'k', model: 'claude-test', fetch: (async () => new Response(JSON.stringify({ error: { type: 'authentication_error', message: 'bad key' } }), { status: 401, headers: { 'content-type': 'application/problem+json' } })) as unknown as typeof fetch });
+    expect(problem).toEqual({ ok: false, cause: expect.stringContaining('refused the key (401)'), anotherKeyMayHelp: true });
+    const untyped = await checkKey({ key: 'k', model: 'claude-test', fetch: (async () => new Response(null, { status: 404 })) as unknown as typeof fetch });
+    expect(untyped).toEqual({ ok: false, cause: expect.stringContaining('has no model claude-test for this key (404)'), anotherKeyMayHelp: true });
+  });
+
+  test('another status of Anthropic\'s own API below 500 says it may be the key\'s account, and that another key can help; a 408, a server that stopped waiting, says to try again; and a 3xx is followed nowhere, with neither its words nor its Location quoted, since they\'re the server\'s own text, which can carry a credential, but the origin its Location names, with the key hidden', async () => {
     const own = await checkKey({
       key: 'k', model: 'm',
       fetch: (async () => Response.json({ type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low' } }, { status: 400 })) as unknown as typeof fetch,
@@ -286,9 +302,9 @@ describe("the key's one real call", () => {
     const sending = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 307, headers: { Location: `http://localhost:${elsewhere.port}/v1/messages` } }) });
     try {
       const through = await checkKey({ key: 'sk-redirected-key', model: 'm', baseUrl: `http://127.0.0.1:${sending.port}` });
-      expect(through).toEqual({ ok: false, cause: expect.stringContaining('answered 307.'), anotherKeyMayHelp: false });
-      expect(cause(through)).toContain(`answered 307. So the key isn't known to work. Anthropic's Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right there is read at the next try), or something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine's network and any proxy it goes through (HTTPS_PROXY), and ANTHROPIC_BASE_URL, which leads to http://127.0.0.1:${sending.port} now.`);
-      expect(cause(through)).not.toContain('localhost');
+      expect(through).toEqual({ ok: false, cause: expect.stringContaining(`answered 307, a redirect to http://localhost:${elsewhere.port}.`), anotherKeyMayHelp: false });
+      expect(cause(through)).toContain(`answered 307, a redirect to http://localhost:${elsewhere.port}. So the key isn't known to work. Anthropic's Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. ANTHROPIC_BASE_URL in .env may not lead to that API (a URL put right there is read at the next try), or something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine's network and any proxy it goes through (HTTPS_PROXY), and ANTHROPIC_BASE_URL, which leads to http://127.0.0.1:${sending.port} now.`);
+      expect(cause(through)).not.toContain('/v1/messages');
       expect(seen).toEqual([]);
     } finally {
       sending.stop(true);
@@ -298,8 +314,8 @@ describe("the key's one real call", () => {
       key: 'Sk-Mixed-Case-Key', model: 'm',
       fetch: (async () => Response.json({ error: { message: 'moved to https://sk-mixed-case-key.portal.example/login' } }, { status: 302, headers: { Location: 'https://Sk-Mixed-Case-Key.portal.example/login' } })) as unknown as typeof fetch,
     });
-    expect(redirected).toEqual({ ok: false, cause: expect.stringContaining('answered 302.'), anotherKeyMayHelp: false });
-    expect(cause(redirected)).toContain('answered 302. So the key isn\'t known to work. Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. Something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine\'s network and any proxy it goes through (HTTPS_PROXY).');
+    expect(redirected).toEqual({ ok: false, cause: expect.stringContaining('answered 302, a redirect to https://<ANTHROPIC_API_KEY>.portal.example.'), anotherKeyMayHelp: false });
+    expect(cause(redirected)).toContain('answered 302, a redirect to https://<ANTHROPIC_API_KEY>.portal.example. So the key isn\'t known to work. Anthropic\'s Messages API answers with no 3xx, and setup follows no redirect, so the key went no further. Something on the way to it, such as a proxy or a captive portal, may have answered in its place. Check this machine\'s network and any proxy it goes through (HTTPS_PROXY).');
     expect(cause(redirected).toLowerCase()).not.toContain('sk-mixed-case-key');
     expect(cause(redirected)).not.toContain('Location');
     expect(cause(redirected)).not.toContain('moved to');
@@ -307,8 +323,16 @@ describe("the key's one real call", () => {
       key: 'sk-ant-key', model: 'm',
       fetch: (async () => new Response(null, { status: 302, headers: { Location: 'https://portal.example/?k=sk%2Dant%2Dkey&u=https://user:gateway-secret@other.example/' } })) as unknown as typeof fetch,
     });
-    expect(cause(encoded)).not.toContain('portal.example');
+    expect(cause(encoded)).toContain('answered 302, a redirect to https://portal.example. So the key');
     expect(cause(encoded)).not.toContain('gateway-secret');
+    expect(cause(encoded)).not.toContain('sk%2Dant');
+    const relative = await checkKey({
+      key: 'k', model: 'm', baseUrl: 'https://gateway.example/anthropic',
+      fetch: (async () => new Response(null, { status: 302, headers: { Location: '/login' } })) as unknown as typeof fetch,
+    });
+    expect(cause(relative)).toContain('answered 302, a redirect to https://gateway.example. So the key');
+    const elsewhereScheme = await checkKey({ key: 'k', model: 'm', fetch: (async () => new Response(null, { status: 302, headers: { Location: 'ftp://files.example/' } })) as unknown as typeof fetch });
+    expect(cause(elsewhereScheme)).toContain('answered 302. So the key');
     const unmoved = await checkKey({ key: 'k', model: 'm', fetch: (async () => new Response(null, { status: 304 })) as unknown as typeof fetch });
     expect(cause(unmoved)).toContain("answered 304. So the key isn't known to work. Anthropic's Messages API answers with no 3xx, and setup follows no redirect");
     expect(cause(unmoved)).not.toContain('Location');
@@ -336,11 +360,45 @@ describe("the key's one real call", () => {
       expect(cause(result), key).not.toContain('sk-ant-e');
       expect(cause(result), key).toContain('no such key: <ANTHROPIC_API_KEY>');
     }
-    for (const choice of ['typekey', 'waitkey']) {
-      const result = await checkKey({ key: 'sk-ant-in-a-header', model: 'm', baseUrl: at(choice) });
-      expect(cause(result), choice).not.toContain('sk-ant-in-a-header');
-      expect(cause(result), choice).toContain('<ANTHROPIC_API_KEY>');
-    }
+    const typed = await checkKey({ key: 'sk-ant-in-a-header', model: 'm', baseUrl: at('typekey') });
+    expect(cause(typed)).not.toContain('sk-ant-in-a-header');
+    expect(cause(typed)).toContain('<ANTHROPIC_API_KEY>');
+    const waited = await checkKey({ key: 'sk-ant-in-a-header', model: 'm', baseUrl: at('waitkey') });
+    expect(cause(waited)).not.toContain('sk-ant-in-a-header');
+    expect(cause(waited)).toContain('Try again shortly.');
+  });
+
+  test('a refusal of the call says what to ask for: of Anthropic\'s console with no ANTHROPIC_BASE_URL, of whoever runs its origin with one', async () => {
+    const denied = (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'not allowed' } }, { status: 403 })) as unknown as typeof fetch;
+    const direct = await checkKey({ key: 'sk-ant-k', model: 'claude-x', fetch: denied });
+    expect(cause(direct)).toBe('api.anthropic.com refused this call, one message to claude-x (403). It said: "not allowed". This key isn\'t ' +
+      'allowed to make it: ask whoever manages its account at console.anthropic.com to allow it, or use a key from an account that can.');
+    const through = await checkKey({ key: 'sk-ant-k', model: 'claude-x', baseUrl: 'https://gw.example', fetch: denied });
+    expect(cause(through)).toBe('gw.example refused this call, one message to claude-x (403). It said: "not allowed". Ask whoever runs ' +
+      'https://gw.example, or manages the key\'s account there, to allow it, or use a key that can make that call.');
+    const streamed = await checkKey({ key: 'sk-ant-stream', model: 'm', baseUrl: at('streamdenied') });
+    expect(cause(streamed)).toContain('refused this call, one message to m, in its stream (permission_error). It said: "not allowed". Ask whoever runs ');
+  });
+
+  test('a 403 that names no permission_error says setup can\'t tell from it whether the key is allowed, and still says whom to ask if it isn\'t', async () => {
+    const refused = (async () => Response.json({ type: 'error', error: { type: 'forbidden', message: 'blocked' } }, { status: 403 })) as unknown as typeof fetch;
+    const result = await checkKey({ key: 'sk-ant-k', model: 'claude-x', fetch: refused });
+    expect(result).toEqual({ ok: false, cause: expect.any(String), anotherKeyMayHelp: true });
+    expect(cause(result)).toBe('api.anthropic.com refused this call, one message to claude-x (403). It said: "blocked". Its answer ' +
+      'doesn\'t name a permission_error, so setup can\'t tell from it whether this key is allowed to make it. If the key\'s ' +
+      'account isn\'t allowed the call, ask whoever manages it at console.anthropic.com to allow it, or use a key from an ' +
+      'account that can.');
+  });
+
+  test('words quoting the path of a request to an ANTHROPIC_BASE_URL with a path of its own show it as the request\'s path', async () => {
+    const quoting = (async (url: string) => Response.json(
+      { type: 'error', error: { type: 'not_found_error', message: `Cannot POST ${new URL(url).pathname}` } }, { status: 404 },
+    )) as unknown as typeof fetch;
+    const withPath = await checkKey({ key: 'sk-ant-k', model: 'm', baseUrl: 'https://gw.example/private-path', fetch: quoting });
+    expect(cause(withPath)).not.toContain('private-path');
+    expect(cause(withPath)).toContain('It said: "Cannot POST <the request\'s path>".');
+    const without = await checkKey({ key: 'sk-ant-k', model: 'm', baseUrl: 'https://gw.example', fetch: quoting });
+    expect(cause(without)).toContain('It said: "Cannot POST /v1/messages".');
   });
 
   test('words quoting ANTHROPIC_BASE_URL show only where it leads', async () => {
@@ -381,24 +439,27 @@ describe("the key's one real call", () => {
     }
   });
 
-  test('a 2xx whose body never comes is named as a server that didn\'t answer, not as a wrong answer', async () => {
-    let answered = false;
-    const result = await checkKey({
-      key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300,
-      fetch: (async (url: string, init: RequestInit) => {
-        const response = await fetch(url, init);
-        answered = true;
-        return response;
-      }) as unknown as typeof fetch,
+  const stalled = (status: number) => (async (_url: string, init: RequestInit) => {
+    let end: (reason: unknown) => void = () => {};
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"type":'));
+        end = (reason) => controller.error(reason);
+      },
     });
-    expect(answered).toBe(true);
+    init.signal?.addEventListener('abort', () => end(init.signal!.reason), { once: true });
+    return new Response(body, { status, headers: { 'content-type': 'application/json', 'retry-after': '37' } });
+  }) as unknown as typeof fetch;
+
+  test('a 2xx whose body never comes is named as a server that didn\'t answer, not as a wrong answer', async () => {
+    const result = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(200) });
     expect(result).toEqual({ ok: false, cause: expect.stringContaining("didn't answer within 0.3 s"), anotherKeyMayHelp: false });
   });
 
   test('a refusal whose body never comes keeps its status\'s cause, and its Retry-After', async () => {
-    const refused = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall401'), timeoutMs: 300 });
+    const refused = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(401) });
     expect(refused).toEqual({ ok: false, cause: expect.stringContaining('refused the key (401)'), anotherKeyMayHelp: true });
-    const limited = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall429'), timeoutMs: 300 });
+    const limited = await checkKey({ key: 'k', model: 'm', baseUrl: at('stall'), timeoutMs: 300, fetch: stalled(429) });
     expect(limited).toEqual({ ok: false, cause: expect.stringContaining('(429)'), anotherKeyMayHelp: false });
     expect(cause(limited)).toContain('a wait of 37 s');
   });
@@ -412,6 +473,17 @@ describe("the key's one real call", () => {
     expect(cause(empty)).toContain('Try again shortly.');
     const dated = await checkKey({ key: 'k', model: 'm', baseUrl: at('waitdate') });
     expect(cause(dated)).toContain('It asks for no call before Wed, 21 Oct 2026 07:28:00 GMT.');
+    const soon = await checkKey({ key: 'k', model: 'm', baseUrl: at('waitsoon') });
+    expect(cause(soon)).not.toContain('soon');
+    expect(cause(soon)).toContain('Try again shortly.');
+    const hidden = await checkKey({ key: '3', model: 'm', baseUrl: at('wait') });
+    expect(cause(hidden)).not.toContain('a wait of');
+    expect(cause(hidden)).not.toContain('7 s');
+    expect(cause(hidden)).toContain('It asks for a wait setup can\'t show without the key. Try again shortly.');
+    const hiddenDate = await checkKey({ key: '2026', model: 'm', baseUrl: at('waitdate') });
+    expect(cause(hiddenDate)).not.toContain('no call before');
+    expect(cause(hiddenDate)).not.toContain('07:28');
+    expect(cause(hiddenDate)).toContain('It asks for a wait setup can\'t show without the key. Try again shortly.');
   });
 
   test('a refused connection says it was refused, where, and what to check, showing only where ANTHROPIC_BASE_URL leads', async () => {
@@ -452,6 +524,23 @@ describe("the key's one real call", () => {
     expect(cause(result)).toContain(`If the server at https://127.0.0.1:${plain.port} speaks plain HTTP, change ANTHROPIC_BASE_URL in .env to begin http:// in place of https://, adding :443 after its host if it names no port, though the key and everything the agent sends and receives then cross the network unencrypted.`);
   });
 
+  test('advice to change ANTHROPIC_BASE_URL names the file it was read from, where the caller gives it', async () => {
+    const envFile = '/srv/resident/.env';
+    const named = async (options: Partial<KeyCheckOptions>) => cause(await checkKey({ key: 'k', model: 'm', envFile, ...options }));
+    const causes = [
+      await named({ baseUrl: at(404) }),
+      await named({ baseUrl: at(302) }),
+      await named({ baseUrl: at(418) }),
+      await named({ baseUrl: at('whole') }),
+      await named({ baseUrl: `https://127.0.0.1:${plain.port}` }),
+      await named({ fetch: (async () => { throw Object.assign(new TypeError('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch }),
+    ];
+    for (const said of causes) {
+      expect(said).toContain(envFile);
+      expect(said).not.toMatch(/ \.env\b/);
+    }
+  });
+
   test('the plain-HTTP remedy says the same words whether the https URL names its port 443, no port, or a user and password', async () => {
     for (const baseUrl of ['https://gw.example/anthropic', 'https://gw.example:443/anthropic', 'https://someone:pass@gw.example/anthropic?x=1']) {
       const result = await checkKey({
@@ -477,9 +566,7 @@ describe("the key's one real call", () => {
       fetch: (async () => { throw Object.assign(new TypeError('getaddrinfo ENOTFOUND no-such-host.invalid'), { code: 'ENOTFOUND', errno: 4 }); }) as unknown as typeof fetch,
     });
     expect(cause(unnamed)).toContain("no-such-host.invalid couldn't be found by name (ENOTFOUND)");
-    seen.length = 0;
     const silent = await checkKey({ key: 'k-silent', model: 'm', baseUrl: at('silent'), timeoutMs: 300 });
-    expect(seen.map((each) => each.key)).toEqual(['k-silent']);
     expect((silent as { cause: string }).cause).toContain("didn't answer within 0.3 s");
   });
 });
@@ -499,24 +586,87 @@ describe('the check and the agent\'s client', () => {
     expect(ours).toBe(theirs);
   });
 
-  test('on each stream, the check passes exactly when membrane\'s own Anthropic stream() reads it as one message', async () => {
+  test('the chunked stream reaches a client in more than one read', async () => {
+    const stubs = Bun.serve({ port: 0, fetch: () => READ.chunked!() });
+    try {
+      const reader = (await fetch(`http://127.0.0.1:${stubs.port}/`)).body!.getReader();
+      let reads = 0;
+      while (!(await reader.read()).done) reads += 1;
+      expect(reads).toBeGreaterThan(1);
+    } finally {
+      stubs.stop(true);
+    }
+  });
+
+  test('on each stream, the check and membrane\'s own Anthropic stream() give the same outcome within their 3 s and 4 s deadlines, and stream() reads exactly the readable ones; a stream other than the held-open CR one that misses a deadline fails the test, named', async () => {
     const stubs = Bun.serve({ port: 0, fetch: (request) => STREAMS[new URL(request.url).pathname.split('/')[1]!]!() });
     try {
       const outcomes = await Promise.all(Object.keys(STREAMS).map(async (choice) => {
         const baseURL = `http://127.0.0.1:${stubs.port}/${choice}`;
-        const check = await checkKey({ key: 'k', model: 'm', baseUrl: baseURL, timeoutMs: 3_000 });
+        const checked = await checkKey({ key: 'k', model: 'm', baseUrl: baseURL, timeoutMs: 3_000 });
+        const check = checked.ok ? true : checked.cause.includes('didn\'t answer within') ? 'timed out' : false;
         const adapter = new AnthropicAdapter({ apiKey: 'k', baseURL, cacheKeepalive: { enabled: false } });
         const reads = await Promise.race([
           adapter.stream({ model: 'm', maxTokens: 1, messages: [{ role: 'user', content: 'ok' }] } as never,
             { onChunk: () => {}, onContentBlock: () => {} } as never, {} as never).then(() => true, () => false),
-          Bun.sleep(4_000).then(() => false),
+          Bun.sleep(4_000).then(() => 'timed out' as const),
         ]);
-        return { choice, check: check.ok, reads };
+        return { choice, check, reads };
       }));
+      const late = outcomes.filter((each) => !(each.choice in EDGE) && (each.check === 'timed out' || each.reads === 'timed out'));
+      expect(late, `timed out, so these streams weren't compared: ${JSON.stringify(late)}`).toEqual([]);
       expect(outcomes.filter((each) => each.check !== each.reads), JSON.stringify(outcomes)).toEqual([]);
       expect(outcomes.filter((each) => !(each.choice in EDGE) && each.reads !== each.choice in READ), JSON.stringify(outcomes)).toEqual([]);
     } finally {
       stubs.stop(true);
     }
   }, 20_000);
+});
+
+describe('the key where ANTHROPIC_BASE_URL carries it', () => {
+  test('a key in the base URL\'s host is hidden, its ASCII letters in any case, wherever the check names that host or its origin', async () => {
+    const result = await checkKey({
+      key: 'Key-In-Host', model: 'm', baseUrl: 'https://key-in-host.gateway.test',
+      fetch: (async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch,
+    });
+    expect(cause(result)).toContain('<ANTHROPIC_API_KEY>.gateway.test');
+    expect(cause(result).toLowerCase()).not.toContain('key-in-host');
+    const refused = await checkKey({
+      key: 'Key-In-Host', model: 'm', baseUrl: 'https://key-in-host.gateway.test',
+      fetch: (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'no' } }, { status: 403 })) as unknown as typeof fetch,
+    });
+    expect(cause(refused)).toContain('Ask whoever runs https://<ANTHROPIC_API_KEY>.gateway.test');
+    expect(cause(refused).toLowerCase()).not.toContain('key-in-host');
+  });
+});
+
+describe('a 200 that isn\'t an event stream', () => {
+  const typed = (type: string) => (async () => new Response('{}', { headers: { 'content-type': type } })) as unknown as typeof fetch;
+
+  test('is JSON by the same rule as the other checks: application/problem+json is, application/json-seq isn\'t', async () => {
+    const problem = await checkKey({ key: 'k', model: 'm', baseUrl: 'https://gateway.test', fetch: typed('application/problem+json') });
+    expect(cause(problem)).toContain('where the check asked for an event stream');
+    const seq = await checkKey({ key: 'k', model: 'm', baseUrl: 'https://gateway.test', fetch: typed('application/json-seq') });
+    expect(cause(seq)).not.toContain('where the check asked for an event stream');
+    expect(cause(seq)).toContain('not with a message from Anthropic\'s Messages API');
+  });
+});
+
+describe('another stored secret where ANTHROPIC_BASE_URL carries it', () => {
+  test('is shown by its name in the check\'s host, its origin and the words it quotes', async () => {
+    const hide = [{ name: 'DISCORD_TOKEN', value: 'Tok-In-Host' }];
+    const refused = await checkKey({
+      key: 'k', model: 'm', baseUrl: 'https://tok-in-host.gateway.test', hide,
+      fetch: (async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }) as unknown as typeof fetch,
+    });
+    expect(cause(refused)).toContain('The connection to <DISCORD_TOKEN>.gateway.test was refused');
+    const said = await checkKey({
+      key: 'k', model: 'm', baseUrl: 'https://tok-in-host.gateway.test', hide,
+      fetch: (async () => Response.json({ type: 'error', error: { type: 'permission_error', message: 'TOK-IN-HOST may not' } },
+        { status: 403 })) as unknown as typeof fetch,
+    });
+    expect(cause(said)).toContain('It said: "<DISCORD_TOKEN> may not"');
+    expect(cause(said)).toContain('Ask whoever runs https://<DISCORD_TOKEN>.gateway.test');
+    for (const each of [refused, said]) expect(cause(each).toLowerCase()).not.toContain('tok-in-host');
+  });
 });

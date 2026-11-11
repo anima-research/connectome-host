@@ -1,1 +1,1 @@
-- The context makeup's `exactTotalTokens` (`/debug/context/makeup`, and the `context-makeup` panel op) stops waiting for `count_tokens` after 30 s and reports `countSource: "count_tokens_error"`. Before, the call had no limit of its own.
+- The context makeup's `exactTotalTokens` (`/debug/context/makeup`, and the `context-makeup` panel op) stops waiting for `count_tokens` after 30 s and reports `countSource: "count_tokens_timeout"`, which the Context page shows as a count that didn't answer in time. Before, the call had no limit of its own.

@@ -1,21 +1,26 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import {
-  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
+  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
   statSync, lstatSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { SETUP_BUN_FLOOR, SETUP_RECIPE, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { bunBelowFloor } from '../src/bun-floor.js';
+import { ANTHROPIC_PRICING_VERSION } from '../src/call-pricing.js';
+import { defaultTrusted } from '../src/setup/default-trusted.js';
 import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 import { lingerOf } from '../src/setup/linger.js';
 import { SetupModule } from '../src/modules/setup-module.js';
 import { readEnvFile } from '../src/setup/secrets.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
-import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths, keptOutsideLines } from '../src/update/contract.js';
+import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths } from '../src/update/contract.js';
 import { entryPointText } from '../src/update/setup.js';
 import { machineOps, shellWord, takeLock } from '../src/update/launcher.js';
 import { HostUpdate } from '../src/update/update.js';
+import { modeTest } from './mode-test.js';
+import { processEnded } from './process-ended.js';
 
 const REPO = resolve(import.meta.dir, '..');
 const BIN = join(REPO, 'src', 'cli', 'connectome.ts');
@@ -52,6 +57,7 @@ interface Script {
   trusted?: Ran;
   pty?: Ran[];
   atPtyCheck?: (cwd: string) => void;
+  ptyCheck?: (cwd: string) => Ran;
   installed?: Ran;
   atInstall?: (cwd: string) => void;
   atAdd?: (cwd: string) => void;
@@ -81,6 +87,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
     seen.options.push(options);
     if (argv[0] === 'node' && argv[1] === '-e') {
       script.atPtyCheck?.(options.cwd);
+      if (script.ptyCheck) return script.ptyCheck(options.cwd);
       return script.pty?.shift() ?? { status: 0, stdout: '', stderr: '' };
     }
     if (argv[0] === 'node') {
@@ -124,17 +131,11 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
       const record = join(root, 'install.json');
       let before: string | null = null;
       if (existsSync(record)) {
-        const recorded = JSON.parse(readFileSync(record, 'utf-8')) as { dataDir: string; workingDir?: string };
-        const here = dirname(realpathSync(root));
-        const runs = () => basename(readlinkSync(join(root, 'current')));
-        if (recorded.workingDir !== here) {
-          writeFileSync(record, JSON.stringify({ ...recorded, dataDir, workingDir: here }));
-          before = `Bound the install at ${root} to ${here}, where it serves ${dataDir} and runs ${runs()}.`;
-        } else if (realpathSync(recorded.dataDir) !== realpathSync(dataDir)) {
-          return { status: 1, stdout: '', stderr: `connectome-host setup: The install at ${root} serves ${recorded.dataDir}, not ${dataDir}.\n` };
-        } else {
-          before = `The install at ${root} serves ${recorded.dataDir} and runs ${runs()}, as before.`;
+        const served = (JSON.parse(readFileSync(record, 'utf-8')) as { dataDir: string }).dataDir;
+        if (realpathSync(served) !== realpathSync(dataDir)) {
+          return { status: 1, stdout: '', stderr: `connectome-host setup: The install at ${root} serves ${served}, not ${dataDir}.\n` };
         }
+        before = `The install at ${root} serves ${served} and runs ${basename(readlinkSync(join(root, 'current')))}, as before.`;
       }
       const release = script.release ?? VERSION;
       const scope = join(root, 'releases', release, 'node_modules', '@animalabs');
@@ -148,9 +149,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
           symlinkSync(script.host ?? REPO, join(scope, 'connectome-host'));
         }
         symlinkSync(join('releases', release), join(root, 'current'));
-        const extraState = keptOutsideLines(script.installSetupSays ?? '').filter((line) => line.startsWith('  ') && line !== '  none')
-          .map((line) => line.slice(2));
-        writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState, workingDir: dirname(realpathSync(root)) }));
+        writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState: [] }));
         writeFileSync(join(root, ENTRY_POINT), entryPointText());
       }
       writeInstallCommand(root, options.env.PATH);
@@ -173,6 +172,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
       user: 'alice',
       env: { PATH: '/usr/bin:/bin', HOME: dir },
       cwd: dir,
+      execArgv: [],
       bun: { path: process.execPath, version: '1.4.4' },
       hasSudo: true,
       lingerOf: () => true,
@@ -223,7 +223,7 @@ test('setup sets up Discord alone, and names it when asked for anything else', a
   expect(readdirSync(dir)).toEqual([]);
 });
 
-test('setup\'s usage line is the command that runs it here: the package\'s first line, or the install\'s own command', async () => {
+test('setup\'s usage line is the command that runs it here: the install\'s own command where the release it runs has setup, and otherwise the package\'s first line', async () => {
   const dir = directory();
   const fresh = world(dir);
   expect(await runSetup(dir, ['telegram'], fresh)).toBe(2);
@@ -231,9 +231,66 @@ test('setup\'s usage line is the command that runs it here: the package\'s first
   const root = join(dir, 'connectome-host');
   mkdirSync(root);
   writeInstallCommand(root, '');
+  const withoutSetup = world(dir);
+  expect(await runSetup(dir, ['telegram'], withoutSetup)).toBe(2);
+  expect(withoutSetup.seen.err[0]).toBe(`Usage: ${firstLine()}`);
+  mkdirSync(dirname(join(root, 'current', SETUP_RECIPE)), { recursive: true });
+  writeFileSync(join(root, 'current', SETUP_RECIPE), '{}');
   const installed = world(dir);
   expect(await runSetup(dir, ['telegram'], installed)).toBe(2);
   expect(installed.seen.err[0]).toBe(`Usage: ${shellWord(join(root, 'connectome'))} setup discord`);
+});
+
+test('a BUN_OPTIONS that holds --env-file is refused before any question, naming the line that runs setup without it', async () => {
+  // Each BUN_OPTIONS beside the execArgv Bun 1.4.4 gives under it.
+  for (const [options, execArgv] of [
+    ['--env-file=/elsewhere/.env', ['--env-file=/elsewhere/.env']],
+    ['--smol --env-file /elsewhere/.env', ['--smol', '--env-file', '/elsewhere/.env']],
+    ['"--env-file=/else where/.env"', ['--env-file=/else where/.env']],
+    ["--env-file='/else where/.env'", ["--env-file='/else where/.env'"]],
+  ] as const) {
+    const dir = directory();
+    const made = world(dir, {}, { env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: options }, execArgv: [...execArgv] });
+    expect(await runSetup(dir, ['discord'], made)).toBe(1);
+    expect(text(made.seen.err)).toContain('BUN_OPTIONS holds --env-file');
+    expect(text(made.seen.err)).not.toContain('Bun was started');
+    expect(made.seen.err).toContain(`  env -u BUN_OPTIONS ${firstLine()}`);
+    expect(made.seen.asked).toEqual([]);
+    expect(readdirSync(dir)).toEqual([]);
+  }
+  const dir = directory();
+  const root = join(dir, 'connectome-host');
+  mkdirSync(dirname(join(root, 'current', SETUP_RECIPE)), { recursive: true });
+  writeFileSync(join(root, 'current', SETUP_RECIPE), '{}');
+  writeInstallCommand(root, '');
+  const installed = world(dir, {}, {
+    env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: '--env-file=/elsewhere/.env' }, execArgv: ['--env-file=/elsewhere/.env'],
+  });
+  expect(await runSetup(dir, ['discord'], installed)).toBe(1);
+  expect(installed.seen.err).toContain(`  env -u BUN_OPTIONS ${shellWord(join(root, 'connectome'))} setup discord`);
+  expect(installed.seen.asked).toEqual([]);
+  expect(readdirSync(dir)).toEqual(['connectome-host']);
+});
+
+test('a Bun started with --env-file is refused before any question, naming setup\'s line to run without it', async () => {
+  for (const execArgv of [['--env-file=/elsewhere/.env'], ['--smol', '--env-file', '/elsewhere/.env']]) {
+    const dir = directory();
+    const made = world(dir, {}, { execArgv });
+    expect(await runSetup(dir, ['discord'], made)).toBe(1);
+    expect(text(made.seen.err)).toContain('Bun was started with --env-file');
+    expect(made.seen.err).toContain(`  ${firstLine()}`);
+    expect(text(made.seen.err)).not.toContain('BUN_OPTIONS');
+    expect(made.seen.asked).toEqual([]);
+    expect(readdirSync(dir)).toEqual([]);
+  }
+});
+
+test('a BUN_OPTIONS and a Bun start without --env-file leave setup to ask its questions', async () => {
+  const dir = directory();
+  const made = world(dir, {}, { env: { PATH: '/usr/bin:/bin', HOME: dir, BUN_OPTIONS: '--smol' }, execArgv: ['--smol'] });
+  await runSetup(dir, ['discord'], made);
+  expect(made.seen.asked.length).toBeGreaterThan(0);
+  expect(text(made.seen.err)).not.toContain('--env-file');
 });
 
 test('the package\'s bin, without a terminal, says setup needs a person at one and leaves the directory as it was',
@@ -250,7 +307,7 @@ test('the package\'s bin, without a terminal, says setup needs a person at one a
   });
 
 test('where no user of its own is possible, a directory holding other files and no install is refused before any question, naming the line that makes one', async () => {
-  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }]) {
+  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }]) {
     const dir = directory();
     writeFileSync(join(dir, '.bashrc'), '# mine\n');
     const made = world(dir, {}, over);
@@ -262,7 +319,63 @@ test('where no user of its own is possible, a directory holding other files and 
   }
 });
 
-test('where a user of its own is possible, a directory holding other files and no install hears who the resident runs as first; setup then makes the resident\'s directory with the person and keeps the answers there, and writes nothing else', async () => {
+test('a .setup directory that isn\'t setup\'s, holding neither its lock nor its answers, doesn\'t make a directory setup\'s', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'config.yml'), 'mine: true\n');
+  writeFileSync(join(dir, 'package.json'), '{"name":"mine"}\n');
+  const made = world(dir, {}, { hasSudo: false, env: { PATH: '/usr/bin:/bin', HOME: directory() } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(made.seen.asked).toEqual([]);
+  expect(readdirSync(dir).sort()).toEqual(['.setup', 'package.json']);
+  expect(readdirSync(join(dir, '.setup'))).toEqual(['config.yml']);
+});
+
+test('the check for a user by that name runs getent with no variable but PATH, so nothing a dotenv file gave setup reaches it', () => {
+  const bin = directory();
+  const seen = join(bin, 'seen-env');
+  writeFileSync(join(bin, 'getent'), `#!/bin/sh\nenv > ${JSON.stringify(seen)}\nexit 2\n`, { mode: 0o755 });
+  const before = { PATH: process.env.PATH, FROM_A_DOTENV_FILE: process.env.FROM_A_DOTENV_FILE };
+  process.env.PATH = `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`;
+  process.env.FROM_A_DOTENV_FILE = 'a-value';
+  try {
+    expect(realWorld().userExists('anyone')).toBe(false);
+  } finally {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const names = readFileSync(seen, 'utf-8').split('\n').filter((line) => line !== '').map((line) => line.slice(0, line.indexOf('=')));
+  expect(names.filter((name) => name !== 'PWD' && name !== 'SHLVL' && name !== '_')).toEqual(['PATH']);
+});
+
+test('the pty check opens node-pty where term-sessions-mcp\'s own resolution finds it, under a hoisted layout and under an isolated one', async () => {
+  const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken] });
+  await runSetup(dir, ['discord'], made);
+  const check = made.seen.ran.find((argv) => argv[0] === 'node' && argv[1] === '-e')![2]!;
+  const pty = 'module.exports = { spawn: () => ({ onData: (f) => setTimeout(() => f(\'pty-ok\\r\\n\'), 0), onExit: (f) => setTimeout(f, 5) }) };\n';
+  const layouts = {
+    hoisted: ['node_modules/term-sessions-mcp', 'node_modules/node-pty'],
+    isolated: ['node_modules/.bun/term-sessions-mcp@1/node_modules/term-sessions-mcp', 'node_modules/.bun/term-sessions-mcp@1/node_modules/node-pty'],
+  };
+  for (const [layout, [server, nodePty]] of Object.entries(layouts)) {
+    const at = directory();
+    mkdirSync(join(at, server!), { recursive: true });
+    writeFileSync(join(at, server!, 'package.json'), '{"name":"term-sessions-mcp"}\n');
+    mkdirSync(join(at, nodePty!), { recursive: true });
+    writeFileSync(join(at, nodePty!, 'package.json'), '{"name":"node-pty","main":"index.js"}\n');
+    writeFileSync(join(at, nodePty!, 'index.js'), pty);
+    if (layout === 'isolated') symlinkSync(join(at, server!), join(at, 'node_modules', 'term-sessions-mcp'));
+    const ran = Bun.spawnSync(['node', '-e', check], { cwd: at, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
+    expect({ layout, status: ran.exitCode, stderr: ran.stderr.toString() }).toEqual({ layout, status: 0, stderr: '' });
+  }
+});
+
+test('where a user of its own is possible, a directory holding other files and no install hears who the resident runs as first, then the lines that make its directory and run setup there, and nothing is written', async () => {
   const holding = () => {
     const dir = directory();
     writeFileSync(join(dir, '.bashrc'), '# mine\n');
@@ -270,11 +383,11 @@ test('where a user of its own is possible, a directory holding other files and n
     chmodSync(join(dir, '.env'), 0o644);
     return dir;
   };
-  const untouched = (dir: string, made: string[] = []) => {
-    expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env', ...made].sort());
+  const untouched = (dir: string) => {
+    expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env']);
     expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o644);
   };
-  const opening = (dir: string) => `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there. It asks first whether the resident gets a shell and who it runs as: if it runs as this user, alice, setup then makes its directory with you, in ${dir}, and keeps your answers there, so they aren't asked again.`;
+  const opening = (dir: string) => `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there. It asks first whether the resident gets a shell and who it runs as, since those say where setup runs next.`;
 
   const own = holding();
   const ownRun = world(own, { answers: ['yes', '1', ''] });
@@ -287,21 +400,14 @@ test('where a user of its own is possible, a directory holding other files and n
   untouched(own);
 
   const here = holding();
-  const hereRun = world(here, { answers: ['yes', '2', ''] });
+  const hereRun = world(here, { answers: ['yes', '2'] });
   expect(await runSetup(here, ['discord'], hereRun)).toBe(0);
-  expect(hereRun.seen.asked).toEqual(['Does the resident get a shell? (yes/no) ', 'Choose 1 or 2: ', 'The resident\'s directory, made in your home, whose name its service takes [resident]: ']);
-  const resident = join(here, 'resident');
-  expect(text(hereRun.seen.out)).toContain(`Setup made ${resident} for the resident, and keeps your answers there. Run this same version of setup there:\n  cd ${resident}\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
-  expect(JSON.parse(readFileSync(join(resident, '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1, shell: true });
-  expect(statSync(join(resident, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
-  expect(readdirSync(resident)).toEqual(['.setup']);
+  expect(hereRun.seen.asked).toEqual(['Does the resident get a shell? (yes/no) ', 'Choose 1 or 2: ']);
+  expect(text(hereRun.seen.out)).toContain(opening(here));
+  expect(text(hereRun.seen.out)).toContain(`Then make a new directory for the resident in your home, and run this same version of setup there, where its questions come again. Its service takes the directory's name, so choose another than resident if you like, or if ~/resident is already there:\n  mkdir ~/resident && cd ~/resident\n  bunx @animalabs/connectome-host@${VERSION} setup discord\nNothing was installed here.`);
+  expect(hereRun.seen.err).toEqual([]);
   expect(hereRun.seen.ran).toEqual([]);
-  untouched(here, ['resident']);
-
-  const there = world(resident, { secrets: [KEY] });
-  expect(await runSetup(resident, ['discord'], there)).toBe(0);
-  expect(there.seen.asked.some((question) => question.startsWith('Does the resident get a shell?'))).toBe(false);
-  expect(text(there.seen.out)).toContain('Setup keeps its answers here: the resident gets a shell, and runs as this user, alice.');
+  untouched(here);
 
   const cut = holding();
   const cutRun = world(cut, { answers: ['no'] });
@@ -309,18 +415,6 @@ test('where a user of its own is possible, a directory holding other files and n
   expect(cutRun.seen.out.at(-1)).toBe('Setup stopped before its questions were answered. Nothing was written here. Run setup again to answer its two questions.');
   expect(cutRun.seen.err).toEqual([]);
   untouched(cut);
-});
-
-test('the resident\'s directory setup makes is one word with a letter, and not one there already, asked again till it is', async () => {
-  const dir = directory();
-  writeFileSync(join(dir, 'notes.txt'), 'mine\n');
-  mkdirSync(join(dir, 'resident'));
-  const made = world(dir, { answers: ['no', '2', '', 'two words', '123', 'tern'] });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain(`${join(dir, 'resident')} is there already: choose another name.`);
-  expect(made.seen.out.filter((line) => line.startsWith('A directory\'s name here is one word'))).toHaveLength(2);
-  expect(JSON.parse(readFileSync(join(dir, 'tern', '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1, shell: false });
-  expect(readdirSync(join(dir, 'resident'))).toEqual([]);
 });
 
 test('where HOME isn\'t an absolute path to a directory, setup makes no directory for the resident: it sends the person to make one, before any question', async () => {
@@ -350,7 +444,7 @@ test('the real world asks getent whether a name is an account here: root is, and
   expect(realWorld().userExists(`nobody-made-${process.pid}`)).toBe(false);
 });
 
-test('a user of its own is never an account the machine already has: setup asks for another name, saying why', async () => {
+test('a name the machine says is already an account isn\'t taken for the resident\'s own user: setup asks for another, saying why', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['yes', '1', 'root', 'connectome'] }, { userExists: (user: string) => user === 'root' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -358,22 +452,6 @@ test('a user of its own is never an account the machine already has: setup asks 
   expect(text(made.seen.out)).toContain('This machine already has a user named root, and the resident gets a user of its own, so choose a name no account here has. If an earlier line of setup\'s made root for the resident, open a shell as root and run setup there instead.');
   expect(text(made.seen.out)).toContain('id -u connectome >/dev/null 2>&1 || sudo useradd');
   expect(text(made.seen.out)).not.toContain('sudo useradd -m -s /bin/bash root');
-});
-
-test('where the resident\'s directory can\'t be made, setup says so in one sentence naming it, and what to do, and leaves nothing behind', async () => {
-  const home = directory();
-  writeFileSync(join(home, 'notes.txt'), 'mine\n');
-  chmodSync(home, 0o500);
-  try {
-    const made = world(home, { answers: ['no', '2', ''] });
-    expect(await runSetup(home, ['discord'], made)).toBe(1);
-    const resident = join(home, 'resident');
-    expect(text(made.seen.err)).toContain(`connectome setup: setup couldn't make ${resident} for the resident (EACCES: permission denied, mkdir '${resident}'), and left nothing of it behind. The resident needs a directory you can write in: make one where you can, or have whoever administers this machine make one for you, and run this same version of setup in it, where its questions come again:\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
-    expect(text(made.seen.err)).not.toContain(`mkdir ${resident} &&`);
-    expect(readdirSync(home)).toEqual(['notes.txt']);
-  } finally {
-    chmodSync(home, 0o700);
-  }
 });
 
 test('setup names what a directory not its own holds: your home, hidden files alone, or other files', async () => {
@@ -421,10 +499,13 @@ test('without a shell, a user of its own chosen is told it needs Node at the flo
 });
 
 test('where setup can\'t offer a user of its own, it offers this user alone and says what that gives up', async () => {
-  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }]) {
+  const whys = ['There\'s no sudo on this machine', 'On macOS, setup has no root lines for a user of its own',
+    'This machine doesn\'t run systemd, which the line for a user of its own needs to keep its services running'];
+  for (const [at, over] of [{ hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }].entries()) {
     const dir = directory();
     const made = world(dir, { answers: ['yes', 'no'] }, over);
     const status = await runSetup(dir, ['discord'], made);
+    expect(text(made.seen.out)).toContain(`${whys[at]}, so the resident runs as this user, alice.`);
     expect(made.seen.asked[1]).toContain('Go on as alice?');
     expect(status).toBe(0);
     expect(text(made.seen.out)).toContain('With a shell, the resident can read and change whatever alice can (alice\'s files, keys and other programs), and whoever talks to it on Discord can ask it to.');
@@ -475,12 +556,13 @@ test('before its first question setup says what it does, the choices of who the 
   expect(again.seen.out[0]).toBe('Setup keeps its answers here: the resident doesn\'t get a shell, and runs as this user, alice. They aren\'t asked again; setup\'s agent picks up where it stopped, and can change with you what it set up.');
 });
 
-test('setup never runs sudo, whatever is chosen', async () => {
+test('setup runs no sudo, for a resident with a shell and a user of its own, or with no shell as this user', async () => {
   for (const answers of [['yes', '1', 'resident'], ['no', '2']]) {
     const dir = directory();
     const made = world(dir, { answers, secrets: [KEY] });
     await runSetup(dir, ['discord'], made);
     expect(made.seen.ran.flat().some((word) => word.includes('sudo'))).toBe(false);
+    if (answers[1] === '1') expect(text(made.seen.out)).toContain('id -u resident >/dev/null 2>&1 || sudo useradd');
     if (answers[1] === '2') expect(made.seen.launched).not.toBeNull();
   }
 });
@@ -522,15 +604,16 @@ test('with linger off and nobody to run its line, setup says the resident can\'t
 });
 
 test('the cost line gives the model\'s list prices and, for the model the test setups ran on, what five of them cost at them', () => {
-  expect(costLine('claude-opus-5-5', false)).toBe('Setup\'s agent runs on claude-opus-5-5, at Anthropic\'s list prices per million tokens: $4 input, $20 output, $8 written to the prompt cache, which keeps it an hour, and $0.20 read from it (anthropic-public-2026-10-19). In five test setups, with a tester playing the person, setup\'s agent cost between $0.45 and $2.70 each at these prices; the higher figure includes the new resident\'s first calls, which couldn\'t be told apart from setup\'s.');
+  expect(costLine('claude-opus-5-5', false)).toBe(`Setup's agent runs on claude-opus-5-5, at Anthropic's list prices per million tokens: $4 input, $20 output, $8 written to the prompt cache, which keeps it an hour, and $0.20 read from it (${ANTHROPIC_PRICING_VERSION}). In five test setups, with a tester playing the person, setup's agent cost between $0.45 and $2.70 each at these prices; the higher figure includes the new resident's first calls, which couldn't be told apart from setup's.`);
   expect(costLine('claude-sonnet-5', false)).toContain('How many turns a setup takes isn\'t measured yet, so neither is what one costs.');
   expect(costLine('claude-sonnet-5', false)).not.toContain('five test setups');
   expect(costLine('no-such-model', false)).toBe('Setup\'s agent runs on no-such-model, which this host has no prices for. How many turns a setup takes isn\'t measured yet, so neither is what one costs.');
 });
 
-test('a key typed while .env became unreadable isn\'t checked, and setup says .env can\'t be read', async () => {
+modeTest('a key typed while .env became unreadable isn\'t checked, and setup says .env can\'t be read', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
   const made = world(dir, { answers: ['no', ''] }, {
     askHidden: async () => { chmodSync(join(dir, '.env'), 0o000); return KEY; },
@@ -547,19 +630,21 @@ test('a key typed while .env became unreadable isn\'t checked, and setup says .e
 test('a first run with a gateway in .env says the gateway may charge otherwise than the list prices', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(text(made.seen.out)).toContain('A gateway at ANTHROPIC_BASE_URL may charge otherwise.');
 });
 
-test('the PATH advice names the file the person\'s shell reads: ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS', async () => {
+test('the PATH advice names ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS, and the shell\'s own startup file for another', async () => {
   for (const [shell, platform, file] of [['/bin/zsh', 'linux', '~/.zshrc'], ['/bin/bash', 'linux', '~/.bashrc'], ['/bin/bash', 'darwin', '~/.bash_profile'], ['/bin/dash', 'linux', 'your shell\'s startup file']] as const) {
     const dir = directory();
     const answers = platform === 'darwin' ? ['no', 'yes'] : ['no', ''];
     const made = world(dir, { answers, secrets: [KEY] }, { platform, env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
     expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
     expect(text(made.seen.out), `${shell} ${platform}`).toContain(`For that, put it on your PATH, and in ${file} to keep it there:`);
+    expect(text(made.seen.out), `${shell} ${platform}`).toContain(`That line is for ${basename(shell)}, the login shell SHELL names; another shell sets PATH its own way.`);
   }
 });
 
@@ -569,7 +654,7 @@ test('a shell that isn\'t a Bourne shell, such as fish or tcsh, is told to put t
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
     expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
     const root = join(dir, 'connectome-host');
-    expect(text(made.seen.out), shell).toContain(`For that, put ${root} on your PATH as your shell sets it, and in its startup file to keep it there.`);
+    expect(text(made.seen.out), shell).toContain(`For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
     expect(text(made.seen.out), shell).not.toContain('export PATH=');
   }
 });
@@ -586,10 +671,23 @@ test('a later run of an install says its answers, the install and its version, t
   expect(text(later.seen.out)).not.toContain(`This install's own command is ${join(root, 'connectome')}`);
 });
 
+test('the install\'s package.json keeps its own mode when setup adds to its trustedDependencies', async () => {
+  const dir = directory();
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'theirs' }));
+  chmodSync(join(dir, 'package.json'), 0o600);
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect((JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] }).trustedDependencies).toContain('term-sessions-mcp');
+  expect(statSync(join(dir, 'package.json')).mode & 0o777).toBe(0o600);
+});
+
 test('before its bun add, setup adds the packages whose install scripts the running Bun runs by default to the install\'s package.json, keeping the names already there', async () => {
   const dir = directory();
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ trustedDependencies: ['their-own-server', 'node-pty'] }));
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const made = world(dir, { answers: ['yes', '2'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const listed = made.seen.ran.findIndex((argv) => args(argv).join(' ') === 'pm default-trusted');
@@ -598,6 +696,14 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(listed).toBeLessThan(added);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['their-own-server', 'node-pty', 'puppeteer', 'term-sessions-mcp']);
+  expect(text(made.seen.out)).toContain(`Setup added 1 name from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
+  const named = directory();
+  writeFileSync(join(named, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer', 'term-sessions-mcp'] }));
+  mkdirSync(join(named, '.setup'));
+  writeFileSync(join(named, '.setup', 'setup.lock'), '');
+  const unchanged = world(named, { answers: ['yes', '2'], secrets: [KEY] });
+  expect(await runSetup(named, ['discord'], unchanged)).toBe(0);
+  expect(text(unchanged.seen.out)).not.toContain('to trustedDependencies in');
 });
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
@@ -615,10 +721,20 @@ test('where the running Bun\'s default trusted list can\'t be read whole, setup 
   }
 });
 
+test.skipIf(bunBelowFloor(SETUP_BUN_FLOOR, Bun.version) === true)('the Bun running these tests prints a default trusted list setup reads whole, node-pty among it', async () => {
+  const read = await defaultTrusted(async (_manager, argv, cwd) => {
+    const ran = Bun.spawnSync([process.execPath, '--no-env-file', ...argv], { cwd });
+    return { status: ran.exitCode, output: `${ran.stdout}${ran.stderr}` };
+  }, directory());
+  expect(Array.isArray(read), JSON.stringify(read)).toBe(true);
+  expect(read).toContain('node-pty');
+});
+
 test('a package a bun add that failed partway left in node_modules, never declared, is added again on the next run', async () => {
   const dir = directory();
   const failed = world(dir, { answers: ['yes', '2'], secrets: [KEY], added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } });
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   mkdirSync(join(dir, 'node_modules', 'term-sessions-mcp'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', 'term-sessions-mcp', 'package.json'), JSON.stringify({ name: 'term-sessions-mcp', version: '1.7.3' }));
   expect(await runSetup(dir, ['discord'], failed)).toBe(1);
@@ -628,28 +744,88 @@ test('a package a bun add that failed partway left in node_modules, never declar
   expect(args(added)).toContain('term-sessions-mcp');
 });
 
-test('with a shell, a node-pty that opens no pty is installed again, and setup goes on once it does', async () => {
+test('with a shell, a node-pty that opens no pty is installed again, and setup goes on with the copy the install made once it works', async () => {
   const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const built = (cwd: string) => join(cwd, 'node_modules', 'node-pty', 'pty.node');
   let leftAtInstall: boolean | null = null;
   const made = world(dir, {
-    answers: ['yes', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' }],
-    atAdd: (cwd) => { mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true }); },
-    atInstall: (cwd) => { leftAtInstall = existsSync(join(cwd, 'node_modules', 'node-pty')); },
+    answers: ['yes', '2'], secrets: [KEY],
+    ptyCheck: (cwd) => existsSync(built(cwd)) && readFileSync(built(cwd), 'utf-8') === 'built by the install'
+      ? { status: 0, stdout: '', stderr: '' } : broken,
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(built(cwd), 'the copy setup found');
+    },
+    atInstall: (cwd) => {
+      leftAtInstall = existsSync(join(cwd, 'node_modules', 'node-pty'));
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(built(cwd), 'built by the install');
+    },
   });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(leftAtInstall).toBe(false);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(true);
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+  expect(readFileSync(built(dir), 'utf-8')).toBe('built by the install');
   expect(made.seen.launched).not.toBeNull();
 });
 
 test('with a shell, an install again of node-pty that fails stops setup before its agent, naming the install', async () => {
   const dir = directory();
   const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
-  const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' } });
+  const made = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy setup found');
+    },
+    atInstall: (cwd) => { writeFileSync(join(cwd, 'node_modules', 'node-pty'), 'what an install that fails left'); },
+  });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(made.seen.launched).toBeNull();
   expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: `bun --no-env-file install` didn\'t finish (');
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+});
+
+test('with a shell, an install again of node-pty that finishes but leaves one that still doesn\'t work puts back the copy setup found', async () => {
+  const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const made = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [broken, broken],
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy setup found');
+    },
+    atInstall: (cwd) => {
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that finished, and never built');
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.launched).toBeNull();
+  expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: Failed to load native module: pty.node, checked: build/Release.');
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+});
+
+test('with a shell, a repair that finds a copy a stopped repair set aside keeps that copy, and puts it back when its own install fails', async () => {
+  const dir = directory();
+  const broken = { status: 1, stdout: '', stderr: 'Failed to load native module: pty.node, checked: build/Release\n' };
+  const made = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [broken], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
+    atAdd: (cwd) => {
+      mkdirSync(join(cwd, '.setup', 'node-pty-aside'), { recursive: true });
+      writeFileSync(join(cwd, '.setup', 'node-pty-aside', 'pty.node'), 'the copy setup found');
+      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
+      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that was stopped, and never built');
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy setup found');
+  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
 });
 
 test('without sudo, the pty stop\'s build-tools line is one for root to run', async () => {
@@ -670,7 +846,7 @@ test('with a shell, a node-pty that still opens no pty once installed again stop
   expect(text(made.seen.err)).toContain(`The resident's shell runs on node-pty, and here it doesn't work: Failed to load native module: pty.node, checked: build/Release. On Linux, its native part is built as it's installed, with python3, make and a C++ compiler; on Debian and Ubuntu, \`sudo apt install build-essential python3\` installs them, run by you if you can use sudo here, or by whoever administers this machine. Then run setup again, which installs node-pty again. Or, for a resident with no shell, remove ${join(dir, '.setup', 'setup-state.json')}, where setup keeps its answers, and run setup again to answer no.`);
 });
 
-test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies before its add, prints no "Blocked" line of its own, and asks Bun for nothing more after its add', async () => {
+test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies before its add, prints no "Blocked" line of its own, and runs no `bun pm untrusted` after its add', async () => {
   const dir = directory();
   let atAdd: unknown = null;
   const made = world(dir, { answers: ['yes', '2'], secrets: [KEY], atAdd: (cwd) => { atAdd = (JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf-8')) as { trustedDependencies?: unknown }).trustedDependencies; } });
@@ -678,8 +854,56 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(atAdd).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
+  expect(text(made.seen.out)).toContain(`Setup added 2 names from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'pm' && args(argv)[1] === 'untrusted')).toBe(false);
   expect(text(made.seen.out)).not.toContain('Blocked');
+});
+
+// Bun's isolated linker: term-sessions-mcp is a link into node_modules/.bun, and its node-pty is there beside it.
+function isolatedNodePty(cwd: string): string {
+  const store = join(cwd, 'node_modules', '.bun');
+  const server = join(store, 'term-sessions-mcp@1.7.3', 'node_modules', 'term-sessions-mcp');
+  const pty = join(store, 'node-pty@1.1.0', 'node_modules', 'node-pty');
+  rmSync(join(cwd, 'node_modules', 'term-sessions-mcp'), { recursive: true, force: true });
+  mkdirSync(server, { recursive: true });
+  writeFileSync(join(server, 'package.json'), '{"name":"term-sessions-mcp","version":"1.7.3"}');
+  mkdirSync(pty, { recursive: true });
+  writeFileSync(join(pty, 'package.json'), '{"name":"node-pty","version":"1.1.0","main":"index.js"}');
+  writeFileSync(join(pty, 'index.js'), '');
+  for (const prebuild of ['darwin-arm64', 'darwin-x64']) {
+    const helper = join(pty, 'prebuilds', prebuild, 'spawn-helper');
+    mkdirSync(dirname(helper), { recursive: true });
+    writeFileSync(helper, '');
+    chmodSync(helper, 0o644);
+  }
+  rmSync(join(dirname(server), 'node-pty'), { force: true });
+  symlinkSync(pty, join(dirname(server), 'node-pty'));
+  symlinkSync(server, join(cwd, 'node_modules', 'term-sessions-mcp'));
+  return pty;
+}
+
+test('under Bun\'s isolated linker, the node-pty installed again is the one term-sessions-mcp loads, and on macOS its spawn-helper is made executable', async () => {
+  const dir = directory();
+  let pty = '';
+  let leftAtInstall: boolean | null = null;
+  const linux = world(dir, {
+    answers: ['yes', '2'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'Failed to load native module: pty.node\n' }],
+    atAdd: (cwd) => { pty = isolatedNodePty(cwd); },
+    atInstall: (cwd) => { leftAtInstall = existsSync(pty); isolatedNodePty(cwd); },
+  });
+  expect(await runSetup(dir, ['discord'], linux)).toBe(0);
+  expect(leftAtInstall).toBe(false);
+  const mac = directory();
+  const modes: number[][] = [];
+  let helpers: string[] = [];
+  const made = world(mac, {
+    answers: ['yes', 'yes'], secrets: [KEY], pty: [{ status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' }],
+    atAdd: (cwd) => { const at = isolatedNodePty(cwd); helpers = ['darwin-arm64', 'darwin-x64'].map((prebuild) => join(at, 'prebuilds', prebuild, 'spawn-helper')); },
+    atInstall: (cwd) => { isolatedNodePty(cwd); },
+    atPtyCheck: () => modes.push(helpers.map((helper) => statSync(helper).mode & 0o777)),
+  }, { platform: 'darwin' });
+  expect(await runSetup(mac, ['discord'], made)).toBe(0);
+  expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
 });
 
 const SPAWN_HELPERS = ['darwin-arm64', 'darwin-x64'];
@@ -704,7 +928,7 @@ test('on macOS, node-pty\'s prebuilt spawn-helper is made executable after every
   }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(modes).toEqual([[0o755, 0o755], [0o755, 0o755]]);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (posix_spawnp failed), so setup installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
 });
 
 test('on macOS, a spawn-helper already executable by its owner is left as it is', async () => {
@@ -723,11 +947,11 @@ test('on Linux, setup leaves node-pty\'s macOS prebuilds as they are', async () 
   expect(helpers.map((helper) => statSync(helper).mode & 0o777)).toEqual([0o644, 0o644]);
 });
 
-test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends', async () => {
+test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts only while they\'re logged in there', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', 'yes'], secrets: [KEY] }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends.');
+  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are.');
 });
 
 test('on macOS, a pty stop names macOS, says setup makes spawn-helper executable, and gives no Linux build lines', async () => {
@@ -742,13 +966,13 @@ test('on macOS, a pty stop names macOS, says setup makes spawn-helper executable
   expect(said).not.toContain('failed..');
 });
 
-test('on macOS, a spawn-helper setup can\'t make executable is named in the stop, with what to do', async () => {
+modeTest('on macOS, a spawn-helper setup can\'t make executable in the copy it leaves in place is named in the stop, with what to do', async () => {
   const dir = directory();
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
   let shut = '';
   const made = world(dir, {
-    answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], atAdd: shipNodePty,
-    atInstall: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
+    answers: ['yes', 'yes'], secrets: [KEY], pty: [broken, broken], atInstall: shipNodePty,
+    atAdd: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
   }, { platform: 'darwin' });
   try {
     expect(await runSetup(dir, ['discord'], made)).toBe(1);
@@ -827,6 +1051,7 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
   expect(text(made.seen.out)).toContain(`This install's own command is ${join(root, 'connectome')}.`);
   expect(text(made.seen.out)).toContain('Nothing setup or its agent does needs its directory on your PATH, so you need it there only to type plain `connectome`. For that, put it on your PATH, and in your shell\'s startup file to keep it there:');
   expect(text(made.seen.out)).toContain(`export PATH=${root}:"$PATH"`);
+  expect(text(made.seen.out)).toContain('That line is for a Bourne shell, such as sh or bash, since SHELL names no shell; another shell sets PATH its own way.');
   const pathAt = made.seen.out.indexOf(`  export PATH=${root}:"$PATH"`);
   const updates = made.seen.out.indexOf('Once the resident runs, these take a newer release, in turn: the first says whether one is out, the second installs it beside the one running, and the third switches the resident to it.');
   expect(updates).toBeGreaterThan(pathAt);
@@ -836,7 +1061,7 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
   }
   expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
   expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o600);
-  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL }]);
+  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), hide: expect.any(Array) }]);
   expect(statSync(join(dir, 'data')).mode & 0o777).toBe(0o700);
   expect(statSync(join(dir, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
   expect(made.seen.launched).not.toBeNull();
@@ -845,26 +1070,33 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
 const resumeLine = (dir: string) =>
   `To go on with setup where it stopped: \`${join(dir, 'connectome-host', 'connectome')} setup discord\`.`;
 
+const withMcplState = async (dir: string): Promise<void> => {
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const record = join(dir, 'connectome-host', 'install.json');
+  writeFileSync(record, JSON.stringify({ ...JSON.parse(readFileSync(record, 'utf-8')), extraState: ['/srv/mcpl-state'] }));
+};
+
 const keptOutsideBlock = (dir: string) => [
   `${EXTRA_STATE_LINE}: an update copies the data directory, ${join(dir, 'data')}, and outside it only the places listed here:`,
   '  /srv/mcpl-state',
   `${LIST_A_PLACE}, run setup again with every place: \`setup --extra-state /srv/mcpl-state --extra-state PATH\`.`,
 ];
 
-test('of the install\'s own setup\'s lines, setup shows its first at once, and once its agent has ended, the line that goes on with setup by the install\'s command\'s full path, then its list of the state an update copies from outside the data directory as its last words, not its service\'s, and its own command once', async () => {
+test('of the install\'s own setup\'s lines, run again, setup shows its first at once, and once its agent has ended, the line that goes on with setup by the install\'s command\'s full path, then its list of the state an update copies from outside the data directory as its last words, not the lines after that list', async () => {
   const dir = directory();
   const root = join(dir, 'connectome-host');
   const block = keptOutsideBlock(dir);
   const service = `The service starts the host with \`bun ${join(root, ENTRY_POINT)}\`, followed by the arguments it gives the host now; set that, and restart it.`;
   const command = `This install's own command is ${join(root, 'connectome')}.`;
-  const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, service, command, ''].join('\n') });
+  await withMcplState(dir);
+  const made = world(dir, { installSetupSays: [...block, service, command, ''].join('\n') });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const first = made.seen.out.findIndex((line) => line.startsWith(`Set up ${root} as the install of`));
+  const first = made.seen.out.findIndex((line) => line.startsWith(`The install at ${root} serves`));
   expect(first).toBeGreaterThanOrEqual(0);
   expect(first).toBeLessThan(made.seen.outAtLaunch!);
   expect(made.seen.out.slice(made.seen.outAtLaunch!)).toEqual([resumeLine(dir), ...block]);
   expect(text(made.seen.out)).not.toContain(service);
-  expect(made.seen.out.filter((line) => line === command)).toHaveLength(1);
+  expect(text(made.seen.out)).not.toContain(command);
 });
 
 test('once its agent has recorded setup finished in this run, setup says it\'s finished and how to change something, not where to go on; one recorded in an earlier run doesn\'t count', async () => {
@@ -883,17 +1115,17 @@ test('once its agent has recorded setup finished in this run, setup says it\'s f
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(made.seen.out).toContain(finishedLine(dir));
   expect(made.seen.out).not.toContain(resumeLine(dir));
-  // The clock set back during the conversation: the finish recorded in this run counts all the same.
-  const back = directory();
-  const stepped = finishing(back, () => '2000-01-01T00:00:00.000Z');
-  expect(await runSetup(back, ['discord'], stepped)).toBe(0);
-  expect(stepped.seen.out).toContain(finishedLine(back));
+  const clockSetBack = directory();
+  const finishedEarlier = finishing(clockSetBack, () => '2000-01-01T00:00:00.000Z');
+  expect(await runSetup(clockSetBack, ['discord'], finishedEarlier)).toBe(0);
+  expect(finishedEarlier.seen.out).toContain(finishedLine(clockSetBack));
   const earlier = directory();
   mkdirSync(join(earlier, '.setup'), { recursive: true });
   writeFileSync(state(earlier), JSON.stringify({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' }));
-  const old = world(earlier, { secrets: [KEY] }, { startAgent: async () => 0 });
+  const old = world(earlier, { answers: ['yes'], secrets: [KEY] }, { startAgent: async () => 0 });
   expect(await runSetup(earlier, ['discord'], old)).toBe(0);
-  expect(old.seen.out).toContain(resumeLine(earlier));
+  expect(old.seen.out).toContain('Setup finished in an earlier run, at 2026-10-01T00:00:00.000Z, and this run didn\'t ' +
+    `finish it again. ${resumeLine(earlier)}`);
   expect(text(old.seen.out)).not.toContain('Setup is finished');
 });
 
@@ -901,7 +1133,7 @@ test('setup keeps a finished time it recorded with its answers, and calls answer
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { recursive: true });
   writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' }));
-  const kept = world(dir, { secrets: [KEY] });
+  const kept = world(dir, { answers: ['yes'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], kept)).toBe(0);
   expect(kept.seen.asked.some((question) => question.startsWith('Does the resident get a shell?'))).toBe(false);
   expect(JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' });
@@ -910,14 +1142,15 @@ test('setup keeps a finished time it recorded with its answers, and calls answer
   writeFileSync(join(other, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false, finished: 5 }));
   const asked = world(other, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(other, ['discord'], asked)).toBe(0);
-  expect(text(asked.seen.err)).toContain('can\'t be read (it isn\'t the answers this setup keeps), so it asks them again');
+  expect(text(asked.seen.err)).toContain('can\'t be read (it isn\'t the answers this setup keeps), so setup doesn\'t go by them');
 });
 
 test('the line that goes on with setup, and the list of the state kept outside the data directory, come whatever status the agent\'s run ends with, 1 or 130', async () => {
   for (const status of [1, 130]) {
     const dir = directory();
     const block = keptOutsideBlock(dir);
-    const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, ''].join('\n') }, {
+    await withMcplState(dir);
+    const made = world(dir, { installSetupSays: [...block, ''].join('\n') }, {
       startAgent: async (launch) => {
         made.seen.launched = launch;
         made.seen.outAtLaunch = made.seen.out.length;
@@ -934,8 +1167,9 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   const root = join(dir, 'connectome-host');
   const record = join(root, 'install.json');
   const block = keptOutsideBlock(dir);
+  await withMcplState(dir);
   const changing = (change: () => void) => {
-    const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...block, ''].join('\n') }, {
+    const made = world(dir, { installSetupSays: [...block, ''].join('\n') }, {
       startAgent: async (launch) => {
         made.seen.launched = launch;
         made.seen.outAtLaunch = made.seen.out.length;
@@ -945,14 +1179,17 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
     });
     return made;
   };
+  let printed = '';
   const added = changing(() => {
-    const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: string[] };
+    printed = readFileSync(record, 'utf-8');
+    const kept = JSON.parse(printed) as { extraState: string[] };
     writeFileSync(record, JSON.stringify({ ...kept, extraState: [...kept.extraState, '/srv/new'] }));
   });
   expect(await runSetup(dir, ['discord'], added)).toBe(0);
   const said = (made: ReturnType<typeof changing>) => made.seen.out.slice(made.seen.outAtLaunch!);
   const notListed = 'The places outside the data directory that an update copies aren\'t listed here: ';
   expect(said(added)).toEqual([resumeLine(dir), `${notListed}they changed during the conversation, and ${record}, the install record, holds them now, under "extraState".`]);
+  writeFileSync(record, printed);
   const swapped = changing(() => {
     const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: string[] };
     writeFileSync(record, JSON.stringify({ ...kept, extraState: kept.extraState.map((place, at) => at === 0 ? '/srv/other' : place) }));
@@ -965,18 +1202,109 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   });
   expect(await runSetup(dir, ['discord'], listless)).toBe(0);
   expect(said(listless)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, holds no list of places under "extraState".`]);
+  writeFileSync(record, printed);
   const mixed = changing(() => {
     const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: unknown[] };
     writeFileSync(record, JSON.stringify({ ...kept, extraState: [...kept.extraState.slice(0, -1), 5] }));
   });
   expect(await runSetup(dir, ['discord'], mixed)).toBe(0);
   expect(said(mixed)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, holds no list of places under "extraState".`]);
+  writeFileSync(record, printed);
   const gone = changing(() => rmSync(record));
   expect(await runSetup(dir, ['discord'], gone)).toBe(0);
   expect(said(gone)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, is gone.`]);
+  writeFileSync(record, printed);
   const broken = changing(() => writeFileSync(record, 'not json'));
   expect(await runSetup(dir, ['discord'], broken)).toBe(0);
   expect(said(broken)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, can't be read: The install record at ${record} isn't JSON, so this release can't read it.`]);
+});
+
+test('a setup whose install kept no state outside the data directory says so once its agent has ended, where the record gained a place meanwhile', async () => {
+  const dir = directory();
+  const record = join(dir, 'connectome-host', 'install.json');
+  const none = [
+    `${EXTRA_STATE_LINE}: an update copies the data directory, ${join(dir, 'data')}, and outside it only the places listed here:`,
+    '  none',
+    `${LIST_A_PLACE}, run setup again with every place: \`setup --extra-state PATH\`.`,
+  ];
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetupSays: [...none, ''].join('\n') }, {
+    startAgent: async (launch) => {
+      made.seen.launched = launch;
+      made.seen.outAtLaunch = made.seen.out.length;
+      const kept = JSON.parse(readFileSync(record, 'utf-8')) as { extraState: string[] };
+      writeFileSync(record, JSON.stringify({ ...kept, extraState: [...kept.extraState, '/srv/new'] }));
+      return 0;
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.out.slice(made.seen.outAtLaunch!)).toEqual([resumeLine(dir), 'The places outside the data directory ' +
+    `that an update copies aren't listed here: they changed during the conversation, and ${record}, the install record, ` +
+    'holds them now, under "extraState".']);
+});
+
+test('where setup\'s kept answers are gone or can\'t be read once its agent has ended, setup says whether it finished isn\'t known, and why', async () => {
+  const dir = directory();
+  const state = join(dir, '.setup', 'setup-state.json');
+  const ending = (change: () => void) => {
+    const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, {
+      startAgent: async (launch) => {
+        made.seen.launched = launch;
+        made.seen.outAtLaunch = made.seen.out.length;
+        change();
+        return 0;
+      },
+    });
+    return made;
+  };
+  const gone = ending(() => rmSync(state));
+  expect(await runSetup(dir, ['discord'], gone)).toBe(0);
+  expect(gone.seen.out.slice(gone.seen.outAtLaunch!)).toEqual([resumeLine(dir),
+    `Whether setup finished isn't known: ${state}, where setup keeps its answers, is gone.`]);
+  const broken = ending(() => writeFileSync(state, 'not json'));
+  expect(await runSetup(dir, ['discord'], broken)).toBe(0);
+  expect(broken.seen.out.slice(broken.seen.outAtLaunch!)).toEqual([resumeLine(dir),
+    `Whether setup finished isn't known: ${state}, where setup keeps its answers, can't be read (it isn't JSON).`]);
+});
+
+test('a finished setup whose install root is gone says what went with it and asks before it makes a new install, and on no stops with nothing written', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  const state = JSON.stringify({ v: 1, shell: false, finished: '2026-10-01T00:00:00.000Z' });
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), state);
+  const root = join(dir, 'connectome-host');
+  const gone = `This directory's install root, ${root}, is gone, and its record with it: the places of state kept ` +
+    'outside the data directory, its releases and its Go back.';
+  const declined = world(dir, { answers: ['no'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], declined)).toBe(0);
+  expect(declined.seen.out).toContain(gone);
+  expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
+  expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
+  expect(existsSync(root)).toBe(false);
+  expect(existsSync(join(dir, 'data'))).toBe(false);
+  expect(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).toBe(state);
+  const made = world(dir, { answers: ['yes'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(existsSync(join(root, 'install.json'))).toBe(true);
+});
+
+test('setup answers that can\'t be read, with no install root, say setup can\'t tell whether a setup finished here and ask before a new install, and on no stop with nothing written', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), 'not json');
+  const root = join(dir, 'connectome-host');
+  const unknown = `This directory's install root, ${root}, isn't there, and setup can't tell whether a setup finished here, ` +
+    'since its kept answers can\'t be read. If one did, the root\'s record went with it: the places of state kept outside ' +
+    'the data directory, its releases and its Go back.';
+  const declined = world(dir, { answers: ['no'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], declined)).toBe(0);
+  expect(declined.seen.out).toContain(unknown);
+  expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
+  expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
+  expect(existsSync(root)).toBe(false);
+  expect(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).toBe('not json');
+  const made = world(dir, { answers: ['yes', 'no', '2'], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(existsSync(join(root, 'install.json'))).toBe(true);
 });
 
 test('a setup whose install keeps no state outside the data directory shows no list of it once its agent has ended, only the line that goes on with setup', async () => {
@@ -1046,9 +1374,10 @@ test('kept answers setup can\'t read are asked again', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup-state.json'), '{"v": 1, "sh');
-  const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
+  const made = world(dir, { answers: ['yes', 'no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked[0]).toContain('Does the resident get a shell');
+  expect(made.seen.asked[0]).toBe(`Make a new install on ${join(dir, 'data')}? (yes/no) `);
+  expect(made.seen.asked[1]).toContain('Does the resident get a shell');
   expect(text(made.seen.err)).toContain(`Setup's kept answers in ${join(dir, '.setup', 'setup-state.json')} can't be read`);
 });
 
@@ -1064,7 +1393,7 @@ async function script(body: string): Promise<{ status: number | null; out: strin
   return { status, out, err };
 }
 
-test('a terminal that closes at a question gives the question no answer', async () => {
+test('input that ends at a question gives the question no answer', async () => {
   const ran = await script('console.log(JSON.stringify(await realWorld().ask("Does the resident get a shell? ")));');
   expect(ran.status).toBe(0);
   expect(ran.out.trim()).toBe('Does the resident get a shell? null');
@@ -1099,10 +1428,10 @@ test('a signal that ends the agent\'s host is named, and setup answers its statu
 
 test('the preflight stops setup before anything is installed, saying what\'s wrong and how to put it right', async () => {
   const cases: Array<{ script: Script; over?: Partial<SetupWorld>; shell: 'yes' | 'no'; says: string[] }> = [
-    { script: {}, over: { bun: { path: process.execPath, version: '1.4.2' } }, shell: 'no', says: ['Bun 1.4.2', 'bun upgrade'] },
+    { script: {}, over: { bun: { path: process.execPath, version: '1.4.2' } }, shell: 'no', says: ['Bun 1.4.2', '`bun upgrade` upgrades it, or the package manager that installed it does; then run setup again.'] },
     {
       script: {}, over: { bun: { path: process.execPath, version: '1.4.3' } }, shell: 'no',
-      says: ['Setup needs Bun 1.4.4 or later', 'this is Bun 1.4.3', 'bun upgrade'],
+      says: ['Setup needs Bun 1.4.4 or later', 'this is Bun 1.4.3', '`bun upgrade` upgrades it, or the package manager that installed it does; then run setup again.'],
     },
     { script: { node: null }, shell: 'no', says: ['didn\'t answer here (there\'s no node on this PATH)', 'nodejs.org'] },
     {
@@ -1246,7 +1575,7 @@ test('before its agent starts, setup names its model and prices, and what five t
   expect(at).toBeLessThan(made.seen.outAtLaunch!);
 });
 
-test('the agent runs from the release current names, on setup\'s recipe and data, with the key setup checked, and starts in .setup, where no mcpl-servers.json or agent overlay is, so the resident\'s servers and overlay don\'t reach it',
+test('the agent runs from the release current named once the install\'s own setup finished, even if current moves meanwhile, on setup\'s recipe and data, with the key setup checked, and starts in .setup, where no mcpl-servers.json or agent overlay is, so the resident\'s servers and overlay don\'t reach it',
   async () => {
     const dir = directory();
     const root = join(dir, 'connectome-host');
@@ -1315,10 +1644,11 @@ test('setup\'s agent\'s host checks for no update on its own, whatever the perso
   }
 });
 
-test('nothing Bun gave setup from .env reaches the programs it runs or its agent, once .env has changed too, and Bun loads no .env into them',
+test('nothing Bun gave setup from .env reaches the programs it runs or its agent, but for the API key and ANTHROPIC_BASE_URL, which setup reads from .env itself and gives the agent, once .env has changed too, and Bun loads no .env into them',
   async () => {
     const dir = directory();
     mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
     const envFile = join(dir, '.env');
     writeFileSync(envFile, 'DISCORD_TOKEN="from-dot-env"\n');
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, {
@@ -1345,7 +1675,7 @@ test('nothing Bun gave setup from .env reaches the programs it runs or its agent
     expect(launch.env.PATH).toBe('/usr/bin:/bin');
   });
 
-test('nothing Bun gave setup from any dotenv file of the directory it was started in reaches its programs or its agent, whatever NODE_ENV is', async () => {
+test('nothing Bun gave setup from any dotenv file of the directory it was started in reaches its programs or its agent, but for the API key and ANTHROPIC_BASE_URL, which setup reads from .env itself and gives the agent, whatever NODE_ENV is', async () => {
   const started = directory();
   const files = ['.env', '.env.local', '.env.development', '.env.development.local', '.env.production', '.env.production.local',
     '.env.test', '.env.test.local'];
@@ -1385,6 +1715,38 @@ test('a value Bun expanded from a $NAME in a dotenv file stays away from setup\'
   }
 });
 
+test('a .env in the directory setup was started in is read for its names as Bun reads it, whatever its form, since that .env isn\'t setup\'s', async () => {
+  const started = directory();
+  writeFileSync(join(started, '.env'), 'OTHER=x\nTOKEN=$OTHER\n');
+  const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+    cwd: started, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+  });
+  const given = JSON.parse(ran.stdout.toString()) as Record<string, string>;
+  expect([given.OTHER, given.TOKEN]).toEqual(['x', 'x']);
+  const dir = directory();
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { cwd: started, env: { ...given, KEEP_ME: 'kept' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  for (const env of [...made.seen.options.map((options) => options.env), made.seen.launched!.env]) {
+    for (const name of ['OTHER', 'TOKEN']) expect(env[name], name).toBeUndefined();
+    expect(env.KEEP_ME).toBe('kept');
+  }
+});
+
+test('a dotenv value Bun built from a name the shell exports, which a file there also names, is the file\'s, not taken for exported', async () => {
+  const started = directory();
+  writeFileSync(join(started, '.env.local'), 'NODE_ENV=development\nANTHROPIC_API_KEY=sk-ant-${NODE_ENV}\n');
+  const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+    cwd: started, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', NODE_ENV: 'staging' },
+  });
+  const given = JSON.parse(ran.stdout.toString()) as Record<string, string>;
+  expect([given.NODE_ENV, given.ANTHROPIC_API_KEY]).toEqual(['staging', 'sk-ant-staging']);
+  const dir = directory();
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, { cwd: started, env: given });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.asked.some((question) => question.includes('exported'))).toBe(false);
+  expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
+});
+
 test('a name the shell exports that a plain object inherits, such as toString, reaches setup\'s agent like any other', async () => {
   const dir = directory();
   const env = { PATH: '/usr/bin:/bin', HOME: dir, toString: 'exported-to-string', constructor: 'exported-constructor' };
@@ -1394,9 +1756,10 @@ test('a name the shell exports that a plain object inherits, such as toString, r
   expect(Object.hasOwn(made.seen.launched!.env, 'constructor') && made.seen.launched!.env.constructor).toBe('exported-constructor');
 });
 
-test('a .env.tmp a write cut off left beside .env is taken away before setup does anything else', async () => {
+test('a .env.tmp a write cut off left beside .env is taken away once setup holds its lock, before it asks anything', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const tmp = join(dir, '.env.tmp');
   writeFileSync(tmp, 'ANTHROPIC_API_KEY="cut-off-value"\n', { mode: 0o600 });
   const answers = ['no', ''];
@@ -1528,26 +1891,32 @@ test('the launch setup gives its agent starts the installed host, run here on a 
   child.stdout.on('data', (chunk) => { out += chunk; });
   child.stderr.on('data', (chunk) => { out += chunk; });
   const closed = new Promise((done) => child.on('close', done));
-  for (const started = Date.now(); !out.includes('[batch]') && Date.now() - started < 30_000;) await Bun.sleep(50);
-  expect(out).toContain('[batch]');
-  const root = join(dir, 'connectome-host');
-  expect(() => takeLock(root, machineOps())).not.toThrow();
-  unlinkSync(installPaths(root).lock);
-  child.stdin.end();
-  expect(await closed).toBe(0);
+  try {
+    for (const started = performance.now(); !out.includes('[batch]') && performance.now() - started < 30_000;) await Bun.sleep(50);
+    expect(out).toContain('[batch]');
+    const root = join(dir, 'connectome-host');
+    expect(() => takeLock(root, machineOps())).not.toThrow();
+    unlinkSync(installPaths(root).lock);
+    child.stdin.end();
+    expect(await closed).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await closed;
+    }
+  }
 }, 60_000);
 
 test('a directory holding only setup\'s own .setup/ is setup\'s, so setup goes on there', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(made.seen.launched).not.toBeNull();
 });
 
-async function holdLock(dir: string) {
-  mkdirSync(join(dir, '.setup'), { recursive: true });
-  const holder = spawn(process.execPath, ['-e', `
+async function holdLock(dir: string, source = `
     const { Database } = await import('bun:sqlite');
     const db = new Database(${JSON.stringify(join(dir, '.setup', 'setup.lock'))}, { create: true });
     db.exec('PRAGMA busy_timeout = 1000');
@@ -1557,24 +1926,64 @@ async function holdLock(dir: string) {
     console.log('held');
     // Bun closes a Database once nothing refers to it, which lets its lock go.
     setInterval(() => db, 1000);
-  `], { stdio: ['ignore', 'pipe', 'inherit'] });
-  await new Promise<void>((done) => holder.stdout!.on('data', (chunk) => { if (String(chunk).includes('held')) done(); }));
-  return { kill: () => new Promise<void>((done) => { holder.on('close', () => done()); holder.kill('SIGKILL'); }) };
+  `, waitMs = 4_000) {
+  mkdirSync(join(dir, '.setup'), { recursive: true });
+  const holder = spawn(process.execPath, ['-e', source], { stdio: ['pipe', 'pipe', 'inherit'] });
+  holder.stdin!.on('error', () => {});
+  const closed = new Promise<void>((done) => holder.once('close', () => done()));
+  const kill = () => {
+    holder.kill('SIGKILL');
+    return closed;
+  };
+  let said = '';
+  let stalled: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((done, fail) => {
+      stalled = setTimeout(() => fail(new Error(`the lock holder didn't say it held the lock within ${waitMs} ms`)), waitMs);
+      holder.stdout!.on('data', (chunk) => {
+        said += String(chunk);
+        if (said.includes('held')) done();
+        else holder.stdin!.write('\n');
+      });
+      holder.once('error', fail);
+      holder.once('exit', (code, signal) => fail(new Error(`the lock holder ended before it held the lock (${signal ?? `exit ${code}`})`)));
+    }).finally(() => clearTimeout(stalled));
+  } catch (error) {
+    await kill();
+    throw error;
+  }
+  return { kill };
 }
+
+test('the lock holder is waited for until it says it holds the lock, however its output is split, and one that ends first fails the wait, named', async () => {
+  const split = await holdLock(directory(), "process.stdout.write('he'); process.stdin.once('data', () => process.stdout.write('ld\\n')); setInterval(() => {}, 1000);");
+  await split.kill();
+  await expect(holdLock(directory(), 'process.exit(3);')).rejects.toThrow('the lock holder ended before it held the lock (exit 3)');
+}, 5_000);
+
+test('a lock holder that never says it holds the lock fails the wait, named, and is killed', async () => {
+  const token = `stalled-holder-${process.pid}-${Date.now()}`;
+  await expect(holdLock(directory(), `// ${token}\nsetInterval(() => {}, 1000);`, 300))
+    .rejects.toThrow('the lock holder didn\'t say it held the lock within 300 ms');
+  expect(Bun.spawnSync(['pgrep', '-f', token]).exitCode).toBe(1);
+}, 5_000);
 
 test('one setup at a time in a directory: another running refuses this one before it asks anything, and one killed doesn\'t',
   async () => {
     const dir = directory();
     const holder = await holdLock(dir);
-    writeFileSync(join(dir, '.env.tmp'), 'DISCORD_TOKEN="being-written"\n', { mode: 0o600 });
-    const refused = world(dir, { answers: ['no', ''], secrets: [KEY] });
-    expect(await runSetup(dir, ['discord'], refused)).toBe(1);
-    expect(readFileSync(join(dir, '.env.tmp'), 'utf-8')).toBe('DISCORD_TOKEN="being-written"\n');
-    expect(text(refused.seen.err)).toContain(`Another setup is running in ${dir}`);
-    expect(text(refused.seen.err)).toContain('Wait for it to end, or end it, and run setup again.');
-    expect(refused.seen.asked).toEqual([]);
-    expect(refused.seen.ran).toEqual([]);
-    await holder.kill();
+    try {
+      writeFileSync(join(dir, '.env.tmp'), 'DISCORD_TOKEN="being-written"\n', { mode: 0o600 });
+      const refused = world(dir, { answers: ['no', ''], secrets: [KEY] });
+      expect(await runSetup(dir, ['discord'], refused)).toBe(1);
+      expect(readFileSync(join(dir, '.env.tmp'), 'utf-8')).toBe('DISCORD_TOKEN="being-written"\n');
+      expect(text(refused.seen.err)).toContain(`Another setup is running in ${dir}`);
+      expect(text(refused.seen.err)).toContain('Wait for it to end, or end it, and run setup again.');
+      expect(refused.seen.asked).toEqual([]);
+      expect(refused.seen.ran).toEqual([]);
+    } finally {
+      await holder.kill();
+    }
     const after = world(dir, { answers: ['no', ''], secrets: [KEY] });
     expect(await runSetup(dir, ['discord'], after)).toBe(0);
     expect(after.seen.launched).not.toBeNull();
@@ -1647,6 +2056,7 @@ test('setup ends with its agent\'s exit status', async () => {
 test('a .env that can\'t be read stops setup before it asks or runs anything, naming it and what to do, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   mkdirSync(join(dir, '.env'), { mode: 0o755 });
   const mode = statSync(join(dir, '.env')).mode & 0o777;
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -1660,6 +2070,7 @@ test('a .env that can\'t be read stops setup before it asks or runs anything, na
 test('the key setup checks, keeps and gives its agent is the one .env holds when setup gets to the key, though .env changed during the boot check, and .env is readable by its owner alone after', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_API_KEY="sk-ant-before-the-install"\n', { mode: 0o600 });
   const made = world(dir, {
     answers: ['no', ''],
@@ -1682,6 +2093,7 @@ test('a .env that is a link, to a file or to nothing, stops setup before it asks
   for (const to of [target, join(directory(), 'not-there.env')]) {
     const dir = directory();
     mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
     symlinkSync(to, join(dir, '.env'));
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
     expect(await runSetup(dir, ['discord'], made), to).toBe(1);
@@ -1698,6 +2110,7 @@ test('a .env that is a link, to a file or to nothing, stops setup before it asks
 test('setup writes the key it checked to .env, though .env changed while the key was checked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
   let checks = 0;
   const made = world(dir, { answers: ['no', ''] }, {
@@ -1734,6 +2147,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
     const dir = directory();
     const envFile = join(dir, '.env');
     mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
     writeFileSync(envFile, `${names.map((name) => `${name}=held-credential-${name}\n`).join('')}ANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
     const fromEnv = Object.fromEntries([...names.map((name) => [name, `held-credential-${name}`]), ['ANTHROPIC_API_KEY', KEY]]);
     const made = world(dir, { answers: ['no', ''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ...fromEnv } });
@@ -1747,9 +2161,10 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
   }
 });
 
-test('a key that works but can\'t be kept in .env stops setup with no agent, saying so', async () => {
+modeTest('a key that works but can\'t be kept in .env stops setup with no agent, saying so', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { mode: 0o700 });
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] }, {
     checkKey: async () => { chmodSync(dir, 0o500); return { ok: true }; },
   });
@@ -1811,6 +2226,7 @@ test('an empty ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE, in .env
     for (const where of ['.env', 'exported']) {
       const dir = directory();
       mkdirSync(join(dir, '.setup'));
+      writeFileSync(join(dir, '.setup', 'setup.lock'), '');
       writeFileSync(join(dir, '.env'), `${where === '.env' ? `${name}=\n` : ''}ANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
       const made = world(dir, { answers: ['no', ''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ...(where === 'exported' ? { [name]: '' } : {}) } });
       expect(await runSetup(dir, ['discord'], made), `${name} ${where}`).toBe(0);
@@ -1823,6 +2239,7 @@ test('an empty ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE, in .env
 test('a .env with a line outside setup\'s form stops setup before it asks or runs anything, naming the line and nothing of it, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const before = 'PEM_KEY="-----BEGIN-----\nbody-of-the-key\n-----END-----"\nPORT=8080\n';
   writeFileSync(join(dir, '.env'), before, { mode: 0o600 });
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -1834,9 +2251,10 @@ test('a .env with a line outside setup\'s form stops setup before it asks or run
   expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe(before);
 });
 
-test('a .env no one can read stops setup before it asks or runs anything, naming it, and changes it not', async () => {
+modeTest('a .env no one can read stops setup before it asks or runs anything, naming it, and changes it not', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY="${KEY}"\n`);
   chmodSync(join(dir, '.env'), 0o000);
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -1850,6 +2268,7 @@ test('a .env no one can read stops setup before it asks or runs anything, naming
 test('a .env its owner can\'t read but others can is made readable by its owner alone, and setup goes on', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY="${KEY}"\n`);
   chmodSync(join(dir, '.env'), 0o040);
   const made = world(dir, { answers: ['no', ''] });
@@ -1874,7 +2293,7 @@ test('run again on an install, setup uses the data directory the install records
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
   const elsewhere = directory();
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [], workingDir: dir }));
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
   rmSync(join(dir, 'data'), { recursive: true });
   const again = world(dir);
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
@@ -1885,76 +2304,39 @@ test('run again on an install, setup uses the data directory the install records
   expect(text(again.seen.out)).toContain(`Checking the install at ${root}.`);
 });
 
-const ownSetup = (seen: Seen): { argv: string[]; dataDir: string | undefined } => {
-  const at = seen.ran.findIndex((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')));
-  return { argv: args(seen.ran[at]!).slice(1), dataDir: seen.options[at]!.env.DATA_DIR };
-};
-const besideIt = (dir: string, name: string): string => {
-  const path = join(dirname(dir), `${basename(dir)}-${name}`);
-  made.push(path);
-  return path;
-};
-
-test('an install moved here whose places were all under its old directory is bound with no question, its own setup given the data directory here', async () => {
-  const dir = directory();
-  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
-  const moved = besideIt(dir, 'moved');
-  renameSync(dir, moved);
-  const again = world(moved);
-  expect(await runSetup(moved, ['discord'], again)).toBe(0);
-  expect(again.seen.asked).toEqual([]);
-  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(moved, 'connectome-host')], dataDir: join(moved, 'data') });
-  expect(text(again.seen.out)).toContain(`This install's record is bound to ${dir}, and the install is in ${moved}, so it was moved or copied here. Setup binds it here: each place under ${dir} becomes the same place under ${moved}.`);
-});
-
-test('a copy with a place outside its old directory asks where that place is in this install, naming it, and gives its own setup the answer', async () => {
-  const dir = directory();
-  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
-  const outside = join(directory(), 'state.json');
-  writeFileSync(outside, 'the original\'s');
-  const record = join(dir, 'connectome-host', 'install.json');
-  writeFileSync(record, JSON.stringify({ ...JSON.parse(readFileSync(record, 'utf-8')), extraState: [outside] }));
-  const copy = besideIt(dir, 'copy');
-  expect(Bun.spawnSync(['cp', '-a', dir, copy]).exitCode).toBe(0);
-  const own = join(copy, 'state.json');
-  const again = world(copy, { answers: ['~/state.json'] });
-  expect(await runSetup(copy, ['discord'], again)).toBe(0);
-  expect(again.seen.asked).toEqual([`${outside} (state kept outside its data directory): `]);
-  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', join(copy, 'connectome-host'), '--place', outside, own], dataDir: join(copy, 'data') });
-  expect(text(again.seen.out)).toContain(`It asks about each place outside ${dir}, since it can't tell whether that came with the install, as after a move, or is still the other install's, as after a copy. Press Enter where a place is this install's, or type the path of this install's own, as after a copy.`);
-});
-
-test('a record from before workingDir asks about each place it names, its data directory too: Enter keeps one, and a data directory that isn\'t there is asked again', async () => {
-  const dir = directory();
-  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
-  const record = join(dir, 'connectome-host', 'install.json');
-  writeFileSync(record, JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  const again = world(dir, { answers: ['nowhere', ''] });
-  expect(await runSetup(dir, ['discord'], again)).toBe(0);
-  const question = `${join(dir, 'data')} (its data directory): `;
-  expect(again.seen.asked).toEqual([question, question]);
-  expect(text(again.seen.out)).toContain(`${join(dir, 'nowhere')} isn't a directory, and the data directory has to be one that's there`);
-  expect(ownSetup(again.seen)).toEqual({
-    argv: ['--root', join(dir, 'connectome-host'), '--place', join(dir, 'data'), join(dir, 'data')], dataDir: join(dir, 'data'),
-  });
-});
-
-test('a binding a setup run cut off is finished with the places that run was given, asking nothing', async () => {
+test('setup shows each line its install\'s own setup gives before the list of state kept outside', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   const root = join(dir, 'connectome-host');
-  writeFileSync(join(root, 'rebind.json'), JSON.stringify({
-    v: 1, id: 'plan-1', from: null, to: dir, places: [],
-    record: { v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir },
-  }));
-  const again = world(dir);
+  const says = [
+    `The install at ${root} serves ${join(dir, 'data')} and runs ${VERSION}, as before.`,
+  ];
+  const again = world(dir, { installSetup: { status: 0, stdout: `${says.join('\n')}\n${EXTRA_STATE_LINE}: the places listed here:\n  none\n`, stderr: '' } });
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
-  expect(again.seen.asked).toEqual([]);
-  expect(text(again.seen.out)).toContain(`A setup run binding this install to ${dir} was cut off before it finished, so setup finishes it, with the places that run was given.`);
-  expect(ownSetup(again.seen)).toEqual({ argv: ['--root', root], dataDir: join(dir, 'data') });
+  for (const line of says) expect(again.seen.out).toContain(line);
+  expect(again.seen.out).not.toContain('  none');
 });
 
-test('an install whose recorded data directory has gone is refused by its own setup, not given a new one', async () => {
+test('where the install\'s own setup fails, setup shows all its lines, not a last part of them', async () => {
+  const dir = directory();
+  const lines = Array.from({ length: 25 }, (_, at) => `line ${at + 1} of what went wrong`);
+  const made = world(dir, { answers: ['no', ''], secrets: [KEY], installSetup: { status: 1, stdout: '', stderr: `${lines.join('\n')}\n` } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  for (const line of lines) expect(made.seen.err).toContain(`  ${line}`);
+});
+
+test('on Linux without systemd, setup says the resident can\'t run as a systemd user service here, and what another service manager must do', async () => {
+  const dir = directory();
+  const made = world(dir, { answers: ['no', 'yes'], secrets: [KEY] }, { lingerOf: () => null });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.out).toContain('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
+  const mac = directory();
+  const onMac = world(mac, { answers: ['no', 'yes'], secrets: [KEY] }, { platform: 'darwin', lingerOf: () => null });
+  expect(await runSetup(mac, ['discord'], onMac)).toBe(0);
+  expect(text(onMac.seen.out)).not.toContain('systemd');
+});
+
+test('an install whose recorded data directory has gone gets that directory from setup, not a new one, and setup stops where its own setup refuses it', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
   rmSync(join(dir, 'data'), { recursive: true });
@@ -1968,6 +2350,7 @@ test('an install whose recorded data directory has gone is refused by its own se
 test('run again where package.json declares the host and node_modules holds it, setup adds only the packages missing', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { '@animalabs/connectome-host': VERSION } }));
   mkdirSync(join(dir, 'node_modules', '@animalabs', 'connectome-host'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', '@animalabs', 'connectome-host', 'package.json'),
@@ -1982,6 +2365,7 @@ test('run again where package.json declares the host and node_modules holds it, 
 test('run again beside another version of the host, setup adds its own version', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   mkdirSync(join(dir, 'node_modules', '@animalabs', 'connectome-host'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', '@animalabs', 'connectome-host', 'package.json'),
     JSON.stringify({ name: '@animalabs/connectome-host', version: '0.0.1-older' }));
@@ -2022,7 +2406,7 @@ test('the key is checked where the resident will call: at the ANTHROPIC_BASE_URL
   writeFileSync(envFile, `${readFileSync(envFile, 'utf-8')}ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n`);
   const fromFile = world(dir);
   expect(await runSetup(dir, ['discord'], fromFile)).toBe(0);
-  expect(fromFile.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, baseUrl: 'https://gateway.example/anthropic' }]);
+  expect(fromFile.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), baseUrl: 'https://gateway.example/anthropic', hide: expect.any(Array) }]);
   expect(fromFile.seen.launched!.env.ANTHROPIC_BASE_URL).toBe('https://gateway.example/anthropic');
   expect(text(fromFile.seen.out)).toContain('A gateway at ANTHROPIC_BASE_URL may charge otherwise.');
 
@@ -2073,6 +2457,7 @@ test('a key .env can\'t hold as typed is refused before it is checked or kept, t
 
   const dir4 = directory();
   mkdirSync(join(dir4, '.setup'));
+  writeFileSync(join(dir4, '.setup', 'setup.lock'), '');
   const stored = 'sk-ant-"stored';
   writeFileSync(join(dir4, '.env'), `ANTHROPIC_API_KEY='${stored}'\n`, { mode: 0o600 });
   const fromEnv = world(dir4, { answers: ['no', ''], secrets: [''] });
@@ -2111,6 +2496,7 @@ test('a key a request header can\'t carry, typed or read from .env, is refused b
 
   const dir2 = directory();
   mkdirSync(join(dir2, '.setup'));
+  writeFileSync(join(dir2, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir2, '.env'), `ANTHROPIC_API_KEY=${bad}\n`, { mode: 0o600 });
   const stored = world(dir2, { answers: ['no', ''], secrets: [''] }, { checkKey: real });
   expect(await runSetup(dir2, ['discord'], stored)).toBe(1);
@@ -2126,10 +2512,11 @@ test('a key a request header can\'t carry, typed or read from .env, is refused b
 test('an empty ANTHROPIC_BASE_URL in .env means Anthropic\'s own API, as it does for the host: setup checks the key there and gives its agent none', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), `ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY="${KEY}"\n`, { mode: 0o600 });
   const made = world(dir, { answers: ['no', ''] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL }]);
+  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), hide: expect.any(Array) }]);
   expect(text(made.seen.out)).toContain(`Checking the ANTHROPIC_API_KEY in ${join(dir, '.env')}: one call at https://api.anthropic.com to ${SETUP_MODEL},`);
   expect(made.seen.launched!.env.ANTHROPIC_BASE_URL).toBeUndefined();
 });
@@ -2140,7 +2527,7 @@ test('an ANTHROPIC_BASE_URL exported in this shell is named, setup checking the 
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] },
     { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://someone:pass-in-url@gateway.example/path?token=in-query' } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL }]);
+  expect(made.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), hide: expect.any(Array) }]);
   expect(made.seen.launched!.env.ANTHROPIC_BASE_URL).toBeUndefined();
   expect(readEnvFile(envFile).has('ANTHROPIC_BASE_URL')).toBe(false);
   expect(text(made.seen.out)).toContain(`Setup checks the key at, and gives its agent, Anthropic's own API, since ${envFile} sets no ANTHROPIC_BASE_URL, not the one exported in this shell.`);
@@ -2152,7 +2539,7 @@ test('an ANTHROPIC_BASE_URL exported in this shell is named, setup checking the 
   for (const exported of ['https://other.example', '']) {
     const again = world(dir, {}, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: exported } });
     expect(await runSetup(dir, ['discord'], again)).toBe(0);
-    expect(again.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, baseUrl: 'https://gateway.example' }]);
+    expect(again.seen.checked).toEqual([{ key: KEY, model: SETUP_MODEL, envFile: join(dir, '.env'), baseUrl: 'https://gateway.example', hide: expect.any(Array) }]);
     expect(again.seen.launched!.env.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
     expect(text(again.seen.out)).toContain(`Setup checks the key at, and gives its agent, the ANTHROPIC_BASE_URL in ${envFile}, which leads to https://gateway.example, not the one exported in this shell.`);
     expect(readEnvFile(envFile).get('ANTHROPIC_BASE_URL')).toBe('https://gateway.example');
@@ -2163,6 +2550,7 @@ test('an ANTHROPIC_API_KEY exported in this shell, empty too, that differs from 
   const dir = directory();
   const envFile = join(dir, '.env');
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(envFile, `ANTHROPIC_API_KEY="${KEY}"\n`);
   const made = world(dir, { answers: ['no', ''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_API_KEY: 'sk-ant-exported-other' } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2208,6 +2596,7 @@ test('an ANTHROPIC_BASE_URL put in .env during a question is checked as a URL be
   const dir = directory();
   const envFile = join(dir, '.env');
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(envFile, 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
   const labels: string[] = [];
   const made = world(dir, { answers: ['no', ''] }, {
@@ -2227,6 +2616,7 @@ test('an ANTHROPIC_BASE_URL put in .env during a question is checked as a URL be
 test('setup shows where ANTHROPIC_BASE_URL leads, never a user, password, path or query it carries', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://someone:pass-in-url@gateway.example/path?token=in-query\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2259,7 +2649,7 @@ test('a host started again on setup\'s data goes on with the conversation it had
   expect(second.out).toContain('hello-from-the-first-run');
 }, 60_000);
 
-test('the host refuses modules.setup headless, in the TUI, or with stdin or stdout off a terminal, so its agent runs only in readline mode on one', async () => {
+test('the host refuses modules.setup headless, in the TUI, or with stdin or stdout off a terminal, so its agent runs only in readline mode on one (the cases on a terminal on Linux only)', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no', ''], secrets: [KEY], host: 'copy' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2269,6 +2659,7 @@ test('the host refuses modules.setup headless, in the TUI, or with stdin or stdo
   expect(ran.exitCode).not.toBe(0);
   expect(ran.stdout.toString() + ran.stderr.toString()).toContain(refusal);
   expect(ran.stderr.toString(), 'a refusal, not a crash with its stack').not.toContain('Fatal error');
+  if (process.platform !== 'linux') return;
 
   // script(1) gives the host a terminal on stdin; the redirect inside takes stdout off it.
   const out = join(directory(), 'out.txt');
@@ -2352,6 +2743,23 @@ test('where the install\'s own setup fails, setup shows its lines and says to ru
   expect(text(made.seen.err)).toContain('Once what the lines above say is put right, run setup again.');
 });
 
+modeTest('an install record this user can\'t read is named, with why, and nothing more is done', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
+  const record = join(dir, 'connectome-host', 'install.json');
+  chmodSync(record, 0o000);
+  try {
+    const closed = world(dir);
+    expect(await runSetup(dir, ['discord'], closed)).toBe(1);
+    expect(text(closed.seen.err)).toContain('EACCES');
+    expect(text(closed.seen.err)).toContain(record);
+    expect(text(closed.seen.err)).toContain(', so setup can\'t tell which data the install serves, and goes no further.');
+    expect(closed.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
+  } finally {
+    chmodSync(record, 0o600);
+  }
+});
+
 test('an install record that can\'t be read is named, one that isn\'t JSON or names no version with how to write it again, one naming another version as another release\'s, which setup won\'t write again since that would lose its fields, and nothing more is done', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: ['no', ''], secrets: [KEY] }))).toBe(0);
@@ -2407,18 +2815,6 @@ test('an install record that can\'t be read is named, one that isn\'t JSON or na
   expect(text(newer.seen.err)).not.toContain(WRITE_RECORD_AGAIN);
   expect(readFileSync(record, 'utf-8')).toBe(JSON.stringify({ v: 2, dataDir: join(dir, 'data'), extraState: [], kept: 'by a newer release' }));
   expect(newer.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
-  writeFileSync(record, JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  chmodSync(record, 0o000);
-  try {
-    const closed = world(dir);
-    expect(await runSetup(dir, ['discord'], closed)).toBe(1);
-    expect(text(closed.seen.err)).toContain('EACCES');
-    expect(text(closed.seen.err)).toContain(record);
-    expect(text(closed.seen.err)).toContain(', so setup can\'t tell which data the install serves, and goes no further.');
-    expect(closed.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
-  } finally {
-    chmodSync(record, 0o600);
-  }
   rmSync(record);
   mkdirSync(record);
   const folder = world(dir);
@@ -2430,6 +2826,7 @@ test('an install record that can\'t be read is named, one that isn\'t JSON or na
 test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is asked for', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=localhost:8080\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
@@ -2438,9 +2835,10 @@ test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is
   expect(made.seen.asked.filter((question) => /\bkey\b/i.test(question))).toEqual([]);
 });
 
-test('a .setup this user can\'t write in is named, with what to do, and nothing is asked', async () => {
+modeTest('a .setup this user can\'t write in is named, with what to do, and nothing is asked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: false }));
   chmodSync(join(dir, '.setup'), 0o555);
   try {
     const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
@@ -2457,6 +2855,7 @@ test('a .setup this user can\'t write in is named, with what to do, and nothing 
 test('a setup.lock that isn\'t setup\'s lock is named, with what to do, and nothing is asked', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.setup', 'setup.lock'), '12345\n');
   const made = world(dir, { answers: ['no', ''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
@@ -2465,34 +2864,35 @@ test('a setup.lock that isn\'t setup\'s lock is named, with what to do, and noth
   expect(made.seen.asked).toEqual([]);
 });
 
-function running(pid: number): boolean {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-  } catch {
-    return false;
-  }
-}
-
 test('setup\'s runner stops a program still running at its limit, and says so', async () => {
   const dir = directory();
-  const started = Date.now();
+  const started = performance.now();
   const marker = `60.${process.pid}${Date.now() % 1000}`;
-  const ran = await realWorld().run(['sh', '-c', `echo started > started; exec sleep ${marker}`], { cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeoutMs: 3_000 });
-  expect(ran.timedOut).toBe(true);
-  expect(ran.status).toBeNull();
-  expect(Date.now() - started).toBeGreaterThanOrEqual(2_950);
-  expect(Date.now() - started).toBeLessThan(60_000);
-  expect(readFileSync(join(dir, 'started'), 'utf-8')).toBe('started\n');
-  if (process.platform !== 'linux') return;
-  const left = readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && running(Number(pid)) && (() => {
+  const left = () => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid) && !processEnded(Number(pid)) && (() => {
     try {
       return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').includes(marker);
     } catch {
       return false;
     }
   })());
-  expect(left).toEqual([]);
+  const pending = realWorld().run(['sh', '-c', `echo started > started; exec sleep ${marker}`], { cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeoutMs: 3_000 });
+  try {
+    if (process.platform === 'linux') {
+      let seen = left();
+      for (const until = performance.now() + 5_000; seen.length === 0 && performance.now() < until; Bun.sleepSync(1)) seen = left();
+      expect(seen).not.toEqual([]);
+    }
+  } finally {
+    await pending;
+  }
+  const ran = await pending;
+  expect(ran.timedOut).toBe(true);
+  expect(ran.status).toBeNull();
+  expect(performance.now() - started).toBeGreaterThanOrEqual(2_950);
+  expect(performance.now() - started).toBeLessThan(60_000);
+  expect(readFileSync(join(dir, 'started'), 'utf-8')).toBe('started\n');
+  if (process.platform !== 'linux') return;
+  expect(left()).toEqual([]);
 }, 70_000);
 
 test('a program setup can\'t start is named with what the system said', async () => {
@@ -2541,6 +2941,7 @@ test('a program setup runs that a signal ends is named by that signal', async ()
 test('an empty ANTHROPIC_API_KEY line in .env counts as no key, so an exported one is offered', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_API_KEY=\n');
   const made = world(dir, { answers: ['no', '', 'yes'] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_API_KEY: KEY } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -2561,3 +2962,86 @@ const LATER_RUN = [
   'Starting setup\'s agent. It speaks first. /quit leaves the conversation, and `<dir>/connectome-host/connectome setup discord` picks it up where it stopped.',
   'To go on with setup where it stopped: `<dir>/connectome-host/connectome setup discord`.',
 ];
+
+test('the line saying where the key is checked hides the key, its ASCII letters in any case, where ANTHROPIC_BASE_URL\'s host carries it', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\nANTHROPIC_BASE_URL=https://${KEY.toUpperCase()}.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('one call at https://<ANTHROPIC_API_KEY>.gateway.example to ');
+  expect(shown.toLowerCase()).not.toContain(KEY);
+});
+
+test('the line saying setup uses the .env ANTHROPIC_BASE_URL over the exported one hides a stored secret its host carries, its ASCII letters in any case', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\nANTHROPIC_BASE_URL=https://${KEY.toUpperCase()}.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] },
+    { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://elsewhere.example' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('which leads to https://<ANTHROPIC_API_KEY>.gateway.example, not the one exported in this shell');
+  expect(shown.toLowerCase()).not.toContain(KEY);
+});
+
+test('on a first setup, the exported-base-URL line hides a value under any other .env name, as the agent\'s side guesses it a secret', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'),
+    `ANTHROPIC_API_KEY=${KEY}\nMY_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] },
+    { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://elsewhere.example' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('which leads to https://<MY_TOKEN>.gateway.example, not the one exported in this shell');
+  expect(shown.toLowerCase()).not.toContain('tok-in-host');
+});
+
+test('where setup\'s list of stored secrets can\'t be read, the exported-base-URL line hides the guessed names\' values too', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.setup', 'stored-secrets.json'), 'not a list');
+  writeFileSync(join(dir, '.env'),
+    `ANTHROPIC_API_KEY=${KEY}\nMY_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://tok-in-host.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] },
+    { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_BASE_URL: 'https://elsewhere.example' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('which leads to https://<MY_TOKEN>.gateway.example, not the one exported in this shell');
+  expect(shown).not.toContain('tok-in-host');
+});
+
+test('the line saying where the key is checked shows a stored secret the base URL\'s host carries by its name', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'),
+    `ANTHROPIC_API_KEY=${KEY}\nDISCORD_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n`);
+  const made = world(dir, { answers: ['no', ''] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = text([...made.seen.out, ...made.seen.err]);
+  expect(shown).toContain('one call at https://<DISCORD_TOKEN>.gateway.example to ');
+  expect(shown.toLowerCase()).not.toContain('tok-in-host');
+});
+
+test('the question for a key names the base URL\'s origin with a stored secret its host carries shown by its name', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN=tok-in-host\nANTHROPIC_BASE_URL=https://TOK-IN-HOST.gateway.example\n');
+  const labels: string[] = [];
+  const made = world(dir, { answers: ['no', ''] }, {
+    askHidden: async (label) => {
+      labels.push(label);
+      return '';
+    },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(labels).toEqual(['An API key that https://<DISCORD_TOKEN>.gateway.example accepts, typed hidden (Enter alone stops setup)']);
+});

@@ -95,7 +95,7 @@ beforeEach(() => {
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 const RECORD_AGAIN = 'To put it right, write the record again as\n' +
-  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>], "workingDir": "<working directory>"}\n' +
+  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>]}\n' +
   'where <data directory> is the absolute path of the data directory its host was started with: the DATA_DIR its ' +
   'service gives it, or else the one Bun reads from the .env files in the service\'s working directory, or else ' +
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
@@ -114,9 +114,6 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   'An update copies only the places the ' +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
-  'And <working directory> is the real path of the directory that holds the record\'s directory, as `realpath .` ' +
-  'prints it in that directory: the record is bound to it, and start.js and connectome refuse a record bound to ' +
-  'another.\n' +
   'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
   'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
   'as a current that names no release. Its service can keep running ' +
@@ -134,7 +131,7 @@ describe('setup', () => {
     expect(existsSync(join(release, 'package.json'))).toBe(true);
     expect(readlinkSync(join(release, 'node_modules', '.bin', 'connectome-host'))).toBe('../@animalabs/connectome-host/src/index.ts');
     expect(readCurrent(root)).toBe('0.10.2');
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(join(root, ENTRY_POINT))).toBe(true);
     expect(said[0]).toBe(`Set up ${root} as the install of 0.10.2 that serves ${data}.`);
     expect(said.some((l) => l.includes('connectome.service restarts the host when it exits with 75 or 1 (Restart=on-failure)'))).toBe(true);
@@ -274,7 +271,7 @@ describe('setup', () => {
     rmSync(command);
     setup(options());
     expect(readCurrent(root)).toBe('0.10.2');
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(entry)).toBe(true);
     expect(existsSync(command)).toBe(true);
     laterRelease('0.11.0', join(dir, 'ran'));
@@ -284,7 +281,7 @@ describe('setup', () => {
     rmSync(command);
     setup(options());
     expect(readCurrent(root)).toBe('0.11.0');
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(entry)).toBe(true);
     expect(existsSync(command)).toBe(true);
     rmSync(entry);
@@ -322,7 +319,7 @@ describe('setup', () => {
     expect(existsSync(join(root, INSTALL_COMMAND))).toBe(false);
     rmSync(join(root, 'install.json.tmp'), { recursive: true });
     setup(options());
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
   });
 
   test('a resumed run syncs the releases directory before it moves current, also when its release was renamed already', () => {
@@ -527,7 +524,7 @@ describe('setup', () => {
     expect(refusal(() => setup(options()))).toContain('Then run setup again as before, with no --extra-state, so it ' +
       'keeps the list as written, since a run given any records only those: it writes the record, start.js and ' +
       'connectome again, or says what else stops it first, such as a current that names no release.');
-    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [], workingDir: install }));
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
     rmSync(join(releaseDir(root, '0.10.2'), HOST_ENTRY));
     expect(refusal(() => setup(options()))).toContain(`names 0.10.2, and there's no host at ` +
       `${join(releaseDir(root, '0.10.2'), HOST_ENTRY)}, so the entry point would start nothing.`);
@@ -545,7 +542,7 @@ describe('setup', () => {
       '--extra-state PATH added for each place of state kept outside the data directory that\'s there now: setup then ' +
       'makes the install afresh there, serving that data directory, with no journal or copy, so with no Go back, and ' +
       'starting the service again starts the new install, since its path is the same, and ' +
-      `\`${join(root, 'connectome')} service install <recipe>\` then records the service again, if that's what set ` +
+      `\`${join(root, 'connectome')} service install <recipe>\` then writes the service again, if that's what set ` +
       'it up. Those places: a setup run that ' +
       'finished printed them after "State kept outside the data directory" (`connectome setup` shows that block only at ' +
       'its end, only while the record still holds it, and not at all when it holds none), and the moved root\'s ' +
@@ -579,7 +576,7 @@ describe('setup', () => {
       writeFileSync(join(data, 'resident.txt'), 'kept');
       renameSync(root, `${root}.old`);
       setup(options());
-      expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+      expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
       expect(readFileSync(join(data, 'resident.txt'), 'utf-8')).toBe('kept');
       expect(fs.readdirSync(`${root}.old`).sort()).toEqual(before);
       expect(readCurrent(root)).toBe('0.10.2');
@@ -661,7 +658,7 @@ describe('setup', () => {
       writeFileSync(join(data, 'resident.txt'), 'kept');
       renameSync(root, `${root}.old`);
       setup(options());
-      expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+      expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
       expect(readFileSync(join(data, 'resident.txt'), 'utf-8')).toBe('kept');
       expect(fs.readdirSync(`${root}.old`).sort())
         .toEqual([...before.filter((name) => name !== 'current'), 'journal.jsonl'].sort());
@@ -866,9 +863,9 @@ describe('setup', () => {
     expect(untouched()).toEqual(before);
     expect(existsSync(installPaths(root).install)).toBe(false);
     expect(existsSync(join(root, INSTALL_COMMAND))).toBe(true);
-    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [], workingDir: install }));
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
     setup(options());
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText());
     expect(existsSync(join(root, INSTALL_COMMAND))).toBe(true);
   });
@@ -917,7 +914,7 @@ describe('setup', () => {
     setup(options());
     expect(readFileSync(outside, 'utf-8')).toBe('keep');
     expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText());
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     for (const name of ['install.json.tmp', `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`]) {
       expect(fs.lstatSync(join(root, name), { throwIfNoEntry: false })).toBeUndefined();
     }
@@ -1112,14 +1109,14 @@ describe('setup', () => {
 
   test("refuses a record it can't read the extra state of, unless --extra-state says what to record", () => {
     setup(options());
-    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: 'none', workingDir: install });
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: 'none' });
     expect(() => setup(options())).toThrow(/has no list of extra state this release can read/);
-    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: ['/srv/state.json', 7], workingDir: install });
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: ['/srv/state.json', 7] });
     expect(() => setup(options())).toThrow(/has no list of extra state this release can read/);
     const state = join(install, 'state.json');
     writeFileSync(state, '{}');
     setup(options({ extraState: [state] }));
-    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [state], workingDir: install });
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [state] });
     for (const named of [{}, { dataDir: '' }]) {
       writeJsonAtomic(installPaths(root).install, { v: 1, ...named, extraState: [] });
       const before = untouched();
@@ -1243,14 +1240,14 @@ describe('setup', () => {
 
 describe("setup's arguments", () => {
   test('takes a root and any number of extra states, and keeps the recorded ones when given none', () => {
-    expect(parseArgs([])).toEqual({ extraState: null, places: [] });
-    expect(parseArgs(['--root', 'r', '--extra-state', 'a', '--extra-state', '/b'])).toEqual({ root: 'r', extraState: [join(process.cwd(), 'a'), '/b'], places: [] });
+    expect(parseArgs([])).toEqual({ extraState: null });
+    expect(parseArgs(['--root', 'r', '--extra-state', 'a', '--extra-state', '/b'])).toEqual({ root: 'r', extraState: [join(process.cwd(), 'a'), '/b'] });
   });
 
   test('says which flag lacks its value, and names what it does not take', () => {
     expect(() => parseArgs(['--root'])).toThrow("Setup's --root takes a directory, and none followed it.");
     expect(() => parseArgs(['--extra-state'])).toThrow("Setup's --extra-state takes a path, and none followed it.");
-    expect(() => parseArgs(['--data', 'x'])).toThrow('Setup takes --root DIR, --extra-state PATH and --place PATH PLACE, not "--data".');
+    expect(() => parseArgs(['--data', 'x'])).toThrow('Setup takes --root DIR and --extra-state PATH, not "--data".');
   });
 });
 

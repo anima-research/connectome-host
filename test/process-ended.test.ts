@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { processEnded, waitForEnd } from './process-ended.js';
 
@@ -46,6 +46,20 @@ describe('waitForEnd', () => {
       sleeper.kill('SIGKILL');
       expect(await waiting).toBe(true);
     } finally {
+      sleeper.kill('SIGKILL');
+    }
+  });
+
+  test("measures elapsed time, so a step of the wall clock doesn't end the wait early", async () => {
+    const sleeper = spawn('sleep', ['60'], { stdio: 'ignore' });
+    setTimeout(() => sleeper.kill('SIGKILL'), 100);
+    const real = Date.now.bind(Date);
+    let steps = 0;
+    const stepped = spyOn(Date, 'now').mockImplementation(() => real() + 60_000 * ++steps);
+    try {
+      expect(await waitForEnd(sleeper.pid!, 5_000)).toBe(true);
+    } finally {
+      stepped.mockRestore();
       sleeper.kill('SIGKILL');
     }
   });

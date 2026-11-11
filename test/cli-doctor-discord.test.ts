@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkDiscord } from '../src/cli/discord-check.js';
@@ -13,6 +13,7 @@ const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
 interface FakeGuild {
   id: string;
   name: string;
+  owner?: boolean;
   everyone: number;
   roles: Array<{ id: string; permissions: number }>;
   botRoles: string[];
@@ -49,7 +50,7 @@ function fakeDiscord(opts: {
       const limit = Number(url.searchParams.get('limit') ?? 200);
       const after = url.searchParams.get('after');
       const from = after === null ? 0 : guilds.findIndex((g) => g.id === after) + 1;
-      return Response.json(guilds.slice(from, from + Math.min(limit, 200)).map((g) => ({ id: g.id, name: g.name })));
+      return Response.json(guilds.slice(from, from + Math.min(limit, 200)).map((g) => ({ id: g.id, name: g.name, owner: g.owner ?? false })));
     }
     const m = /^\/guilds\/(\d+)\/(roles|channels|members\/900)$/.exec(path);
     const guild = m ? guilds.find((g) => g.id === m[1]) : undefined;
@@ -146,12 +147,42 @@ describe('doctor: Discord', () => {
     expect(later.problems).toEqual([expect.stringContaining('Discord answered 403 to GET /applications/@me: Missing Access (code 50001)')]);
     expect(json.problems[0]).toMatch(/weren't made/);
     expect(json.problems[0]).not.toMatch(/again|its message says/);
-    const raw = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => new Response(`error code: 1010 ${TOKEN.slice(0, 9)}`, { status: 403 }) }));
-    expect(raw.problems.length).toBe(1);
-    expect(raw.problems[0]).toContain('403');
-    expect(raw.problems[0]).toContain('with no message');
-    expect(raw.problems[0]).not.toContain('error code');
-    expect(raw.problems[0]).not.toMatch(/its message says/);
+    const silent = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => Response.json({ code: 0 }, { status: 403 }) }));
+    expect(silent.problems.length).toBe(1);
+    expect(silent.problems[0]).toContain('403');
+    expect(silent.problems[0]).toContain('with no message');
+    expect(silent.problems[0]).not.toMatch(/its message says/);
+  });
+
+  test('an error answer that isn\'t JSON isn\'t read as Discord\'s error, whatever its status, and no raw body shows', async () => {
+    const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    const raw = (status: number) => () => new Response(`error code: 1010 ${TOKEN.slice(0, 9)}`, { status, headers: { 'content-type': 'text/html' } });
+    for (const status of [401, 403, 404]) {
+      const own = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: raw(status) }));
+      expect(own.problems).toEqual([`Discord answered ${status} to GET /users/@me with something other than JSON, so the Discord checks after it weren't made.${between}`]);
+      expect(own.text).not.toContain('error code');
+      const later = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': raw(status) } }));
+      expect(later.problems).toEqual([`Discord answered ${status} to GET /applications/@me with something other than JSON, so the Discord checks after it weren't made.${between}`]);
+    }
+    const server = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': raw(404) } }));
+    expect(server.problems).toEqual([`Discord answered 404 to GET /guilds/100/roles with something other than JSON, so the Discord checks after it weren't made.${between}`]);
+    const busy = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: raw(503) }));
+    expect(busy.problems).toEqual([`Discord answered 503 to GET /users/@me with something other than JSON, so the Discord checks after it weren't made: run connectome doctor again.${between}`]);
+    const refused = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 }) }));
+    expect(refused.problems[0]).toStartWith('Discord refused the bot token the server is given as DISCORD_TOKEN (401)');
+  });
+
+  test('a 403 or 404 to the bot\'s own user or application says what may be answering in Discord\'s place, and one to a server\'s read says what that read says', async () => {
+    const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    for (const status of [403, 404]) {
+      const own = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status }) } }));
+      expect(own.problems).toEqual([`Discord answered ${status} to GET /users/@me: Missing Access, so the Discord checks after it weren't made.${between}`]);
+      const app = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status }) } }));
+      expect(app.problems).toEqual([`Discord answered ${status} to GET /applications/@me: Missing Access (code 50001), so the Discord checks after it weren't made.${between}`]);
+    }
+    const server = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }));
+    expect(server.problems).toEqual([expect.stringContaining('Discord listed that server for the bot a moment before')]);
+    expect(server.problems[0]).not.toContain('Something between');
   });
 
   test('an answer that can change by itself, Discord busy or limiting the rate, says to run doctor again', async () => {
@@ -166,9 +197,9 @@ describe('doctor: Discord', () => {
     const rejected = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'reject' }));
     expect(rejected.problems.length).toBe(1);
     expect(rejected.problems[0]).toContain('ENOTFOUND');
-    expect(rejected.problems[0]).toMatch(/weren't made: run connectome doctor again/);
+    expect(rejected.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
     const notJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => new Response('<html>', { status: 200 }) }));
-    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made.']);
+    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
     const laterNotJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => new Response('<html>', { status: 200 }) } }));
     expect(laterNotJson.problems).toEqual([expect.stringMatching(/GET \/applications\/@me with something other than JSON/)]);
   });
@@ -185,15 +216,25 @@ describe('doctor: Discord', () => {
     const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'hang' }), workdir(), 200);
     expect(r.problems.length).toBe(1);
     expect(r.problems[0]).toMatch(/^Discord couldn't be asked GET \/users\/@me: no answer within 0\.2 s, /);
-    expect(r.problems[0]).toMatch(/weren't made: run connectome doctor again/);
+    expect(r.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
   });
 
   test('a 200 that isn\'t the bot\'s user stops the checks, rather than naming a bot it can\'t name', async () => {
     const discord = fakeDiscord({ answers: { '/users/@me': () => Response.json({ message: 'ok' }) }, guilds: [HOME] });
     const r = await run({ DISCORD_TOKEN: TOKEN }, discord);
-    expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made.']);
+    expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
     expect(r.text).not.toContain('undefined');
     expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
+  });
+
+  test('an answer doctor can\'t read the way it reads Discord\'s stops the check, and what it found before is still said', async () => {
+    for (const list of [null, {}]) {
+      const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ guilds: [HOME], answers: { '/users/@me/guilds': () => Response.json(list) } }));
+      expect(r.lines[0]).toBe('\u2713 The token in DISCORD_TOKEN works: the bot is ember (900).');
+      expect(r.problems).toHaveLength(2);
+      expect(r.problems[0]).toStartWith('The Message Content intent is off');
+      expect(r.problems[1]).toStartWith('The Discord check stopped: ');
+    }
   });
 
   test('a redirect, to the first request or a later one, is reported, not followed with the token', async () => {
@@ -204,7 +245,7 @@ describe('doctor: Discord', () => {
       const r = await run({ DISCORD_TOKEN: TOKEN }, { ...discord, fetch: (async (input: string, init: RequestInit) => { asked.push(init.redirect); return discord.fetch(input, init); }) as typeof fetch });
       expect([path, asked]).toEqual([path, discord.requests.map(() => 'manual')]);
       expect(discord.requests.at(-1)!.path).toBe(path);
-      expect(r.problems).toEqual([`Discord answered 307 to GET ${path}, a redirect, which doctor doesn't follow with the token, so the Discord checks after it weren't made.`]);
+      expect(r.problems).toEqual([`Discord answered 307 to GET ${path}, a redirect, which doctor doesn't follow with the token, so the Discord checks after it weren't made. Something between this machine and Discord, such as a proxy, may be answering in its place.`]);
     }
   });
 
@@ -231,7 +272,7 @@ describe('doctor: Discord', () => {
     }
   });
 
-  test('a token with whitespace around it, as a quoted .env value keeps it, is sent as given, never trimmed by doctor', async () => {
+  test('a token with whitespace around it, as a quoted .env value keeps it, keeps its leading whitespace in the header and is never trimmed by doctor, though the header drops what trails it', async () => {
     const discord = fakeDiscord({ token: ` ${TOKEN}`, flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] });
     const r = await run({ DISCORD_TOKEN: ` ${TOKEN} \t` }, discord);
     expect(discord.requests[0]!.headers.get('authorization')).toBe(`Bot  ${TOKEN}`);
@@ -246,11 +287,14 @@ describe('doctor: Discord', () => {
       const ran = Bun.spawnSync([process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.env.DISCORD_TOKEN))'], { cwd: dir, env: { PATH: process.env.PATH ?? '' } });
       return JSON.parse(ran.stdout.toString()) as string;
     };
-    const line = 'DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which doctor can\'t check. Store it without the whitespace: `connectome setup discord` stores it trimmed.';
-    const quoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN="${TOKEN}  "`) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
+    const dir = workdir();
+    const line = 'DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which doctor can\'t check. Store it without the whitespace where the server\'s value comes from. `connectome setup discord` stores it trimmed in ' +
+      `${join(dir, '.env')}, which is that place unless the server's entry gives DISCORD_TOKEN a value itself, or another of the files Bun reads there, ` +
+      'such as .env.local or .env.development, or the service\'s own environment, comes before .env where it sets the name.';
+    const quoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN="${TOKEN}  "`) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
     expect(quoted.lines[0]).toBe(line);
     expect(quoted.problems).toEqual([]);
-    const unquoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN=${TOKEN}  `) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
+    const unquoted = await run({ DISCORD_TOKEN: bunReads(`DISCORD_TOKEN=${TOKEN}  `) }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
     expect(unquoted.lines).not.toContain(line);
     expect(unquoted.problems).toEqual([]);
   });
@@ -296,6 +340,18 @@ describe('doctor: Discord', () => {
     expect(r.text).toContain('lobby'); // an administrator sees every channel
   });
 
+  test('a server the bot owns shows every channel, since its owner holds every permission', async () => {
+    const owned: FakeGuild = {
+      id: '300', name: 'Its own', owner: true, everyone: 0, roles: [], botRoles: [],
+      channels: [{ id: '301', name: 'hall', type: 0 }, { id: '302', name: 'closed', type: 0, overwrites: [{ id: '300', type: 0, deny: VIEW }] }],
+    };
+    const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [owned] }));
+    expect(r.lines).toContain('  Its own (300)');
+    expect(r.lines).toContain('    #hall (301)');
+    expect(r.lines).toContain('    #closed (302)');
+    expect(r.problems).toEqual([]);
+  });
+
   test('the scope reads back by name, and a server the bot isn\'t in, or a channel it can\'t see, is a problem', async () => {
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME, ELSEWHERE] });
     const ok = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+104,200' }, discord);
@@ -331,7 +387,24 @@ describe('doctor: Discord', () => {
     expect(r.text).toMatch(/No scope is set \(DISCORD_GUILD_ID\): every server the bot is in is admitted\./);
   });
 
-  test('a filters file that parses replaces the variables; one that doesn\'t is a problem, and the variables apply', async () => {
+  test.skipIf(process.getuid?.() === 0)('a filters file under a directory this user can\'t search isn\'t said to be missing', async () => {
+    const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] });
+    const dir = workdir();
+    mkdirSync(join(dir, 'locked'));
+    writeFileSync(join(dir, 'locked', 'filters.json'), JSON.stringify({ guildIds: ['100'] }));
+    chmodSync(join(dir, 'locked'), 0o000);
+    try {
+      const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100', DISCORD_FILTERS_FILE: 'locked/filters.json' }, discord, dir);
+      expect(r.text).not.toContain('isn\'t there');
+      expect(r.problems).toEqual([`${join(dir, 'locked', 'filters.json')} (DISCORD_FILTERS_FILE) isn't a filters file discord-mcpl can read. ` +
+        'If it was unreadable when discord-mcpl started, DISCORD_GUILD_ID applies, as below; if it broke since, the filters read ' +
+        'before stay in force until it\'s fixed.']);
+    } finally {
+      chmodSync(join(dir, 'locked'), 0o755);
+    }
+  });
+
+  test('a filters file that parses replaces the variables; one that doesn\'t is a problem, and discord-mcpl starts with the variables', async () => {
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME, ELSEWHERE] });
     const dir = workdir();
     writeFileSync(join(dir, 'filters.json'), JSON.stringify({ guildIds: ['200'] }));

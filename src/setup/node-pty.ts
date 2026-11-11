@@ -1,10 +1,20 @@
-import { chmodSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+
+export function nodePtyDir(dir: string): string {
+  try {
+    const server = realpathSync(join(dir, 'node_modules', 'term-sessions-mcp'));
+    return realpathSync(dirname(createRequire(join(server, 'package.json')).resolve('node-pty/package.json')));
+  } catch {
+    return join(dir, 'node_modules', 'node-pty');
+  }
+}
 
 // node-pty 1.1.0 ships its macOS spawn-helpers without execute bits (microsoft/node-pty#850).
-export function makeSpawnHelperExecutable(nodeModules: string, platform: NodeJS.Platform): string | null {
+export function makeSpawnHelperExecutable(ptyDir: string, platform: NodeJS.Platform): string | null {
   if (platform !== 'darwin') return null;
-  const prebuilds = join(nodeModules, 'node-pty', 'prebuilds');
+  const prebuilds = join(ptyDir, 'prebuilds');
   let names: string[];
   try {
     names = readdirSync(prebuilds).filter((name) => name.startsWith('darwin-'));

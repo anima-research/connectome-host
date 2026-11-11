@@ -4,7 +4,9 @@ export type ProviderAnswer<T> =
   | { kind: 'accepted'; value: T }
   | { kind: 'refused'; status: number }
   | { kind: 'unsendable' }
-  | { kind: 'answered'; status: number; said: string | null }
+  | { kind: 'answered'; status: number; said: string | null; retryAfter?: { shown: string | null; seconds: boolean } }
+  | { kind: 'redirected'; status: number; to: string | null }
+  | { kind: 'unrecognized'; status: number }
   | { kind: 'unanswered'; why: string };
 
 interface Request {
@@ -22,15 +24,37 @@ interface ProviderKey {
 const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
 const dataOf = (body: unknown): unknown =>
   (body !== null && typeof body === 'object' ? (body as { data?: unknown }).data : undefined);
-const listed = (body: unknown): boolean => Array.isArray(dataOf(body));
+const idsOf = (body: unknown): string[] | undefined => {
+  const data = dataOf(body);
+  if (!Array.isArray(data)) return undefined;
+  const ids = data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+  return ids.length === data.length ? ids : undefined;
+};
+const listed = (body: unknown): boolean => idsOf(body) !== undefined;
 // A base URL and a path joined as @anthropic-ai/sdk 0.52.0's buildURL joins them, as the key check does: a base
 // ending in / takes the path without its first /.
 const under = (base: string, path: string) => base + (base.endsWith('/') ? path.slice(1) : path);
+
+export const JSON_TYPE = /^application\/([\w.+-]+\+)?json\s*(;|$)/i;
+
+// A relative Location is resolved against the origin of the URL asked, not the whole URL as RFC 9110 (10.2.2) has
+// it, so a credential in the URL's user part stays out of the target.
+export function redirectTarget(location: string, asked: string): string {
+  try {
+    return new URL(location, new URL(asked).origin).href;
+  } catch {
+    return location;
+  }
+}
 
 function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
   return { url: under(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1', '/models'), headers: bearer(key) };
 }
 
+const openrouter = (path: string) => (key: string, env: ReadonlyMap<string, string>): Request =>
+  ({ url: under(env.get('OPENROUTER_BASE_URL') || 'https://openrouter.ai/api/v1', path), headers: bearer(key) });
+
+// Anthropic's List Models takes `limit` from 1 to 1000 (https://docs.anthropic.com/en/api/models-list).
 function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request {
   return {
     url: under(env.get('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com', '/v1/models?limit=1000'),
@@ -38,20 +62,18 @@ function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request
   };
 }
 
-/** The provider keys setup checks, by the name each is stored as in the install's .env. Bedrock's keys aren't among
- *  them, since a request with them needs AWS's signing; nor Codex's, a ChatGPT login rather than a key; nor
- *  OPENAI_COMPATIBLE_API_KEY, whose base URL is the recipe's. */
+// Not Bedrock's keys, since a request with them needs AWS's signing, nor Codex's, a ChatGPT login rather than a key.
 export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
   OPENAI_API_KEY: { provider: 'OpenAI', check: openaiModels, accepts: listed, models: openaiModels },
   ANTHROPIC_API_KEY: { provider: 'Anthropic', check: anthropicModels, accepts: listed, models: anthropicModels },
   OPENROUTER_API_KEY: {
     provider: 'OpenRouter',
-    check: (key) => ({ url: 'https://openrouter.ai/api/v1/key', headers: bearer(key) }),
+    check: openrouter('/key'),
     accepts: (body) => {
       const data = dataOf(body);
       return data !== null && typeof data === 'object' && !Array.isArray(data);
     },
-    models: (key) => ({ url: 'https://openrouter.ai/api/v1/models', headers: bearer(key) }),
+    models: openrouter('/models'),
   },
 };
 
@@ -59,7 +81,6 @@ interface Options {
   fetch?: typeof fetch;
   limitMs?: number;
   env?: ReadonlyMap<string, string>;
-  /** Values that an answer quoting them shows by their names, as `<NAME>`, beside the key's own. */
   hide?: readonly { name: string; value: string }[];
 }
 
@@ -70,13 +91,15 @@ export function checkProviderKey(name: string, key: string, options: Options = {
     (body) => (provider.accepts(body) ? null : undefined));
 }
 
-export function listModels(name: string, key: string, options: Options = {}): Promise<ProviderAnswer<string[]>> | null {
+export function listModels(
+  name: string, key: string, options: Options = {},
+): Promise<ProviderAnswer<{ ids: string[]; shownIds: string[]; more: boolean }>> | null {
   const provider = PROVIDER_KEYS[name];
   if (provider === undefined) return null;
   return ask(provider.models(key, options.env ?? new Map()), name, key, options, (body) => {
-    const data = (body as { data?: unknown } | null)?.data;
-    if (!Array.isArray(data)) return undefined;
-    return data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+    const ids = idsOf(body);
+    if (ids === undefined) return undefined;
+    return { ids, shownIds: ids.map((id) => hidden(id, key, name, options.hide)), more: (body as { has_more?: unknown }).has_more === true };
   });
 }
 
@@ -103,7 +126,19 @@ async function ask<T>(
   } catch (error) {
     return unanswered(error);
   }
-  if (response.status === 401 || response.status === 403) return { kind: 'refused', status: response.status };
+  const type = response.headers.get('content-type');
+  const typedJson = type === null || JSON_TYPE.test(type.trim());
+  if (response.status === 401 || response.status === 403) {
+    return typedJson ? { kind: 'refused', status: response.status } : { kind: 'unrecognized', status: response.status };
+  }
+  if (response.status === 404 && !typedJson) return { kind: 'unrecognized', status: response.status };
+  if (response.status >= 300 && response.status < 400) {
+    const to = response.headers.get('location');
+    return {
+      kind: 'redirected', status: response.status,
+      to: to === null ? null : redirectTarget(hidden(to, key, name, options.hide), request.url),
+    };
+  }
   let text: string;
   try {
     text = await response.text();
@@ -118,20 +153,38 @@ async function ask<T>(
   }
   const value = response.ok ? read(body) : undefined;
   if (value !== undefined) return { kind: 'accepted', value };
+  if (response.ok && body === undefined) return { kind: 'unrecognized', status: response.status };
   const error = (body as { error?: unknown } | undefined)?.error;
   const message = typeof error === 'string' ? error
     : typeof (error as { message?: unknown } | undefined)?.message === 'string' ? (error as { message: string }).message
     : null;
+  // Retry-After is a number of seconds or an HTTP date (RFC 9110, 10.2.3); anything that isn't digits or a date
+  // JavaScript reads is no wait asked for.
+  const after = response.headers.get('retry-after')?.trim() ?? '';
+  const seconds = /^\d+$/.test(after);
   return {
     kind: 'answered', status: response.status, said: message === null ? null : hidden(message, key, name, options.hide),
+    ...(seconds || !Number.isNaN(Date.parse(after))
+      ? { retryAfter: { shown: hidden(after, key, name, options.hide) === after ? after : null, seconds } } : {}),
   };
 }
 
+/** The words with each secret, whole or trimmed, its ASCII letters in any case, shown by its name. One pass, longest
+ *  first, so a short secret isn't found again inside a name that took a longer one's place. */
+export function shownByName(words: string, secrets: readonly { name: string; value: string }[]): string {
+  const forms = secrets.flatMap(({ name, value }) => [...new Set([value, value.trim()])].map((form) => ({ name, form })))
+    .filter(({ form }) => form.trim() !== '').sort((a, b) => b.form.length - a.form.length);
+  if (forms.length === 0) return words;
+  const any = new RegExp(forms.map(({ form }) => `(${form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`).join('|'), 'gi');
+  return words.replace(any, (...found: unknown[]) => {
+    const at = found.slice(1, forms.length + 1).findIndex((one) => one !== undefined);
+    return `<${forms[at]!.name}>`;
+  });
+}
+
+// Every secret, its ASCII letters in any case, since a server that puts one in a URL's host gives it back lowercased.
 function hidden(words: string, key: string, name: string, also: Options['hide'] = []): string {
-  const forms = [...[key, key.trim()].map((value) => ({ name, value })), ...also]
-    .filter(({ value }) => value !== '').sort((a, b) => b.value.length - a.value.length);
-  for (const form of forms) words = words.split(form.value).join(`<${form.name}>`);
-  return words;
+  return shownByName(words, [{ name, value: key }, ...also]);
 }
 
 export function familyOf(model: string): string {
