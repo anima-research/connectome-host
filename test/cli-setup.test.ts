@@ -1508,7 +1508,8 @@ test('setup\'s recipe tells its agent who it is, the version, the install, the s
   expect(prompt).toContain(`SETUP.md in ${dir}`);
   expect(prompt).toContain('The resident runs as alice, the user the person ran setup as.');
   expect(prompt).not.toContain('setup\'s question');
-  expect(prompt).toContain(`Whether the resident gets a shell isn't decided: it's the person's to decide with you, once you've told them what a shell lets the resident read and change as alice, and that whoever talks to it on Discord can ask it to. On a yes, run \`${shellWord(join(dir, 'connectome-host', 'connectome'))} shell install\` with a time limit of 10 minutes, then set up the shell as your guide says; on a no, set up no shell; either way, write their answer in SETUP.md as theirs.`);
+  expect(prompt).toContain(`Whether the resident gets a shell is the person's to decide with you. Where an earlier setup already has their answer, in SETUP.md or in this conversation, it stands unless they want to change it. Otherwise, once you've told them what a shell lets the resident read and change as alice, and that whoever talks to it on Discord can ask it to, ask them. On a yes, run \`${shellWord(join(dir, 'connectome-host', 'connectome'))} shell install\` with a time limit of 10 minutes, then set up the shell as your guide says; on a no, set up no shell; either way, write their answer in SETUP.md as theirs.`);
+  expect(prompt).not.toContain('isn\'t decided');
   expect(prompt).not.toContain('${');
   expect(prompt).toContain('Answer it by speaking to the person first, in a sentence or two before any tool call, so that they see your words within seconds and not after your reads; then read what you need.');
 });
