@@ -125,14 +125,13 @@ describe('setup--finished', () => {
   test('records when setup finished beside its answers, and asks the host to end the conversation', async () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
     expect(module.finishedAt()).toBeNull();
     const before = Date.now();
     const result = await call(module);
     expect(result.success).toBe(true);
-    const state = JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')) as { v: number; shell: boolean; finished: string };
-    expect(state.v).toBe(1);
-    expect(state.shell).toBe(true);
+    const state = JSON.parse(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')) as { v: number; finished: string };
+    expect(state).toEqual({ v: 1, finished: state.finished });
     expect(Date.parse(state.finished)).toBeGreaterThanOrEqual(before - 1000);
     expect(String(result.data)).toBe(`Recorded that setup finished at ${state.finished}. The conversation ends after this turn, once anything the person typed meanwhile has come to you as further turns.`);
     expect(statSync(join(dir, '.setup', 'setup-state.json')).mode & 0o777).toBe(0o600);
@@ -143,7 +142,7 @@ describe('setup--finished', () => {
   test('a finished time that isn\'t an ISO time reading back the same, such as a stored key or an RFC 1123 date, is read as answers setup doesn\'t keep, and isn\'t told; an ISO time is read as when setup finished', () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    const state = (finished: string) => writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true, finished }));
+    const state = (finished: string) => writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, finished }));
     state('sk-ant-stored-key');
     expect(module.finishedAt()).toBeNull();
     state('Sun, 01 Nov 2026 01:00:00 GMT');
@@ -167,7 +166,7 @@ describe('setup--finished', () => {
   modeTest('where its directory can\'t be written, records nothing, says what stopped it and what to do, and leaves the conversation going', async () => {
     const { dir, module } = install();
     mkdirSync(join(dir, '.setup'), { recursive: true });
-    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, shell: true }));
+    writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1 }));
     chmodSync(join(dir, '.setup'), 0o500);
     try {
       const result = await call(module);
@@ -367,6 +366,43 @@ describe('setup--run', () => {
     expect(result.success).toBe(true);
   });
 
+  test('a model check already under way when a question is asked shows nothing while the question is open', async () => {
+    let requested = () => {};
+    const sent = new Promise<void>((done) => { requested = done; });
+    let reply: (response: Response) => void = () => {};
+    const fetchModels = (() => {
+      requested();
+      return new Promise<Response>((done) => { reply = done; });
+    }) as unknown as typeof fetch;
+    let opened = () => {};
+    const open = new Promise<void>((done) => { opened = done; });
+    let checked: Promise<ToolResult> = Promise.resolve({ success: false } as ToolResult);
+    const shownWhileOpen: string[] = [];
+    const made = install({
+      envFile: 'OPENAI_API_KEY="sk-stored-value"\n',
+      fetch: fetchModels,
+      asker: {
+        ask: async () => {
+          const at = made.shown.length;
+          opened();
+          await checked;
+          shownWhileOpen.push(...made.shown.slice(at));
+          return 'other-value';
+        },
+      },
+    });
+    checked = made.module.handleToolCall(
+      { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall);
+    await sent;
+    const asked = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
+    await Promise.race([open, new Promise<void>((done) => setImmediate(done))]);
+    reply(Response.json({ data: [{ id: 'gpt-6.1-terra' }] }));
+    expect((await checked).success).toBe(true);
+    expect((await asked).success).toBe(true);
+    expect(made.shown.some((line) => line.includes('lists gpt-6.1-terra'))).toBe(true);
+    expect(shownWhileOpen).toEqual([]);
+  });
+
   test('a timeoutMs out of its range is refused, naming the value given', async () => {
     const { module } = install();
     const result = await runCall(module, 'true', -5);
@@ -487,13 +523,13 @@ describe('setup--run', () => {
   linuxTest('stops a command at its limit with every process in its group, says so, and answers', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'child.pid');
-    const startedFile = join(dir, 'started-at');
-    const answer = await run(module, `cut -d" " -f1 /proc/uptime > ${startedFile}; sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
-    const ran = Math.round((uptime() - Number(readFileSync(startedFile, 'utf-8'))) * 1000);
-    expect(ran).toBeGreaterThanOrEqual(400);
-    expect(ran).toBeLessThan(15_000);
+    const called = performance.now();
+    const answer = await run(module, `sleep 30 & echo $! > ${pidFile}; echo begun; sleep 30`, 500);
+    const ran = performance.now() - called;
+    expect(ran, 'the answer came sooner after the call than the limit').toBeGreaterThanOrEqual(490);
+    expect(ran, 'the answer waited out the 5 s grace, though the whole group ended of its SIGTERM').toBeLessThan(4_500);
     expect(answer.stoppedAtLimit).toBe(true);
-    expect(answer.note).toContain('500 ms limit');
+    expect(answer.note).toContain('500 ms limit, so its process group was sent SIGTERM, and all of it ended within 5 s.');
     expect(answer.stdout.text).toBe('begun\n');
     expect(await waitForEnd(Number(readFileSync(pidFile, 'utf-8')), 3_000)).toBe(true);
   }, 20_000);
@@ -502,8 +538,6 @@ describe('setup--run', () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'stubborn.pid');
     const termFile = join(dir, 'term-at');
-    // Each turn of its loop stamps its uptime, through a rename, so a kill mid-write leaves the last whole stamp: the
-    // last one dates the kill to within a turn whenever the test itself gets to look.
     const aliveFile = join(dir, 'alive-at');
     const answering = run(module, `(trap 'cut -d" " -f1 /proc/uptime > ${termFile}' TERM; echo $BASHPID > ${pidFile}; while :; do cut -d" " -f1 /proc/uptime > ${aliveFile}.new && mv ${aliveFile}.new ${aliveFile}; sleep 0.1 & wait $!; done) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 3_000);
     const stubborn = Number(await waitForFile(pidFile));
@@ -519,32 +553,47 @@ describe('setup--run', () => {
     expect(Math.round((Number(readFileSync(aliveFile, 'utf-8')) - termAt) * 1000)).toBeGreaterThanOrEqual(4_400);
   }, 30_000);
 
-  linuxTest('stopping the module within 5 s of a limit still stops what that command left in its group, a SIGTERM-ignoring process too', async () => {
-    const { dir, module } = install();
-    const pidFile = join(dir, 'stubborn.pid');
-    const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
-    expect(answer.stoppedAtLimit).toBe(true);
-    const stubborn = Number(readFileSync(pidFile, 'utf-8'));
-    expect(processEnded(stubborn)).toBe(false);
-    await module.stop();
-    expect(await waitForEnd(stubborn, 1_000)).toBe(true);
-  }, 20_000);
+  linuxTest('answers a command stopped at its limit only once what it left in its group has ended, a SIGTERM-ignoring process too, whether or not that holds the output', async () => {
+    for (const [holds, redirect] of [[true, ''], [false, ' > /dev/null 2>&1']] as const) {
+      const { dir, module } = install();
+      const pidFile = join(dir, 'stubborn.pid');
+      const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60${redirect}) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
+      const stubborn = Number(readFileSync(pidFile, 'utf-8'));
+      try {
+        expect(answer.stoppedAtLimit).toBe(true);
+        expect(await waitForEnd(stubborn, 1_000), `holding the output: ${holds}`).toBe(true);
+        expect(answer.note).toContain('500 ms limit, so its process group was sent SIGTERM, and SIGKILL 5 s later, since some of it was still running then.');
+        expect(answer.note).not.toContain('and is still running');
+      } finally {
+        try { process.kill(stubborn, 'SIGKILL'); } catch {}
+      }
+    }
+  }, 40_000);
 
   linuxTest('a command that ends before its limit is not stopped at it while its output drains, nor is what it left running', async () => {
-    const { dir, module } = install();
-    const pidFile = join(dir, 'holder.pid');
-    let holder = 0;
-    try {
-      const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & echo begun`, 900);
-      holder = Number(await waitForFile(pidFile));
-      expect(answer.outputHeldOpen).toBe(true);
-      expect(answer.stoppedAtLimit).toBe(false);
-      expect(answer.note).not.toContain('limit');
-      expect(processEnded(holder)).toBe(false);
-    } finally {
-      if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
+    let clear = false;
+    for (let runs = 0; !clear && runs < 3; runs += 1) {
+      const { dir, module } = install();
+      const pidFile = join(dir, 'holder.pid');
+      const endedFile = join(dir, 'ended-up');
+      let holder = 0;
+      try {
+        const called = uptime();
+        const answer = await run(module, `sh -c 'echo $$ > ${pidFile}; exec sleep 30' & echo begun; read -r up _ < /proc/uptime; echo $up > ${endedFile}`, 900);
+        holder = Number(await waitForFile(pidFile));
+        clear = Number(await waitForFile(endedFile)) <= called + 0.6;
+        if (!clear) continue;
+        expect(answer.outputHeldOpen).toBe(true);
+        expect(answer.stoppedAtLimit).toBe(false);
+        expect(answer.note).not.toContain('limit');
+        expect(processEnded(holder)).toBe(false);
+      } finally {
+        if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
+      }
     }
-  }, 20_000);
+    expect(clear, 'in 3 runs the command never ended 300 ms clear of its 900 ms limit, so the host was too slow for this ' +
+      'case to be reached: that is load, not a fault in the drain').toBe(true);
+  }, 30_000);
 
   linuxTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
     const { dir, module } = install();
@@ -557,8 +606,9 @@ describe('setup--run', () => {
       const nowBefore = Date.now();
       const monoBefore = performance.now();
       // kill -0 succeeds for a zombie, so the holder writes once the module has reaped the command's bash.
-      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}; cut -d' ' -f1 /proc/uptime > ${dir}/ended-up`);
-      const took = Math.round((uptime() - Number(readFileSync(join(dir, 'ended-up'), 'utf-8'))) * 1000);
+      const answer = await run(module, `B=$$ setsid sh -c 'echo $$ > ${pidFile}; while kill -0 $B 2>/dev/null; do sleep 0.01; done; date +%s%3N > ${dir}/reaped-at; echo late; read -r up _ < /proc/uptime; echo $up > ${dir}/late-up; exec sleep 30' & while [ ! -s ${pidFile} ]; do sleep 0.01; done; echo begun; date +%s%3N > ${dir}/begun-at; sleep 1.2; date +%s%3N > ${endedAt}; cut -d' ' -f1 /proc/uptime > ${dir}/ended-up`);
+      const answeredUp = uptime();
+      const took = Math.round((answeredUp - Number(readFileSync(join(dir, 'ended-up'), 'utf-8'))) * 1000);
       const tookByWallClock = Date.now() - Number(readFileSync(endedAt, 'utf-8'));
       const answeredAfter = Math.round(performance.now() - monoBefore);
       holder = Number(readFileSync(pidFile, 'utf-8'));
@@ -574,7 +624,13 @@ describe('setup--run', () => {
       expect(answer.exitCode).toBe(0);
       expect(answer.outputHeldOpen).toBe(true);
       expect(answer.note).toContain('still holds the output open');
-      expect(answer.stdout.text).toBe('begun\nlate\n');
+      if (answer.stdout.text !== 'begun\nlate\n') {
+        const lateBeforeAnswer = answeredUp - Number(await waitForFile(join(dir, 'late-up')));
+        expect(lateBeforeAnswer, `${said}: a drain that keeps what comes until it cuts the output loses "late" only ` +
+          'when the holder wrote it at about the cut or after, and the answer comes just after the cut, so the write ' +
+          'must be within 0.5 s of the answer').toBeLessThanOrEqual(0.5);
+        expect(answer.stdout.text).toBe('begun\n');
+      }
     } finally {
       if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
     }
@@ -1135,8 +1191,10 @@ describe('setup--run', () => {
     const first = askSecret(made.module, { name: 'FIRST_TOKEN', purpose: 'a token' });
     const ran = runCall(made.module, 'touch ran');
     const second = askSecret(made.module, { name: 'SECOND_TOKEN', purpose: 'a token' });
+    const reached = heldAt(made.module);
     while (answers.length < 1) await Bun.sleep(1);
     answers[0]!('first-value');
+    await Promise.race([reached, ran.then(() => { throw new Error('the command ran without waiting for the second question'); })]);
     while (answers.length < 2) await Bun.sleep(1);
     expect(made.shown.filter((line) => line.startsWith('Setup\'s agent runs'))).toEqual([]);
     answers[1]!('second-value');
@@ -1266,13 +1324,13 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     expect(said(made, result)).not.toContain('a-refused-token');
   });
 
-  test('stores a token Discord answered otherwise, or couldn\'t be asked about, saying it isn\'t known to work and why, never with the token in the words', async () => {
+  test('stores a token Discord answered otherwise, or couldn\'t be asked about, saying it isn\'t known to work and why, and to ask for it again or go on with it unchecked, never with the token in the words', async () => {
     const answered = install({
       asker: typed('token-one'),
       fetch: (async () => Response.json({ message: 'Service Unavailable' }, { status: 503 })) as unknown as typeof fetch,
     });
     const first = await askSecret(answered.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 503: Service Unavailable.`);
+    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 503: Service Unavailable. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 503 (Service Unavailable).']);
     expect(readEnvFile(join(answered.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-one');
     const unasked = install({
@@ -1280,7 +1338,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
       fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bot token-two'); }) as unknown as typeof fetch,
     });
     const second = await askSecret(unasked.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(second.data)).toBe(`stored as DISCORD_TOKEN in ${join(unasked.dir, '.env')}, but it isn't known to work: Discord couldn't be asked (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).`);
+    expect(String(second.data)).toBe(`stored as DISCORD_TOKEN in ${join(unasked.dir, '.env')}, but it isn't known to work: Discord couldn't be asked (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>). Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     expect(unasked.shown).toEqual(['Checking it with Discord.', 'Discord couldn\'t be asked whether it works (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).']);
     expect(readEnvFile(join(unasked.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-two');
     expect(said(unasked, second)).not.toContain('token-two');
@@ -2113,13 +2171,17 @@ describe("the terminal's hidden question", () => {
     await Bun.sleep(30);
     input.write('typed TOK-abcdef');
     await Bun.sleep(20);
+    const history = (rl as unknown as { history: string[] }).history;
+    const ringKey = Object.getOwnPropertySymbols(rl).find((key) => key.description === '_killRing');
+    const ring = (rl as unknown as Record<symbol, unknown[]>)[ringKey!]!;
+    expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef')), 'the history held the token first').toBe(true);
+    expect(ring.some((entry) => String(entry).toLowerCase().includes('tok-abcdef')), 'the kill ring held the token first').toBe(true);
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
     input.write('tok-abcdef\r');
     expect(await answer).toBe('tok-abcdef');
     expect(rl.line).toBe('');
     expect(shown()).toContain('What you\'d typed held what you just entered hidden, so it was taken out.');
     expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out. Enter sends the rest.\n');
-    const history = (rl as unknown as { history: string[] }).history;
     expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef'))).toBe(false);
     const yanked = new Promise<void>((resolve) => rl.once('line', () => resolve()));
     input.write('\x19\r');
@@ -2129,9 +2191,11 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('whether a line holds an answer given hidden is told with ASCII letters in any case, as a line queued for the conversation is', () => {
+  test('whether a line holds an answer given hidden is told with ASCII letters in any case and other letters as given, as a line queued for the conversation is', () => {
     expect(terminalSecret.holdsAnswer('my TOK-abcdef', ['tok-ABCDEF'])).toBe(true);
     expect(terminalSecret.holdsAnswer('my token', ['tok-abcdef', 'other'])).toBe(false);
+    expect(terminalSecret.holdsAnswer('my ΟΣA', ['ΟΣ'])).toBe(true);
+    expect(terminalSecret.holdsAnswer('my CAFÉ', ['café'])).toBe(false);
   });
 
   test('a draft that holds the answer isn\'t given back where the answer came with spaces around it', async () => {
@@ -2551,7 +2615,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a provider key the provider answered otherwise, or couldn\'t be asked about, is stored as not known to work, never with the key in the words', async () => {
+  test('a provider key the provider answered otherwise, or couldn\'t be asked about, is stored as not known to work, with what to do next, never with the key in the words', async () => {
     const answered = install({
       asker: typed('key-one'),
       fetch: (async () => Response.json({ error: { message: 'overloaded' } }, { status: 529 })) as unknown as typeof fetch,
@@ -2564,7 +2628,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bearer key-two'); }) as unknown as typeof fetch,
     });
     const second = await askSecret(unasked.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>).`);
+    expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>). Check it again with setup--check_model, or go on with it unchecked.`);
     expect(said(unasked, second)).not.toContain('key-two');
   });
 

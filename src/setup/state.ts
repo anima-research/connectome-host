@@ -2,7 +2,6 @@ import { readWithoutWaiting } from '../update/contract.js';
 
 export interface SetupState {
   v: 1;
-  shell: boolean;
   finished?: string;
 }
 
@@ -22,10 +21,10 @@ export function readSetupState(path: string): KeptState {
   } catch {
     return { unreadable: 'it isn\'t JSON' };
   }
-  if (state?.v !== 1 || typeof state.shell !== 'boolean' || (state.finished !== undefined && !isStamp(state.finished))) {
+  if (state?.v !== 1 || (state.finished !== undefined && !isStamp(state.finished))) {
     return { unreadable: 'it isn\'t the answers this setup keeps' };
   }
-  return { state: state as SetupState };
+  return { state: { v: 1, ...(state.finished === undefined ? {} : { finished: state.finished }) } };
 }
 
 function isStamp(value: unknown): boolean {
