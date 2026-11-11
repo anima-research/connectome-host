@@ -871,7 +871,8 @@ function keyNote(name: string, asked: string, answer: ProviderAnswer<unknown>, a
       return `, but it isn't known to work: ${asked} answered ${answer.status}` +
         `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
     }
-    case 'unanswered': return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).`;
+    case 'unanswered':
+      return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     case 'redirected': return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.`;
     case 'unrecognized':
       return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}`;
@@ -884,8 +885,9 @@ function tokenNote(token: TokenCheck): string {
   switch (token.kind) {
     case 'accepted': return `. Discord accepted it: the bot is ${token.name} (${token.id}).`;
     case 'answered':
-      return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}.`;
-    case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}).`;
+      return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
+        ASK_TOKEN_AGAIN;
+    case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
     case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${CONNECTION}`;
     default: return '';
@@ -893,6 +895,8 @@ function tokenNote(token: TokenCheck): string {
 }
 
 const CONNECTION = 'Tell the person: their connection to it is theirs to check.';
+const CHECK_KEY_AGAIN = 'Check it again with setup--check_model, or go on with it unchecked.';
+const ASK_TOKEN_AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
 
 function redirect(service: string, answer: { status: number; to: string | null }): string {
   const origin = answer.to === null ? null : originOf(answer.to);
