@@ -360,17 +360,16 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-/** The .env values the agent's side takes as secrets, by secretNames, each with its name: what setup's own lines show
- *  by its name, as a URL's host can carry one. The base URLs are left out, since such a line says where one leads. */
-export function storedSecretsIn(setupDir: string, envFile: string): Secret[] {
+/** The values the agent's side takes as secrets, by secretNames, from .env, the dotenv files beside it and env, each
+ *  with its name: what setup's own lines show by its name, as a URL's host can carry one. The base URLs are left out,
+ *  since such a line says where one leads. */
+export function storedSecretsIn(setupDir: string, envFile: string, env: Record<string, string | undefined>): Secret[] {
   let taken: string[];
   try {
     taken = secretNames(setupDir, envFile).names;
   } catch {
-    // An unreadable list is said where setup reads it for its agent. Here every name it could hold is hidden.
     taken = [...KNOWN_SECRETS, ...guessedNames(envFile)];
   }
-  const names = new Set(taken.filter((name) => !name.endsWith('_BASE_URL')));
-  return [...readEnvFile(envFile)].filter(([name, value]) => names.has(name) && value.trim() !== '')
-    .map(([name, value]) => ({ name, value }));
+  return secretValues(taken.filter((name) => !name.endsWith('_BASE_URL')), envFile, env)
+    .filter(({ value }) => value.trim() !== '');
 }

@@ -582,8 +582,7 @@ async function installAndStart(
   out(`The installed host (${running}) starts.`);
 
   const stored = readEnvFile(envFile);
-  // Read again at each use, since the person can change .env while setup waits on a question.
-  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile);
+  const hide = () => storedSecretsIn(join(dir, '.setup'), envFile, env);
   const shownOrigin = (url: string, key: string) => withSecretsHidden(String(originOf(url)), key, hide());
   const baseIn = (): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
