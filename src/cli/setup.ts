@@ -254,6 +254,9 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
           : null;
     if (lost !== null) {
       out(lost);
+      out(`A new install gets connectome-host ${version}, this setup's own release. If the install had updated to a ` +
+        `later release, answer no, and run that later release's setup here: \`bunx ${PACKAGE}@<that release> setup ` +
+        `${SURFACE}\`.`);
       const fresh = await yesNo(world, `Make a new install on ${join(dir, 'data')}? (yes/no) `);
       if (fresh === null) {
         out('Setup stopped. Run it again in this directory to go on.');

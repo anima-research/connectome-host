@@ -947,7 +947,10 @@ test('where setup\'s kept answers are gone or can\'t be read once its agent has 
     `Whether setup finished isn't known: ${state}, where setup keeps its answers, can't be read (it isn't JSON).`]);
 });
 
-test('a finished setup whose install root is gone says what went with it and asks before it makes a new install, and on no stops with nothing written', async () => {
+const NEWER = `A new install gets connectome-host ${VERSION}, this setup's own release. If the install had updated to a ` +
+  'later release, answer no, and run that later release\'s setup here: `bunx @animalabs/connectome-host@<that release> setup discord`.';
+
+test('a finished setup whose install root is gone says what went with it and names the release a new install gets, and asks before it makes a new install, and on no stops with nothing written', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { recursive: true });
   const state = JSON.stringify({ v: 1, finished: '2026-10-01T00:00:00.000Z' });
@@ -958,6 +961,7 @@ test('a finished setup whose install root is gone says what went with it and ask
   const declined = world(dir, { answers: ['no'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], declined)).toBe(0);
   expect(declined.seen.out).toContain(gone);
+  expect(declined.seen.out).toContain(NEWER);
   expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
   expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
   expect(existsSync(root)).toBe(false);
@@ -968,7 +972,7 @@ test('a finished setup whose install root is gone says what went with it and ask
   expect(existsSync(join(root, 'install.json'))).toBe(true);
 });
 
-test('setup answers that can\'t be read, with no install root, say setup can\'t tell whether a setup finished here and ask before a new install, and on no stop with nothing written', async () => {
+test('setup answers that can\'t be read, with no install root, say setup can\'t tell whether a setup finished here, name the release a new install gets, and ask before a new install, and on no stop with nothing written', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { recursive: true });
   writeFileSync(join(dir, '.setup', 'setup-state.json'), 'not json');
@@ -979,6 +983,7 @@ test('setup answers that can\'t be read, with no install root, say setup can\'t 
   const declined = world(dir, { answers: ['no'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], declined)).toBe(0);
   expect(declined.seen.out).toContain(unknown);
+  expect(declined.seen.out).toContain(NEWER);
   expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
   expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
   expect(existsSync(root)).toBe(false);
@@ -999,6 +1004,7 @@ test('an install root that is there but empty, after a setup that finished or wh
   expect(await runSetup(dir, ['discord'], emptied)).toBe(0);
   expect(emptied.seen.out).toContain(`This directory's install root, ${root}, is empty, so its record is gone: the places of ` +
     'state kept outside the data directory, its releases and its Go back.');
+  expect(emptied.seen.out).toContain(NEWER);
   expect(emptied.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
   expect(readdirSync(root)).toEqual([]);
   expect(existsSync(join(dir, 'data'))).toBe(false);
@@ -1016,6 +1022,7 @@ test('an install root that is there but empty, after a setup that finished or wh
   expect(unknown.seen.out).toContain(`This directory's install root, ${join(unread, 'connectome-host')}, is empty, and setup ` +
     'can\'t tell whether a setup finished here, since its kept answers can\'t be read. If one did, the root\'s record went ' +
     'with it: the places of state kept outside the data directory, its releases and its Go back.');
+  expect(unknown.seen.out).toContain(NEWER);
   expect(unknown.seen.asked).toEqual([`Make a new install on ${join(unread, 'data')}? (yes/no) `]);
 
   const unfinished = directory();
@@ -1025,6 +1032,7 @@ test('an install root that is there but empty, after a setup that finished or wh
   const goes = world(unfinished, { secrets: [KEY] });
   expect(await runSetup(unfinished, ['discord'], goes)).toBe(0);
   expect(goes.seen.asked).not.toContain(`Make a new install on ${join(unfinished, 'data')}? (yes/no) `);
+  expect(goes.seen.out).not.toContain(NEWER);
   expect(existsSync(join(unfinished, 'connectome-host', 'install.json'))).toBe(true);
 });
 
