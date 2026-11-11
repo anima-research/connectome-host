@@ -1,5 +1,4 @@
 import { expect, test } from 'bun:test';
-import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { openSocket, type HostClient } from '../src/cli/host-socket.js';
 import { quarantine } from '../src/cli/quarantine.js';
 import { waiverConfirmation } from '../src/quarantine-operator.js';
-import { connectWhenAccepting } from './ipc-connect.js';
+import { ownedFixtureChild, type OwnedFixtureChild } from './owned-fixture-child.js';
 
 async function until(check: () => boolean) {
   const end = Date.now()+8_000;
@@ -19,35 +18,31 @@ async function harness(body: (h: {
   cli(argv:string[]):Promise<{code:number;out:string[];err:string[]}>;
 })=>Promise<void>) {
   const dir=mkdtempSync(join(tmpdir(),'keyed-ipc-'));
-  let child:ChildProcess|undefined, childStart:string|undefined;
-  const startTime=(pid:number)=>readFileSync(`/proc/${pid}/stat`,'utf8').split(') ')[1].split(' ')[19];
+  let fixture:OwnedFixtureChild|undefined;
   const clients:HostClient[]=[];
-  const stop=async(crash=false)=>{
-    if(child && child.exitCode===null && child.signalCode===null) {
-      expect(startTime(child.pid!)).toBe(childStart);
-      const exit=new Promise<void>(r=>child!.once('exit',()=>r()));child.kill(crash?'SIGKILL':'SIGTERM');await exit;
-    }
-  };
+  const stop=async(crash=false)=>{ await fixture?.stop(crash); };
   // Explicit test-admin recovery ONLY after this fixture child positively exited.
   // Never part of start(): preserve stale artifacts, and never touch op receipts.
   const recoverInactiveFixture=()=>{
-    expect(Boolean(child && (child.exitCode!==null || child.signalCode!==null))).toBe(true);
+    expect(Boolean(fixture && (fixture.child.exitCode!==null || fixture.child.signalCode!==null))).toBe(true);
     renameSync(join(dir,'q'),join(dir,'retired-q-'+randomUUID()));
   };
   const start=async(hold=false)=>{
-    child=spawn(process.execPath,[new URL('./mock-quarantine-child.ts',import.meta.url).pathname],
-      {env:{...process.env,DATA_DIR:dir,HOLD_ACK:hold?'1':'0'},stdio:['ignore','ignore','ignore','ipc']});
-    childStart=startTime(child.pid!);
-    // Startup synchronization only; not a provider/route retry.
-    const socket=await connectWhenAccepting(join(dir,'q','s'),{timeoutMs:8000});socket.destroy();
+    if(fixture && fixture.child.exitCode===null && fixture.child.signalCode===null) throw Error('stop the owned fixture before restarting');
+    fixture=ownedFixtureChild([new URL('./mock-quarantine-child.ts',import.meta.url).pathname],
+      {env:{...process.env,DATA_DIR:dir,HOLD_ACK:hold?'1':'0'},ipc:true});
+    // Startup synchronization only; fail on child exit with bounded stderr.
+    // No capability shim, fake native release or unsupported-profile bypass.
+    const socket=await fixture.connect(join(dir,'q','s'));socket.destroy();
   };
   const client=async(control=true)=>{const c=await openSocket(join(dir,...(control?['q','s']:['ipc.sock'])));if('reason'in c)throw new Error(c.reason);clients.push(c);return c;};
   writeFileSync(join(dir,'install.json'),JSON.stringify({v:1,dataDir:dir,extraState:[]}));
-  try {await start();await body({dir,start,stop,recoverInactiveFixture,client,trace:events=>child!.send(events),async cli(argv){
-    const cli=spawn(process.execPath,[new URL('./mock-quarantine-cli.ts',import.meta.url).pathname,dir,'quarantine',...argv],{stdio:['ignore','pipe','pipe']});
-    let out='',err='';cli.stdout!.on('data',s=>out+=s);cli.stderr!.on('data',s=>err+=s);
-    const code=await new Promise<number>(resolve=>cli.once('exit',code=>resolve(code??1)));
-    return {code,out:out.trim().split('\n').filter(Boolean),err:err.trim().split('\n').filter(Boolean)};
+  try {await start();await body({dir,start,stop,recoverInactiveFixture,client,trace:events=>fixture!.child.send(events),async cli(argv){
+    const cli=ownedFixtureChild([new URL('./mock-quarantine-cli.ts',import.meta.url).pathname,dir,'quarantine',...argv]);
+    try {
+      const {code}=await cli.result();
+      return {code:code??1,out:cli.stdout().trim().split('\n').filter(Boolean),err:cli.stderr().trim().split('\n').filter(Boolean)};
+    } finally {await cli.stop(true);}
   }});}
   finally {for(const c of clients)c.close();await stop(true);rmSync(dir,{recursive:true,force:true});}
 }

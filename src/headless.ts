@@ -90,6 +90,11 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   const opts = parseHeadlessArgs(argv);
   const dataDir = resolve(process.env.DATA_DIR || './data');
   let quarantine: QuarantineOperator | undefined;
+  // Initialize before the interactive listener can accept ready/shutdown,
+  // including while its own listen callback is still pending.
+  let control: Awaited<ReturnType<typeof listenQuarantineSocket>> | undefined;
+  let controlStarting: Promise<void> | undefined;
+  const controlAbort = new AbortController();
   const socketPath = opts.socketPath ?? join(dataDir, 'ipc.sock');
   const logPath = join(dataDir, 'headless.log');
   const pidPath = join(dataDir, 'headless.pid');
@@ -738,6 +743,10 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     log(`server error: ${String(err)}`);
   });
 
+  // Signals must also stop the core while either listen callback is pending.
+  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+  process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+
   await new Promise<void>((resolveListen, rejectListen) => {
     server.listen(socketPath, () => {
       log(`socket listening at ${socketPath}`);
@@ -748,30 +757,41 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
 
   // Independent finite control channel: never currentClient, emit(), replay,
   // subscription or text accounting. Lazy CM loading preserves old-CM startup.
-  let control: { close(): void } | undefined;
-  try {
-    control = await listenQuarantineSocket(dataDir, {
-      ready: { pid: process.pid, recipe: app.recipe.name }, log,
-      async handle(cmd) {
-        const { QuarantineOperator } = await import('./quarantine-operator.js');
-        quarantine ??= new QuarantineOperator(app, dataDir);
-        const work = quarantine.handle(cmd);
-        return cmd.type === 'quarantine-release'
-          ? trackOperatorWork(app, 'selected L1 quarantine waiver', work) : work;
-      },
-    });
-  } catch (error) { log(`quarantine control unavailable (interactive IPC unchanged): ${String(error)}`); }
+  if (app.stopping) return;
+  controlStarting = listenQuarantineSocket(dataDir, {
+    ready: { pid: process.pid, recipe: app.recipe.name }, log, signal: controlAbort.signal,
+    async handle(cmd) {
+      const { QuarantineOperator } = await import('./quarantine-operator.js');
+      if (app.stopping) return { status: 'refused', reason: 'host stopping' };
+      quarantine ??= new QuarantineOperator(app, dataDir);
+      const work = quarantine.handle(cmd);
+      return cmd.type === 'quarantine-release'
+        ? trackOperatorWork(app, 'selected L1 quarantine waiver', work) : work;
+    },
+  }).then(async listener => {
+    if (app.stopping) await listener.close();
+    else control = listener;
+  }).catch(error => {
+    if (!app.stopping) log(`quarantine control unavailable (interactive IPC unchanged): ${String(error)}`);
+  });
+  await controlStarting;
+  if (app.stopping) return;
 
   async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
     if (app.stopping) return;
     // The host is stopping: a session switch under way goes no further, and
     // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
-    control?.close();
+    controlAbort.abort();
     quarantine?.invalidate();
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
     emit({ type: 'lifecycle', phase: 'exiting', reason });
+
+    // Pending bind cancellation and owned-claim cleanup must finish before
+    // framework stop/exit; never install a late optional listener after stop.
+    await controlStarting;
+    await control?.close();
 
     await new Promise((r) => setTimeout(r, EXITING_FLUSH_MS));
 
@@ -792,8 +812,6 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     void endHeadlessLog().then(() => process.exit(exitCode));
   }
 
-  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
-  process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
   hostUpdate.attachStop({
     supervised: true,
     stop: (reason, farewell) => { log(farewell); void gracefulShutdown(reason, RESTART_EXIT_CODE); },

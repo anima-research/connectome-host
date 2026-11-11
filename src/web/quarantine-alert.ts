@@ -12,6 +12,8 @@ export interface QuarantineStatus {
   count: number;
   keys: string[];
   spans?: readonly unknown[];
+  /** Optional episode-end context only; neither value establishes coverage. */
+  clearReason?: 'quarantine-empty' | 'operator-waiver-requested';
 }
 
 export function quarantineSpans(q: QuarantineCounts): number | undefined {
@@ -38,10 +40,15 @@ export function quarantineHeld(q: QuarantineCounts): string {
  *  not a receipt of coverage or debt payment (an operator may have waived it). */
 export function quarantineAlarm(status: QuarantineStatus): { kind: string; message: string; data: Record<string, unknown> } {
   if (status.count === 0) {
+    // Allowlist at the structural boundary: older/unknown reasons stay neutral.
+    const clearReason = status.clearReason === 'quarantine-empty' || status.clearReason === 'operator-waiver-requested'
+      ? status.clearReason : undefined;
     return {
       kind: 'compression-quarantine-clear',
-      message: 'compression quarantine EMPTY — no records held; coverage and debt payment not established by this count; alarm stands down.',
-      data: { count: 0 },
+      message: 'compression quarantine EMPTY — no records held; ' +
+        (clearReason === 'operator-waiver-requested' ? 'operator waiver requested; ' : '') +
+        'coverage and debt payment not established by this count; alarm stands down.',
+      data: { count: 0, ...(clearReason === undefined ? {} : { clearReason }) },
     };
   }
   return {

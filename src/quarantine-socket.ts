@@ -22,7 +22,9 @@ export async function listenQuarantineSocket(dataDir: string, options: {
   ready: Record<string, unknown>;
   handle(command: QuarantineCommand): Promise<Record<string, unknown>>;
   log(message: string): void;
-}): Promise<{ close(): void }> {
+  signal?: AbortSignal;
+}): Promise<{ close(): Promise<void> }> {
+  options.signal?.throwIfAborted();
   if (process.platform !== 'linux') throw new Error('quarantine channel requires Linux');
   const path = quarantineSocketPath(dataDir);
   if (Buffer.byteLength(path) > 103) throw new Error('quarantine UNIX socket path too long');
@@ -41,6 +43,7 @@ export async function listenQuarantineSocket(dataDir: string, options: {
   const endpoint = `${anchor}/s`, receipt = `${anchor}/owner.json`;
   const sockets = new Set<Socket>();
   const server = createServer(socket => {
+    if (options.signal?.aborted) { socket.destroy(); return; }
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', error => options.log(`quarantine socket error: ${String(error)}`));
@@ -102,6 +105,17 @@ export async function listenQuarantineSocket(dataDir: string, options: {
       unlinkOwned(receipt, ownedReceipt);
     }
   };
+  let closing: Promise<void> | undefined;
+  const close = (removeOwned: boolean): Promise<void> => closing ??= new Promise(resolve => {
+    for (const socket of sockets) socket.destroy();
+    server.close(() => {
+      try { if (removeOwned) cleanup(); }
+      catch (error) { options.log(`quarantine cleanup refused: ${String(error)}`); }
+      finally { if (owner !== undefined) closeSync(owner); closeSync(fd); resolve(); }
+    });
+  });
+  const cancelled = new Error('quarantine listener startup cancelled by shutdown');
+  let cancelListen: (() => void) | undefined;
   try {
     if (statIfPresent(endpoint)) throw new Error('existing quarantine endpoint; left untouched; explicit admin recovery required');
     try {
@@ -125,28 +139,25 @@ export async function listenQuarantineSocket(dataDir: string, options: {
     symlinkSync('.', alias);
     ownedAlias = lstatSync(alias);
     await new Promise<void>((resolve, reject) => {
+      cancelListen = () => reject(cancelled);
+      options.signal?.addEventListener('abort', cancelListen, { once: true });
       server.once('error', reject);
       server.listen(`${alias}/s`, () => { server.removeListener('error', reject); resolve(); });
+      // UNIX bind has created the endpoint before listen() returns, even if
+      // its callback has not run. Retain its inode so cancellation in that
+      // window can clean ONLY this reservation, without awaiting the callback.
+      ownedSocket = statIfPresent(endpoint);
     });
-    ownedSocket = lstatSync(endpoint);
     removeAlias();
+    if (options.signal?.aborted) throw cancelled;
   } catch (error) {
-    for (const socket of sockets) socket.destroy();
     removeAlias();
-    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+    await close(error === cancelled);
     // Failed startup deliberately leaves any claim/socket as conservative
-    // partial state. No automatic recovery, even when this process is exiting.
-    if (owner !== undefined) closeSync(owner);
-    closeSync(fd);
+    // partial state. Explicit cancellation removes only our own reservation.
     throw error;
+  } finally {
+    if (cancelListen) options.signal?.removeEventListener('abort', cancelListen);
   }
-  let closed = false;
-  return { close() {
-    if (closed) return; closed = true;
-    for (const socket of sockets) socket.destroy();
-    server.close(() => {
-      try { cleanup(); } catch (error) { options.log(`quarantine cleanup refused: ${String(error)}`); }
-      finally { if (owner !== undefined) closeSync(owner); closeSync(fd); }
-    });
-  } };
+  return { close: () => close(true) };
 }

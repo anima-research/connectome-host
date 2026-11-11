@@ -364,7 +364,7 @@ test('same-live native waiver episode callback zero produces absence-only host a
     expect(clear.message).toContain('no records held');
     expect(clear.message).toContain('coverage and debt payment not established');
     expect(clear.message).not.toContain('all debt paid');
-    expect(clear.data).toEqual({count:0});
+    expect(clear.data).toEqual({count:0,clearReason:'operator-waiver-requested'});
     expect(fx.strategy.getStats().l1).toBe(0);
   } finally {await fx.close();}
 });
