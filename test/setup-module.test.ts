@@ -809,7 +809,7 @@ describe('setup--run', () => {
       envFile: 'ANTHROPIC_API_KEY="sk-ant-stored-key"\n',
       env: { ANTHROPIC_API_KEY: 'sk-ant-stored-key', MY_COPY: 'sk-ant-stored-key', MY_HEADER: 'Bearer sk-ant-stored-key', KEEP_ME: 'kept' },
     });
-    const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER KEEP_ME');
+    const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER; printenv KEEP_ME');
     expect(answer.stdout.text).toBe('copy=1\nBearer <ANTHROPIC_API_KEY>\nkept\n');
   });
 
@@ -828,8 +828,9 @@ describe('setup--run', () => {
       envFile: 'DISCORD_TOKEN="discord-token-value"\nMY_SERVER_TOKEN="custom-token-value"\nDEBUG=7\n',
       env: { DISCORD_TOKEN: 'discord-token-value', MY_SERVER_TOKEN: 'custom-token-value', DEBUG: '7', KEEP_ME: 'kept' },
     });
-    const stripped = await run(module, 'printenv DISCORD_TOKEN MY_SERVER_TOKEN DEBUG; echo "status=$?"; printenv KEEP_ME');
-    expect(stripped.stdout.text).toBe('status=1\nkept\n');
+    const stripped = await run(module, 'printenv DISCORD_TOKEN; echo "DISCORD_TOKEN=$?"; printenv MY_SERVER_TOKEN; ' +
+      'echo "MY_SERVER_TOKEN=$?"; printenv DEBUG; echo "DEBUG=$?"; printenv KEEP_ME');
+    expect(stripped.stdout.text).toBe('DISCORD_TOKEN=1\nMY_SERVER_TOKEN=1\nDEBUG=1\nkept\n');
     const answer = await run(module, 'cat .env');
     expect(answer.stdout.text).not.toContain('custom-token-value');
     expect(answer.stdout.text).not.toContain('discord-token-value');
