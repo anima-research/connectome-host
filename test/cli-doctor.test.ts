@@ -899,7 +899,7 @@ describe('connectome doctor', () => {
     writeUnit(at, join(at.work, 'recipe.json'));
     writeFileSync(at.unit, readFileSync(at.unit, 'utf-8').replace(/"[^"]*start\.js" /, ''));
     const other = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(other.out).toContain(`✗ ${at.unit} doesn't run start.js with a recipe after it, as the one service install writes does.`);
+    expect(other.out).toContain(`✗ ${at.unit} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`);
     expect(other.out).not.toContain('ladder args');
     expect(other.out).toContain(ladder);
     rmSync(at.unit);
@@ -2688,5 +2688,15 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     unitLines(theirs, `WorkingDirectory=${theirs.work}\nWorkingDirectory=/elsewhere`);
     const r3 = await withHost(theirs, HEALTHY_HOST, () => run(theirs));
     expect(r3.out).toContain(`${theirs.unit} names /elsewhere as the directory it runs in, not this install's, ${theirs.work}`);
+  });
+
+  test('a unit that gives Bun a flag of its own before start.js isn\'t read as install\'s, since the service then reads what doctor wouldn\'t', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], env: { LONELY_SECRET: 'lonely-value-1' } });
+    const units = serviceUnits(at.root, at.platform, at.home)!;
+    writeFileSync(units.host.file, systemdUnit('Connectome test', at.work,
+      [process.execPath, '--no-env-file', join(at.root, 'start.js'), join(at.work, 'recipe.json'), '--headless'],
+      Object.entries(unitEnvironment(at)), null));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`✗ ${at.unit} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`);
   });
 });

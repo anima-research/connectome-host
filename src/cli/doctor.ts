@@ -137,16 +137,17 @@ export async function doctor(
     if (text !== null) {
       const read = readUnit(units.manager, text);
       const runsIn = unitRunsIn(units.manager, text, read, parts.home);
-      const at = 'why' in read ? -1 : read.argv.findIndex((word) => basename(word) === 'start.js');
       if (runsIn !== null && !runsHere(runsIn, units.work)) {
         elsewhere = true;
         serviceError = namesElsewhere(units.host.file, runsIn, units.work);
       } else if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
-      } else if (at < 0 || read.argv[at + 1] === undefined) {
-        serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
+      } else if (basename(read.argv[1] ?? '') !== 'start.js' || read.argv[2] === undefined) {
+        // Bun's own flags before start.js, such as --env-file, change what the service reads, which doctor's
+        // read of its environment wouldn't.
+        serviceError = `${units.host.file} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`;
       } else {
-        service = { units, recipe: read.argv[at + 1]!, work: runsIn ?? read.workingDirectory, bun: read.argv[0]! };
+        service = { units, recipe: read.argv[2]!, work: runsIn ?? read.workingDirectory, bun: read.argv[0]! };
       }
     }
   }
