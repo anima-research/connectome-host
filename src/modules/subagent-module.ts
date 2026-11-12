@@ -1085,7 +1085,7 @@ export class SubagentModule implements Module {
           case 'inference:tokens': {
             const { content = '', blockType } = event as { content?: string; blockType?: string };
             if (blockType === 'text') live.currentStream += content;
-            live.streaming = true;
+            if (content) live.streaming = true;
             live.requestInFlightSince = undefined;
             this.emit(displayName, { type: 'tokens', content });
             break;

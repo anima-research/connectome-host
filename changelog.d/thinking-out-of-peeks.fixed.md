@@ -4,10 +4,11 @@
   `display: 'summarized'` and the `'updates'` notes do, the parent model
   read it as a tool result or in the `[Subagent … returned]` message. They
   now carry the round's text alone, without its thinking or, in XML tool
-  mode, the tool-call markup it streams. An operator's TUI or Web UI peek of
-  a subagent opens on that text too, and the live tail beside it still shows
-  the thinking as it streams. A round that has only thought so far still
-  counts as streaming, so it isn't reclaimed as a zombie or listed as idle.
+  mode, the tool-call markup it streams. A Web UI peek of a subagent opened
+  partway through a round opens on that text, as a TUI peek does while its
+  log of that subagent is still empty, and the live tail still shows the
+  thinking as it streams. A round that has only thought so far still counts
+  as streaming, so it isn't reclaimed as a zombie or listed as idle.
 - `fleet--peek` leaves out a child's thinking tokens (`inference:tokens`
   with `blockType: 'thinking'`), and its `lines` counts the events it
   gives. Only the tool changes: the child's buffer still holds them, and

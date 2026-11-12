@@ -160,8 +160,25 @@ describe("a round's streaming ends where its text is cleared", () => {
     mod.setFramework({ onTrace: (cb: (e: TraceEvent) => void) => { handler = cb; } } as never);
     const fire = (event: Record<string, unknown>) => handler!({ agentName: 'fw-scout', ...event } as unknown as TraceEvent);
     const label = () => priv.describeSlotHolders()[0]!.split(' ').slice(4).join(' ');
-    return { fire, label };
+    return { fire, label, live };
   }
+
+  test('an empty token leaves a round as it was, not streaming', () => {
+    const { fire, label } = setUp();
+    fire({ type: 'inference:started' });
+    fire({ type: 'inference:tokens', content: '', blockType: 'text', blockIndex: 0 });
+    expect(label()).toBe('idle');
+  });
+
+  test("a round's tool-call and tool-result markup stays out of its text", () => {
+    const { fire, live } = setUp();
+    fire({ type: 'inference:started' });
+    fire({ type: 'inference:tokens', content: 'Checking.', blockType: 'text', blockIndex: 0 });
+    fire({ type: 'inference:tokens', content: '<invoke name="look">', blockType: 'tool_call', blockIndex: 1 });
+    fire({ type: 'inference:tokens', content: '<result>ok</result>', blockType: 'tool_result', blockIndex: 2 });
+    fire({ type: 'inference:tokens', content: ' Done.', blockType: 'text', blockIndex: 3 });
+    expect(live.currentStream).toBe('Checking. Done.');
+  });
 
   for (const [end, event, after] of [
     ['a new round', { type: 'inference:started' }, 'idle'],
