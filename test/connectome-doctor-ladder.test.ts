@@ -653,6 +653,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     const none = ladder(at).out;
     expect(none).toMatch(/gate dump: not asked: the unit has no main process now/);
     expect(none).not.toContain('the gate dump wasn\'t asked for');
+    await settled(at.host);
     expect(signalled(at.host)).toBe(false);
   });
 
