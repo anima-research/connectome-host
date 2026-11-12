@@ -118,6 +118,7 @@ export async function doctor(
   const units = serviceUnits(root, parts.platform, parts.home);
   let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
+  let elsewhere = false;
   if (units !== null) {
     let text: string | null = null;
     try {
@@ -135,6 +136,7 @@ export async function doctor(
       if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
       } else if (!runsHere(read.workingDirectory, units.work)) {
+        elsewhere = true;
         serviceError = `${units.host.file} names ${read.workingDirectory} as the directory it runs in, not this install's, ` +
           `${units.work}: it's another install's, or this one's from before it moved, and doctor reads nothing there. Its ` +
           'name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
@@ -208,10 +210,11 @@ export async function doctor(
       const why = read.why.replace(/\.$/, '');
       const anew = `${typed} service install ${recipePath === null ? '<recipe>' : shellWord(recipePath)}`;
       throw new Error(units!.manager === 'launchd'
-        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
-          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it anew.`
-        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
-          `\`${anew}\` writes the unit anew.`);
+        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). ` + (elsewhere
+          ? serviceError! : `Fix it (\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
+            `\`${anew}\`, which writes it anew or says why it can't.`)
+        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again` +
+          (elsewhere ? `. ${serviceError!}` : `, or \`${anew}\` writes the unit anew or says why it can't.`));
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
@@ -285,7 +288,8 @@ export async function doctor(
   try {
     report.section('Service');
     if (serviceError !== null) {
-      report.problem(`${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
+      report.problem(elsewhere ? serviceError
+        : `${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
     } else if (service === null) {
       report.problem(units === null
         ? `No service is installed for this install: \`${typed} service install\` writes one only on Linux and macOS, ` +
@@ -398,7 +402,7 @@ export async function doctor(
         const error = String(answer.error ?? 'no reason given');
         report.problem(`The host refused ${CHECKS[op]}: ${error}.` + (!error.startsWith('unknown panel op') ? ''
           : ' The running host is an older release than this command, so it doesn\'t know this check: restarting the ' +
-            `service ${commands === null ? '' : `(\`${commands.stop}\`, then \`${commands.start}\`) `}starts it on this release.`));
+            `${commands === null ? 'host' : `service (\`${commands.stop}\`, then \`${commands.start}\`)`} starts it on this release.`));
         return null;
       }
       return { data: answer.data as T };

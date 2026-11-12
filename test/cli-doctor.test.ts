@@ -2143,7 +2143,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain('✗ systemd didn\'t say the environment connectome-test.service sets the service (');
     expect(r.out).toContain(`). Run doctor again, or \`${join(at.root, 'connectome')} service install ${join(at.work, 'recipe.json')}\` ` +
-      'writes the unit anew.');
+      'writes the unit anew or says why it can\'t.');
     expect(r.out).toContain('Doctor stops here');
     expect(r.out).not.toContain('pid 4242');
     expect(r.status).toBe(1);
@@ -2154,7 +2154,8 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
     const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
-    expect(r.out).toContain(`Run doctor again, or \`${join(at.root, 'connectome')} service install <recipe>\` writes the unit anew.`);
+    expect(r.out).toContain(`Run doctor again, or \`${join(at.root, 'connectome')} service install <recipe>\` writes the unit anew or ` +
+      'says why it can\'t.');
     expect(r.out).toContain('Doctor stops here');
   });
 
@@ -2183,7 +2184,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
     expect(r.out).toContain(`${at.unit}, com.animalabs.connectome.test's plist, couldn't be read for the environment it sets the ` +
       `service (plutil's answer wasn't JSON). Fix it (\`plutil -lint ${at.unit}\` names what's wrong), or move it aside and run ` +
-      `\`${join(at.root, 'connectome')} service install ${join(at.work, 'recipe.json')}\`, which writes it anew.`);
+      `\`${join(at.root, 'connectome')} service install ${join(at.work, 'recipe.json')}\`, which writes it anew or says why it can't.`);
     expect(r.out).toContain('Doctor stops here');
   });
 
@@ -2504,5 +2505,50 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).toContain('A line there names a subscription-gc-close but can\'t be read as one');
     expect(r.out.split('\n').filter((line) => line.trim() !== '').at(-1)).toMatch(
       /^Doctor found no problem, though .*a line naming a channel the subscription GC closed couldn't be read/);
+  });
+});
+
+describe('connectome doctor, in a copy whose service name another install\'s unit holds', () => {
+  const TAKEN = 'Its name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in ' +
+    'a directory of another name.';
+  const copy = (manager: 'systemd-user' | 'launchd') => {
+    const at = install({ manager });
+    const other = install({ manager });
+    writeUnit(at, join(other.work, 'recipe.json'), other.work);
+    return at;
+  };
+
+  test('the unit\'s problem gives install\'s own remedy and offers no service install, which refuses there', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const r = await run(copy(manager));
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`and doctor reads nothing there. ${TAKEN}`)]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('service install <recipe>')]);
+    }
+  });
+
+  test('where the manager won\'t give that unit\'s environment, doctor stops with the same remedy, and offers no service install', async () => {
+    const at = copy('systemd-user');
+    const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('). Run doctor again. ');
+    expect(r.out).toContain(`and doctor reads nothing there. ${TAKEN}`);
+    expect(r.out).not.toContain('service install');
+    expect(r.out).toContain('Doctor stops here');
+    const mac = copy('launchd');
+    const plutil = join(mac.work, 'plutil-garbled');
+    writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
+    chmodSync(plutil, 0o755);
+    const onMac = await withHost(mac, HEALTHY_HOST, () => run(mac, { plutil }));
+    expect(onMac.out).toContain(`(plutil's answer wasn't JSON). ${mac.unit} names `);
+    expect(onMac.out).toContain(`and doctor reads nothing there. ${TAKEN}`);
+    expect(onMac.out).not.toContain('Fix it');
+    expect(onMac.out).not.toContain('service install');
+  });
+
+  test('a host of an older release answering there is to be restarted as a host, since no service of this install\'s runs it', async () => {
+    const at = copy('systemd-user');
+    const r = await withHost(at, { 'shell-check': HEALTHY_HOST['shell-check'] }, () => run(at));
+    expect(r.out).toContain('so it doesn\'t know this check: restarting the host starts it on this release.');
+    expect(r.out).not.toContain('restarting the service');
   });
 });
