@@ -211,6 +211,10 @@ export function takeLock(root: string, ops: LauncherOps): void {
           linkSync(aside, lock);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          throw new ContractError(`While taking over the lock that process ${holder.pid} left, which has ended, this ` +
+            `moved another process's lock to ${aside}, and couldn't put it back, since ${lock} is there again. Nothing ` +
+            'else was changed. Each of the two files names a process that may be running in this install: stop each ' +
+            'that is, remove both files, and run this again.');
         }
       }
       rmSync(aside, { force: true });

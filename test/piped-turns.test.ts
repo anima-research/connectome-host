@@ -409,6 +409,8 @@ describe('the wait for a line\'s turn', () => {
       emit('inference:failed', { error: 'held' });
       await advance(PIPED_TURN_CAP_MS * 10);
       expect(await settledNow(wait)).toBe(false);
+      emit('inference:started');
+      expect(await settledNow(wait)).toBe(false);
       emit('inference:completed');
       expect(await settledNow(wait)).toBe(true);
       expect(out.some((line) => line.includes('no answer after'))).toBe(false);

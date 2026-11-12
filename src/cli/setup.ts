@@ -20,12 +20,12 @@ import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
-  writeJsonAtomic, writeTextAtomic, type InstallRecord,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,
+  realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import {
-  MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
+  MOVED_ASIDE_AFTERWARDS, bindingOf, childPathsOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
   unfinishedWords, type Binding, type KeptInRoot, type Place,
 } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
@@ -92,7 +92,6 @@ function entriesOf(dir: string): string[] {
   }
 }
 
-// A directory is setup's once it holds setup's lock or kept answers, or an install record.
 function setupsOwn(dir: string, root: string): boolean {
   return existsSync(join(dir, '.setup', 'setup.lock')) || existsSync(join(dir, '.setup', 'setup-state.json')) ||
     existsSync(join(root, 'install.json'));
@@ -106,8 +105,6 @@ function takes(dir: string): boolean {
   }
 }
 
-// Where setup works when the package's own command runs it: the directory it starts in where that is empty or
-// setup's, and ~/resident otherwise. With no home directory, the start directory, which setup then refuses.
 export function setupDirectory(cwd: string, home: string | undefined): string {
   if (takes(cwd)) return cwd;
   const at = homeDirectory(home);
@@ -199,6 +196,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   const setupDir = join(dir, '.setup');
   const statePath = join(setupDir, 'setup-state.json');
+  const dirThere = existsSync(dir);
   const entries = entriesOf(dir);
   const ours = setupsOwn(dir, root);
   const home = homeDirectory(world.env.HOME);
@@ -327,6 +325,14 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
           'Run setup again: it goes on from what that setup kept.');
         return 1;
       }
+      const others = entriesOf(dir).filter((entry) => entry !== '.setup').sort();
+      if (others.length > 0) {
+        err(`${dir} ${dirThere ? 'was empty' : 'wasn\'t there'} when setup began, and holds other files now, such as ` +
+          `${others[0]}, so setup keeps nothing there and stops. Make a new directory for the resident where you can ` +
+          'write, and run this same version of setup there:');
+        err(`  ${firstLine()}`);
+        return 1;
+      }
       tidy();
     }
     if ('unreadable' in read) {
@@ -401,7 +407,6 @@ function lingerLine(world: SetupWorld): string {
   return `${world.hasSudo ? 'sudo ' : ''}loginctl enable-linger ${world.user}`;
 }
 
-// The lines setup can show the person, for its agent to show again; each is left out where setup has none.
 function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string, string> {
   const lines: Record<string, string> = {};
   if (offersOwnUser(world, linger)) {
@@ -660,11 +665,11 @@ async function installAndStart(
     }
   };
   const shownOrigin = (url: string, key: string, hidden: Secret[]) => withSecretsHidden(String(originOf(url)), key, hidden);
-  const baseIn = (): string | undefined | null => {
+  const baseIn = (fate = ''): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
     if (url === undefined || originOf(url) !== null) return url;
-    err(`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL. Set it to one there, or take it out ` +
-      'for Anthropic\'s own API, and run setup again.');
+    err(`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL.${fate} Set it to one there, or take it ` +
+      'out for Anthropic\'s own API, and run setup again.');
     return null;
   };
   let baseUrl = baseIn();
@@ -709,7 +714,7 @@ async function installAndStart(
     const fate = fromDotEnv ? ` The ANTHROPIC_API_KEY in ${envFile} wasn't checked.`
       : ' The key wasn\'t checked or stored.';
     try {
-      baseUrl = baseIn();
+      baseUrl = baseIn(fate);
     } catch (error) {
       err(`connectome setup: ${(error as Error).message}.${fate} Put that right, then run setup again.`);
       return 1;
@@ -864,7 +869,9 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
           'where that is: type the whole path.');
         continue;
       }
-      const given = path === '' ? place.path : resolve(dirname(root), tilde && home !== null ? join(home, path.slice(1)) : path);
+      const typedPlace = path === '' ? place.path
+        : resolve(dirname(root), tilde && home !== null ? join(home, path.slice(1)) : path);
+      const given = realOrResolved(typedPlace);
       if (place.data) {
         const data = mapPath(record.dataDir, { from: null, to, places: [{ from: place.path, to: given }] })!;
         if (!existsSync(data) || !statSync(data).isDirectory()) {
@@ -872,6 +879,18 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
             'install\'s data is, or put it there first.');
           continue;
         }
+      }
+      const rootReal = realOrResolved(root);
+      const nested = [record.dataDir, ...Array.isArray(record.extraState) ? record.extraState : [], ...childPathsOf(asking)]
+        .filter((was): was is string => typeof was === 'string' && isUnder(was, place.path))
+        .map((was) => ({ was, put: mapPath(was, { from: null, to, places: [{ from: place.path, to: typedPlace }] })! }))
+        .map((one) => ({ ...one, real: realOrResolved(one.put) }))
+        .find(({ real }) => isUnder(rootReal, real) || isUnder(real, rootReal));
+      if (nested !== undefined) {
+        out(`The binding would put ${nested.was} at ${nested.put}, and ${nested.real === nested.put ? 'that'
+          : `that, which is ${nested.real} once its links are followed,`} and the install root ${rootReal} are one ` +
+          'inside the other, so a copy of the data would hold the copy itself: type a place apart from the root.');
+        continue;
       }
       places.push({ from: place.path, to: given });
       break;
@@ -1050,7 +1069,7 @@ function offersOwnUser(world: SetupWorld, linger = world.lingerOf(world.user)): 
 function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {
   let manifest: Record<string, unknown> = {};
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf-8'));
+    const parsed: unknown = JSON.parse(readWithoutWaiting(file));
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { reason: `${file} holds no JSON object` };
     }
@@ -1077,7 +1096,7 @@ function addTrusted(file: string, names: string[]): { added: string[] } | { reas
 export function declaredDependencies(dir: string): Set<string> | null {
   let text: string;
   try {
-    text = readFileSync(join(dir, 'package.json'), 'utf-8');
+    text = readWithoutWaiting(join(dir, 'package.json'));
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? new Set() : null;
   }

@@ -276,6 +276,25 @@ test('where package.json doesn\'t name term-sessions-mcp in trustedDependencies,
   expect(text(fine.seen.out)).not.toContain('trustedDependencies');
 });
 
+test('a package.json that isn\'t a file, such as a named pipe, isn\'t waited on: the command says it can\'t be read, and goes by what node_modules holds', async () => {
+  const { dir, root } = installed();
+  const manifest = join(dir, 'package.json');
+  rmSync(manifest);
+  Bun.spawnSync(['mkfifo', manifest]);
+  declare(dir, 'term-sessions-mcp', '1.7.3', false);
+  // Where a read waits on the pipe, this writer gives it JSON, so the test ends either way.
+  const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest], { stdout: 'ignore', stderr: 'ignore' });
+  try {
+    const made = world(dir, { added: OK });
+    expect(await runShell(root, ['install'], made)).toBe(0);
+    expect(made.seen.out[0]).toBe(`${manifest} can't be read (it isn't a file), so Bun runs no install script of term-sessions-mcp's, and through a mirror or a company registry it may run none of the others', node-pty's among them. Setup tries to write that list each time it runs, and says so when it can't.`);
+    expect(made.seen.ran.some((argv) => args(argv)[0] === 'add')).toBe(false);
+    expect(made.seen.out).toContain(`term-sessions-mcp 1.7.3 is installed in ${dir}.`);
+  } finally {
+    writer.kill('SIGKILL');
+  }
+});
+
 test('the pty check opens node-pty where term-sessions-mcp\'s own resolution finds it, under a hoisted layout and under an isolated one', async () => {
   const { dir, root } = installed();
   const made = world(dir, { pty: [BROKEN, BROKEN] });
@@ -563,6 +582,18 @@ modeTest('on macOS, a prebuilds directory the command can\'t list is named in th
   expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${shut} couldn't be read (EACCES: permission denied, scandir '${shut}'). Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
 });
 
+test('on macOS, a prebuilt binary with no spawn-helper is named in the stop as not there, with what to do', async () => {
+  const { dir, root, line } = installed();
+  const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
+  let missing = '';
+  const made = world(dir, {
+    pty: [broken, broken], atInstall: shipNodePty,
+    atAdd: (cwd) => { [missing] = shipNodePty(cwd); rmSync(missing); },
+  }, { platform: 'darwin' });
+  expect(await runShell(root, ['install'], made)).toBe(1);
+  expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${missing} isn't there. Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
+});
+
 test('on macOS, a node-pty with no prebuilt binaries gets no word about them in the stop, and the note on the trusted list when Bun may not have built it', async () => {
   const { dir, root } = installed();
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
@@ -581,6 +612,16 @@ test('an add that fails stops the command, saying Bun\'s own lines say why and h
   const cut = world(dir, { added: { status: null, stdout: '', stderr: '', signal: 'SIGTERM' } });
   expect(await runShell(root, ['install'], cut)).toBe(1);
   expect(cut.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (it was ended by SIGTERM), so the resident's shell isn't installed. Run \`${line}\` again to try once more.`]);
+});
+
+test('where setup\'s agent runs it, an add that fails says setup\'s agent has Bun\'s own lines', async () => {
+  const { dir, root, line } = installed();
+  const said = join(directory(), 'said');
+  writeFileSync(said, '');
+  const env = { PATH: '/usr/bin:/bin', HOME: dir, [SHOWN_FILE]: said };
+  const failed = world(dir, { added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } }, { env });
+  expect(await runShell(root, ['install'], failed)).toBe(1);
+  expect(failed.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (exit 1), so the resident's shell isn't installed. Setup's agent has Bun's own lines, which say why. Once that's put right, run \`${line}\` again.`]);
 });
 
 test('where setup\'s agent names a file for the person, each line shell install says goes there too, in the order said', async () => {

@@ -65,7 +65,7 @@ export function entryPointText(release: string | null = null): string {
     '// the launcher of the release this install\'s data last committed on decides what',
     '// runs, and then becomes the host of the release it decided on.',
     "import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
-    "import { dirname, join } from 'node:path';",
+    "import { dirname, isAbsolute, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
@@ -21,7 +21,7 @@ import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
 import { originOf } from '../setup/key-check.js';
 import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAnswer } from '../setup/provider-key.js';
 import { unknownToolResult } from './unknown-tool.js';
-import { writeJsonAtomic } from '../update/contract.js';
+import { readWithoutWaiting, writeJsonAtomic } from '../update/contract.js';
 import { readSetupState } from '../setup/state.js';
 import { SHOWN_FILE } from '../cli/shown.js';
 
@@ -413,9 +413,14 @@ export class SetupModule implements Module {
   }
 
   private async afterAsked(work: () => Promise<ToolResult>): Promise<ToolResult> {
+    await this.noneAsked();
+    return work();
+  }
+
+  private async noneAsked(): Promise<void> {
     for (let asking = this.asking; ; asking = this.asking) {
       await asking;
-      if (asking === this.asking) return work();
+      if (asking === this.asking) return;
     }
   }
 
@@ -561,6 +566,7 @@ export class SetupModule implements Module {
       notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still ` +
         (stoppedAtLimit ? 'held the output open.' : 'holds the output open, and is still running.'));
     }
+    await this.noneAsked();
     let secrets: Secret[];
     let guessed: string[];
     try {
@@ -607,7 +613,7 @@ export class SetupModule implements Module {
   private showSaid(file: string, secrets: Secret[], unfinished: string | null): void {
     let text: string;
     try {
-      text = readFileSync(file, 'utf-8');
+      text = readWithoutWaiting(file);
     } catch (error) {
       const why = (error as NodeJS.ErrnoException).code ?? (error as Error).message;
       this.config.show(`What it said for you can't be shown: ${shown(file)} can't be read (${why}).`);
@@ -741,6 +747,9 @@ export class SetupModule implements Module {
       }
       return failed(`It isn't known whether ${name} was stored: ${(error as Error).message}. Ask the person to put right ` +
         'what that names, then call again, which asks for the value again.');
+    }
+    if (token !== null ? token.kind !== 'accepted' : key !== null && key.kind !== 'accepted') {
+      this.config.show(`It's stored as ${name}, though whether it works isn't known.`);
     }
     return { success: true, data: `stored as ${name} in ${envFile}${told}` };
   }
