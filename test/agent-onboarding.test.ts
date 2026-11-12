@@ -312,8 +312,24 @@ describe('the backups\' commands', () => {
     for (const span of greps) expect({ span, stderr: /2>&1 \| grep\b/.test(span) }).toEqual({ span, stderr: true });
   });
 
+  it('rerun the audit leaving out only each store\'s line that it opens, so no refusal or other note is cut', () => {
+    const greps = spansIn(['The restore check']).filter((span) => /\bgrep\b/.test(span));
+    expect(greps.length).toBeGreaterThan(0);
+    for (const span of greps) expect(span).toBe("2>&1 | grep -v '): opens$'");
+  });
+
+  it('have root start the schedule only once it has made the repository with init', () => {
+    const root = PIECES.find((piece) => piece.heading === 'Backups run by root')!.text;
+    const init = root.indexOf('`init`');
+    expect(init).toBeGreaterThanOrEqual(0);
+    for (const start of ['systemctl enable --now', 'launchctl bootstrap system']) {
+      const at = root.indexOf(start);
+      expect({ start, at: at >= 0, afterInit: at > init }).toEqual({ start, at: true, afterInit: true });
+    }
+  });
+
   it('write the password over no file already there, so the umask gives the new file its mode', () => {
-    const lines = spansIn(sections).filter((span) => span.includes('stty -echo'));
+    const lines = spansIn(sections).filter((span) => span.endsWith(" sh '<dir>/backup-secret'"));
     expect(lines.length).toBeGreaterThan(0);
     for (const span of lines) expect({ span, removedFirst: /rm -f "\$1"; printf "%s" "\$p" > "\$1"/.test(span) }).toEqual({ span, removedFirst: true });
   });
