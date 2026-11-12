@@ -476,7 +476,8 @@ export class SetupModule implements Module {
           'bot can view it and send there. From November 16, 2026, Discord lists the bot only the channels it can view. ' +
           'Given server alone, it reads that one server the same way. Given server and username, it gives instead the ' +
           'members of that server whose Discord username or server nickname starts with username, of the up to 1,000 ' +
-          'Discord gives, and says how many match: Discord matches no display name. An answer too long for you to read whole gives what fits, ' +
+          'Discord gives; where Discord gave its 1,000, it says so, and that more may match. Discord matches no display name. ' +
+          'An answer too long for you to read whole gives what fits, ' +
           'says how many of how many, and how to read the rest, or, for one server\'s channels, how the person can ' +
           'copy the id of one not shown. The token\'s value is never shown.',
         inputSchema: {
