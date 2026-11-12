@@ -1384,7 +1384,7 @@ describe('connectome doctor', () => {
     }
   });
 
-  test('another agent gets lines only with a failed turn or a refusal, and a recipe\'s agent the host doesn\'t list is said', async () => {
+  test('another agent gets lines only with a failed turn or a refusal, and a recipe\'s agent the host doesn\'t list is said, with the closing line saying its model calls weren\'t checked', async () => {
     const at = install();
     const quiet = { name: 'ember-reader', status: 'idle', consecutiveInferenceFailures: 0, lastInference: null, refusalStats: null };
     const failing = { name: 'helper-1', status: 'idle', consecutiveInferenceFailures: 1, lastInference: { startedAt: STARTED, failedAt: STARTED + 5_000 }, refusalStats: null };
@@ -1393,6 +1393,7 @@ describe('connectome doctor', () => {
     expect(r.out).not.toContain('ember-reader');
     const elsewhere = await withHost(at, { ...HEALTHY_HOST, health: { ...HEALTH, agents: [quiet] } }, () => run(at));
     expect(elsewhere.out).toContain('  The host\'s counts list no agent named ember.');
+    expect(elsewhere.out).toMatch(/\nDoctor found no problem, though .*ember's model calls weren't checked.*, as said above\.$/);
   });
 
   test('with no host the counts aren\'t asked, and an answer doctor can\'t read is a problem', async () => {

@@ -275,6 +275,7 @@ export async function doctor(
   let unanswered = false;
   let closedTabs = false;
   let shellUnchecked = false;
+  let uncounted: string | null = null;
   const commands = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home });
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
   let dataDir: string | null = null;
@@ -475,7 +476,7 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        if (answer !== null) callLines(report, agentCalls(answer.data), recipe?.agent.name, commands?.log ?? null);
+        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, commands?.log ?? null);
       });
     }
 
@@ -603,6 +604,7 @@ export async function doctor(
 
   const unmade = [
     ...('reason' in host ? ['the host\'s checks weren\'t made'] : []),
+    ...(uncounted === null ? [] : [`${uncounted}'s model calls weren't checked`]),
     ...(ladderRan ? [] : ['the ladder didn\'t run']),
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
     ...(filesUnread ? ['the files its unit reads its environment from weren\'t read'] : []),
@@ -708,11 +710,10 @@ function agentCalls(data: unknown): AgentCalls[] {
   });
 }
 
-function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, log: string | null): void {
+function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, log: string | null): string | null {
   const named = recipeAgent ?? agents[0]?.name;
-  if (named !== undefined && !agents.some((agent) => agent.name === named)) {
-    report.line(`The host's counts list no agent named ${named}.`);
-  }
+  const unlisted = named !== undefined && !agents.some((agent) => agent.name === named) ? named : null;
+  if (unlisted !== null) report.line(`The host's counts list no agent named ${unlisted}.`);
   for (const agent of agents) {
     const refusals = agent.refusals !== null && agent.refusals.total > 0 ? agent.refusals : null;
     if (agent.name !== named && agent.failures === 0 && refusals === null) continue;
@@ -735,6 +736,7 @@ function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | u
         'answered.');
     }
   }
+  return unlisted;
 }
 
 interface CountCheck {
