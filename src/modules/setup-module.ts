@@ -304,7 +304,7 @@ function tokenFailure(check: Exclude<TokenCheck, { kind: 'accepted' } | { kind: 
 }
 
 function discordNote(failure: DiscordFailure): string {
-  const { path } = failure;
+  const path = failure.path.replace(/\?.*$/s, '');
   const again = 'Call setup--discord again in a minute, and if it answers the same, tell the person what it says.';
   const between = 'Tell the person: something between this machine and Discord may be answering in its place.';
   const asked = (wait: number) => `It asks for ${Math.ceil(wait)} s: call setup--discord again once that has passed.`;
@@ -947,7 +947,7 @@ export class SetupModule implements Module {
       return failed(`The token stored as ${DISCORD_TOKEN} holds a character a request header can't carry, so it can't be a ` +
         'bot token: ask the person for it again with setup--ask_secret.');
     }
-    if (bot.kind !== 'accepted') return failed(discordNote(tokenFailure(bot)));
+    if (bot.kind !== 'accepted') return failed(redacted(discordNote(tokenFailure(bot)), hide));
     const reader = discordReader(token, { fetch: fetchFn });
     const botUser = redactedData({ id: bot.id, name: bot.name }, hide);
     try {
@@ -999,10 +999,10 @@ export class SetupModule implements Module {
       });
       return { success: true, data: answer(fitting(counted, answer, cap)) };
     } catch (error) {
-      if (error instanceof DiscordFailed) return failed(discordNote(error.failure));
+      if (error instanceof DiscordFailed) return failed(redacted(discordNote(error.failure), hide));
       const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      return failed(`The read stopped on an answer setup can't read (${hidden(what, token)}). Tell the person: something ` +
-        'between this machine and Discord may be answering in its place.');
+      return failed(redacted(`The read stopped on an answer setup can't read (${hidden(what, token)}). Tell the person: ` +
+        'something between this machine and Discord may be answering in its place.', hide));
     }
   }
 

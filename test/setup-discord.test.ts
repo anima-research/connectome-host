@@ -286,7 +286,7 @@ describe('setup--discord', () => {
     expect(busy.error).toBe('Discord answered 503 to GET /applications/@me: Service Unavailable, so the read stopped there. Call setup--discord again in a minute, and if it answers the same, tell the person what it says.');
 
     const wait = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': () => Response.json({ message: 'You are being rate limited.', retry_after: 2.5 }, { status: 429 }) })).module);
-    expect(wait.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200: You are being rate limited., so the read stopped there. It asks for 3 s: call setup--discord again once that has passed.');
+    expect(wait.error).toBe('Discord answered 429 to GET /users/@me/guilds: You are being rate limited., so the read stopped there. It asks for 3 s: call setup--discord again once that has passed.');
 
     const echoed = await read(install(fakeDiscord([HOME], { '/guilds/100/channels': () => Response.json({ message: `Missing Access for ${TOKEN}`, code: 50001 }, { status: 403 }) })).module);
     expect(echoed.error).toBe('Discord answered 403 to GET /guilds/100/channels: Missing Access for <DISCORD_TOKEN> (code 50001), so the read stopped there. The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now, and if that server is still listed and answers the same, tell the person what it says.');
@@ -312,7 +312,7 @@ describe('setup--discord', () => {
     const REFUSED = 'Discord refused the bot token stored as DISCORD_TOKEN (401), so the read stopped there. Ask the person for the token again with setup--ask_secret.';
     const typed = (type: string, body: BodyInit) => () => new Response(body, { status: 401, headers: { 'content-type': type } });
     const page = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('text/html', '{"message":"401: Unauthorized","code":0}') })).module);
-    expect(page.error).toBe('Discord answered 401 to GET /users/@me/guilds?limit=200 with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    expect(page.error).toBe('Discord answered 401 to GET /users/@me/guilds with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
     const json = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('application/json', '<html>401</html>') })).module);
     expect(json.error).toBe(REFUSED);
     const stalled = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('application/json', new ReadableStream({ start() {} })) })).module);
@@ -324,9 +324,9 @@ describe('setup--discord', () => {
     const token = await read(install(fakeDiscord([HOME], { '/users/@me': limited('<html>slow down</html>', 'text/html') })).module);
     expect(token.error).toBe('Discord answered 429 to GET /users/@me with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
     const page = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': limited('<html>slow down</html>', 'text/html') })).module);
-    expect(page.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200 with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+    expect(page.error).toBe('Discord answered 429 to GET /users/@me/guilds with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
     const json = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': limited('{"message":"You are being rate limited."}', 'application/json') })).module);
-    expect(json.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200: You are being rate limited., so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+    expect(json.error).toBe('Discord answered 429 to GET /users/@me/guilds: You are being rate limited., so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
   });
 
   test('an answer in JSON that setup can\'t read the way it reads Discord\'s stops the read in setup\'s words, never with the token, rather than throwing', async () => {
@@ -422,5 +422,20 @@ describe('setup--discord', () => {
     expect(JSON.stringify(whole.data).length).toBeLessThanOrEqual(24_000);
     expect(whole.data).toMatchObject({ servers: [{ id: '300' }, { id: '400' }] });
     expect((whole.data as { servers: Array<{ channels: unknown[] }> }).servers[0]!.channels.length).toBe(50);
+  });
+
+  test('a failed read names its endpoint without its query, and a stored secret that the call sent or Discord gave back comes by its name', async () => {
+    const OTHER = 'sk-stored-583-other';
+    const env = `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="${OTHER}"\n`;
+    const missing = install(fakeDiscord([HOME], {
+      '/guilds/100/members/search': () => Response.json({ message: `Unknown Member ${OTHER}`, code: 10007 }, { status: 404 }),
+    }), env);
+    const searched = await read(missing.module, { server: '100', username: OTHER });
+    expect(searched.success).toBe(false);
+    expect(searched.error).toStartWith('Discord answered 404 to GET /guilds/100/members/search: Unknown Member <OPENAI_API_KEY> (code 10007), so the read stopped there.');
+    expect(searched.error).not.toContain(OTHER);
+    const down = install(fakeDiscord([HOME], { '/users/@me': () => Response.json({ message: `down for ${OTHER}` }, { status: 503 }) }), env);
+    const checked = await read(down.module);
+    expect(checked.error).toStartWith('Discord answered 503 to GET /users/@me: down for <OPENAI_API_KEY>, so the read stopped there.');
   });
 });
