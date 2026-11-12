@@ -298,8 +298,8 @@ export class HostUpdate {
         this.installing = null;
       }
       this.lastInstall = { version, at, ok: true };
-      return done(`${version} is installed beside ${setup.running}, which runs on. Restart switches to the newest release ` +
-        `installed: ${ways.restart}.`);
+      return done(`${version} is installed beside ${setup.running}, which runs on: ${ways.restart} switches to the newest ` +
+        'release installed.');
     })();
     return { version, installed };
   }
