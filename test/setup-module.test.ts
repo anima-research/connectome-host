@@ -1420,10 +1420,11 @@ describe('setup--run, and what the install\'s commands say for the person', () =
     const { dir, module, shown } = install();
     const [at, go] = [join(dir, 'pipe-at'), join(dir, 'go')];
     const answering = run(module, `rm "$CONNECTOME_SETUP_SHOWN" && mkfifo "$CONNECTOME_SETUP_SHOWN" && echo "$CONNECTOME_SETUP_SHOWN" > ${at}.new && mv ${at}.new ${at} && while [ ! -e ${go} ]; do sleep 0.02; done; echo for the agent`);
-    for (const started = performance.now(); !existsSync(at) && performance.now() - started < 10_000; await Bun.sleep(10));
-    // Where a read waits on the pipe, this writer gives it a line, so the test ends either way.
-    const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim()], { stdout: 'ignore', stderr: 'ignore' });
+    let writer: ReturnType<typeof Bun.spawn> | undefined;
     try {
+      for (const started = performance.now(); !existsSync(at) && performance.now() - started < 10_000; await Bun.sleep(10));
+      // Where a read waits on the pipe, this writer gives it a line, so the test ends either way.
+      writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim()], { stdout: 'ignore', stderr: 'ignore' });
       writeFileSync(go, '');
       const answer = await answering;
       expect(answer.stdout.text).toBe('for the agent\n');
@@ -1431,9 +1432,11 @@ describe('setup--run, and what the install\'s commands say for the person', () =
       expect(after).toHaveLength(1);
       expect(after[0]).toMatch(/^What it said for you can't be shown: .+ can't be read \(it isn't a file\)\.$/);
     } finally {
-      writer.kill('SIGKILL');
+      writeFileSync(go, '');
+      await answering.catch(() => {});
+      writer?.kill('SIGKILL');
     }
-  });
+  }, 20_000);
 
   test('where which values are secret can\'t be read once the command ends, nothing it wrote there is shown, and the person is told', async () => {
     const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
