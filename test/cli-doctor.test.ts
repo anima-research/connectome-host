@@ -2759,4 +2759,20 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const r = await withHost(own, { ...HEALTHY_HOST, health }, () => run(own));
     expect(failedLine(r.out)).toContain('journalctl --user -u connectome-test.service | grep -F');
   });
+
+  test('with no host answering while the service runs, doctor says its host may still be starting and to run doctor again', async () => {
+    const again = 'The service is running, so its host may still be starting: run doctor again in a minute. If it still ' +
+      'doesn\'t answer then, its log says why.';
+    const at = install();
+    const r = await run(at, { checkService: async () => ({ passed: true, lines: ['connectome-test.service is active (running).'] }) });
+    expect(r.out).toContain('No host answers: there\'s no socket at');
+    expect(r.out).toContain(again);
+    for (const checkService of [
+      async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true as const }),
+      async () => ({ passed: false, lines: ['connectome-test.service is failed, not active.'] }),
+    ]) {
+      const quiet = install();
+      expect((await run(quiet, { checkService })).out).not.toContain(again);
+    }
+  });
 });

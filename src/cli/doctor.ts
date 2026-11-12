@@ -292,6 +292,7 @@ export async function doctor(
 
   let host: HostClient | NoHost = { reason: 'it wasn\'t asked', down: false };
   let stopped = false;
+  let serviceRuns = false;
   let fitUnchecked = false;
   let filesUnread = false;
   let pidUntold = false;
@@ -326,6 +327,7 @@ export async function doctor(
           : document === null ? null : recipeHasShell(document.raw), typed, true);
         for (const line of result.lines) report.line(line);
         if (!result.passed) report.problem('The service check above didn\'t pass.');
+        serviceRuns = result.passed && result.stopped !== true;
         if (result.stopped === true) {
           stopped = true;
           report.line('It\'s stopped.');
@@ -344,6 +346,10 @@ export async function doctor(
       report.line(`No host answers, since its service is stopped: \`${startCommand}\` starts it.`);
     } else if ('reason' in host) {
       report.problem(`No host answers: ${host.reason}.`);
+      if (host.down && serviceRuns) {
+        report.line('The service is running, so its host may still be starting: run doctor again in a minute. If it ' +
+          'still doesn\'t answer then, its log says why.');
+      }
       if (host.down && service !== null) {
         await checked(report, 'Naming the service\'s own lines', () => {
           for (const line of serviceLines(root, { ...machine(), platform: parts.platform, home: parts.home }) ?? []) report.line(line);
