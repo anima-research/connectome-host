@@ -75,13 +75,19 @@ except ValueError as e:
 WITHHOLD = [(k, v) for k, v in WITHHOLD if v]
 
 
+ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
 def withheld(text):
     found = []
+    folded = text.translate(ASCII_FOLD)
     for name, value in WITHHOLD:
-        at = text.find(value)
-        while at >= 0:
-            found.append((at, at + len(value), name))
-            at = text.find(value, at + 1)
+        for form in {value, value.strip()}:
+            needle = form.translate(ASCII_FOLD)
+            at = folded.find(needle) if needle else -1
+            while at >= 0:
+                found.append((at, at + len(needle), name))
+                at = folded.find(needle, at + 1)
     found.sort(key=lambda span: (span[0], -span[1]))
     spans = []
     for start, end, name in found:
@@ -398,6 +404,13 @@ def err_text(err):
     return "" if err is None else str(err)
 
 
+def response_of(row):
+    raw = row.get("rawResponse")
+    raw = raw if isinstance(raw, dict) else {}
+    inner = raw.get("response")
+    return inner if isinstance(inner, dict) and inner else raw
+
+
 llm_ts = None
 llm_detail = ""
 turn_ts = None
@@ -474,16 +487,14 @@ if llm_files:
             continue
         call = r
         turn_ts = parse_iso(str(r.get("timestamp", "")))
-        turn_resp = r.get("rawResponse") or {}
-        turn_resp = turn_resp.get("response") or turn_resp
+        turn_resp = response_of(r)
         turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
-        newer_unread = incomplete or unreadable > 0
         llm_window_from = None
         break
+    newer_unread = incomplete or unreadable > 0
     if call is not None:
         llm_ts = parse_iso(str(call.get("timestamp", "")))
-        resp = call.get("rawResponse") or {}
-        resp = resp.get("response") or resp
+        resp = response_of(call)
         sr = resp.get("stop_reason")
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
@@ -681,8 +692,12 @@ if times or untimed:
              "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
                  "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
                  if newer_unread else ""), counts=False)
-    elif failed_at is not None and (INFERENCE in unknown or newer_unread):
-        why = unseen_why if INFERENCE in unknown else "newer rows of the call log can't be read"
+    elif failed_at is not None and (INFERENCE in unknown or newer_unread or (
+            turn_ts is None and window_from is not None and window_from > failed_at)):
+        why = (unseen_why if INFERENCE in unknown
+               else "newer rows of the call log can't be read" if newer_unread and turn_ts is not None
+               else "rows of the call log can't be read" if newer_unread
+               else f"the call log read here starts at {hhmm(window_from)}, after it")
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
              f"since {why}", counts=False)
     elif failed_at is not None:

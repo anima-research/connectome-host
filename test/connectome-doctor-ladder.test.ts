@@ -42,7 +42,6 @@ async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dump
   const ticks = join(dir, 'ticks');
   const dump = join(dir, 'dump-line');
   writeFileSync(dump, '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}\n');
-  // A unit that logs to the journal gets the dump there, stamped as journald stamps a line it receives.
   const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; `
     : `printf "%s.000000 host bun[1]: %s\\n" "$(date +%s)" "$(cat ${dump})" >> ${join(dir, 'journal.txt')}; `;
   const trap = listens ? `trap '${dumpDelay ? `sleep ${dumpDelay}; ` : ''}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
@@ -1096,6 +1095,15 @@ describe('what the ladder withholds', () => {
     expect(out).not.toContain('Zq9');
   });
 
+  test('a value is withheld in the forms doctor\'s redactor matches: in another ASCII case, and trimmed', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const long = `[inference-failed] ${'x'.repeat(125)}zQ9-CASE-SECRET-55 and the rest`;
+    writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: ${long}\n`);
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', '  Zq9-case-secret-55 ']]) });
+    expect(out).toContain('<DISC');
+    expect(out.toLowerCase()).not.toContain('zq9');
+  });
+
   test('two values that overlap where they\'re read leave no part of either', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: [inference-failed] key aaQ1-bbQ2-ccQ3 refused\n`);
@@ -1233,5 +1241,72 @@ describe('the ladder run by doctor, with --findings-json', () => {
     expect(out).toContain('turn in-flight for: resident');
     expect(found.map((f) => f.text).join('\n')).not.toContain('NO turn was recorded after it');
     expect(found).toContainEqual({ text: expect.stringMatching(/^agent is ASLEEP until /), counts: false });
+  });
+});
+
+describe('the ladder, its round on the review of 3c6be0fd0', () => {
+  const exhausted = (at: Install, s: number) => writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({
+    at: new Date(s * 1000).toISOString(), agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
+  const row = (s: number, kind: string, rawResponse: unknown = { stop_reason: 'end_turn' }) =>
+    JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse });
+  const findings = (at: Install): Array<{ text: string; counts: boolean }> => {
+    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '));
+    if (line === undefined) throw new Error('the ladder gave no findings line');
+    return JSON.parse(line.slice('connectome-doctor findings: '.length));
+  };
+  const hardDown = { text: expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/), counts: true };
+  const startsAfter = { text: expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
+    'since isn\'t known, since the call log read here starts at \\S+ \\S+, after it$')), counts: false };
+
+  test('a failure from before the call log the ladder reads isn\'t called hard-down: whether a turn has succeeded since isn\'t known', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const before = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    writeFileSync(before, `${row(at.now - 200, 'stream')}\n`);
+    utimesSync(before, at.now - 200, at.now - 200);
+    const newest = join(at.work, 'data', 'llm-calls.2026-10-31T00-00-00.jsonl');
+    writeFileSync(newest, `${row(at.now - 50, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(startsAfter);
+    expect(findings(at)).not.toContainEqual(hardDown);
+    writeFileSync(newest, `${row(at.now - 400, 'complete')}\n${row(at.now - 50, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(hardDown);
+  });
+
+  test('a failure from before the last 30 MB of the call log isn\'t called hard-down either', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const poke = JSON.stringify({ timestamp: new Date((at.now - 100) * 1000).toISOString(), kind: 'keepalive', pad: 'x'.repeat(900) });
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'),
+      `${row(at.now - 200, 'stream')}\n${`${poke}\n`.repeat(Math.ceil(31_000_000 / (poke.length + 1)))}`);
+    expect(findings(at)).toContainEqual(startsAfter);
+    expect(findings(at)).not.toContainEqual(hardDown);
+  }, 60_000);
+
+  test('with no readable turn\'s call, rows of the call log that can\'t be read leave whether a turn has succeeded since not known', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    const unread = { text: expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
+      'since isn\'t known, since rows of the call log can\'t be read$')), counts: false };
+    writeFileSync(calls, `${row(at.now - 400, 'complete')}\n{"timestamp":"${new Date((at.now - 90) * 1000).toISOString()}","kind":"str`);
+    expect(findings(at)).toContainEqual(unread);
+    expect(findings(at)).not.toContainEqual(hardDown);
+    writeFileSync(calls, `{"timestamp": not json, "kind":"stream"}\n${row(at.now - 400, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(unread);
+    expect(findings(at)).not.toContainEqual(hardDown);
+  });
+
+  test('a turn\'s call whose rawResponse, or the response in it, isn\'t an object is read as one with no stop reason, and the ladder goes on', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    for (const raw of ['bad', ['bad'], { response: 'bad' }]) {
+      writeFileSync(calls, `${row(at.now - 5, 'stream', raw)}\n`);
+      const { out, status } = ladder(at, ['--findings-json']);
+      expect([raw, status, out]).toEqual([raw, 0, expect.stringMatching(/inference \(llm call\)\s+\S+ \S+\s+\(\s*\d+s ago\)\s+answered/)]);
+      expect(out).toContain('connectome-doctor findings: ');
+    }
   });
 });

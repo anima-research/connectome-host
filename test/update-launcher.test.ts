@@ -2510,6 +2510,48 @@ describe('the lock', () => {
     expect(readdirSync(dirname(lock)).filter((name) => name.includes('.stale'))).toEqual([]);
   });
 
+  test('a stale lock replaced before it is set aside, and taken again before it can go back, is left where it was set aside, and the start refuses naming both files', () => {
+    const { lock } = installPaths(root);
+    const aside = `${lock}.${process.pid}.stale`;
+    writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });
+    let raced = false;
+    const racing: LauncherOps = {
+      ...ops(),
+      pidAlive: (pid) => {
+        if (pid === 4242 && !raced) {
+          raced = true;
+          rmSync(lock);
+          writeJsonAtomic(lock, { v: 1, pid: 5151, bootId: boot, at: '2026-10-24T00:00:00Z' });
+          alive.add(5151);
+          return false;
+        }
+        return alive.has(pid);
+      },
+    };
+    const realLink = fs.linkSync;
+    const links = spyOn(fs, 'linkSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from) === aside && String(to) === lock) {
+        writeJsonAtomic(lock, { v: 1, pid: 6161, bootId: boot, at: '2026-10-24T00:00:01Z' });
+        alive.add(6161);
+      }
+      realLink(from, to);
+    }) as typeof fs.linkSync);
+    let why = '';
+    try {
+      takeLock(root, racing);
+    } catch (error) {
+      why = (error as Error).message;
+      expect(error).not.toBeInstanceOf(LockHeld);
+    } finally {
+      links.mockRestore();
+    }
+    expect(why).toContain(`moved another process's lock to ${aside}, and couldn't put it back, since ${lock} is there again.`);
+    expect(why).toContain('Each of the two files names a process that may be running in this install: stop each that is, ' +
+      'remove both files, and run this again.');
+    expect(readRecord<{ v: 1; pid: number }>(aside, 'lock')?.pid).toBe(5151);
+    expect(readRecord<{ v: 1; pid: number }>(lock, 'lock')?.pid).toBe(6161);
+  });
+
   test('a stale lock found alone is taken over', () => {
     const { lock } = installPaths(root);
     writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });

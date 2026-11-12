@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
@@ -13,7 +14,8 @@ import {
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { serviceCommand, serviceCommands, serviceLines } from './service.js';
+import { serviceCommand, serviceCommands, serviceLines, unitElsewhere } from './service.js';
+import { serviceUnits } from './service-unit.js';
 import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup, setupDirectory } from './setup.js';
 import { shellCommand } from './shell.js';
 import { shownToPerson } from './shown.js';
@@ -235,11 +237,20 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
 
 function service(ctx: CliContext): number {
   const lines = serviceLines(ctx.root!);
-  if (lines === null) {
-    ctx.out(`No service is set up for it here: \`${typedCommand(ctx.root!)} service install <recipe>\` sets one up.`);
-  }
+  if (lines === null) ctx.out(noService(ctx.root!));
   for (const line of lines ?? []) ctx.out(line);
   return 0;
+}
+
+function noService(root: string): string {
+  if (serviceUnits(root, process.platform, homedir()) === null) return '`service install` hasn\'t set up a service for it here.';
+  const taken = unitElsewhere(root);
+  if (taken !== null) {
+    return '`service install` hasn\'t set up a service for it here, and a name it would give one is taken: ' +
+      `${taken.unit.file}, the file of ${taken.unit.name}, names ` +
+      `${taken.runsIn === null ? 'no working directory' : `${taken.runsIn} as its working directory`}.`;
+  }
+  return `\`service install\` hasn't set up a service for it here: \`${typedCommand(root)} service install <recipe>\` sets one up.`;
 }
 
 export const SEND_QUIET_LIMIT_MS = 15 * 60_000;

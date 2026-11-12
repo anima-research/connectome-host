@@ -96,8 +96,8 @@ function heldOnChecks(module: SetupModule): Promise<void> {
   });
 }
 
-// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
-const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
+// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc or have setsid.
+const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat') || Bun.which('setsid') === null);
 
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
 
@@ -417,6 +417,34 @@ describe('setup--run', () => {
     expect(shownWhileOpen).toEqual([]);
   });
 
+  test('a command that ends while a question is open shows what it said once the question is answered', async () => {
+    const shownWhileOpen: string[] = [];
+    let open = '';
+    const made = install({
+      asker: {
+        ask: async () => {
+          const at = made.shown.length;
+          const held = heldAt(made.module);
+          writeFileSync(open, '');
+          const shownSince = new Promise<void>((done) => {
+            const look = () => (made.shown.slice(at).includes('It said:') ? done() : setTimeout(look, 10));
+            look();
+          });
+          await Promise.race([held, shownSince]);
+          shownWhileOpen.push(...made.shown.slice(at));
+          return 'a-held-secret';
+        },
+      },
+    });
+    open = join(made.dir, 'open');
+    const running = run(made.module, `while [ ! -e ${open} ]; do sleep 0.02; done; echo said-for-the-person >> "$CONNECTOME_SETUP_SHOWN"`);
+    for (const started = performance.now(); !made.shown.includes("Setup's agent runs:") && performance.now() - started < 5_000; await Bun.sleep(10));
+    expect((await askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' })).success).toBe(true);
+    expect(shownWhileOpen).toEqual([]);
+    expect((await running).exitCode).toBe(0);
+    expect(made.shown.slice(-2)).toEqual(['It said:', '  said-for-the-person']);
+  });
+
   test('a timeoutMs out of its range is refused, naming the value given', async () => {
     const { module } = install();
     const result = await runCall(module, 'true', -5);
@@ -510,7 +538,7 @@ describe('setup--run', () => {
     expect(readFileSync(marker, 'utf-8')).toBe('once\n');
   }, 30_000);
 
-  linuxTest('a command stopped at its limit that left a dotenv file unreadable is said to have been stopped, though its output isn\'t shown', async () => {
+  test('a command stopped at its limit that left a dotenv file unreadable is said to have been stopped, though its output isn\'t shown', async () => {
     const { module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
     const result = await runCall(module, 'mkfifo .env.local; echo word-it-printed; sleep 30', 500);
     expect(result.success).toBe(false);
@@ -519,7 +547,7 @@ describe('setup--run', () => {
     expect(JSON.stringify(result)).not.toContain('word-it-printed');
   }, 20_000);
 
-  linuxTest('a command that left a dotenv file unreadable and a process holding its output is said to have left it, though its output isn\'t shown', async () => {
+  test('a command that left a dotenv file unreadable and a process holding its output is said to have left it, though its output isn\'t shown', async () => {
     const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
     const pidFile = join(dir, 'holder.pid');
     try {
@@ -781,7 +809,7 @@ describe('setup--run', () => {
       envFile: 'ANTHROPIC_API_KEY="sk-ant-stored-key"\n',
       env: { ANTHROPIC_API_KEY: 'sk-ant-stored-key', MY_COPY: 'sk-ant-stored-key', MY_HEADER: 'Bearer sk-ant-stored-key', KEEP_ME: 'kept' },
     });
-    const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER KEEP_ME');
+    const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER; printenv KEEP_ME');
     expect(answer.stdout.text).toBe('copy=1\nBearer <ANTHROPIC_API_KEY>\nkept\n');
   });
 
@@ -800,8 +828,9 @@ describe('setup--run', () => {
       envFile: 'DISCORD_TOKEN="discord-token-value"\nMY_SERVER_TOKEN="custom-token-value"\nDEBUG=7\n',
       env: { DISCORD_TOKEN: 'discord-token-value', MY_SERVER_TOKEN: 'custom-token-value', DEBUG: '7', KEEP_ME: 'kept' },
     });
-    const stripped = await run(module, 'printenv DISCORD_TOKEN MY_SERVER_TOKEN DEBUG; echo "status=$?"; printenv KEEP_ME');
-    expect(stripped.stdout.text).toBe('status=1\nkept\n');
+    const stripped = await run(module, 'printenv DISCORD_TOKEN; echo "DISCORD_TOKEN=$?"; printenv MY_SERVER_TOKEN; ' +
+      'echo "MY_SERVER_TOKEN=$?"; printenv DEBUG; echo "DEBUG=$?"; printenv KEEP_ME');
+    expect(stripped.stdout.text).toBe('DISCORD_TOKEN=1\nMY_SERVER_TOKEN=1\nDEBUG=1\nkept\n');
     const answer = await run(module, 'cat .env');
     expect(answer.stdout.text).not.toContain('custom-token-value');
     expect(answer.stdout.text).not.toContain('discord-token-value');
@@ -1163,7 +1192,7 @@ describe('setup--run', () => {
   test('keeps replacing a value it read from .env after a command changes it there', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="first-read-value"\n' });
     listSecrets(module, 'DISCORD_TOKEN');
-    await run(module, 'cp .env backup; sed -i s/first-read-value/second-read-value/ .env');
+    await run(module, 'cp .env backup; sed s/first-read-value/second-read-value/ backup > .env');
     expect(readEnvFile(join(dir, '.env')).get('DISCORD_TOKEN')).toBe('second-read-value');
     expect((await run(module, 'cat backup .env')).stdout.text).toBe('DISCORD_TOKEN="<DISCORD_TOKEN>"\nDISCORD_TOKEN="<DISCORD_TOKEN>"\n');
   });
@@ -1392,13 +1421,33 @@ describe('setup--run, and what the install\'s commands say for the person', () =
     expect(afterCommand(quiet.shown)).toEqual([]);
   });
 
+  test('a named pipe left where the file for the person was is refused as no file, and the command is answered', async () => {
+    const { dir, module, shown } = install();
+    const [at, go] = [join(dir, 'pipe-at'), join(dir, 'go')];
+    const answering = run(module, `rm "$CONNECTOME_SETUP_SHOWN" && mkfifo "$CONNECTOME_SETUP_SHOWN" && echo "$CONNECTOME_SETUP_SHOWN" > ${at}.new && mv ${at}.new ${at} && while [ ! -e ${go} ]; do sleep 0.02; done; echo for the agent`);
+    let writer: ReturnType<typeof Bun.spawn> | undefined;
+    try {
+      for (const started = performance.now(); !existsSync(at) && performance.now() - started < 10_000; await Bun.sleep(10));
+      // Where a read waits on the pipe, this writer gives it a line, so the test ends either way.
+      writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim()], { stdout: 'ignore', stderr: 'ignore' });
+      writeFileSync(go, '');
+      const answer = await answering;
+      expect(answer.stdout.text).toBe('for the agent\n');
+      const after = afterCommand(shown);
+      expect(after).toHaveLength(1);
+      expect(after[0]).toMatch(/^What it said for you can't be shown: .+ can't be read \(it isn't a file\)\.$/);
+    } finally {
+      writeFileSync(go, '');
+      await answering.catch(() => {});
+      writer?.kill('SIGKILL');
+    }
+  }, 20_000);
+
   test('where which values are secret can\'t be read once the command ends, nothing it wrote there is shown, and the person is told', async () => {
     const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
     const result = await runCall(module, 'echo written-for-the-person >> "$CONNECTOME_SETUP_SHOWN"; mkdir .env.local');
     expect(result.success).toBe(false);
-    const after = afterCommand(shown);
-    expect(after).toHaveLength(1);
-    expect(after.join('\n')).not.toContain('written-for-the-person');
+    expect(afterCommand(shown)).toEqual(['What it said for you isn\'t shown, since which values are secret isn\'t known.']);
   });
 });
 
@@ -1449,7 +1498,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     });
     const first = await askSecret(answered.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 403: Missing Access. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 403 (Missing Access).']);
+    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 403 (Missing Access).', 'It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.']);
     expect(readEnvFile(join(answered.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-one');
     const unasked = install({
       asker: typed('token-two'),
@@ -1457,7 +1506,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     });
     const second = await askSecret(unasked.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(String(second.data)).toBe(`stored as DISCORD_TOKEN in ${join(unasked.dir, '.env')}, but it isn't known to work: Discord couldn't be asked (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>). Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(unasked.shown).toEqual(['Checking it with Discord.', 'Discord couldn\'t be asked whether it works (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).']);
+    expect(unasked.shown).toEqual(['Checking it with Discord.', 'Discord couldn\'t be asked whether it works (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).', 'It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.']);
     expect(readEnvFile(join(unasked.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-two');
     expect(said(unasked, second)).not.toContain('token-two');
     const trimmed = install({
@@ -2755,6 +2804,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const first = await askSecret(answered.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
     expect(String(first.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(answered.dir, '.env')}, but it isn't known to work: Anthropic answered 529: overloaded. Call setup--check_model in a minute, to check the key again.`);
     expect(readEnvFile(join(answered.dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('key-one');
+    expect(answered.shown.at(-1)).toBe('It\'s stored as ANTHROPIC_API_KEY, though whether it works isn\'t known.');
     const unasked = install({
       asker: typed('key-two'),
       fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bearer key-two'); }) as unknown as typeof fetch,
@@ -2827,7 +2877,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
       expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
-      expect(made.shown, body).toEqual(['Checking it with OpenAI.', 'OpenAI didn\'t say whether it works: it answered 200.']);
+      expect(made.shown, body).toEqual(['Checking it with OpenAI.', 'OpenAI didn\'t say whether it works: it answered 200.', 'It\'s stored as OPENAI_API_KEY, though whether it works isn\'t known.']);
     }
   });
 
@@ -2944,33 +2994,44 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
   });
 
-  test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says doctor checks it again, in place of the connection advice', async () => {
+  test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says, in place of the connection advice, that setup--discord checks it again, to the agent, and doctor, to the person', async () => {
     const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+    const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
     const CONNECTION = ' Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to ' +
       'check it again, or go on with it unchecked.';
-    for (const [status, after] of [[503, BUSY], [429, BUSY], [403, CONNECTION]] as const) {
+    for (const [status, after] of [[503, AGENT_BUSY], [429, AGENT_BUSY], [403, CONNECTION]] as const) {
       const page = (async () => new Response('<html>error</html>', { status, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
       const token = install({ asker: typed('a-page-token'), fetch: page });
       const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
       const unrecognized = 'its answer didn\'t say it was JSON, as Discord\'s do: a network\'s sign-in page is one such answer.';
       expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be ` +
         `checked: ${unrecognized}${after}`);
-      expect(token.shown, String(status)).toContain(`It couldn't be checked: ${unrecognized}${after === BUSY ? BUSY : ''}`);
+      expect(token.shown, String(status)).toContain(`It couldn't be checked: ${unrecognized}${after === AGENT_BUSY ? BUSY : ''}`);
     }
   });
 
-  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then that doctor checks it again, to the person and in place of asking for it again', async () => {
+  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then, in place of asking for it again, that setup--discord checks it again after any wait Discord asks, to the agent, and that doctor does, to the person', async () => {
     const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
     const AGAIN = ' Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
-    for (const [status, words, after] of [[503, 'Service Unavailable', BUSY], [429, 'You are being rate limited', BUSY], [403, 'Missing Access', AGAIN]] as const) {
+    const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
+    const WAIT = ' It asks for 3 s: call setup--discord once that has passed, which checks the stored token first.';
+    for (const [status, words, after] of [[503, 'Service Unavailable', AGENT_BUSY], [429, 'You are being rate limited', WAIT], [403, 'Missing Access', AGAIN]] as const) {
       const answering = (async () => Response.json({ message: words, retry_after: 2.5 }, { status })) as unknown as typeof fetch;
       const token = install({ asker: typed('a-busy-token'), fetch: answering });
       const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
       expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to ` +
         `work: Discord answered ${status}: ${words}.${after}`);
       expect(token.shown, String(status)).toContain(`Discord didn't say whether it works: it answered ${status} (${words}).` +
-        (after === BUSY ? BUSY : ''));
+        (after === AGAIN ? '' : BUSY));
     }
+  });
+
+  test('a token Discord answered 200 with something other than a bot\'s user is said so, to the agent and the person, with what may be answering in its place', async () => {
+    const odd = (async () => Response.json({})) as unknown as typeof fetch;
+    const token = install({ asker: typed('a-strange-token'), fetch: odd });
+    const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to work: Discord answered GET /users/@me with something other than the bot's user. Tell the person: something between this machine and Discord may be answering in its place. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
+    expect(token.shown).toContain('It isn\'t known to work: Discord answered with something other than the bot\'s user, so something between this machine and Discord may be answering in its place.');
   });
 
   test('a redirect is named, with the server it leads to, and what to set where a base URL can be set, for a key, a token and a model', async () => {

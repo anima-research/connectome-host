@@ -31,19 +31,27 @@ export function discordReader(token: string, options: { fetch: typeof fetch; lim
   const limitMs = options.limitMs ?? REQUEST_LIMIT_MS;
   const userAgent = discordUserAgent();
   const get = async <T>(path: string): Promise<T> => {
+    const unanswered = (error: unknown): DiscordFailed => {
+      const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+      const why = error instanceof Error ? error.message : String(error);
+      return new DiscordFailed({ kind: 'unanswered', path, timedOut, why: hidden(why, token) });
+    };
     let res: Response;
-    let text: string;
     try {
       res = await options.fetch(DISCORD_API + path, {
         headers: { authorization: `Bot ${token}`, 'user-agent': userAgent },
         signal: AbortSignal.timeout(limitMs),
         redirect: 'manual',
       });
+    } catch (error) {
+      throw unanswered(error);
+    }
+    if (res.status >= 300 && res.status < 400) throw new DiscordFailed({ kind: 'redirected', path, status: res.status });
+    let text: string;
+    try {
       text = await res.text();
     } catch (error) {
-      const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      const why = error instanceof Error ? error.message : String(error);
-      throw new DiscordFailed({ kind: 'unanswered', path, timedOut, why: hidden(why, token) });
+      throw unanswered(error);
     }
     let body: unknown;
     try {
@@ -51,7 +59,6 @@ export function discordReader(token: string, options: { fetch: typeof fetch; lim
     } catch {
       body = undefined;
     }
-    if (res.status >= 300 && res.status < 400) throw new DiscordFailed({ kind: 'redirected', path, status: res.status });
     if (body === undefined) throw new DiscordFailed({ kind: 'unrecognized', path, status: res.status, ok: res.ok });
     if (res.status === 401) throw new DiscordFailed({ kind: 'refused', path });
     if (!res.ok) {
@@ -96,14 +103,16 @@ export async function botGuilds(reader: DiscordReader, botId: string): Promise<B
     if (page.length < GUILD_PAGE) break;
   }
   const guilds: BotGuild[] = [];
-  for (const { id, name, owner } of joined) {
-    const roles = new Map((await reader.get<Array<{ id: string; permissions: string }>>(`/guilds/${id}/roles`))
-      .map((r) => [r.id, BigInt(r.permissions)] as const));
-    const member = await reader.get<{ roles: string[] }>(`/guilds/${id}/members/${botId}`);
-    const channels = await reader.get<Channel[]>(`/guilds/${id}/channels`);
-    guilds.push({ id, name, botOwns: owner === true, roles, botRoles: member.roles, channels });
-  }
+  for (const { id, name, owner } of joined) guilds.push(await botGuild(reader, botId, { id, name, botOwns: owner === true }));
   return guilds;
+}
+
+export async function botGuild(reader: DiscordReader, botId: string, guild: { id: string; name: string; botOwns: boolean }): Promise<BotGuild> {
+  const roles = new Map((await reader.get<Array<{ id: string; permissions: string }>>(`/guilds/${guild.id}/roles`))
+    .map((r) => [r.id, BigInt(r.permissions)] as const));
+  const member = await reader.get<{ roles: string[] }>(`/guilds/${guild.id}/members/${botId}`);
+  const channels = await reader.get<Channel[]>(`/guilds/${guild.id}/channels`);
+  return { ...guild, roles, botRoles: member.roles, channels };
 }
 
 export function channelPermissions(guild: BotGuild, botId: string, channel: Channel): bigint {

@@ -190,8 +190,15 @@ test('where setup\'s agent names a file for the person, the refusals before any 
     writeFileSync(said, '');
     const refusedUnreadable = unreadable.run('update');
     expect(refusedUnreadable.exitCode).toBe(1);
-    expect(refusedUnreadable.stderr).toContain('holds a "workingDir" that isn\'t a path');
+    expect(refusedUnreadable.stderr).toContain('holds a "workingDir" that isn\'t an absolute path');
     expect(readFileSync(said, 'utf-8')).toBe(refusedUnreadable.stderr);
+
+    writeFileSync(join(unreadable.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(unreadable.dir, 'data'), extraState: [], workingDir: '.' }));
+    writeFileSync(said, '');
+    const refusedRelative = unreadable.run('update');
+    expect(refusedRelative.exitCode).toBe(1);
+    expect(refusedRelative.stderr).toContain('holds a "workingDir" that isn\'t an absolute path');
+    expect(readFileSync(said, 'utf-8')).toBe(refusedRelative.stderr);
 
     const none = withCommands(false, false);
     writeFileSync(said, '');

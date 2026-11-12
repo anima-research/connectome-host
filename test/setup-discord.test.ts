@@ -162,10 +162,95 @@ describe('setup--discord', () => {
         { id: '701', username: 'adam.k', displayName: 'Adam', nickname: null },
       ],
     });
-    expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=10');
-    const half = await read(module, { server: '100' });
+    expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=11');
+    const half = await read(module, { username: 'ada' });
     expect(half.success).toBe(false);
     expect(half.error).toContain('given both server');
+  });
+
+  test('where more than ten members match, it gives ten and says more match, so a longer start can find the rest', async () => {
+    const many: FakeServer = {
+      ...HOME,
+      members: [...Array.from({ length: 11 }, (_, i) => ({ id: `${710 + i}`, username: `ada${i}` })), { id: '900', username: 'ember' }],
+    };
+    const r = await read(install(fakeDiscord([many])).module, { server: '100', username: 'ada' });
+    expect(r.success).toBe(true);
+    const data = r.data as { members: Array<{ username: string }>; note?: string };
+    expect(data.members.map((m) => m.username)).toEqual(Array.from({ length: 10 }, (_, i) => `ada${i}`));
+    expect(data.note).toBe('More members match: call setup--discord again with more of the username or nickname.');
+    const ten = await read(install(fakeDiscord([{ ...many, members: many.members.slice(1) }])).module, { server: '100', username: 'ada' });
+    expect((ten.data as { members: unknown[] }).members).toHaveLength(10);
+    expect(ten.data).not.toHaveProperty('note');
+  });
+
+  test('given a server alone, it reads that one server as the full read gives it, without listing the others', async () => {
+    const discord = fakeDiscord([HOME, ADMIN]);
+    const { module } = install(discord);
+    const whole = await read(module);
+    const r = await read(module, { server: '100' });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({ bot: { id: '900', name: 'ember' }, server: (whole.data as { servers: unknown[] }).servers[0] });
+    expect(discord.asked.slice(discord.asked.lastIndexOf('/users/@me')).filter((p) => p.startsWith('/users/@me/guilds'))).toEqual([]);
+    const gone = await read(module, { server: '300' });
+    expect(gone.error).toContain('The bot may no longer be in that server');
+  });
+
+  const big = (id: string, count: number, name = `Server ${id}`): FakeServer => ({
+    ...HOME, id, name, members: HOME.members,
+    channels: Array.from({ length: count }, (_, i) => ({ id: `${id}${String(i).padStart(4, '0')}`, name: `channel-${i}`, type: 0, position: i })),
+  });
+
+  test('where every server\'s channels together would pass what one answer can hold, the servers come with their counts of channels and without the channels, and say to read one server', async () => {
+    const r = await read(install(fakeDiscord([HOME, big('300', 400)])).module);
+    expect(r.success).toBe(true);
+    expect(JSON.stringify(r.data).length).toBeLessThanOrEqual(24_000);
+    const data = r.data as { servers: Array<Record<string, unknown>>; note: string };
+    expect(data.servers.map((s) => [s.id, s.textChannels, 'channels' in s])).toEqual([['100', 4, false], ['300', 400, false]]);
+    expect(data.note).toBe('Every server\'s channels together would pass what one answer can hold, so the servers come without them: call setup--discord with a server\'s id as server to read its channels.');
+  });
+
+  test('where the servers alone would pass what one answer can hold, the first that fit come, with how many of how many, and how the person copies another\'s id', async () => {
+    const servers = Array.from({ length: 150 }, (_, i) => big(`${400 + i}`, 1, `A server with a long name, number ${i}`));
+    const r = await read(install(fakeDiscord(servers)).module);
+    expect(r.success).toBe(true);
+    expect(JSON.stringify(r.data).length).toBeLessThanOrEqual(24_000);
+    const data = r.data as { servers: Array<{ id: string }>; note: string };
+    expect(data.servers.length).toBeLessThan(150);
+    expect(data.servers.map((s) => s.id)).toEqual(servers.slice(0, data.servers.length).map((s) => s.id));
+    expect(data.note).toBe(`${data.servers.length} of 150 servers are shown, since one answer can't hold more, without their channels: call setup--discord with a server's id as server to read its channels. The person can copy the id of a server not shown in Discord: with Developer Mode on (User Settings, Advanced), right-click the server and choose Copy Server ID.`);
+  });
+
+  test('where one server\'s channels would pass what one answer can hold, the first that fit in the tool\'s order come, with how many of how many, and how the person copies another\'s id', async () => {
+    const r = await read(install(fakeDiscord([big('300', 400)])).module, { server: '300' });
+    expect(r.success).toBe(true);
+    expect(JSON.stringify(r.data).length).toBeLessThanOrEqual(24_000);
+    const data = r.data as { server: { channels: Array<{ name: string }> }; note: string };
+    const n = data.server.channels.length;
+    expect(n).toBeLessThan(400);
+    expect(data.server.channels.map((c) => c.name)).toEqual(Array.from({ length: n }, (_, i) => `channel-${i}`));
+    expect(data.note).toBe(`${n} of 400 text and announcement channels are shown, since one answer can't hold more. The person can copy the id of a channel not shown in Discord: with Developer Mode on (User Settings, Advanced), right-click the channel and choose Copy Channel ID.`);
+  });
+
+  test('the person sees the read\'s line before Discord is asked anything, and a secret question asked meanwhile doesn\'t wait for the read', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((done) => { release = done; });
+    const discord = fakeDiscord([HOME]);
+    const slow = (async (input: string, init: RequestInit) => { await gate; return discord.fetch(input, init); }) as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), 'setup-discord-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, '.env'), `DISCORD_TOKEN="${TOKEN}"\n`, { mode: 0o600 });
+    const shown: string[] = [];
+    const module = new SetupModule({
+      dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: dir }, asker: () => ({ ask: async () => 'a-typed-value' }),
+      show: (line) => shown.push(line), fetch: slow,
+    });
+    const reading = read(module);
+    await Bun.sleep(20);
+    expect(shown).toContain('Reading the bot\'s servers and channels from Discord.');
+    const asked = module.handleToolCall({ id: 'a1', name: 'ask_secret', input: { name: 'NEW_TOKEN', purpose: 'a test' } } as ToolCall);
+    expect(await Promise.race([asked.then(() => 'answered'), Bun.sleep(500).then(() => 'waited')])).toBe('answered');
+    release();
+    expect((await reading).success).toBe(true);
   });
 
   test('the person is told of each read made with the bot\'s token, with a stored secret given as a username shown by its name', async () => {
@@ -189,7 +274,7 @@ describe('setup--discord', () => {
     expect(wait.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200: You are being rate limited., so the read stopped there. It asks for 3 s: call setup--discord again once that has passed.');
 
     const echoed = await read(install(fakeDiscord([HOME], { '/guilds/100/channels': () => Response.json({ message: `Missing Access for ${TOKEN}`, code: 50001 }, { status: 403 }) })).module);
-    expect(echoed.error).toBe('Discord answered 403 to GET /guilds/100/channels: Missing Access for <DISCORD_TOKEN> (code 50001), so the read stopped there. The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now.');
+    expect(echoed.error).toBe('Discord answered 403 to GET /guilds/100/channels: Missing Access for <DISCORD_TOKEN> (code 50001), so the read stopped there. The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now, and if that server is still listed and answers the same, tell the person what it says.');
 
     const page = await read(install(fakeDiscord([HOME], { '/applications/@me': () => new Response('<html>sign in</html>', { status: 200, headers: { 'content-type': 'text/html' } }) })).module);
     expect(page.error).toBe('Discord answered GET /applications/@me with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
@@ -197,5 +282,23 @@ describe('setup--discord', () => {
     const silent = install({ fetch: (async () => { throw new TypeError('fetch failed: getaddrinfo ENOTFOUND discord.com'); }) as unknown as typeof fetch });
     const unanswered = await read(silent.module);
     expect(unanswered.error).toBe('Discord couldn\'t be asked GET /users/@me (fetch failed: getaddrinfo ENOTFOUND discord.com), so the read stopped there. Call setup--discord again, and if it fails the same way, tell the person: their connection to discord.com is theirs to check.');
+
+    const notBot = await read(install(fakeDiscord([HOME], { '/users/@me': () => Response.json({}) })).module);
+    expect(notBot.error).toBe('Discord answered GET /users/@me with something other than the bot\'s user, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+  });
+
+  test('an answer in JSON that setup can\'t read the way it reads Discord\'s stops the read in setup\'s words, never with the token, rather than throwing', async () => {
+    const shapes: Array<[Record<string, () => Response>, Record<string, unknown>]> = [
+      [{ '/guilds/100/members/search': () => Response.json({ members: [] }) }, { server: '100', username: 'ada' }],
+      [{ '/guilds/100/roles': () => Response.json([{ id: '100', permissions: `lots ${TOKEN}` }]) }, {}],
+      [{ '/users/@me/guilds': () => Response.json(null) }, {}],
+    ];
+    for (const [answers, input] of shapes) {
+      const r = await read(install(fakeDiscord([HOME], answers)).module, input);
+      expect(r.success).toBe(false);
+      expect(r.error).toStartWith('The read stopped on an answer setup can\'t read (');
+      expect(r.error).toEndWith('). Tell the person: something between this machine and Discord may be answering in its place.');
+      expect(r.error).not.toContain(TOKEN);
+    }
   });
 });

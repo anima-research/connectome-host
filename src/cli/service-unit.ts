@@ -34,7 +34,7 @@ export function serviceUnits(root: string, platform: NodeJS.Platform, home: stri
     return {
       manager, work,
       host: { name: `connectome-${slug}.service`, file: join(dir, `connectome-${slug}.service`) },
-      shell: { name: `connectome-${slug}-shell.service`, file: join(dir, `connectome-${slug}-shell.service`) },
+      shell: { name: `connectome-${slug}.shell.service`, file: join(dir, `connectome-${slug}.shell.service`) },
     };
   }
   const dir = join(home, 'Library', 'LaunchAgents');
