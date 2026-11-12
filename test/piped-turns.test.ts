@@ -106,7 +106,7 @@ describe('the wait for a line\'s turn', () => {
     expect(await settled(wait)).toBe(true);
   });
 
-  test('a line is unanswered while its turn runs, and while it\'s owed one, even one whose wait ran out before it was taken in, as batch mode and the setup close both ask', async () => {
+  test('a line is unanswered while its turn runs, and while it\'s owed one, even one whose wait ran out before it was taken in, as setup\'s close asks', async () => {
     await onFakeTimers(async (advance) => {
       const { turns, emit } = setUp();
       const settledTrace = [...TURN_SETTLED_TRACES][0]!;
@@ -184,7 +184,6 @@ describe('the wait for a line\'s turn', () => {
       emit(settledTrace);
       expect(await settled(wait)).toBe(false);
       emit('inference:started');
-      await takeIn('tui');
       emit(settledTrace);
       expect(await settled(wait)).toBe(true);
     } finally {
@@ -401,7 +400,7 @@ describe('the wait for a line\'s turn', () => {
     expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on; it prints here when it comes)');
   });
 
-  test('with no cap, only the turn\'s end, or the conversation closing, ends it, and nothing is said of a cap', async () => {
+  test('with no cap, it waits however long the turn runs and ends at the turn\'s end, and nothing is said of a cap', async () => {
     await onFakeTimers(async (advance, settledNow) => {
       const { out, turns, emit } = setUp();
       const wait = turns.waitForTurn(null);
