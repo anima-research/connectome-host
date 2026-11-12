@@ -57,11 +57,24 @@ function shellPackage(work: string): void {
   }));
 }
 
+/** A plist's string values by key path, as plutil names them: a value in a nested dict is under its dict's key, then
+ *  a dot, then its own key. */
 function xmlPlistFields(path: string): Record<string, string> {
   const fields: Record<string, string> = {};
-  for (const [, key, value] of readFileSync(path, 'utf-8').matchAll(/<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g)) {
-    fields[key!] ??= value!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, '\'')
-      .replace(/&amp;/g, '&');
+  const within: string[] = [];
+  let key: string | null = null;
+  for (const [token, named, value] of readFileSync(path, 'utf-8')
+    .matchAll(/<key>([^<]*)<\/key>|<string>([^<]*)<\/string>|<\/?dict>|<\/?array>/g)) {
+    if (named !== undefined) key = named;
+    else if (token === '<dict>' || token === '<array>') {
+      within.push(key ?? '');
+      key = null;
+    } else if (token === '</dict>' || token === '</array>') within.pop();
+    else if (value !== undefined && key !== null) {
+      fields[[...within.slice(1), key].join('.')] = value.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"').replace(/&apos;/g, '\'').replace(/&amp;/g, '&');
+      key = null;
+    }
   }
   return fields;
 }
@@ -70,7 +83,7 @@ function plistFields(args: string[], fields: Record<string, string | number>, co
   if (args[0] === '-convert') return converts ? ok(JSON.stringify(fields))
     : { status: 1, stdout: 'invalid object in plist for destination format\n', stderr: '' };
   if (args[0] === '-lint') return ok('fixture: OK\n');
-  const value = fields[args[1]!] ?? fields[args[1]!.split('.').at(-1)!];
+  const value = fields[args[1]!];
   if (value === undefined) return { status: 1, stdout: 'No value at that key path\n', stderr: '' };
   if (args[0] === '-type') return ok((typeof value === 'string' ? 'string' : 'integer') + '\n');
   return ok(String(value) + '\n');
@@ -1150,7 +1163,7 @@ test('each server the recipe or the agent overlay names adds 90 s to the wait fo
   expect(f.err.join('\n')).toContain('no host said it was ready within 241 s');
 });
 
-test('a copy whose original\'s host answers on its socket is refused, naming that pid, before anything is written', async () => {
+test('an install whose data directory\'s socket answers with a host its unit doesn\'t run, as a copy\'s original would, is refused, naming that pid, before anything is written', async () => {
   const first = install();
   const f = fake(first);
   expect(await installService(f.ctx(['install', first.recipe]), f.system)).toBe(0);
@@ -1935,7 +1948,7 @@ test('anything but install with one recipe is a usage error, and stop and start 
   expect(f.systemd.calls).toEqual([]);
 });
 
-test('nothing the install prints holds a known or recorded secret\'s value or the shell token', async () => {
+test('a successful install prints none of the values .env holds for a known or recorded secret, nor the shell token', async () => {
   const at = install('My Resident', { shell: true });
   writeFileSync(join(at.work, '.env'),
     'DISCORD_TOKEN="discord-secret-value"\nANTHROPIC_API_KEY="sk-secret"\nSESSION_SERVER_PORT="3150"\n' +
@@ -2028,13 +2041,17 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a recipe 
 for (const platform of ['linux', 'darwin'] as const) test(platform + ' an install with no shell daemon leaves a shell unit of its name that runs another directory as it is', async () => {
   const at = install();
   const other = install('my resident', { shell: true, home: at.home });
-  const g = fake(other, { platform });
-  expect(await installService(g.ctx(['install', other.recipe]), g.system)).toBe(0);
+  const f = fake(at, { platform });
+  expect(await installService({ root: other.root, argv: ['install', other.recipe], out: () => {}, err: () => {} },
+    f.system)).toBe(0);
   const label = 'com.animalabs.connectome.my-resident';
+  if (platform === 'darwin') f.systemd.run('launchctl', ['bootout', `gui/1001/${label}`], {});
+  else f.systemd.run('systemctl', ['--user', 'stop', HOST], {});
   rmSync(platform === 'darwin' ? agentPlist(at, label) : hostUnit(at));
+  if (platform === 'linux') f.systemd.run('systemctl', ['--user', 'daemon-reload'], {});
   const unit = platform === 'darwin' ? agentPlist(at, `${label}.shell`) : shellUnit(at);
   const text = readFileSync(unit, 'utf-8');
-  const f = fake(at, { platform });
+  f.systemd.calls.length = 0;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(readFileSync(unit, 'utf-8')).toBe(text);
   expect(f.out.join('\n')).not.toContain('Stopped and removed');
@@ -2175,7 +2192,10 @@ test('a no-shell run whose host isn\'t ready leaves the shell daemon\'s unit as 
   writeFileSync(plain, '{}');
   const text = readFileSync(shellUnit(at), 'utf-8');
   f.systemd.exiting.add(HOST);
+  const startsBefore = f.systemd.starts.filter((start) => start.unit === HOST).length;
   expect(await installService(f.ctx(['install', plain]), f.system)).toBe(1);
+  expect(f.systemd.starts.filter((start) => start.unit === HOST).length).toBe(startsBefore + 1);
+  expect(f.err.join('\n')).toContain(`${HOST} is failed, and no host answers`);
   expect(readFileSync(shellUnit(at), 'utf-8')).toBe(text);
   expect(f.systemd.calls.filter((call) => call.includes('disable') && call.includes(SHELL))).toEqual([]);
 });
@@ -2306,4 +2326,81 @@ test('a refusal after the shell\'s settings are kept, such as the restart policy
   expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(true);
   expect(f.systemd.starts).toEqual([]);
   expect([...f.out, ...f.err].join('\n')).not.toContain('With a shell');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a shell daemon that has stopped by the time its host answers fails the install, which names the shell\'s log', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  const label = 'com.animalabs.connectome.my-resident.shell';
+  if (platform === 'linux') f.systemd.exiting.add(SHELL);
+  else {
+    const open = f.system.openHost;
+    f.system.openHost = async (root) => {
+      const agent = f.systemd.agents.get(label);
+      if (agent !== undefined) agent.pid = null;
+      return open(root);
+    };
+  }
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const said = f.err.join('\n');
+  expect(said).toContain(`the resident's shell daemon, ${platform === 'linux' ? SHELL : label}, didn't stay up after this ` +
+    'run started it');
+  expect(said).toContain(platform === 'linux' ? `journalctl --user -u ${SHELL} -f`
+    : `tail -f '${join(at.work, 'logs', 'shell.log')}'`);
+  expect(f.out.join('\n')).toContain('Its host answers');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a shell daemon started again before its host answers fails the install', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  const label = 'com.animalabs.connectome.my-resident.shell';
+  const open = f.system.openHost;
+  f.system.openHost = async (root) => {
+    if (platform === 'linux') f.systemd.run('systemctl', ['--user', 'restart', SHELL], {});
+    else f.systemd.run('launchctl', ['kickstart', `gui/1001/${label}`], {});
+    return open(root);
+  };
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`the resident's shell daemon, ${platform === 'linux' ? SHELL : label}, didn't stay ` +
+    'up after this run started it');
+});
+
+test('a run from a current directory that\'s gone fails with a message rather than a throw', async () => {
+  const at = install();
+  const f = fake(at);
+  Object.defineProperty(f.system, 'cwd', {
+    get() {
+      throw Object.assign(new Error('ENOENT: no such file or directory, uv_cwd'), { code: 'ENOENT' });
+    },
+  });
+  expect(await installService(f.ctx(['install', 'resident.json']), f.system)).toBe(1);
+  expect(f.err).toHaveLength(1);
+  expect(f.err[0]).toContain('uv_cwd');
+});
+
+for (const name of ['resident ', 'resident\\']) test(`on Linux, a working directory whose name ends in ${JSON.stringify(name.at(-1))} is refused before anything is written`, async () => {
+  const at = install(name, { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`The working directory ${JSON.stringify(at.work)} ends in a space or a backslash`);
+  expect(existsSync(join(unitsDir(at), 'connectome-resident.service'))).toBe(false);
+  expect(existsSync(join(unitsDir(at), 'connectome-resident.shell.service'))).toBe(false);
+  expect(existsSync(join(at.work, '.env'))).toBe(false);
+  expect(f.systemd.calls.filter((call) => call.includes('daemon-reload'))).toEqual([]);
+});
+
+test('a unit whose file names this directory while systemd shows an earlier load in another is refused with the reload that reads its files again', async () => {
+  const at = install();
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const dropIn = `${hostUnit(at)}.d`;
+  mkdirSync(dropIn);
+  writeFileSync(join(dropIn, 'elsewhere.conf'), '[Service]\nWorkingDirectory=/srv/elsewhere\n');
+  f.systemd.run('systemctl', ['--user', 'daemon-reload'], {});
+  rmSync(dropIn, { recursive: true });
+  f.err.length = 0;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const said = f.err.join('\n');
+  expect(said).toContain(`systemd shows ${HOST} as it last loaded it, while its file names ${at.work}`);
+  expect(said).toContain('XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload');
 });

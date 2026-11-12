@@ -92,7 +92,9 @@ to stop, `kickstart -k` to restart.) A service `connectome service install`
 writes is named after the install's working directory instead:
 `com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
 shell daemon `com.animalabs.connectome.<name>.shell` /
-`connectome-<name>.shell.service`. `connectome` alone shows its own stop and
+`connectome-<name>.shell.service`, with `<name>` the directory's name in lower
+case, each run of characters other than letters and digits made one `-` and
+none at either end. `connectome` alone shows its own stop and
 start commands, and how to follow its log. A stop that runs past the
 platform's timeout is ended by SIGKILL, and what was still in flight is cut
 off: on macOS that timeout is the exit timeout `launchctl print
@@ -334,7 +336,9 @@ its fallback need: systemd's `Restart=on-failure` does.
 **Moving or copying an install.** Setup records the directory that holds the
 install root, and `start.js` and `connectome` refuse to run an install moved
 or copied away from it, since its record still names the places of the
-install it was. Run setup again in the new directory:
+install it was. After a move, a service `connectome service install` wrote
+goes first: take its units away, as said below, before setup's run, since
+setup refuses while the host runs. Run setup again in the new directory:
 `'<root>/connectome' setup discord` for an install `connectome setup` made, or
 for one set up by hand, the setup of the release the install runs, with the
 new `DATA_DIR`:
@@ -372,7 +376,10 @@ service that `connectome service install` wrote: its units, named after the
 old directory as under Start / stop / restart above, still name that
 directory. After a move, take them away: on Linux, run `systemctl --user
 disable --now` with each unit, remove its file in `~/.config/systemd/user`,
-and run `systemctl --user daemon-reload`; on macOS, run `launchctl bootout
+and run `systemctl --user daemon-reload`. `systemctl --user` finds this
+user's systemd through `XDG_RUNTIME_DIR`: in a session that doesn't set it,
+start each of those commands with `XDG_RUNTIME_DIR=/run/user/$(id -u)`. On
+macOS, run `launchctl bootout
 gui/$(id -u)` with each unit's plist in `~/Library/LaunchAgents`, and remove
 it. Then run `connectome service install <recipe>` in the new directory, which
 refuses while a unit of its name names the old directory. A copy can have a

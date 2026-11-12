@@ -158,9 +158,9 @@ export async function runService(given: CliContext, sys: ServiceSystem = machine
 export async function installService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
   const root = ctx.root!;
   const given = ctx.argv[1]!;
-  const recipe = /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
   const cmd = typedCommand(root, sys.env.PATH);
   try {
+    const recipe = /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
     return await install(ctx, sys, root, recipe, cmd);
   } catch (error) {
     ctx.err(`connectome: ${error instanceof Refusal || error instanceof ContractError ? error.message
@@ -278,6 +278,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (shell !== null) keepShellSettings(ctx, sys, work, shell);
   const shellLive = () => ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and ` +
     'whoever talks to it on Discord can ask it to.');
+  let shellStart: string | undefined;
   if (manager === 'systemd-user') {
     if (texts.shell !== null) {
       writeUnit(names.shell, texts.shell);
@@ -319,7 +320,12 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       const running = RUNNING.has(shown.get('ActiveState') ?? '');
       systemctl(sys, env, ['restart', unit.name]);
       ctx.out(running ? `Restarted ${unit.name}.` : `Started ${unit.name}.`);
-      if (unit === names.shell) shellLive();
+      if (unit === names.shell) {
+        shellLive();
+        const started = showUnit(sys, env, unit.name, ['InvocationID']);
+        if (typeof started === 'string') throw new Refusal(`${started}. The units' files are written and enabled.`);
+        shellStart = started.get('InvocationID') ?? '';
+      }
     }
   } else {
     mkdirSync(dirname(logPath), { recursive: true });
@@ -350,7 +356,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           `${consequence}${host} Repeat this service install command with the same recipe to load it.`);
       }
       ctx.out(`${loaded ? 'Reloaded' : 'Loaded'} ${unit.name} from ${unit.file}.`);
-      if (unit === names.shell) shellLive();
+      if (unit === names.shell) {
+        shellLive();
+        const started = agentState(sys, env, unit);
+        shellStart = started.kind === 'running' ? started.pid : undefined;
+      }
     }
     ctx.out(`launchd loads ${units.length === 1 ? 'this agent' : 'these agents'}, and so starts ` +
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
@@ -366,12 +376,38 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
         'run clears that limit'
       : 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'}.`);
-  } else {
+  }
+  let lost: string | null = null;
+  if (typeof ready !== 'string') {
     ctx.out(`Its host answers: pid ${ready.pid}, recipe ${ready.recipe}.`);
     if (shellBin === null) await removeShell(ctx, sys, env, manager, names.shell, work);
+    else lost = shellLost(sys, env, manager, names.shell, shellStart);
+  }
+  if (lost !== null) {
+    ctx.err(`connectome: ${lost} Its log shows what happened: ${manager === 'systemd-user'
+      ? `journalctl --user -u ${names.shell.name} -f` : `tail -f ${shellWord(join(work, 'logs', 'shell.log'))}`}. ` +
+      `Put that right, then run ${cmd} service install ${shellWord(recipe)} again.`);
   }
   for (const line of serviceLines(root, sys) ?? []) ctx.out(line);
-  return typeof ready === 'string' ? 1 : 0;
+  return typeof ready === 'string' || lost !== null ? 1 : 0;
+}
+
+function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Manager, unit: ServiceUnit,
+  started: string | undefined): string | null {
+  const daemon = `the resident's shell daemon, ${unit.name},`;
+  if (manager === 'systemd-user') {
+    const shown = showUnit(sys, env, unit.name, ['ActiveState', 'SubState', 'InvocationID']);
+    if (typeof shown === 'string') return `whether ${daemon} still runs can't be told: ${shown}.`;
+    const again = shown.get('InvocationID') !== started;
+    if (RUNNING.has(shown.get('ActiveState') ?? '') && !again) return null;
+    return `${daemon} didn't stay up after this run started it: systemd shows it ${stateOf(shown)}` +
+      `${again ? ', in a later start than this run\'s' : ''}.`;
+  }
+  const state = agentState(sys, env, unit);
+  if (state.kind === 'unknown') return `whether ${daemon} still runs can't be told: launchctl list ${unit.name} failed: ${state.why}.`;
+  if (state.kind === 'running' && (started === undefined || state.pid === started)) return null;
+  return `${daemon} didn't stay up after this run started it: launchd shows it ${state.kind === 'running'
+    ? `running as pid ${state.pid}, where this run started pid ${started}` : 'not running'}.`;
 }
 
 function envWritable(envFile: string): void {
@@ -747,7 +783,7 @@ function runsFrom(shown: string, home: string): string | null {
   return realOrResolved(set === '~' ? home : set);
 }
 
-type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string } | { kind: 'untold' }
+type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
   | { kind: 'unshown'; shown: string };
 
 function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -770,7 +806,7 @@ function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: Service
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
   return runsHere(runsIn, work) ? { kind: 'ok' }
-    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
+    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: text !== null };
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -780,6 +816,9 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
     : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
+      (owner.loadedOnly ? ` systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file ` +
+        `or drop-ins changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then repeat this service ` +
+        'install command with the same recipe.' : '') +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
       'install up again in a directory of another name.');
   }
