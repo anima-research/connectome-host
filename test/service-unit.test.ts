@@ -28,6 +28,9 @@ test('a systemd unit whose start or working directory line install could not hav
     [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "$HOME/r.json"'), /ExecStart/],
     [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/%h'), /WorkingDirectory/],
     [`${text}ExecStart="/bin/true"\n`, /ExecStart/],
+    [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/w\\'), /backslash/],
+    [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "r\t.json"'), /ExecStart/],
+    [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "r\u0001.json"'), /ExecStart/],
   ];
   for (const [edited, said] of cases) {
     const read = readUnit('systemd-user', edited);
@@ -44,6 +47,9 @@ test('a launch agent whose start or working directory line install could not hav
     [text.replace('<string>/srv/w</string>', '<string>/srv/<w</string>'), /WorkingDirectory/],
     [text.replace('  </array>\n', ''), /ProgramArguments/],
     [text.replace(/\n {4}<string>/g, '\n\t\t<string>'), /ProgramArguments/],
+    [text.replace('<string>r.json</string>', '<string>r\t.json</string>'), /ProgramArguments/],
+    [text.replace('<string>r.json</string>', '<string>r\u0001.json</string>'), /ProgramArguments/],
+    [text.replace('<string>/srv/w</string>', '<string>/srv/\tw</string>'), /WorkingDirectory/],
   ];
   for (const [edited, said] of cases) {
     const read = readUnit('launchd', edited);

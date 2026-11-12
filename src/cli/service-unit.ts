@@ -46,8 +46,10 @@ export function serviceUnits(root: string, platform: NodeJS.Platform, home: stri
   };
 }
 
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
 export function plain(value: string, what: string): string {
-  if (/[\u0000-\u001f\u007f]/.test(value)) {
+  if (CONTROL.test(value)) {
     throw new Refusal(`${what} holds a line break or another control character, so it can't go in a unit. Nothing was ` +
       'written.');
   }
@@ -137,6 +139,9 @@ export function readUnit(manager: Manager, text: string): UnitRead | { why: stri
 
 function readSystemdUnit(text: string): UnitRead | { why: string } {
   const lines = text.split('\n');
+  if (lines.some((line) => line.endsWith('\\'))) {
+    return { why: 'a line of it ends in a backslash, which systemd joins to the next line, where service install writes none' };
+  }
   const only = (key: string): string | { why: string } => {
     const found = lines.filter((line) => line.startsWith(`${key}=`));
     if (found.length !== 1) {
@@ -165,7 +170,7 @@ function execWords(value: string): string[] | null {
     let word = '';
     for (;;) {
       const c = value[at];
-      if (c === undefined) return null;
+      if (c === undefined || CONTROL.test(c)) return null;
       if (c === '"') {
         at++;
         break;
@@ -219,7 +224,7 @@ function stringOf(line: string, indent: string): string | null {
   const open = `${indent}<string>`;
   if (!line.startsWith(open) || !line.endsWith('</string>')) return null;
   const inner = line.slice(open.length, -'</string>'.length);
-  if (/[<>]/.test(inner)) return null;
+  if (/[<>]/.test(inner) || CONTROL.test(inner)) return null;
   let bad = false;
   const decoded = inner.replace(/&([^;]*);?/g, (whole, name: string) => {
     if (!whole.endsWith(';') || !(name in ENTITIES)) bad = true;

@@ -146,14 +146,15 @@ const discordFetch = (async (input: string | URL | Request, init?: RequestInit):
   return new Response('not found', { status: 404 });
 }) as typeof fetch;
 
-function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lines' | 'traceback' | 'clean' | 'signal' | 'garbled' | 'silent' | 'misshapen' } = {}): string {
+function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lines' | 'traceback' | 'clean' | 'signal' | 'garbled' | 'silent' | 'misshapen'; version?: string } = {}): string {
   const end = opts.end ?? 'lines';
-  const path = join(dir, opts.sleep ? 'python3-slow' : end !== 'lines' ? `python3-${end}` : 'python3');
+  const path = join(dir, opts.sleep ? 'python3-slow' : end !== 'lines' ? `python3-${end}` : opts.version !== undefined ? `python3-${opts.version}` : 'python3');
   const LINE = '{"text":"a line the ladder only says","counts":false}';
   const COUNTED = '{"text":"a finding the ladder counts","counts":true}';
   const written = (json: string): string[] => [`printf '%s\\n' 'connectome-doctor findings: ${json}'`, 'exit 0'];
   writeFileSync(path, [
     '#!/bin/sh',
+    `if [ "$1" = -c ]; then echo '${opts.version ?? '3.12'}'; exit 0; fi`,
     'shift',
     'echo "ladder args: $*"',
     `printf '%s' "$CONNECTOME_DOCTOR_WITHHOLD" > '${join(dir, 'withheld.json')}'`,
@@ -892,6 +893,7 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
     expect(r.out).toContain('The ladder reads the service\'s unit and log, so it runs once a service is installed.');
     expect(r.out).not.toContain('ladder args');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
     expect(r.out).not.toContain('ember (900)');
     expect(r.status).toBe(1);
     const nowhere = await withHost(at, HEALTHY_HOST, () => run(at, { platform: 'win32' }));
@@ -911,6 +913,7 @@ describe('connectome doctor', () => {
     expect(r.out).toContain(`✗ ${at.unit} isn't the unit file service install writes: `);
     expect(r.out).toContain(`\`${join(at.root, 'connectome')} service install <recipe>\` writes it anew, or says why it can't.`);
     expect(r.out).not.toContain('ladder args');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
     const ladder = 'The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.';
     expect(r.out).toContain(ladder);
     expect(r.out).toMatch(/Discord isn't checked: .*the service's unit names, and doctor can't use that unit/);
@@ -919,8 +922,9 @@ describe('connectome doctor', () => {
     writeUnit(at, join(at.work, 'recipe.json'));
     writeFileSync(at.unit, readFileSync(at.unit, 'utf-8').replace(/"[^"]*start\.js" /, ''));
     const other = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(other.out).toContain(`✗ ${at.unit} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`);
+    expect(other.out).toContain(`✗ ${at.unit} doesn't run this install's start.js, ${join(at.root, 'start.js')}, right after its Bun, with a recipe after it, as the one service install writes does.`);
     expect(other.out).not.toContain('ladder args');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
     expect(other.out).toContain(ladder);
     rmSync(at.unit);
     mkdirSync(at.unit);
@@ -1567,6 +1571,7 @@ describe('connectome doctor', () => {
     const r = await run(at);
     expect(r.out).toContain('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it doesn\'t run.');
     expect(r.out).not.toContain('ladder args');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
     expect(r.out).not.toMatch(/✗ The ladder reads/);
     expect(r.out.split('names its data directory as "data", not an absolute path').length - 1).toBe(1);
     expect(r.out).toMatch(/✗ No host answers: The install record at \S+ names its data directory as "data"/);
@@ -1576,6 +1581,7 @@ describe('connectome doctor', () => {
     const at = install({ manager: 'launchd' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).not.toContain('ladder args');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
     expect(r.out).toMatch(/launchd/);
     expect(r.out).toMatch(/Doctor found no problem, though the ladder didn't run and the fit wasn't checked, as said above\.$/);
     expect(r.status).toBe(0);
@@ -2788,7 +2794,7 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
       [process.execPath, '--no-env-file', join(at.root, 'start.js'), join(at.work, 'recipe.json'), '--headless'],
       Object.entries(unitEnvironment(at)), null));
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toContain(`✗ ${at.unit} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`);
+    expect(r.out).toContain(`✗ ${at.unit} doesn't run this install's start.js, ${join(at.root, 'start.js')}, right after its Bun, with a recipe after it, as the one service install writes does.`);
   });
 
   test('as root, on an install another user owns, doctor stops at once and says to run it as that user, as install does', async () => {
@@ -2863,6 +2869,7 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(r.out).toContain('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while ' +
       'systemd runs the service in another directory, said above: that process isn\'t this install\'s host.');
     expect(r.out).not.toContain('Where an incoming message got to');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
   });
 
   test('the service\'s section says that doctor reads the unit or plist as loaded or on disk, not the running host\'s own environment', async () => {
@@ -2911,5 +2918,53 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     expect(r.out).toContain(`${at.unit} names no directory it runs in, where install writes this install's, ${at.work}, so install ` +
       'takes it as another\'s, and doctor reads nothing from it. Its name comes from this directory\'s name.');
     expect(r.out).not.toContain('service install');
+  });
+
+  test('a python3 older than 3.7, which the ladder needs, leaves the ladder unrun with a section line naming both, and 3.7 runs it', async () => {
+    const at = install();
+    const old = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { version: '3.6' }) }));
+    expect(old.out).toContain('The pipeline ladder needs Python 3.7 or later, and python3 on PATH is 3.6. The checks above don\'t.');
+    expect(old.out).not.toContain('ladder args');
+    expect(old.out).not.toMatch(/✗ The pipeline ladder/);
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    const enough = install();
+    const ran = await withHost(enough, HEALTHY_HOST, () => run(enough, { python: fakePython(enough.work, { version: '3.7' }) }));
+    expect(ran.out).toContain('ladder args');
+  });
+
+  test('a shell daemon\'s unit that names no directory to run in is another install\'s, as install takes it, with no host unit installed', async () => {
+    const at = install();
+    const units = serviceUnits(at.root, at.platform, at.home)!;
+    rmSync(at.unit);
+    mkdirSync(dirname(units.shell.file), { recursive: true });
+    writeFileSync(units.shell.file, systemdUnit('Connectome test shell', at.work, [join(at.work, 'node_modules/.bin/session-server')], [], null)
+      .replace(`WorkingDirectory=${at.work}\n`, ''));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`${units.shell.file} names no directory it runs in, where install writes this install's, ${at.work}, so install ` +
+      'takes it as another\'s, and doctor reads nothing from it.');
+    expect(r.out).not.toContain('service install <recipe>` writes one');
+  });
+
+  test('a unit in this install\'s directory that runs another install\'s start.js isn\'t read as this install\'s service, and the ladder doesn\'t run', async () => {
+    const at = install();
+    writeFileSync(at.unit, systemdUnit('Connectome test', at.work, [process.execPath, '/another/install/connectome-host/start.js',
+      join(at.work, 'recipe.json'), '--headless'], Object.entries(unitEnvironment(at)), null));
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`✗ ${at.unit} doesn't run this install's start.js, ${join(at.root, 'start.js')}, right after its Bun, with a recipe ` +
+      'after it, as the one service install writes does.');
+    expect(r.out).not.toContain('ladder args');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+  });
+
+  test('a failed turn under a unit doctor refuses names its line\'s start but no search of the service\'s log, since whose host answers isn\'t told', async () => {
+    const at = install();
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
+    const health = { ...HEALTH, agents: [{ ...HEALTH.agents[0], consecutiveInferenceFailures: 1,
+      lastInference: { startedAt: STARTED + 40_000, failedAt: STARTED + 41_000 } }] };
+    const r = await withHost(at, { ...HEALTHY_HOST, health }, () => run(at));
+    expect(r.out).toContain('isn\'t the unit file service install writes');
+    const failed = r.out.split('\n').find((line) => line.includes('last turn\'s model call failed'));
+    expect(failed).toContain('starts `[inference-failed] agent=');
+    expect(failed).not.toContain('journalctl');
   });
 });

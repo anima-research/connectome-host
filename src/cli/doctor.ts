@@ -2,7 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -167,13 +167,18 @@ export async function doctor(
         serviceError = namesElsewhere(units.host.file, other.runsIn, units.work);
       } else if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
-      } else if (basename(read.argv[1] ?? '') !== 'start.js' || read.argv[2] === undefined) {
-        // Bun's own flags before start.js, such as --env-file, change what the service reads, which doctor's
-        // read of its environment wouldn't.
-        serviceError = `${units.host.file} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`;
       } else {
         const named = units.manager === 'systemd-user' ? systemdWorkingDirectory(text)! : read.workingDirectory;
-        service = { units, recipe: read.argv[2]!, work: named === '~' ? parts.home : named, bun: read.argv[0]! };
+        const runsIn = named === '~' ? parts.home : named;
+        const launcher = join(root, 'start.js');
+        if (read.argv[1] === undefined || resolve(runsIn, read.argv[1]) !== launcher || read.argv[2] === undefined) {
+          // Bun's own flags before start.js, such as --env-file, change what the service reads, which doctor's
+          // read of its environment wouldn't.
+          serviceError = `${units.host.file} doesn't run this install's start.js, ${launcher}, right after its Bun, with a ` +
+            'recipe after it, as the one service install writes does.';
+        } else {
+          service = { units, recipe: read.argv[2]!, work: runsIn, bun: read.argv[0]! };
+        }
       }
     }
   }
@@ -540,7 +545,7 @@ export async function doctor(
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
         // The service's log holds only the service's own host's stderr.
-        const logged = commands === null || notTheService || pidUntold ? null : units;
+        const logged = service === null || commands === null || notTheService || pidUntold ? null : units;
         if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
       });
     }
@@ -611,6 +616,7 @@ export async function doctor(
   }
 
   let ladderRan = false;
+  let tooOld: string | null = null;
   if (serviceError !== null) {
     report.section('The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.');
   } else if (service === null) {
@@ -623,6 +629,8 @@ export async function doctor(
       'runs the service in another directory, said above: that process isn\'t this install\'s host.');
   } else if (parts.python === null) {
     report.section('The pipeline ladder needs python3, which isn\'t on PATH. The checks above don\'t.');
+  } else if ((tooOld = pythonOlderThan37(parts.python, parts.ladderLimitMs)) !== null) {
+    report.section(`The pipeline ladder needs Python 3.7 or later, and python3 on PATH is ${tooOld}. The checks above don't.`);
   } else if (dataDir === null) {
     report.section('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it ' +
       'doesn\'t run.');
@@ -1338,6 +1346,14 @@ function namesElsewhere(file: string, directory: string | null, work: string): s
 function shellOfAnother(units: ServiceUnits, sys: ServiceSystem): string | null {
   const other = namedElsewhere(sys, units.manager, units.shell, units.work);
   return other === undefined ? null : namesElsewhere(units.shell.file, other.runsIn, units.work);
+}
+
+function pythonOlderThan37(python: string, limitMs: number): string | null {
+  const ran = spawnSync(python, ['-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], { encoding: 'utf-8', timeout: limitMs });
+  const version = ran.status === 0 ? /^(\d+)\.(\d+)$/.exec(ran.stdout.trim()) : null;
+  if (version === null) return null;
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  return major < 3 || (major === 3 && minor < 7) ? `${major}.${minor}` : null;
 }
 
 function fileWord(manager: Manager): string {
