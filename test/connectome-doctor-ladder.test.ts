@@ -1298,4 +1298,15 @@ describe('the ladder, its round on the review of 3c6be0fd0', () => {
     expect(findings(at)).toContainEqual(unread);
     expect(findings(at)).not.toContainEqual(hardDown);
   });
+
+  test('a turn\'s call whose rawResponse, or the response in it, isn\'t an object is read as one with no stop reason, and the ladder goes on', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    for (const raw of ['bad', ['bad'], { response: 'bad' }]) {
+      writeFileSync(calls, `${row(at.now - 5, 'stream', raw)}\n`);
+      const { out, status } = ladder(at, ['--findings-json']);
+      expect([raw, status, out]).toEqual([raw, 0, expect.stringMatching(/inference \(llm call\)\s+\S+ \S+\s+\(\s*\d+s ago\)\s+answered/)]);
+      expect(out).toContain('connectome-doctor findings: ');
+    }
+  });
 });

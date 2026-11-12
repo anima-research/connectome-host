@@ -404,6 +404,13 @@ def err_text(err):
     return "" if err is None else str(err)
 
 
+def response_of(row):
+    raw = row.get("rawResponse")
+    raw = raw if isinstance(raw, dict) else {}
+    inner = raw.get("response")
+    return inner if isinstance(inner, dict) and inner else raw
+
+
 llm_ts = None
 llm_detail = ""
 turn_ts = None
@@ -480,16 +487,14 @@ if llm_files:
             continue
         call = r
         turn_ts = parse_iso(str(r.get("timestamp", "")))
-        turn_resp = r.get("rawResponse") or {}
-        turn_resp = turn_resp.get("response") or turn_resp
+        turn_resp = response_of(r)
         turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
         llm_window_from = None
         break
     newer_unread = incomplete or unreadable > 0
     if call is not None:
         llm_ts = parse_iso(str(call.get("timestamp", "")))
-        resp = call.get("rawResponse") or {}
-        resp = resp.get("response") or resp
+        resp = response_of(call)
         sr = resp.get("stop_reason")
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
