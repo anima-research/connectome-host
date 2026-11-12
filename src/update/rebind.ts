@@ -2,8 +2,9 @@ import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, renameSync,
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ContractError, ITEM_UPDATE_DIR, VersionError, childrenFilePath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir,
-  pendingGoBack, readCurrent, readGoBackList, readJournal, readRecord, realOrResolved, syncDir, unfinishedTrial,
+  markSpent, pendingGoBack, readCurrent, readGoBackList, readJournal, readRecord, realOrResolved, syncDir, unfinishedTrial,
   WRITE_RECORD_AGAIN, writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
+  type Mark,
 } from './contract.js';
 import { makeDirs } from './data-swap.js';
 import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
@@ -347,10 +348,18 @@ export function unfinishedWords(root: string): string | null {
       'so setup can\'t tell whether a trial or a Go back is unfinished there. Setup has changed nothing. Make it ' +
       'readable to this user, or put it right, and run setup again.';
   }
-  const trial = unfinishedTrial(lines, readCurrent(root));
+  const current = readCurrent(root);
+  const trial = unfinishedTrial(lines, current);
   if (trial !== null) return unfinishedTrialWords(trial);
   const goBack = pendingGoBack(lines);
-  return goBack === null ? null : unfinishedGoBackWords(goBack);
+  if (goBack !== null) return unfinishedGoBackWords(goBack);
+  const path = installPaths(root).mark;
+  const mark = readRecord<Mark>(path, 'mark');
+  if (mark === null || mark.why !== 'go-back' || markSpent(mark, lines, current)) return null;
+  return `A Go back is asked for: the mark at ${path} asks the next start to go back to ${mark.to}, and that start ` +
+    'goes back from what\'s listed here. Setup has changed nothing. Let that Go back run where the install was, by ' +
+    'starting it there, moving it back first if it was moved, and then move or copy it again. Or remove the mark ' +
+    'file, which drops the request.';
 }
 
 export interface MovedAside {

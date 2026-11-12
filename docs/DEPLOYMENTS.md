@@ -391,7 +391,9 @@ directory, leaving any outside it, which may be another install's. Setup refuses
 a Go back is unfinished, since that trial's fallback restores from them, and
 the next start goes on with that Go back from them: let it end where the
 install was, moving it back first if it was moved, and then move or copy it
-again. Nothing
+again. It refuses too while a Go back is asked for and no start has begun
+it, since that start goes back from them: let it run there the same way, or
+remove the install root's `mark.json`, which drops the request. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
 move out what you want of it rather than deleting it. Until the next update
 takes a new copy, `/update back restore` isn't there, and each update
