@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
+import { readWithoutWaiting } from '../update/contract.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { typedCommand } from './install-command.js';
 import { SHOWN_FILE, shownToPerson } from './shown.js';
@@ -172,7 +173,7 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
 function notTrusted(manifest: string): string | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(manifest, 'utf-8'));
+    parsed = JSON.parse(readWithoutWaiting(manifest));
   } catch (error) {
     return `can't be read (${(error as Error).message})`;
   }

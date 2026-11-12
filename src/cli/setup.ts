@@ -20,8 +20,8 @@ import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, realOrResolved,
-  releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,
+  realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import {
@@ -1073,7 +1073,7 @@ function offersOwnUser(world: SetupWorld, linger = world.lingerOf(world.user)): 
 function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {
   let manifest: Record<string, unknown> = {};
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf-8'));
+    const parsed: unknown = JSON.parse(readWithoutWaiting(file));
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { reason: `${file} holds no JSON object` };
     }
@@ -1100,7 +1100,7 @@ function addTrusted(file: string, names: string[]): { added: string[] } | { reas
 export function declaredDependencies(dir: string): Set<string> | null {
   let text: string;
   try {
-    text = readFileSync(join(dir, 'package.json'), 'utf-8');
+    text = readWithoutWaiting(join(dir, 'package.json'));
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? new Set() : null;
   }
