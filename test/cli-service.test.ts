@@ -988,6 +988,19 @@ test('a drop-in that stops the restart on failure leaves the unit without the li
   expect(said).toContain('left without CONNECTOME_SUPERVISED=1');
 });
 
+test('a host unit that systemd shows with another working directory, once written, is refused: nothing is started', async () => {
+  const at = install();
+  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
+  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nWorkingDirectory=/srv/elsewhere\n');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(existsSync(hostUnit(at))).toBe(true);
+  expect(readFileSync(hostUnit(at), 'utf-8')).not.toContain('CONNECTOME_SUPERVISED');
+  expect(f.systemd.starts).toEqual([]);
+  expect(f.err.join('\n')).toContain(`systemd didn't load ${HOST} from ${hostUnit(at)} with ${at.work} as its working ` +
+    'directory (it shows loaded, in /srv/elsewhere)');
+});
+
 test('a running host whose restart check fails keeps running, and the next run that passes restarts it', async () => {
   const at = install();
   const f = fake(at);
@@ -1958,6 +1971,23 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a recipe 
   expect(f.out).toContain('No shell daemon is set up: the recipe names no shell client or shell setting.');
   expect(f.out).toContain(`Stopped and removed ${name}: this install has no shell daemon now. Its settings stay in ` +
     `${join(at.work, '.env')}.`);
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' an install with no shell daemon leaves a shell unit of its name that runs another directory as it is', async () => {
+  const at = install();
+  const other = install('my resident', { shell: true, home: at.home });
+  const g = fake(other, { platform });
+  expect(await installService(g.ctx(['install', other.recipe]), g.system)).toBe(0);
+  const label = 'com.animalabs.connectome.my-resident';
+  rmSync(platform === 'darwin' ? agentPlist(at, label) : hostUnit(at));
+  const unit = platform === 'darwin' ? agentPlist(at, `${label}.shell`) : shellUnit(at);
+  const text = readFileSync(unit, 'utf-8');
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(unit, 'utf-8')).toBe(text);
+  expect(f.out.join('\n')).not.toContain('Stopped and removed');
+  expect(f.systemd.calls.filter((call) => !call.startsWith('plutil ') &&
+    call.includes(platform === 'darwin' ? `${label}.shell` : SHELL))).toEqual([]);
 });
 
 test('serviceCommands is null until the host\'s unit file is there, and names the shell daemon only while its file is', async () => {
