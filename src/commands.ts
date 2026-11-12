@@ -41,7 +41,9 @@ import { leavesOutChangedThinking } from './logging-adapter.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
-import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
+import {
+  HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitchQuiesced, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork,
+} from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
@@ -312,7 +314,7 @@ export function handleCommand(command: string, app: AppContext, input: CommandIn
 function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext, input: CommandInput): CommandResult {
   const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
-  const refused = change ? refusedWhileSwitching(app, change) : null;
+  const refused = change ? refusedWhileSwitching(app, change) ?? refusedWhileSwitchQuiesced(app, change) : null;
   if (refused) return { lines: [{ text: refused, style: 'system' }] };
   const framework = app.framework;
   const requester = input.requester ?? HOST_COMMAND;

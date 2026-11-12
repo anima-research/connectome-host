@@ -26,7 +26,7 @@ function readableApp(switching: boolean): App {
     { id: 's2', name: 'second', manuallyNamed: true },
   ];
   return {
-    framework: { getAllAgents: () => [agent] } as unknown as AgentFramework,
+    framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [agent] } as unknown as AgentFramework,
     sessionManager: {
       listSessions: () => sessions,
       getActiveSession: () => sessions[0],
@@ -102,6 +102,7 @@ describe('a session switch is not started while a command that changes the sessi
     const sessions = [{ id: 's1', name: 'first' }, { id: 's2', name: 'second' }];
     const app: App = {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAllAgents: () => [agent],
         getAgent: () => agent,
         getStore: () => ({ currentBranch: () => ({ name: 'main' }) }),
@@ -168,7 +169,7 @@ describe('a session switch is not started while a command that changes the sessi
     const sessions = [{ id: 's1', name: 'first' }, { id: 's2', name: 'second' }];
     const fleet = { name: 'fleet', handleToolCall: () => Promise.reject(new Error('the child is gone')) };
     const app: App = {
-      framework: { getAllModules: () => [fleet] } as unknown as AgentFramework,
+      framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllModules: () => [fleet] } as unknown as AgentFramework,
       sessionManager: {
         findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
         getActiveSession: () => sessions[0],
@@ -215,6 +216,7 @@ describe('with no session switch under way', () => {
     const app: App = {
       ...readableApp(false),
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         nudgeAgent: (name: string | undefined) => {
           calls.push(name);
           return { ok: true, agentName: 'main', agentStatus: 'idle' };
@@ -231,7 +233,7 @@ describe("another entry's work holds off a session switch until it settles", () 
   function plainApp(): App {
     const sessions = [{ id: 's1', name: 'first' }, { id: 's2', name: 'second' }];
     return {
-      framework: {} as unknown as AgentFramework,
+      framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }) } as unknown as AgentFramework,
       sessionManager: {
         findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
         getActiveSession: () => sessions[0],
