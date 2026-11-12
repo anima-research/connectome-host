@@ -534,13 +534,16 @@ async function installAndStart(
       `install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
       'registry it may run none of the others\'.');
   } else if (listed.added.length > 0) {
-    const fromBun = listed.added.some((name) => !HOST_TRUSTED.includes(name));
-    const what = [fromBun ? 'those Bun allows by default' : null,
+    const fromBun = listed.added.filter((name) => !HOST_TRUSTED.includes(name)).length;
+    const ofBun = Array.isArray(trusted) ? trusted.filter((name) => !HOST_TRUSTED.includes(name)).length : 0;
+    const bunPart = fromBun === 0 ? null
+      : fromBun < ofBun ? 'the rest of those Bun allows by default' : 'those Bun allows by default';
+    const what = [bunPart,
       ...listed.added.filter((name) => HOST_TRUSTED.includes(name))
         .map((name) => name === SERVERS.shell ? `${name}, which gives the resident a shell if it gets one` : name)]
       .filter((part) => part !== null).join(', and ');
     out(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: ${what}.` +
-      (fromBun ? ' Without that list, Bun runs the install scripts of its default packages only when they come from ' +
+      (fromBun > 0 ? ' Without that list, Bun runs the install scripts of its default packages only when they come from ' +
         'npm\'s own registry.' : ''));
   }
 
