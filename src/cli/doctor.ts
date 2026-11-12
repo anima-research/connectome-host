@@ -198,6 +198,10 @@ export async function doctor(
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
     const read = units === null || (service === null && serviceError === null) ? null : unitEnv(units, parts);
+    const set = read?.env;
+    if (set !== undefined) {
+      secrets = [...secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
+    }
     if (read !== null && 'why' in read) {
       const { name, file } = units!.host;
       const why = read.why.replace(/\.$/, '');
@@ -207,10 +211,6 @@ export async function doctor(
           '`connectome service install`, which writes it anew.'
         : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
           '`connectome service install` writes the unit anew.');
-    }
-    if (read !== null && service === null) {
-      secrets = [...secrets,
-        ...named.names.flatMap((name) => read.env[name] ? withSentForms({ name, value: read.env[name] }) : [])];
     }
     const unit = service === null ? null : read;
     envFiles = unit === null ? [] : unit.files;
@@ -1066,7 +1066,7 @@ function shownWords(text: string): string[] {
 }
 
 function unitEnv(service: ServiceUnits, parts: DoctorParts):
-  { env: Record<string, string>; files: string[] } | { why: string } {
+  { env: Record<string, string>; files: string[] } | { why: string; env?: Record<string, string> } {
   const name = service.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
@@ -1097,10 +1097,10 @@ function unitEnv(service: ServiceUnits, parts: DoctorParts):
         env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
       });
     } catch (error) {
-      return { why: errorText(error) };
+      return { why: errorText(error), env: out };
     }
     const unlisted = failure(listed, parts.envLimitMs);
-    if (unlisted !== null) return { why: unlisted };
+    if (unlisted !== null) return { why: unlisted, env: out };
     // systemd 257 prints each file on a line of its own, as `<path> (ignore_errors=no)`.
     const files = listed.stdout.split('\n').map((line) => line.replace(/ \(ignore_errors=(?:yes|no)\)$/, ''))
       .filter((line) => line !== '');

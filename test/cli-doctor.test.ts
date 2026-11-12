@@ -183,6 +183,7 @@ const unitWords = (data: string): string => `PATH=${process.env.PATH ?? '/usr/bi
 
 function fakeManager(dir: string, opts: {
   env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null; unitFails?: string;
+  filesFail?: string;
 } = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
@@ -200,6 +201,7 @@ function fakeManager(dir: string, opts: {
     ...(opts.unitFails === undefined ? [] : [`if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ]; then echo '${opts.unitFails}' >&2; exit 1; fi`]),
     `if [ "$*" = "--user show --property=Environment --value -- connectome-test.service" ]; then cat ${join(at, 'unit-environment')}; exit 0; fi`,
     `if [ "$1" = getenv ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'values')}/$2" ]; then cat "${join(at, 'values')}/$2"; fi; exit 0; fi`,
+    ...(opts.filesFail === undefined ? [] : [`if [ "$*" = "--user show --property=EnvironmentFiles --value -- connectome-test.service" ]; then echo '${opts.filesFail}' >&2; exit 1; fi`]),
     `if [ "$*" = "--user show --property=EnvironmentFiles --value -- connectome-test.service" ]; then if [ -f ${join(at, 'environment-files')} ]; then cat ${join(at, 'environment-files')}; fi; exit 0; fi`,
     'echo "unexpected: $*" >&2',
     'exit 2',
@@ -931,6 +933,25 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('isn\'t the unit file service install writes');
     expect(r.out).toMatch(/^connectome doctor: the install at .*<UNIT_ONLY>/);
     expect(r.out).not.toContain(value);
+  });
+
+  test('a stored secret the unit sets is withheld from the stop a later step of reading the service\'s environment makes', async () => {
+    const value = 'unit-set-secret-value';
+    for (const fails of ['files', 'bun'] as const) {
+      const at = install({ prefix: `chost-${value}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'UNIT_SET'] });
+      const manager = fakeManager(at.work, {
+        unit: [...Object.entries(unitEnvironment(at)).map(([name, v]) => `${name}=${v}`), `UNIT_SET=${value}`].join(' '),
+        ...(fails === 'files' ? { filesFail: 'Failed to get properties: Access denied' } : {}),
+      });
+      if (fails === 'bun') {
+        writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./pre.ts"]\n');
+        writeFileSync(join(at.work, 'pre.ts'), 'throw new Error("refused");\n');
+      }
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.out).toMatch(/^connectome doctor: the install at .*<UNIT_SET>/);
+      expect(r.out).not.toContain(value);
+    }
   });
 
   test('whether the service check expects a shell comes from the recipe the unit runs', async () => {
