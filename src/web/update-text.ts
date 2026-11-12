@@ -228,6 +228,11 @@ export function notAnInstall(ways: UpdateWays): string {
         'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
 }
 
+export function passItOn(ways: UpdateWays, said: string): string[] {
+  return ways.reader === 'agent'
+    ? [`${said}, written to the person who runs it: what it asks of that person is theirs to do, so pass it on.`] : [];
+}
+
 const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
   'is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ask is ' +
   'done falls back the same way.';
@@ -342,7 +347,9 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     return [...lines, ...problemLines(status.problems)];
   }
   if (status.installing !== null) lines.push(`Installing ${status.installing}.`);
-  else if (status.lastInstall?.ok === false) lines.push(failedInstall(status.lastInstall));
+  else if (status.lastInstall?.ok === false) {
+    lines.push(failedInstall(status.lastInstall), ...passItOn(ways, 'That error is your host\'s'));
+  }
   if (status.installed !== null) {
     lines.push(retrying(status)
       ? `${status.installed} is installed, and ended before its commit at its last try: ${ways.restart} tries it again.`
