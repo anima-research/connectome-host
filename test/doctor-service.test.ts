@@ -119,6 +119,7 @@ test('a host unit that runs in another directory fails, naming both', () => {
   const result = checkUnits(at.units, at.work, false, 'connectome', sys);
   expect(result.passed).toBe(false);
   expect(result.lines.join('\n')).toContain(`systemd runs ${at.units.host.name} in /somewhere/else, not ${at.work}.`);
+  expect(result.elsewhere).toBe(true);
 });
 
 test('under launchd a running host passes, one loaded but not running fails with its log file, and all unloaded is stopped', () => {

@@ -2775,4 +2775,14 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
       expect((await run(quiet, { checkService })).out).not.toContain(again);
     }
   });
+
+  test('where systemd runs the service in another directory, the ladder doesn\'t run, naming why', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      checkService: async () => ({ passed: false, lines: [`systemd runs connectome-test.service in /elsewhere, not ${at.work}.`], elsewhere: true as const }),
+    }));
+    expect(r.out).toContain('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while ' +
+      'systemd runs the service in another directory, said above: that process isn\'t this install\'s host.');
+    expect(r.out).not.toContain('Where an incoming message got to');
+  });
 });

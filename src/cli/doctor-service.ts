@@ -9,6 +9,8 @@ export interface ServiceCheck {
   passed: boolean;
   lines: string[];
   stopped?: true;
+  /** systemd runs the host's unit in another directory than this install's. */
+  elsewhere?: true;
 }
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
@@ -45,6 +47,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
   }
   const env = childEnv(sys);
   if (units.manager === 'systemd-user') {
+    let elsewhere = false;
     const shownAll = expected.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
       'NRestarts', 'ExecMainStatus', 'ExecMainStartTimestamp', 'Environment', 'WorkingDirectory', 'ConditionResult',
       'ConditionTimestamp', RESTART_PROPERTIES]));
@@ -91,6 +94,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
       if (unit !== units.host) continue;
       const policy = restartPolicy(shown);
       if (!runsHere(runsFrom(shown.get('WorkingDirectory') ?? '', sys.home), work)) {
+        elsewhere = true;
         fail(`systemd runs ${unit.name} in ${shown.get('WorkingDirectory') || 'no set directory'}, not ${work}.`);
       } else if (policy.restarts) {
         lines.push(`It restarts the host when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}).`);
@@ -104,7 +108,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
           `host on ${RESTART_EXIT_CODE} and 1.`);
       }
     }
-    return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}) };
+    return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}), ...(elsewhere ? { elsewhere: true as const } : {}) };
   }
   const states = expected.map((unit) => agentState(sys, env, unit));
   const stopped = stoppedIsFine && unseen === 0 && states.every((state) => state.kind === 'unloaded');
