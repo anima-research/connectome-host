@@ -1394,6 +1394,19 @@ describe('the fleet\'s children file', () => {
     expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
   });
 
+  test('a copy of an install whose record is from before workingDir binds its children file as a copy does: given the data directory\'s place, the child\'s directory goes under it, and a child the original runs is no process of the copy\'s', () => {
+    setup(options(install));
+    withChild(install, join(install, 'data', 'kids', 'c'), live());
+    writeJsonAtomic(installPaths(rootOf(install)).install, { v: 1, dataDir: join(install, 'data'), extraState: [] });
+    const original = readFileSync(join(install, 'data', 'fleet-children.json'), 'utf-8');
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    setup(options(copy, { places: [{ from: join(install, 'data'), to: join(copy, 'data') }] }));
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: join(copy, 'data', 'kids', 'c') }]);
+    expect(readFileSync(join(install, 'data', 'fleet-children.json'), 'utf-8')).toBe(original);
+    expect(record(copy)!.workingDir).toBe(copy);
+  });
+
   test('a moved install\'s binding leaves its child\'s socket and pid file, which are its own child\'s', () => {
     setup(options(install));
     const kid = join(install, 'data', 'kids', 'c');
