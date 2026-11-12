@@ -580,6 +580,26 @@ test('a setup whose directory another setup kept answers in, or made an install 
   }
 });
 
+test('a setup whose install record goes while it asks its questions stops, and makes no new install in its place', async () => {
+  const dir = directory();
+  const first = world(dir, { answers: [''], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], first)).toBe(0);
+  const root = join(dir, 'connectome-host');
+  const record = join(root, 'install.json');
+  expect(existsSync(record)).toBe(true);
+  const again = world(dir, { secrets: [KEY] });
+  const { run } = again.world;
+  again.world.run = async (argv, options) => {
+    if (argv[0] === 'node' && argv[1] === '--version') rmSync(root, { recursive: true, force: true });
+    return run(argv, options);
+  };
+  expect(await runSetup(dir, ['discord'], again)).toBe(1);
+  expect(again.seen.err).toEqual([`The install record, ${record}, was there when setup began and is gone now, so setup stops rather than make a new install in its place. Run setup again: it says what it finds there.`]);
+  expect(existsSync(root)).toBe(false);
+  expect(again.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
+  expect(again.seen.launched).toBeNull();
+});
+
 test('a setup whose directory, empty or not there, gained other files while it asked its first step keeps nothing there and stops, and installs nothing', async () => {
   for (const there of [true, false]) {
     const start = directory();
