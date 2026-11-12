@@ -62,11 +62,11 @@ export function validateBuiltinStrategy(strategy: Record<string, unknown>): void
   // The forwarding list is not an admission schema for unrelated recipe keys.
   if (strategy.compressionInstructions === undefined) return;
   if (type !== 'autobiographical') {
-    throw new Error('Recipe compressionInstructions requires an autobiographical strategy.');
+    throw new TypeError('Recipe compressionInstructions requires an autobiographical strategy.');
   }
   validateCompressionInstructions(strategy.compressionInstructions);
   // CM's cross-option constructor conflict is outside its nested validator.
   if (strategy.witnessedInstruction && strategy.compressionInstructions.templates?.witnessedChunk !== undefined) {
-    throw new Error('Conflicting witnessed instruction configuration');
+    throw new TypeError('Conflicting witnessed instruction configuration');
   }
 }

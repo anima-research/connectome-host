@@ -6,6 +6,7 @@ import {
   type FrameworkConfig,
   type SubconsciousConfig,
 } from '@animalabs/agent-framework';
+import { AutobiographicalStrategy as HostAutobiographicalStrategy } from '@animalabs/context-manager';
 import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
 import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
 import { resolvePromptCaching } from './framework-agent-config.js';
@@ -93,6 +94,15 @@ export function buildFrameworkStrategy(
       model,
       timeZone,
     });
+  }
+  // Validation uses the host's CM, but construction uses AF's re-export.
+  // A different copy can accept unknown options while silently ignoring them.
+  // Conservatively require class identity only for this opt-in feature; do not
+  // infer support from instance/config fields or impose this on legacy recipes.
+  if (strategyConfig?.compressionInstructions !== undefined && AutobiographicalStrategy !== HostAutobiographicalStrategy) {
+    throw new TypeError(
+      'Recipe compressionInstructions requires agent-framework and host to use the same @animalabs/context-manager; deduplicate @animalabs/context-manager.',
+    );
   }
   const autobiographicalOpts: Record<string, unknown> = {
     headWindowTokens: headWindowTokens(recipe),

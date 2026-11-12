@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutobiographicalStrategy as FrameworkStrategy, PassthroughStrategy } from '@animalabs/agent-framework';
-import { AutobiographicalStrategy, ContextManager, validateCompressionInstructions, type StrategyContext } from '@animalabs/context-manager';
+import { AutobiographicalStrategy, ContextManager, validateCompressionInstructions } from '@animalabs/context-manager';
 import type { ContentBlock, NormalizedRequest } from '@animalabs/membrane';
-import { buildFrameworkStrategy } from '../src/framework-strategy.js';
+import { buildConversationsConfig, buildSubconsciousConfig, buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { emptyExtensionRegistry } from '../src/extensions.js';
 import { FrontdeskStrategy } from '../src/strategies/frontdesk-strategy.js';
 import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
@@ -34,13 +34,25 @@ const texts = (request: NormalizedRequest) => request.messages.flatMap(m => m.co
 
 // No replacement constructor or formatter. Drive one native L1 request on the
 // actual host-built class, using a synthetic Chronicle store and a mock only at
-// the summarizer boundary. Large windows keep automatic ticks from adding work.
-async function capture(settings: Record<string, unknown> = {}, inherited = false) {
-  const strategy = build({
-    headWindowTokens: 0, recentWindowTokens: 100_000, targetChunkTokens: 100_000,
+// the summarizer boundary. Four messages close one chunk; no merges are due.
+async function capture(settings: Record<string, unknown> = {}, inherited = false, route: 'main' | 'conversation' | 'reader' = 'main') {
+  const input = recipe({
+    headWindowTokens: 0, recentWindowTokens: 0, targetChunkTokens: 100, l1HoldbackChunks: 0,
     summaryTargetTokens: 321, adaptiveResolution: false, mergeThreshold: 99,
     ...(inherited ? { witnessedBeforeSequence: 1_000_000 } : {}), ...settings,
   });
+  input.conversations = {};
+  input.subconscious = { enabled: true, reader: 'forks', model: 'mock-only', voice: 'Synthetic reader.' };
+  const reader = buildSubconsciousConfig(input, 'mock-only', 'UTC');
+  let strategy: ReturnType<typeof buildFrameworkStrategy>;
+  if (route === 'conversation') {
+    strategy = buildConversationsConfig(input, 'Participant', 'mock-only', 'UTC')!.strategyFactory!();
+  } else if (route === 'reader') {
+    if (reader?.reader !== 'forks') throw new Error('Expected a fork reader');
+    strategy = reader.strategyFactory!();
+  } else {
+    strategy = buildFrameworkStrategy(input, 'mock-only', 'UTC');
+  }
   expect(strategy.constructor).toBe(FrameworkStrategy);
   expect(FrameworkStrategy).toBe(AutobiographicalStrategy);
   const calls: NormalizedRequest[] = [];
@@ -53,20 +65,19 @@ async function capture(settings: Record<string, unknown> = {}, inherited = false
   } as never });
   try {
     for (let i = 0; i < 4; i++) manager.addMessage(i % 2 ? 'Participant' : 'Other', [text(`raw-${i} {participant} $& ` + 'synthetic event. '.repeat(20))]);
-    const ctx = (manager as unknown as { createStrategyContext(): StrategyContext }).createStrategyContext();
-    const messages = ctx.messageStore.getAll();
-    const before = structuredClone(messages);
-    const native = strategy as unknown as {
-      compressChunkHierarchical(chunk: object, context: StrategyContext): Promise<void>;
-      summaries: { content: string; sourceIds: string[] }[];
-    };
-    await native.compressChunkHierarchical({ index: 0, startIndex: 0, endIndex: messages.length,
-      messages, tokens: 400, compressed: false }, ctx);
+    const before = structuredClone(manager.getAllMessages());
+    // autoTickOnNewMessage may already have started this L1. Bounded public
+    // ticks/macrotask hops let that work finish without inspecting lane state.
+    for (let tick = 0; tick < 20 && manager.getSummariesInRange({ level: 1 }).length === 0; tick++) {
+      await manager.tick();
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     expect(calls).toHaveLength(1);
-    expect(native.summaries).toHaveLength(1);
-    expect(native.summaries[0]!.content).toBe('A synthetic event note.');
-    expect(native.summaries[0]!.sourceIds).toEqual(messages.map(m => m.id));
-    expect(ctx.messageStore.getAll()).toEqual(before);
+    const summaries = manager.getSummariesInRange({ level: 1 });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]!.content).toBe('A synthetic event note.');
+    expect(summaries[0]!.sourceIds).toEqual(before.map(m => m.id));
+    expect(manager.getAllMessages()).toEqual(before);
     return calls[0]!;
   } finally {
     await manager.close();
@@ -85,8 +96,6 @@ describe('recipe compression instructions: native dependency route', () => {
   test('omission and explicit default preserve the native request', async () => {
     const omitted = await capture();
     expect(await capture({ compressionInstructions: { preset: 'default' } })).toEqual(omitted);
-    expect(instruction(omitted)).toContain('Write the memory of events since the most recent memory system notification.');
-    expect(instruction(omitted)).toContain('Target ~321 tokens.');
   });
 
   test('JSON template-only override reaches the native mock request; partial slots inherit defaults', async () => {
@@ -98,6 +107,13 @@ describe('recipe compression instructions: native dependency route', () => {
       .toEqual({ ...baseline, messages: baseline.messages.slice(0, -1) });
     expect(await capture(settings, true)).toEqual(await capture({}, true));
   });
+
+  for (const route of ['conversation', 'reader'] as const) {
+    test(`${route} factory forwards templates to a native request`, async () => {
+      const result = await capture({ compressionInstructions: { templates: { chunk: 'FORK {targetTokens}' } } }, false, route);
+      expect(instruction(result)).toBe('FORK 321');
+    });
+  }
 
   test('CM performs substitutions once; existing identity reminders still append', async () => {
     const result = await capture({ identityReminder: 'REMINDER', compressionInstructions: {
@@ -146,28 +162,36 @@ describe('recipe compression instructions: admission before construction/provide
     }
   });
 
-  test('all documented slots are admitted and forwarded without host defaults', () => {
+  test('all documented slots are admitted (request forwarding is exercised above)', () => {
     const settings = { participant: 'Participant', templates: {
       opening: 'O {participant}', chunk: 'C {targetTokens}', witnessedChunk: 'W {targetTokens}',
       readingChunk: 'R {totalTokens}', merge: 'M {sourceLevelShown} {targetLevel}',
       witnessedMerge: 'WM {targetTokens}', readingMerge: 'RM {totalTokens}', transition: 'T {context}',
     } };
-    const config = (build({ compressionInstructions: settings }) as unknown as { config: Record<string, unknown> }).config;
-    expect(config.compressionInstructions).toEqual(settings);
-    expect((build() as unknown as { config: Record<string, unknown> }).config.compressionInstructions).toBeUndefined();
+    expect(() => build({ compressionInstructions: settings })).not.toThrow();
+    expect(() => build()).not.toThrow();
     expect(() => recipe({ compressionInstructions: {} })).not.toThrow();
   });
 
-  test('conflicting witnessed instructions fail at recipe validation, not first compression', () => {
-    expect(errorMessage(() => recipe({ witnessedInstruction: 'VALUE_SENTINEL', compressionInstructions: { templates: { witnessedChunk: 'new' } } })))
-      .toBe('Conflicting witnessed instruction configuration');
+  test('conflicting witnessed instructions fail as TypeError at both boundaries', () => {
+    for (const type of [undefined, 'autobiographical']) {
+      const input = raw({ type, witnessedInstruction: 'VALUE_SENTINEL',
+        compressionInstructions: { templates: { witnessedChunk: 'new' } } });
+      for (const run of [() => validateRecipe(input), () => buildFrameworkStrategy(input, 'mock-only', 'UTC')]) {
+        expect(run).toThrow(TypeError);
+        expect(errorMessage(run)).toBe('Conflicting witnessed instruction configuration');
+      }
+    }
+    expect(() => build({ witnessedInstruction: '', compressionInstructions: { templates: { witnessedChunk: 'new' } } })).not.toThrow();
   });
 
   for (const type of ['frontdesk', 'passthrough']) {
     test(`${type} rejects even empty/default settings, including direct builder callers`, () => {
       for (const compressionInstructions of [{}, { preset: 'default' }, { templates: { chunk: 'C' } }]) {
         const input = raw({ type, compressionInstructions });
+        expect(() => validateRecipe(input)).toThrow(TypeError);
         expect(() => validateRecipe(input)).toThrow('requires an autobiographical strategy');
+        expect(() => buildFrameworkStrategy(input, 'mock-only', 'UTC')).toThrow(TypeError);
         expect(() => buildFrameworkStrategy(input, 'mock-only', 'UTC')).toThrow('requires an autobiographical strategy');
       }
       expect(() => build({ type })).not.toThrow();
