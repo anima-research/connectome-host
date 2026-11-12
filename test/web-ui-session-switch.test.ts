@@ -543,6 +543,8 @@ test("a host-quiesce over a switch's quiesce on a host that can't tell whether t
   expect(message).toStartWith('host-quiesce refused: ');
   expect(message).toContain('may still be under way or may have ended and left this quiesce behind');
   expect(message).toContain('clicking "⏸ quiesced" in the top bar ends it, and then quiesce again');
-  expect(message).toContain("That click also ends it while the switch is under way, though the switch then doesn't go ahead.");
+  expect(message).toContain("That click also ends it while the switch waits, and that try then doesn't go ahead; during " +
+    "the switch's last look this host holds, and the click is refused until the switch is decided.");
+  expect(message).not.toContain('while the switch is under way');
   expect(message).not.toContain('Resume');
 });
