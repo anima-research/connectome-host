@@ -534,7 +534,7 @@ describe('setup--run', () => {
     expect(readFileSync(marker, 'utf-8')).toBe('once\n');
   }, 30_000);
 
-  linuxTest('a command stopped at its limit that left a dotenv file unreadable is said to have been stopped, though its output isn\'t shown', async () => {
+  test('a command stopped at its limit that left a dotenv file unreadable is said to have been stopped, though its output isn\'t shown', async () => {
     const { module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
     const result = await runCall(module, 'mkfifo .env.local; echo word-it-printed; sleep 30', 500);
     expect(result.success).toBe(false);
@@ -543,7 +543,7 @@ describe('setup--run', () => {
     expect(JSON.stringify(result)).not.toContain('word-it-printed');
   }, 20_000);
 
-  linuxTest('a command that left a dotenv file unreadable and a process holding its output is said to have left it, though its output isn\'t shown', async () => {
+  test('a command that left a dotenv file unreadable and a process holding its output is said to have left it, though its output isn\'t shown', async () => {
     const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
     const pidFile = join(dir, 'holder.pid');
     try {
