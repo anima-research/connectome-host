@@ -368,14 +368,14 @@ test('from a directory it can\'t use, setup says before its first question that 
 
   const declined = world(home, { answers: ['no'] });
   expect(await runAt(declined)).toBe(0);
-  expect(declined.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service is named after resident.`);
+  expect(declined.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service will be named after the directory's name, resident.`);
   expect(declined.seen.out[1]).toBe(ADVICE);
   expect(existsSync(resident)).toBe(false);
   expect(readdirSync(home)).toEqual(['.bashrc']);
 
   const made = world(home, { answers: [''], secrets: [KEY] });
   expect(await runAt(made)).toBe(0);
-  expect(made.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service is named after resident.`);
+  expect(made.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service will be named after the directory's name, resident.`);
   expect(made.seen.asked[0]).toBe(CONTINUE);
   expect(made.seen.launched!.cwd).toBe(join(resident, '.setup'));
   expect(existsSync(join(resident, 'connectome-host', 'install.json'))).toBe(true);
@@ -391,7 +391,7 @@ test('from a directory it can\'t use, setup says before its first question that 
   mkdirSync(there);
   const thereRun = world(other, { answers: ['no'] }, { env: { PATH: '/usr/bin:/bin', HOME: dirname(there) } });
   expect(await setup({ root: join(there, 'connectome-host'), argv: ['discord'], out: (line) => { thereRun.seen.out.push(line); }, err: (line) => { thereRun.seen.err.push(line); } }, thereRun.world)).toBe(0);
-  expect(thereRun.seen.out[0]).toBe(`The resident will live in ${there}, since ${other} holds other files. Its service is named after resident.`);
+  expect(thereRun.seen.out[0]).toBe(`The resident will live in ${there}, since ${other} holds other files. Its service will be named after the directory's name, resident.`);
 });
 
 test('where ~/resident holds other files and no install, setup says so with what to do, and asks nothing', async () => {
@@ -502,8 +502,9 @@ test('where setup can offer a user of its own, it says first what it does, then 
     return ask(question);
   };
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const opening = made.seen.out.indexOf(`The resident will live in ${dir}. Its service is named after ${basename(dir)}.`);
+  const opening = made.seen.out.indexOf(`The resident will live in ${dir}. Its service will be named after the directory's name, ${basename(dir)}.`);
   expect(opening).toBe(0);
+  expect(made.seen.out).toContain(`Setting up ${join(dir, 'connectome-host')}, the folder the resident's host runs from, which later updates install into. It starts as a copy of what was just installed here.`);
   expect(made.seen.out).toContain(`With the install's own copy of it, made next, setup takes about 0.8 GB of disk here. Installing @animalabs/connectome-host@${VERSION}, @animalabs/discord-mcpl in ${dir}, with Bun:`);
   expect(made.seen.out.slice(opening + 1, outAtFirstQuestion)).toEqual([ADVICE, `  ${OWN_LINE}`]);
   expect(made.seen.asked).toEqual([CONTINUE, 'An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
@@ -3003,7 +3004,7 @@ test('a boot that doesn\'t finish within 60 s is stopped there, and said so', as
   const made = world(dir, { answers: [''], secrets: [KEY], boot: { status: null, stdout: '', stderr: '', timedOut: true } });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(made.seen.boot!.timeoutMs).toBe(60_000);
-  expect(text(made.seen.err)).toContain('didn\'t finish booting on a mock recipe in batch mode within 60 s');
+  expect(text(made.seen.err)).toContain('didn\'t finish booting with a test setup that calls no model, in batch mode, within 60 s');
 });
 
 test('where the install\'s own setup fails, setup shows its lines and says to run setup again once they\'re put right', async () => {
@@ -3224,7 +3225,7 @@ const LATER_RUN = [
   'Setup began in <dir> before, as this user, alice, and the resident runs as alice. Setup\'s agent picks up where it stopped, and can change with you what it set up.',
   'Checking the install at <dir>/connectome-host.',
   `The install at <dir>/connectome-host serves <dir>/data and runs ${VERSION}, as before.`,
-  'Starting the installed host once, on a mock recipe, to see that it starts.',
+  'Starting the installed host once, with a test setup that calls no model, to see that it starts.',
   `The installed host (${VERSION}) starts.`,
   'Checking the ANTHROPIC_API_KEY in <dir>/.env: one call at https://api.anthropic.com to claude-opus-5-5, the model setup\'s agent runs on, which the key\'s account has to be able to use.',
   'The key works, and it\'s in <dir>/.env.',
