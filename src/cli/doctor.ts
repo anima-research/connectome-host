@@ -295,6 +295,7 @@ export async function doctor(
   let fitUnchecked = false;
   let filesUnread = false;
   let pidUntold = false;
+  let notTheService = false;
   let uncredentialed = false;
   let unanswered = false;
   let closedTabs = false;
@@ -379,6 +380,7 @@ export async function doctor(
         if (now !== null && 'why' in now) untold(now.why);
         else if (now !== null && (now.pid !== '0' || !(await stillAnswers()))) changed();
         else {
+          notTheService = true;
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
             `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket ` +
@@ -390,6 +392,7 @@ export async function doctor(
           const again = await ownPid();
           if (again === null || !('pid' in again) || again.pid !== own.pid || !(await stillAnswers())) changed();
           else {
+            notTheService = true;
             report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but ` +
               `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
               'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
@@ -510,7 +513,9 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, commands === null ? null : units);
+        // The service's log holds only the service's own host's stderr.
+        const logged = commands === null || notTheService || pidUntold ? null : units;
+        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
       });
     }
 

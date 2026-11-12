@@ -2744,4 +2744,19 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const still = await withHost(alive, HEALTHY_HOST, () => run(alive, { servicePid: () => ({ pid: '777' }) }));
     expect(still.out).toContain('`kill 4242` stops it');
   });
+
+  test('a failed turn of a host that isn\'t the service\'s, or may not be, names its line\'s start but no search of the service\'s log', async () => {
+    const health = { ...HEALTH, agents: [{ ...HEALTH.agents[0], consecutiveInferenceFailures: 2,
+      lastInference: { startedAt: STARTED + 40_000, endedAt: STARTED + 41_000, failedAt: STARTED + 60_000, lastError: 'x' } }] };
+    const failedLine = (out: string) => out.split('\n').find((line) => line.includes('last turn\'s model call failed'));
+    for (const servicePid of [async () => ({ pid: '5151' }), async () => ({ why: 'Failed to connect to bus' })]) {
+      const at = install();
+      const r = await withHost(at, { ...HEALTHY_HOST, health }, () => run(at, { servicePid }));
+      expect(failedLine(r.out)).toContain('starts `[inference-failed] agent=');
+      expect(failedLine(r.out)).not.toContain('journalctl');
+    }
+    const own = install();
+    const r = await withHost(own, { ...HEALTHY_HOST, health }, () => run(own));
+    expect(failedLine(r.out)).toContain('journalctl --user -u connectome-test.service | grep -F');
+  });
 });
