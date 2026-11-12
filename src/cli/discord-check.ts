@@ -9,6 +9,7 @@ import { checkDiscordToken } from '../setup/discord-token.js';
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
 const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
 const GUILD_CATEGORY = 4;
+const TEXT_CHAT_TYPES = [...TEXT_CHANNEL_TYPES, 2, 13];
 const REQUEST_LIMIT_MS = 15_000;
 
 export interface DiscordCheck {
@@ -126,7 +127,7 @@ export async function checkDiscord(
         name: guild.name,
         visible,
         ids: new Set(guild.channels.map((c) => c.id)),
-        unsendable: new Set(visible.filter((c) => TEXT_CHANNEL_TYPES.includes(c.type)
+        unsendable: new Set(visible.filter((c) => TEXT_CHAT_TYPES.includes(c.type)
           && (channelPermissions(guild, bot.id, c) & SEND_MESSAGES) === 0n).map((c) => c.id)),
       };
     });
@@ -264,8 +265,10 @@ function scopeLines(
         problem(`The scope names ${channelId}, a channel of ${guild.name} (${guild.id}) the bot can't see: give the bot ` +
           'View Channel in it.');
       } else {
-        unlisted.push(`  ${channelId} isn't a channel of ${guild.name} (${guild.id}). discord-mcpl takes a thread's id ` +
-          'in a scope, and doctor doesn\'t look threads up, so if it isn\'t a thread there, correct the id.');
+        unlisted.push(`  ${channelId} isn't among the channels Discord lists to the bot in ${guild.name} (${guild.id}). It ` +
+          'may be a thread, since discord-mcpl takes a thread\'s id in a scope and doctor doesn\'t look threads up; a channel ' +
+          'the bot lacks View Channel in, which Discord leaves out of that list from November 16, 2026, so give the bot View ' +
+          'Channel there; or a wrong id, to correct.');
       }
     }
     if (named.length > 0) lines.push(`  ${guild.name} (${guild.id}): ${named.join(', ')}`);

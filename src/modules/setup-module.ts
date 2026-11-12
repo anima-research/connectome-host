@@ -17,9 +17,10 @@ import {
   secretNames, secretValues, unwritableValue, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm,
   envLink, type Secret,
 } from '../setup/secrets.js';
-import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
+import { checkDiscordToken, hidden, type TokenCheck } from '../setup/discord-token.js';
 import {
-  botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL, type DiscordFailure,
+  botGuild, botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL,
+  type BotGuild, type DiscordFailure, type DiscordReader,
 } from '../setup/discord-read.js';
 import { originOf } from '../setup/key-check.js';
 import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAnswer } from '../setup/provider-key.js';
@@ -48,6 +49,8 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
 // with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
 // for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
 // of ordinary output. Output dense in what JSON escapes, or in short secrets under long names, can still pass it.
+// setup--discord measures its answer's JSON, which is that inline text, against the same cap.
+const INLINE_MAX_CHARS = 24_000;
 const KEPT_BYTES = 4 * 1024;
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
 const KILL_GRACE_MS = 5_000;
@@ -241,6 +244,42 @@ function memberOf(member: DiscordMember): { id: string; username: string; displa
   return { id: member.user.id, username: member.user.username, displayName: member.user.global_name ?? null, nickname: member.nick ?? null };
 }
 
+async function serverOf(reader: DiscordReader, guild: BotGuild, botId: string, ownerId: string) {
+  const owner = await reader.get<DiscordMember>(`/guilds/${guild.id}/members/${ownerId}`);
+  const byId = new Map(guild.channels.map((c) => [c.id, c] as const));
+  const channels = guild.channels.filter((c) => TEXT_CHANNEL_TYPES.includes(c.type))
+    .map((c) => {
+      const category = c.parent_id ? byId.get(c.parent_id) : undefined;
+      const perms = channelPermissions(guild, botId, c);
+      return {
+        id: c.id, name: c.name, category: category?.name ?? null,
+        view: (perms & VIEW_CHANNEL) !== 0n, send: (perms & VIEW_CHANNEL) !== 0n && (perms & SEND_MESSAGES) !== 0n,
+        at: [category?.position ?? -1, c.position ?? 0] as const,
+      };
+    })
+    .sort((a, b) => a.at[0] - b.at[0] || a.at[1] - b.at[1])
+    .map(({ at: _at, ...channel }) => channel);
+  return { id: guild.id, name: guild.name, owner: memberOf(owner), channels };
+}
+
+const fits = (answer: unknown): boolean => JSON.stringify(answer).length <= INLINE_MAX_CHARS;
+
+// The most of items, from the start, whose answer fits: all of them, or else the longest start below that does.
+function fitting<T>(items: T[], answer: (shown: T[]) => unknown): T[] {
+  if (fits(answer(items))) return items;
+  let low = 0;
+  let high = items.length - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(answer(items.slice(0, mid)))) low = mid;
+    else high = mid - 1;
+  }
+  return items.slice(0, low);
+}
+
+const copyId = (what: 'server' | 'channel', label: string): string => `The person can copy the id of a ${what} not shown ` +
+  `in Discord: with Developer Mode on (User Settings, Advanced), right-click the ${what} and choose Copy ${label} ID.`;
+
 function tokenFailure(check: Exclude<TokenCheck, { kind: 'accepted' } | { kind: 'unsendable' }>): DiscordFailure {
   const path = '/users/@me';
   switch (check.kind) {
@@ -271,6 +310,9 @@ function discordNote(failure: DiscordFailure): string {
       return `Discord answered ${failure.ok ? '' : `${failure.status} to `}GET ${path} with something other than JSON, so ` +
         `the read stopped there. ${failure.status === 429 || failure.status >= 500 ? again : between}`;
     case 'answered':
+      if (failure.status >= 200 && failure.status < 300) {
+        return `Discord answered GET ${path} with something other than the bot's user, so the read stopped there. ${between}`;
+      }
       return `Discord answered ${failure.status} to GET ${path}` +
         `${failure.said === null ? '' : `: ${failure.said}`}${failure.code === undefined ? '' : ` (code ${failure.code})`}, ` +
         'so the read stopped there. ' +
@@ -278,7 +320,8 @@ function discordNote(failure: DiscordFailure): string {
           ? `It asks for ${Math.ceil(failure.retryAfter)} s: call setup--discord again once that has passed.`
           : failure.status === 429 || failure.status >= 500 ? again
             : path.startsWith('/guilds/') && (failure.status === 403 || failure.status === 404)
-              ? 'The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now.'
+              ? 'The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now, ' +
+                'and if that server is still listed and answers the same, tell the person what it says.'
               : 'Tell the person what it says.');
   }
 }
@@ -417,14 +460,16 @@ export class SetupModule implements Module {
         description:
           'Read from Discord, with the bot token stored in the install\'s .env as DISCORD_TOKEN, what the person would ' +
           'otherwise copy by hand: the application\'s id, which the invite link needs; each server the bot is in, with ' +
-          'its owner; and each server\'s text channels under their categories, each with whether the bot can view it ' +
-          'and send there. Given server and username, it gives instead the members of that server whose Discord ' +
-          'username or server nickname starts with username, up to ten: Discord matches no display name. The token\'s ' +
-          'value is never shown.',
+          'its owner; and each server\'s text and announcement channels under their categories, each with whether the ' +
+          'bot can view it and send there. From November 16, 2026, Discord lists the bot only the channels it can view. ' +
+          'Given server alone, it reads that one server the same way. Given server and username, it gives instead the ' +
+          'members of that server whose Discord username or server nickname starts with username, up to ten, and says ' +
+          'when more match: Discord matches no display name. An answer too long for you to read whole gives what fits, ' +
+          'says how many of how many, and how to read the rest. The token\'s value is never shown.',
         inputSchema: {
           type: 'object',
           properties: {
-            server: { type: 'string', description: 'A server\'s id, as this tool gives it.' },
+            server: { type: 'string', description: 'A server\'s id, as this tool gives it: alone, to read that server; with username, to search its members.' },
             username: { type: 'string', description: 'The start of a member\'s Discord username or server nickname.' },
           },
         },
@@ -478,15 +523,7 @@ export class SetupModule implements Module {
         return check;
       });
     }
-    if (call.name === 'discord') {
-      return this.afterAsked(() => {
-        const read = this.discord(call.input as { server?: unknown; username?: unknown });
-        const ended = read.then(() => {}, () => {});
-        this.checks.add(ended);
-        void ended.then(() => { this.checks.delete(ended); });
-        return read;
-      });
-    }
+    if (call.name === 'discord') return this.afterAsked(() => this.discord(call.input as { server?: unknown; username?: unknown }));
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
   }
@@ -836,10 +873,11 @@ export class SetupModule implements Module {
   private async discord(input: { server?: unknown; username?: unknown }): Promise<ToolResult> {
     if (this.stopping) return failed('The host is stopping, so setup--discord reads nothing, and calling it again won\'t change that.');
     const { server, username } = input;
-    const searching = server !== undefined || username !== undefined;
-    if (searching && (typeof server !== 'string' || !/^\d+$/.test(server) || typeof username !== 'string' || username.trim() === '')) {
+    if ((server !== undefined && (typeof server !== 'string' || !/^\d+$/.test(server)))
+      || (username !== undefined && (server === undefined || typeof username !== 'string' || username.trim() === ''))) {
       return failed('setup--discord searches members given both server, a server\'s id as it gives them, and username, ' +
-        'the start of a username or server nickname. Call it with neither to read the servers and channels.');
+        'the start of a username or server nickname. Call it with server alone to read that server, or with neither to ' +
+        'read the servers and channels.');
     }
     const envFile = join(this.config.dir, '.env');
     let env: Map<string, string>;
@@ -857,6 +895,18 @@ export class SetupModule implements Module {
       return failed(`Nothing is stored as ${DISCORD_TOKEN} in ${envFile}, so Discord can't be read. Ask the person for the ` +
         'bot\'s token with setup--ask_secret first.');
     }
+    if (typeof username === 'string') {
+      let hide: Secret[];
+      try {
+        hide = this.secrets().values;
+      } catch (error) {
+        return this.damaged(error, 'Nothing was read');
+      }
+      this.config.show(`Searching a Discord server's members for ${shown(redacted(username, hide))}.`);
+    } else {
+      this.config.show(server === undefined ? 'Reading the bot\'s servers and channels from Discord.'
+        : 'Reading one of the bot\'s servers from Discord.');
+    }
     const fetchFn = this.config.fetch ?? fetch;
     const bot = await checkDiscordToken(token, { fetch: fetchFn });
     if (bot.kind === 'unsendable') {
@@ -865,44 +915,56 @@ export class SetupModule implements Module {
     }
     if (bot.kind !== 'accepted') return failed(discordNote(tokenFailure(bot)));
     const reader = discordReader(token, { fetch: fetchFn });
+    const botUser = { id: bot.id, name: bot.name };
     try {
-      if (searching) {
-        let hide: Secret[];
-        try {
-          hide = this.secrets().values;
-        } catch (error) {
-          return this.damaged(error, 'Nothing was read');
-        }
-        this.config.show(`Searching a Discord server's members for ${shown(redacted(username as string, hide))}.`);
+      if (typeof username === 'string') {
         const found = await reader.get<DiscordMember[]>(
-          `/guilds/${server}/members/search?query=${encodeURIComponent(username as string)}&limit=${MEMBERS_SHOWN}`);
-        return { success: true, data: { server, username, members: found.map(memberOf) } };
+          `/guilds/${server}/members/search?query=${encodeURIComponent(username)}&limit=${MEMBERS_SHOWN + 1}`);
+        const members = found.slice(0, MEMBERS_SHOWN).map(memberOf);
+        return {
+          success: true,
+          data: {
+            server, username, members,
+            ...(found.length > MEMBERS_SHOWN
+              ? { note: 'More members match: call setup--discord again with more of the username or nickname.' } : {}),
+          },
+        };
       }
-      this.config.show('Reading the bot\'s servers and channels from Discord.');
+      if (typeof server === 'string') {
+        const { name, owner_id: ownerId } = await reader.get<{ name: string; owner_id: string }>(`/guilds/${server}`);
+        const one = await serverOf(reader, await botGuild(reader, bot.id, { id: server, name, botOwns: ownerId === bot.id }), bot.id, ownerId);
+        const answer = (channels: typeof one.channels) => ({
+          bot: botUser, server: { ...one, channels },
+          ...(channels.length < one.channels.length ? {
+            note: `${channels.length} of ${one.channels.length} text and announcement channels are shown, since one ` +
+              `answer can't hold more. ${copyId('channel', 'Channel')}`,
+          } : {}),
+        });
+        return { success: true, data: answer(fitting(one.channels, answer)) };
+      }
       const application = await reader.get<{ id: string }>('/applications/@me');
       const servers = [];
       for (const guild of await botGuilds(reader, bot.id)) {
         const { owner_id: ownerId } = await reader.get<{ owner_id: string }>(`/guilds/${guild.id}`);
-        const owner = await reader.get<DiscordMember>(`/guilds/${guild.id}/members/${ownerId}`);
-        const byId = new Map(guild.channels.map((c) => [c.id, c] as const));
-        const channels = guild.channels.filter((c) => TEXT_CHANNEL_TYPES.includes(c.type))
-          .map((c) => {
-            const category = c.parent_id ? byId.get(c.parent_id) : undefined;
-            const perms = channelPermissions(guild, bot.id, c);
-            return {
-              id: c.id, name: c.name, category: category?.name ?? null,
-              view: (perms & VIEW_CHANNEL) !== 0n, send: (perms & VIEW_CHANNEL) !== 0n && (perms & SEND_MESSAGES) !== 0n,
-              at: [category?.position ?? -1, c.position ?? 0] as const,
-            };
-          })
-          .sort((a, b) => a.at[0] - b.at[0] || a.at[1] - b.at[1])
-          .map(({ at: _at, ...channel }) => channel);
-        servers.push({ id: guild.id, name: guild.name, owner: memberOf(owner), channels });
+        servers.push(await serverOf(reader, guild, bot.id, ownerId));
       }
-      return { success: true, data: { application: { id: application.id }, bot: { id: bot.id, name: bot.name }, servers } };
+      const whole = { application: { id: application.id }, bot: botUser, servers };
+      if (fits(whole)) return { success: true, data: whole };
+      const counted = servers.map(({ channels, ...each }) => ({ ...each, textChannels: channels.length }));
+      const answer = (shown: typeof counted) => ({
+        application: { id: application.id }, bot: botUser, servers: shown,
+        note: shown.length === counted.length
+          ? 'Every server\'s channels together would pass what one answer can hold, so the servers come without them: ' +
+            'call setup--discord with a server\'s id as server to read its channels.'
+          : `${shown.length} of ${counted.length} servers are shown, since one answer can't hold more, without their ` +
+            `channels: call setup--discord with a server's id as server to read its channels. ${copyId('server', 'Server')}`,
+      });
+      return { success: true, data: answer(fitting(counted, answer)) };
     } catch (error) {
       if (error instanceof DiscordFailed) return failed(discordNote(error.failure));
-      throw error;
+      const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      return failed(`The read stopped on an answer setup can't read (${hidden(what, token)}). Tell the person: something ` +
+        'between this machine and Discord may be answering in its place.');
     }
   }
 
@@ -1007,6 +1069,10 @@ function tokenLine(token: TokenCheck): string {
     case 'refused': return 'Discord refused it (401): nothing was stored.';
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a token: nothing was stored.';
     case 'answered':
+      if (token.status >= 200 && token.status < 300) {
+        return 'It isn\'t known to work: Discord answered with something other than the bot\'s user, so something ' +
+          'between this machine and Discord may be answering in its place.';
+      }
       return `Discord didn't say whether it works: it answered ${token.status}` +
         `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${BUSY}` : '');
     case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
@@ -1075,14 +1141,18 @@ function tokenNote(token: TokenCheck): string {
   switch (token.kind) {
     case 'accepted': return `. Discord accepted it: the bot is ${token.name} (${token.id}).`;
     case 'answered':
+      if (token.status >= 200 && token.status < 300) {
+        return ', but it isn\'t known to work: Discord answered GET /users/@me with something other than the bot\'s user. ' +
+          `Tell the person: something between this machine and Discord may be answering in its place. ${ASK_TOKEN_AGAIN}`;
+      }
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
-        (busy(token.status) ? BUSY : ASK_TOKEN_AGAIN);
+        (busy(token.status) ? readAgain(token.retryAfter) : ASK_TOKEN_AGAIN);
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected':
       return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
     case 'unrecognized':
       return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ` +
-        (busy(token.status) ? BUSY : `${CONNECTION} ${ASK_TOKEN_AGAIN}`);
+        (busy(token.status) ? readAgain(undefined) : `${CONNECTION} ${ASK_TOKEN_AGAIN}`);
     default: return '';
   }
 }
@@ -1092,6 +1162,11 @@ const CHECK_KEY_AGAIN = 'Check it again with setup--check_model, or go on with i
 const ASK_TOKEN_AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
 
 const BUSY = 'It may be busy: `connectome doctor` checks the token again when it runs.';
+
+function readAgain(wait: number | undefined): string {
+  return wait === undefined ? 'It may be busy: call setup--discord in a minute, which checks the stored token first.'
+    : `It asks for ${Math.ceil(wait)} s: call setup--discord once that has passed, which checks the stored token first.`;
+}
 
 function busy(status: number): boolean {
   return status === 429 || status >= 500;
