@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { ChannelRegistry, EventGate, AgentFramework, type ModuleContext, type ToolCall } from '@animalabs/agent-framework';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -97,7 +97,7 @@ describe('channel-mode server ownership', () => {
       const calls = w.calls.length;
       const refused = await w.set(m, id, mode, 'b');
       expect(refused.success).toBe(false);
-      expect(refused.error).toContain('mentions cleanup');
+      expect(refused.error).toContain('mentions with serverId "a"');
       expect(w.calls).toHaveLength(calls);
       expect([...w.rules]).toEqual(rules);
       expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
@@ -115,36 +115,116 @@ describe('channel-mode server ownership', () => {
   }
 
   for (const connected of [false, true]) {
-    test(`R3-1 configured owner awaiting registration retains binding (connected: ${connected})`, async () => {
-      const id = 'zulip:g';
-      const w = registryWired(['a', 'b']);
-      const m = await w.createModule();
-      await w.register('a', id);
-      await w.set(m, id);
-      w.channels.removeServer('a');
-      w.servers[0].isConnected = connected;
-      // Even other entries do not prove absence while disconnected.
-      if (!connected) await w.register('a', 'zulip:other');
-      await w.register('b', id);
-      const calls = w.calls.length;
-      const refused = await w.set(m, id);
-      expect(refused.error).toContain(connected ? 'registered its channels yet' : 'disconnected');
-      expect(refused.error).not.toContain('clear the record');
-      expect(w.calls).toHaveLength(calls);
-      const cleanup = await w.set(m, id, 'mentions');
-      expect(cleanup.success).toBe(false);
-      expect(cleanup.error).toContain('Retry mentions after');
-      expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
-      expect(w.calls[calls]).toMatchObject({ name: 'channel_close', input: { serverId: 'a' } });
-      expect(w.rules.size).toBe(0);
-      expect((await w.set(m, id, 'mentions', 'b')).success).toBe(false);
-      expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
-      // Explicitly naming the saved owner deliberately abandons it.
-      await w.set(m, id, 'mentions', 'a');
-      expect(w.saved()).toEqual({ owners: {} });
-      await m.stop();
+    for (const otherRegistered of [false, true]) {
+      test(`R4-1/R4-2 configured owner awaiting registration retains binding (connected: ${connected}, other registered: ${otherRegistered})`, async () => {
+        const id = 'zulip:g';
+        const w = registryWired(['a', 'b']);
+        const m = await w.createModule();
+        await w.register('a', id);
+        await w.set(m, id);
+        w.channels.removeServer('a');
+        w.servers[0].isConnected = connected;
+        // Other entries do not prove that a lazy thread/DM registration is finished.
+        if (otherRegistered) await w.register('a', 'zulip:other');
+        await w.register('b', id);
+        const calls = w.calls.length;
+        for (const explicit of [undefined, 'a', 'b']) {
+          const refused = await w.set(m, id, 'debounced', explicit);
+          expect(refused.success).toBe(false);
+          if (explicit !== 'b') {
+            expect(refused.error).toContain(connected ? 'threads/DMs' : 'disconnected');
+            if (connected) expect(refused.error).not.toContain('disconnected');
+          }
+          expect(refused.error).toContain('mentions with serverId "a"');
+          expect(refused.error).toContain('without a confirmed close');
+          expect(refused.error).not.toContain('call again with serverId "b"');
+          expect(refused.error).not.toContain('leave serverId out');
+          expect(w.calls).toHaveLength(calls);
+          expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
+        }
+        const cleanup = await w.set(m, id, 'mentions');
+        expect(cleanup.success).toBe(false);
+        expect(cleanup.error).toContain('Retry mentions once');
+        expect(cleanup.error).toContain('mentions with serverId "a"');
+        expect(cleanup.error).toContain('without a confirmed close');
+        expect(cleanup.error).not.toContain('serverId "b"');
+        expect(cleanup.error).not.toContain('leave serverId out');
+        expect(cleanup.error).not.toContain('must be retried');
+        expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
+        expect(w.calls[calls]).toMatchObject({ name: 'channel_close', input: { serverId: 'a' } });
+        expect(w.rules.size).toBe(0);
+        const wrongOwner = await w.set(m, id, 'mentions', 'b');
+        expect(wrongOwner.success).toBe(false);
+        expect(wrongOwner.error).toContain('mentions with serverId "a"');
+        expect(wrongOwner.error).toContain('without a confirmed close');
+        expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
+        // Explicitly naming the saved owner deliberately abandons it.
+        await w.set(m, id, 'mentions', 'a');
+        expect(w.saved()).toEqual({ owners: {} });
+        await m.stop();
+      });
+    }
+  }
+
+  for (const gcModuleName of [undefined, 'misspelled-gc', 'custom-gc']) {
+    test(`R4-3 absent GC wording and one-time custom-name warning (${gcModuleName})`, async () => {
+      const m = new ChannelModeModule({ gcModuleName });
+      const w = registryWired();
+      m.setFramework(w.framework);
+      let modulePresent = gcModuleName === 'custom-gc';
+      await m.start({
+        getModule: () => modulePresent ? m : null,
+        getState: () => undefined, setState: () => {},
+        callTool: async (call: ToolCall) => call.name === 'channel_open'
+          ? { success: false, error: 'injected open failure' } : { success: true },
+      } as unknown as ModuleContext);
+      const warn = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const set = (mode: string) => w.set(m, 'zulip:g', mode);
+        const first = await set('debounced');
+        if (modulePresent) {
+          expect(first.error).toContain('it is pinned open');
+          expect(warn).not.toHaveBeenCalled();
+          modulePresent = false; // A custom module removed at runtime also warns.
+        }
+        const partial = await set('debounced');
+        expect(partial.success).toBe(false);
+        expect(partial.error).toContain(
+          `its debounce rule is set and nothing will auto-close it (no ${gcModuleName ?? 'subscription-gc'} module)`,
+        );
+        await set('mentions');
+        await set('debounced');
+        expect(warn).toHaveBeenCalledTimes(gcModuleName === undefined ? 0 : 1);
+        if (gcModuleName !== undefined) {
+          expect(warn.mock.calls[0][0]).toContain(gcModuleName);
+          expect(warn.mock.calls[0][0]).toContain('may still auto-close channels');
+        }
+      } finally {
+        warn.mockRestore();
+        await m.stop();
+      }
     });
   }
+
+  test('R4-2 lazy registration retains a configured owner despite other channels', async () => {
+    const id = 'discord:g1:thread1';
+    const w = registryWired(['a', 'b']);
+    const m = await w.createModule();
+    await w.register('a', id);
+    await w.set(m, id);
+    w.channels.removeServer('a');
+    await w.register('a', 'discord:g1:text1');
+    const calls = w.calls.length;
+    expect((await w.set(m, id)).success).toBe(false);
+    expect(w.calls).toHaveLength(calls);
+    await w.set(m, id, 'mentions');
+    expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
+    await w.register('a', id); // The next thread message registers it.
+    expect((await w.set(m, id, 'mentions')).success).toBe(true);
+    expect(w.channels.getDesiredState('a', id)).toBe('closed');
+    expect(w.saved()).toEqual({ owners: {} });
+    await m.stop();
+  });
 
   test('R2-1 sequence 3: removed saved owner cannot silently move to a replacement', async () => {
     const w = registryWired(['a', 'b']);
@@ -170,14 +250,13 @@ describe('channel-mode server ownership', () => {
     await m.stop();
   });
 
-  for (const explicit of [undefined, 'a', 'b']) {
+  for (const explicit of ['a']) {
     test(`R2-1 deregistered connected owner releases after mentions (serverId: ${explicit})`, async () => {
       const w = registryWired(['a', 'b']);
       const m = await w.createModule();
       const id = 'zulip:g';
       await w.register('a', id);
       expect((await w.set(m, id)).success).toBe(true);
-      await w.register('a', 'zulip:other');
       await w.channels.handleChanged('a', { removed: [id] });
       await w.register('b', id);
       expect(w.servers[0].isConnected).toBe(true);
@@ -241,31 +320,29 @@ describe('channel-mode server ownership', () => {
       const id = 'zulip:g';
       await w.register('a', id);
       await w.set(m, id);
-      await w.register('a', 'zulip:other');
       await w.channels.handleChanged('a', { removed: [id] });
       await w.register('b', id);
       const remove = w.framework.removeGatePolicy;
       if (failing === 'rule') w.framework.removeGatePolicy = () => { throw new Error('rule removal failed'); };
       else w.failedTools.add('subscription-gc--pin_channel_idle_limit');
-      const cleanup = await w.set(m, id, 'mentions', 'b');
+      const cleanup = await w.set(m, id, 'mentions', 'a');
       expect(cleanup.success).toBe(false);
       expect(cleanup.error).not.toContain('saved owner record was cleared');
       expect((cleanup.data as { steps: Array<{ detail: string }> }).steps[1].detail).toBe(
         "Old owner a's close could not be confirmed. The saved owner record was retained. " +
-        'This does not confirm a close. Close attempt: ' +
-        'No channel "zulip:g" is on server "a", so nothing ran. ' +
-        'It\'s on server "b": call again with serverId "b", or leave serverId out.',
+        'This does not confirm a close. ' +
+        'Call mentions with serverId "a" to retry cleanup and release the binding without a confirmed close.',
       );
       expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
       w.framework.removeGatePolicy = remove;
       w.failedTools.clear();
-      await w.set(m, id, 'mentions');
+      await w.set(m, id, 'mentions', 'a');
       expect(w.saved()).toEqual({ owners: {} });
       await m.stop();
     });
   }
 
-  test('R2-2 wrong explicit owner preserves working rule before any step, with registry hint', async () => {
+  test('R2-2 wrong explicit owner preserves working rule before any step, with binding-aware guidance', async () => {
     const w = registryWired();
     const m = await w.createModule();
     const id = 'zulip:backend';
@@ -278,7 +355,9 @@ describe('channel-mode server ownership', () => {
       const refused = await w.set(module, id, 'debounced', 'discord');
       expect(refused.success).toBe(false);
       expect([...w.rules]).toEqual(rules);
-      expect(refused.error).toContain('It\'s on server "zulip": call again with serverId "zulip"');
+      expect(refused.error).toContain(module === m
+        ? 'mentions with serverId "zulip"'
+        : 'It\'s on server "zulip": call again with serverId "zulip"');
       expect(w.calls).toHaveLength(calls);
       expect(w.saved()).toEqual({ owners: { [id]: 'zulip' } });
       expect(w.channels.getDesiredState('zulip', id)).toBe('open');
@@ -351,7 +430,7 @@ describe('channel-mode server ownership', () => {
   for (const gcMode of ['off', 'removed', 'unpin-failure'] as const) {
     for (const ownerStatus of ['live', 'deregistered', 'removed'] as const) {
       if (gcMode === 'unpin-failure' && ownerStatus === 'live') continue;
-      for (const explicit of ownerStatus === 'live' ? [undefined] : [undefined, 'a', 'b']) {
+      for (const explicit of ownerStatus === 'live' ? [undefined] : ownerStatus === 'deregistered' ? ['a'] : [undefined, 'a', 'b']) {
         test(`R3 GC ${gcMode}: ${ownerStatus} owner cleanup (serverId: ${explicit})`, async () => {
           const dir = mkdtempSync(join(tmpdir(), 'cm-gc-'));
           const w = registryWired(['a', 'b']);
@@ -391,7 +470,6 @@ describe('channel-mode server ownership', () => {
               gc.handleToolCall = async () => ({ success: false, error: 'Module not found: subscription-gc, so nothing was done' });
             }
             if (ownerStatus === 'deregistered') {
-              await w.register('a', 'zulip:other');
               await w.channels.handleChanged('a', { removed: [id] });
             }
             if (ownerStatus === 'removed') {
@@ -830,7 +908,7 @@ describe('channel-mode server ownership', () => {
         .toEqual(['realm-a']);
       expect(w.channels.getDesiredState('realm-b', 'zulip:general')).toBe('open');
       if (!removeKnownServer) {
-        expect(result.error).toContain('Retry mentions after');
+        expect(result.error).toContain('Retry mentions once');
         expect(w.saved()).toEqual({ owners: { 'zulip:general': 'realm-a' } });
         expect((await w.set(restarted, 'zulip:general', 'debounced', 'realm-b')).success).toBe(false);
         // Once registration arrives, a retried close completes normal cleanup.
@@ -921,6 +999,8 @@ describe('channel-mode server ownership', () => {
     expect(refused.error).toContain('Nothing changed');
     expect(refused.error).toContain('1024');
     expect(refused.error).toContain('Complete mentions cleanup');
+    expect(refused.error).toContain('mentions with serverId');
+    expect(refused.error).toContain('without a confirmed close');
     expect(w.calls).toEqual([]);
     expect(w.writes).toEqual([]);
     expect([...w.rules]).toEqual(beforeRules);

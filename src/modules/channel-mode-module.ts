@@ -38,6 +38,7 @@ export class ChannelModeModule implements Module {
   private ctx: ModuleContext | null = null;
   private framework: AgentFramework | null = null;
   private callSeq = 0;
+  private warnedMissingGc = false;
   private pendingOwners = new Set<string>();
 
   private readonly fallbackServerId: string;
@@ -99,7 +100,7 @@ export class ChannelModeModule implements Module {
           type: 'object',
           properties: {
             channelId: { type: 'string', description: 'Copy the exact incoming-event id: zulip:backend, slack:<conversationId> (slack:C0123ABCD), or discord:<guildId>:<channelId>, not a raw platform id. Bare legacy ids (no colon) may use the configured fallback. Unknown namespaces are refused.' },
-            serverId: { type: 'string', description: 'Optional owning MCPL server, for ids registered on more than one server.' },
+            serverId: { type: 'string', description: 'Optional owning MCPL server for shared ids; mentions naming a saved owner releases its missing-channel binding without a confirmed close.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms (100–300000); validated in either mode.' },
           },
@@ -173,33 +174,37 @@ export class ChannelModeModule implements Module {
     const explicit = serverId as string | undefined;
     const entries = this.framework.channels?.listChannelsRaw() ?? [];
     const registered = entries.filter(entry => entry.descriptor.id === channelId);
-    // Reuse the registry's refusal/hint, without running an open or any other step.
-    if (mode === 'debounced' && explicit !== undefined && registered.length > 0 &&
-        !registered.some(entry => entry.serverId === explicit)) {
-      const refusal = this.framework.channels!.resolveChannel(channelId, explicit);
-      if ('error' in refusal) return { success: false, isError: true, error: `Nothing changed: ${refusal.error}` };
-    }
     const ownerMissing = savedOwner !== undefined &&
       !registered.some(entry => entry.serverId === savedOwner);
     const ownerServer = this.framework.listMcplServers().find(server => server.id === savedOwner);
-    // An empty registry can mean startup, not deregistration. Disconnection
-    // also makes registrations inconclusive; retain the binding until retry.
-    const ownerPending = ownerMissing && ownerServer !== undefined &&
-      (!ownerServer.connected || !entries.some(entry => entry.serverId === savedOwner));
+    // Configured servers may register channels lazily (for example threads/DMs
+    // on their next message). Other entries do not prove this channel is gone.
+    const ownerPending = ownerMissing && ownerServer !== undefined;
     const ownerGone = ownerMissing && !ownerPending;
     const releaseOrphan = mode === 'mentions' && ownerMissing &&
       (ownerGone || explicit === savedOwner);
     if (savedOwner !== undefined && explicit !== undefined && explicit !== savedOwner && !releaseOrphan) {
-      return { success: false, isError: true, error: `Nothing changed: channel ${channelId} is bound to saved owner ${savedOwner}. Complete mentions cleanup on that owner before selecting ${explicit}.` };
+      return { success: false, isError: true, error: `Nothing changed: channel ${channelId} is bound to saved owner ${savedOwner}. Call mentions with serverId "${savedOwner}" to complete cleanup (for a missing channel, this releases the binding without a confirmed close) before selecting ${explicit}.` };
+    }
+    // Registry hints are safe only without a saved binding: otherwise they can
+    // point to a replacement that the binding refuses. Classify saved owners first.
+    if (savedOwner === undefined && mode === 'debounced' && explicit !== undefined && registered.length > 0 &&
+        !registered.some(entry => entry.serverId === explicit)) {
+      const refusal = this.framework.channels!.resolveChannel(channelId, explicit);
+      if ('error' in refusal) return { success: false, isError: true, error: `Nothing changed: ${refusal.error}` };
     }
     const resolved = releaseOrphan
       ? { serverId: savedOwner!, connected: false }
       : ownerPending
         ? mode === 'mentions'
           ? { serverId: savedOwner!, connected: ownerServer!.connected }
-          : { error: `MCPL server ${savedOwner} for channel ${channelId} is disconnected or hasn't registered its channels yet. Retry once it is connected and has registered its channels.` }
+          : { error: `MCPL server ${savedOwner} for channel ${channelId} ` +
+              (ownerServer!.connected
+                ? "is connected but hasn't registered this channel; lazy channels such as threads/DMs may register on their next message. "
+                : "is disconnected and hasn't registered this channel. ") +
+              `Retry debounced once the server registers the channel, or call mentions with serverId "${savedOwner}" to release the binding without a confirmed close.` }
         : ownerGone
-          ? { error: `The saved owner ${savedOwner} no longer registers channel ${channelId} (deregistered or removed). Restore that server and its registration, or call mentions with or without serverId to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
+          ? { error: `The saved owner ${savedOwner} is no longer configured for channel ${channelId}. Restore that server and its registration, or call mentions with or without serverId to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
           : this.resolveServer(channelId, explicit ?? savedOwner);
     if (mode === 'debounced') {
       const error = 'error' in resolved ? resolved.error : !resolved.connected
@@ -214,7 +219,7 @@ export class ChannelModeModule implements Module {
         return { success: false, isError: true, error: `Nothing changed: a debounced change for channel ${channelId} is in progress. Retry after it completes.` };
       }
       if (owners.size + this.pendingOwners.size >= MAX_OWNERS) {
-        return { success: false, isError: true, error: `Nothing changed: channel-mode's ${MAX_OWNERS} live-owner capacity is full. Complete mentions cleanup for a tracked channel to free a slot (mentions can release deregistered or removed owners even if their close is unconfirmed).` };
+        return { success: false, isError: true, error: `Nothing changed: channel-mode's ${MAX_OWNERS} live-owner capacity is full. Complete mentions cleanup for a tracked channel to free a slot (for a missing channel, call mentions with serverId naming its saved owner to release the binding without a confirmed close).` };
       }
       this.pendingOwners.add(channelId);
     }
@@ -385,11 +390,16 @@ export class ChannelModeModule implements Module {
       steps[1]!.detail = `Old owner ${resolved.serverId}'s close could not be confirmed. ` +
         `The saved owner record was ${released ? 'cleared' : 'retained'}. ` +
         'This does not confirm a close. ' +
-        `Close attempt: ${steps[1]!.detail}`;
+        (released
+          ? `Close attempt: ${steps[1]!.detail}`
+          : `Call mentions with serverId "${resolved.serverId}" to retry cleanup and release the binding without a confirmed close.`);
     }
 
-    if (retainPending && !steps[1]!.ok) {
-      steps[1]!.detail += ' The saved owner record was retained. Retry mentions after the saved owner connects and registers its channels; the close must be retried.';
+    if (retainPending && !steps[1]!.ok && 'serverId' in resolved) {
+      // The registry may suggest another server, but the saved binding forbids
+      // that selection. Replace its hint rather than presenting conflicting advice.
+      steps[1]!.detail = `Server ${resolved.serverId} has not registered channel ${channelId}. ` +
+        'The saved owner record was retained. ' + pendingAdvice(resolved.serverId);
     }
 
     return steps;
@@ -407,6 +417,13 @@ export class ChannelModeModule implements Module {
       // confirmed module absence is a no-op; a present module's failure stays
       // a failure, even if its error happens to say "Module not found".
       if ((step === 'gc-unpin' || step === 'gc-pin') && ctx.getModule(this.gcModuleName) === null) {
+        if (this.gcModuleName !== 'subscription-gc' && !this.warnedMissingGc) {
+          this.warnedMissingGc = true;
+          console.error(
+            `[gate] channel-mode's gcModuleName "${this.gcModuleName}" was not found; pin/unpin are no-ops. ` +
+            'Check modules.channelMode.gcModuleName: another subscription-gc module may still auto-close channels.',
+          );
+        }
         return { step, ok: true, detail: `no ${this.gcModuleName} module; ${step === 'gc-pin' ? 'nothing auto-closes it' : 'nothing to unpin'}` };
       }
       const result = await ctx.callTool({ id: `chanmode-${this.callSeq++}`, name, input: toolInput });
@@ -418,6 +435,11 @@ export class ChannelModeModule implements Module {
       return { step, ok: false, detail: errMsg(err), unanswered: true };
     }
   }
+}
+
+function pendingAdvice(owner: string): string {
+  return `Retry mentions once server ${owner} has registered the channel, or call mentions with serverId "${owner}" ` +
+    'to release the binding without a confirmed close.';
 }
 
 function errMsg(err: unknown): string {
@@ -439,7 +461,7 @@ function doneText(s: StepResult): string {
       return s.detail === 'set' ? 'its debounce rule is set'
         : s.detail === 'removed' ? 'its debounce rule was removed'
         : 'it had no debounce rule to remove';
-    case 'gc-pin': return s.detail.endsWith('; nothing auto-closes it') ? s.detail : 'it is pinned open';
+    case 'gc-pin': return s.detail.endsWith('; nothing auto-closes it') ? `nothing will auto-close it (${s.detail.split(';')[0]})` : 'it is pinned open';
     case 'gc-unpin': return s.detail.endsWith('; nothing to unpin') ? `there was no pin to release (${s.detail.split(';')[0]})` : "it isn't pinned";
     default: return `${s.step} worked`;
   }

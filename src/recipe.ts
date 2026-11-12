@@ -1273,19 +1273,12 @@ export interface RecipeModules {
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
    * `false` disables. The tool's optional `serverId` disambiguates shared ids;
-   * debounced requires it to own a registered channel. Otherwise use saved
-   * ownership, then registry, known id prefix, or this config's legacy fallback
-   * (default `discord`, bare ids or its own namespace only). Unknown namespaces
-   * never use a different fallback. Debounced refuses invalid/disconnected
-   * ownership before effects. A saved owner binds both modes until mentions
-   * cleanup completes; it cannot be silently replaced. Mentions closes even
-   * disconnected known owners, recording the close for re-registration.
-   * If the owner no longer registers the channel, mentions (with or without
-   * serverId) attempts its close and releases the record after rule removal
-   * and unpin, even if close is unconfirmed. It never closes a replacement.
-   * Owners are saved after open + rule install. Still-registered owners are
-   * deleted after rule removal and close, independently of unpin failures
-   * (also with subscriptionGc off).
+   * ownership otherwise uses the saved owner, registry, known id prefix, or
+   * this config's legacy fallback (default discord, bare ids or its namespace
+   * only). Unknown namespaces never use a different fallback. A saved owner
+   * binds both modes until mentions cleanup completes.
+   * See docs/ATTENTION-AND-GATING.md, ownership resolution and cleanup points
+   * 4 and 5, for disconnected/pending owners and explicit binding release.
    * New ids are refused before effects at 1024 live owners, including in-flight
    * opens; complete mentions cleanup to free a slot. Owners are never evicted.
    * See docs/ATTENTION-AND-GATING.md for resolution and cleanup details.

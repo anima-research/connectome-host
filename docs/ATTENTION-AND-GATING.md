@@ -226,8 +226,8 @@ action.
   4. Mentions removes the rule and unpins, even when ownership cannot be resolved.
      It closes a known owner even when disconnected: when the channel still
      has a registry entry, the framework records the close for re-registration.
-     If the saved owner is still configured but disconnected or has registered
-     no channels yet, a missing channel entry is inconclusive: plain mentions
+     If the saved owner is still configured, a missing channel entry is
+     inconclusive (threads/DMs may register on their next message): plain mentions
      keeps the binding and says to retry the close after registration. Debounced
      refuses without effects and asks to retry once connected and registered.
      For a still-registered owner, a successful or
@@ -242,24 +242,12 @@ action.
      Only a sole
      answered close failure suppresses the tool's generic retry advice; the
      registry explains deferred closes. Skipped, failed, or unanswered steps are reported individually.
-  5. A missing channel entry confirms an orphan only if the saved owner is no
-     longer configured, or is connected and has registered other channels but
-     not this one. In those cases **mentions**, plain or with an explicit
-     `serverId`, attempts close on that **old owner**, never the selected
-     replacement. An explicit `serverId` naming the saved owner also permits
-     deliberate abandonment while disconnected or awaiting registration; naming
-     a replacement does not bypass the retained binding in that transient state.
-     Successful rule removal and unpin clear the saved record even
-     if close fails or gets no answer. No replacement is needed. The result
-     reports an unconfirmed old-owner close plainly, without claiming the channel
-     was closed; close failure still makes the overall result partial/failure.
-     An absent subscription-GC module counts as nothing to unpin here too;
-     a real unpin failure with the module present still retains the record for
-     retry, as does failed rule removal. Debounced calls remain refused until
-     cleanup, or restoration of the old registration.
-     This releases a stale binding, not the old registry's desired-open state:
-     if the old server/channel returns, it may reopen. Restore and close it if
-     that matters; abandonment does not guarantee a remote close.
+  5. For a missing channel entry, mentions releases the saved binding only if
+     the owner is no longer configured or an explicit `serverId` names that
+     saved owner (never closing a replacement), and only after successful rule
+     removal and unpin (absent GC counts as nothing to unpin), even if close is
+     unconfirmed; failures remain reported, and this does not clear the old
+     registry's desired-open state or guarantee a remote close.
 
   New distinct debounced ids are refused before effects at 1024 live owners
   (including in-flight opens). Complete mentions cleanup for a tracked channel
