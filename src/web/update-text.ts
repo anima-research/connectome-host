@@ -419,7 +419,7 @@ export function lastSwitchLines(last: SwitchOutcome, ways: UpdateWays = COMMAND_
   const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}${asked}` +
     (last.reason ? `: ${last.reason}.` : '.');
   const kept = keptLines(last);
-  if (kept.length === 0) return [`${head} ${MORE_IN_LOG}`];
+  if (kept.length === 0) return [`${head} ${ways.reader === 'agent' ? MORE_IN_LOG_ASK : MORE_IN_LOG}`];
   return [`${head} What ${last.to} wrote last${WROTE_LAST}`, ...kept.map((line) => `${QUOTED}${line}`),
     ...ways.reader === 'agent' ? [HOST_LINES] : []];
 }
@@ -429,6 +429,9 @@ function failedInstall(install: { version: string; error?: string }): string {
 }
 
 const MORE_IN_LOG = 'The service\'s log, or the terminal the host was started in, says more.';
+
+const MORE_IN_LOG_ASK = 'The service\'s log, or the terminal your host was started in, says more, and the person who ' +
+  'runs your host can read either: ask them.';
 
 function keptLines(last: Extract<SwitchOutcome, { outcome: 'fell-back' }>): string[] {
   return last.trialLog !== null && last.trialLog.some((line) => line !== '') ? last.trialLog : [];
