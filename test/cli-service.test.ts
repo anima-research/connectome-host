@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
+  chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
   symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
@@ -1988,6 +1988,34 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' an instal
   expect(f.out.join('\n')).not.toContain('Stopped and removed');
   expect(f.systemd.calls.filter((call) => !call.startsWith('plutil ') &&
     call.includes(platform === 'darwin' ? `${label}.shell` : SHELL))).toEqual([]);
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a unit of this directory\'s name that runs another directory, as a same-name copy\'s original does, gives this install no service lines', async () => {
+  const original = install();
+  const f = fake(original, { platform });
+  expect(await installService(f.ctx(['install', original.recipe]), f.system)).toBe(0);
+  const work = join(original.home, 'elsewhere', 'My Resident');
+  mkdirSync(dirname(work), { recursive: true });
+  cpSync(original.work, work, { recursive: true });
+  const copy: Install = { home: original.home, work, root: join(work, 'connectome-host'), data: join(work, 'data'),
+    recipe: join(work, 'resident.json') };
+  const g = fake(copy, { platform });
+  expect(serviceCommands(copy.root, g.system)).toBeNull();
+  expect(serviceLines(copy.root, g.system)).toBeNull();
+  expect(serviceLines(original.root, g.system)![0]).toContain(platform === 'darwin'
+    ? 'com.animalabs.connectome.my-resident' : HOST);
+});
+
+test('a launch agent whose working directory plutil can\'t read still gives its lines, with no throw', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  writeFileSync(agentPlist(at), 'not a plist');
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'plutil'
+    ? { status: 1, stdout: '', stderr: `${args.at(-1)}: Unexpected character n at line 1` }
+    : run(command, args, env);
+  expect(serviceLines(at.root, f.system)![0]).toContain('com.animalabs.connectome.my-resident');
 });
 
 test('serviceCommands is null until the host\'s unit file is there, and names the shell daemon only while its file is', async () => {

@@ -12,7 +12,7 @@ import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
+import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit, type ServiceUnits } from './service-unit.js';
 import { shownToPerson } from './shown.js';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
@@ -383,10 +383,9 @@ export interface ServiceCommands {
   start: string;
 }
 
-export function serviceCommands(root: string, sys: Pick<ServiceSystem, 'platform' | 'home' | 'uid' | 'env'> = machine()):
-  ServiceCommands | null {
+export function serviceCommands(root: string, sys: ServiceSystem = machine()): ServiceCommands | null {
   const names = serviceUnits(root, sys.platform, sys.home);
-  if (names === null || !isFile(names.host.file)) return null;
+  if (names === null || !isFile(names.host.file) || !mayRunHere(sys, names)) return null;
   const units = isFile(names.shell.file) ? [names.shell, names.host] : [names.host];
   if (names.manager === 'systemd-user') {
     const ids = units.map((unit) => unit.name).join(' ');
@@ -398,8 +397,7 @@ export function serviceCommands(root: string, sys: Pick<ServiceSystem, 'platform
     stop: `launchctl bootout gui/${sys.uid} ${files}`, start: `launchctl bootstrap gui/${sys.uid} ${files}` };
 }
 
-export function serviceLines(root: string, sys: Pick<ServiceSystem, 'platform' | 'home' | 'uid' | 'env'> = machine()):
-  string[] | null {
+export function serviceLines(root: string, sys: ServiceSystem = machine()): string[] | null {
   const commands = serviceCommands(root, sys);
   if (commands === null) return null;
   const host = commands.units.at(-1)!;
@@ -604,6 +602,16 @@ function agentState(sys: ServiceSystem, env: Record<string, string>, unit: Servi
 function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit, log: string, rotate: boolean): Ran {
   if (rotate && existsSync(log)) renameSync(log, `${log}.previous`);
   return sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
+}
+
+function mayRunHere(sys: ServiceSystem, names: ServiceUnits): boolean {
+  const text = readOr(names.host.file);
+  if (text === null) return true;
+  try {
+    return runsHere(fileDirectory(sys, childEnv(sys), names.manager, names.host, text), names.work);
+  } catch {
+    return true;
+  }
 }
 
 function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,

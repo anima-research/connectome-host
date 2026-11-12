@@ -359,7 +359,16 @@ next start. Nor does it change a recipe: a fleet child that a recipe starts
 with an absolute `dataDir` has that directory, the original's, in a copy
 too, so the copy's autostart can start that child there. Give such a child a
 `dataDir` relative to the directory the host runs in, or change the copy's
-recipe to name its own, before the copy's first start. A binding of an
+recipe to name its own, before the copy's first start. Nor does it move a
+service that `connectome service install` wrote: its units still name the old
+directory. After a move, take them away: on Linux, run `systemctl --user
+disable --now` with each unit, remove its file in `~/.config/systemd/user`,
+and run `systemctl --user daemon-reload`; on macOS, run `launchctl bootout
+gui/$(id -u)` with each unit's plist in `~/Library/LaunchAgents`, and remove
+it. Then run `connectome service install <recipe>` in the new directory, which
+refuses while a unit of its name names the old directory. A copy can have a
+service of its own only in a directory of another name, since a service is
+named after its directory. A binding of an
 install moved or copied from the directory its record names, one that gives
 any place another place, or one that rewrites the fleet's children file
 takes the install's lock, so it needs the host stopped, and refuses while it

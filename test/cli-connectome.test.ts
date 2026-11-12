@@ -6,9 +6,9 @@ import {
 } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { bare, COMMANDS, send } from '../src/cli/connectome.js';
-import { serviceUnits } from '../src/cli/service-unit.js';
+import { plist, serviceUnits, systemdUnit } from '../src/cli/service-unit.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { SHOWN_FILE } from '../src/cli/shown.js';
@@ -191,11 +191,14 @@ test('a PATH entry that leads to the root through a link counts as the root on P
 
 /** Writes the host unit service install would write for this install, in a home of the test's own, and gives the
  *  environment that has a command look there. */
-function serviceUnit(root: string): { env: Record<string, string>; name: string; file: string; start: string } {
+function serviceUnit(root: string, work = dirname(root)): { env: Record<string, string>; name: string; file: string; start: string } {
   const home = join(dirname(root), 'home');
   const units = serviceUnits(root, process.platform, home)!;
   mkdirSync(dirname(units.host.file), { recursive: true });
-  writeFileSync(units.host.file, '');
+  const argv = [process.execPath, join(root, 'start.js'), 'recipe.json', '--headless'];
+  writeFileSync(units.host.file, process.platform === 'darwin'
+    ? plist(units.host.name, work, argv, [], join(work, 'logs', 'agent.log'))
+    : systemdUnit('connectome-host resident', work, argv, [], null));
   const uid = process.getuid!();
   return { env: { HOME: home, XDG_RUNTIME_DIR: `/run/user/${uid}` }, name: units.host.name, file: units.host.file,
     start: process.platform === 'darwin' ? `launchctl bootstrap gui/${uid} ${shellWord(units.host.file)}`
@@ -252,6 +255,16 @@ test('with the service\'s unit there and no host running, bare, send and update 
   const asked = await run(path, ['update'], root, undefined, undefined, unit.env);
   expect(asked.status).toBe(1);
   expect(asked.err).toContain(`If no host is running, start its service with \`${unit.start}\`, then ask again.`);
+});
+
+test('bare in a copy, whose unit of its name runs the original, names no unit and gives the host\'s own start line', async () => {
+  const { root } = install();
+  const { path } = writeInstallCommand(root, '');
+  const unit = serviceUnit(root, join('/srv/original', basename(dirname(root))));
+  const ran = await run(path, [], root, undefined, undefined, unit.env);
+  expect(ran.out).toContain(`No service is set up for it here: \`${path} service install <recipe>\` sets one up.`);
+  expect(ran.out).toContain(`If no host is running, have its service start it with \`${process.execPath} ${join(root, 'start.js')}\``);
+  expect(ran.out + ran.err).not.toContain(unit.name);
 });
 
 test('bare whose host can\'t be looked for still shows the service\'s lines, and exits 1', async () => {
