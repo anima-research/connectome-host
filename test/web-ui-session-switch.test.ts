@@ -10,6 +10,7 @@ import {
   switchQuiesceRefusalFor,
 } from '../src/modules/web-ui-module.js';
 import { switchQuiesceReason } from '../src/update/contract.js';
+import { answerSwitchRequest } from '../src/update/quiesce.js';
 
 const USER = 'admin';
 const PASS = 'open-sesame';
@@ -167,6 +168,85 @@ describe("the web UI's own entry during a session switch", () => {
       expect(mode).toEqual({ quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true });
     } finally {
       client.close();
+    }
+  }, TEST_MS);
+
+  test("while a switch's quiesce holds the host, its own rollback, suppress, pin and settings changes are refused and change nothing, while a read and a Resume aren't, and a rollback goes once it has resumed", async () => {
+    const quiescedRefusal = (what: string) => `${what} refused: this host is quiesced for a release switch. If that switch ` +
+      'goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended.';
+    const reached: string[] = [];
+    let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
+    webUiModule.setApp(hostApp({
+      getHostModeStatus: () => mode,
+      rollbackToMessage: async () => { reached.push('rollback'); return { sourceBranch: 'main', targetBranch: 'b2', messagesRemoved: 1, lastVisible: null }; },
+      suppressMessages: async () => { reached.push('suppress'); return {}; },
+      updateAgentRuntimeSettings: () => { reached.push('settings-update'); },
+      resetAgentRuntimeSettings: () => { reached.push('settings-reset'); },
+      cancelAgentRuntimeSettingsTransition: () => { reached.push('settings-cancel-transition'); },
+      resume: async () => { mode = { quiesced: false, drained: true }; return mode; },
+    }, false, [], {
+      cm: {
+        pinRange: () => { reached.push('pin-add'); return 'pin-1'; },
+        unpin: () => { reached.push('pin-remove'); return true; },
+        listPins: () => [],
+      },
+    }) as never);
+    const client = await connect();
+    try {
+      for (const op of ['rollback', 'suppress'] as const) {
+        client.send({ type: op, corrId: op, messageId: 'm1', ...(op === 'suppress' ? { messageIds: ['m1'] } : {}), sessionId: 's1' });
+        expect(await client.next(`the ${op} refusal`, (r) => r.corrId === op)).toEqual({
+          type: 'surgery-result', corrId: op, op, ok: false, error: quiescedRefusal(op),
+        });
+      }
+      const fields: Record<string, Record<string, unknown>> = {
+        'pin-add': { firstMessageId: 'm1' }, 'pin-remove': { pinId: 'pin-0' }, 'settings-update': { tailTokens: 4000 },
+      };
+      for (const op of ['pin-add', 'pin-remove', 'settings-update', 'settings-reset', 'settings-cancel-transition']) {
+        client.send({ type: op, ...fields[op], sessionId: 's1' });
+        expect(await client.next(`the ${op} refusal`, (r) => r.type === 'error' && String(r.message).startsWith(`${op} refused`))).toEqual({
+          type: 'error', message: quiescedRefusal(op),
+        });
+      }
+      expect(reached).toEqual([]);
+      client.send({ type: 'request-host-mode' });
+      expect((await client.next('the host mode, a read', (r) => r.type === 'host-mode')).hostMode).toMatchObject({ mode: 'quiesced' });
+      client.send({ type: 'host-resume', corrId: 'resume' });
+      await client.next('the host mode after Resume', (r) => r.type === 'host-mode' && (r.hostMode as { mode?: string }).mode === 'serving');
+      expect(mode.quiesced).toBe(false);
+      client.send({ type: 'rollback', corrId: 'after', messageId: 'm1', sessionId: 's1' });
+      expect(await client.next('the rollback after Resume', (r) => r.corrId === 'after')).toMatchObject({ type: 'surgery-result', ok: true });
+      expect(reached).toContain('rollback');
+    } finally {
+      client.close();
+    }
+  }, TEST_MS);
+
+  test("a Resume from the page while this host holds for a switch's last look is refused with the hold's words, the page reads the host mode again, and the host stays quiesced", async () => {
+    const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides it. " +
+      "If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install's host " +
+      "can't reach this host, stopping the install's host or restarting this one ends the wait.";
+    let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
+    const resumed: string[] = [];
+    const app = hostApp({
+      getHostModeStatus: () => mode,
+      resume: async () => { resumed.push('resume'); mode = { quiesced: false, drained: true }; return mode; },
+    }, false);
+    const { gateResume } = await import('../src/update/resume-gate.js');
+    gateResume(app.framework as never);
+    webUiModule.setApp(app as never);
+    const look = { op: 'quiesce', to: '0.15.0', waitMs: 0, last: { look: 'look-1', mark: join(dir, 'mark.json'), parent: process.pid } };
+    expect(await answerSwitchRequest(app.framework as never, look)).toMatchObject({ held: true });
+    const client = await connect();
+    try {
+      client.send({ type: 'host-resume', corrId: 'held' });
+      expect(await client.next('the refusal', (r) => r.corrId === 'held')).toEqual({ type: 'error', corrId: 'held', message: `resume failed: ${HOLDING}` });
+      expect((await client.next('the host mode after the refusal', (r) => r.type === 'host-mode')).hostMode).toMatchObject({ mode: 'quiesced' });
+      expect(resumed).toEqual([]);
+      expect(mode.quiesced).toBe(true);
+    } finally {
+      client.close();
+      await answerSwitchRequest(app.framework as never, { op: 'release', look: 'look-1' });
     }
   }, TEST_MS);
 
@@ -455,13 +535,17 @@ test("a host-quiesce over a switch's quiesce that no switch is still running is 
   expect(message).not.toContain('once the switch has gone ahead or ended');
 });
 
-test("a host-quiesce over a switch's quiesce on a host that can't tell whether the switch still runs is refused, naming Resume and what it costs", () => {
+test("a host-quiesce over a switch's quiesce on a host that can't tell whether the switch still runs is refused, naming the top bar's control that ends it there and what it costs", () => {
   const app = { framework: { getHostModeStatus: () => ({ quiesced: true, reason: switchQuiesceReason('0.15.0') }) } };
   const answer = switchQuiesceRefusalFor(app, { type: 'host-quiesce', corrId: 'quiesce', reason: 'maintenance' } as never, null);
   expect(answer).toMatchObject({ type: 'error', corrId: 'quiesce' });
   const message = String((answer as { message?: unknown }).message);
   expect(message).toStartWith('host-quiesce refused: ');
   expect(message).toContain('may still be under way or may have ended and left this quiesce behind');
-  expect(message).toContain('Resume ends it, and then quiesce again');
-  expect(message).toContain("though the switch then doesn't go ahead");
+  expect(message).toContain('clicking "⏸ quiesced" in the top bar ends it, and then quiesce again');
+  expect(message).toContain("That click also ends it while the switch waits, and that try then doesn't go ahead; during " +
+    "the switch's last look this host holds, and while the install's host runs, the click is refused until the switch is " +
+    'decided.');
+  expect(message).not.toContain('while the switch is under way');
+  expect(message).not.toContain('Resume');
 });

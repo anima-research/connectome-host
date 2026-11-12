@@ -282,6 +282,21 @@ describe('the binding check, before any release loads', () => {
     expect(run.stderr).toContain(`run \`${join(copy, 'connectome-host', 'connectome')} setup discord\`, or, for an install set up by hand, the setup of 0.10.2, the release whose setup wrote this file, which this install's releases don't hold now: install exactly 0.10.2 in ${copy} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand. ${RESTARTS}`);
   });
 
+  test('a record whose workingDir isn\'t an absolute path, under a current older than the release whose setup wrote its entries, sends an install set up by hand to that release\'s setup, or to install that release where its releases don\'t hold it', () => {
+    hostPackage(join(releaseDir(root, '0.9.0'), RELEASE_HOST), '0.9.0');
+    moveCurrent(root, '0.9.0');
+    writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [], workingDir: 'service' });
+    const ownSetup = join(releaseDir(root, '0.10.2'), RELEASE_HOST, 'src', 'update', 'setup.ts');
+    const held = start();
+    expect(held.exitCode).toBe(1);
+    expect(held.stderr).toContain(`or, for an install set up by hand, the setup of 0.10.2, the release whose setup wrote this file, ${ownSetup}, run by hand as docs/DEPLOYMENTS.md shows. A service that restarts`);
+    rmSync(ownSetup);
+    const gone = start();
+    expect(gone.exitCode).toBe(1);
+    expect(gone.stderr).toContain(`or, for an install set up by hand, the setup of 0.10.2, the release whose setup wrote this file, which this install's releases don't hold now: install exactly 0.10.2 in ${install} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand. A service that restarts`);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test('a record from before workingDir starts as it did', () => {
     writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] });
     expect(start().exitCode).toBe(0);

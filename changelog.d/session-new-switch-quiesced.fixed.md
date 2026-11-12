@@ -1,0 +1,1 @@
+- `/session new` and `/session switch` are refused while a host is quiesced for a release switch, as `/session rename` and `/session delete` are. They went through, and a new session's framework serves at once, outside the switch's quiesce. While a session switch is under way, they now give the refusal the other commands give there.

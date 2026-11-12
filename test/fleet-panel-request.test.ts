@@ -76,7 +76,7 @@ describe('FleetModule.requestPanel', () => {
   });
 
   test("a switch's request round-trips on the same path, and the child is among those it reaches", async () => {
-    expect(fleet.runningChildren()).toEqual([{ name: 'panelkid' }]);
+    expect(fleet.runningChildren()).toEqual([{ name: 'panelkid', incarnation: expect.stringMatching(/^\d+@\d+$/) }]);
     const request = { op: 'quiesce' as const, to: '9.9.9', waitMs: 0 };
     const [quiesced, panel] = await Promise.all([fleet.requestSwitch('panelkid', request, 5_000), fleet.requestPanel('panelkid', 'health')]);
     expect(quiesced).toEqual({
@@ -104,10 +104,10 @@ describe("the children a switch's quiesce reaches", () => {
         const res = await fleet.handleToolCall({ id: `launch-${name}`, name: 'launch', input: { name, recipe: 'mock-recipe', dataDir: join(dir, name) } });
         if (!res.success) throw new Error(`launch failed: ${res.error}`);
       }
-      expect(fleet.runningChildren()).toEqual([{ name: 'up' }, { name: 'gone' }]);
+      expect(fleet.runningChildren()).toEqual(['up', 'gone'].map((name) => ({ name, incarnation: expect.stringMatching(/^\d+@\d+$/) })));
       await fleet.handleToolCall({ id: 'kill-gone', name: 'kill', input: { name: 'gone' } });
       expect(fleet.getChildren().get('gone')?.status).toBe('exited');
-      expect(fleet.runningChildren()).toEqual([{ name: 'up' }]);
+      expect(fleet.runningChildren().map((child) => child.name)).toEqual(['up']);
       const gone = fleet.getChildren().get('gone') as { status: string };
       for (const [status, listed] of [['starting', true], ['crashed', false], ['ready', true], ['exited', false]] as const) {
         gone.status = status;
@@ -128,7 +128,7 @@ describe("the children a switch's quiesce reaches", () => {
         });
       }
       await new Promise<void>((done) => { const poll = setInterval(() => { if (up.socket !== null && up.socket !== socket) { clearInterval(poll); done(); } }, 5); });
-      expect(fleet.runningChildren()).toEqual([{ name: 'up' }]);
+      expect(fleet.runningChildren().map((child) => child.name)).toEqual(['up']);
       const answer = await fleet.requestSwitch('up', { op: 'quiesce', to: '9.9.9', waitMs: 0 }, 5_000);
       expect(answer).toMatchObject({ ok: true, data: { drained: false, echo: { op: 'quiesce', to: '9.9.9', waitMs: 0 } } });
     } finally {

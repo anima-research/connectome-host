@@ -1,0 +1,1 @@
+- A host's start asks each fleet child it adopted to end a switch's quiesce, which a stop during a switch's try could leave holding the child's new turns. A child the request doesn't reach, or that refuses it, is named in the host's log. An operator's own quiesce of a child stays.

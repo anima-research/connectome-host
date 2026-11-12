@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
@@ -12,14 +12,14 @@ import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type Ins
 import { RELEASE_HOST, goBackOffer, isUnder, readInstallRecord } from './launcher.js';
 import { installCommandAt } from '../cli/install-command.js';
 import {
-  NOT_THE_SWITCHS, SERVING, lookAtChildren, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework,
-  type SwitchFleet,
+  NOT_THE_SWITCHS, SERVING, fleetChanged, lookAtChildren, quiesceForSwitch, releaseHolds, resumeAfterSwitchQuiesce, takeLastLook,
+  type Looked, type QuiesceFramework, type SwitchFleet,
 } from './quiesce.js';
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
 import {
   ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName,
-  bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines,
+  bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines, registryPassOn,
   notAnInstall, noticeLines, notesUrl, personWay, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
   type SwitchOutcome, type UpdateStatus, type UpdateWays,
@@ -94,15 +94,19 @@ function notesSections(text: string): Array<{ version: string; text: string }> {
 }
 
 // agent-framework 0.33.0 keeps a tool's answer whole in the agent's context
-// only up to its inline cap, 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS)
-// where neither the recipe nor the agent's settings set another and no context
-// strategy's per-message bound is lower, and keeps no more than that where no
-// workspace mount is writable.
+// only up to its inline cap, which a model's call carries as resultMaxChars:
+// 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS) where neither the
+// recipe nor the agent's settings set another, lowered to any context strategy's
+// per-message bound, and it keeps no more than that where no workspace mount is
+// writable. Where one round's results together pass that bound, each takes a
+// share, which the call doesn't carry.
 const NOTES_BUDGET = 24_000;
 
 const characters = (count: number): string => `${count.toLocaleString('en-US')} characters`;
 
-function notesAnswer(path: string, running: string, installed: string, version?: string): UpdateAnswer {
+function notesAnswer(
+  path: string, running: string, installed: string, version: string | undefined, budget: number,
+): UpdateAnswer {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
@@ -116,14 +120,14 @@ function notesAnswer(path: string, running: string, installed: string, version?:
     return refused(`No notes were given: ${path} has no notes for the releases after ${running} up to ${installed}: ` +
       `${notesUrl(installed)} has ${installed}'s.`);
   }
-  const fits = (answer: UpdateAnswer): boolean => answer.lines.join('\n').length <= NOTES_BUDGET;
+  const fits = (answer: UpdateAnswer): boolean => answer.lines.join('\n').length <= budget;
   if (version === undefined) {
     const whole = done(`The notes of ${list(sections.map(({ version: v }) => v))}, from ${path}:`,
       sections.map(({ text: body }) => body).join('\n\n'));
     if (fits(whole)) return whole;
     if (sections.length > 1) {
       return done(`The notes of the releases after ${running} up to ${installed} come to more than one answer carries ` +
-        `(${characters(NOTES_BUDGET)}), so here is each release's size, from ${path}. Ask for one release's notes with ` +
+        `(${characters(budget)}), so here is each release's size, from ${path}. Ask for one release's notes with ` +
         'lifecycle--update notes with its `version`:',
         ...sections.map(({ version: v, text: body }) => `- ${v}: ${characters(body.length)}`));
     }
@@ -138,7 +142,7 @@ function notesAnswer(path: string, running: string, installed: string, version?:
   const head = (shown: number): string => `The notes of ${one.version}, from ${path}, cut: the first ` +
     `${shown.toLocaleString('en-US')} of its ${characters(one.text.length)}. The rest is in that file, and at ` +
     `${notesUrl(one.version)}:`;
-  const shown = NOTES_BUDGET - head(NOTES_BUDGET).length - 1;
+  const shown = Math.max(0, budget - head(budget).length - 1);
   return done(head(shown), one.text.slice(0, shown));
 }
 
@@ -152,19 +156,25 @@ export class HostUpdate {
   private installing: string | null = null;
   private lastInstall: UpdateStatus['lastInstall'] = null;
   private restart: RestartState | null = null;
+  private looked: Looked | null = null;
   private quiescedFramework: SwitchFramework | null = null;
+  private quiescedSince: number | undefined;
   private endingSwitchQuiesce = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private serviceLine = false;
   private armed: ArmedSwitch | null = null;
   private armedDropped: UpdateStatus['armedDropped'] = null;
   private stopRecord: { path: string; record: Record<string, unknown> & { reason: string } } | null = null;
+  private droppedFile: string | null = null;
   private trying = false;
 
   configure(setup: UpdateSetup): void {
     this.setup = setup;
     this.serviceLine = (setup.env ?? process.env)[SUPERVISED_ENV] === '1';
-    this.armedDropped = setup.here === null ? null : takeDroppedArm(installPaths(setup.here.root).armedDropped, (line) => { this.log(line); });
+    const path = setup.here === null ? null : installPaths(setup.here.root).armedDropped;
+    const taken = path === null ? null : takeDroppedArm(path, (line) => { this.log(line); });
+    this.armedDropped = taken?.dropped ?? null;
+    this.droppedFile = taken?.remove === true ? path : null;
   }
 
   recordStop(reason: string): string | null {
@@ -185,9 +195,22 @@ export class HostUpdate {
 
   attachStop(stop: HostStop): void {
     this.stopper = stop;
+    this.removeDroppedRecord();
     const serve = this.serving;
     this.serving = null;
     serve?.();
+  }
+
+  private removeDroppedRecord(): void {
+    const path = this.droppedFile;
+    this.droppedFile = null;
+    if (path === null) return;
+    try {
+      rmSync(path, { force: true });
+    } catch (error) {
+      this.log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be removed, so a later ` +
+        `start may say the same again: ${said(error)}`);
+    }
   }
 
   whenStopAttached(serve: () => void): void {
@@ -272,7 +295,7 @@ export class HostUpdate {
     } catch (error) {
       this.check = { at, ok: false, error: said(error) };
       this.installing = null;
-      return { refusal: refused(`Nothing was installed: ${said(error)}`) };
+      return { refusal: refused(`Nothing was installed: ${said(error)}`, ...registryPassOn(ways)) };
     }
     if (check.candidate === null) {
       this.installing = null;
@@ -415,7 +438,9 @@ export class HostUpdate {
         'it went ahead, and cancel disarms it if it didn\'t.');
     }
     this.disarm(by ? `${by} cancelled it` : 'it was cancelled');
+    const dropped = this.armedDropped!;
     const ended = await this.endLeftQuiesce();
+    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
     return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + (ended === null
       ? ' A switch\'s quiesce is being ended already, which also ends any quiesce an earlier try left.'
       : leftQuiesced(ended, false, ways)));
@@ -527,14 +552,14 @@ export class HostUpdate {
     const restart = this.restart!;
     restart.phase = 'ending';
     restart.hosts = [];
-    const ended = await this.endQuiesce();
+    const ended = await this.endQuiesce(this.looked?.look);
     this.restart = null;
     const holding = hosts.filter((h) => !settled(h) || isHeld(h));
     const held = [
       ...(holding.some((h) => !h.answered) ? ['a host couldn\'t be counted'] : []),
       ...(holding.some((h) => h.answered && !h.drained) ? ['turns were still going'] : []),
       ...(holding.some((h) => h.answered && h.drained && h.backgroundScripts > 0) ? ['scripts were running outside any turn'] : []),
-      ...(holding.some((h) => h.answered && h.inFlight !== undefined) ? ['a fleet child had work going outside any turn'] : []),
+      ...(holding.some((h) => h.answered && h.inFlight !== undefined) ? ['a fleet child had work in flight'] : []),
     ];
     const what = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held.at(-1)}` : held[0] ?? 'this host had work in flight again';
     const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true, this.hostWays());
@@ -591,8 +616,25 @@ export class HostUpdate {
   }
 
   async stopNow(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
-    if (this.restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
-    if (this.need().host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
+    const restart = this.restart;
+    if (restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
+    const setup = this.need();
+    if (setup.host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
+    restart.phase = 'quiescing';
+    restart.hosts = [];
+    const { hosts, look } = await takeLastLook(setup.host.fleet(), restart.to, installPaths(setup.here!.root).mark);
+    this.looked = look;
+    if (setup.host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
+    const own = this.quiescedFramework!.getHostModeStatus();
+    if (!own.quiesced || own.since !== this.quiescedSince) {
+      return this.callOff("stop now found that this host's quiesce was ended during the wait, so stopping now could cut work " +
+        "that wasn't named as busy.", ways);
+    }
+    const loose = hosts.filter((host) => !host.answered);
+    if (loose.length > 0) {
+      return this.callOff("stop now's last look found a fleet child that doesn't hold or didn't answer, so stopping now could " +
+        `cut work that wasn't named as busy: ${loose.map((host) => `${host.host}: ${host.answered ? '' : host.why}`).join('; ')}.`, ways);
+    }
     return this.markAndStop(ways);
   }
 
@@ -691,7 +733,7 @@ export class HostUpdate {
       `them from ${notesPath(setup.here.root, installed)}.`];
   }
 
-  installedNotes(version?: string, ways: UpdateWays = TOOL_WAYS): UpdateAnswer {
+  installedNotes(version?: string, ways: UpdateWays = TOOL_WAYS, cap?: number): UpdateAnswer {
     const setup = this.need();
     if (setup.here === null) return refused(`No notes were given: ${notAnInstall(ways)}`);
     let installed: string | null;
@@ -704,7 +746,8 @@ export class HostUpdate {
       return refused(`No notes were given: no release newer than ${setup.running} is installed. ${ways.check} ` +
         'says what\'s out, with its notes link.');
     }
-    return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version);
+    return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version,
+      Math.min(NOTES_BUDGET, cap ?? NOTES_BUDGET));
   }
 
   private installedTarget(): string | null {
@@ -757,12 +800,15 @@ export class HostUpdate {
     restart.hosts = [];
     const framework = setup.host.framework();
     this.quiescedFramework = framework;
+    this.looked = null;
     let quiet;
     try {
-      quiet = await quiesceForSwitch(framework, setup.host.fleet(), { to: restart.to, timeoutMs });
+      quiet = await quiesceForSwitch(framework, setup.host.fleet(), { to: restart.to, timeoutMs, mark: installPaths(setup.here!.root).mark });
     } catch (error) {
       return this.callOff(`its quiesce was refused: ${said(error)}`, ways);
     }
+    this.looked = quiet.look;
+    this.quiescedSince = quiet.since;
     if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED, ways);
     if (armedQuiet !== undefined) {
       const hold = operatorHold(framework.getHostModeStatus()) ?? childHold(quiet.hosts);
@@ -770,6 +816,7 @@ export class HostUpdate {
       return quiet.drained && quiet.hosts.every(settled) && armedQuiet() ? this.markAndStop(ways) : this.endAndStayArmed(quiet.hosts);
     }
     if (quiet.drained) return this.markAndStop(ways);
+    await releaseHolds(setup.host.fleet(), quiet.look.look);
     restart.phase = 'busy';
     restart.hosts = quiet.hosts;
     return refused(...busyLines(restart, timeoutMs, ways));
@@ -781,11 +828,14 @@ export class HostUpdate {
     if (this.trying && this.stopper?.stopping?.() === true) return this.callOff(STOPPING_FIRST, ways);
     const held = this.trying && restart.why === 'go-back' && !restart.keepData ? this.restoreRefusal(this.hostWays()) : null;
     if (held !== null) return this.callOff(held, ways);
+    const changed = fleetChanged(setup.host.fleet(), this.looked);
+    if (changed !== null) return this.callOff(`${changed}. Ask again.`, ways);
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
       ({ unsynced } = writeMark(setup.here!.root, {
         to: restart.to, why: restart.why, keepData: restart.keepData, connected, by: this.armed?.by ?? undefined,
+        look: this.looked?.look,
       }, this.now()));
     } catch (error) {
       return this.callOff(`its mark couldn't be written: ${said(error)}`, ways);
@@ -809,7 +859,7 @@ export class HostUpdate {
     const restart = this.restart!;
     restart.phase = 'ending';
     restart.hosts = [];
-    const ended = await this.endQuiesce();
+    const ended = await this.endQuiesce(this.looked?.look);
     this.restart = null;
     if (this.trying && this.armed !== null) {
       this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + this.droppedLeft(ended));
@@ -821,10 +871,10 @@ export class HostUpdate {
     return why === null ? done(first, ...ended.lines) : refused(first, ...ended.lines);
   }
 
-  private async endQuiesce(): Promise<{ ended: string[]; lines: string[]; stuck: number }> {
+  private async endQuiesce(look?: string): Promise<{ ended: string[]; lines: string[]; stuck: number }> {
     const setup = this.need();
     try {
-      const { hosts } = await resumeAfterSwitchQuiesce(setup.host.framework(), setup.host.fleet());
+      const { hosts } = await resumeAfterSwitchQuiesce(setup.host.framework(), setup.host.fleet(), look);
       const said = (h: { host: string; why?: string }) => `${h.host}: ${(h.why ?? 'it didn\'t say why').replace(/\.$/, '')}.`;
       const told = hosts.filter((h) => h.why !== undefined && h.why !== SERVING);
       const stuck = told.filter((h) => !h.resumed && !h.why!.startsWith(NOT_THE_SWITCHS));
@@ -882,7 +932,7 @@ const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: bo
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';
 
-function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus['armedDropped'] {
+function takeDroppedArm(path: string, log: (line: string) => void): { dropped: UpdateStatus['armedDropped']; remove: boolean } | null {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
@@ -893,25 +943,23 @@ function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus
     }
     return null;
   }
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be removed, so a later start ` +
-      `may say the same again: ${said(error)}`);
-  }
   let read: Record<string, unknown> | null = null;
   try {
     read = JSON.parse(text);
   } catch {}
   const { v, to, why, keepData, since, at, reason } = read ?? {};
+  if (typeof v === 'number' && v !== 1) {
+    log(`[update] ${path} holds the record of an armed switch a stop dropped, but its version is ${v}, and this release ` +
+      'reads only version 1, so check can\'t say whether one was. The record stays for a release that reads it.');
+    return { dropped: null, remove: false };
+  }
   if (v === 1 && typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
     typeof since === 'string' && typeof at === 'string' && typeof reason === 'string') {
-    return { to, why, keepData, since, at, reason };
+    return { dropped: { to, why, keepData, since, at, reason }, remove: true };
   }
-  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped` +
-    (v !== undefined && v !== 1 ? `: its version is ${JSON.stringify(v)}, and this release reads only version 1` : '') +
-    ', so check can\'t say whether one was.');
-  return null;
+  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped, so check can't say whether ` +
+    'one was.');
+  return { dropped: null, remove: true };
 }
 
 export const hostUpdate = new HostUpdate();

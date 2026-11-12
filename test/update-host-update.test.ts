@@ -12,7 +12,8 @@ import {
 } from '../src/update/contract.js';
 import type { InstallOps } from '../src/update/install.js';
 import { RELEASE_HOST } from '../src/update/launcher.js';
-import type { SwitchFleet } from '../src/update/quiesce.js';
+import { answerSwitchRequest, type SwitchFleet, type SwitchRequest } from '../src/update/quiesce.js';
+import * as quiesce from '../src/update/quiesce.js';
 import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, pageRequest, statusLines,
@@ -58,7 +59,9 @@ function fakeFramework(options: {
   const timeouts: Array<number | undefined> = [];
   let reads = 0;
   let drainedNow = false;
-  let mode: { quiesced: boolean; reason?: string } = options.quiesced ? { quiesced: true, reason: options.quiesced } : { quiesced: false };
+  let quiesces = 0;
+  let mode: { quiesced: boolean; reason?: string; since?: number } = options.quiesced
+    ? { quiesced: true, reason: options.quiesced, since: quiesces } : { quiesced: false };
   const status = (): HostModeStatus => {
     const drained = drainedNow || reads >= (options.drainAfter ?? 0);
     return {
@@ -72,7 +75,7 @@ function fakeFramework(options: {
       if (options.quiesceFails) throw options.quiesceFails;
       calls.push('quiesce');
       timeouts.push(opts.timeoutMs);
-      if (!mode.quiesced) mode = { quiesced: true, reason: opts.reason };
+      if (!mode.quiesced) mode = { quiesced: true, reason: opts.reason, since: ++quiesces };
       return status();
     },
     resume: async () => {
@@ -524,9 +527,10 @@ describe('Restart', () => {
     let asked: () => void = () => {};
     const resumeAsked = new Promise<void>((done) => { asked = done; });
     const fleet: SwitchFleet = {
-      runningChildren: () => [{ name: 'kid' }],
+      runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }],
       requestSwitch: async (_name, request) => {
-        if (request.op === 'quiesce') return { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0 } };
+        if (request.op === 'quiesce') return { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0, held: true } };
+        if (request.op === 'release') return { ok: true, data: { released: true } };
         asked();
         await held;
         return { ok: true, data: { resumed: true } };
@@ -591,7 +595,7 @@ describe('Restart', () => {
       expect.stringMatching(/^this host: it stays quiesced, since agent-framework refused its resume \(it would wedge\)/),
       "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
     ] });
-    const kid: SwitchFleet = { runningChildren: () => [{ name: 'kid' }], requestSwitch: async () => ({ ok: true, data: { resumed: true } }) };
+    const kid: SwitchFleet = { runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }], requestSwitch: async () => ({ ok: true, data: { resumed: true } }) };
     const partly = hostUpdate({ root, dataDir, framework: stuck.framework, fleet: kid }, { supervised: true }).update;
     expect(await partly.resume()).toEqual({ done: false, lines: [
       "The switch's quiesce is ended on kid, but not on every host.",
@@ -609,9 +613,10 @@ describe('Restart', () => {
     let asked: () => void = () => {};
     const resumeAsked = new Promise<void>((done) => { asked = done; });
     const fleet: SwitchFleet = {
-      runningChildren: () => [{ name: 'kid' }],
+      runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }],
       requestSwitch: async (_name, request) => {
-        if (request.op === 'quiesce') return { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0 } };
+        if (request.op === 'quiesce') return { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0, held: true } };
+        if (request.op === 'release') return { ok: true, data: { released: true } };
         asked();
         await held;
         return { ok: true, data: { resumed: true } };
@@ -635,16 +640,17 @@ describe('Restart', () => {
     // agent-framework is undrained with no agent listed while a wake is parked on provider admission.
     const { framework } = fakeFramework({ holders: [], drainAfter: Infinity, resumeFails: new Error('a resume is under way') });
     const fleet: SwitchFleet = {
-      runningChildren: () => [{ name: 'kid' }, { name: 'busy' }, { name: 'gone' }],
+      runningChildren: () => ['kid', 'busy', 'gone'].map((name) => ({ name, incarnation: `${name}@1` })),
       requestSwitch: async (name, request) => {
         if (name === 'gone') return { ok: false, error: 'its socket closed.' };
         if (request.op === 'resume' && name === 'busy') {
           return { ok: true, data: { resumed: true, why: "it's serving, though agent-framework's resume failed after the quiesce ended: EIO" } };
         }
         if (request.op === 'resume') return { ok: true, data: { resumed: true } };
+        if (request.op === 'release') return { ok: true, data: { released: true } };
         return name === 'busy'
-          ? { ok: true, data: { drained: false, activeTurnAgents: ['bob'], backgroundScripts: 2 } }
-          : { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 1 } };
+          ? { ok: true, data: { drained: false, activeTurnAgents: ['bob'], backgroundScripts: 2, held: true } }
+          : { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 1, held: true } };
       },
     };
     const { update } = hostUpdate({ root, dataDir, framework, fleet }, { supervised: true });
@@ -716,11 +722,11 @@ describe('Restart', () => {
     const { framework } = fakeFramework({ quiesceFails: new Error('no turn holders named') });
     const asked: string[] = [];
     const fleet: SwitchFleet = {
-      runningChildren: () => [{ name: 'kid' }],
+      runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }],
       requestSwitch: async (name, request) => {
         asked.push(`${name} ${request.op}`);
         return request.op === 'quiesce'
-          ? { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0 } }
+          ? { ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0, held: true } }
           : { ok: true, data: { resumed: true } };
       },
     };
@@ -1165,5 +1171,149 @@ describe("the page's own Update controls", () => {
       await module.stop();
       await stopWebUiServer();
     }
+  });
+});
+
+describe("the switch's last look, from the install's host", () => {
+  const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides " +
+    "it. If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install's host " +
+    "can't reach this host, stopping the install's host or restarting this one ends the wait.";
+  const SERVING = "it was serving at the switch's last look, which quiesces nothing";
+
+  function lookingFleet(children: Record<string, { busy?: boolean; servingFromLook?: number; gate?: Promise<void> }>) {
+    const asked: Array<{ name: string; request: SwitchRequest }> = [];
+    const incarnations = new Map(Object.keys(children).map((name) => [name, `${name}@1`]));
+    let lastLooks = 0;
+    const fleet: SwitchFleet = {
+      runningChildren: () => [...incarnations].map(([name, incarnation]) => ({ name, incarnation })),
+      requestSwitch: async (name, request) => {
+        asked.push({ name, request });
+        if (request.op === 'resume') return { ok: true, data: { resumed: true } };
+        if (request.op === 'release') return { ok: true, data: { released: true } };
+        const child = children[name]!;
+        if (request.last === undefined) {
+          return { ok: true, data: { answered: true, drained: !child.busy, activeTurnAgents: child.busy ? ['bob'] : [], backgroundScripts: 0 } };
+        }
+        lastLooks += 1;
+        await child.gate;
+        if (child.servingFromLook !== undefined && lastLooks >= child.servingFromLook) {
+          return { ok: true, data: { host: 'this host', answered: false, why: SERVING } };
+        }
+        return { ok: true, data: { answered: true, drained: !child.busy, activeTurnAgents: child.busy ? ['bob'] : [], backgroundScripts: 0, held: true } };
+      },
+    };
+    const looks = () => asked.flatMap(({ request }) => request.op === 'quiesce' && request.last !== undefined ? [request.last.look] : []);
+    return { fleet, asked, incarnations, looks };
+  }
+
+  test("an operator's Restart that finds a host busy tells each child not yet, for the look it holds on, before the busy lines come back", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    const { fleet, asked, looks } = lookingFleet({ a: {}, b: { busy: true } });
+    const { update, stops } = hostUpdate({ root, dataDir, fleet }, { supervised: true });
+    expect((await update.restartToInstalled()).done).toBe(false);
+    const [look] = [...new Set(looks())];
+    expect(asked.filter(({ request }) => request.op !== 'quiesce')).toEqual([
+      { name: 'a', request: { op: 'release', look } }, { name: 'b', request: { op: 'release', look } },
+    ]);
+    expect(update.status().restart).toMatchObject({ phase: 'busy' });
+    expect(readMark(root)).toBeNull();
+    expect(stops).toHaveLength(0);
+  });
+
+  test("stop now takes a last look of its own before its mark, holds the busy child too, and stops, with the mark naming that look", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    const { fleet, looks } = lookingFleet({ a: {}, b: { busy: true } });
+    const { update, stops } = hostUpdate({ root, dataDir, fleet }, { supervised: true });
+    expect((await update.restartToInstalled()).done).toBe(false);
+    expect(new Set(looks()).size).toBe(1);
+    expect((await update.stopNow()).done).toBe(true);
+    const all = [...new Set(looks())];
+    expect(all).toHaveLength(2);
+    expect(readMark(root)).toMatchObject({ to: '0.13.0', look: all[1] });
+    expect(stops).toHaveLength(1);
+  });
+
+  test("stop now is called off where a child's person resumed it during the wait: nothing is marked or stopped", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    const { fleet, asked, looks } = lookingFleet({ a: { servingFromLook: 3 }, b: { busy: true } });
+    const { update, stops } = hostUpdate({ root, dataDir, fleet }, { supervised: true });
+    expect((await update.restartToInstalled()).done).toBe(false);
+    const answer = await update.stopNow();
+    expect(answer.done).toBe(false);
+    expect(answer.lines[0]).toBe("The restart to 0.13.0 is called off, and nothing switches: stop now's last look found a " +
+      `fleet child that doesn't hold or didn't answer, so stopping now could cut work that wasn't named as busy: a: ${SERVING}.`);
+    expect(readMark(root)).toBeNull();
+    expect(stops).toHaveLength(0);
+    const stopNowLook = [...new Set(looks())][1];
+    expect(asked.filter(({ request }) => request.op === 'resume').map(({ name, request }) => [name, request]))
+      .toEqual([['a', { op: 'resume', look: stopNowLook }], ['b', { op: 'resume', look: stopNowLook }]]);
+  });
+
+  test("stop now is called off where this host's own quiesce was ended during the wait, or ended and taken again: nothing is marked or stopped", async () => {
+    for (const again of [false, true]) {
+      const { root, dataDir } = install('0.12.1', ['0.13.0']);
+      const { framework } = fakeFramework({ holders: ['alice'], drainAfter: Infinity });
+      const { update, stops } = hostUpdate({ root, dataDir, framework }, { supervised: true });
+      expect((await update.restartToInstalled()).done).toBe(false);
+      await framework.resume();
+      if (again) await framework.quiesce({ reason: 'maintenance: disk swap' });
+      const answer = await update.stopNow();
+      expect({ again, done: answer.done, first: answer.lines[0] }).toEqual({
+        again, done: false,
+        first: "The restart to 0.13.0 is called off, and nothing switches: stop now found that this host's quiesce was ended " +
+          "during the wait, so stopping now could cut work that wasn't named as busy.",
+      });
+      expect(readMark(root)).toBeNull();
+      expect(stops).toHaveLength(0);
+    }
+  });
+
+  test('a child the fleet starts again while another child answers the last look calls the switch off before its mark', async () => {
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    let open = () => {};
+    const gate = new Promise<void>((done) => { open = done; });
+    const { fleet, incarnations, looks } = lookingFleet({ a: {}, b: { gate } });
+    const { update, stops } = hostUpdate({ root, dataDir, fleet }, { supervised: true });
+    const restarting = update.restartToInstalled();
+    for (let tries = 0; looks().length < 2; tries++) {
+      if (tries > 200) throw new Error('Timed out: the last look asked both children');
+      await Bun.sleep(5);
+    }
+    incarnations.set('a', 'a@2');
+    open();
+    const answer = await restarting;
+    expect(answer.done).toBe(false);
+    expect(answer.lines[0]).toBe("The restart to 0.13.0 is called off, and nothing switches: a started again during the switch's " +
+      'last look. Ask again.');
+    expect(readMark(root)).toBeNull();
+    expect(stops).toHaveLength(0);
+  });
+
+  test('the mark names the last look it decides', async () => {
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    const { fleet, looks } = lookingFleet({ a: {} });
+    const { update } = hostUpdate({ root, dataDir, fleet }, { supervised: true });
+    expect((await update.restartToInstalled()).done).toBe(true);
+    expect(readMark(root)).toMatchObject({ to: '0.13.0', look: looks()[0] });
+  });
+
+  test("a fleet child that holds answers its own /update restart resume with the hold's words, and its quiesce stays", async () => {
+    const { framework, calls } = fakeFramework({ quiesced: switchQuiesceReason('0.13.0') });
+    const { gateResume } = await import('../src/update/resume-gate.js');
+    gateResume(framework);
+    const { update } = hostUpdate({ framework });
+    const request = { op: 'quiesce', to: '0.13.0', waitMs: 0, last: { look: 'look-1', mark: '/nowhere/mark.json', parent: process.pid } };
+    await answerSwitchRequest(framework, request);
+    try {
+      expect(await update.resume()).toEqual({ done: false, lines: [
+        "No restart is waiting, and the switch's quiesce couldn't be ended.",
+        `this host: ${HOLDING}`,
+        "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
+      ] });
+      expect(calls).not.toContain('resume');
+    } finally {
+      await answerSwitchRequest(framework, { op: 'release', look: 'look-1' });
+    }
+    expect(quiesce.switchHold.held()).toBe(false);
   });
 });

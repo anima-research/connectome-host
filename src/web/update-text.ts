@@ -237,6 +237,12 @@ export function passItOn(ways: UpdateWays, said: string): string[] {
     ? [`${said}, written to the person who runs it: what it asks of that person is theirs to do, so pass it on.`] : [];
 }
 
+export function registryPassOn(ways: UpdateWays): string[] {
+  return ways.reader === 'agent'
+    ? ['That error is from your host\'s read of its registry. If a later check gives it again, tell the person who runs ' +
+      'your host.'] : [];
+}
+
 const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
   'is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ask is ' +
   'done falls back the same way.';
@@ -344,7 +350,7 @@ export function statusLines(status: UpdateStatus, given: UpdateWays = COMMAND_WA
     lines.push(`${status.checks ? 'The registry hasn\'t been read yet' : 'This host doesn\'t read the registry on its ' +
       'own'}: ${ways.check} reads it.`);
   } else if (!check.ok) {
-    lines.push(told(`Reading the registry failed at ${check.at}`, check.error));
+    lines.push(told(`Reading the registry failed at ${check.at}`, check.error), ...registryPassOn(ways));
   } else if (check.candidate === null) {
     lines.push(`No newer release is offered (read at ${check.at}): Update offers final releases that aren't deprecated.`);
     if (check.runningDeprecated !== null) lines.push(deprecatedLine(status.running, check.runningDeprecated));

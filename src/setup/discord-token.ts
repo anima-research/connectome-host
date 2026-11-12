@@ -12,7 +12,7 @@ export type TokenCheck =
   | { kind: 'unsendable' }
   | { kind: 'answered'; status: number; said: string | null; retryAfter?: number }
   | { kind: 'redirected'; status: number; to: string | null }
-  | { kind: 'unrecognized'; status: number }
+  | { kind: 'unrecognized'; status: number; retryAfter?: number }
   | { kind: 'unanswered'; why: string };
 
 /** Discord asks API callers for a User-Agent naming their library; one with none can get a 403 unrelated to its
@@ -50,11 +50,7 @@ export async function checkDiscordToken(
   } catch (error) {
     return unanswered(error);
   }
-  const type = response.headers.get('content-type');
-  if (response.status === 401) {
-    return type === null || JSON_TYPE.test(type.trim())
-      ? { kind: 'refused' } : { kind: 'unrecognized', status: response.status };
-  }
+  if (response.status === 401) return refusedByType(response) ? { kind: 'refused' } : { kind: 'unrecognized', status: 401 };
   if (response.status >= 300 && response.status < 400) {
     const to = response.headers.get('location');
     return { kind: 'redirected', status: response.status, to: to === null ? null : redirectTarget(hidden(to, token), DISCORD_API) };
@@ -74,12 +70,24 @@ export async function checkDiscordToken(
   if (response.ok && typeof body?.id === 'string' && typeof body.username === 'string') {
     return { kind: 'accepted', name: hidden(body.username, token), id: hidden(body.id, token) };
   }
-  if (body === undefined) return { kind: 'unrecognized', status: response.status };
+  const wait = retryWait(response, body);
+  const after = wait === undefined ? {} : { retryAfter: wait };
+  if (body === undefined) return { kind: 'unrecognized', status: response.status, ...after };
   const said = typeof body?.message === 'string' ? hidden(body.message, token) : null;
-  const wait = body?.retry_after;
-  return response.status === 429 && typeof wait === 'number' && Number.isFinite(wait)
-    ? { kind: 'answered', status: response.status, said, retryAfter: wait }
-    : { kind: 'answered', status: response.status, said };
+  return { kind: 'answered', status: response.status, said, ...after };
+}
+
+export function refusedByType(response: Response): boolean {
+  const type = response.headers.get('content-type');
+  return type === null || JSON_TYPE.test(type.trim());
+}
+
+export function retryWait(response: Response, body: unknown): number | undefined {
+  if (response.status !== 429) return undefined;
+  const said = (body as { retry_after?: unknown } | null | undefined)?.retry_after;
+  if (typeof said === 'number' && Number.isFinite(said)) return said;
+  const header = response.headers.get('retry-after')?.trim() ?? '';
+  return /^\d+$/.test(header) ? Number(header) : undefined;
 }
 
 // Its ASCII letters in any case, since a server that puts the token in a URL's host gives it back lowercased.

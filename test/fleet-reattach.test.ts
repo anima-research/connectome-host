@@ -217,6 +217,94 @@ test("the release switch's requests try even within the bound", async () => {
   await until(second.closed, "the other client's connection closing");
 }, 30_000);
 
+test("a resume or not yet the release switch couldn't deliver is sent again once this host connects to the same child again, and not after it's answered", async () => {
+  const { fleet, launch } = setup();
+  fleet.reopenWindowMs = 0;
+  const leaf = await launch('leaf', { blockMs: 3_000 });
+  const answers: string[] = [];
+  cleanups.push(fleet.onChildEvent('leaf', (_, event) => { if (event.type === 'update-response') answers.push(String((event as { corrId?: string }).corrId)); }));
+  await leaf.signal('block', 'blocking');
+  expect(await fleet.requestSwitch('leaf', { op: 'release', look: 'look-1' }, 200)).toMatchObject({ ok: false, status: 504 });
+  await until(leaf.unblocked, 'the child answering again');
+  await until(() => answers.length === 1, "the child's late answer to the timed-out request");
+  await leaf.cut();
+  await until(() => answers.length === 2, 'the owed word on the new connection');
+  expect(answers[1]).toStartWith('update-release-');
+  await leaf.cut();
+  await until(() => leaf.child.socket !== null, 'this host connecting again');
+  await leaf.marker();
+  expect(answers).toHaveLength(2);
+}, 30_000);
+
+test('a newer switch request to a child replaces the word owed to it', async () => {
+  const { fleet, launch } = setup();
+  const leaf = await launch('leaf', { blockMs: 3_000 });
+  const answers: string[] = [];
+  cleanups.push(fleet.onChildEvent('leaf', (_, event) => { if (event.type === 'update-response') answers.push(String((event as { corrId?: string }).corrId)); }));
+  await leaf.signal('block', 'blocking');
+  expect(await fleet.requestSwitch('leaf', { op: 'release', look: 'look-1' }, 200)).toMatchObject({ ok: false, status: 504 });
+  await until(leaf.unblocked, 'the child answering again');
+  expect(await fleet.requestSwitch('leaf', { op: 'resume', look: 'look-1' }, 5_000)).toMatchObject({ ok: true });
+  await until(() => answers.length === 2, 'both answers');
+  await leaf.cut();
+  await until(() => leaf.child.socket !== null, 'this host connecting again');
+  await leaf.marker();
+  expect(answers).toHaveLength(2);
+}, 30_000);
+
+test("a word owed to a child is kept through a later switch request that isn't one, and goes first on that request's own connect", async () => {
+  const { fleet, launch } = setup();
+  const leaf = await launch('leaf', { blockMs: 3_000 });
+  const answers: string[] = [];
+  cleanups.push(fleet.onChildEvent('leaf', (_, event) => { if (event.type === 'update-response') answers.push(String((event as { corrId?: string }).corrId)); }));
+  await leaf.cut();
+  await until(() => leaf.child.socket !== null, 'this host connecting again');
+  await leaf.signal('block', 'blocking');
+  expect(await fleet.requestSwitch('leaf', { op: 'release', look: 'look-1' }, 200)).toMatchObject({ ok: false, status: 504 });
+  await until(leaf.unblocked, 'the child answering again');
+  await until(() => answers.length === 1, "the child's late answer to the timed-out request");
+  await leaf.cut();
+  expect(leaf.child.socket).toBeNull();
+  await fleet.requestSwitch('leaf', { op: 'quiesce', to: '9.9.9', waitMs: 0 }, 5_000);
+  await until(() => answers.some((corrId) => corrId.startsWith('update-quiesce-')), "the answer to the switch's look");
+  expect(answers.slice(1).map((corrId) => corrId.split('-').slice(0, 2).join('-'))).toEqual(['update-release', 'update-quiesce']);
+}, 30_000);
+
+test("a word owed to a child stops being owed once the child answers a later quiesce, so the next connect doesn't send it", async () => {
+  const { fleet, launch } = setup();
+  const leaf = await launch('leaf', { blockMs: 3_000 });
+  const answers: string[] = [];
+  cleanups.push(fleet.onChildEvent('leaf', (_, event) => { if (event.type === 'update-response') answers.push(String((event as { corrId?: string }).corrId)); }));
+  await leaf.signal('block', 'blocking');
+  expect(await fleet.requestSwitch('leaf', { op: 'release', look: 'look-1' }, 200)).toMatchObject({ ok: false, status: 504 });
+  await until(leaf.unblocked, 'the child answering again');
+  await until(() => answers.length === 1, "the child's late answer to the timed-out request");
+  await fleet.requestSwitch('leaf', { op: 'quiesce', to: '9.9.9', waitMs: 0 }, 5_000);
+  await until(() => answers.length === 2, "the answer to the switch's look");
+  await leaf.cut();
+  await until(() => leaf.child.socket !== null, 'this host connecting again');
+  await leaf.marker();
+  expect(answers.map((corrId) => corrId.split('-').slice(0, 2).join('-'))).toEqual(['update-release', 'update-quiesce']);
+}, 30_000);
+
+test("a resume with no look that timed out stops being owed once the child answers a later last look, so the next connect doesn't send it", async () => {
+  const { fleet, launch } = setup();
+  const leaf = await launch('leaf', { blockMs: 3_000 });
+  const answers: string[] = [];
+  cleanups.push(fleet.onChildEvent('leaf', (_, event) => { if (event.type === 'update-response') answers.push(String((event as { corrId?: string }).corrId)); }));
+  await leaf.signal('block', 'blocking');
+  expect(await fleet.requestSwitch('leaf', { op: 'resume' }, 200)).toMatchObject({ ok: false, status: 504 });
+  await until(leaf.unblocked, 'the child answering again');
+  await until(() => answers.length === 1, "the child's late answer to the timed-out resume");
+  const last = { look: 'look-2', mark: join(leaf.dir, 'mark.json'), parent: process.pid };
+  await fleet.requestSwitch('leaf', { op: 'quiesce', to: '9.9.9', waitMs: 0, last }, 5_000);
+  await until(() => answers.length === 2, 'the answer to the later last look');
+  await leaf.cut();
+  await until(() => leaf.child.socket !== null, 'this host connecting again');
+  await leaf.marker();
+  expect(answers.map((corrId) => corrId.split('-').slice(0, 2).join('-'))).toEqual(['update-resume', 'update-quiesce']);
+}, 30_000);
+
 test('a call within the bound waits for a connect the release switch has under way, and goes through on it', async () => {
   const { fleet, call, launch, logged } = setup();
   fleet.connectAnswerMs = 20_000;

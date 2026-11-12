@@ -16,6 +16,7 @@ import {
   goBackFromShell, goBackFromStart, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
   macMountPoints, shellWord, takeLock, type LauncherOps,
 } from '../src/update/launcher.js';
+import * as installCommand from '../src/cli/install-command.js';
 import { copyTree, removeTree, spaceTaken } from '../src/update/data-swap.js';
 
 const ROOM_MARGIN = 256 * 2 ** 20;
@@ -2610,6 +2611,23 @@ describe('a Go back from a shell', () => {
     expect(await goBackFromStart(root, [], ops())).toBe(1);
     expect(reports.at(-1)).toEndWith(`If that process is this install's own host, it goes back with \`${shellWord(join(root, 'connectome'))} ` +
       'update back`, which lets its turns end first, or stop the service, run this again, and start the service.');
+  });
+
+  test("start.js --go-back answers in /update back's words where the install's own command can't be worked out, as where its spelling can't load", async () => {
+    await committedSwitch();
+    reports = [];
+    lockOf(4242);
+    alive.add(4242);
+    const spelling = spyOn(installCommand, 'typedCommand').mockImplementation(() => {
+      throw new Error('the working directory was removed');
+    });
+    try {
+      expect(await goBackFromStart(root, [], ops())).toBe(1);
+    } finally {
+      spelling.mockRestore();
+    }
+    expect(reports.at(-1)).toEndWith('If that process is this install\'s own host, it goes back with `/update back`, which ' +
+      'lets its turns end first, or stop the service, run this again, and start the service.');
   });
 
   test('takes the lock a host that keeps exiting gives up, writes the mark with no servers recorded, gives the lock up, and the next start goes back', async () => {

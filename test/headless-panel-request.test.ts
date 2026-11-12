@@ -27,6 +27,9 @@ const MINIMAL_RECIPE = {
   },
 };
 
+const quiescedRefusal = (what: string): string => `${what} refused: this host is quiesced for a release switch. If that ` +
+  'switch goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended.';
+
 function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; stop: () => void } {
   const events: Array<Record<string, unknown>> = [];
   socket.setEncoding('utf8');
@@ -105,10 +108,16 @@ async function launch(tmpDir: string): Promise<Host> {
 }
 
 async function stopHost(host: Host): Promise<void> {
-  try { host.sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch { }
-  await new Promise((r) => setTimeout(r, 500));
+  const exited = host.child.exitCode !== null || host.child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((done) => host.child.once('exit', done));
+  try {
+    host.sock.write(JSON.stringify({ type: 'shutdown' }) + '\n');
+  } catch {
+    host.child.kill('SIGKILL');
+  }
+  await exited;
   try { host.reader.stop(); host.sock.destroy(); } catch { }
-  try { if (host.child.exitCode === null) host.child.kill('SIGKILL'); } catch { }
   try { rmSync(host.tmpDir, { recursive: true, force: true }); } catch { }
 }
 
@@ -145,6 +154,17 @@ describe('headless daemon — panel-request / panel-response', () => {
       `update-response for op=${String(request.op)}`,
     );
     return reader.events.find((e) => e.type === 'update-response' && e.corrId === corrId)!;
+  }
+
+  async function command(text: string): Promise<string> {
+    const corrId = `command-test-${++corrSeq}`;
+    sock.write(JSON.stringify({ type: 'command', command: text, corrId }) + '\n');
+    await waitFor(
+      () => reader.events.some((e) => e.type === 'command-done' && e.corrId === corrId),
+      10_000,
+      `command-done for ${text}`,
+    );
+    return reader.events.filter((e) => e.type === 'command-output' && e.corrId === corrId).map((e) => String(e.text)).join('\n');
   }
 
   beforeAll(async () => {
@@ -244,16 +264,14 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(res.error).toContain('unknown panel op');
   });
 
-  test("a change to the session is refused while this host is quiesced for a release switch, naming Resume, and goes once it has resumed", async () => {
+  test("a change to the session is refused while this host is quiesced for a release switch, and goes once it has resumed", async () => {
     const quiesced = await switchRequest({ op: 'quiesce', to: '9.9.9', waitMs: 0 });
     expect(quiesced.ok).toBe(true);
     try {
       for (const op of ['settings-update', 'settings-reset', 'settings-cancel-transition', 'pin-add', 'pin-remove']) {
         const res = await panel(op, { agent: 'commander' });
         expect({ op, ok: res.ok, status: res.status }).toEqual({ op, ok: false, status: 409 });
-        expect(res.error).toBe(`${op} refused: this host is quiesced for a release switch. If that switch goes ahead, its ` +
-          'stop can cut a change to the session off. Nothing changed. Resume ends the switch\'s quiesce here: if the ' +
-          'switch is still under way, its try then doesn\'t go ahead. Then try again.');
+        expect(res.error).toBe(quiescedRefusal(op));
       }
       expect((await panel('settings')).ok).toBe(true);
     } finally {
@@ -263,11 +281,38 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(after.status).not.toBe(409);
   });
 
+  test("a command that changes the session is refused while this host is quiesced for a release switch, changing nothing, and goes once it has resumed", async () => {
+    const quiesced = await switchRequest({ op: 'quiesce', to: '9.9.9', waitMs: 0 });
+    expect(quiesced.ok).toBe(true);
+    try {
+      expect(await command('/checkpoint held-by-switch')).toBe(quiescedRefusal('/checkpoint'));
+      expect(await command('/checkpoint')).not.toContain('held-by-switch');
+    } finally {
+      expect((await switchRequest({ op: 'resume' })).ok).toBe(true);
+    }
+    expect(await command('/checkpoint held-by-switch')).toContain('Checkpoint "held-by-switch" saved');
+    expect(await command('/checkpoint')).toContain('Saved checkpoints: held-by-switch');
+  });
+
   test('panel-response bypasses subscription filter', async () => {
     sock.write(JSON.stringify({ type: 'subscribe', events: ['command-output'] }) + '\n');
     await new Promise((r) => setTimeout(r, 100));
     const res = await panel('health');
     expect(res.ok).toBe(true);
+  });
+
+  test("/session new and /session switch are refused while this host is quiesced for a release switch, making and opening no session", async () => {
+    const quiesced = await switchRequest({ op: 'quiesce', to: '9.9.9', waitMs: 0 });
+    expect(quiesced.ok).toBe(true);
+    try {
+      expect(await command('/session new held-by-switch')).toBe(quiescedRefusal('/session new'));
+      expect(await command('/session create held-by-switch')).toBe(quiescedRefusal('/session create'));
+      expect(await command('/session switch held-by-switch')).toBe(quiescedRefusal('/session switch'));
+      expect(await command('/session sw held-by-switch')).toBe(quiescedRefusal('/session sw'));
+      expect(await command('/session list')).not.toContain('held-by-switch');
+    } finally {
+      expect((await switchRequest({ op: 'resume' })).ok).toBe(true);
+    }
   });
 });
 
@@ -292,4 +337,33 @@ describe('headless daemon — panel-request on a host its operator quiesced', ()
     const held = await ask(host, switchAsk, 'update-response');
     expect(held.data).toMatchObject({ operatorHold: { reason: 'maintenance: disk swap' } });
   });
+
+  test("while it holds on the switch's last look, a command that changes the session is refused with the hold's words, /session new makes no session, and the next last look still finds it held", async () => {
+    const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides it. " +
+      "If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install's host " +
+      "can't reach this host, stopping the install's host or restarting this one ends the wait.";
+    const heldRefusal = (what: string) => `${what} refused: ${HOLDING} Nothing changed; try again once the switch is decided.`;
+    let seq = 0;
+    const command = async (text: string): Promise<string> => {
+      const corrId = `held-command-${++seq}`;
+      await ask(host, { type: 'command', command: text, corrId }, 'command-done');
+      return host.reader.events.filter((e) => e.type === 'command-output' && e.corrId === corrId).map((e) => String(e.text)).join('\n');
+    };
+    const lastLook = (look: string) => ({
+      type: 'update-request', corrId: `last-${look}-${++seq}`,
+      request: { op: 'quiesce', to: '9.9.9', waitMs: 0, last: { look, mark: join(host.tmpDir, 'no-mark.json'), parent: process.pid } },
+    });
+    expect((await ask(host, lastLook('look-1'), 'update-response')).data).toMatchObject({ held: true });
+    try {
+      expect(await command('/session new held-by-look')).toBe(heldRefusal('/session new'));
+      expect(await command('/session switch held-by-look')).toBe(heldRefusal('/session switch'));
+      expect(await command('/checkpoint held-by-look')).toBe(heldRefusal('/checkpoint'));
+      expect(await command('/session list')).not.toContain('held-by-look');
+      expect((await ask(host, lastLook('look-1'), 'update-response')).data).toMatchObject({ held: true });
+    } finally {
+      const release = { type: 'update-request', corrId: `release-${++seq}`, request: { op: 'release', look: 'look-1' } };
+      expect((await ask(host, release, 'update-response')).ok).toBe(true);
+    }
+    expect(await command('/checkpoint after-the-look')).toContain('Checkpoint "after-the-look" saved');
+  }, 30_000);
 });

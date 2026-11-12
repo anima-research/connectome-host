@@ -68,6 +68,7 @@ function buildStubApp(fleet: StubFleet | null): Parameters<typeof handleCommand>
   const modules = fleet ? [fleet] : [];
   return {
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAllModules: () => modules,
     } as unknown as AgentFramework,
     sessionManager: {} as never,
