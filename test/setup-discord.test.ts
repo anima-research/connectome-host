@@ -244,11 +244,16 @@ describe('setup--discord', () => {
     let release!: () => void;
     const gate = new Promise<void>((done) => { release = done; });
     const discord = fakeDiscord([HOME]);
-    const slow = (async (input: string, init: RequestInit) => { await gate; return discord.fetch(input, init); }) as typeof fetch;
+    const shown: string[] = [];
+    const lineAtRequest: boolean[] = [];
+    const slow = (async (input: string, init: RequestInit) => {
+      lineAtRequest.push(shown.includes('Reading the bot\'s servers and channels from Discord.'));
+      await gate;
+      return discord.fetch(input, init);
+    }) as typeof fetch;
     const dir = mkdtempSync(join(tmpdir(), 'setup-discord-'));
     dirs.push(dir);
     writeFileSync(join(dir, '.env'), `DISCORD_TOKEN="${TOKEN}"\n`, { mode: 0o600 });
-    const shown: string[] = [];
     const module = new SetupModule({
       dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: dir }, asker: () => ({ ask: async () => 'a-typed-value' }),
       show: (line) => shown.push(line), fetch: slow,
@@ -256,6 +261,7 @@ describe('setup--discord', () => {
     const reading = read(module);
     await Bun.sleep(20);
     expect(shown).toContain('Reading the bot\'s servers and channels from Discord.');
+    expect(lineAtRequest).toEqual([true]);
     const asked = module.handleToolCall({ id: 'a1', name: 'ask_secret', input: { name: 'NEW_TOKEN', purpose: 'a test' } } as ToolCall);
     expect(await Promise.race([asked.then(() => 'answered'), Bun.sleep(500).then(() => 'waited')])).toBe('answered');
     release();
