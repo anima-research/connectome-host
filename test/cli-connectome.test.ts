@@ -1008,7 +1008,7 @@ test('send whose connection closes before the agent goes quiet says what was and
   expect(begun.err).not.toContain('never reached');
 });
 
-test('update runs /update with the same words in the host and prints its answer until it ends', async () => {
+test('update runs /update with the same words in the host and prints its answer until it ends, an older host\'s /update in the install\'s command', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   const asked: string[] = [];
@@ -1041,7 +1041,7 @@ test('update runs /update with the same words in the host and prints its answer 
   expect(asked).toEqual(['/update install']);
   expect(typed).toEqual([path]);
   expect(ran.out).toBe('Reading the registry, then installing…\nSee /update-log and /updates.\n' +
-    'Installed 0.15.0: /update restart switches to it.\n');
+    `Installed 0.15.0: ${path} update restart switches to it.\n`);
   expect(runningAtDone).toBe(true);
   const checked = await run(path, ['update', 'check'], root);
   expect(checked.status).toBe(0);
@@ -1097,7 +1097,7 @@ test('update whose command fails in the host says so and exits 1', async () => {
   });
   const ran = await run(path, ['update'], root);
   expect(ran.status).toBe(1);
-  expect(ran.err).toContain('registry unreachable: try /update again');
+  expect(ran.err).toContain(`registry unreachable: try ${path} update again`);
   expect(ran.out).toBe('');
 });
 

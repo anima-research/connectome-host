@@ -867,6 +867,20 @@ describe('the last switch', () => {
     expect(lines()).not.toContain('asked for by');
   });
 
+  test("a refused request's reason reaches the agent as the person's to act on, and the person as it is", () => {
+    const { root, dataDir } = install('0.12.1');
+    const reason = "/srv/data can't be read, written and searched by this process (EACCES), and an update changes what's " +
+      'in it, and syncs it. Give this user read, write and search on it';
+    appendJournal(root, line('children-check', 'refused', { reason }));
+    const status = hostUpdate({ root, dataDir }).update.status();
+    const agent = statusLines(status, TOOL_WAYS);
+    const at = agent.findIndex((said) => said.startsWith('Last request:'));
+    expect(agent[at]).toEndWith(reason);
+    expect(agent[at + 1]).toBe("That reason is your host's, written to the person who runs it: what it asks of that person is " +
+      'theirs to do, so pass it on.');
+    expect(statusLines(status, COMMAND_WAYS).join('\n')).not.toContain('pass it on');
+  });
+
   test('is the journal\'s last commit, fallback or refusal', () => {
     const { root, dataDir } = install('0.12.1');
     const status = () => hostUpdate({ root, dataDir }).update.status().lastSwitch;

@@ -31,7 +31,7 @@ export type SwitchOutcome = (
   | { outcome: 'committed'; from: string; to: string; at: string }
   | { outcome: 'fell-back'; from: string; to: string; at: string; reason: string; trialLog: string[] | null }
   | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string }
-) & { /** The agent whose update tool asked for it, where one did. */ by?: string };
+) & { by?: string };
 
 /** One host's state after a switch's quiesce: `host` is "this host" or the
  *  child's name. A host that can't be counted, such as a child that didn't
@@ -68,10 +68,9 @@ export interface UpdateStatus {
   /** A release Restart would switch to. */
   installed: string | null;
   goBack: { to: string; since: string } | null;
+  restoreHeld: string | null;
   restart: RestartState | null;
   armed: ArmedSwitch | null;
-  /** An armed restart or Go back that was dropped without going ahead, and
-   *  the reason. */
   armedDropped: (Pick<ArmedSwitch, 'to' | 'why' | 'keepData' | 'since'> & { at: string; reason: string }) | null;
   /** The reason the operator quiesced this host under, which it keeps
    *  through a restart. */
@@ -173,7 +172,8 @@ export function personWay(ways: UpdateWays, way: UpdateWay): string {
 
 export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
   'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
-  'going there, such as a turn, background script, operator\'s work or credential action';
+  'going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
+  'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
 
 export const ASKS_NOBODY = 'however long that takes, so it goes only once every host has said no turn is running ' +
   'there, and asks nobody';
@@ -222,6 +222,14 @@ export function notAnInstall(ways: UpdateWays): string {
         'the host in and with the DATA_DIR you start it with ' +
         '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says ' +
         'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
+}
+
+const operatorHeld = (hold: { reason?: string }): string =>
+  `quiesced by its operator${hold.reason ? ` (${hold.reason})` : ''}`;
+
+export function heldLines(hosts: HostQuiet[]): string[] {
+  return hosts.flatMap((host) => host.answered && host.operatorHold !== undefined
+    ? [`- ${host.host}: ${operatorHeld(host.operatorHold)}`] : []);
 }
 
 export function passItOn(ways: UpdateWays, said: string): string[] {
@@ -324,7 +332,12 @@ function busyHostLines(hosts: HostQuiet[], scriptsEnd = 'which a stop ends'): st
   return lines;
 }
 
-export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
+function restoreWays(status: UpdateStatus, ways: UpdateWays): UpdateWays {
+  return ways.reader === 'agent' && status.restoreHeld ? { ...ways, restore: personWay(ways, 'restore') } : ways;
+}
+
+export function statusLines(status: UpdateStatus, given: UpdateWays = COMMAND_WAYS): string[] {
+  const ways = restoreWays(status, given);
   const lines = [`connectome-host ${status.running}.`];
   const check = status.check;
   if (check === null) {
@@ -376,11 +389,12 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       lines.push(told(`Its try at ${last.at} didn't go ahead`, last.waited) + ' It tries again at a quiet moment at ' +
         'least a minute later.');
       const holding = last.hosts.flatMap((host) => {
+        const held = host.answered && host.operatorHold !== undefined ? [operatorHeld(host.operatorHold)] : [];
         if (!host.answered || !host.drained) {
-          return busyHostLines([host], 'which the switch waits for')
-            .map((line) => host.answered && host.inFlight !== undefined ? `${line}; ${list(host.inFlight)}` : line);
+          return busyHostLines([host], 'which the switch waits for').map((line) =>
+            [line, ...held, ...host.answered && host.inFlight !== undefined ? [list(host.inFlight)] : []].join('; '));
         }
-        const parts = [...host.inFlight ?? [], ...(host.backgroundScripts > 0
+        const parts = [...held, ...host.inFlight ?? [], ...(host.backgroundScripts > 0
           ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'} running outside any turn`]
           : [])];
         return parts.length > 0 ? [`- ${host.host}: ${parts.join('; ')}`] : [];
@@ -411,7 +425,10 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
 export function lastSwitchLines(last: SwitchOutcome, ways: UpdateWays = COMMAND_WAYS): string[] {
   const asked = last.by !== undefined ? `, asked for by ${last.by}` : '';
   if (last.outcome === 'committed') return [`Last switch: ${last.from} to ${last.to}, committed at ${last.at}${asked}.`];
-  if (last.outcome === 'refused') return [told(`Last request: to ${last.to}${asked}, didn't go ahead at ${last.at}`, last.reason)];
+  if (last.outcome === 'refused') {
+    return [told(`Last request: to ${last.to}${asked}, didn't go ahead at ${last.at}`, last.reason),
+      ...passItOn(ways, 'That reason is your host\'s')];
+  }
   const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}${asked}` +
     (last.reason ? `: ${last.reason}.` : '.');
   const kept = keptLines(last);
@@ -448,7 +465,8 @@ export function goBackUnread(status: UpdateStatus): string | undefined {
   return status.problems.find((problem) => problem.startsWith(GO_BACK_UNREAD));
 }
 
-export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
+export function goBackLines(status: UpdateStatus, given: UpdateWays = COMMAND_WAYS): string[] {
+  const ways = restoreWays(status, given);
   if (!status.install) return [notAnInstall(ways)];
   if (status.goBack === null) {
     const unread = goBackUnread(status);
@@ -457,6 +475,7 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       : 'No Go back is offered: the copy doesn\'t hold another installed release\'s data.'];
   }
   const { to, since } = status.goBack;
+  const held = ways.reader === 'agent' && status.restoreHeld ? status.restoreHeld : null;
   return [
     `Going back to ${to}, whose data the copy holds as it was at ${since}. Two ways:`,
     `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. It comes back as the host is ` +
@@ -468,9 +487,11 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
       `and ${ways.reader === 'agent' ? 'the person\'s click on' : 'clicking'} "⏸ quiesced" in the Web UI's ` +
       'top bar lets them through. Whether it\'s quiesced now makes no difference.',
+    ...held !== null ? [`Restoring the copy is the person's here: ${held}.`] : [],
     ways.reader === 'agent'
-      ? 'Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, it begins at the host\'s first quiet ' +
-        `moment, ${ASKS_NOBODY}. ${ARMED_RETRY} Anywhere else, back refuses and arms nothing.`
+      ? `${held !== null ? 'On' : 'Either way, on'} a headless host started with \`CONNECTOME_SUPERVISED=1\`, ` +
+        `${held !== null ? ways.keep : 'it'} begins at the host's first quiet moment, ${ASKS_NOBODY}. ${ARMED_RETRY} ` +
+        'Anywhere else, back refuses and arms nothing.'
       : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }

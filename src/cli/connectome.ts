@@ -375,7 +375,9 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
     return 1;
   }
   const typed = typedCommand(ctx.root!);
-  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(line), typed);
+  const inShellWords = (line: string): string =>
+    line.replace(/(^|[^\w/])\/update(?![\w/-])/g, (_, before: string) => `${before}${typed} update`);
+  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inShellWords(line)), typed);
   host.close();
   if (answer.how === 'closed') {
     ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
@@ -384,7 +386,7 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
     return 1;
   }
   if (answer.error !== undefined) {
-    ctx.err(`connectome: the host's update command failed: ${answer.error}`);
+    ctx.err(`connectome: the host's update command failed: ${inShellWords(answer.error)}`);
     return 1;
   }
   if (answer.refused) return 1;

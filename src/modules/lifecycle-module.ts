@@ -139,6 +139,9 @@ function updateTool(headless: boolean, command: string | null): ToolDefinition {
   };
 }
 
+const updateCancel = (by: string | null): string =>
+  `${TOOL_CANCEL} disarms it, for an agent given that tool${by !== null ? `, such as ${by}, who armed it` : ''}`;
+
 export class LifecycleModule implements Module {
   readonly name = 'lifecycle';
 
@@ -237,7 +240,7 @@ export class LifecycleModule implements Module {
         return { success: true, data: update === null
           ? 'No restart was pending, so there was nothing to cancel.'
           : `No plain restart was pending. ${armedName(update)} is armed since ` +
-            `${this.when(update.since)}: ${TOOL_CANCEL} disarms it.` };
+            `${this.when(update.since)}: ${updateCancel(update.by)}.` };
       }
       return {
         success: true,
@@ -277,7 +280,7 @@ export class LifecycleModule implements Module {
         success: false,
         isError: true,
         error: `Nothing was armed: ${armedName(update, false)} is armed since ${this.when(update.since)}, and it restarts ` +
-          `the host at a quiet moment. ${TOOL_CANCEL} disarms it, if you'd rather restart without it.`,
+          `the host at a quiet moment. If you'd rather restart without it, ${updateCancel(update.by)}.`,
       };
     }
 
