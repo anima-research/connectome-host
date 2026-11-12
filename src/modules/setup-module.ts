@@ -264,7 +264,6 @@ async function serverOf(reader: DiscordReader, guild: BotGuild, botId: string, o
 
 const fits = (answer: unknown): boolean => JSON.stringify(answer).length <= INLINE_MAX_CHARS;
 
-// The most of items, from the start, whose answer fits: all of them, or else the longest start below that does.
 function fitting<T>(items: T[], answer: (shown: T[]) => unknown): T[] {
   if (fits(answer(items))) return items;
   let low = 0;

@@ -26,7 +26,6 @@ const hold = mode === 'cancel-in-wait' ? 'turn' : quiet && (process.argv[3] === 
 if ((mode === 'held' || (quiet && hold !== undefined)) && !HOLDS.includes(hold!)) throw new Error('Unknown self-restart fixture hold');
 const dataDir = process.env.DATA_DIR!;
 if (hold === 'count-check') {
-  // A count model, and a count endpoint that refuses at once, so the check's counts end without leaving the machine.
   process.env.COUNT_TOKENS_MODEL = 'claude-fixture-count';
   process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9';
 }
