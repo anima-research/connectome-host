@@ -113,6 +113,7 @@ export async function doctor(
     return 2;
   }
   const root = ctx.root!;
+  const typed = typedCommand(root);
 
   const units = serviceUnits(root, parts.platform, parts.home);
   let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
@@ -205,12 +206,12 @@ export async function doctor(
     if (read !== null && 'why' in read) {
       const { name, file } = units!.host;
       const why = read.why.replace(/\.$/, '');
+      const anew = `${typed} service install ${recipePath === null ? '<recipe>' : shellWord(recipePath)}`;
       throw new Error(units!.manager === 'launchd'
         ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
-          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
-          '`connectome service install`, which writes it anew.'
+          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it anew.`
         : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
-          '`connectome service install` writes the unit anew.');
+          `\`${anew}\` writes the unit anew.`);
     }
     const unit = service === null ? null : read;
     envFiles = unit === null ? [] : unit.files;
@@ -274,8 +275,8 @@ export async function doctor(
   let unanswered = false;
   let closedTabs = false;
   let shellUnchecked = false;
-  const startCommand = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home })?.start
-    ?? `${typedCommand(root)} service install <recipe>`;
+  const commands = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home });
+  const startCommand = commands?.start ?? `${typed} service install <recipe>`;
   let dataDir: string | null = null;
   try {
     dataDir = dataDirOf(root);
@@ -283,19 +284,19 @@ export async function doctor(
   try {
     report.section('Service');
     if (serviceError !== null) {
-      report.problem(`${serviceError} \`connectome service install <recipe>\` writes it anew, or says why it can't.`);
+      report.problem(`${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
     } else if (service === null) {
       report.problem(units === null
-        ? 'No service is installed for this install: `connectome service install` writes one only on Linux and macOS, ' +
+        ? `No service is installed for this install: \`${typed} service install\` writes one only on Linux and macOS, ` +
           'for a directory whose name has a letter or digit.'
         : `No service is installed for this install: ${units.host.file} isn't there. ` +
-          '`connectome service install <recipe>` writes one and checks it.');
+          `\`${typed} service install <recipe>\` writes one and checks it.`);
     } else {
       const installed = service;
       await checked(report, 'The service check', async () => {
         const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
         const result = await parts.checkService(installed.units, installed.work, document === null ? null : recipeHasShell(document.raw),
-          typedCommand(root), true);
+          typed, true);
         for (const line of result.lines) report.line(line);
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         if (result.stopped === true) {
@@ -396,7 +397,7 @@ export async function doctor(
         const error = String(answer.error ?? 'no reason given');
         report.problem(`The host refused ${CHECKS[op]}: ${error}.` + (!error.startsWith('unknown panel op') ? ''
           : ' The running host is an older release than this command, so it doesn\'t know this check: restarting the ' +
-            'service starts it on this release.'));
+            `service ${commands === null ? '' : `(\`${commands.stop}\`, then \`${commands.start}\`) `}starts it on this release.`));
         return null;
       }
       return { data: answer.data as T };

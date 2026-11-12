@@ -868,15 +868,15 @@ describe('connectome doctor', () => {
     rmSync(at.unit);
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✗ No service is installed for this install: ${at.unit} isn't there. ` +
-      '`connectome service install <recipe>` writes one and checks it.');
+      `\`${join(at.root, 'connectome')} service install <recipe>\` writes one and checks it.`);
     expect(r.out).toContain('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
     expect(r.out).toContain('The ladder reads the service\'s unit and log, so it runs once a service is installed.');
     expect(r.out).not.toContain('ladder args');
     expect(r.out).not.toContain('ember (900)');
     expect(r.status).toBe(1);
     const nowhere = await withHost(at, HEALTHY_HOST, () => run(at, { platform: 'win32' }));
-    expect(nowhere.out).toContain('✗ No service is installed for this install: `connectome service install` writes one only ' +
-      'on Linux and macOS, for a directory whose name has a letter or digit.');
+    expect(nowhere.out).toContain(`✗ No service is installed for this install: \`${join(at.root, 'connectome')} service install\` ` +
+      'writes one only on Linux and macOS, for a directory whose name has a letter or digit.');
     rmSync(dirname(at.unit), { recursive: true });
     writeFileSync(dirname(at.unit), '');
     const through = await withHost(at, HEALTHY_HOST, () => run(at));
@@ -889,7 +889,7 @@ describe('connectome doctor', () => {
     writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✗ ${at.unit} isn't the unit file service install writes: `);
-    expect(r.out).toContain('`connectome service install <recipe>` writes it anew, or says why it can\'t.');
+    expect(r.out).toContain(`\`${join(at.root, 'connectome')} service install <recipe>\` writes it anew, or says why it can't.`);
     expect(r.out).not.toContain('ladder args');
     const ladder = 'The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.';
     expect(r.out).toContain(ladder);
@@ -1120,7 +1120,9 @@ describe('connectome doctor', () => {
     const at = install();
     const r = await withHost(at, { 'shell-check': HEALTHY_HOST['shell-check'] }, () => run(at));
     expect(r.out).toMatch(/✗.*token counts.*unknown panel op: count-check/);
-    expect(r.out).toMatch(/older release/);
+    expect(r.out).toMatch(new RegExp('The running host is an older release than this command, so it doesn\'t know this check: ' +
+      'restarting the service \\(`(XDG_RUNTIME_DIR=\\S+ )?systemctl --user stop connectome-test\\.service`, then ' +
+      '`(XDG_RUNTIME_DIR=\\S+ )?systemctl --user start connectome-test\\.service`\\) starts it on this release\\.'));
     expect(r.status).toBe(1);
   });
 
@@ -2127,10 +2129,20 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain('✗ systemd didn\'t say the environment connectome-test.service sets the service (');
-    expect(r.out).toContain('). Run doctor again, or `connectome service install` writes the unit anew.');
+    expect(r.out).toContain(`). Run doctor again, or \`${join(at.root, 'connectome')} service install ${join(at.work, 'recipe.json')}\` ` +
+      'writes the unit anew.');
     expect(r.out).toContain('Doctor stops here');
     expect(r.out).not.toContain('pid 4242');
     expect(r.status).toBe(1);
+  });
+
+  test('a unit doctor can\'t use whose environment systemd doesn\'t give names <recipe> in its remedy, since doctor takes no recipe from it', async () => {
+    const at = install();
+    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain(`Run doctor again, or \`${join(at.root, 'connectome')} service install <recipe>\` writes the unit anew.`);
+    expect(r.out).toContain('Doctor stops here');
   });
 
   test('a unit systemd hasn\'t loaded gives no environment, as systemd answers, so doctor goes on, and the service check is what fails it', async () => {
@@ -2158,7 +2170,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
     expect(r.out).toContain(`${at.unit}, com.animalabs.connectome.test's plist, couldn't be read for the environment it sets the ` +
       `service (plutil's answer wasn't JSON). Fix it (\`plutil -lint ${at.unit}\` names what's wrong), or move it aside and run ` +
-      '`connectome service install`, which writes it anew.');
+      `\`${join(at.root, 'connectome')} service install ${join(at.work, 'recipe.json')}\`, which writes it anew.`);
     expect(r.out).toContain('Doctor stops here');
   });
 
