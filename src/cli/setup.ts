@@ -278,7 +278,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
         'agent picks up where it stopped, and can change with you what it set up.');
     } else {
       out(`The resident will live in ${dir}${movedFrom === null ? '' : `${existsSync(dir) ? '' : ', which setup makes'}, ` +
-        `since ${movedFrom}`}. Its service is named after ${basename(dir)}.`);
+        `since ${movedFrom}`}. Its service will be named after the directory's name, ${basename(dir)}.`);
     }
     const rootSeen = (): string => {
       try {
@@ -565,8 +565,8 @@ async function installAndStart(
   if (settingUp) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const copySetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(settingUp
-    ? `Making ${root} an install that can take newer releases. Its first release is a copy of what's installed here. ` +
-      'Making it can take a minute or more.'
+    ? `Setting up ${root}, the folder the resident's host runs from, which later updates install into. It starts as a ` +
+      'copy of what was just installed here.'
     : `Checking the install at ${root}.`);
   const made = await world.run([world.bun.path, '--no-env-file', copySetup, '--root', root, ...placeArgs], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
@@ -614,7 +614,7 @@ async function installAndStart(
 
   if (settingUp) out(`This install's own command is ${join(root, INSTALL_COMMAND)}.`);
 
-  out('Starting the installed host once, on a mock recipe, to see that it starts.');
+  out('Starting the installed host once, with a test setup that calls no model, to see that it starts.');
   const scratch = mkdtempSync(join(tmpdir(), 'connectome-setup-boot-'));
   try {
     const recipe = join(scratch, 'boot.json');
@@ -629,9 +629,10 @@ async function installAndStart(
     });
     if (boot.status !== 0) {
       err(boot.timedOut
-        ? `The installed host (${running}, ${entry}) didn't finish booting on a mock recipe in batch mode within ` +
-          `${BOOT_TIMEOUT_MS / 1000} s, so setup stopped it.`
-        : `The installed host (${running}, ${entry}) doesn't start on a mock recipe in batch mode: ${ended(boot)}.`);
+        ? `The installed host (${running}, ${entry}) didn't finish booting with a test setup that calls no model, in ` +
+          `batch mode, within ${BOOT_TIMEOUT_MS / 1000} s, so setup stopped it.`
+        : `The installed host (${running}, ${entry}) doesn't start with a test setup that calls no model, in batch ` +
+          `mode: ${ended(boot)}.`);
       for (const line of outputLines(boot)) err(`  ${line}`);
       err('Where the host\'s own lines above name something of this machine\'s, such as a file it can\'t read, put ' +
         'that right. Where they name the host\'s code or a package it brings, such as a module it can\'t find, ' +
