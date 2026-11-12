@@ -264,6 +264,7 @@ async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[]
     envLimitMs: 60_000,
     recipeLimitMs: 60_000,
     plutil: fakePlutil(at, unitEnvironment(at)),
+    launchdGives: () => ({}),
     servicePid: async () => ({ pid: '4242' }),
     platform: at.platform,
     home: at.home,
@@ -2051,6 +2052,36 @@ describe('connectome doctor\'s Discord check, where Discord or the way to it ans
 });
 
 describe('connectome doctor, its round on the review of af5b59f95', () => {
+  const asShell = async <T>(values: Record<string, string>, body: () => Promise<T>): Promise<T> => {
+    const saved = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, values);
+    try {
+      return await body();
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  };
+  const SEEN = '${HOME:-}|${USER:-}|${LOGNAME:-}|${SHELL:-}|${TMPDIR:-}|${LANG:-}';
+  const SHELL_HAS = { USER: 'shell-user', LOGNAME: 'shell-logname', SHELL: '/bin/shell-shell', LANG: 'shell-lang' };
+
+  test('under systemd the service\'s environment holds what the user manager gives, and nothing from doctor\'s own shell', async () => {
+    const at = install({ recipe: { ...RECIPE(''), name: SEEN, bogus: true } });
+    const manager = fakeManager(at.work, { env: ['HOME=/manager/home', 'USER=manager-user'],
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' ') });
+    const r = await asShell(SHELL_HAS, () => withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path })));
+    expect(r.out).toContain('Recipe "/manager/home|manager-user||||" has keys the host does not read');
+  });
+
+  test('under launchd the service\'s environment holds what launchd gives a job, the user\'s account and temporary directory, and nothing from doctor\'s own shell', async () => {
+    const at = install({ recipe: { ...RECIPE(''), name: SEEN, bogus: true }, manager: 'launchd' });
+    const gives = { HOME: '/Users/given', USER: 'given', LOGNAME: 'given', SHELL: '/bin/given', TMPDIR: '/var/folders/given/T/' };
+    const r = await asShell(SHELL_HAS, () => withHost(at, HEALTHY_HOST, () => run(at, { launchdGives: () => gives })));
+    expect(r.out).toContain('Recipe "/Users/given|given|given|/bin/given|/var/folders/given/T/|" has keys the host does not read');
+  });
+
   test('a stored secret whose dotenv value expands a setting of a unit doctor refuses, one that runs here, is hidden in what doctor prints', async () => {
     const derived = 'prefrag-partsuf';
     const at = install({ prefix: `chost-${derived}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'STORED_KEY'] });

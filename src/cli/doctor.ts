@@ -1,7 +1,7 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
@@ -55,6 +55,7 @@ export interface DoctorParts {
   envLimitMs: number;
   recipeLimitMs: number;
   plutil: string;
+  launchdGives: () => Record<string, string>;
   servicePid: (units: ServiceUnits) => Promise<{ pid: string } | { why: string }> | { pid: string } | { why: string };
   platform: NodeJS.Platform;
   home: string;
@@ -107,6 +108,7 @@ export async function doctor(
     envLimitMs: ENV_LIMIT_MS,
     recipeLimitMs: RECIPE_LIMIT_MS,
     plutil: 'plutil',
+    launchdGives,
     servicePid: (units) => servicePid(units, machine()),
     platform: process.platform,
     home: homedir(),
@@ -245,11 +247,12 @@ export async function doctor(
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
-    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs,
+    const given = { ...(manager === 'launchd' ? parts.launchdGives() : {}), ...managed };
+    const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath, typed);
     env = built.env;
     const refusedHere = service === null && read !== null
-      ? serviceEnv(work, root, managed, read.env, parts.envLimitMs, process.execPath, typed) : null;
+      ? serviceEnv(work, root, given, read.env, parts.envLimitMs, process.execPath, typed) : null;
     secrets = [...secrets, ...known(env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
       .flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -1204,11 +1207,22 @@ function systemVariables(): Record<string, string> {
   return base;
 }
 
+// launchd gives each job HOME, USER, LOGNAME and SHELL from the user's account, whatever the environment of the shell
+// that loads it, and TMPDIR as the user's own temporary directory (macOS 26).
+function launchdGives(): Record<string, string> {
+  const user = userInfo();
+  const gives: Record<string, string> = { HOME: user.homedir, USER: user.username, LOGNAME: user.username };
+  if (user.shell) gives.SHELL = user.shell;
+  const temporary = spawnSync('getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf-8' });
+  if (temporary.status === 0 && temporary.stdout.trim() !== '') gives.TMPDIR = temporary.stdout.trim();
+  return gives;
+}
+
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
   limitMs: number, bun: string, typed: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
-  const base = { ...systemVariables(), ...manager };
+  const base = { ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
     base[SUPERVISED_ENV] = '1';
