@@ -304,6 +304,12 @@ describe('the backups\' commands', () => {
     for (const span of root) expect({ span, follows: /\b(?:chown root|chmod)\b/.test(span) }).toEqual({ span, follows: false });
   });
 
+  it('pipe the audit to grep with its stderr, where the audit writes every line', () => {
+    const greps = spansIn(['The restore check']).filter((span) => /\bgrep\b/.test(span));
+    expect(greps.length).toBeGreaterThan(0);
+    for (const span of greps) expect({ span, stderr: /2>&1 \| grep\b/.test(span) }).toEqual({ span, stderr: true });
+  });
+
   it('write the password over no file already there, so the umask gives the new file its mode', () => {
     const lines = spansIn(sections).filter((span) => span.includes('stty -echo'));
     expect(lines.length).toBeGreaterThan(0);
