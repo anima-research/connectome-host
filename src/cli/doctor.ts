@@ -23,9 +23,9 @@ import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './disco
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, recipeHasShell, runsHere, serviceCommands, serviceLines } from './service.js';
+import { machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, type ServiceSystem } from './service.js';
 import {
-  managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits, type UnitRead,
+  managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits,
 } from './service-unit.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
@@ -122,6 +122,11 @@ export async function doctor(
   const typed = typedCommand(root);
 
   const units = serviceUnits(root, parts.platform, parts.home);
+  const base = machine();
+  const sys: ServiceSystem = {
+    ...base, platform: parts.platform, home: parts.home,
+    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command, args, env),
+  };
   if (parts.uid === 0) {
     const dir = dirname(root);
     let owner: number | null = null;
@@ -141,7 +146,7 @@ export async function doctor(
   let elsewhere = false;
   let shellElsewhere: string | null = null;
   if (units !== null) {
-    shellElsewhere = shellOfAnother(units, parts.home);
+    shellElsewhere = shellOfAnother(units, sys);
     let text: string | null = null;
     try {
       text = readFileSync(units.host.file, 'utf-8');
@@ -154,10 +159,10 @@ export async function doctor(
     }
     if (text !== null) {
       const read = readUnit(units.manager, text);
-      const runsIn = unitRunsIn(units.manager, text, read, parts.home);
-      if (runsIn !== null && !runsHere(runsIn, units.work)) {
+      const other = namedElsewhere(sys, units.manager, units.host, units.work);
+      if (other !== undefined) {
         elsewhere = true;
-        serviceError = namesElsewhere(units.host.file, runsIn, units.work);
+        serviceError = namesElsewhere(units.host.file, other.runsIn, units.work);
       } else if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
       } else if (basename(read.argv[1] ?? '') !== 'start.js' || read.argv[2] === undefined) {
@@ -165,7 +170,8 @@ export async function doctor(
         // read of its environment wouldn't.
         serviceError = `${units.host.file} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`;
       } else {
-        service = { units, recipe: read.argv[2]!, work: runsIn ?? read.workingDirectory, bun: read.argv[0]! };
+        const named = units.manager === 'systemd-user' ? systemdWorkingDirectory(text)! : read.workingDirectory;
+        service = { units, recipe: read.argv[2]!, work: named === '~' ? parts.home : named, bun: read.argv[0]! };
       }
     }
   }
@@ -306,7 +312,7 @@ export async function doctor(
   let closedTabs = false;
   let shellUnchecked = false;
   let uncounted: string | null = null;
-  const commands = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home });
+  const commands = serviceCommands(root, sys);
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
   let dataDir: string | null = null;
   try {
@@ -363,7 +369,7 @@ export async function doctor(
       }
       if (host.down && service !== null) {
         await checked(report, 'Naming the service\'s own lines', () => {
-          for (const line of serviceLines(root, { ...machine(), platform: parts.platform, home: parts.home }) ?? []) report.line(line);
+          for (const line of serviceLines(root, sys) ?? []) report.line(line);
         });
       }
     } else {
@@ -1307,29 +1313,19 @@ function errorText(error: unknown): string {
 
 /** A unit file of this install's name that names another working directory, said as install says it when it refuses
  *  that unit. */
-function namesElsewhere(file: string, directory: string, work: string): string {
-  return `${file} names ${directory} as the directory it runs in, not this install's, ${work}: it's another install's, ` +
-    'or this one\'s from before it moved, and doctor reads nothing in that directory. Its name comes from this ' +
-    'directory\'s name. Remove that unit if nothing uses it, or set this install up again in a directory of another name.';
+function namesElsewhere(file: string, directory: string | null, work: string): string {
+  return (directory === null
+    ? `${file} names no directory it runs in, where install writes this install's, ${work}, so install takes it as ` +
+      'another\'s, and doctor reads nothing from it.'
+    : `${file} names ${directory} as the directory it runs in, not this install's, ${work}: it's another install's, ` +
+      'or this one\'s from before it moved, and doctor reads nothing in that directory.') +
+    ' Its name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
+    'directory of another name.';
 }
 
-/** Install refuses a shell daemon's unit of this install's name that runs another directory, whatever the recipe, so
- *  doctor reads that unit's file as it reads the host's. A file it can't read, or whose directory can't be read from
- *  it, is left to the service check. */
-function shellOfAnother(units: ServiceUnits, home: string): string | null {
-  let text: string;
-  try {
-    text = readFileSync(units.shell.file, 'utf-8');
-  } catch {
-    return null;
-  }
-  const runsIn = unitRunsIn(units.manager, text, readUnit(units.manager, text), home);
-  return runsIn === null || runsHere(runsIn, units.work) ? null : namesElsewhere(units.shell.file, runsIn, units.work);
-}
-
-function unitRunsIn(manager: Manager, text: string, read: UnitRead | { why: string }, home: string): string | null {
-  const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : 'why' in read ? null : read.workingDirectory;
-  return set === '~' ? home : set;
+function shellOfAnother(units: ServiceUnits, sys: ServiceSystem): string | null {
+  const other = namedElsewhere(sys, units.manager, units.shell, units.work);
+  return other === undefined ? null : namesElsewhere(units.shell.file, other.runsIn, units.work);
 }
 
 function fileWord(manager: Manager): string {

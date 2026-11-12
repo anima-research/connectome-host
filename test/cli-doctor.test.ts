@@ -221,12 +221,25 @@ const unitEnvironment = (at: Install): Record<string, string> => ({
 
 let plists = 0;
 
+/** plutil as install reads a plist's WorkingDirectory with it: `-type`, `-lint` and `-extract … raw`. */
+const PLUTIL_WORKING_DIRECTORY = [
+  'if [ "$1" = -type ] && [ "$2" = WorkingDirectory ]; then',
+  '  if grep -q "<key>WorkingDirectory</key>" "$3"; then echo string; exit 0; fi',
+  '  echo "Could not extract value, error: No value at that key path or invalid key path: WorkingDirectory" >&2; exit 1',
+  'fi',
+  'if [ "$1" = -lint ]; then echo "$2: OK"; exit 0; fi',
+  'if [ "$1" = -extract ] && [ "$2" = WorkingDirectory ] && [ "$3" = raw ]; then',
+  "  sed -n '/<key>WorkingDirectory<\\/key>/{n;s/^ *<string>\\(.*\\)<\\/string>$/\\1/p;}' \"$6\"; exit 0",
+  'fi',
+];
+
 function fakePlutil(at: Install, variables: Record<string, string> | null): string {
   const path = join(at.work, `plutil-${++plists}`);
   const json = join(at.work, `plist-environment-${plists}.json`);
   if (variables !== null) writeFileSync(json, JSON.stringify(variables));
   writeFileSync(path, [
     '#!/bin/sh',
+    ...PLUTIL_WORKING_DIRECTORY,
     `if [ "$*" = "-extract EnvironmentVariables json -o - ${at.unit}" ] && [ -f '${json}' ]; then cat '${json}'; exit 0; fi`,
     'echo "Could not extract value, error: No value at that key path or invalid key path: EnvironmentVariables" >&2',
     'exit 1',
@@ -2219,7 +2232,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
   test('a plist whose environment plutil gives as something other than JSON stops doctor, saying so', async () => {
     const at = install({ manager: 'launchd' });
     const plutil = join(at.work, 'plutil-garbled');
-    writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
+    writeFileSync(plutil, ['#!/bin/sh', ...PLUTIL_WORKING_DIRECTORY, 'echo "<dict>"'].join('\n') + '\n');
     chmodSync(plutil, 0o755);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
     expect(r.out).toContain(`${at.unit}, com.animalabs.connectome.test's plist, couldn't be read for the environment it sets the ` +
@@ -2325,7 +2338,7 @@ describe('connectome doctor\'s Discord check, in its round on the review of 4a79
 describe('connectome doctor, its round on the review of e9bb852cc', () => {
   test('with a unit file install couldn\'t have written, a manager doctor can\'t read stops it, as with a readable one', async () => {
     const at = install();
-    writeFileSync(at.unit, '[Service]\nExecStart=bun\n');
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun\n`);
     const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
     expect(r.out).toContain('Doctor stops here');
@@ -2589,7 +2602,7 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     expect(manager.calls()).not.toContain('--user show --property=Environment --value -- connectome-test.service');
     const mac = copy('launchd');
     const plutil = join(mac.work, 'plutil-garbled');
-    writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
+    writeFileSync(plutil, ['#!/bin/sh', ...PLUTIL_WORKING_DIRECTORY, 'echo "<dict>"'].join('\n') + '\n');
     chmodSync(plutil, 0o755);
     const onMac = await run(mac, { plutil });
     expect(onMac.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
@@ -2825,5 +2838,43 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect((await withHost(mac, HEALTHY_HOST, () => run(mac))).out).toContain(`Doctor reads the environment ${mac.unit} gives as ` +
       'the plist is on disk, which launchd takes up only at the agent\'s next load, so a value changed there since then ' +
       'isn\'t what a running host has.');
+  });
+});
+
+describe('connectome doctor, where whose unit it is is read as install reads it, on both managers', () => {
+  const NOT_HERE = 'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing in that directory. ' +
+    'Its name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
+    'directory of another name.';
+  const unwritable = (file: string) =>
+    writeFileSync(file, readFileSync(file, 'utf-8').replace('  <key>ProgramArguments</key>', '  <key>Program</key>'));
+
+  test('a host plist install couldn\'t have written that runs another directory is another install\'s, as install reads it with plutil', async () => {
+    const at = install({ manager: 'launchd' });
+    const other = install({ manager: 'launchd' });
+    writeUnit(at, join(other.work, 'recipe.json'), other.work);
+    unwritable(at.unit);
+    const r = await run(at);
+    expect(r.out).toContain(`${at.unit} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
+    expect(r.out).not.toContain('isn\'t the plist service install writes');
+  });
+
+  test('a shell daemon\'s plist install couldn\'t have written that runs another directory is named, as install refuses it', async () => {
+    const at = install({ manager: 'launchd' });
+    const other = install({ manager: 'launchd' });
+    const units = serviceUnits(at.root, at.platform, at.home)!;
+    writeFileSync(units.shell.file, plist(units.shell.name, other.work, [join(other.work, 'node_modules/.bin/session-server')], [],
+      join(other.work, 'logs', 'shell.log')));
+    unwritable(units.shell.file);
+    const r = await run(at);
+    expect(r.out).toContain(`${units.shell.file} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
+  });
+
+  test('a unit that names no directory to run in is another install\'s, as install takes it, and doctor offers no service install', async () => {
+    const at = install();
+    writeFileSync(at.unit, readFileSync(at.unit, 'utf-8').replace(`WorkingDirectory=${at.work}\n`, ''));
+    const r = await run(at);
+    expect(r.out).toContain(`${at.unit} names no directory it runs in, where install writes this install's, ${at.work}, so install ` +
+      'takes it as another\'s, and doctor reads nothing from it. Its name comes from this directory\'s name.');
+    expect(r.out).not.toContain('service install');
   });
 });

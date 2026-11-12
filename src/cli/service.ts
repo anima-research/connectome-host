@@ -727,7 +727,7 @@ function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, wor
   return namedElsewhere(sys, manager, unit, work) === undefined;
 }
 
-function namedElsewhere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit,
+export function namedElsewhere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit,
   work: string): { runsIn: string | null } | undefined {
   try {
     const text = readOr(unit.file);
