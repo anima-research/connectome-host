@@ -750,6 +750,46 @@ describe('the ladder\'s recent start', () => {
   });
 });
 
+describe('the ladder\'s inference stage', () => {
+  const row = (s: number, kind: string, stop = 'end_turn') =>
+    JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse: { stop_reason: stop } });
+  const STARTED = 'llm-calls.2026-11-12T11-02-38-066Z.jsonl';
+
+  test('with only calls that aren\'t a turn\'s since the host last started, it says so, counting them', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED),
+      [row(at.now - 9, 'complete'), row(at.now - 8, 'complete', 'max_tokens'), row(at.now - 7, 'keepalive')].join('\n') + '\n');
+    const { out } = ladder(at);
+    expect(out).toMatch(/x inference \(llm call\) +--:--:-- +\( *never\) +no turn's model call since the host last started at 11-12 11:02:38: 2 other model call\(s\), 1 keepalive poke\(s\)$/m);
+    expect(out).not.toContain('stop=');
+  });
+
+  test('a turn\'s call is the stage, though calls that aren\'t a turn\'s came after it', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED),
+      [row(at.now - 30, 'stream'), row(at.now - 5, 'complete', 'max_tokens')].join('\n') + '\n');
+    const { out } = ladder(at);
+    expect(out).toMatch(new RegExp(`o inference \\(llm call\\) +${stamp(at.now - 30)} .* stop=end_turn$`, 'm'));
+    expect(out).not.toContain('stop=max_tokens');
+  });
+
+  test('with a call log over 30 MB whose last 30 MB hold no turn\'s call, it says so of the last 30 MB, not of the start', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED), `${row(at.now - 60, 'stream')}\n${'x'.repeat(30_000_100)}\n${row(at.now - 5, 'complete')}\n`);
+    const { out } = ladder(at);
+    expect(out).toContain("no turn's model call in the last 30 MB of the call log since the host last started at 11-12 11:02:38: " +
+      '1 other model call(s)');
+  });
+
+  test('with a row that can\'t be read and no turn\'s call, it says no readable turn\'s call, not that there was none', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED), `${row(at.now - 9, 'complete')}\n{"timestamp": not json\n${row(at.now - 5, 'complete')}\n`);
+    const { out } = ladder(at);
+    expect(out).toContain("no readable turn's model call since the host last started at 11-12 11:02:38: 2 other model call(s)");
+    expect(out).not.toContain("no turn's model call");
+  });
+});
+
 describe('the ladder\'s data directory', () => {
   test('--data-dir reads the data directory it names, not INSTALL_DIR/data', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });

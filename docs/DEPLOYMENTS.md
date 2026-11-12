@@ -179,8 +179,15 @@ the working directory):
   shows the last five failures from each place it reads. Chronicle ingest
   comes from the active session's `records.log`, as `sessions.json` names it,
   and the Discord stages from `DATA_DIR/discord-mcpl-debug.log`, which
-  discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. A stage the
-  ladder can't see reads "can't be seen here", with the reason. `SIGUSR2` goes
+  discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. The
+  inference stage is the newest turn's call in the newest `llm-calls` file,
+  which each start of the host opens: its newest streamed call. A subagent's
+  turn and a streamed inference an MCPL server asks for are streamed calls
+  too, so on a host with either, the stage's time and stop can be that
+  call's and not the resident's. Other calls, such as the start-up
+  thinking-binding probe and compression, are only counted, in "no turn's
+  model call since the host last started" when there's no turn's call.
+  A stage the ladder can't see reads "can't be seen here", with the reason. `SIGUSR2` goes
   only to a host whose `/proc/PID/status` says it catches the signal: a host
   that hasn't built its framework yet has no listener, and the signal's
   default action ends it. It waits up to 5 s for the host's `[diagnostics]`

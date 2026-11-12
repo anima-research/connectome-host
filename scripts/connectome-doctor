@@ -448,6 +448,7 @@ if llm_files:
             incomplete = True
     call = None
     pokes = 0
+    others = 0
     unreadable = 0
     before_ingest = rec_ts is not None and llm_written_at < rec_ts - 120
     llm_unsure = incomplete and not before_ingest
@@ -468,16 +469,17 @@ if llm_files:
         if r.get("kind") == "keepalive":
             pokes += 1
             continue
-        if call is None:
-            call = r
-        if r.get("kind") == "stream":
-            turn_ts = parse_iso(str(r.get("timestamp", "")))
-            turn_resp = r.get("rawResponse") or {}
-            turn_resp = turn_resp.get("response") or turn_resp
-            turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
-            newer_unread = incomplete or unreadable > 0
-            llm_window_from = None
-            break
+        if r.get("kind") != "stream":
+            others += 1
+            continue
+        call = r
+        turn_ts = parse_iso(str(r.get("timestamp", "")))
+        turn_resp = r.get("rawResponse") or {}
+        turn_resp = turn_resp.get("response") or turn_resp
+        turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
+        newer_unread = incomplete or unreadable > 0
+        llm_window_from = None
+        break
     if call is not None:
         llm_ts = parse_iso(str(call.get("timestamp", "")))
         resp = call.get("rawResponse") or {}
@@ -495,8 +497,13 @@ if llm_files:
     elif llm_unread is not None:
         llm_detail = f"the newest call log, {llm_files[-1]}, can't be read ({llm_unread})"
     else:
-        llm_detail = f"no readable model call in {where}" + (
-            f": {pokes} keepalive poke(s)" if pokes else "")
+        named = re.fullmatch(r"llm-calls\.(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)(?:-(\d{3}))?Z?\.jsonl", llm_files[-1])
+        started = parse_iso(f"{named[1]}T{named[2]}:{named[3]}:{named[4]}.{named[5] or '000'}Z") if named else None
+        since = "since the host last started" + (f" at {hhmm(started)}" if started else "")
+        seen = ([f"{others} other model call(s)"] if others else []) + ([f"{pokes} keepalive poke(s)"] if pokes else [])
+        whole = where == "the newest file"
+        llm_detail = (f"no {'' if not (unreadable or incomplete) else 'readable '}turn's model call "
+                      f"{since if whole else f'in the last 30 MB of the call log {since}'}") + (f": {', '.join(seen)}" if seen else "")
     if unreadable:
         llm_detail += f"  {C_YEL}{unreadable} row(s){' since the last turn' if turn_ts else ''} unreadable{C_OFF}"
     if incomplete:
