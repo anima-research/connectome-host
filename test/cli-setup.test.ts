@@ -847,7 +847,7 @@ test('on macOS, setup says the service stops when the user logs out of the Mac\'
   const dir = directory();
   const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are.');
+  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are. `who` lists alice on console while alice is logged in there.');
 });
 
 test('setup installs the host and discord-mcpl alone: it adds no shell, checks no node-pty, and a Node above 24 doesn\'t stop it, whose words name that ceiling as the shell\'s', async () => {
