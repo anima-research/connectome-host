@@ -176,6 +176,19 @@ describe('doctor: Discord', () => {
     expect(refused.problems[0]).toStartWith('Discord refused the bot token the server is given as DISCORD_TOKEN (401)');
   });
 
+  test('a 429 that gives no retry_after says to run doctor again after Retry-After\'s seconds, to the token check and to a later read, whether or not its body is JSON', async () => {
+    const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    const wait = 'so the Discord checks after it weren\'t made: Discord asked for 300 s before the next request, so run connectome doctor again after that.';
+    const page = () => new Response('<html>slow down</html>', { status: 429, headers: { 'content-type': 'text/html', 'retry-after': '300' } });
+    const json = () => Response.json({ message: 'You are being rate limited.' }, { status: 429, headers: { 'retry-after': '300' } });
+    for (const path of ['/users/@me', '/applications/@me']) {
+      const unread = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { [path]: page } }));
+      expect(unread.problems).toEqual([`Discord answered 429 to GET ${path} with something other than JSON, ${wait}${between}`]);
+      const read = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { [path]: json } }));
+      expect(read.problems).toEqual([`Discord answered 429 to GET ${path}: You are being rate limited., ${wait}`]);
+    }
+  });
+
   test('a 403 or 404 to the bot\'s own user or application says what may be answering in Discord\'s place, and one to a server\'s read says what that read says', async () => {
     const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
     for (const status of [403, 404]) {

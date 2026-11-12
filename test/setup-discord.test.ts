@@ -296,6 +296,27 @@ describe('setup--discord', () => {
     expect(notBot.error).toBe('Discord answered GET /users/@me with something other than the bot\'s user, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
   });
 
+  test('a 401 to a read after the token check is decided by its type before its body, as the token check decides one: typed JSON is a refusal, any other type isn\'t Discord\'s', async () => {
+    const REFUSED = 'Discord refused the bot token stored as DISCORD_TOKEN (401), so the read stopped there. Ask the person for the token again with setup--ask_secret.';
+    const typed = (type: string, body: BodyInit) => () => new Response(body, { status: 401, headers: { 'content-type': type } });
+    const page = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('text/html', '{"message":"401: Unauthorized","code":0}') })).module);
+    expect(page.error).toBe('Discord answered 401 to GET /users/@me/guilds?limit=200 with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    const json = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('application/json', '<html>401</html>') })).module);
+    expect(json.error).toBe(REFUSED);
+    const stalled = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('application/json', new ReadableStream({ start() {} })) })).module);
+    expect(stalled.error).toBe(REFUSED);
+  });
+
+  test('a 429 to the token check or a later read that gives no retry_after asks for Retry-After\'s seconds, whether or not its body is JSON', async () => {
+    const limited = (body: string, type: string) => () => new Response(body, { status: 429, headers: { 'content-type': type, 'retry-after': '300' } });
+    const token = await read(install(fakeDiscord([HOME], { '/users/@me': limited('<html>slow down</html>', 'text/html') })).module);
+    expect(token.error).toBe('Discord answered 429 to GET /users/@me with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+    const page = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': limited('<html>slow down</html>', 'text/html') })).module);
+    expect(page.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200 with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+    const json = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': limited('{"message":"You are being rate limited."}', 'application/json') })).module);
+    expect(json.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200: You are being rate limited., so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+  });
+
   test('an answer in JSON that setup can\'t read the way it reads Discord\'s stops the read in setup\'s words, never with the token, rather than throwing', async () => {
     const shapes: Array<[Record<string, () => Response>, Record<string, unknown>]> = [
       [{ '/guilds/100/members/search': () => Response.json({ members: [] }) }, { server: '100', username: 'ada' }],

@@ -214,7 +214,7 @@ export async function doctor(
       ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
     let managed: Record<string, string> = {};
     try {
-      managed = managerEnv(manager, names, parts);
+      managed = managerEnv(manager, names, parts, typed);
       secrets = [...secrets,
         ...named.names.flatMap((name) => managed[name] ? withSentForms({ name, value: managed[name] }) : [])];
     } catch (error) {
@@ -234,15 +234,18 @@ export async function doctor(
         ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
           `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it ` +
           'anew or says why it can\'t.'
-        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or \`${anew}\` writes ` +
+        : `systemd didn't say the environment ${name} sets the service (${why}). Run ${typed} doctor again, or \`${anew}\` writes ` +
           'the unit anew or says why it can\'t.');
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
     const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs,
-      service?.bun ?? process.execPath);
+      service?.bun ?? process.execPath, typed);
     env = built.env;
-    secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
+    const refusedHere = service === null && read !== null
+      ? serviceEnv(work, root, managed, read.env, parts.envLimitMs, process.execPath, typed) : null;
+    secrets = [...secrets, ...known(env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
+      .flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
   } catch (error) {
     ctx.out(redact(banner));
@@ -355,7 +358,7 @@ export async function doctor(
     } else if ('reason' in host) {
       report.problem(`No host answers: ${host.reason}.`);
       if (host.down && serviceRuns) {
-        report.line('The service is running, so its host may still be starting: run doctor again in a minute. If it ' +
+        report.line(`The service is running, so its host may still be starting: run ${typed} doctor again in a minute. If it ` +
           'still doesn\'t answer then, its log says why.');
       }
       if (host.down && service !== null) {
@@ -381,7 +384,7 @@ export async function doctor(
         open && await answering.request({ type: 'describe' }, parts.hostLimitMs) !== null;
       const changed = () => {
         report.line(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but the service's host ` +
-          'changed during the check, so whether it\'s the service\'s can\'t be told: run doctor again.');
+          `changed during the check, so whether it's the service's can't be told: run ${typed} doctor again.`);
         pidUntold = true;
       };
       const untold = (why: string) => {
@@ -624,7 +627,8 @@ export async function doctor(
         env: {
           ...process.env,
           XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
-          CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.map((s) => [s.name, s.value])),
+          CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.flatMap((s) => s.value.trim() === s.value
+            ? [[s.name, s.value]] : [[s.name, s.value], [s.name, s.value.trim()]])),
         },
       });
     } catch (error) {
@@ -1060,7 +1064,7 @@ class ManagerUnread extends Error {
   }
 }
 
-function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts): Record<string, string> {
+function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
@@ -1072,7 +1076,7 @@ function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts
     if (failed !== null) {
       throw new ManagerUnread('systemctl --user show-environment failed, so what the user manager gives the service ' +
         `can't be read: ${failed}. Run \`systemctl --user show-environment\` as this user to see why: it needs the user's ` +
-        'manager running and XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run doctor again.',
+        `manager running and XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run ${typed} doctor again.`,
         `\`systemctl --user show-environment\` failed: ${failed}`);
     }
     for (const line of ran.stdout.split('\n')) {
@@ -1088,7 +1092,7 @@ function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts
       const failed = failure(ran, parts.envLimitMs);
       if (failed !== null) {
         throw new ManagerUnread(`launchctl getenv ${name} failed, so what launchd gives the service can't be read: ${failed}. ` +
-          `Run \`launchctl getenv ${name}\` as this user to see why, then run doctor again.`,
+          `Run \`launchctl getenv ${name}\` as this user to see why, then run ${typed} doctor again.`,
           `\`launchctl getenv ${name}\` failed: ${failed}`);
       }
       if (ran.stdout !== '') out[name] = ran.stdout.endsWith('\n') ? ran.stdout.slice(0, -1) : ran.stdout;
@@ -1197,7 +1201,7 @@ function systemVariables(): Record<string, string> {
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
-  limitMs: number, bun: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
+  limitMs: number, bun: string, typed: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
   const base = { ...systemVariables(), ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
@@ -1232,7 +1236,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   } catch {
     throw new Error(`Bun's answer in ${work} wasn't an environment doctor could read: something else wrote to its ` +
       'output, as a bunfig.toml preload can. `bun -e 0`, run there, shows what writes, though with your shell\'s ' +
-      'environment, not the service\'s; once nothing does, run doctor again.');
+      `environment, not the service's; once nothing does, run ${typed} doctor again.`);
   }
   env[INSTALL_ROOT_ENV] = root;
   base[INSTALL_ROOT_ENV] = root;

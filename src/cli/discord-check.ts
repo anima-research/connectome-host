@@ -99,7 +99,8 @@ export async function checkDiscord(
         return failure.ok
           ? `Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`
           : `Discord answered ${failure.status} to GET ${path} with something other than JSON, ` +
-            `${failure.status === 429 || failure.status >= 500 ? again : unchecked}. ${between}`;
+            `${failure.retryAfter !== undefined ? waited(unchecked, failure.retryAfter, command)
+              : failure.status === 429 || failure.status >= 500 ? again : unchecked}. ${between}`;
       case 'refused':
         return refused;
       case 'answered': {
@@ -177,7 +178,8 @@ async function whoseToken(
     case 'answered':
       if (check.kind === 'unrecognized' && (check.status < 200 || check.status >= 300)) {
         throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path} with something other than JSON, ` +
-          `${check.status === 429 || check.status >= 500 ? words.again : words.unchecked}. ${words.between}`);
+          `${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
+            : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}. ${words.between}`);
       }
       if (check.kind === 'unrecognized' || (check.status >= 200 && check.status < 300)) {
         throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +

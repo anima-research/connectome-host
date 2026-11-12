@@ -18,7 +18,7 @@ test('reads back the argv and working directory of every launch agent install wr
   expect(readUnit('launchd', text)).toEqual({ argv: awkward, workingDirectory: work });
 });
 
-test('a systemd unit install could not have written is refused with what is wrong with it', () => {
+test('a systemd unit whose start or working directory line install could not have written is refused with what is wrong with it', () => {
   const text = systemdUnit('connectome-host resident in /srv', '/srv/w', ['/bin/bun', '/srv/start.js', 'r.json'], env, null);
   const cases: Array<[string, RegExp]> = [
     [text.replace(/^ExecStart=.*\n/m, ''), /ExecStart/],
@@ -35,7 +35,7 @@ test('a systemd unit install could not have written is refused with what is wron
   }
 });
 
-test('a launch agent install could not have written is refused with what is wrong with it', () => {
+test('a launch agent whose start or working directory line install could not have written is refused with what is wrong with it', () => {
   const text = plist('com.connectome.x', '/srv/w', ['/bin/bun', '/srv/start.js', 'r.json'], env, '/srv/agent.log');
   const cases: Array<[string, RegExp]> = [
     [text.replace('  <key>ProgramArguments</key>\n', ''), /ProgramArguments/],

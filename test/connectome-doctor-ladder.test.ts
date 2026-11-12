@@ -98,6 +98,7 @@ async function install(opts: {
   const at = { work, bins, host, started: now - 60, now, mainPidNow: opts.mainPidNow };
   systemctl(at);
   const journal = join(work, 'journal.txt');
+  bin(bins, 'df', String.raw`printf 'Filesystem Size Used Avail Use%% Mounted on\n/dev/x 100G 10G 90G 10%% /\n'`);
   bin(bins, 'journalctl', opts.journalFails !== undefined
     ? `echo "${opts.journalFails}" >&2; exit 1`
     : [
@@ -766,7 +767,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s inference stage', () => {
     expect(out).not.toContain('stop=');
   });
 
-  test('a turn\'s call is the stage, though calls that aren\'t a turn\'s came after it', async () => {
+  test('a streamed call is the stage, though calls that aren\'t streamed came after it', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'data', STARTED),
       [row(at.now - 30, 'stream'), row(at.now - 5, 'complete', 'max_tokens')].join('\n') + '\n');
@@ -849,7 +850,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
     expect(status).toBe(1);
   });
 
-  test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be looked at, or that\'s a file, is said to be so, not to be missing', async () => {
+  test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be looked at is said to be so, not to be missing', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const locked = join(at.work, 'locked');
     const data = join(locked, 'data');
@@ -865,6 +866,10 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
     } finally {
       chmodSync(locked, 0o755);
     }
+  });
+
+  test('a data directory that\'s a file is said to be so, not to be missing', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
     const file = join(at.work, 'data-file');
     writeFileSync(file, '');
     const { out } = ladder(at, ['--data-dir', file]);

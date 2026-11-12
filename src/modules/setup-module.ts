@@ -297,7 +297,7 @@ function tokenFailure(check: Exclude<TokenCheck, { kind: 'accepted' } | { kind: 
     case 'refused': return { kind: 'refused', path };
     case 'unanswered': return { kind: 'unanswered', path, timedOut: false, why: check.why };
     case 'redirected': return { kind: 'redirected', path, status: check.status };
-    case 'unrecognized': return { kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300 };
+    case 'unrecognized': return { kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
     case 'answered': return { kind: 'answered', path, status: check.status, said: check.said, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
   }
 }
@@ -306,6 +306,7 @@ function discordNote(failure: DiscordFailure): string {
   const { path } = failure;
   const again = 'Call setup--discord again in a minute, and if it answers the same, tell the person what it says.';
   const between = 'Tell the person: something between this machine and Discord may be answering in its place.';
+  const asked = (wait: number) => `It asks for ${Math.ceil(wait)} s: call setup--discord again once that has passed.`;
   switch (failure.kind) {
     case 'refused':
       return `Discord refused the bot token stored as ${DISCORD_TOKEN} (401), so the read stopped there. Ask the person for ` +
@@ -319,7 +320,8 @@ function discordNote(failure: DiscordFailure): string {
         `the read stopped there. ${between}`;
     case 'unrecognized':
       return `Discord answered ${failure.ok ? '' : `${failure.status} to `}GET ${path} with something other than JSON, so ` +
-        `the read stopped there. ${failure.status === 429 || failure.status >= 500 ? again : between}`;
+        `the read stopped there. ${failure.retryAfter !== undefined ? asked(failure.retryAfter)
+          : failure.status === 429 || failure.status >= 500 ? again : between}`;
     case 'answered':
       if (failure.status >= 200 && failure.status < 300) {
         return `Discord answered GET ${path} with something other than the bot's user, so the read stopped there. ${between}`;
@@ -327,8 +329,7 @@ function discordNote(failure: DiscordFailure): string {
       return `Discord answered ${failure.status} to GET ${path}` +
         `${failure.said === null ? '' : `: ${failure.said}`}${failure.code === undefined ? '' : ` (code ${failure.code})`}, ` +
         'so the read stopped there. ' +
-        (failure.retryAfter !== undefined
-          ? `It asks for ${Math.ceil(failure.retryAfter)} s: call setup--discord again once that has passed.`
+        (failure.retryAfter !== undefined ? asked(failure.retryAfter)
           : failure.status === 429 || failure.status >= 500 ? again
             : path.startsWith('/guilds/') && (failure.status === 403 || failure.status === 404)
               ? 'The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now, ' +
@@ -1186,7 +1187,7 @@ function tokenNote(token: TokenCheck): string {
       return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
     case 'unrecognized':
       return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ` +
-        (busy(token.status) ? readAgain(undefined) : `${CONNECTION} ${ASK_TOKEN_AGAIN}`);
+        (busy(token.status) ? readAgain(token.retryAfter) : `${CONNECTION} ${ASK_TOKEN_AGAIN}`);
     default: return '';
   }
 }

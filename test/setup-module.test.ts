@@ -1687,6 +1687,24 @@ describe('checkDiscordToken', () => {
     expect(await checkDiscordToken('a-token', { fetch: (async () => new Response('<html>', { status: 403 })) as unknown as typeof fetch })).toEqual({ kind: 'unrecognized', status: 403 });
   });
 
+  test('a 429 asks for the wait its body\'s retry_after gives, or else Retry-After\'s seconds, whether or not its body is JSON; a Retry-After that isn\'t seconds asks for none', async () => {
+    const answering = (body: string, type: string, after?: string) => (async () => new Response(body, {
+      status: 429, headers: { 'content-type': type, ...(after === undefined ? {} : { 'retry-after': after }) },
+    })) as unknown as typeof fetch;
+    const json = '{"message":"You are being rate limited."}';
+    expect({
+      page: await checkDiscordToken('a-token', { fetch: answering('<html>slow down</html>', 'text/html', '300') }),
+      bodyless: await checkDiscordToken('a-token', { fetch: answering(json, 'application/json', '300') }),
+      both: await checkDiscordToken('a-token', { fetch: answering('{"message":"You are being rate limited.","retry_after":2.5}', 'application/json', '300') }),
+      date: await checkDiscordToken('a-token', { fetch: answering(json, 'application/json', 'Wed, 21 Oct 2026 07:28:00 GMT') }),
+    }).toEqual({
+      page: { kind: 'unrecognized', status: 429, retryAfter: 300 },
+      bodyless: { kind: 'answered', status: 429, said: 'You are being rate limited.', retryAfter: 300 },
+      both: { kind: 'answered', status: 429, said: 'You are being rate limited.', retryAfter: 2.5 },
+      date: { kind: 'answered', status: 429, said: 'You are being rate limited.' },
+    });
+  });
+
   test('a 401 typed other than JSON is read as unrecognized, decided before the body, and one typed JSON, or a +json type, as Discord\'s refusal', async () => {
     const answering = (type: string) => (async () => new Response(new ReadableStream({ start() {} }), {
       status: 401, headers: { 'content-type': type },
@@ -3014,6 +3032,17 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be ` +
         `checked: ${unrecognized}${after}`);
       expect(token.shown, String(status)).toContain(`It couldn't be checked: ${unrecognized}${after === AGENT_BUSY ? BUSY : ''}`);
+    }
+  });
+
+  test('a token answered 429 with a Retry-After of seconds and no retry_after in its body tells the agent that wait, whether or not the body is JSON', async () => {
+    const WAIT = ' It asks for 300 s: call setup--discord once that has passed, which checks the stored token first.';
+    const bodies = [new Response('<html>slow down</html>', { status: 429, headers: { 'content-type': 'text/html', 'retry-after': '300' } }),
+      Response.json({ message: 'You are being rate limited.' }, { status: 429, headers: { 'retry-after': '300' } })];
+    for (const body of bodies) {
+      const token = install({ asker: typed('a-limited-token'), fetch: (async () => body) as unknown as typeof fetch });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(String(told.data)).toEndWith(WAIT);
     }
   });
 
