@@ -1429,9 +1429,7 @@ describe('setup--run, and what the install\'s commands say for the person', () =
     const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
     const result = await runCall(module, 'echo written-for-the-person >> "$CONNECTOME_SETUP_SHOWN"; mkdir .env.local');
     expect(result.success).toBe(false);
-    const after = afterCommand(shown);
-    expect(after).toHaveLength(1);
-    expect(after.join('\n')).not.toContain('written-for-the-person');
+    expect(afterCommand(shown)).toEqual(['What it said for you isn\'t shown, since which values are secret isn\'t known.']);
   });
 });
 
