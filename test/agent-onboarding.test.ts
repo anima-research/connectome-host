@@ -278,10 +278,42 @@ describe('SETUP.md\'s lines', () => {
 
 describe('the backups\' units', () => {
   it('are named with a character after the slug that no slug holds, so none is another install\'s own unit', () => {
-    const backups = PIECES.find((piece) => piece.heading === 'Backups')!.text;
+    const backups = PIECES.filter((piece) => ['Backups', 'The restore check', 'Backups run by root'].includes(piece.heading ?? ''))
+      .map((piece) => piece.text).join('');
     const rests = [...backups.matchAll(/connectome-<slug>([^`'\s]*)\.(?:service|timer)\b/g)].map((match) => match[1]!)
       .filter((rest) => rest !== '');
     expect(rests.length).toBeGreaterThan(0);
     for (const rest of rests) expect({ rest, apart: slugOf(`x${rest}`) !== `x${rest}` }).toEqual({ rest, apart: true });
+  });
+});
+
+describe('the backups\' commands', () => {
+  const sections = ['Backups', 'The restore check', 'Backups run by root'];
+  const spansIn = (names: string[]) => PIECES.filter((piece) => names.includes(piece.heading ?? ''))
+    .flatMap((piece) => [...piece.text.matchAll(SPAN)].map((match) => match[1]!));
+
+  it('run restic by hand by the whole path the script runs, so root runs the restic it checked', () => {
+    const subshells = spansIn(sections).filter((span) => span.startsWith('(') && span.includes(". '<dir>/backup.env'"));
+    expect(subshells.length).toBeGreaterThan(0);
+    for (const span of subshells) expect({ span, whole: /; '<restic>' <command>\)$/.test(span) }).toEqual({ span, whole: true });
+  });
+
+  it('have root remove the restore check\'s copy with rm -rf alone, since a chown or chmod there follows a link the resident\'s user can put at its name', () => {
+    const root = spansIn(['Backups run by root']).filter((span) => span.includes("'<scratch>'"));
+    expect(root).toContain("rm -rf '<scratch>'");
+    for (const span of root) expect({ span, follows: /\b(?:chown root|chmod)\b/.test(span) }).toEqual({ span, follows: false });
+  });
+
+  it('write the password over no file already there, so the umask gives the new file its mode', () => {
+    const lines = spansIn(sections).filter((span) => span.includes('stty -echo'));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const span of lines) expect({ span, removedFirst: /rm -f "\$1"; printf "%s" "\$p" > "\$1"/.test(span) }).toEqual({ span, removedFirst: true });
+  });
+
+  it('name root\'s files, units and daemon with the resident\'s user too, since root\'s names are the whole machine\'s', () => {
+    const root = PIECES.find((piece) => piece.heading === 'Backups run by root')!.text;
+    const names = [...root.matchAll(/(?:connectome-<slug>|com\.animalabs\.connectome\.<slug>)[^`'\s/]*/g)].map((match) => match[0]);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect({ name, user: name.includes('.<user>.') }).toEqual({ name, user: true });
   });
 });
