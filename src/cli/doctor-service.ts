@@ -12,6 +12,7 @@ export interface ServiceCheck {
   lines: string[];
   stopped?: true;
   elsewhere?: true;
+  here?: true;
 }
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
@@ -58,6 +59,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
   }
   if (units.manager === 'systemd-user') {
     let elsewhere = false;
+    let here = false;
     const shownAll = expected.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
       'NRestarts', 'ExecMainStatus', 'ExecMainStartTimestamp', 'Environment', 'WorkingDirectory', 'FragmentPath',
       'ConditionResult', 'ConditionTimestamp', RESTART_PROPERTIES]));
@@ -108,8 +110,10 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
       if (other !== null) {
         elsewhere = true;
       } else if (policy.restarts) {
+        here = true;
         lines.push(`It restarts the host when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}).`);
       } else {
+        here = true;
         fail(`It doesn't restart the host both when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}). ` +
           dropInLine(sys, unit.name));
       }
@@ -120,7 +124,8 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
           `host on ${RESTART_EXIT_CODE} and 1.`);
       }
     }
-    return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}), ...(elsewhere ? { elsewhere: true as const } : {}) };
+    return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}), ...(elsewhere ? { elsewhere: true as const } : {}),
+      ...(here ? { here: true as const } : {}) };
   }
   const states = expected.map((unit) => agentState(sys, env, unit));
   const stopped = stoppedIsFine && unseen === 0 && states.every((state) => state.kind === 'unloaded');

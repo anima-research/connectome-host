@@ -58,6 +58,7 @@ test('an active host unit that runs here, restarts on 75 and 1 and sets the supe
   expect(result.lines.join('\n')).toContain(`${at.units.host.name} is active (running).`);
   expect(result.lines.join('\n')).toContain('It restarts the host when it exits with 75 and with 1');
   expect(result.lines.join('\n')).toContain('Its unit sets CONNECTOME_SUPERVISED=1.');
+  expect(result.here).toBe(true);
 });
 
 test('a host unit file that is gone fails, naming the file and the install that writes it', () => {
@@ -80,6 +81,7 @@ test('a recipe that names a shell with no shell unit fails, and a shell unit the
   expect(missing.lines).toContain(`The recipe names a shell, and ${expected.units.shell.file}, ` +
     `${expected.units.shell.name}'s unit file, is gone. \`connectome service install <recipe>\` writes it, or names what it ` +
     'needs first.');
+  expect(missing.here).toBe(true);
   expect(missing.lines).toContain(`systemd has no ${expected.units.shell.name} loaded (not-found): \`connectome service ` +
     'install <recipe>\` writes it, or names what it needs first.');
 
@@ -112,7 +114,8 @@ test('every expected unit loaded and inactive reads as stopped where doctor asks
   const inactive = activeHost(at.work).replace('ActiveState=active', 'ActiveState=inactive').replace('SubState=running', 'SubState=dead');
   const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: inactive });
   const stopped = checkUnits(at.units, at.work, false, 'connectome', sys, true);
-  expect(stopped).toEqual({ passed: true, lines: expect.arrayContaining([`${at.units.host.name} is stopped: systemd shows it inactive (dead).`]), stopped: true });
+  expect(stopped).toEqual({ passed: true, lines: expect.arrayContaining([`${at.units.host.name} is stopped: systemd shows it inactive (dead).`]), stopped: true,
+    here: true });
   expect(checkUnits(at.units, at.work, false, 'connectome', sys).passed).toBe(false);
 });
 
@@ -122,7 +125,7 @@ test('a host unit that runs in another directory fails, naming both', () => {
   const result = checkUnits(at.units, at.work, false, 'connectome', sys);
   expect(result.passed).toBe(false);
   expect(result.lines.join('\n')).toContain(`systemd runs ${at.units.host.name} in /somewhere/else, not ${at.work}.`);
-  expect(result.elsewhere).toBe(true);
+  expect([result.elsewhere, result.here]).toEqual([true, undefined]);
 });
 
 const reloads = (name: string, work: string) => `systemd shows ${name} as it last loaded it, while its file names ` +
@@ -162,6 +165,14 @@ test('a shell unit systemd runs in another directory fails as install refuses it
   expect(unnamed.passed).toBe(false);
   expect(unnamed.lines).toContain(line);
   expect(unnamed.lines.join('\n')).not.toContain('stops and removes it');
+});
+
+test('a host unit systemd can\'t show, or hasn\'t loaded, isn\'t seen running here', () => {
+  const at = place('linux', ['host']);
+  const unshown = system(at.home, {});
+  expect(checkUnits(at.units, at.work, false, 'connectome', unshown.sys).here).toBeUndefined();
+  const unloaded = system(at.home, { [`systemctl ${at.units.host.name}`]: 'LoadState=not-found\nActiveState=active\n' });
+  expect(checkUnits(at.units, at.work, false, 'connectome', unloaded.sys).here).toBeUndefined();
 });
 
 test('under launchd a running host passes, one loaded but not running fails with its log file, and all unloaded is stopped', () => {

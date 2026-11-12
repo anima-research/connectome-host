@@ -256,7 +256,7 @@ async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[]
   }).path;
   const status = await doctor({ root: at.root, argv, out: (l) => out.push(l), err: (l) => err.push(l) }, {
     fetch: discordFetch,
-    checkService: async () => ({ passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] }),
+    checkService: async () => ({ passed: true, here: true as const, lines: ['The unit connectome-test.service is active, with no restarts.'] }),
     python: fakePython(at.work),
     hostLimitMs: 60_000,
     ladderLimitMs: 60_000,
@@ -295,7 +295,7 @@ async function digestOf(at: Install): Promise<string> {
   return recipeDigest((await loadRecipeDocument(await readRecipeDocument(path), path, { env: SECRETS })).recipe);
 }
 
-const reports = (...lines: string[]): Partial<DoctorParts> => ({ checkService: async () => ({ passed: true, lines }) });
+const reports = (...lines: string[]): Partial<DoctorParts> => ({ checkService: async () => ({ passed: true, here: true as const, lines }) });
 
 function expectNoSecret(text: string): void {
   for (const value of Object.values(SECRETS)) expect(text).not.toContain(value);
@@ -426,7 +426,7 @@ describe('connectome doctor', () => {
     const r = await run(at, {
       checkService: async (...args: unknown[]) => {
         asked = args;
-        return { passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true };
+        return { passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true };
       },
       python: fakePython(at.work, { end: 'clean' }),
     });
@@ -440,7 +440,7 @@ describe('connectome doctor', () => {
     const closing = Bun.listen({ unix: join(at.data, 'ipc.sock'), socket: { open(socket) { socket.end(); }, data() {} } });
     try {
       const unready = await run(at, {
-        checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+        checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
         python: fakePython(at.work, { end: 'clean' }),
       });
       expect(unready.out).toMatch(/✗ No host answers: the socket \S+ closed before a host said it was ready\./);
@@ -560,7 +560,7 @@ describe('connectome doctor', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-shell-only-key';
     try {
       const r = await withHost(at, HEALTHY_HOST, () => run(at, {
-        checkService: async () => ({ passed: true, lines: ['The unit said: key sk-shell-only-key refused.'] }),
+        checkService: async () => ({ passed: true, here: true as const, lines: ['The unit said: key sk-shell-only-key refused.'] }),
       }));
       expect(r.out).toContain('key <ANTHROPIC_API_KEY> refused');
       expect(r.out).not.toContain('sk-shell-only-key');
@@ -577,7 +577,7 @@ describe('connectome doctor', () => {
     process.env.DOCTOR_ONLY_PREFIX = 'p7-prefix-';
     try {
       const r = await withHost(at, HEALTHY_HOST, () => run(at, {
-        checkService: async () => ({ passed: true, lines: ['The unit said: token p7-prefix-z9suffix refused.'] }),
+        checkService: async () => ({ passed: true, here: true as const, lines: ['The unit said: token p7-prefix-z9suffix refused.'] }),
       }));
       const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
       expect(withheld).toContainEqual(['MY_TOKEN', 'p7-prefix-z9suffix']);
@@ -1009,7 +1009,7 @@ describe('connectome doctor', () => {
       await run(at, {
         checkService: async (...args: unknown[]) => {
           asked = args;
-          return { passed: true, lines: [] };
+          return { passed: true, here: true as const, lines: [] };
         },
       });
       expect([shell, asked[2]]).toEqual([shell, shell]);
@@ -1020,13 +1020,13 @@ describe('connectome doctor', () => {
     await run(unread, {
       checkService: async (...args: unknown[]) => {
         given = args;
-        return { passed: true, lines: [] };
+        return { passed: true, here: true as const, lines: [] };
       },
     });
     expect(given[2]).toBeNull();
   });
 
-  test('a service check that doesn\'t pass is a problem, and one that throws is a problem too, with the checks after it made', async () => {
+  test('a service check that doesn\'t pass is a problem, and one that throws is a problem too, with the host\'s checks after it made and not the ladder', async () => {
     const at = install();
     const failing = await withHost(at, HEALTHY_HOST, () => run(at, { checkService: async () => ({ passed: false, lines: ['The unit is failed.'] }) }));
     expect(failing.out).toMatch(/✗ The service check above didn't pass/);
@@ -1034,7 +1034,8 @@ describe('connectome doctor', () => {
     const throwing = await withHost(at, HEALTHY_HOST, () => run(at, { checkService: async () => { throw new Error('systemctl vanished'); } }));
     expect(throwing.out).toMatch(/✗.*systemctl vanished/);
     expect(throwing.out).toContain('ember (900)');
-    expect(throwing.out).toContain('ladder args');
+    expect(throwing.out).not.toContain('ladder args');
+    expect(throwing.out).toContain('so it doesn\'t run while systemd isn\'t seen running the service in this install\'s directory');
     expect(throwing.status).toBe(1);
   });
 
@@ -1522,7 +1523,7 @@ describe('connectome doctor', () => {
   });
 
   test('a data directory the install record names that isn\'t there is one more problem, with what\'s at stake, wherever the ladder runs or not', async () => {
-    const stopped = async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'],
+    const stopped = async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'],
       stopped: true as const });
     const count = (out: string) => Number(/Doctor found (\d+) problems?/.exec(out)?.[1] ?? 0);
     for (const python of [undefined, null]) {
@@ -1554,7 +1555,7 @@ describe('connectome doctor', () => {
     delete nameless.channelId;
     for (const manager of ['launchd', 'systemd-user'] as const) {
       const at = install({ manager });
-      const parts = { checkService: async () => ({ passed: true, lines: [] }), python: null };
+      const parts = { checkService: async () => ({ passed: true, here: true as const, lines: [] }), python: null };
       const before = await run(at, parts);
       expect(before.out).not.toContain('Channels the subscription GC closed');
       mkdirSync(join(at.work, 'logs'));
@@ -1883,13 +1884,13 @@ describe('connectome doctor: its waits, its remedies and its last line', () => {
   test('with no host answering, doctor that finds no problem says the host\'s checks weren\'t made', async () => {
     const at = install();
     const stopped = await run(at, {
-      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped.'], stopped: true }),
+      checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped.'], stopped: true }),
       python: fakePython(at.work, { end: 'clean' }),
     });
     expect(stopped.out).toMatch(/Doctor found no problem, though the host's checks weren't made and the fit wasn't checked, as said above\.$/);
     expect(stopped.status).toBe(0);
     const unladdered = await run(at, {
-      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped.'], stopped: true }),
+      checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped.'], stopped: true }),
       python: null,
     });
     expect(unladdered.out).toMatch(/Doctor found no problem, though the host's checks weren't made, the ladder didn't run and the fit wasn't checked, as said above\.$/);
@@ -1957,7 +1958,7 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
   test('a host that answers while its service is stopped is a problem naming it, with no advice to start the service until it\'s stopped', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, {
-      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+      checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
       python: fakePython(at.work, { end: 'clean' }),
       servicePid: async () => ({ pid: '0' }),
     }));
@@ -1999,7 +2000,7 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
       JSON.stringify({ kind: 'subscription-gc-close', channelId: 'discord:111/333', at: '2026-11-01T04:20:00.000Z', restore: 'channel_open discord:111/333' }),
       '',
     ].join('\n'));
-    const r = await run(at, { checkService: async () => ({ passed: true, lines: [] }), python: null });
+    const r = await run(at, { checkService: async () => ({ passed: true, here: true as const, lines: [] }), python: null });
     expect(r.out).toContain('Channels the subscription GC closed (logs/failures.log):');
     expect(r.out).toContain('2 lines there name a subscription-gc-close but can\'t be read as one, cut short or missing a field, so a ' +
       'channel they would name may have been closed too.');
@@ -2574,7 +2575,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     }
     for (const answer of [{ pid: '4242' }, { pid: '6161' }]) {
       const started = await withHost(at, HEALTHY_HOST, () => run(at, {
-        checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+        checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
         servicePid: async () => answer,
       }));
       expect(started.out).toContain('but the service\'s host changed during the check');
@@ -2585,7 +2586,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
   test('a host found while the service reads as stopped, whose main process then can\'t be read, is said as can\'t be told, with the manager\'s words', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, {
-      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+      checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
       servicePid: async () => ({ why: 'Failed to connect to bus: No such file or directory' }),
     }));
     expect(r.out).toContain('The host answers: pid 4242, recipe Ember. Whether it\'s the service\'s host can\'t be told: Failed to ' +
@@ -2597,7 +2598,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
   test('a stopped service whose main process is read only after the host\'s connection closed is said as changed, not as a foreign host', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, (host) => run(at, {
-      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+      checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
       servicePid: async () => {
         host.stop();
         return { pid: '0' };
@@ -2729,7 +2730,7 @@ describe('connectome doctor, where the shell daemon\'s unit of this install\'s n
     const asked: Array<boolean | null | 'other'> = [];
     const checkService: DoctorParts['checkService'] = async (_units, _work, shell) => {
       asked.push(shell);
-      return { passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] };
+      return { passed: true, here: true as const, lines: ['The unit connectome-test.service is active, with no restarts.'] };
     };
     return { asked, checkService };
   };
@@ -2811,7 +2812,7 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const r1 = await withHost(dashed, HEALTHY_HOST, () => run(dashed, {
       checkService: async (_units, work) => {
         works.push(work);
-        return { passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] };
+        return { passed: true, here: true as const, lines: ['The unit connectome-test.service is active, with no restarts.'] };
       },
     }));
     expect(r1.out).not.toContain('as the directory it runs in');
@@ -2885,11 +2886,11 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const at = install();
     const again = `The service is running, so its host may still be starting: run ${join(at.root, 'connectome')} doctor again in a minute. ` +
       'If it still doesn\'t answer then, its log says why.';
-    const r = await run(at, { checkService: async () => ({ passed: true, lines: ['connectome-test.service is active (running).'] }) });
+    const r = await run(at, { checkService: async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is active (running).'] }) });
     expect(r.out).toContain('No host answers: there\'s no socket at');
     expect(r.out).toContain(again);
     for (const [checkService, said] of [
-      [async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true as const }),
+      [async () => ({ passed: true, here: true as const, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true as const }),
         ['connectome-test.service is stopped: systemd shows it inactive (dead).', 'No host answers, since its service is stopped']],
       [async () => ({ passed: false, lines: ['connectome-test.service is failed, not active.'] }),
         ['connectome-test.service is failed, not active.', 'The service check above didn\'t pass.']],
@@ -2909,6 +2910,21 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(r.out).toContain('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while ' +
       'systemd runs the service in another directory, said above: that process isn\'t this install\'s host.');
     expect(r.out).not.toContain('Where an incoming message got to');
+    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+  });
+
+  test('where the service check didn\'t see systemd run the service in this install\'s directory, the ladder doesn\'t run, naming why', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      checkService: async () => ({ passed: false, lines: ['connectome-test.service is running, but systemd can\'t load its unit ' +
+        '(not-found), so which install it runs can\'t be told. If it\'s this install\'s, stop it, then run ' +
+        '`connectome service install <recipe>`.'] }),
+    }));
+    expect(r.out).toContain('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while ' +
+      'systemd isn\'t seen running the service in this install\'s directory, said above: that process may not be this ' +
+      'install\'s host.');
+    expect(r.out).not.toContain('Where an incoming message got to');
+    expect(r.out).not.toContain('ladder args');
     expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
   });
 

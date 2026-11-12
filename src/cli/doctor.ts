@@ -311,6 +311,7 @@ export async function doctor(
   let stopped = false;
   let serviceRuns = false;
   let unitElsewhere = false;
+  let unitHere = false;
   let fitUnchecked = false;
   let fitEstimated = false;
   let filesUnread = false;
@@ -348,6 +349,7 @@ export async function doctor(
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         serviceRuns = result.passed && result.stopped !== true;
         unitElsewhere = result.elsewhere === true;
+        unitHere = result.here === true;
         if (result.stopped === true) {
           stopped = true;
           report.line('It\'s stopped.');
@@ -626,9 +628,11 @@ export async function doctor(
   } else if (service.units.manager !== 'systemd-user') {
     report.section('The ladder reads systemd\'s units and journal, so it doesn\'t run for this install, whose service ' +
       'runs under launchd.');
-  } else if (unitElsewhere) {
+  } else if (!unitHere) {
     report.section('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while systemd ' +
-      'runs the service in another directory, said above: that process isn\'t this install\'s host.');
+      (unitElsewhere ? 'runs the service in another directory, said above: that process isn\'t this install\'s host.'
+        : 'isn\'t seen running the service in this install\'s directory, said above: that process may not be this ' +
+          'install\'s host.'));
   } else if (parts.python === null) {
     report.section('The pipeline ladder needs python3, which isn\'t on PATH. The checks above don\'t.');
   } else if ((tooOld = pythonOlderThan37(parts.python, parts.ladderLimitMs)) !== null) {
