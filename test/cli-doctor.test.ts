@@ -2464,7 +2464,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       expect(r.out).not.toContain('kill 4242');
       expect(r.out).not.toContain('✗ A host answers');
     }
-    for (const answer of [{ pid: '4242' }, { pid: '6161' }, { why: 'systemctl --user show connectome-test.service failed' }]) {
+    for (const answer of [{ pid: '4242' }, { pid: '6161' }]) {
       const started = await withHost(at, HEALTHY_HOST, () => run(at, {
         checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
         servicePid: async () => answer,
@@ -2472,6 +2472,18 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       expect(started.out).toContain('but the service\'s host changed during the check');
       expect(started.out).not.toContain('though the service is stopped');
     }
+  });
+
+  test('a host found while the service reads as stopped, whose main process then can\'t be read, is said as can\'t be told, with the manager\'s words', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+      servicePid: async () => ({ why: 'Failed to connect to bus: No such file or directory' }),
+    }));
+    expect(r.out).toContain('The host answers: pid 4242, recipe Ember. Whether it\'s the service\'s host can\'t be told: Failed to ' +
+      'connect to bus: No such file or directory.');
+    expect(r.out).not.toContain('changed during the check');
+    expect(r.out).not.toContain('though the service is stopped');
   });
 
   test('a stopped service whose main process is read only after the host\'s connection closed is said as changed, not as a foreign host', async () => {

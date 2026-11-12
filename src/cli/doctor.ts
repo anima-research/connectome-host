@@ -369,9 +369,15 @@ export async function doctor(
           'changed during the check, so whether it\'s the service\'s can\'t be told: run doctor again.');
         pidUntold = true;
       };
+      const untold = (why: string) => {
+        report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
+          `service's host can't be told: ${why.replace(/\.$/, '')}.`);
+        pidUntold = true;
+      };
       if (stopped) {
         const now = await ownPid();
-        if (now !== null && (!('pid' in now) || now.pid !== '0' || !(await stillAnswers()))) changed();
+        if (now !== null && 'why' in now) untold(now.why);
+        else if (now !== null && (now.pid !== '0' || !(await stillAnswers()))) changed();
         else {
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
@@ -395,9 +401,7 @@ export async function doctor(
                 : ''));
           }
         } else if (own !== null && 'why' in own) {
-          report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
-            `service's host can't be told: ${own.why.replace(/\.$/, '')}.`);
-          pidUntold = true;
+          untold(own.why);
         } else {
           report.ok(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}.`);
         }
