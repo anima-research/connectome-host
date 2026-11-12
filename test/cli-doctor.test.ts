@@ -90,7 +90,7 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
             return;
           }
           if (answers === SILENT) continue;
-          const data = answers[msg.op!];
+          const data = msg.op === 'health' && !('health' in answers) ? HEALTH : answers[msg.op!];
           socket.write(JSON.stringify(data === undefined
             ? { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: false, error: `unknown panel op: ${msg.op}` }
             : { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: true, data }) + '\n');
@@ -102,6 +102,16 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
 }
 
 const SILENT: Record<string, unknown> = {};
+
+const STARTED = Date.parse('2026-11-12T05:00:00.000Z');
+const HEALTH = {
+  at: '2026-11-12T06:00:00.000Z',
+  uptimeSec: 3600,
+  agents: [{
+    name: 'ember', status: 'idle', consecutiveInferenceFailures: 0,
+    lastInference: { startedAt: STARTED, endedAt: STARTED + 4_000 }, refusalStats: null,
+  }],
+};
 
 const STANDIN_BESIDE = { tokens: null, source: 'preview_failed', error: 'the stand-in host builds no request' };
 const COUNTED = {
