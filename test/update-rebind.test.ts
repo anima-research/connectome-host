@@ -1286,6 +1286,55 @@ describe('the fleet\'s children file', () => {
     expect(record(copy)!.workingDir).toBe(copy);
   });
 
+  test('a copy\'s binding syncs each child directory it removed the copied files from before it stamps the children file, so a power loss can\'t keep the stamp without the removals', () => {
+    setup(options(install));
+    const kid = join(install, 'data', 'kids', 'c');
+    withChild(install, kid, live());
+    for (const name of ['ipc.sock', 'headless.pid']) writeFileSync(join(kid, name), 'the original child\'s');
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const copied = join(copy, 'data', 'kids', 'c');
+    const children = join(copy, 'data', 'fleet-children.json');
+    const events: string[] = [];
+    const realRm = fs.rmSync;
+    const realOpen = fs.openSync;
+    const realRename = fs.renameSync;
+    const rm = spyOn(fs, 'rmSync').mockImplementation(((path: fs.PathLike, options?: fs.RmOptions) => {
+      events.push(`rm ${String(path)}`);
+      realRm(path, options);
+    }) as typeof fs.rmSync);
+    const open = spyOn(fs, 'openSync').mockImplementation(((path: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode | null) => {
+      if (String(path) === copied) events.push(`sync ${copied}`);
+      return realOpen(path, flags, mode);
+    }) as typeof fs.openSync);
+    const rename = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === children) events.push('stamp');
+      realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      setup(options(copy));
+    } finally {
+      rm.mockRestore();
+      open.mockRestore();
+      rename.mockRestore();
+    }
+    const removed = events.filter((event) => event.startsWith(`rm ${copied}/`));
+    expect(removed).toEqual([`rm ${join(copied, 'ipc.sock')}`, `rm ${join(copied, 'headless.pid')}`]);
+    expect(events.indexOf(`sync ${copied}`)).toBeGreaterThan(Math.max(...removed.map((event) => events.indexOf(event))));
+    expect(events.indexOf('stamp')).toBeGreaterThan(events.indexOf(`sync ${copied}`));
+  });
+
+  test('a copy whose child is given a place that isn\'t there yet binds, with nothing there to remove or sync', () => {
+    setup(options(install));
+    const kid = join(dir, 'kid');
+    withChild(install, kid, null);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const own = join(dir, 'copy-kid-later');
+    setup(options(copy, { places: [{ from: kid, to: own }] }));
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: own }]);
+  });
+
   test('a moved install\'s binding leaves its child\'s socket and pid file, which are its own child\'s', () => {
     setup(options(install));
     const kid = join(install, 'data', 'kids', 'c');
