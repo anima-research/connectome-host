@@ -33,7 +33,10 @@ const HOST_ANSWER_LIMIT_MS = 60_000;
 const ENV_LIMIT_MS = 60_000;
 const RECIPE_LIMIT_MS = 60_000;
 const SYSTEM_VARIABLES = ['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'LANG', 'TMPDIR', 'XDG_RUNTIME_DIR'];
-const CHECKS = { 'count-check': 'the token counts', 'shell-check': 'the shell\'s call' } as const;
+const CHECKS = {
+  'count-check': 'the token counts', 'shell-check': 'the shell\'s call', health: 'the counts of its model calls',
+} as const;
+const SHORT_WORD = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const EMPTY_COMPRESSION = 'The recipe\'s agent.strategy.compressionModel is empty, so context-manager halts memory ' +
   'formation: it refuses an empty model. Leave it out to compress with the agent\'s model, or name one, and restart the ' +
   'service.';
@@ -389,6 +392,8 @@ export async function doctor(
     };
     const counting = asked('count-check');
     counting?.catch(() => {});
+    const calls = asked('health');
+    calls?.catch(() => {});
 
     report.section('Recipe');
     let recipe: Recipe | null = null;
@@ -450,6 +455,15 @@ export async function doctor(
           uncredentialed = sources.includes('count_tokens_no_credential');
           unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
         }
+      });
+    }
+
+    report.section('Model calls');
+    if ('reason' in host) report.line('The host\'s counts of its model calls weren\'t asked: that needs the host running.');
+    else {
+      await checked(report, 'The counts of its model calls', async () => {
+        const answer = await read<unknown>('health', calls);
+        if (answer !== null) callLines(report, agentCalls(answer.data), recipe?.agent.name);
       });
     }
 
@@ -649,6 +663,63 @@ async function checked(report: Report, what: string, body: () => Promise<void> |
     await body();
   } catch (error) {
     report.problem(`${what} failed: ${errorText(error)}`);
+  }
+}
+
+interface AgentCalls {
+  name: string;
+  failures: number;
+  failedAt: number | undefined;
+  startedAt: number | undefined;
+  refusals: { total: number; lastAt: number; lastCategory: string } | null;
+}
+
+function agentCalls(data: unknown): AgentCalls[] {
+  const agents = (data as { agents?: unknown } | null)?.agents;
+  if (!Array.isArray(agents)) throw new Error('its answer has no list of agents');
+  const time = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  return agents.map((agent: unknown) => {
+    const { name, consecutiveInferenceFailures: failures, lastInference, refusalStats } = (agent ?? {}) as Record<string, unknown>;
+    if (typeof name !== 'string' || typeof failures !== 'number' || !Number.isInteger(failures) || failures < 0) {
+      throw new Error('an agent in its answer has no name or no count of failed turns');
+    }
+    const last = (lastInference ?? {}) as Record<string, unknown>;
+    let refusals: AgentCalls['refusals'] = null;
+    if (refusalStats !== null && refusalStats !== undefined) {
+      const { total, lastAt, lastCategory } = refusalStats as Record<string, unknown>;
+      if (typeof total !== 'number' || time(lastAt) === undefined || typeof lastCategory !== 'string') {
+        throw new Error(`${name}'s refusal counts aren't of the form doctor reads`);
+      }
+      refusals = { total, lastAt: lastAt as number, lastCategory };
+    }
+    return { name, failures, failedAt: time(last.failedAt), startedAt: time(last.startedAt), refusals };
+  });
+}
+
+function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined): void {
+  const named = recipeAgent ?? agents[0]?.name;
+  if (named !== undefined && !agents.some((agent) => agent.name === named)) {
+    report.line(`The host's counts list no agent named ${named}.`);
+  }
+  for (const agent of agents) {
+    const refusals = agent.refusals !== null && agent.refusals.total > 0 ? agent.refusals : null;
+    if (agent.name !== named && agent.failures === 0 && refusals === null) continue;
+    if (agent.failures > 0) {
+      report.problem(`${agent.name}'s last turn's model call failed` +
+        `${agent.failedAt === undefined ? '' : ` at ${new Date(agent.failedAt).toISOString()}`}, ${agent.failures} in a row.`);
+    } else {
+      report.ok(`${agent.name}: no failed turns in a row, by the host's counts.`);
+    }
+    if (refusals === null) continue;
+    report.line(`${agent.name} was refused ${refusals.total} time${refusals.total === 1 ? '' : 's'} since this host started or ` +
+      `last switched session, the last at ${new Date(refusals.lastAt).toISOString()}, ` +
+      (refusals.lastCategory === 'unknown' ? 'with no category given.'
+        : SHORT_WORD.test(refusals.lastCategory) ? `in the category ${refusals.lastCategory}.`
+          : 'in a category the provider gave in other words.'));
+    if (agent.startedAt !== undefined && refusals.lastAt >= agent.startedAt) {
+      report.line(`${agent.name}'s newest turn met a refusal, and the host's counts don't show whether a retry in that turn then ` +
+        'answered.');
+    }
   }
 }
 
