@@ -212,23 +212,25 @@ describe('what the guide names ships, or is the install\'s own', () => {
 
 describe('the opening\'s steps, in the order the person meets them', () => {
   const steps = OPENING.split('\n').filter((line) => /^\d+\. /.test(line));
-  const first = (pattern: RegExp) => steps.findIndex((step) => pattern.test(step));
+  const all = (pattern: RegExp) => steps.flatMap((step, index) => (pattern.test(step) ? [index] : []));
+  const before = (a: number[], b: number[]) => Math.max(...a) < Math.min(...b);
 
   it('take Discord and any history before one read-back, the read-back by going live, SETUP.md before the hello, and backups after the hello and before setup--finished', () => {
     const at = {
-      discord: first(/"Discord"/),
-      history: first(/"Importing a history"/),
-      readBack: first(/"The read-back"/),
-      goingLive: first(/"Going live"/),
-      setupMd: first(/"SETUP\.md"/),
-      hello: first(/^\d+\. The person's own hello/),
-      backups: first(/"Backups"/),
-      finished: first(/`setup--finished`/),
+      discord: all(/"Discord"/),
+      history: all(/"Importing a history"/),
+      readBack: all(/"The read-back"/),
+      goingLive: all(/"Going live"/),
+      setupMd: all(/"SETUP\.md"/),
+      hello: all(/^\d+\. The person's own hello/),
+      backups: all(/"Backups"/),
+      finished: all(/`setup--finished`/),
     };
-    const found = Object.values(at).every((step) => step >= 0);
-    const readBacks = steps.filter((step) => /"The read-back"/.test(step)).length;
-    expect({ at, found, readBacks, order: found && at.discord < at.readBack && at.history < at.readBack
-      && at.readBack <= at.goingLive && at.setupMd < at.hello && at.hello < at.backups && at.backups < at.finished })
+    const found = Object.values(at).every((each) => each.length > 0);
+    const readBacks = at.readBack.length;
+    expect({ at, found, readBacks, order: found && before(at.discord, at.readBack) && before(at.history, at.readBack)
+      && Math.max(...at.readBack) <= Math.min(...at.goingLive) && before(at.setupMd, at.hello)
+      && before(at.hello, at.backups) && before(at.backups, at.finished) })
       .toEqual({ at, found: true, readBacks: 1, order: true });
   });
 });
