@@ -12,7 +12,8 @@ import {
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
-  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, redactWindow, secretNames, storedSecrets, type Secret,
+  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, readSecrets, redactWindow, secretNames, storedSecrets,
+  type Secret,
 } from '../setup/secrets.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
 import { INSTALL_ROOT_ENV, SUPERVISED_ENV } from '../update/contract.js';
@@ -174,7 +175,8 @@ export async function doctor(
     guessed = named.guessed;
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
-    secrets = [...secrets, ...known(process.env, systemVariables())].flatMap(withSentForms);
+    secrets = [...secrets, ...known(process.env, systemVariables()),
+      ...readSecrets(named.names, join(work, '.env'), process.env, [])].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
       ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];

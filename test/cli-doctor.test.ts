@@ -533,6 +533,25 @@ describe('connectome doctor', () => {
     }
   });
 
+  test('a stored secret\'s value as a command run in doctor\'s own environment reads it is withheld too', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MY_TOKEN'] });
+    writeFileSync(join(at.work, '.env.local'), 'MY_TOKEN=${DOCTOR_ONLY_PREFIX}z9suffix\n');
+    const saved = process.env.DOCTOR_ONLY_PREFIX;
+    process.env.DOCTOR_ONLY_PREFIX = 'p7-prefix-';
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+        checkService: async () => ({ passed: true, lines: ['The unit said: token p7-prefix-z9suffix refused.'] }),
+      }));
+      const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
+      expect(withheld).toContainEqual(['MY_TOKEN', 'p7-prefix-z9suffix']);
+      expect(r.out).toContain('token <MY_TOKEN> refused');
+      expect(r.out).not.toContain('p7-prefix-');
+    } finally {
+      if (saved === undefined) delete process.env.DOCTOR_ONLY_PREFIX;
+      else process.env.DOCTOR_ONLY_PREFIX = saved;
+    }
+  });
+
   test('the install\'s own path is printed through the redactor too', async () => {
     const at = install({ prefix: `chost-${SECRETS.LONELY_SECRET}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], recipe: { ...RECIPE(''), mcpServers: {} } });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
