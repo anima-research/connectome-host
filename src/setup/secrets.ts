@@ -169,9 +169,9 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
       throw new DotenvTimeoutError(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
     }
     if (ran.error || ran.status !== 0) {
-      const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);
       const how = ran.error ? ran.error.message : ran.status === null ? `killed by ${ran.signal}` : `exit ${ran.status}`;
-      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}${last ? `: ${last}` : ''})`);
+      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}), and its error isn't shown, since it can hold ` +
+        'their values: run `bun --config=/dev/null -e 0` there to see it');
     }
     let read: Record<string, unknown> | null = null;
     try {

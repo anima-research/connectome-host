@@ -291,6 +291,12 @@ describe('setup--discord', () => {
     const echoed = await read(install(fakeDiscord([HOME], { '/guilds/100/channels': () => Response.json({ message: `Missing Access for ${TOKEN}`, code: 50001 }, { status: 403 }) })).module);
     expect(echoed.error).toBe('Discord answered 403 to GET /guilds/100/channels: Missing Access for <DISCORD_TOKEN> (code 50001), so the read stopped there. The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now, and if that server is still listed and answers the same, tell the person what it says.');
 
+    const own = await read(install(fakeDiscord([HOME], { '/applications/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) })).module);
+    expect(own.error).toBe('Discord answered 403 to GET /applications/@me: Missing Access (code 50001), so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+
+    const user = await read(install(fakeDiscord([HOME], { '/users/@me': () => Response.json({ message: 'Unknown User', code: 10013 }, { status: 404 }) })).module);
+    expect(user.error).toBe('Discord answered 404 to GET /users/@me: Unknown User, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+
     const page = await read(install(fakeDiscord([HOME], { '/applications/@me': () => new Response('<html>sign in</html>', { status: 200, headers: { 'content-type': 'text/html' } }) })).module);
     expect(page.error).toBe('Discord answered GET /applications/@me with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
 

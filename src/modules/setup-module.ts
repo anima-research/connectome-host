@@ -334,7 +334,8 @@ function discordNote(failure: DiscordFailure): string {
             : path.startsWith('/guilds/') && (failure.status === 403 || failure.status === 404)
               ? 'The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now, ' +
                 'and if that server is still listed and answers the same, tell the person what it says.'
-              : 'Tell the person what it says.');
+              : (path === '/users/@me' || path === '/applications/@me') && (failure.status === 403 || failure.status === 404)
+                ? between : 'Tell the person what it says.');
   }
 }
 
