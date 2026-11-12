@@ -327,6 +327,12 @@ describe('setup--run', () => {
     expect(answer.stderr.text).toBe('<DISCORD_TOKEN>\n');
   });
 
+  test('a token stored with the `Bot ` prefix discord.js drops is shown by its name in a command\'s output without the prefix too', async () => {
+    const { module } = install({ envFile: 'DISCORD_TOKEN="Bot discord-token-value"\n' });
+    const answer = await run(module, 'echo "discord-token-value"');
+    expect(answer.stdout.text).toBe('<DISCORD_TOKEN>\n');
+  });
+
   test('a secret a dotenv file names as a name every object has, such as constructor, is shown by its name in a command\'s output', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n' });
     writeFileSync(join(dir, '.env.local'), 'constructor=private-token\n');
@@ -813,6 +819,12 @@ describe('setup--run', () => {
     });
     const answer = await run(module, 'printenv MY_COPY; echo "copy=$?"; printenv MY_HEADER; printenv KEEP_ME');
     expect(answer.stdout.text).toBe('copy=1\nBearer <ANTHROPIC_API_KEY>\nkept\n');
+  });
+
+  test('leaves out of its commands\' environment a variable of another name holding a token stored with the `Bot ` prefix discord.js drops, without the prefix', async () => {
+    const { module } = install({ envFile: 'DISCORD_TOKEN="Bot discord-token-value"\n', env: { MY_BARE: 'discord-token-value', KEEP_ME: 'kept' } });
+    const answer = await run(module, 'printenv MY_BARE; echo "bare=$?"; printenv KEEP_ME');
+    expect(answer.stdout.text).toBe('bare=1\nkept\n');
   });
 
   test('leaves out of its commands\' environment a variable of another name holding a stored value trimmed, and keeps an empty one where a stored value is only spaces', async () => {
@@ -1568,6 +1580,20 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     expect((await askSecret(made.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).success).toBe(true);
     expect(sent).toBe('Bot token-four');
     expect(readEnvFile(join(made.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-four');
+  });
+
+  test('checks a token typed with the `Bot ` prefix discord.js drops as discord.js sends it, and stores it as typed', async () => {
+    let sent: string | null = null;
+    const made = install({
+      asker: typed('Bot token-six'),
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent = new Headers(init.headers).get('authorization');
+        return Response.json({ id: '6', username: 'six-bot' });
+      }) as unknown as typeof fetch,
+    });
+    expect((await askSecret(made.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).success).toBe(true);
+    expect(sent).toBe('Bot token-six');
+    expect(readEnvFile(join(made.dir, '.env')).get('DISCORD_TOKEN')).toBe('Bot token-six');
   });
 
   test('asks Discord nothing about a secret of a name no service checks, and stores it as typed, spaces and all', async () => {

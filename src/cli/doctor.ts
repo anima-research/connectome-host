@@ -16,11 +16,12 @@ import {
   secretNames, storedSecrets,
   type Secret,
 } from '../setup/secrets.js';
+import { withSentForms } from '../setup/discord-token.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
 import { INSTALL_ROOT_ENV, SUPERVISED_ENV } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
+import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
@@ -1089,12 +1090,6 @@ async function within<T>(limitMs: number, work: Promise<T>, late: string): Promi
 
 function namesIn(document: RecipeDocument): string[] {
   return [...JSON.stringify(document.raw).matchAll(new RegExp(ENV_REFERENCE, 'g'))].map(([, name]) => name!);
-}
-
-function withSentForms(secret: Secret): Secret[] {
-  if (secret.name !== 'DISCORD_TOKEN') return [secret];
-  const sent = sentToken(secret.value);
-  return [secret, ...[sent, sent.trim()].filter((value) => value !== '').map((value) => ({ name: secret.name, value }))];
 }
 
 function failure(ran: SpawnSyncReturns<string>, limitMs: number): string | null {

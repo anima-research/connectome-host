@@ -17,7 +17,7 @@ import {
   secretNames, secretValues, unwritableValue, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm,
   envLink, type Secret,
 } from '../setup/secrets.js';
-import { checkDiscordToken, hidden, type TokenCheck } from '../setup/discord-token.js';
+import { checkDiscordToken, hidden, sentToken, withSentForms, type TokenCheck } from '../setup/discord-token.js';
 import {
   botGuild, botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL,
   type BotGuild, type DiscordFailure, type DiscordReader,
@@ -399,7 +399,8 @@ export class SetupModule implements Module {
           `Run one command with bash -c in the install's directory, and get its exit status and output back: of an ` +
           `output longer than 8 KiB, its first and last 4 KiB, each widened to take in whole a secret a cut falls ` +
           `in, or the whole output where the two then meet. Its environment is the host's, less the stored secrets, the provider credentials and the ` +
-          `providers' base URLs, under their own names or any other whose whole value is one of theirs, as stored or trimmed (a variable holding ` +
+          `providers' base URLs, under their own names or any other whose whole value is one of theirs, as stored or trimmed, or, for DISCORD_TOKEN, without the Bot ` +
+          `or Bearer prefix that discord.js drops (a variable holding ` +
           `one within a longer value stays), and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
           `install's directory itself unless it's run with --no-env-file. Nothing is kept between calls but what the command ` +
           `leaves behind: a process it leaves running when it ends, before the host shuts down, keeps running, after ` +
@@ -565,7 +566,7 @@ export class SetupModule implements Module {
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
     readSecrets(names, envFile, this.config.env, this.seen.values, this.notForCommands());
-    return { names, values: [...this.seen.values], guessed };
+    return { names, values: [...this.seen.values].flatMap(withSentForms), guessed };
   }
 
   private notForCommands(): string[] {
@@ -943,13 +944,13 @@ export class SetupModule implements Module {
         : 'Reading one of the bot\'s servers from Discord.');
     }
     const fetchFn = this.config.fetch ?? fetch;
-    const bot = await checkDiscordToken(token, { fetch: fetchFn });
+    const bot = await checkDiscordToken(sentToken(token), { fetch: fetchFn });
     if (bot.kind === 'unsendable') {
       return failed(`The token stored as ${DISCORD_TOKEN} holds a character a request header can't carry, so it can't be a ` +
         'bot token: ask the person for it again with setup--ask_secret.');
     }
     if (bot.kind !== 'accepted') return failed(redacted(discordNote(tokenFailure(bot)), hide));
-    const reader = discordReader(token, { fetch: fetchFn });
+    const reader = discordReader(sentToken(token), { fetch: fetchFn });
     const botUser = redactedData({ id: bot.id, name: bot.name }, hide);
     try {
       if (typeof username === 'string') {
@@ -1094,7 +1095,7 @@ export class SetupModule implements Module {
   }
 
   private async checkToken(value: string, known: Secret[]): Promise<TokenCheck> {
-    const token = await checkDiscordToken(value, {
+    const token = await checkDiscordToken(sentToken(value), {
       fetch: this.config.fetch, asking: () => this.config.show('Checking it with Discord.'),
     });
     this.config.show(redacted(tokenLine(token), known));
