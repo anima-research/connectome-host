@@ -201,6 +201,37 @@ describe('what the guide names ships, or is the install\'s own', () => {
   });
 });
 
+describe('the opening\'s steps, in the order the person meets them', () => {
+  const steps = OPENING.split('\n').filter((line) => /^\d+\. /.test(line));
+  const first = (pattern: RegExp) => steps.findIndex((step) => pattern.test(step));
+
+  it('take Discord and any history before one read-back, the read-back by going live, SETUP.md before the hello, and backups after the hello and before setup--finished', () => {
+    const at = {
+      discord: first(/"Discord"/),
+      history: first(/"Importing a history"/),
+      readBack: first(/"The read-back"/),
+      goingLive: first(/"Going live"/),
+      setupMd: first(/"SETUP\.md"/),
+      hello: first(/\bhello\b/),
+      backups: first(/"Backups"/),
+      finished: first(/`setup--finished`/),
+    };
+    const found = Object.values(at).every((step) => step >= 0);
+    expect({ at, found, order: found && at.discord < at.readBack && at.history < at.readBack && at.readBack <= at.goingLive
+      && at.setupMd < at.hello && at.hello < at.backups && at.backups < at.finished })
+      .toEqual({ at, found: true, order: true });
+  });
+});
+
+describe('the setup agent\'s tools', () => {
+  it('are each one the setup recipe allows, wherever the guide names one', () => {
+    const recipe = JSON.parse(readFileSync(join(ROOT, 'recipes', 'setup.json'), 'utf-8')) as { agent: { allowedTools: string[] } };
+    const named = [...new Set([...GUIDE.matchAll(/\bsetup--\w+/g)].map((match) => match[0]))];
+    expect(named.length).toBeGreaterThan(0);
+    for (const tool of named) expect({ tool, allowed: recipe.agent.allowedTools.includes(tool) }).toEqual({ tool, allowed: true });
+  });
+});
+
 describe('the resident\'s shell is decided with the person', () => {
   const STEP = 'The resident\'s shell';
 
