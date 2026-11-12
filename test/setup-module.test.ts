@@ -1425,15 +1425,16 @@ describe('setup--run, and what the install\'s commands say for the person', () =
 
   test('a named pipe left where the file for the person was is refused as no file, and the command is answered', async () => {
     const { dir, module, shown } = install();
-    const [at, go] = [join(dir, 'pipe-at'), join(dir, 'go')];
+    const [at, go, released] = [join(dir, 'pipe-at'), join(dir, 'go'), join(dir, 'released')];
     const answering = run(module, `rm "$CONNECTOME_SETUP_SHOWN" && mkfifo "$CONNECTOME_SETUP_SHOWN" && echo "$CONNECTOME_SETUP_SHOWN" > ${at}.new && mv ${at}.new ${at} && while [ ! -e ${go} ]; do sleep 0.02; done; echo for the agent`);
     let writer: ReturnType<typeof Bun.spawn> | undefined;
     try {
       for (const started = performance.now(); !existsSync(at) && performance.now() - started < 10_000; await Bun.sleep(10));
-      // Where a read waits on the pipe, this writer gives it a line, so the test ends either way.
-      writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim()], { stdout: 'ignore', stderr: 'ignore' });
+      // A named pipe's open waits for a writer: this one comes 10 s on and marks when, so a read that waited is seen.
+      writer = Bun.spawn(['sh', '-c', 'sleep 10; touch "$2"; while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim(), released], { stdout: 'ignore', stderr: 'ignore' });
       writeFileSync(go, '');
       const answer = await answering;
+      expect(existsSync(released)).toBe(false);
       expect(answer.stdout.text).toBe('for the agent\n');
       const after = afterCommand(shown);
       expect(after).toHaveLength(1);

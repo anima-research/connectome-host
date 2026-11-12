@@ -847,17 +847,19 @@ test('a package.json that isn\'t a file, such as a named pipe, isn\'t waited on 
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const manifest = join(dir, 'package.json');
   Bun.spawnSync(['mkfifo', manifest]);
-  // Where a read waits on the pipe, this writer gives it JSON, so the test ends either way.
-  const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest], { stdout: 'ignore', stderr: 'ignore' });
+  const released = join(directory(), 'released');
+  // A named pipe's open waits for a writer: this one comes 10 s on and marks when, so a read that waited is seen.
+  const writer = Bun.spawn(['sh', '-c', 'sleep 10; touch "$2"; while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest, released], { stdout: 'ignore', stderr: 'ignore' });
   try {
     const made = world(dir, { answers: [''], secrets: [KEY], added: { status: 0, stdout: '', stderr: '' } });
     expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(existsSync(released)).toBe(false);
     expect(text(made.seen.out)).toContain(`Setup couldn't add the packages whose install scripts Bun runs by default to ${manifest} (${manifest} can't be read (it isn't a file)), so unless`);
     expect(lstatSync(manifest).isFIFO()).toBe(true);
   } finally {
     writer.kill('SIGKILL');
   }
-});
+}, 20_000);
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
   for (const trusted of [
