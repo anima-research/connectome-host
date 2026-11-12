@@ -470,11 +470,11 @@ test('where a user named connectome is here already, or setup can\'t tell, it sa
   const there = directory();
   const thereRun = world(there, { answers: ['no'] }, { userExists: (user: string) => user === 'connectome' });
   expect(await runSetup(there, ['discord'], thereRun)).toBe(0);
-  expect(text(thereRun.seen.out)).toContain(`  ${OWN_LINE}\nThis machine already has a user named connectome. If an earlier line of setup's made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident's own, put a name no account here has in place of connectome, in the line and in what setup says after it.\n`);
+  expect(text(thereRun.seen.out)).toContain(`  ${OWN_LINE}\nThis machine already has a user named connectome. If an earlier line of setup's made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident's own, put a name no account here has in place of connectome, in the line and in what setup says after it.\n${NO_TAKES}\n${AS_OWN_USER[0]}`);
   const unknown = directory();
   const unknownRun = world(unknown, { answers: ['no'] }, { userExists: () => null });
   expect(await runSetup(unknown, ['discord'], unknownRun)).toBe(0);
-  expect(text(unknownRun.seen.out)).toContain(`  ${OWN_LINE}\nSetup couldn't check whether this machine already has a user named connectome. The line makes it only where there's none: where there is one, the resident runs as that account.\n`);
+  expect(text(unknownRun.seen.out)).toContain(`  ${OWN_LINE}\nSetup couldn't check whether this machine already has a user named connectome. The line makes it only where there's none: where there is one, the resident runs as that account.\n${NO_TAKES}\n${AS_OWN_USER[0]}`);
   const none = directory();
   const noneRun = world(none, { answers: ['no'] });
   expect(await runSetup(none, ['discord'], noneRun)).toBe(0);
