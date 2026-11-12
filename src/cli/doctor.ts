@@ -23,7 +23,7 @@ import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './disco
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, recipeHasShell, serviceCommands, serviceLines } from './service.js';
+import { machine, recipeHasShell, runsHere, serviceCommands, serviceLines } from './service.js';
 import { managerFor, readUnit, serviceUnits, type Manager, type ServiceUnits } from './service-unit.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
@@ -133,6 +133,11 @@ export async function doctor(
       const at = 'why' in read ? -1 : read.argv.findIndex((word) => basename(word) === 'start.js');
       if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
+      } else if (!runsHere(read.workingDirectory, units.work)) {
+        serviceError = `${units.host.file} names ${read.workingDirectory} as the directory it runs in, not this install's, ` +
+          `${units.work}: it's another install's, or this one's from before it moved, and doctor reads nothing there. Its ` +
+          'name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
+          'directory of another name.';
       } else if (at < 0 || read.argv[at + 1] === undefined) {
         serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
       } else {

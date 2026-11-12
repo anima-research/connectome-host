@@ -909,6 +909,17 @@ describe('connectome doctor', () => {
     expect(unread.status).toBe(1);
   });
 
+  test('a unit that runs in another directory than this install\'s, as another install\'s of the same directory name does, is a problem, and doctor reads nothing there', async () => {
+    const at = install();
+    const other = install();
+    writeUnit(at, join(other.work, 'recipe.json'), other.work);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`✗ ${at.unit} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ` +
+      'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing there.');
+    expect(r.out).not.toContain(join(other.work, 'recipe.json'));
+    expect(r.status).toBe(1);
+  });
+
   test('whether the service check expects a shell comes from the recipe the unit runs', async () => {
     for (const [recipe, shell] of [[RECIPE(''), true], [{ ...RECIPE(''), mcpServers: { discord: RECIPE('').mcpServers.discord } }, false]] as const) {
       const at = install({ recipe });
