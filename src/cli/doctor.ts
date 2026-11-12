@@ -24,7 +24,9 @@ import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } fro
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
 import { machine, recipeHasShell, runsHere, serviceCommands, serviceLines } from './service.js';
-import { managerFor, readUnit, serviceUnits, type Manager, type ServiceUnits } from './service-unit.js';
+import {
+  managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits, type UnitRead,
+} from './service-unit.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
 const LADDER_LIMIT_MS = 60_000;
@@ -121,7 +123,7 @@ export async function doctor(
   let elsewhere = false;
   let shellElsewhere: string | null = null;
   if (units !== null) {
-    shellElsewhere = shellOfAnother(units);
+    shellElsewhere = shellOfAnother(units, parts.home);
     let text: string | null = null;
     try {
       text = readFileSync(units.host.file, 'utf-8');
@@ -134,16 +136,17 @@ export async function doctor(
     }
     if (text !== null) {
       const read = readUnit(units.manager, text);
+      const runsIn = unitRunsIn(units.manager, text, read, parts.home);
       const at = 'why' in read ? -1 : read.argv.findIndex((word) => basename(word) === 'start.js');
-      if ('why' in read) {
-        serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
-      } else if (!runsHere(read.workingDirectory, units.work)) {
+      if (runsIn !== null && !runsHere(runsIn, units.work)) {
         elsewhere = true;
-        serviceError = namesElsewhere(units.host.file, read.workingDirectory, units.work);
+        serviceError = namesElsewhere(units.host.file, runsIn, units.work);
+      } else if ('why' in read) {
+        serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
       } else if (at < 0 || read.argv[at + 1] === undefined) {
         serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
       } else {
-        service = { units, recipe: read.argv[at + 1]!, work: read.workingDirectory, bun: read.argv[0]! };
+        service = { units, recipe: read.argv[at + 1]!, work: runsIn ?? read.workingDirectory, bun: read.argv[0]! };
       }
     }
   }
@@ -1258,18 +1261,24 @@ function namesElsewhere(file: string, directory: string, work: string): string {
 }
 
 /** Install refuses a shell daemon's unit of this install's name that runs another directory, whatever the recipe, so
- *  doctor reads that unit's file as it reads the host's. A file it can't read, or doesn't read as one install writes,
- *  is left to the service check. */
-function shellOfAnother(units: ServiceUnits): string | null {
+ *  doctor reads that unit's file as it reads the host's. A file it can't read, or whose directory can't be read from
+ *  it, is left to the service check. */
+function shellOfAnother(units: ServiceUnits, home: string): string | null {
   let text: string;
   try {
     text = readFileSync(units.shell.file, 'utf-8');
   } catch {
     return null;
   }
-  const read = readUnit(units.manager, text);
-  return 'why' in read || runsHere(read.workingDirectory, units.work) ? null
-    : namesElsewhere(units.shell.file, read.workingDirectory, units.work);
+  const runsIn = unitRunsIn(units.manager, text, readUnit(units.manager, text), home);
+  return runsIn === null || runsHere(runsIn, units.work) ? null : namesElsewhere(units.shell.file, runsIn, units.work);
+}
+
+/** The directory a unit runs in, read as install reads it to tell its own unit from another install's. On systemd
+ *  that reading doesn't need the rest of the unit to be what install writes, so the two agree on whose unit it is. */
+function unitRunsIn(manager: Manager, text: string, read: UnitRead | { why: string }, home: string): string | null {
+  const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : 'why' in read ? null : read.workingDirectory;
+  return set === '~' ? home : set;
 }
 
 function fileWord(manager: Manager): string {

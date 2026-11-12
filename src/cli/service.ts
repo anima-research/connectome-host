@@ -17,7 +17,9 @@ import { THINKING_BINDING_PROBE_MS } from '../thinking-binding-bound.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
+import {
+  Refusal, plain, plist, serviceUnits, systemdUnit, systemdWorkingDirectory, type Manager, type ServiceUnit,
+} from './service-unit.js';
 import { shownToPerson } from './shown.js';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
@@ -784,9 +786,7 @@ function heldPort(sys: ServiceSystem, manager: Manager, env: Record<string, stri
 
 function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
   unit: ServiceUnit, text: string): string | null {
-  const set = manager === 'systemd-user'
-    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%') ?? null
-    : plistField(sys, env, unit.file, 'WorkingDirectory');
+  const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : plistField(sys, env, unit.file, 'WorkingDirectory');
   return set === null || set === '' ? null : realOrResolved(set === '~' ? sys.home : set);
 }
 

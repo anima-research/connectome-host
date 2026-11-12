@@ -886,7 +886,7 @@ describe('connectome doctor', () => {
 
   test('a unit file install couldn\'t have written, or one that can\'t be read, is a problem naming how to write it anew, and the ladder says why it didn\'t run', async () => {
     const at = install();
-    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✗ ${at.unit} isn't the unit file service install writes: `);
     expect(r.out).toContain(`\`${join(at.root, 'connectome')} service install <recipe>\` writes it anew, or says why it can't.`);
@@ -925,7 +925,7 @@ describe('connectome doctor', () => {
   test('a stored secret only the unit sets is withheld where doctor can\'t use the unit, as systemd still gives its environment', async () => {
     const value = 'unit-only-secret-value';
     const at = install({ prefix: `chost-${value}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'UNIT_ONLY'] });
-    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
     const manager = fakeManager(at.work, {
       unit: [...Object.entries(unitEnvironment(at)).map(([name, v]) => `${name}=${v}`), `UNIT_ONLY=${value}`].join(' '),
     });
@@ -2159,7 +2159,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
 
   test('a unit doctor can\'t use whose environment systemd doesn\'t give names <recipe> in its remedy, since doctor takes no recipe from it', async () => {
     const at = install();
-    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
     const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain(`Run doctor again, or \`${join(at.root, 'connectome')} service install <recipe>\` writes the unit anew or ` +
@@ -2422,7 +2422,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
 
   test('a unit doctor can\'t use that reads an EnvironmentFile is said too, since what it sets still reaches the service', async () => {
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
-    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
     const manager = fakeManager(at.work, {
       unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
     });
@@ -2644,5 +2644,49 @@ describe('connectome doctor, where the shell daemon\'s unit of this install\'s n
       expect([manager, r.out]).toEqual([manager, expect.not.stringContaining(`${shellFile} names`)]);
       expect([manager, asked]).toEqual([manager, [true]]);
     }
+  });
+
+  test('a shell daemon\'s unit install couldn\'t have written that runs another directory is named, as install refuses it', async () => {
+    const { at, other, shellFile } = withShellUnit('systemd-user');
+    writeFileSync(shellFile, `[Service]\nWorkingDirectory=${other.work}\nExecStart=session-server --headless\n`);
+    const r = await run(at);
+    expect(r.out).toContain(`${shellFile} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
+  });
+
+  test('a shell daemon\'s unit with systemd\'s `-` before this install\'s directory runs here, as install reads it', async () => {
+    const { at, shellFile } = withShellUnit('systemd-user', { here: true });
+    writeFileSync(shellFile, readFileSync(shellFile, 'utf-8').replace(`WorkingDirectory=${at.work}`, `WorkingDirectory=-${at.work}`));
+    const { asked, checkService } = asking();
+    const r = await run(at, { checkService });
+    expect(r.out).not.toContain(`${shellFile} names`);
+    expect(asked).toEqual([true]);
+  });
+});
+
+describe('connectome doctor, its round on the review of af5b59f95', () => {
+  const unitLines = (at: Install, lines: string) =>
+    writeFileSync(at.unit, readFileSync(at.unit, 'utf-8').replace(`WorkingDirectory=${at.work}`, lines));
+
+  test('whose unit it is follows install\'s reading of systemd\'s WorkingDirectory: a `-` before it, and the last of two lines', async () => {
+    const dashed = install();
+    unitLines(dashed, `WorkingDirectory=-${dashed.work}`);
+    const works: string[] = [];
+    const r1 = await withHost(dashed, HEALTHY_HOST, () => run(dashed, {
+      checkService: async (_units, work) => {
+        works.push(work);
+        return { passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] };
+      },
+    }));
+    expect(r1.out).not.toContain('as the directory it runs in');
+    expect(works).toEqual([dashed.work]);
+    const ours = install();
+    unitLines(ours, `WorkingDirectory=/elsewhere\nWorkingDirectory=${ours.work}`);
+    const r2 = await withHost(ours, HEALTHY_HOST, () => run(ours));
+    expect(r2.out).toContain(`${ours.unit} isn't the unit file service install writes: it has 2 WorkingDirectory lines`);
+    expect(r2.out).not.toContain('as the directory it runs in');
+    const theirs = install();
+    unitLines(theirs, `WorkingDirectory=${theirs.work}\nWorkingDirectory=/elsewhere`);
+    const r3 = await withHost(theirs, HEALTHY_HOST, () => run(theirs));
+    expect(r3.out).toContain(`${theirs.unit} names /elsewhere as the directory it runs in, not this install's, ${theirs.work}`);
   });
 });
