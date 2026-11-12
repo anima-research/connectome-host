@@ -219,16 +219,19 @@ export class HostUpdate {
     const candidate = this.check.candidate;
     if (candidate !== null && !this.logged.has(candidate)) {
       let installed: string | null = null;
-      let read = true;
+      let unread: string | null = null;
       if (setup.here !== null) {
         try {
           installed = this.installedTarget();
-        } catch {
-          read = false;
+        } catch (error) {
+          unread = said(error);
         }
       }
-      if (read) this.logged.add(candidate);
+      if (unread === null) this.logged.add(candidate);
       const lines = noticeLines(this.check, setup.running, setup.here !== null, this.hostWays(), installed);
+      if (unread !== null) {
+        lines.push(`Which releases are installed couldn't be read, so ${candidate} may be installed already: ${unread}`);
+      }
       for (const line of lines) this.log(`[update] ${line}`);
     }
     return this.check;
