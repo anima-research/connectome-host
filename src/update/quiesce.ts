@@ -77,7 +77,7 @@ function childQuiet(name: string, answer: { ok: boolean; data?: unknown; error?:
     return { host: name, answered: false, why: "its answer doesn't say whether it drained, who holds a turn and what scripts it runs" };
   }
   const work = data.inFlight === undefined ? [] : Array.isArray(data.inFlight) && data.inFlight.every((w) => typeof w === 'string')
-    ? data.inFlight as string[] : ['work outside any turn that its answer doesn\'t name plainly'];
+    ? data.inFlight as string[] : ['work in flight that its answer doesn\'t name plainly'];
   const hold = data.operatorHold as { reason?: unknown } | undefined;
   if (hold !== undefined && (hold === null || typeof hold !== 'object' || Array.isArray(hold))) {
     return { host: name, answered: false, why: "its answer says it's held by its operator in a form this host can't read" };

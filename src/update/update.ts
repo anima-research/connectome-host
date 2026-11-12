@@ -556,7 +556,7 @@ export class HostUpdate {
       ...(holding.some((h) => !h.answered) ? ['a host couldn\'t be counted'] : []),
       ...(holding.some((h) => h.answered && !h.drained) ? ['turns were still going'] : []),
       ...(holding.some((h) => h.answered && h.drained && h.backgroundScripts > 0) ? ['scripts were running outside any turn'] : []),
-      ...(holding.some((h) => h.answered && h.inFlight !== undefined) ? ['a fleet child had work going outside any turn'] : []),
+      ...(holding.some((h) => h.answered && h.inFlight !== undefined) ? ['a fleet child had work in flight'] : []),
     ];
     const what = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held.at(-1)}` : held[0] ?? 'this host had work in flight again';
     const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true, this.hostWays());

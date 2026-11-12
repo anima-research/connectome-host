@@ -3,7 +3,7 @@ import type { AppContext } from '../src/index.js';
 import { trackOperatorWork } from '../src/session-switch.js';
 
 const mode = process.env.ANSWER_MODE;
-if (!['quiet', 'credential', 'operator', 'subagents', 'switch-begun'].includes(mode ?? '')) {
+if (!['quiet', 'credential', 'operator', 'subagents', 'switch-begun', 'refused-text'].includes(mode ?? '')) {
   throw new Error('Unknown switch-answer fixture mode');
 }
 
@@ -36,6 +36,7 @@ const app = {
     },
     resume: async () => { quiesced = { quiesced: false }; return status(); },
     stop: async () => {},
+    pushEvent: () => { if (mode === 'refused-text') throw new Error('this framework takes no text now'); },
   },
 };
 if (mode === 'operator') void trackOperatorWork(app, null, new Promise<void>(() => {}));

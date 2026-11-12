@@ -604,7 +604,7 @@ test('a fleet child with a credential action in flight keeps the restart armed, 
   expect(child.quiesced).toBe(false);
   expect(host.update.armedSwitch()).not.toBeNull();
   const check = text(await host.call({ action: 'check' }));
-  expect(check).toContain('a fleet child had work going outside any turn');
+  expect(check).toContain('a fleet child had work in flight');
   expect(check).toContain('- kid: a credential action');
 });
 
@@ -615,7 +615,7 @@ test('a fleet child whose answer names its work in flight unreadably keeps the r
   await host.armed();
   expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
   expect(readMark(root)).toBeNull();
-  expect(text(await host.call({ action: 'check' }))).toContain('- kid: work outside any turn that its answer doesn\'t name plainly');
+  expect(text(await host.call({ action: 'check' }))).toContain('- kid: work in flight that its answer doesn\'t name plainly');
 });
 
 test('a host says a switch is under way only while its own restart is: never on a host with no install, and not once it has ended', async () => {

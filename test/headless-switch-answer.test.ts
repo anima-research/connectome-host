@@ -13,7 +13,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
   }
 }
 
-async function answerToQuiesce(mode: string): Promise<Record<string, unknown>> {
+async function answerToQuiesce(mode: string, before: Array<Record<string, unknown>> = []): Promise<Record<string, unknown>> {
   const dir = mkdtempSync(join(tmpdir(), 'headless-switch-answer-'));
   const child = spawn(process.execPath, [new URL('./mock-headless-switch-answer-child.ts', import.meta.url).pathname], {
     env: { ...process.env, DATA_DIR: dir, ANSWER_MODE: mode }, stdio: 'ignore',
@@ -35,6 +35,7 @@ async function answerToQuiesce(mode: string): Promise<Record<string, unknown>> {
     });
     await until(() => events.some((event) => event.type === 'lifecycle' && event.phase === 'ready'), 'ready');
     socket.write(JSON.stringify({ type: 'subscribe', events: [] }) + '\n');
+    for (const message of before) socket.write(JSON.stringify(message) + '\n');
     socket.write(JSON.stringify({
       type: 'update-request', corrId: 'look', request: { op: 'quiesce', to: '9.9.9', waitMs: 0 },
     }) + '\n');
@@ -66,3 +67,9 @@ for (const [mode, named] of [
     expect(answer.data).toMatchObject({ drained: true, inFlight: [named] });
   }, 20_000);
 }
+
+test('a fleet child holding a text its framework refused says turn work is in flight in its answer to the switch\'s quiesce, though the framework reads drained', async () => {
+  const answer = await answerToQuiesce('refused-text', [{ type: 'text', content: 'hello while the framework takes none' }]);
+  expect(answer.ok).toBe(true);
+  expect(answer.data).toMatchObject({ drained: true, inFlight: ['turn work'] });
+}, 20_000);
