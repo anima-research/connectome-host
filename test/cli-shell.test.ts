@@ -563,6 +563,18 @@ modeTest('on macOS, a prebuilds directory the command can\'t list is named in th
   expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${shut} couldn't be read (EACCES: permission denied, scandir '${shut}'). Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
 });
 
+test('on macOS, a prebuilt binary with no spawn-helper is named in the stop as not there, with what to do', async () => {
+  const { dir, root, line } = installed();
+  const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
+  let missing = '';
+  const made = world(dir, {
+    pty: [broken, broken], atInstall: shipNodePty,
+    atAdd: (cwd) => { [missing] = shipNodePty(cwd); rmSync(missing); },
+  }, { platform: 'darwin' });
+  expect(await runShell(root, ['install'], made)).toBe(1);
+  expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${missing} isn't there. Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
+});
+
 test('on macOS, a node-pty with no prebuilt binaries gets no word about them in the stop, and the note on the trusted list when Bun may not have built it', async () => {
   const { dir, root } = installed();
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
