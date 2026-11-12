@@ -5,7 +5,7 @@
  * until the next of its kind.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { buildContextMakeup, buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
+import { COUNT_LIMIT_MS, buildContextMakeup, buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
 
 const words = () => import('../web/src/composition-text');
@@ -343,9 +343,22 @@ test('the makeup asks its count with a deadline, and gives count_tokens_timeout,
         previewActivation: async () => ({ messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'hi' }] }] }),
       },
     } as unknown as PanelAppRef;
-    const makeup = await buildContextMakeup(app, 'agent');
+    const realTimeout = AbortSignal.timeout;
+    const timed: Array<{ ms: number; signal: AbortSignal }> = [];
+    AbortSignal.timeout = (ms: number) => {
+      const signal = realTimeout.call(AbortSignal, ms);
+      timed.push({ ms, signal });
+      return signal;
+    };
+    let makeup: Record<string, unknown>;
+    try {
+      makeup = await buildContextMakeup(app, 'agent');
+    } finally {
+      AbortSignal.timeout = realTimeout;
+    }
     expect(signals).toHaveLength(1);
-    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(timed.map(({ ms }) => ms)).toEqual([COUNT_LIMIT_MS]);
+    expect(signals[0]).toBe(timed[0]!.signal);
     expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_timeout', null]);
   } finally {
     globalThis.fetch = realFetch;
