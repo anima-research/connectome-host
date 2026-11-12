@@ -250,6 +250,17 @@ describe('doctor: Discord', () => {
     }
   });
 
+  test('a redirect to a later request whose body stays open is reported as a redirect at once, not as a request with no answer', async () => {
+    const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] });
+    const held = (async (input: string, init: RequestInit) => {
+      if (!String(input).endsWith('/applications/@me')) return discord.fetch(input, init);
+      const body = new ReadableStream({ start(c) { init.signal?.addEventListener('abort', () => c.error(init.signal!.reason)); } });
+      return new Response(body, { status: 302, headers: { location: 'https://elsewhere.example/' } });
+    }) as typeof fetch;
+    const r = await run({ DISCORD_TOKEN: TOKEN }, { ...discord, fetch: held }, workdir(), 2_000);
+    expect(r.problems).toEqual(['Discord answered 302 to GET /applications/@me, a redirect, which doctor doesn\'t follow with the token, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
+  });
+
   test('a token a request header can\'t carry is named as such and never sent, with where the service\'s token comes from', async () => {
     const discord = fakeDiscord({ guilds: [HOME] });
     const r = await run({ DISCORD_TOKEN: 'MTEx.part\u2028part' }, discord);
@@ -379,7 +390,15 @@ describe('doctor: Discord', () => {
     const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+150' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }));
     expect(r.problems).toEqual([]);
     expect(scopeOf(r)).toContain('Home (100): #general (101)');
-    expect(scopeOf(r)).toMatch(/150 isn't a channel of Home \(100\).*thread/);
+    expect(scopeOf(r)).toContain('150 isn\'t among the channels Discord lists to the bot in Home (100). It may be a thread, since discord-mcpl takes a thread\'s id in a scope and doctor doesn\'t look threads up; a channel the bot lacks View Channel in, which Discord leaves out of that list from November 16, 2026, so give the bot View Channel there; or a wrong id, to correct.');
+  });
+
+  test('a channel the scope names that Discord leaves out of the list, as it does from November 16, 2026 for one the bot can\'t view, is named with View Channel as a cause', async () => {
+    const omitting: FakeGuild = { ...HOME, channels: HOME.channels.filter((c) => c.id !== '102') };
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+102' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [omitting] }));
+    expect(r.problems).toEqual([]);
+    expect(scopeOf(r)).toContain('Home (100): #general (101)');
+    expect(scopeOf(r)).toMatch(/102 isn't among the channels Discord lists to the bot in Home \(100\)\. .*give the bot View Channel there/);
   });
 
   test('with no scope set, it says every server the bot is in is admitted, which isn\'t a problem', async () => {
@@ -460,7 +479,7 @@ describe('doctor: Discord', () => {
     expect(scopeOf(r)).not.toMatch(/the bot is in no server/);
   });
 
-  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every channel it can\'t send in', async () => {
+  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every text, announcement, voice or stage channel it can\'t send in', async () => {
     const quiet: FakeGuild = {
       ...HOME,
       channels: [...HOME.channels,
@@ -476,6 +495,24 @@ describe('doctor: Discord', () => {
     expect(scopeOf(r)).toContain('Home (100): #general (101), #announcements (106)');
     const wide = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100' }, discord);
     expect(wide.problems).toEqual([]);
+  });
+
+  test('a voice or stage channel the bot can see but can\'t send in is marked, and a problem where the scope names it, since discord-mcpl delivers from its text chat', async () => {
+    const voiced: FakeGuild = {
+      ...HOME,
+      channels: [...HOME.channels,
+        { id: '108', name: 'lounge', type: 2, overwrites: [{ id: '100', type: 0, deny: SEND }] },
+        { id: '109', name: 'town-hall', type: 13, overwrites: [{ id: '100', type: 0, deny: SEND }] },
+        { id: '121', name: 'open-voice', type: 2 }],
+    };
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+108+109+121' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [voiced] }));
+    expect(r.problems).toEqual([
+      'The scope names 108, a channel of Home (100) the bot can see but can\'t send in: give the bot Send Messages in it.',
+      'The scope names 109, a channel of Home (100) the bot can see but can\'t send in: give the bot Send Messages in it.',
+    ]);
+    expect(r.lines).toContain('    #lounge (108), where it can\'t send');
+    expect(r.lines).toContain('    #town-hall (109), where it can\'t send');
+    expect(r.lines).toContain('    #open-voice (121)');
   });
 
   test('a server a filters file names that the bot isn\'t in says to invite it, without DISCORD_GUILD_ID\'s separators', async () => {
