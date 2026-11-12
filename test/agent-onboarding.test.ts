@@ -255,8 +255,8 @@ describe('the resident\'s shell is decided with the person', () => {
 
   it('and on a yes, runs `connectome shell install` with a time limit above setup--run\'s default and within its most', () => {
     const step = PIECES.find((piece) => piece.heading === STEP)?.text ?? '';
-    expect(step).toContain('`connectome shell install`');
-    const limits = [...step.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
+    const run = step.split(/(?<=\.) /).find((sentence) => sentence.includes('run `connectome shell install` with `setup--run`')) ?? '';
+    const limits = [...run.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
     expect(limits.length).toBeGreaterThan(0);
     for (const limit of limits) {
       expect({ limit, within: limit > DEFAULT_TIMEOUT_MS && limit <= MAX_TIMEOUT_MS }).toEqual({ limit, within: true });
@@ -326,11 +326,14 @@ describe('the backups\' commands', () => {
 
 describe('connectome service install, run by the agent', () => {
   it('gets setup--run\'s most as its timeoutMs in "Going live", which each run of it again elsewhere points to', () => {
-    const live = PIECES.find((piece) => piece.heading === 'Going live')!.text;
-    const run = live.split(/(?<=\.) /)
-      .find((sentence) => sentence.includes("Run `connectome service install '<name>.json'` with `setup--run`")) ?? '';
-    const limits = [...run.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
-    expect({ limits }).toEqual({ limits: [MAX_TIMEOUT_MS] });
+    const live = PIECES.find((piece) => piece.heading === 'Going live')!.text.split(/(?<=\.) |\n/);
+    const limitsIn = (sentence: string) => [...sentence.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
+    const run = live.find((sentence) => sentence.includes("Run `connectome service install '<name>.json'` with `setup--run`")) ?? '';
+    expect({ limits: limitsIn(run), everyRun: run.includes('wherever this guide says to run it again') })
+      .toEqual({ limits: [MAX_TIMEOUT_MS], everyRun: true });
+    for (const sentence of live.filter((each) => each !== run && each.includes('connectome service install'))) {
+      expect({ sentence, limits: limitsIn(sentence).filter((limit) => limit !== MAX_TIMEOUT_MS) }).toEqual({ sentence, limits: [] });
+    }
     for (const piece of PIECES) {
       if (['SETUP.md', 'With another harness', 'Going live'].includes(piece.heading ?? '')) continue;
       for (const sentence of piece.text.split(/(?<=\.) |\n/)) {
