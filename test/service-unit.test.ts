@@ -6,14 +6,14 @@ const awkward = ['/opt/bun 1/bin/bun', '/srv/a "quoted" dir/start.js', 'C:\\path
 const work = "/srv/a \"quoted\" dir/100% & <work> it's";
 const env: Array<[string, string]> = [['PATH', '/usr/bin:/bin'], ['DATA_DIR', '/srv/data 100%'], ['CONNECTOME_SUPERVISED', '1']];
 
-test('reads back the argv and working directory of every systemd unit install writes', () => {
+test('reads back the argv and working directory of a systemd unit written with awkward words in each field', () => {
   for (const wants of [null, 'connectome-shell-x.service']) {
     const text = systemdUnit('connectome-host resident in /srv', work, awkward, env, wants);
     expect(readUnit('systemd-user', text)).toEqual({ argv: awkward, workingDirectory: work });
   }
 });
 
-test('reads back the argv and working directory of every launch agent install writes', () => {
+test('reads back the argv and working directory of a launch agent written with awkward words in each field', () => {
   const text = plist('com.connectome.x', work, awkward, env, '/srv/logs/agent 100% & <x>.log');
   expect(readUnit('launchd', text)).toEqual({ argv: awkward, workingDirectory: work });
 });
