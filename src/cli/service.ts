@@ -295,9 +295,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     const policy = restartPolicy(loaded);
     if (!policy.restarts) {
       throw new Refusal(`systemd shows ${names.host.name} with ${policy.settings}, so it doesn't restart the host both ` +
-        `when it exits with ${RESTART_EXIT_CODE}, as an update's restart does, and with 1, as a failed update does. A ` +
-        `drop-in may override the unit: ${systemctlLine(sys, `cat ${names.host.name}`)} shows every file it's read ` +
-        `from. Its unit is left without ${SUPERVISED_ENV}=1, and nothing was started or restarted. A host it runs ` +
+        `when it exits with ${RESTART_EXIT_CODE}, as an update's restart does, and with 1, as a failed update does. ` +
+        `${dropInLine(sys, names.host.name)} Its unit is left without ${SUPERVISED_ENV}=1, and nothing was started or restarted. A host it runs ` +
         `now keeps what it started with, ${SUPERVISED_ENV}=1 included if it started with it, until it starts again: ` +
         `${systemctlLine(sys, `restart ${names.host.name}`)} restarts it on the unit as it is now: the file this run ` +
         `wrote, with the recipe it was given, and any drop-in over it. Once the unit ` +
@@ -812,7 +811,7 @@ export function runsFrom(shown: string, home: string): string | null {
   return realOrResolved(set === '~' ? home : set);
 }
 
-type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
+export type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
   | { kind: 'unshown'; shown: string };
 
 function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -828,14 +827,30 @@ function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: Service
     if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
     return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
   }
-  const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath']);
+  const shown = showUnit(sys, env, unit.name, OWNER_PROPERTIES);
   if (typeof shown === 'string') return { kind: 'unshown', shown };
+  return loadedOwner(unit, work, sys, shown, text !== null);
+}
+
+export const OWNER_PROPERTIES = ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath'];
+
+export function loadedOwner(unit: ServiceUnit, work: string, sys: Pick<ServiceSystem, 'home'>,
+  shown: Map<string, string>, fileThere: boolean): Owner {
   if (shown.get('LoadState') === 'not-found') {
     return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
   return runsHere(runsIn, work) ? { kind: 'ok' }
-    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: text !== null };
+    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: fileThere };
+}
+
+export function reloadLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, unit: ServiceUnit, work: string, next: string): string {
+  return `systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file or drop-ins ` +
+    `changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then ${next}.`;
+}
+
+export function dropInLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, name: string): string {
+  return `A drop-in may override the unit: ${systemctlLine(sys, `cat ${name}`)} shows every file it's read from.`;
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -845,9 +860,8 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
     : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
-      (owner.loadedOnly ? ` systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file ` +
-        `or drop-ins changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then repeat this service ` +
-        'install command with the same recipe.' : '') +
+      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, 'repeat this service install command with the same recipe')}`
+        : '') +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
       'install up again in a directory of another name.');
   }

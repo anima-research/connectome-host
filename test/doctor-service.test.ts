@@ -84,7 +84,10 @@ test('a recipe that names a shell with no shell unit fails, and a shell unit the
     'install <recipe>\` writes it, or names what it needs first.');
 
   const extra = place('linux', ['host', 'shell']);
-  const two = system(extra.home, { [`systemctl ${extra.units.host.name}`]: activeHost(extra.work) });
+  const two = system(extra.home, {
+    [`systemctl ${extra.units.host.name}`]: activeHost(extra.work),
+    [`systemctl ${extra.units.shell.name}`]: activeHost(extra.work),
+  });
   const kept = checkUnits(extra.units, extra.work, false, 'connectome', two.sys);
   expect(kept.passed).toBe(true);
   expect(kept.lines.join('\n')).toContain(`The recipe names no shell, and ${extra.units.shell.name} is installed: ` +
@@ -122,6 +125,45 @@ test('a host unit that runs in another directory fails, naming both', () => {
   expect(result.elsewhere).toBe(true);
 });
 
+const reloads = (name: string, work: string) => `systemd shows ${name} as it last loaded it, while its file names ` +
+  `${work}: if its file or drop-ins changed since, XDG_RUNTIME_DIR=/run/user/1000 systemctl --user daemon-reload loads ` +
+  'them again, then run `connectome service install <recipe>`.';
+
+test('a host unit systemd runs in another directory while its file is there says how to load the file again', () => {
+  const at = place('linux', ['host']);
+  const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: activeHost('/somewhere/else') });
+  const result = checkUnits(at.units, at.work, false, 'connectome', sys);
+  expect(result.lines).toContain(`systemd runs ${at.units.host.name} in /somewhere/else, not ${at.work}. ` +
+    reloads(at.units.host.name, at.work));
+});
+
+test('a host unit that doesn\'t restart the host on 75 and 1 names the command that shows every file it\'s read from', () => {
+  const at = place('linux', ['host']);
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: activeHost(at.work).replace('Restart=on-failure', 'Restart=no'),
+  });
+  const result = checkUnits(at.units, at.work, false, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  expect(result.lines.find((line) => line.startsWith('It doesn\'t restart the host'))).toEndWith('. A drop-in may override ' +
+    `the unit: XDG_RUNTIME_DIR=/run/user/1000 systemctl --user cat ${at.units.host.name} shows every file it's read from.`);
+});
+
+test('a shell unit systemd runs in another directory fails as install refuses it, whether or not the recipe names a shell', () => {
+  const at = place('linux', ['host', 'shell']);
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: activeHost('/elsewhere'),
+  });
+  const line = `systemd runs ${at.units.shell.name} in /elsewhere, not ${at.work}. ${reloads(at.units.shell.name, at.work)}`;
+  const named = checkUnits(at.units, at.work, true, 'connectome', sys);
+  expect([named.passed, named.elsewhere]).toEqual([false, undefined]);
+  expect(named.lines).toContain(line);
+  const unnamed = checkUnits(at.units, at.work, false, 'connectome', sys);
+  expect(unnamed.passed).toBe(false);
+  expect(unnamed.lines).toContain(line);
+  expect(unnamed.lines.join('\n')).not.toContain('stops and removes it');
+});
+
 test('under launchd a running host passes, one loaded but not running fails with its log file, and all unloaded is stopped', () => {
   const at = place('darwin', ['host']);
   const running = system(at.home, { [`launchctl ${at.units.host.name}`]: '{\n\t"PID" = 501;\n};\n' });
@@ -150,16 +192,16 @@ test('the service\'s pid is its host unit\'s main process, under systemd and lau
 
 const stoppedHost = (work: string) => activeHost(work).replace('ActiveState=active', 'ActiveState=inactive')
   .replace('SubState=running', 'SubState=dead');
-const shellShown = (active: string, sub: string) => shown({
+const shellShown = (work: string, active: string, sub: string) => shown({
   LoadState: 'loaded', ActiveState: active, SubState: sub, NRestarts: '0', ExecMainStatus: '0', ExecMainStartTimestamp: '',
-  ConditionResult: 'yes', ConditionTimestamp: '',
+  WorkingDirectory: work, ConditionResult: 'yes', ConditionTimestamp: '',
 });
 
 test('a host and its shell both stopped read as stopped where doctor asks, each said so, and fail the check that doesn\'t ask', () => {
   const at = place('linux', ['host', 'shell']);
   const { sys } = system(at.home, {
     [`systemctl ${at.units.host.name}`]: stoppedHost(at.work),
-    [`systemctl ${at.units.shell.name}`]: shellShown('inactive', 'dead'),
+    [`systemctl ${at.units.shell.name}`]: shellShown(at.work, 'inactive', 'dead'),
   });
   const fine = checkUnits(at.units, at.work, true, 'connectome', sys, true);
   expect([fine.passed, fine.stopped]).toEqual([true, true]);
@@ -173,7 +215,7 @@ test('one unit stopped while another runs fails even where stopped is fine, nami
   const at = place('linux', ['host', 'shell']);
   const { sys } = system(at.home, {
     [`systemctl ${at.units.host.name}`]: activeHost(at.work),
-    [`systemctl ${at.units.shell.name}`]: shellShown('inactive', 'dead'),
+    [`systemctl ${at.units.shell.name}`]: shellShown(at.work, 'inactive', 'dead'),
   });
   const fine = checkUnits(at.units, at.work, true, 'connectome', sys, true);
   expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
@@ -186,7 +228,7 @@ test('a failed unit fails even where stopped is fine', () => {
   const at = place('linux', ['host', 'shell']);
   const { sys } = system(at.home, {
     [`systemctl ${at.units.host.name}`]: stoppedHost(at.work),
-    [`systemctl ${at.units.shell.name}`]: shellShown('failed', 'failed'),
+    [`systemctl ${at.units.shell.name}`]: shellShown(at.work, 'failed', 'failed'),
   });
   const fine = checkUnits(at.units, at.work, true, 'connectome', sys, true);
   expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
@@ -198,7 +240,7 @@ test('a stopped service whose check finds a fault isn\'t stopped, so nothing pro
   const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: stoppedHost('/srv/other/My Resident') });
   const fine = checkUnits(at.units, at.work, false, 'connectome', sys, true);
   expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
-  expect(fine.lines).toContain(`systemd runs ${at.units.host.name} in /srv/other/My Resident, not ${at.work}.`);
+  expect(fine.lines.join('\n')).toContain(`systemd runs ${at.units.host.name} in /srv/other/My Resident, not ${at.work}.`);
 });
 
 test('a unit file that\'s gone leaves a stopped service not stopped, under systemd and launchd', () => {
@@ -283,7 +325,7 @@ test('where the recipe didn\'t load, a shell unit that\'s installed is checked a
   const both = place('linux', ['host', 'shell']);
   const failed = system(both.home, {
     [`systemctl ${both.units.host.name}`]: stoppedHost(both.work),
-    [`systemctl ${both.units.shell.name}`]: shellShown('failed', 'failed'),
+    [`systemctl ${both.units.shell.name}`]: shellShown(both.work, 'failed', 'failed'),
   });
   const unknown = checkUnits(both.units, both.work, null, 'connectome', failed.sys, true);
   expect([unknown.passed, unknown.stopped]).toEqual([false, undefined]);
@@ -292,7 +334,7 @@ test('where the recipe didn\'t load, a shell unit that\'s installed is checked a
   expect(unknown.lines.join('\n')).not.toContain('names no shell');
   const quiet = system(both.home, {
     [`systemctl ${both.units.host.name}`]: stoppedHost(both.work),
-    [`systemctl ${both.units.shell.name}`]: shellShown('inactive', 'dead'),
+    [`systemctl ${both.units.shell.name}`]: shellShown(both.work, 'inactive', 'dead'),
   });
   const stopped = checkUnits(both.units, both.work, null, 'connectome', quiet.sys, true);
   expect([stopped.passed, stopped.stopped]).toEqual([true, true]);
