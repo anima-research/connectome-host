@@ -14,7 +14,6 @@ import type { InstallOps } from '../src/update/install.js';
 import { RELEASE_HOST } from '../src/update/launcher.js';
 import { answerSwitchRequest, type SwitchFleet, type SwitchRequest } from '../src/update/quiesce.js';
 import * as quiesce from '../src/update/quiesce.js';
-import * as webUi from '../src/modules/web-ui-module.js';
 import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, pageRequest, statusLines,
@@ -1174,9 +1173,9 @@ describe("the page's own Update controls", () => {
 });
 
 describe("the switch's last look, from the install's host", () => {
-  const HOLDING = "Resume refused: the release switch's last look has begun here, so nothing here changes until the install's host " +
-    'decides it. If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the ' +
-    "install's host can't reach this host, stopping the install's host or restarting this one ends the wait.";
+  const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides " +
+    "it. If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install's host " +
+    "can't reach this host, stopping the install's host or restarting this one ends the wait.";
   const SERVING = "it was serving at the switch's last look, which quiesces nothing";
 
   function lookingFleet(children: Record<string, { busy?: boolean; servingFromLook?: number; gate?: Promise<void> }>) {
@@ -1277,20 +1276,23 @@ describe("the switch's last look, from the install's host", () => {
     expect(readMark(root)).toMatchObject({ to: '0.13.0', look: looks()[0] });
   });
 
-  test("a fleet child that holds refuses its own /update restart resume and the Web UI's host-resume, and its quiesce stays", async () => {
+  test("a fleet child that holds answers its own /update restart resume with the hold's words, and its quiesce stays", async () => {
     const { framework, calls } = fakeFramework({ quiesced: switchQuiesceReason('0.13.0') });
+    const { gateResume } = await import('../src/update/resume-gate.js');
+    gateResume(framework);
     const { update } = hostUpdate({ framework });
     const request = { op: 'quiesce', to: '0.13.0', waitMs: 0, last: { look: 'look-1', mark: '/nowhere/mark.json', parent: process.pid } };
     await answerSwitchRequest(framework, request);
     try {
-      expect(await update.resume()).toEqual({ done: false, lines: [HOLDING] });
-      expect(webUi.switchHoldRefusalFor({ type: 'host-resume', corrId: 'c1' })).toEqual({ type: 'error', corrId: 'c1', message: HOLDING });
-      expect(webUi.switchHoldRefusalFor({ type: 'host-quiesce', corrId: 'c2' })).toBeNull();
+      expect(await update.resume()).toEqual({ done: false, lines: [
+        "No restart is waiting, and the switch's quiesce couldn't be ended.",
+        `this host: ${HOLDING}`,
+        "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
+      ] });
       expect(calls).not.toContain('resume');
     } finally {
       await answerSwitchRequest(framework, { op: 'release', look: 'look-1' });
     }
-    expect(webUi.switchHoldRefusalFor({ type: 'host-resume', corrId: 'c3' })).toBeNull();
     expect(quiesce.switchHold.held()).toBe(false);
   });
 });

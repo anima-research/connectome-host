@@ -53,7 +53,7 @@ function idleHost(): QuiesceFramework {
 }
 
 describe("the switch's quiesce of a real fleet child", () => {
-  test('waits on its turn, says who holds it, answers a request it can\'t read with why, persists until the resume, and leaves the child serving', async () => {
+  test('waits on its turn, says who holds it, answers a request it can\'t read with why, holds on the last look against its own Resume, persists until the resume, and leaves the child serving', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'update-quiesce-e2e-'));
     dirs.push(dir);
     const recipe = join(dir, 'kid.json');
@@ -102,6 +102,16 @@ describe("the switch's quiesce of a real fleet child", () => {
     const quiesced = hostModeRecord(dataDir);
     expect(quiesced?.quiesced).toBe(true);
     expect(isSwitchQuiesce(quiesced?.reason)).toBe(true);
+
+    const said: string[] = [];
+    const listening = fleet.onChildEvent('kid', (_name, event) => {
+      if (event.type === 'command-output') said.push(String((event as { text?: unknown }).text));
+    });
+    expect((await fleet.handleToolCall({ id: 'resume-here', name: 'command', input: { name: 'kid', command: '/update restart resume' } })).success).toBe(true);
+    await until(() => said.some((line) => line.includes("this host: the release switch's last look has begun here")), 20_000,
+      "the child's own Resume, refused by the hold of the last look");
+    listening();
+    expect(hostModeRecord(dataDir)?.quiesced).toBe(true);
 
     const resumed = await resumeAfterSwitchQuiesce(host, fleet);
     expect(resumed.hosts[1]).toEqual({ host: 'kid', resumed: true });

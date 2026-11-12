@@ -457,10 +457,10 @@ describe("a fleet child's answer", () => {
   });
 });
 
-const HOLDING = "Resume refused: the release switch's last look has begun here, so nothing here changes until the install's host " +
-  'decides it. If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the ' +
-  "install's host can't reach this host, stopping the install's host or restarting this one ends the wait.";
-const BEGUN = "Resume refused: the release switch has begun, and it finishes at the install's host's next start.";
+const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides it. " +
+  'If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install\'s host ' +
+  "can't reach this host, stopping the install's host or restarting this one ends the wait.";
+const BEGUN = "the release switch has begun, and it finishes at the install's host's next start.";
 const lastLookOf = (look: string, mark = MARK, parent = process.pid) => ({ op: 'quiesce', to: '0.14.0', waitMs: 0, last: { look, mark, parent } });
 
 async function deadPid(): Promise<number> {
@@ -568,21 +568,30 @@ describe("a fleet child's hold on the last look", () => {
     expect(hold.refusal()).toBeNull();
   });
 
-  test("the status read, the hold and the answer are one step: a Resume asked here and still under way leaves the look a child that may serve", async () => {
+  test("the status read, the hold and the answer are one step: a Resume of the gated framework still under way leaves the look a child that may serve, and one asked in the hold is refused", async () => {
     const hold = new quiesce.SwitchHold();
-    const { framework } = fakeFramework({ quiesced: true, reason: SWITCH });
-    const resuming = held<string>();
-    const asked = hold.resumeHere(() => resuming.promise);
+    const { framework, calls } = fakeFramework({ quiesced: true, reason: SWITCH });
+    const resuming = held<void>();
+    const resume = framework.resume.bind(framework);
+    framework.resume = async (opts) => { await resuming.promise; return resume(opts); };
+    const { gateResume } = await import('../src/update/resume-gate.js');
+    gateResume(framework, hold);
+    const asked = framework.resume();
     expect(await answerSwitchRequest(framework, lastLookOf('look-1'), hold)).toEqual({
       host: 'this host', answered: false, why: "a Resume asked here was under way at the switch's last look, so it may serve",
     });
     expect(hold.held()).toBe(false);
-    resuming.settle('resumed');
-    expect(await asked).toEqual({ done: 'resumed' });
+    resuming.settle();
+    await asked;
+    await framework.quiesce({ reason: SWITCH });
     await answerSwitchRequest(framework, lastLookOf('look-2'), hold);
-    let ran = false;
-    expect(await hold.resumeHere(async () => { ran = true; return 'resumed'; })).toEqual({ refused: HOLDING });
-    expect(ran).toBe(false);
+    for (const opts of [undefined, { force: true }]) {
+      const refused = await framework.resume(opts).then(() => null, (error: unknown) => error as Error & { verdicts?: unknown });
+      expect(refused?.message).toBe(HOLDING);
+      expect(refused?.name).toBe('ResumeBlockedError');
+      expect(refused?.verdicts).toEqual([]);
+    }
+    expect(calls.filter((call) => call === 'resume')).toHaveLength(1);
   });
 
   test("not yet for that look ends the hold and leaves the child quiesced, so its person's Resume works again", async () => {
@@ -688,4 +697,32 @@ describe("a fleet child's hold on the last look", () => {
       }
     });
   });
+});
+
+describe("the gate on a real framework's resume", () => {
+  test("agent-framework's own host/command resume meets the hold, and answers with its words", async () => {
+    const { AgentFramework } = await import('@animalabs/agent-framework');
+    const { Membrane, MockAdapter } = await import('@animalabs/membrane');
+    const dir = mkdtempSync(join(tmpdir(), 'switch-hold-gate-'));
+    const framework = await AgentFramework.create({ storePath: join(dir, 'store'), membrane: new Membrane(new MockAdapter()), agents: [], modules: [] });
+    try {
+      const { gateResume } = await import('../src/update/resume-gate.js');
+      gateResume(framework);
+      await framework.quiesce({ reason: SWITCH });
+      expect(await answerSwitchRequest(framework, lastLookOf('look-1'))).toMatchObject({ held: true });
+      try {
+        const command = framework as unknown as { handleHostCommand(server: string, params: { command: string; force?: boolean }): Promise<{ ok: boolean; error?: string }> };
+        expect(await command.handleHostCommand('ops', { command: 'resume' })).toMatchObject({ ok: false, error: HOLDING });
+        expect(await command.handleHostCommand('ops', { command: 'resume', force: true })).toMatchObject({ ok: false, error: HOLDING });
+        expect(framework.getHostModeStatus().quiesced).toBe(true);
+      } finally {
+        await answerSwitchRequest(framework, { op: 'release', look: 'look-1' });
+      }
+      await framework.resume();
+      expect(framework.getHostModeStatus().quiesced).toBe(false);
+    } finally {
+      await framework.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
