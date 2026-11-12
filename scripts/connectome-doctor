@@ -682,6 +682,8 @@ for where, found, why, unread in sources:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:
             print(f"  {C_RED}{withheld(ln)[:150]}{C_OFF}")
+        if len(found) > 5:
+            print(f"  and {len(found) - 5} more, older")
     else:
         print(f"recent failures in {where}: {C_GRN}none found{C_OFF}")
 if times or untimed:

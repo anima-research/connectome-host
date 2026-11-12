@@ -202,7 +202,8 @@ export function mappingRemedy(name: string, envOnly = false): string {
     `whole environment, with ${name} left out of the file's env, whose value would replace the host's. An agent ` +
     'overlay entry replaces the recipe\'s and the file\'s, so the recipe can\'t reach a server the overlay defines ' +
     'while that entry is there: take the entry out of the overlay, put the server\'s definition, with its command or ' +
-    'url, in the recipe, or in mcpl-servers.json with a recipe entry that names it, and follow the steps above for ' +
+    'url, in the recipe, and out of mcpl-servers.json too where the file has an entry of that name, whose command and ' +
+    'env would stay, or in mcpl-servers.json with a recipe entry that names it, and follow the steps above for ' +
     'whichever then defines it. Then restart the service.';
 }
 

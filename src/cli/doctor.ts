@@ -1,8 +1,8 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { homedir, userInfo } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -12,7 +12,8 @@ import {
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
-  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, readSecrets, redactWindow, secretNames, storedSecrets,
+  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, linesKeepingSecrets, readSecrets, redactWindow,
+  secretNames, storedSecrets,
   type Secret,
 } from '../setup/secrets.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
@@ -23,9 +24,9 @@ import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './disco
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, recipeHasShell, runsHere, serviceCommands, serviceLines } from './service.js';
+import { machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, type ServiceCommands, type ServiceSystem } from './service.js';
 import {
-  managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits, type UnitRead,
+  managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits,
 } from './service-unit.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
@@ -55,6 +56,7 @@ export interface DoctorParts {
   envLimitMs: number;
   recipeLimitMs: number;
   plutil: string;
+  launchdGives: () => Record<string, string>;
   servicePid: (units: ServiceUnits) => Promise<{ pid: string } | { why: string }> | { pid: string } | { why: string };
   platform: NodeJS.Platform;
   home: string;
@@ -107,6 +109,7 @@ export async function doctor(
     envLimitMs: ENV_LIMIT_MS,
     recipeLimitMs: RECIPE_LIMIT_MS,
     plutil: 'plutil',
+    launchdGives,
     servicePid: (units) => servicePid(units, machine()),
     platform: process.platform,
     home: homedir(),
@@ -122,6 +125,11 @@ export async function doctor(
   const typed = typedCommand(root);
 
   const units = serviceUnits(root, parts.platform, parts.home);
+  const base = machine();
+  const sys: ServiceSystem = {
+    ...base, platform: parts.platform, home: parts.home,
+    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command, args, env),
+  };
   if (parts.uid === 0) {
     const dir = dirname(root);
     let owner: number | null = null;
@@ -141,7 +149,7 @@ export async function doctor(
   let elsewhere = false;
   let shellElsewhere: string | null = null;
   if (units !== null) {
-    shellElsewhere = shellOfAnother(units, parts.home);
+    shellElsewhere = shellOfAnother(units, sys);
     let text: string | null = null;
     try {
       text = readFileSync(units.host.file, 'utf-8');
@@ -154,18 +162,24 @@ export async function doctor(
     }
     if (text !== null) {
       const read = readUnit(units.manager, text);
-      const runsIn = unitRunsIn(units.manager, text, read, parts.home);
-      if (runsIn !== null && !runsHere(runsIn, units.work)) {
+      const other = namedElsewhere(sys, units.manager, units.host, units.work);
+      if (other !== undefined) {
         elsewhere = true;
-        serviceError = namesElsewhere(units.host.file, runsIn, units.work);
+        serviceError = namesElsewhere(units.host.file, other.runsIn, units.work);
       } else if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
-      } else if (basename(read.argv[1] ?? '') !== 'start.js' || read.argv[2] === undefined) {
-        // Bun's own flags before start.js, such as --env-file, change what the service reads, which doctor's
-        // read of its environment wouldn't.
-        serviceError = `${units.host.file} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`;
       } else {
-        service = { units, recipe: read.argv[2]!, work: runsIn ?? read.workingDirectory, bun: read.argv[0]! };
+        const named = units.manager === 'systemd-user' ? systemdWorkingDirectory(text)! : read.workingDirectory;
+        const runsIn = named === '~' ? parts.home : named;
+        const launcher = join(root, 'start.js');
+        if (read.argv[1] === undefined || resolve(runsIn, read.argv[1]) !== launcher || read.argv[2] === undefined) {
+          // Bun's own flags before start.js, such as --env-file, change what the service reads, which doctor's
+          // read of its environment wouldn't.
+          serviceError = `${units.host.file} doesn't run this install's start.js, ${launcher}, right after its Bun, with a ` +
+            'recipe after it, as the one service install writes does.';
+        } else {
+          service = { units, recipe: read.argv[2]!, work: runsIn, bun: read.argv[0]! };
+        }
       }
     }
   }
@@ -239,11 +253,12 @@ export async function doctor(
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
-    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs,
-      service?.bun ?? process.execPath, typed);
+    const given = { ...(manager === 'launchd' ? parts.launchdGives() : {}), ...managed };
+    const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
+      service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
     env = built.env;
     const refusedHere = service === null && read !== null
-      ? serviceEnv(work, root, managed, read.env, parts.envLimitMs, process.execPath, typed) : null;
+      ? serviceEnv(work, root, given, read.env, parts.envLimitMs, process.execPath, typed, read.unset) : null;
     secrets = [...secrets, ...known(env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
       .flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -297,7 +312,9 @@ export async function doctor(
   let stopped = false;
   let serviceRuns = false;
   let unitElsewhere = false;
+  let unitHere = false;
   let fitUnchecked = false;
+  let fitEstimated = false;
   let filesUnread = false;
   let pidUntold = false;
   let notTheService = false;
@@ -306,7 +323,7 @@ export async function doctor(
   let closedTabs = false;
   let shellUnchecked = false;
   let uncounted: string | null = null;
-  const commands = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home });
+  const commands = serviceCommands(root, sys);
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
   let dataDir: string | null = null;
   try {
@@ -333,6 +350,7 @@ export async function doctor(
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         serviceRuns = result.passed && result.stopped !== true;
         unitElsewhere = result.elsewhere === true;
+        unitHere = result.here === true;
         if (result.stopped === true) {
           stopped = true;
           report.line('It\'s stopped.');
@@ -363,7 +381,7 @@ export async function doctor(
       }
       if (host.down && service !== null) {
         await checked(report, 'Naming the service\'s own lines', () => {
-          for (const line of serviceLines(root, { ...machine(), platform: parts.platform, home: parts.home }) ?? []) report.line(line);
+          for (const line of serviceLines(root, sys) ?? []) report.line(line);
         });
       }
     } else {
@@ -445,7 +463,7 @@ export async function doctor(
       const answer = await answering;
       if (answer === null) {
         report.problem(`The host didn't answer ${CHECKS[op]} within ${parts.hostLimitMs / 1000} s, or its connection ` +
-          'closed first.');
+          `closed first. Run ${typed} doctor again` + (commands === null ? '.' : `; \`${commands.log}\` follows the host's log.`));
         return null;
       }
       if (answer.ok !== true) {
@@ -500,6 +518,7 @@ export async function doctor(
         } else {
           report.ok(`It fits ${model}'s window.`);
           if ('why' in counted) {
+            if (counting !== null) fitEstimated = true;
             report.line(`The system prompt and tools the host sends weren't counted (${counted.why}), so this is the check the ` +
               'host makes at load, by estimate.');
           }
@@ -531,7 +550,7 @@ export async function doctor(
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
         // The service's log holds only the service's own host's stderr.
-        const logged = commands === null || notTheService || pidUntold ? null : units;
+        const logged = service === null || commands === null || notTheService || pidUntold ? null : units;
         if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
       });
     }
@@ -542,7 +561,7 @@ export async function doctor(
       await checked(report, 'The shell\'s call', async () => {
         const answer = await read<ShellCheck>('shell-check', asked('shell-check'));
         if (answer !== null) {
-          shellLines(report, answer.data);
+          shellLines(report, answer.data, commands);
           closedTabs = answer.data.closedTabs.length > 0;
           shellUnchecked = (answer.data.unchecked ?? []).length > 0;
         }
@@ -602,6 +621,7 @@ export async function doctor(
   }
 
   let ladderRan = false;
+  let tooOld: string | null = null;
   if (serviceError !== null) {
     report.section('The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.');
   } else if (service === null) {
@@ -609,11 +629,15 @@ export async function doctor(
   } else if (service.units.manager !== 'systemd-user') {
     report.section('The ladder reads systemd\'s units and journal, so it doesn\'t run for this install, whose service ' +
       'runs under launchd.');
-  } else if (unitElsewhere) {
+  } else if (!unitHere) {
     report.section('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while systemd ' +
-      'runs the service in another directory, said above: that process isn\'t this install\'s host.');
+      (unitElsewhere ? 'runs the service in another directory, said above: that process isn\'t this install\'s host.'
+        : 'isn\'t seen running the service in this install\'s directory, said above: that process may not be this ' +
+          'install\'s host.'));
   } else if (parts.python === null) {
     report.section('The pipeline ladder needs python3, which isn\'t on PATH. The checks above don\'t.');
+  } else if ((tooOld = pythonOlderThan37(parts.python, parts.ladderLimitMs)) !== null) {
+    report.section(`The pipeline ladder needs Python 3.7 or later, and python3 on PATH is ${tooOld}. The checks above don't.`);
   } else if (dataDir === null) {
     report.section('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it ' +
       'doesn\'t run.');
@@ -636,10 +660,22 @@ export async function doctor(
     }
     if (ran !== undefined) {
       ladderRan = true;
-      const said = (ran.stdout ?? '').split('\n');
+      const cut = ran.error !== undefined || ran.signal !== null;
+      const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
+      let dropped = 0;
+      const linesOf = (text: string): string[] => {
+        const lines = linesKeepingSecrets(text, secrets);
+        if (cut) dropped += lines.splice(-(breaks + 1)).filter((line) => line !== '').length;
+        return lines;
+      };
+      const said = linesOf(ran.stdout ?? '');
       const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
       const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
-      for (const line of [...said, ...(ran.stderr ?? '').split('\n')]) if (line !== '') report.line(line);
+      for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
+      if (dropped > 0) {
+        report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
+          'printed last: a secret cut short there couldn\'t be hidden.');
+      }
       if (ran.error !== undefined) {
         const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
         report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
@@ -669,6 +705,7 @@ export async function doctor(
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
     ...(filesUnread ? ['the files its unit reads its environment from weren\'t read'] : []),
     ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
+    ...(fitEstimated ? ['the system prompt and tools weren\'t counted for the fit'] : []),
     ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
     ...(typeof closed !== 'string' && closed.undecoded > 0
       ? ['a line naming a channel the subscription GC closed couldn\'t be read'] : []),
@@ -855,7 +892,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
-      `${BEFORE_ENV}: where one sets it, set it there instead.`);
+      `${BEFORE_ENV}: where one sets it, set it there instead.`) + (passes(agent.source) ? PASSES : '');
     if (onAnthropic && agent.source === 'count_tokens_failed_401') report.problem(said);
     else report.line(said);
   }
@@ -876,11 +913,19 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       (agent.source !== 'count_tokens' || agent.countModel !== agent.model || compression.model === agent.model ? ''
         : ', or leave it out to compress with the agent\'s model,') +
       ' and restart the service. The endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
-      'may answer 404 for a model it doesn\'t serve too, and then the 404 doesn\'t mean it\'s retired.'));
+      'may answer 404 for a model it doesn\'t serve too, and then the 404 doesn\'t mean it\'s retired.') +
+      (passes(compression.source) ? PASSES : ''));
   }
 }
 
-function shellLines(report: Report, shell: ShellCheck): void {
+/** A count that timed out, or that count_tokens answered with 429 or a 5xx, can pass by itself. */
+function passes(source: string): boolean {
+  const status = Number(/^count_tokens_failed_(\d+)$/.exec(source)?.[1]);
+  return source === 'count_tokens_timeout' || status === 429 || (status >= 500 && status < 600);
+}
+const PASSES = ' That can pass by itself: run doctor again later.';
+
+function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands | null): void {
   for (const server of shell.notConnected) {
     report.problem(`The server ${server.id} isn't connected` + (server.refused !== null
       ? `: the host refuses its configuration: ${server.refused}.`
@@ -909,7 +954,10 @@ function shellLines(report: Report, shell: ShellCheck): void {
     } else if (row.error.includes('Connection lost') || row.error.includes('Connection timeout')) {
       report.problem(`${row.server} didn't reach its daemon: ${row.error}. On terminal-sessions 1.7.3, "Connection lost" ` +
         'is what a missing or wrong SESSION_SERVER_TOKEN in the server\'s env gives, and "Connection timeout" a daemon ' +
-        'that isn\'t running.');
+        'that isn\'t running.' + (row.error.includes('Connection lost')
+        ? ' Where setup stored SESSION_SERVER_TOKEN, the stored-secrets lines below say whether a server is given it. Once ' +
+          `the server's env names it, restart the service${commands === null ? '' : `: \`${commands.stop}\`, then \`${commands.start}\``}.`
+        : commands !== null && commands.units.length > 1 ? ` \`${commands.start}\` starts the shell daemon with the host.` : ''));
     } else {
       report.problem(`${row.server}'s listSessions call failed: ${row.error}.`);
     }
@@ -1145,12 +1193,12 @@ function shownWords(text: string): string[] {
 }
 
 function unitEnv(service: ServiceUnits, parts: DoctorParts):
-  { env: Record<string, string>; files: string[] } | { why: string; env?: Record<string, string> } {
+  { env: Record<string, string>; files: string[]; unset: string[] } | { why: string; env?: Record<string, string> } {
   const name = service.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
     ran = service.manager === 'systemd-user'
-      ? spawnSync(parts.systemctl, ['--user', 'show', '--property=Environment', '--value', '--', name], {
+      ? spawnSync(parts.systemctl, ['--user', 'show', '--property=Environment', '--property=UnsetEnvironment', '--', name], {
         encoding: 'utf-8',
         timeout: parts.envLimitMs,
         env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
@@ -1163,10 +1211,18 @@ function unitEnv(service: ServiceUnits, parts: DoctorParts):
   const failed = failure(ran, parts.envLimitMs);
   if (failed !== null) return { why: failed };
   if (service.manager === 'systemd-user') {
+    // systemd 257 prints each property as its own `Name=value` line, in its own order, whatever the order asked.
     const out: Record<string, string> = {};
-    for (const word of shownWords(ran.stdout.trim())) {
-      const at = word.indexOf('=');
-      if (at > 0) out[word.slice(0, at)] = word.slice(at + 1);
+    const unset: string[] = [];
+    for (const line of ran.stdout.split('\n')) {
+      const at = line.indexOf('=');
+      const words = at < 0 ? [] : shownWords(line.slice(at + 1).trim());
+      if (line.startsWith('Environment=')) {
+        for (const word of words) {
+          const eq = word.indexOf('=');
+          if (eq > 0) out[word.slice(0, eq)] = word.slice(eq + 1);
+        }
+      } else if (line.startsWith('UnsetEnvironment=')) unset.push(...words);
     }
     let listed: SpawnSyncReturns<string>;
     try {
@@ -1183,10 +1239,10 @@ function unitEnv(service: ServiceUnits, parts: DoctorParts):
     // systemd 257 prints each file on a line of its own, as `<path> (ignore_errors=no)`.
     const files = listed.stdout.split('\n').map((line) => line.replace(/ \(ignore_errors=(?:yes|no)\)$/, ''))
       .filter((line) => line !== '');
-    return { env: out, files };
+    return { env: out, files, unset };
   }
   try {
-    return { env: stringValues(JSON.parse(ran.stdout)), files: [] };
+    return { env: stringValues(JSON.parse(ran.stdout)), files: [], unset: [] };
   } catch {
     return { why: 'plutil\'s answer wasn\'t JSON' };
   }
@@ -1198,11 +1254,26 @@ function systemVariables(): Record<string, string> {
   return base;
 }
 
+// launchd gives each job HOME, USER, LOGNAME and SHELL from the user's account, whatever the environment of the shell
+// that loads it, and TMPDIR as the user's own temporary directory (macOS 26).
+function launchdGives(): Record<string, string> {
+  const user = userInfo();
+  const gives: Record<string, string> = { HOME: user.homedir, USER: user.username, LOGNAME: user.username };
+  if (user.shell) gives.SHELL = user.shell;
+  const temporary = spawnSync('getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf-8' });
+  if (temporary.status === 0 && temporary.stdout.trim() !== '') gives.TMPDIR = temporary.stdout.trim();
+  return gives;
+}
+
+const RELAUNCHED_ENV = 'const ran = Bun.spawnSync([process.execPath, "-e", "process.stdout.write(JSON.stringify(process.env))"], ' +
+  '{ env: process.env, stdout: "pipe", stderr: "inherit" }); require("node:fs").writeSync(1, ran.stdout); ' +
+  'process.exit(ran.exitCode ?? 1);';
+
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
-  limitMs: number, bun: string, typed: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
-  const base = { ...systemVariables(), ...manager };
+  limitMs: number, bun: string, typed: string, unset: string[] = []): { env: Record<string, string | undefined>; base: Record<string, string> } {
+  const base = { ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
     base[SUPERVISED_ENV] = '1';
@@ -1210,7 +1281,13 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       base.DATA_DIR = dataDirOf(root);
     } catch {}
   }
-  const ran = spawnSync(bun, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+  // UnsetEnvironment= takes a name, or one NAME=VALUE assignment, out of what the manager and the unit give, last.
+  for (const entry of unset) {
+    const eq = entry.indexOf('=');
+    if (eq < 0) delete base[entry];
+    else if (base[entry.slice(0, eq)] === entry.slice(eq + 1)) delete base[entry.slice(0, eq)];
+  }
+  const ran = spawnSync(bun, ['-e', RELAUNCHED_ENV], {
     cwd: work,
     env: base,
     encoding: 'utf-8',
@@ -1305,31 +1382,27 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A unit file of this install's name that names another working directory, said as install says it when it refuses
- *  that unit. */
-function namesElsewhere(file: string, directory: string, work: string): string {
-  return `${file} names ${directory} as the directory it runs in, not this install's, ${work}: it's another install's, ` +
-    'or this one\'s from before it moved, and doctor reads nothing in that directory. Its name comes from this ' +
-    'directory\'s name. Remove that unit if nothing uses it, or set this install up again in a directory of another name.';
+function namesElsewhere(file: string, directory: string | null, work: string): string {
+  return (directory === null
+    ? `${file} names no directory it runs in, where install writes this install's, ${work}, so install takes it as ` +
+      'another\'s, and doctor reads nothing from it.'
+    : `${file} names ${directory} as the directory it runs in, not this install's, ${work}: it's another install's, ` +
+      'or this one\'s from before it moved, and doctor reads nothing in that directory.') +
+    ' Its name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
+    'directory of another name.';
 }
 
-/** Install refuses a shell daemon's unit of this install's name that runs another directory, whatever the recipe, so
- *  doctor reads that unit's file as it reads the host's. A file it can't read, or whose directory can't be read from
- *  it, is left to the service check. */
-function shellOfAnother(units: ServiceUnits, home: string): string | null {
-  let text: string;
-  try {
-    text = readFileSync(units.shell.file, 'utf-8');
-  } catch {
-    return null;
-  }
-  const runsIn = unitRunsIn(units.manager, text, readUnit(units.manager, text), home);
-  return runsIn === null || runsHere(runsIn, units.work) ? null : namesElsewhere(units.shell.file, runsIn, units.work);
+function shellOfAnother(units: ServiceUnits, sys: ServiceSystem): string | null {
+  const other = namedElsewhere(sys, units.manager, units.shell, units.work);
+  return other === undefined ? null : namesElsewhere(units.shell.file, other.runsIn, units.work);
 }
 
-function unitRunsIn(manager: Manager, text: string, read: UnitRead | { why: string }, home: string): string | null {
-  const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : 'why' in read ? null : read.workingDirectory;
-  return set === '~' ? home : set;
+function pythonOlderThan37(python: string, limitMs: number): string | null {
+  const ran = spawnSync(python, ['-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], { encoding: 'utf-8', timeout: limitMs });
+  const version = ran.status === 0 ? /^(\d+)\.(\d+)$/.exec(ran.stdout.trim()) : null;
+  if (version === null) return null;
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  return major < 3 || (major === 3 && minor < 7) ? `${major}.${minor}` : null;
 }
 
 function fileWord(manager: Manager): string {

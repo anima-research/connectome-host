@@ -343,9 +343,22 @@ test('the makeup asks its count with a deadline, and gives count_tokens_timeout,
         previewActivation: async () => ({ messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'hi' }] }] }),
       },
     } as unknown as PanelAppRef;
-    const makeup = await buildContextMakeup(app, 'agent');
+    const realTimeout = AbortSignal.timeout;
+    const timed: Array<{ ms: number; signal: AbortSignal }> = [];
+    AbortSignal.timeout = (ms: number) => {
+      const signal = realTimeout.call(AbortSignal, ms);
+      timed.push({ ms, signal });
+      return signal;
+    };
+    let makeup: Record<string, unknown>;
+    try {
+      makeup = await buildContextMakeup(app, 'agent');
+    } finally {
+      AbortSignal.timeout = realTimeout;
+    }
     expect(signals).toHaveLength(1);
-    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(timed.map(({ ms }) => ms)).toEqual([30_000]);
+    expect(signals[0]).toBe(timed[0]!.signal);
     expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_timeout', null]);
   } finally {
     globalThis.fetch = realFetch;

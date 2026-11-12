@@ -189,7 +189,8 @@ the working directory):
   in `INSTALL_DIR/logs/failures.log`. Recent failures also come from that
   file: its records in its last 400 KB, of every kind but the subscription
   GC's `subscription-gc-close`, which `connectome doctor` names apart. It
-  shows the last five failures from each place it reads. Chronicle ingest
+  shows the last five failures from each place it reads, and how many older
+  ones it leaves out. Chronicle ingest
   comes from the active session's `records.log`, as `sessions.json` names it,
   and the Discord stages from `DATA_DIR/discord-mcpl-debug.log`, which
   discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. The
