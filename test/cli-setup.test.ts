@@ -509,7 +509,7 @@ test('where setup can offer a user of its own, it says first what it does, then 
   expect(text(again.seen.out)).not.toContain('user of its own');
 });
 
-test('yes, y and YES continue as Enter does, and only the continue question takes Enter as yes: Enter at linger\'s question asks it again', async () => {
+test('yes, y and YES continue as Enter does, and Enter at a question with no default asks it again', async () => {
   for (const word of ['yes', 'y', 'YES']) {
     const dir = directory();
     const made = world(dir, { answers: [word], secrets: [KEY] });
@@ -518,10 +518,12 @@ test('yes, y and YES continue as Enter does, and only the continue question take
     expect(made.seen.launched, word).not.toBeNull();
   }
   const dir = directory();
-  const made = world(dir, { answers: ['', '', 'yes'], secrets: [KEY] }, { lingerOf: (user: string) => (user === 'alice' ? false : true) });
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, finished: '2026-10-01T00:00:00.000Z' }));
+  const made = world(dir, { answers: ['', 'yes'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const linger = 'Can you run it, or have whoever administers this machine run it? (yes/no) ';
-  expect(made.seen.asked.slice(0, 3)).toEqual([CONTINUE, linger, linger]);
+  const fresh = `Make a new install on ${join(dir, 'data')}? (yes/no) `;
+  expect(made.seen.asked.slice(0, 2)).toEqual([fresh, fresh]);
   expect(made.seen.launched).not.toBeNull();
 });
 
@@ -615,38 +617,26 @@ test('setup runs no sudo, for a resident with a user of its own or one run as th
   }
 });
 
-test('run as this user, setup says before anything is installed that linger is off, that the service needs it, and who can run the line that turns it on, and goes on', async () => {
+test('where linger is off, setup says before anything is installed that a service of this user stops at logout, and who can run the line that turns it on and when, asks nothing, and goes on', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['', 'yes'], secrets: [KEY] }, { lingerOf: (user) => (user === 'alice' ? false : true) });
+  const made = world(dir, { answers: [''], secrets: [KEY] }, { lingerOf: (user) => (user === 'alice' ? false : true) });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(text(made.seen.out)).toContain('sudo loginctl enable-linger alice');
-  expect(text(made.seen.out)).toContain('Linger is off for alice, so a service of alice\'s would stop when alice logs out, and the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once with sudo, by you if you can use sudo here or by whoever administers this machine:\n  sudo loginctl enable-linger alice');
-  expect(made.seen.asked).toContain('Can you run it, or have whoever administers this machine run it? (yes/no) ');
-  expect(text(made.seen.out)).toContain('Run it any time before the resident\'s service is set up, in a second terminal or by whoever runs it for you; setup goes on here meanwhile.');
+  expect(text(made.seen.out)).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once with sudo. You can run it if you can use sudo here, or whoever administers this machine can. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  sudo loginctl enable-linger alice');
+  expect(made.seen.asked).toEqual([CONTINUE, 'An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
+  const at = made.seen.out.indexOf('  sudo loginctl enable-linger alice');
+  expect(made.seen.out.findIndex((line) => line.includes('Installing @animalabs/connectome-host'))).toBeGreaterThan(at);
   expect(made.seen.launched).not.toBeNull();
 });
 
-test('with linger off and nobody to run its line, setup says the resident can\'t go live as a service, and the person stops there or goes on knowingly; a later run of the install says the line and asks neither', async () => {
+test('with linger off, a later run of the install, its record there, says the same notice and asks nothing', async () => {
   const off = { lingerOf: (user: string) => (user === 'alice' ? false : true) };
-  const said = 'Without it, the resident can\'t go live as a service. Setup\'s agent can still set up the rest with you, and the service waits until linger is on.';
-  const stopping = directory();
-  const stopped = world(stopping, { answers: ['', 'no', 'no'], secrets: [KEY] }, off);
-  expect(await runSetup(stopping, ['discord'], stopped)).toBe(0);
-  expect(text(stopped.seen.out)).toContain(said);
-  expect(stopped.seen.out.at(-1)).toBe(`Setup stopped before installing anything, and keeps your answers. Once linger is on, run this same version of setup again here: \`bunx @animalabs/connectome-host@${VERSION} setup discord\`.`);
-  expect(stopped.seen.ran.some((argv) => args(argv)[0] === 'add')).toBe(false);
-  expect(stopped.seen.launched).toBeNull();
-  expect(JSON.parse(readFileSync(join(stopping, '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1 });
-  const going = directory();
-  const went = world(going, { answers: ['', 'no', 'yes'], secrets: [KEY] }, off);
-  expect(await runSetup(going, ['discord'], went)).toBe(0);
-  expect(text(went.seen.out)).toContain(said);
-  expect(went.seen.launched).not.toBeNull();
-  const later = world(going, { secrets: [KEY] }, off);
-  expect(await runSetup(going, ['discord'], later)).toBe(0);
-  expect(later.seen.asked.filter((question) => question.startsWith('Can you run it') || question.startsWith('Go on without it'))).toEqual([]);
-  expect(text(later.seen.out)).toContain('Linger is off for alice, so a service of alice\'s would stop when alice logs out, and the resident\'s service can\'t be set up until it\'s on.');
-  expect(text(later.seen.out)).toContain('  sudo loginctl enable-linger alice\nRun it any time before the resident\'s service is set up, in a second terminal or by whoever runs it for you; setup goes on here meanwhile.');
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }, off))).toBe(0);
+  expect(existsSync(join(dir, 'connectome-host', 'install.json'))).toBe(true);
+  const later = world(dir, { secrets: [KEY] }, off);
+  expect(await runSetup(dir, ['discord'], later)).toBe(0);
+  expect(later.seen.asked).toEqual([]);
+  expect(text(later.seen.out)).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once with sudo. You can run it if you can use sudo here, or whoever administers this machine can. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  sudo loginctl enable-linger alice');
   expect(later.seen.launched).not.toBeNull();
 });
 
@@ -2333,7 +2323,8 @@ test('without sudo, the line that turns linger on is one for root to run', async
   const made = world(dir, { answers: ['yes'], secrets: [KEY] }, { hasSudo: false, lingerOf: () => false });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const out = text(made.seen.out);
-  expect(out).toContain('One line turns it on, run once as root, by you or by whoever administers this machine:\n  loginctl enable-linger alice\n');
+  expect(out).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once as root. You or whoever administers this machine can run it. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  loginctl enable-linger alice\n');
+  expect(made.seen.asked).toEqual(['An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
   expect(out).not.toContain('sudo loginctl');
 });
 
