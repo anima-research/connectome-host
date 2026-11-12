@@ -30,6 +30,19 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 const FORM_VALUE = /^(?:[^ #$"'`\\]*|"[^"$\\]*"|'[^'$\\]*')$/;
 
+export const SHORT_CHARACTERS = 8;
+const charactersIn = (value: string): number => [...value.trim()].length;
+export const isShort = (value: string): boolean => charactersIn(value) < SHORT_CHARACTERS;
+
+export function shortLength(value: string): string {
+  const count = charactersIn(value);
+  const ends = value === value.trim() ? '' : ', not counting the whitespace at its ends';
+  return `${count} character${count === 1 ? '' : 's'} long${ends}`;
+}
+
+export const SHORT_HIDES = 'Setup hides a stored secret wherever its text appears in what its agent sees, so one this ' +
+  'short also hides parts of ids and of command output.';
+
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';
   if (CONTROL.test(value)) return 'it holds a line break, a tab or another control character';

@@ -1572,11 +1572,11 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
 
   test('asks Discord nothing about a secret of a name no service checks, and stores it as typed, spaces and all', async () => {
     let called = 0;
-    const made = install({ asker: typed('  a-value '), fetch: (async () => { called += 1; return new Response(''); }) as unknown as typeof fetch });
+    const made = install({ asker: typed('  a-longer-value '), fetch: (async () => { called += 1; return new Response(''); }) as unknown as typeof fetch });
     expect((await askSecret(made.module, { name: 'DISCORD_TOKEN_NOTE', purpose: 'x' })).success).toBe(true);
     expect(called).toBe(0);
     expect(made.shown).toEqual([]);
-    expect(readEnvFile(join(made.dir, '.env')).get('DISCORD_TOKEN_NOTE')).toBe('  a-value ');
+    expect(readEnvFile(join(made.dir, '.env')).get('DISCORD_TOKEN_NOTE')).toBe('  a-longer-value ');
   });
 });
 
@@ -1718,7 +1718,7 @@ describe('setup--ask_secret', () => {
   test('asks the person, stores the value in .env (0600) beside what is there, and answers where it went and what Discord said of it', async () => {
     const asked: Array<{ name: string; purpose: string }> = [];
     const { dir, module } = install({
-      envFile: 'ANTHROPIC_API_KEY="sk-ant-the-key"\nDISCORD_TOKEN="old"\n',
+      envFile: 'ANTHROPIC_API_KEY="sk-ant-the-key"\nDISCORD_TOKEN="old-discord-token"\n',
       asker: { ask: async (name, purpose) => { asked.push({ name, purpose }); return 'new-discord-token'; } },
     });
     chmodSync(join(dir, '.env'), 0o644);
@@ -2088,6 +2088,126 @@ describe('setup--ask_secret', () => {
     const stored = readEnvFile(join(dir, '.env'));
     expect(stored.get('FIRST_TOKEN')).toBe('value-of-FIRST_TOKEN');
     expect(stored.get('SECOND_TOKEN')).toBe('value-of-SECOND_TOKEN');
+  });
+
+  describe('a value shorter than 8 characters', () => {
+    const NAME = 'OPENAI_COMPATIBLE_API_KEY';
+    const WARNING = `What you typed for ${NAME} is `;
+    const answering = (...answers: Array<string | null>) => {
+      const asked: Array<{ purpose: string; turned: boolean }> = [];
+      let turned = false;
+      const asker = {
+        ask: async (_name: string, purpose: string) => {
+          asked.push({ purpose, turned });
+          turned = false;
+          setImmediate(() => { turned = true; });
+          return answers.shift() ?? null;
+        },
+      };
+      return { asker, asked };
+    };
+
+    test('is stored only once the person types it again, with the warning shown between the two asks and nothing awaited between them, and the answer says it is short', async () => {
+      const { asker, asked } = answering('0', '0');
+      const { dir, module, shown } = install({ asker });
+      const result = await askSecret(module, { name: NAME, purpose: 'a key the local endpoint takes' });
+      expect(result.success, result.error).toBe(true);
+      expect(asked).toEqual([
+        { purpose: 'a key the local endpoint takes', turned: false },
+        { purpose: 'the same value again to keep it, or another one', turned: false },
+      ]);
+      expect(shown.filter((line) => line.startsWith(WARNING))).toEqual([`What you typed for ${NAME} is 1 character long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.`]);
+      expect(readEnvFile(join(dir, '.env')).get(NAME)).toBe('0');
+      expect(String(result.data)).toEndWith(`The value stored as ${NAME} is shorter than 8 characters, and the person typed it twice to keep it. So <${NAME}> can appear in place of parts of other text, such as ids and command output, and setup--run leaves an environment variable with the same value out of its commands' environment.`);
+    });
+
+    test('is judged on its trimmed text, which hiding matches too', async () => {
+      const { asker, asked } = answering('  ab       ', '  ab       ');
+      const { module, shown } = install({ asker });
+      const result = await askSecret(module, { name: NAME, purpose: 'a key' });
+      expect(result.success, result.error).toBe(true);
+      expect(asked.length).toBe(2);
+      expect(shown.filter((line) => line.startsWith(WARNING)).map((line) => line.split('.')[0])).toEqual([`What you typed for ${NAME} is 2 characters long, not counting the whitespace at its ends`]);
+    });
+
+    test('of only whitespace is nothing typed, at either ask, under any name', async () => {
+      const first = install({ asker: answering('   ').asker });
+      const none = await askSecret(first.module, { name: NAME, purpose: 'a key' });
+      expect(none.success).toBe(false);
+      expect(none.error).toStartWith(`Nothing came back from the terminal (Enter alone, or only whitespace, or the terminal closed), so nothing was stored as ${NAME}.`);
+      expect(existsSync(join(first.dir, '.env'))).toBe(false);
+
+      const second = install({ asker: answering('0', ' \t ').asker });
+      const declined = await askSecret(second.module, { name: NAME, purpose: 'a key' });
+      expect(declined.success).toBe(false);
+      expect(declined.error).toStartWith(`The person was told the value is shorter than 8 characters and gave nothing back (Enter alone, or only whitespace, or the terminal closed), so nothing was stored as ${NAME}.`);
+      expect(existsSync(join(second.dir, '.env'))).toBe(false);
+    });
+
+    test('is asked for again under a checked name too, before anything is sent', async () => {
+      const events: string[] = [];
+      const asker = { ask: async () => { events.push('ask'); return 'abc'; } };
+      const fetch = (async () => { events.push('fetch'); return Response.json({ id: '1000', username: 'test-bot' }); }) as unknown as typeof globalThis.fetch;
+      const { module } = install({ asker, fetch });
+      const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(result.success, result.error).toBe(true);
+      expect(events.slice(0, 3)).toEqual(['ask', 'ask', 'fetch']);
+    });
+
+    test('tells the agent when the value it replaces was short, which setup still hides', async () => {
+      const short = install({ asker: answering('q7Rz2kW9pX').asker, envFile: `${NAME}=0\n` });
+      const replaced = await askSecret(short.module, { name: NAME, purpose: 'a key' });
+      expect(replaced.success, replaced.error).toBe(true);
+      expect(String(replaced.data)).toBe(`stored as ${NAME} in ${join(short.dir, '.env')}. The value stored as ${NAME} before this one was shorter than 8 characters, and setup still hides it, as <${NAME}>, until the host restarts.`);
+
+      const long = install({ asker: answering('q7Rz2kW9pX').asker, envFile: `${NAME}=w3Lm8vQ2tY\n` });
+      const other = await askSecret(long.module, { name: NAME, purpose: 'a key' });
+      expect(String(other.data)).toBe(`stored as ${NAME} in ${join(long.dir, '.env')}`);
+
+      const same = install({ asker: answering('0', '0').asker, envFile: `${NAME}=0\n` });
+      const kept = await askSecret(same.module, { name: NAME, purpose: 'a key' });
+      expect(String(kept.data)).not.toContain('before this one');
+    });
+
+    test('stores nothing when the person gives nothing at the second ask, and stores another value they give there, judged afresh', async () => {
+      const declined = install({ asker: answering('0', null).asker });
+      const nothing = await askSecret(declined.module, { name: NAME, purpose: 'a key' });
+      expect(nothing.success).toBe(false);
+      expect(nothing.error).toStartWith(`The person was told the value is shorter than 8 characters and gave nothing back`);
+      expect(existsSync(join(declined.dir, '.env'))).toBe(false);
+
+      const longer = answering('0', 'q7Rz2kW9pX');
+      const replaced = install({ asker: longer.asker });
+      const stored = await askSecret(replaced.module, { name: NAME, purpose: 'a key' });
+      expect(stored.success, stored.error).toBe(true);
+      expect(longer.asked.length).toBe(2);
+      expect(readEnvFile(join(replaced.dir, '.env')).get(NAME)).toBe('q7Rz2kW9pX');
+      expect(String(stored.data)).not.toContain('shorter than');
+
+      const unwritable = install({ asker: answering('0', 'q7Rz2kW9pX\nq7Rz2kW9pX').asker });
+      const refused = await askSecret(unwritable.module, { name: NAME, purpose: 'a key' });
+      expect(refused.success).toBe(false);
+      expect(refused.error).toStartWith(`What the person typed for ${NAME} can't be stored, since `);
+      expect(existsSync(join(unwritable.dir, '.env'))).toBe(false);
+
+      const twice = answering('0', '1', '1');
+      const again = install({ asker: twice.asker });
+      const kept = await askSecret(again.module, { name: NAME, purpose: 'a key' });
+      expect(kept.success, kept.error).toBe(true);
+      expect(twice.asked.map((a) => a.turned)).toEqual([false, false, false]);
+      expect(again.shown.filter((line) => line.startsWith(WARNING)).length).toBe(2);
+      expect(readEnvFile(join(again.dir, '.env')).get(NAME)).toBe('1');
+    });
+
+    test('isn\'t asked for again at 8 characters', async () => {
+      const { asker, asked } = answering('12345678');
+      const { dir, module, shown } = install({ asker });
+      const result = await askSecret(module, { name: NAME, purpose: 'a key' });
+      expect(result.success, result.error).toBe(true);
+      expect(asked.length).toBe(1);
+      expect(shown.some((line) => line.startsWith(WARNING))).toBe(false);
+      expect(String(result.data)).toBe(`stored as ${NAME} in ${join(dir, '.env')}`);
+    });
   });
 });
 
@@ -2793,20 +2913,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
 
   test('a provider key the provider answered otherwise, or couldn\'t be asked about, is stored as not known to work, with what to do next, never with the key in the words', async () => {
     const answered = install({
-      asker: typed('key-one'),
+      asker: typed('the-key-one'),
       fetch: (async () => Response.json({ error: { message: 'overloaded' } }, { status: 529 })) as unknown as typeof fetch,
     });
     const first = await askSecret(answered.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
     expect(String(first.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(answered.dir, '.env')}, but it isn't known to work: Anthropic answered 529: overloaded. Call setup--check_model in a minute, to check the key again.`);
-    expect(readEnvFile(join(answered.dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('key-one');
+    expect(readEnvFile(join(answered.dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('the-key-one');
     expect(answered.shown.at(-1)).toBe('It\'s stored as ANTHROPIC_API_KEY, though whether it works isn\'t known.');
     const unasked = install({
-      asker: typed('key-two'),
-      fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bearer key-two'); }) as unknown as typeof fetch,
+      asker: typed('the-key-two'),
+      fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bearer the-key-two'); }) as unknown as typeof fetch,
     });
     const second = await askSecret(unasked.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
     expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>). Check it again with setup--check_model, or go on with it unchecked.`);
-    expect(said(unasked, second)).not.toContain('key-two');
+    expect(said(unasked, second)).not.toContain('the-key-two');
     expect(unasked.shown.at(-1)).toBe('It\'s stored as OPENROUTER_API_KEY, though whether it works isn\'t known.');
     const otherwise = install({
       asker: typed('key-three'),
@@ -3096,7 +3216,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
 
   test('an OPENAI_COMPATIBLE_API_KEY is stored without being checked', async () => {
     let called = 0;
-    const made = install({ asker: typed('a-value'), fetch: (async () => { called += 1; return models(); }) as unknown as typeof fetch });
+    const made = install({ asker: typed('a-longer-value'), fetch: (async () => { called += 1; return models(); }) as unknown as typeof fetch });
     const result = await askSecret(made.module, { name: 'OPENAI_COMPATIBLE_API_KEY', purpose: 'a key' });
     expect(String(result.data)).toBe(`stored as OPENAI_COMPATIBLE_API_KEY in ${join(made.dir, '.env')}`);
     expect(called).toBe(0);
