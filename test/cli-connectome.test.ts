@@ -11,6 +11,7 @@ import { bare, COMMANDS, send } from '../src/cli/connectome.js';
 import { serviceUnits } from '../src/cli/service-unit.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
+import { SHOWN_FILE } from '../src/cli/shown.js';
 import { installPaths } from '../src/update/contract.js';
 import { shellWord } from '../src/update/launcher.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
@@ -1290,4 +1291,42 @@ test('bare whose host doesn\'t answer the health request gives up and says so', 
   expect(status).toBe(0);
   expect(out.join('\n')).toContain('Its host is running: pid 4242');
   expect(out.join('\n')).toContain('Its update state couldn\'t be read: no answer came within 0.3 s');
+});
+
+test('where setup\'s agent names a file for the person, the install command\'s refusals and the package\'s hand-over line go there too', async () => {
+  const said = join(realpathSync(mkdtempSync(join(tmpdir(), 'cli-said-'))), 'said');
+  made.push(dirname(said));
+  process.env[SHOWN_FILE] = said;
+  try {
+    const none = install();
+    const noneCommand = writeInstallCommand(none.root, '');
+    unlinkSync(join(none.root, 'current'));
+    writeFileSync(said, '');
+    const noCurrent = await run(noneCommand.path, ['service', 'install'], none.root);
+    expect(noCurrent.status).toBe(1);
+    expect(noCurrent.err).toContain('has no current release');
+    expect(readFileSync(said, 'utf-8')).toBe(noCurrent.err);
+
+    const broken = install();
+    const brokenCommand = writeInstallCommand(broken.root, '');
+    release(broken.root, '0.13.0', stubPackage(broken.root, null));
+    moveCurrent(broken.root, '0.13.0');
+    writeFileSync(said, '');
+    const noLoad = await run(brokenCommand.path, ['service', 'install'], broken.root);
+    expect(noLoad.status).toBe(1);
+    expect(noLoad.err).toContain('has no connectome command that loads');
+    expect(readFileSync(said, 'utf-8')).toBe(noLoad.err);
+
+    const handed = install();
+    writeInstallCommand(handed.root, '');
+    release(handed.root, '0.15.0', stubPackage(handed.root, 'export async function main() { process.kill(process.pid, "SIGKILL"); }\n'));
+    moveCurrent(handed.root, '0.15.0');
+    writeFileSync(said, '');
+    const killed = await run(BIN, ['service', 'install'], handed.work);
+    expect(killed.status).toBe(1);
+    expect(killed.err).toContain('ended on SIGKILL');
+    expect(readFileSync(said, 'utf-8')).toBe(killed.err);
+  } finally {
+    delete process.env[SHOWN_FILE];
+  }
 });

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
   EventResponse,
@@ -25,6 +26,7 @@ import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAns
 import { unknownToolResult } from './unknown-tool.js';
 import { writeJsonAtomic } from '../update/contract.js';
 import { readSetupState } from '../setup/state.js';
+import { SHOWN_FILE } from '../cli/shown.js';
 
 export interface SecretAsker {
   ask(name: string, purpose: string): Promise<string | null>;
@@ -557,6 +559,19 @@ export class SetupModule implements Module {
     const out = new Capture(overlap);
     const err = new Capture(overlap);
     const env = this.commandEnv(atLaunch.names, atLaunch.values);
+    const said = mkdtempSync(join(tmpdir(), 'connectome-setup-said-'));
+    try {
+      const file = join(said, 'said');
+      writeFileSync(file, '', { mode: 0o600 });
+      return await this.ranAndAnswered(command, limit, { ...env, [SHOWN_FILE]: file }, out, err, file);
+    } finally {
+      rmSync(said, { recursive: true, force: true });
+    }
+  }
+
+  private async ranAndAnswered(
+    command: string, limit: number, env: Record<string, string>, out: Capture, err: Capture, said: string,
+  ): Promise<ToolResult> {
     const child = spawn('bash', ['--norc', '-c', command], {
       cwd: this.config.dir,
       env,
@@ -633,6 +648,9 @@ export class SetupModule implements Module {
       const ending = `setup--run's command ended (exit ${ended.code ?? ended.signal})`;
       const what = notes.length > 0 ? `${ending}. ${notes.join(' ')} Its output isn't shown`
         : `${ending}, and its output isn't shown`;
+      if (statSync(said, { throwIfNoEntry: false })?.size) {
+        this.config.show('What it said for you isn\'t shown, since which values are secret isn\'t known.');
+      }
       if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
       return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
         'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
@@ -641,6 +659,8 @@ export class SetupModule implements Module {
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
     const stderr = err.result(secrets, replaced);
+    this.showSaid(said, secrets, stoppedAtLimit ? `it was stopped at its ${limit / 1000} s limit`
+      : ended.signal ? `it was ended by ${ended.signal}` : null);
     const hidden = guessed.filter((name) => replaced.has(name)).sort();
     if (hidden.length > 0) {
       notes.push(`${join(this.config.dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is ` +
@@ -661,6 +681,21 @@ export class SetupModule implements Module {
       replaced: [...replaced].sort(),
     };
     return { success: true, data };
+  }
+
+  private showSaid(file: string, secrets: Secret[], unfinished: string | null): void {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf-8');
+    } catch (error) {
+      const why = (error as NodeJS.ErrnoException).code ?? (error as Error).message;
+      this.config.show(`What it said for you can't be shown: ${shown(file)} can't be read (${why}).`);
+      return;
+    }
+    if (text === '') return;
+    this.config.show('It said:');
+    for (const line of redacted(text, secrets).replace(/\n$/, '').split('\n')) this.config.show(`  ${shown(line)}`);
+    if (unfinished !== null) this.config.show(`It didn't finish: ${unfinished}.`);
   }
 
   private async askSecret(input: { name?: unknown; purpose?: unknown }): Promise<ToolResult> {
