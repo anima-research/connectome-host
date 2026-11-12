@@ -34,7 +34,7 @@ export function makeSpawnHelperExecutable(ptyDir: string, platform: NodeJS.Platf
       if (mode & 0o100) continue;
       chmodSync(helper, mode | 0o111);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return `${helper} isn't there`;
       return `${helper} couldn't be made executable (${(error as Error).message})`;
     }
   }
