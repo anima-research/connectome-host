@@ -9,7 +9,7 @@ import { basename, dirname, join } from 'node:path';
 import {
   installService, portFree, recipeHasShell, runService, serviceCommands, serviceLines, unitElsewhere, type ServiceSystem,
 } from '../src/cli/service.js';
-import { slugOf } from '../src/cli/service-unit.js';
+import { serviceUnits, slugOf } from '../src/cli/service-unit.js';
 import { SHOWN_FILE } from '../src/cli/shown.js';
 import { readRecipeDocument } from '../src/recipe-document.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
@@ -271,7 +271,7 @@ class FakeSystemd {
     const loaded = this.loaded.get(unit) ?? this.load(unit);
     if (loaded) {
       this.referenced.add(unit);
-      if (!unit.endsWith('-shell.service') && asked.includes('Restart')) this.checkedEnvironment.push(loaded.environment);
+      if (!unit.endsWith('.shell.service') && asked.includes('Restart')) this.checkedEnvironment.push(loaded.environment);
     }
     const crashing = loaded !== undefined && this.running.has(unit) && this.crashing.has(unit);
     if (crashing) {
@@ -462,11 +462,11 @@ function fake(at: Install, options: {
 
 const unitsDir = (at: Install) => join(at.home, '.config', 'systemd', 'user');
 const hostUnit = (at: Install) => join(unitsDir(at), 'connectome-my-resident.service');
-const shellUnit = (at: Install) => join(unitsDir(at), 'connectome-my-resident-shell.service');
+const shellUnit = (at: Install) => join(unitsDir(at), 'connectome-my-resident.shell.service');
 const agentPlist = (at: Install, label = 'com.animalabs.connectome.my-resident') =>
   join(at.home, 'Library', 'LaunchAgents', `${label}.plist`);
 const HOST = 'connectome-my-resident.service';
-const SHELL = 'connectome-my-resident-shell.service';
+const SHELL = 'connectome-my-resident.shell.service';
 
 function nothingWritten(at: Install, unitFile = hostUnit(at)): void {
   expect(existsSync(unitFile)).toBe(false);
@@ -2131,6 +2131,13 @@ test('a run as root on a directory root owns goes on', async () => {
   f.system.uid = 0;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.err).toEqual([]);
+});
+
+test('on Linux, the shell daemon\'s unit of an install in alice and the host\'s unit of an install in alice-shell have different names', () => {
+  const alice = serviceUnits('/srv/alice/connectome-host', 'linux', '/home/r')!;
+  const aliceShell = serviceUnits('/srv/alice-shell/connectome-host', 'linux', '/home/r')!;
+  expect(alice.shell.name).not.toBe(aliceShell.host.name);
+  expect(alice.shell.file).not.toBe(aliceShell.host.file);
 });
 
 test('a no-shell run whose host isn\'t ready leaves the shell daemon\'s unit as it is', async () => {

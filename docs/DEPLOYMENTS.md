@@ -92,7 +92,7 @@ to stop, `kickstart -k` to restart.) A service `connectome service install`
 writes is named after the install's working directory instead:
 `com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
 shell daemon `com.animalabs.connectome.<name>.shell` /
-`connectome-<name>-shell.service`. `connectome` alone shows its own stop and
+`connectome-<name>.shell.service`. `connectome` alone shows its own stop and
 start commands, and how to follow its log.
 
 A restart can make auxiliary model calls before any user message: agent-framework
