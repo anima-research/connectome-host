@@ -26,6 +26,7 @@ import type {
 import { appendFileSync } from 'node:fs';
 import { describeError } from './logging-error-fields.js';
 import { serializeRecord } from './logging-record.js';
+import { sendWithRecoveredThinkingGuard } from './recovered-thinking.js';
 
 function summarizeRequest(request: ProviderRequest): Record<string, unknown> {
   const msgs = (request.messages ?? []) as Array<{ role?: string; content?: unknown }>;
@@ -153,7 +154,24 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     }
   }
 
+  // Recovered thinking a model refuses is left out of its requests, and a
+  // request refused for it is sent again once without it (recovered-thinking.ts).
   async complete(
+    request: ProviderRequest,
+    options?: ProviderRequestOptions,
+  ): Promise<ProviderResponse> {
+    return sendWithRecoveredThinkingGuard(request, undefined, (req) => this.completeOnce(req, options));
+  }
+
+  async stream(
+    request: ProviderRequest,
+    callbacks: StreamCallbacks,
+    options?: ProviderRequestOptions,
+  ): Promise<ProviderResponse> {
+    return sendWithRecoveredThinkingGuard(request, callbacks, (req, cb) => this.streamOnce(req, cb!, options));
+  }
+
+  private async completeOnce(
     request: ProviderRequest,
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
@@ -169,7 +187,7 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     return response;
   }
 
-  async stream(
+  private async streamOnce(
     request: ProviderRequest,
     callbacks: StreamCallbacks,
     options?: ProviderRequestOptions,

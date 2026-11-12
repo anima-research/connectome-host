@@ -100,6 +100,51 @@ describe('transformContent', () => {
     expect(t.text).toContain('</recovered_thinking>');
   });
 
+  test('dropThinking leaves thinking out', () => {
+    const msg = mkMsg({
+      uuid: 'x',
+      sender: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'I was reasoning about X' },
+        { type: 'text', text: 'Answer' },
+      ],
+    });
+    expect(transformContent(msg, { dropThinking: true })).toEqual([{ type: 'text', text: 'Answer' }]);
+  });
+
+  test('a turn of thinking alone keeps a placeholder when its thinking is left out', () => {
+    const msg = mkMsg({ uuid: 'x', sender: 'assistant', content: [{ type: 'thinking', thinking: 'only a thought' }] });
+    expect(transformContent(msg, { dropThinking: true })).toEqual([{ type: 'text', text: '[earlier thinking left out]' }]);
+    const empty = mkMsg({ uuid: 'y', sender: 'assistant', content: [{ type: 'thinking', thinking: '' }] });
+    // R1-12: empty thinking left nothing out, so the marker doesn't say it did.
+    expect(transformContent(empty)).toEqual([{ type: 'text', text: '[empty turn]' }]);
+    // A human turn with nothing to import stays empty, as before.
+    expect(transformContent(mkMsg({ uuid: 'z', sender: 'human', content: [] }))).toEqual([]);
+  });
+
+  test('a non-string thought does not stop the import', () => {
+    const msg = mkMsg({ uuid: 'x', sender: 'assistant', content: [{ type: 'thinking', thinking: 123 }, { type: 'text', text: 'ok' }] });
+    expect(transformContent(msg)).toEqual([
+      { type: 'text', text: '<recovered_thinking>\n123\n</recovered_thinking>' },
+      { type: 'text', text: 'ok' },
+    ]);
+    const missing = mkMsg({ uuid: 'y', sender: 'assistant', content: [{ type: 'thinking' }, { type: 'text', text: 'ok' }] });
+    expect(transformContent(missing)).toEqual([{ type: 'text', text: 'ok' }]);
+  });
+
+  test('empty thinking never produces a block', () => {
+    const msg = mkMsg({
+      uuid: 'x',
+      sender: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '' },
+        { type: 'thinking', thinking: '  \n ' },
+        { type: 'text', text: 'Hello!' },
+      ],
+    });
+    expect(transformContent(msg)).toEqual([{ type: 'text', text: 'Hello!' }]);
+  });
+
   test('tool_use round-trips with id, name, input', () => {
     const msg = mkMsg({
       uuid: 'x',
