@@ -345,8 +345,9 @@ function failed(error: string): ToolResult {
 }
 
 function linked(nothing: string, link: EnvLinkError): ToolResult {
-  return failed(`${nothing}: ${link.message}. Asking again won't help until the person replaces the link with the file ` +
-    'it leads to, if that\'s there, or takes it away; tell them so.');
+  return failed(`${nothing}: ${link.path} is a link, and it's written only as a file of its own, not through a link or ` +
+    'over one. Asking again won\'t help until the person replaces the link with the file it leads to, if that\'s there, ' +
+    'or takes it away; tell them so, and that `ls -l` on it, in a terminal of their own, shows where it leads.');
 }
 
 interface Seen {

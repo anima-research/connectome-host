@@ -1878,7 +1878,7 @@ describe('setup--ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).get('DISCORD_TOKEN')).toBe('the-new-token');
   });
 
-  test('asks nothing while .env is a link, to a file, a directory, a file this user can\'t read, or nothing, saying where it leads and what the person can do, and leaves the link as it was', async () => {
+  test('asks nothing while .env is a link, to a file, a directory, a file this user can\'t read, or nothing, saying how the person sees where it leads, and what they can do, and leaves the link as it was', async () => {
     const elsewhere = scratch();
     const targets: Array<[string, string]> = [
       ['a file', join(elsewhere, 'shared.env')],
@@ -1898,7 +1898,7 @@ describe('setup--ask_secret', () => {
       const { module } = install({ dir, asker: { ask: async () => { asked = true; return 'a-new-secret'; } } });
       const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' });
       expect(result.isError, what).toBe(true);
-      expect(result.error, what).toBe(`Nothing was asked, so nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link to ${target}, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so.`);
+      expect(result.error, what).toBe(`Nothing was asked, so nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so, and that \`ls -l\` on it, in a terminal of their own, shows where it leads.`);
       expect(asked, what).toBe(false);
       expect(lstatSync(join(dir, '.env')).isSymbolicLink(), what).toBe(true);
       expect(existsSync(target) ? statSync(target).mode & 0o777 : null, what).toBe(modeBefore);
@@ -1906,7 +1906,7 @@ describe('setup--ask_secret', () => {
     expect(readFileSync(join(elsewhere, 'shared.env'), 'utf-8')).toBe('PORT=8080\n');
   });
 
-  test('stores nothing through or over a .env made a link while it asks, to a file that holds the value, a directory or a file this user can\'t read, saying where it leads and what the person can do, and leaves the link and its target as they were', async () => {
+  test('stores nothing through or over a .env made a link while it asks, to a file that holds the value, a directory or a file this user can\'t read, saying how the person sees where it leads, and what they can do, and leaves the link and its target as they were', async () => {
     const elsewhere = scratch();
     const holding = join(elsewhere, 'shared.env');
     writeFileSync(holding, 'PORT=8080\nDISCORD_TOKEN="linked-value"\n');
@@ -1919,12 +1919,32 @@ describe('setup--ask_secret', () => {
       const { module } = install({ dir, asker: { ask: async () => { symlinkSync(target, join(dir, '.env')); return 'linked-value'; } } });
       const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' });
       expect(result.isError, target).toBe(true);
-      expect(result.error, target).toBe(`Nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link to ${target}, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so.`);
+      expect(result.error, target).toBe(`Nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so, and that \`ls -l\` on it, in a terminal of their own, shows where it leads.`);
       expect(lstatSync(join(dir, '.env')).isSymbolicLink(), target).toBe(true);
       expect(statSync(target).mode & 0o777, target).toBe(modeBefore);
     }
     expect(readFileSync(holding, 'utf-8')).toBe('PORT=8080\nDISCORD_TOKEN="linked-value"\n');
     expect(statSync(holding).mode & 0o777).toBe(0o644);
+  });
+
+  test('before it knows which values are secret, each tool refuses a .env that is a link without its target, naming what the person runs in a terminal of their own to see where it leads', async () => {
+    const SECRET = 'sk-linked-583-secret';
+    const call = (module: SetupModule, name: string, input: Record<string, unknown>) =>
+      module.handleToolCall({ id: 'c12', name, input } as ToolCall);
+    const linkedTools: Array<[string, Record<string, unknown>]> = [
+      ['discord', {}], ['check_model', { name: 'OPENAI_API_KEY', model: 'gpt-test' }], ['ask_secret', { name: 'OPENAI_API_KEY', purpose: 'a key' }],
+    ];
+    for (const [name, input] of linkedTools) {
+      const dir = scratch();
+      writeFileSync(join(dir, `target-${SECRET}.env`), 'DISCORD_TOKEN="t"\nOPENAI_API_KEY="k"\n');
+      symlinkSync(`target-${SECRET}.env`, join(dir, '.env'));
+      const { module } = install({ dir, asker: { ask: async () => 'x' }, env: { OPENAI_API_KEY: SECRET } });
+      const result = await call(module, name, input);
+      expect(result.success, name).toBe(false);
+      expect(result.error, name).not.toContain(SECRET);
+      expect(result.error, name).toContain(`${join(dir, '.env')} is a link, and it's written only as a file of its own`);
+      expect(result.error, name).toContain('tell them so, and that `ls -l` on it, in a terminal of their own, shows where it leads.');
+    }
   });
 
   modeTest('says it isn\'t known whether a value was stored when its directory refuses the write to .env, and leaves no copy of it beside .env', async () => {

@@ -201,12 +201,15 @@ export function envForm(path: string): EnvFormError | null {
   return outside.length > 0 ? new EnvFormError(path, outside) : null;
 }
 
-export class EnvLinkError extends Error {}
+export class EnvLinkError extends Error {
+  constructor(readonly path: string, target: string) {
+    super(`${path} is a link to ${target}, and it's written only as a file of its own, not through a link or over one`);
+  }
+}
 
 export function envLink(path: string): EnvLinkError | null {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
-  return new EnvLinkError(`${path} is a link to ${readlinkSync(path)}, and it's written only as a file of its own, ` +
-    'not through a link or over one');
+  return new EnvLinkError(path, readlinkSync(path));
 }
 
 export function writeEnvValue(path: string, name: string, value: string): void {
