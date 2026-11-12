@@ -14,7 +14,8 @@ import { RELEASE_HOST } from '../src/update/launcher.js';
 import type { SwitchFleet } from '../src/update/quiesce.js';
 import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
-  COMMAND_WAYS, commandFor, goBackLines, noticeLines, statusLines, type HostQuiet, type ReadCheck, type UpdateStatus,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, statusLines, type HostQuiet,
+  type ReadCheck, type UpdateStatus,
   type UpdateWay,
 } from '../src/web/update-text.js';
 
@@ -722,7 +723,11 @@ describe('Restart', () => {
   test("is refused with nothing newer installed, with no stop to use, before this host's commit, or during an install", async () => {
     const { root, dataDir } = install('0.12.1', ['0.11.0']);
     expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled()).lines)
-      .toEqual(['No release newer than 0.12.1 is installed: Update installs one first.']);
+      .toEqual(['No release newer than 0.12.1 is installed: /update install installs one first.']);
+    for (const ways of [PAGE_WAYS, cliWays('connectome'), TOOL_WAYS]) {
+      expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled(undefined, ways)).lines)
+        .toEqual([`No release newer than 0.12.1 is installed: ${ways.install} installs one first.`]);
+    }
     placeRelease(root, '0.13.0');
     expect((await hostUpdate({ root, dataDir }).update.restartToInstalled()).lines)
       .toEqual([expect.stringContaining('This host has no stop a restart can use')]);
