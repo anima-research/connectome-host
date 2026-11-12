@@ -156,7 +156,7 @@ Once Discord is set up ("Discord") and any history is imported ("Importing a his
 - **Its model,** by its exact id (below).
 - **Its system prompt:** none, unless they want a sentence or two ("Working with the person").
 - **Where it lives:** its channel, by name, DMs from the person, and the person as its admin ("Discord"). Say again that this is where it starts, not a limit.
-- **Its time zone:** this machine's, by name, which `bun --no-env-file -e 'console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)'` prints. Say that it's this machine's, which may not be theirs, as on a rented machine. Where they give another, as a place or a zone such as `Europe/Berlin`, it goes in the recipe as `agent.timezone`.
+- **Its time zone:** this machine's, by name, which `bun --no-env-file -e 'console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)'` prints. Say that it's this machine's, which may not be theirs, as on a rented machine. Where they give another, as a place or a zone such as `Europe/Berlin`, use that. Either way, the zone the read-back names goes in the recipe as `agent.timezone`.
 - **No schedule of its own:** it wakes only when someone talks to it, unless they want it to wake on its own ("The recipe").
 - **The two grants,** each with one line on what it lets the resident do ("What the resident may do to itself").
 - **Where linger is off,** that the start waits on its root line, shown again (below).
@@ -189,7 +189,7 @@ The recipe is a JSON file the service runs the host with. Write it in `<dir>`, b
 
 - `name` is the recipe's display name; `agent.name` is the resident's name as its memory and the importer know it ("Working with the person").
 - `agent.model` is the id as the provider names it. For Anthropic's API the host needs nothing more; for a gateway or another provider, read its section ("Gateways and other providers").
-- `timezone` is the zone the person gave in the read-back, an IANA name such as `Europe/Berlin`; leave it out where they keep this machine's ("The read-back"). The host checks it, gives the resident its clock in it, and passes it to every server it starts, so discord-mcpl writes the times of earlier messages in it too.
+- `timezone` is the zone the read-back named, an IANA name such as `Europe/Berlin`, this machine's included, so the resident's clock is that zone from the recipe alone ("The read-back"). The host checks it, gives the resident its clock in it, and passes it to every server it starts, so discord-mcpl writes the times of earlier messages in it too.
 - `systemPrompt` is the person's choice, kept minimal.
 - `modules.heartbeat`, when the person wants the resident to wake on its own: `"modules": { "heartbeat": true }`. It gets a heartbeat and reminders it sets and changes itself, with their tools. Off when left out.
 - `modules.selfUpdate` and `codeExecution` are the two grants ("What the resident may do to itself"). The skeleton carries `codeExecution` on, as the host's makers recommend for every resident; take it out if the person declines it. Add `selfUpdate` once it's decided, beside any other module in `modules`.
