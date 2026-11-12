@@ -900,7 +900,7 @@ async function runPiped(app: AppContext) {
       ask: async (name, purpose) => {
         const release = turns.holdCaps();
         try {
-          const answer = await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`,
+          const answer = await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone stores nothing)`,
             paste ?? undefined);
           const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
           for (const waiting of waitingLines) {
