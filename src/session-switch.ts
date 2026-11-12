@@ -1,5 +1,6 @@
 import type { PanelOp } from './web/panel-data.js';
 import { isSwitchQuiesce } from './update/contract.js';
+import { refusedWhileHeld } from './update/quiesce.js';
 
 export const SWITCH_UNDER_WAY = 'a session switch is under way, so this one isn\'t started; try again once it has finished';
 export const HOST_STOPPING = 'the host is stopping, so it starts no session switch';
@@ -82,10 +83,13 @@ export function refusedWhileSwitching(app: { switching?: boolean }, what: string
 }
 
 /** The refusal every entry gives an action that would change the session
- *  while this host is quiesced for a release switch, or null when it isn't. */
+ *  while this host holds for a release switch's last look, whatever quiesced
+ *  it, or is quiesced for a release switch; null when neither is so. */
 export function refusedWhileSwitchQuiesced(
   app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } }, what: string,
 ): string | null {
+  const held = refusedWhileHeld(what);
+  if (held !== null) return held;
   const status = app.framework.getHostModeStatus();
   return status.quiesced && isSwitchQuiesce(status.reason)
     ? `${what} refused: this host is quiesced for a release switch. If that switch goes ahead, its stop can cut a change ` +

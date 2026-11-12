@@ -57,6 +57,9 @@ export interface SwitchQuiet {
   drained: boolean;
   hosts: HostQuiet[];
   look: Looked;
+  /** When this host's quiesce began, as its status read after the last look
+   *  gives it. */
+  since?: number;
 }
 
 export interface SwitchResumed {
@@ -185,7 +188,7 @@ export async function quiesceForSwitch(
   const { hosts: children, look } = await takeLastLook(fleet, opts.to, opts.mark);
   const after = framework.getHostModeStatus();
   const hosts = [quiet(THIS_HOST, !after.quiesced || (before.quiesced && before.drained) ? after : before), ...children];
-  return { drained: hosts.every((h) => h.answered && h.drained), hosts, look };
+  return { drained: hosts.every((h) => h.answered && h.drained), hosts, look, since: after.since };
 }
 
 export async function resumeAfterSwitchQuiesce(framework: QuiesceFramework, fleet: SwitchFleet | null, look?: string): Promise<SwitchResumed> {
@@ -314,6 +317,14 @@ function processRuns(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
+}
+
+/** The refusal of `what`, a change to the session, while this host holds for
+ *  the switch's last look, or null where it doesn't hold. */
+export function refusedWhileHeld(what: string, hold: SwitchHold = switchHold): string | null {
+  const text = hold.refusal();
+  if (text === null) return null;
+  return `${what} refused: ${text} Nothing changed${text === HOLDING ? '; try again once the switch is decided' : ''}.`;
 }
 
 /** This process's hold, which its answers to the switch and the gate on its

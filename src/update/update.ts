@@ -157,6 +157,7 @@ export class HostUpdate {
   private restart: RestartState | null = null;
   private looked: Looked | null = null;
   private quiescedFramework: SwitchFramework | null = null;
+  private quiescedSince: number | undefined;
   private endingSwitchQuiesce = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private serviceLine = false;
@@ -623,10 +624,15 @@ export class HostUpdate {
     const { hosts, look } = await takeLastLook(setup.host.fleet(), restart.to, installPaths(setup.here!.root).mark);
     this.looked = look;
     if (setup.host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
+    const own = this.quiescedFramework!.getHostModeStatus();
+    if (!own.quiesced || own.since !== this.quiescedSince) {
+      return this.callOff("stop now found that this host's quiesce was ended during the wait, so stopping now could cut work " +
+        "that wasn't named as busy.", ways);
+    }
     const loose = hosts.filter((host) => !host.answered);
     if (loose.length > 0) {
-      return this.callOff("stop now's last look found a fleet child that doesn't hold, so stopping now could cut work that " +
-        `wasn't named as busy: ${loose.map((host) => `${host.host}: ${host.answered ? '' : host.why}`).join('; ')}.`, ways);
+      return this.callOff("stop now's last look found a fleet child that doesn't hold or didn't answer, so stopping now could " +
+        `cut work that wasn't named as busy: ${loose.map((host) => `${host.host}: ${host.answered ? '' : host.why}`).join('; ')}.`, ways);
     }
     return this.markAndStop(ways);
   }
@@ -801,6 +807,7 @@ export class HostUpdate {
       return this.callOff(`its quiesce was refused: ${said(error)}`, ways);
     }
     this.looked = quiet.look;
+    this.quiescedSince = quiet.since;
     if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED, ways);
     if (armedQuiet !== undefined) {
       const hold = operatorHold(framework.getHostModeStatus()) ?? childHold(quiet.hosts);

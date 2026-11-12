@@ -1964,10 +1964,7 @@ export class FleetModule implements Module {
       console.error(`[fleet] child "${c.name}" closed this host's connection while it ran, and this host ` +
         `connected to it again (pid ${c.pid}).`);
       const owed = c.owedSwitch;
-      if (owed !== undefined) {
-        c.owedSwitch = undefined;
-        void this.sendSwitch(c, owed.request, owed.timeoutMs);
-      }
+      if (owed !== undefined) void this.sendSwitch(c, owed.request, owed.timeoutMs);
     } catch (err) {
       c.reopenFailure = err instanceof Error ? err.message : String(err);
       console.error(`[fleet] connecting to child "${c.name}" again failed: ${c.reopenFailure}`);
@@ -2346,10 +2343,10 @@ export class FleetModule implements Module {
 
   async requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     const child = this.children.get(childName);
-    if (child) child.owedSwitch = undefined;
     // Keep the switch's requests outside the bound: each is sent once, for a step the switch or its operator takes, so
     // they make no loop.
     if (child) await this.tryReopen(child, { withinBound: true });
+    if (child && request.op !== 'quiesce' && this.children.get(child.name) === child) child.owedSwitch = { request, timeoutMs };
     return child ? this.sendSwitch(child, request, timeoutMs)
       : this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
         (corrId) => ({ type: 'update-request', request, corrId }));
@@ -2359,9 +2356,7 @@ export class FleetModule implements Module {
     const answer = await this.requestAnswer(child.name, `update-${request.op}`, 'update-response', `the switch's ${request.op}`,
       timeoutMs, (corrId) => ({ type: 'update-request', request, corrId }));
     const undelivered = !answer.ok && (answer.status === 502 || answer.status === 504);
-    if (undelivered && request.op !== 'quiesce' && this.children.get(child.name) === child && child.owedSwitch === undefined) {
-      child.owedSwitch = { request, timeoutMs };
-    }
+    if (!undelivered && child.owedSwitch?.request === request) child.owedSwitch = undefined;
     return answer;
   }
 
