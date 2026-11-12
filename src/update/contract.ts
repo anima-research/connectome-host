@@ -286,6 +286,10 @@ export interface Mark {
    *  person's, or for the launcher's Go back from a shell. A launcher copies
    *  it onto each journal line it writes for the request (JournalLine.by). */
   by?: string;
+  /** The id of the switch's last look that this request decides. A fleet
+   *  child that held on that look reads it to tell whether the switch went
+   *  ahead. */
+  look?: string;
 }
 
 export function askedBy(by: unknown): { by?: string } {
@@ -815,13 +819,14 @@ export function readMark(root: string): Mark | null {
  *  request, so the release that ran starts and ends the switch's quiesce, or
  *  the request this one replaced. */
 export function writeMark(
-  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected' | 'by'>, now: Date = new Date(), write = writeJsonAtomic,
+  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected' | 'by' | 'look'>, now: Date = new Date(), write = writeJsonAtomic,
 ): { mark: Mark; unsynced: Error | null } {
   const mark: Mark = {
     v: 1, id: randomUUID(), to: segment(request.to, 'release'), why: request.why, at: now.toISOString(),
     ...(request.keepData ? { keepData: true } : {}),
     ...(request.connected !== undefined ? { connected: [...request.connected] } : {}),
     ...(request.by ? { by: request.by } : {}),
+    ...(request.look ? { look: request.look } : {}),
   };
   const path = installPaths(root).mark;
   try {

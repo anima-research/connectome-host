@@ -529,7 +529,14 @@ reasons unless the grant holds `ops` too.
   and you choose: wait up to ten minutes more (`/update restart wait`), stop
   now and cut those turns off (`/update restart now`), or call it off
   (`/update restart resume`, which also ends a switch's quiesce left on a
-  host after an earlier try). Scripts a turn left running in the background
+  host after an earlier try). A fleet child's own Resume during the wait
+  keeps that try from going ahead. The switch's last look quiesces nothing,
+  so a child that starts during the wait does too, and the next try quiesces
+  it. From that last look until the switch is decided, a child refuses a
+  Resume asked on it. Stop now takes a last look of its own, and is called
+  off where a child's person has resumed that child, so it cuts only the
+  turns it named. A child the fleet starts or starts again during the last
+  look calls the switch off. Scripts a turn left running in the background
   aren't waited for, and the stop ends them. Then the host stops, and its
   next start, which the service makes, copies the data, starts the new
   release on trial, and commits once that release has opened its stores and
