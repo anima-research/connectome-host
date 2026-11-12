@@ -2353,6 +2353,20 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(missing.out).toContain('✗ LONELY_SECRET is in setup\'s list of stored secrets');
   });
 
+  test('a unit that reads an EnvironmentFile is said whatever doctor reads of the stored secrets, since the file\'s values come first', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
+    const manager = fakeManager(at.work, {
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+    });
+    const listed = join(at.work, 'secrets.env');
+    writeFileSync(join(manager.path, '..', 'environment-files'), `${listed} (ignore_errors=no)\n`);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain(`The service's unit also reads ${listed}, whose values doctor can't see. Where one sets a stored ` +
+      'secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+    expect(r.out).not.toContain('LONELY_SECRET is in setup\'s list of stored secrets and has no value');
+    expect(r.out).toMatch(/Doctor found no problem, though .*the files its unit reads its environment from weren't read/);
+  });
+
   test('the dotenv files are read without the install root, as the launcher\'s Bun reads them, and the root is set after', async () => {
     const at = install();
     writeFileSync(join(at.work, '.env.local'), 'MODEL=claude-${CONNECTOME_INSTALL_ROOT:-root-unset}\n');

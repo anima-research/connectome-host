@@ -865,6 +865,11 @@ function storedSecretLines(
   const provider: readonly string[] = PROVIDER_SECRETS;
   const mapped: string[] = [];
   let filesUnread = false;
+  if (envFiles.length > 0) {
+    report.line(`The service's unit also reads ${envFiles.join(' and ')}, whose values doctor can't see. Where one sets a ` +
+      'stored secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+    filesUnread = true;
+  }
   for (const name of names ?? []) {
     if (!env[name] && envFiles.length > 0) {
       report.line(`${name} is in setup's list of stored secrets and has no value in what doctor reads of the service's ` +
