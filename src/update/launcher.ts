@@ -1116,7 +1116,10 @@ export function goBackLine(root: string, offer: { to: string; since: string }): 
 }
 
 export async function goBackFromStart(root: string, args: string[], ops: LauncherOps): Promise<number> {
-  return goBackFromShell(root, args, ops);
+  const [{ typedCommand }, { cliWays }] = await Promise.all([
+    import('../cli/install-command.js'), import('../web/update-text.js'),
+  ]);
+  return goBackFromShell(root, args, ops, undefined, cliWays(typedCommand(root)).back);
 }
 
 export function shellWord(word: string): string {
