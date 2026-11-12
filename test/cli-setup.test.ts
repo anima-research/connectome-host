@@ -2379,7 +2379,7 @@ test('while a Go back is unfinished, a moved install whose root keeps a copy is 
   expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
 });
 
-test.skipIf(process.getuid?.() === 0)('a journal or a Go back\'s list setup can\'t read, in a moved install whose root keeps a Go back, stops it under the binding\'s line, naming the file, and nothing is asked', async () => {
+modeTest('a journal or a Go back\'s list setup can\'t read, in a moved install whose root keeps a Go back, stops it under the binding\'s line, naming the file, and nothing is asked', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
   keptInRoot(dir);
