@@ -221,6 +221,29 @@ export function showsItself(tool: string): boolean {
   return tool.startsWith(`${SETUP_MODULE}--`);
 }
 
+const SHORT_CHARACTERS = 8;
+const charactersIn = (value: string): number => [...value.trim()].length;
+const isShort = (value: string): boolean => charactersIn(value) < SHORT_CHARACTERS;
+
+const shortWarning = (name: string, value: string): string => {
+  const count = charactersIn(value);
+  const ends = value === value.trim() ? '' : ', not counting the whitespace at its ends';
+  return `What you typed for ${name} is ${count} character${count === 1 ? '' : 's'} long${ends}. Setup hides a ` +
+    'stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of ' +
+    'command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer ' +
+    `made-up one: ${SHORT_CHARACTERS} or more random letters and digits, not a word. To keep this one, type it again.`;
+};
+
+const SHORT_AGAIN = 'the same value again to keep it, or another one';
+
+const shortNote = (name: string): string => `The value stored as ${name} is shorter than ${SHORT_CHARACTERS} ` +
+  `characters, and the person typed it twice to keep it. So <${name}> can appear in place of parts of other text, ` +
+  'such as ids and command output, and setup--run leaves an environment variable with the same value out of its ' +
+  'commands\' environment.';
+
+const shortBeforeNote = (name: string): string => `The value stored as ${name} before this one was shorter than ` +
+  `${SHORT_CHARACTERS} characters, and setup still hides it, as <${name}>, until the host restarts.`;
+
 function redacted(text: string, secrets: Secret[]): string {
   const bytes = Buffer.from(text);
   return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text;
@@ -666,16 +689,37 @@ export class SetupModule implements Module {
         'won\'t change that, so tell the person why.');
     }
     if (value !== null && name === DISCORD_TOKEN) value = value.trim();
-    if (value === null || value === '') {
-      const spaces = name === DISCORD_TOKEN ? ', or only whitespace' : '';
-      return failed(`Nothing came back from the terminal (Enter alone${spaces}, or the terminal closed), so nothing was stored as ${name}. ` +
+    if (value === null || value.trim() === '') {
+      return failed(`Nothing came back from the terminal (Enter alone, or only whitespace, or the terminal closed), so nothing was stored as ${name}. ` +
         'If they declined, ask them in the conversation whether to try again.');
     }
-    const why = unwritableValue(value);
-    if (why) {
-      return failed(`What the person typed for ${name} can't be stored, since ${why}, and ask_secret can't store such a ` +
-        'value however it is asked. Nothing was stored. Tell them why, and ask them to check what they copied; if it\'s ' +
-        'right as typed, tell them setup can\'t store it.');
+    const unstorable = (typed: string): ToolResult | null => {
+      const why = unwritableValue(typed);
+      return why === null ? null : failed(`What the person typed for ${name} can't be stored, since ${why}, and ` +
+        'ask_secret can\'t store such a value however it is asked. Nothing was stored. Tell them why, and ask them to ' +
+        'check what they copied; if it\'s right as typed, tell them setup can\'t store it.');
+    };
+    const refused = unstorable(value);
+    if (refused) return refused;
+    while (isShort(value)) {
+      this.config.show(shortWarning(name, value));
+      let again: string | null;
+      try {
+        again = await asker.ask(name, SHORT_AGAIN);
+      } catch (error) {
+        return failed(`Nothing was stored as ${name}: the second ask failed (${(error as Error).message}). Calling ` +
+          'again won\'t change that, so tell the person why.');
+      }
+      if (again !== null && name === DISCORD_TOKEN) again = again.trim();
+      if (again === null || again.trim() === '') {
+        return failed(`The person was told the value is shorter than ${SHORT_CHARACTERS} characters and gave nothing ` +
+          `back (Enter alone, or only whitespace, or the terminal closed), so nothing was stored as ${name}. Ask them in ` +
+          'the conversation whether to try again.');
+      }
+      if (again === value) break;
+      const againRefused = unstorable(again);
+      if (againRefused) return againRefused;
+      value = again;
     }
     let token: TokenCheck | null = null;
     if (name === DISCORD_TOKEN) {
@@ -728,10 +772,14 @@ export class SetupModule implements Module {
     this.seen.names.add(name);
     addSecret(this.seen.values, { name, value });
     let writing = false;
+    let shortBefore = false;
     try {
       const link = envLink(envFile);
       if (link) throw link;
-      for (const replaced of secretValues([name], envFile, {})) addSecret(this.seen.values, replaced);
+      for (const replaced of secretValues([name], envFile, {})) {
+        addSecret(this.seen.values, replaced);
+        if (replaced.value !== value && isShort(replaced.value)) shortBefore = true;
+      }
       this.storedSecrets.record(name, envFile);
       writing = true;
       writeEnvValue(envFile, name, value);
@@ -751,7 +799,9 @@ export class SetupModule implements Module {
     if (token !== null ? token.kind !== 'accepted' : key !== null && key.kind !== 'accepted') {
       this.config.show(`It's stored as ${name}, though whether it works isn't known.`);
     }
-    return { success: true, data: `stored as ${name} in ${envFile}${told}` };
+    const notes = [...isShort(value) ? [shortNote(name)] : [], ...shortBefore ? [shortBeforeNote(name)] : []];
+    const data = `stored as ${name} in ${envFile}${told}`;
+    return { success: true, data: notes.length === 0 ? data : `${data}${data.endsWith('.') ? '' : '.'} ${notes.join(' ')}` };
   }
 
   private async checkKey(
