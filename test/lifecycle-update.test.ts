@@ -32,6 +32,7 @@ function installRunning0141(others: string[] = []): { root: string; dataDir: str
   moveCurrent(root, '0.14.1');
   const dataDir = join(root, 'data');
   mkdirSync(dataDir);
+  writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir, extraState: [] }));
   return { root, dataDir };
 }
 
