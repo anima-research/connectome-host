@@ -77,7 +77,8 @@ const UPDATE_DESCRIPTION =
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
   'nobody: your turn ends as it would.\n' +
   '- back: arms a Go back to the release whose data the copy holds, the same way, with `data`: keep runs it on your ' +
-  'data as it is now, so you lose nothing; restore puts back the copy taken at the last switch, so everything you ' +
+  'data as it is now, so you lose nothing, where that release can read it; otherwise its start comes back to the ' +
+  'release you run by itself, and restore is the way; restore puts back the copy taken at the last switch, so everything you ' +
   'have lived since is set aside, not deleted.\n' +
   '- cancel: disarms an armed restart or Go back before it begins.\n' +
   '`version`, with restart or back, is the release you looked at: if they would go to another by then, nothing is ' +

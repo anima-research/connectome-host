@@ -218,6 +218,8 @@ describe('the notice', () => {
       'connectome-host 0.13.0 is out; this host runs 0.12.1.',
       'None of the releases since this one is breaking.',
       '0.13.0 needs Bun >=1.5.0: upgrade Bun first, and /update install installs nothing until then.',
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        '/update back restore, and what was lived since the switch is set aside.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.13.0/CHANGELOG.md',
       'To take it: /update install, then /update restart.',
     ]);

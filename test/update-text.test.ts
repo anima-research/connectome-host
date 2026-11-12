@@ -169,6 +169,8 @@ describe('the Restart dialog', () => {
         'now and Resume.',
       'Breaking: 0.12.2. Read its notes before updating.',
       "Each resident's prompt cache is written in full once: 0.13.0.",
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        'Restore the copy, and what was lived since the switch is set aside.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.13.0/CHANGELOG.md',
     ]);
   });
@@ -215,6 +217,10 @@ describe('before a switch, check says what going back can cost', () => {
     const at = lines.indexOf(line('0.12.1', PAGE_WAYS.restore));
     expect({ at: at >= 0, beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
       .toEqual({ at: true, beforeNotes: true });
+  });
+
+  test('a host that is no install, and so has no switch to go back from, says nothing of it', () => {
+    expect(noticeLines(read, '0.12.1', false).join('\n')).not.toContain('Going back after a switch');
   });
 
   test('the banner leaves it out, as it leaves out the notes', () => {
