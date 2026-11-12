@@ -78,8 +78,7 @@ const UPDATE_DESCRIPTION =
   '- back: arms a Go back to the release whose data the copy holds, the same way, with `data`: keep runs it on your ' +
   'data as it is now, so you lose nothing, where that release can read it; otherwise its start comes back to the ' +
   'release you run by itself, and restore is the way; restore puts back the copy taken at the last switch, so ' +
-  'everything you and every other agent on this host and its fleet children have lived since is set aside, not ' +
-  'deleted.\n' +
+  'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s.\n' +
   '- cancel: disarms an armed restart or Go back before it begins, whoever armed it.\n' +
   '`version`, with restart or back, is the release you looked at: if they\'d go to another by then, nothing is armed. ' +
   'Restart and back need a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere they refuse and ' +
