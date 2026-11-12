@@ -669,11 +669,11 @@ async function installAndStart(
     }
   };
   const shownOrigin = (url: string, key: string, hidden: Secret[]) => withSecretsHidden(String(originOf(url)), key, hidden);
-  const baseIn = (): string | undefined | null => {
+  const baseIn = (fate = ''): string | undefined | null => {
     const url = readEnvFile(envFile).get('ANTHROPIC_BASE_URL') || undefined;
     if (url === undefined || originOf(url) !== null) return url;
-    err(`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL. Set it to one there, or take it out ` +
-      'for Anthropic\'s own API, and run setup again.');
+    err(`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL.${fate} Set it to one there, or take it ` +
+      'out for Anthropic\'s own API, and run setup again.');
     return null;
   };
   let baseUrl = baseIn();
@@ -718,7 +718,7 @@ async function installAndStart(
     const fate = fromDotEnv ? ` The ANTHROPIC_API_KEY in ${envFile} wasn't checked.`
       : ' The key wasn\'t checked or stored.';
     try {
-      baseUrl = baseIn();
+      baseUrl = baseIn(fate);
     } catch (error) {
       err(`connectome setup: ${(error as Error).message}.${fate} Put that right, then run setup again.`);
       return 1;
