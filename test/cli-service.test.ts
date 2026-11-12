@@ -2559,3 +2559,41 @@ test('a unit whose file names this directory while systemd shows an earlier load
   expect(said).toContain(`systemd shows ${HOST} as it last loaded it, while its file names ${at.work}`);
   expect(said).toContain('XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload');
 });
+
+test('a shell daemon whose start systemd can\'t be asked about right after it is refused with what was and wasn\'t done', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'systemctl' && args.includes('--property=InvocationID') &&
+    args.at(-1) === SHELL ? { status: 1, stdout: '', stderr: 'Failed to connect to bus' } : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`The units' files are written and enabled, and ${SHELL} is started. The host's unit ` +
+    'isn\'t started or restarted by this run.');
+  expect(f.systemd.starts.filter((start) => start.unit === HOST)).toEqual([]);
+});
+
+test('the host\'s state that systemd can\'t give once the shell daemon has started is refused with what was and wasn\'t done', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'systemctl' && args.includes('--property=ActiveState') &&
+    args.at(-1) === HOST && f.systemd.starts.some((start) => start.unit === SHELL)
+    ? { status: 1, stdout: '', stderr: 'Failed to connect to bus' } : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`The units' files are written and enabled, and ${SHELL} is started. The host's unit ` +
+    'isn\'t started or restarted by this run.');
+  expect(f.systemd.starts.filter((start) => start.unit === HOST)).toEqual([]);
+});
+
+test('the shell daemon\'s state that systemd can\'t give before anything has started is refused saying the host\'s unit isn\'t started', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  const run = f.system.run;
+  f.system.run = (command, args, env) => command === 'systemctl' && args.includes('--property=ActiveState') &&
+    args.at(-1) === SHELL ? { status: 1, stdout: '', stderr: 'Failed to connect to bus' } : run(command, args, env);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const said = f.err.join('\n');
+  expect(said).toContain('The units\' files are written and enabled. The host\'s unit isn\'t started or restarted by ' +
+    'this run.');
+  expect(f.systemd.starts).toEqual([]);
+});

@@ -310,16 +310,20 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.out(`Enabled ${units.map((unit) => unit.name).join(' and ')}, so systemd starts ` +
       `${units.length === 1 ? 'it' : 'them'} at boot.`);
     systemctl(sys, env, ['reset-failed', ...units.map((unit) => unit.name)]);
+    let shellUp = false;
+    const sofar = () => `The units' files are written and enabled${shellUp ? `, and ${names.shell.name} is started` : ''}. ` +
+      'The host\'s unit isn\'t started or restarted by this run.';
     for (const unit of units) {
       const shown = showUnit(sys, env, unit.name, ['ActiveState']);
-      if (typeof shown === 'string') throw new Refusal(`${shown}. The units' files are written and enabled.`);
+      if (typeof shown === 'string') throw new Refusal(`${shown}. ${sofar()}`);
       const running = RUNNING.has(shown.get('ActiveState') ?? '');
       systemctl(sys, env, ['restart', unit.name]);
       ctx.out(running ? `Restarted ${unit.name}.` : `Started ${unit.name}.`);
       if (unit === names.shell) {
+        shellUp = true;
         shellLive();
         const started = showUnit(sys, env, unit.name, ['InvocationID']);
-        if (typeof started === 'string') throw new Refusal(`${started}. The units' files are written and enabled.`);
+        if (typeof started === 'string') throw new Refusal(`${started}. ${sofar()}`);
         shellStart = started.get('InvocationID') ?? '';
       }
     }
