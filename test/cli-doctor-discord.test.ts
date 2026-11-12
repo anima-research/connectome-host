@@ -7,6 +7,7 @@ import { DISCORD_API, discordUserAgent } from '../src/setup/discord-token.js';
 
 const TOKEN = 'MTEx.fake-token-value.abc';
 const VIEW = 1 << 10;
+const SEND = 1 << 11;
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
 const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
 
@@ -71,7 +72,7 @@ function fakeDiscord(opts: {
 const HOME: FakeGuild = {
   id: '100',
   name: 'Home',
-  everyone: VIEW,
+  everyone: VIEW | SEND,
   roles: [{ id: '110', permissions: 0 }],
   botRoles: ['110'],
   channels: [
@@ -312,7 +313,7 @@ describe('doctor: Discord', () => {
 
   test('a bot in more servers than one page of Discord\'s list holds sees the scoped server on a later page', async () => {
     const many: FakeGuild[] = Array.from({ length: 201 }, (_, i) => ({
-      id: String(1000 + i), name: `server-${i}`, everyone: VIEW, roles: [], botRoles: [], channels: [{ id: String(5000 + i), name: 'general', type: 0 }],
+      id: String(1000 + i), name: `server-${i}`, everyone: VIEW | SEND, roles: [], botRoles: [], channels: [{ id: String(5000 + i), name: 'general', type: 0 }],
     }));
     const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '1200' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: many }));
     expect(r.problems).toEqual([]);
