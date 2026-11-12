@@ -1638,11 +1638,19 @@ export interface Recipe {
   modules?: RecipeModules;
   /** Deployment-specific code extensions, keyed by a human-readable name. */
   extensions?: Record<string, RecipeExtension>;
-  /** Session naming (synesthete): example names for the prompt, and the
-   *  model the naming call goes to. Left out, the model is Claude Haiku on
-   *  the `anthropic` route and the resident's own model elsewhere
-   *  (auxiliaryModel), one the recipe's provider serves. */
-  sessionNaming?: { examples?: string[]; model?: string };
+  /** Session naming (synesthete): example names for the prompt. */
+  sessionNaming?: { examples?: string[] };
+  /**
+   * The model the host's own small calls go to, as the provider names it:
+   * the session name, the TUI fleet view's activity summaries, and, where
+   * the recipe names none of its own, lesson retrieval
+   * (`modules.retrieval.model`), the reply judge (`modules.wake.judge.model`)
+   * and the gate's suppression review. Left out, each keeps its Claude Haiku
+   * default on the `anthropic` and `bedrock` routes, which serve it, and
+   * goes to the resident's own model on every other provider, which
+   * certainly serves that (auxiliaryModel; #649).
+   */
+  auxiliaryModel?: string;
   /** Client-side programmatic tool calling (code_execution tool). */
   codeExecution?: RecipeCodeExecution;
   /**
@@ -2053,7 +2061,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
-  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
+  'sessionNaming', 'auxiliaryModel', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
   'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars',
 ] as const;
 const RECIPE_AGENT_KEYS = [
@@ -3459,15 +3467,20 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   if (obj.sessionNaming !== undefined) {
-    const naming = obj.sessionNaming as { examples?: unknown; model?: unknown };
+    const naming = obj.sessionNaming as { examples?: unknown };
     if (naming === null || typeof naming !== 'object' || Array.isArray(naming)) {
       throw new Error(`Recipe sessionNaming must be an object, got ${shown(obj.sessionNaming)}.`);
     }
+    rejectUnknownKeys('sessionNaming', naming, ['examples']);
     if (naming.examples !== undefined && (!Array.isArray(naming.examples) || naming.examples.some((e) => typeof e !== 'string'))) {
       throw new Error('Recipe sessionNaming.examples must be an array of strings.');
     }
-    if (naming.model !== undefined && (typeof naming.model !== 'string' || !naming.model.trim())) {
-      throw new Error(`Recipe sessionNaming.model must be a non-empty string, got ${shown(naming.model)}.`);
+  }
+
+  if (obj.auxiliaryModel !== undefined) {
+    // Sent as the request's model id as written, so a space around it would go to the provider too.
+    if (typeof obj.auxiliaryModel !== 'string' || !obj.auxiliaryModel.trim() || obj.auxiliaryModel !== obj.auxiliaryModel.trim()) {
+      throw new Error(`Recipe auxiliaryModel must be a model id with no space around it, got ${shown(obj.auxiliaryModel)}.`);
     }
   }
 

@@ -92,7 +92,7 @@ import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName, namingSummary } from './synesthete.js';
-import { auxiliaryModel } from './auxiliary-model.js';
+import { auxiliaryModelOverride } from './auxiliary-model.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
@@ -341,7 +341,7 @@ async function createFramework(
 
   // Gate config — core AF EventGate feature, with the reply judge
   // (gate-options.ts). Path is per-session: {storePath}/config/gate.json
-  const gateOptions = gateOptionsFor(modules.wake, storePath);
+  const gateOptions = gateOptionsFor(modules.wake, storePath, process.env, auxiliaryModelOverride(recipe));
 
   let workspaceModule: WorkspaceModule | null = null;
   const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);
@@ -643,7 +643,7 @@ function setupSynesthete(app: AppContext): void {
     const { messages } = cm.queryMessages({});
     const summary = namingSummary(messages);
 
-    generateSessionName(app.membrane, summary, namingExamples, auxiliaryModel(app.recipe, app.recipe.sessionNaming?.model)).then(name => {
+    generateSessionName(app.membrane, summary, namingExamples, app.recipe).then(name => {
       if (name) {
         app.sessionManager.renameSession(session.id, name, false);
       }

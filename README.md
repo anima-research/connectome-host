@@ -89,9 +89,18 @@ A recipe is a JSON file that configures everything specific to one agent:
   },
   "sessionNaming": {
     "examples": ["Thread Archaeology", "Pipeline Debug"]
-  }
+  },
+  "auxiliaryModel": "gpt-5.6-sol"
 }
 ```
+
+`auxiliaryModel` is the model the host's own small calls go to, as the
+provider names it: the session name, the TUI fleet view's activity summaries,
+and, where the recipe names none of its own, lesson retrieval
+(`modules.retrieval.model`), the reply judge (`modules.wake.judge.model`) and
+the gate's suppression review. Left out, each keeps its Claude Haiku default
+on the `anthropic` and `bedrock` routes, which serve it, and goes to the
+resident's own model on every other provider.
 
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.
@@ -345,7 +354,9 @@ Check legacy configuration variables before enabling full inheritance. For Disco
 ### Provider retries (`agent.retry`)
 
 `agent.retry` governs framework **turns** as well as Membrane's other calls
-(compression and merging, retrieval, session naming and the TUI status line).
+(compression and merging, retrieval, session naming and the TUI status line;
+the last two, and retrieval, the judge and the suppression review where the
+recipe names no model, go to `auxiliaryModel`).
 Omitted or `{}` leaves the framework's default turn policy untouched. A non-empty
 object installs a framework-wide policy, preserving the framework's turn defaults
 for omitted fields, including nested `overloaded` fields. Recipe validation still

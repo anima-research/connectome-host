@@ -3,6 +3,7 @@ import type { Recipe, RecipeAgent, RecipeModules } from './recipe.js';
 import type { RetrievalModuleConfig } from './modules/retrieval-module.js';
 import { SUBAGENT_MESSAGE_CAP } from './modules/subagent-module.js';
 import { strategyMessageCap } from './framework-strategy.js';
+import { auxiliaryModelOverride } from './auxiliary-model.js';
 
 type RetrievalRecipeConfig = Exclude<RecipeModules['retrieval'], boolean | undefined>;
 
@@ -40,8 +41,14 @@ export function buildRetrievalModuleConfig(
 }
 
 export function retrievalModuleConfig(membrane: Membrane, recipe: Recipe): RetrievalModuleConfig {
+  const config = buildRetrievalModuleConfig(membrane, recipe.modules?.retrieval, recipe.agent.provider);
   return {
-    ...buildRetrievalModuleConfig(membrane, recipe.modules?.retrieval, recipe.agent.provider),
+    ...config,
+    // Where the recipe names no model and the provider doesn't serve the
+    // module's own Haiku default, the host's auxiliary model: before, every
+    // turn's concept extraction on Codex or OpenRouter sent the Haiku id,
+    // was refused, and injected no lessons (#649).
+    retrievalModel: config.retrievalModel ?? auxiliaryModelOverride(recipe),
     maxMessageTokens: retrievalMessageCap(recipe),
   };
 }
