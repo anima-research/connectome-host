@@ -476,7 +476,7 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, commands?.log ?? null);
+        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, commands === null ? null : units);
       });
     }
 
@@ -710,7 +710,7 @@ function agentCalls(data: unknown): AgentCalls[] {
   });
 }
 
-function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, log: string | null): string | null {
+function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, logged: ServiceUnits | null): string | null {
   const named = recipeAgent ?? agents[0]?.name;
   const unlisted = named !== undefined && !agents.some((agent) => agent.name === named) ? named : null;
   if (unlisted !== null) report.line(`The host's counts list no agent named ${unlisted}.`);
@@ -718,10 +718,12 @@ function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | u
     const refusals = agent.refusals !== null && agent.refusals.total > 0 ? agent.refusals : null;
     if (agent.name !== named && agent.failures === 0 && refusals === null) continue;
     if (agent.failures > 0) {
+      const line = `[inference-failed] agent=${agent.name} consecutive=`;
       report.problem(`${agent.name}'s last turn's model call failed` +
         `${agent.failedAt === undefined ? '' : ` at ${new Date(agent.failedAt).toISOString()}`}, ${agent.failures} in a row. ` +
-        `Each failure's reason is in a line of the host's stderr that starts \`[inference-failed] agent=${agent.name}\`.` +
-        (log === null ? '' : ` The service keeps its host's stderr in its log: \`${log}\` follows it.`));
+        `Each failure's reason is in a line of the host's stderr that starts \`${line}\`.` +
+        (logged === null ? '' : ` The service keeps its host's stderr in its log, and \`${failureSearch(logged, line)}\` ` +
+          'lists those lines.'));
     } else {
       report.ok(`${agent.name}: no failed turns in a row, by the host's counts.`);
     }
@@ -737,6 +739,12 @@ function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | u
     }
   }
   return unlisted;
+}
+
+function failureSearch(units: ServiceUnits, line: string): string {
+  return units.manager === 'systemd-user'
+    ? `journalctl --user -u ${shellWord(units.host.name)} | grep -F -- ${shellWord(line)}`
+    : `grep -F -- ${shellWord(line)} ${shellWord(join(units.work, 'logs', 'agent.log'))}`;
 }
 
 interface CountCheck {

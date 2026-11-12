@@ -1333,13 +1333,23 @@ describe('connectome doctor', () => {
     expect(from).toBeGreaterThan(lines.indexOf('Token counts'));
     expect(lines.slice(from + 1, from + 4)).toEqual([
       `  ✗ ember's last turn's model call failed at ${new Date(failedAt).toISOString()}, 2 in a row. Each failure's reason is in ` +
-        'a line of the host\'s stderr that starts `[inference-failed] agent=ember`. The service keeps its host\'s stderr in its ' +
-        'log: `journalctl --user -u connectome-test.service -f` follows it.',
+        'a line of the host\'s stderr that starts `[inference-failed] agent=ember consecutive=`. The service keeps its host\'s ' +
+        'stderr in its log, and `journalctl --user -u connectome-test.service | grep -F -- \'[inference-failed] agent=ember ' +
+        'consecutive=\'` lists those lines.',
       `  ember was refused 3 times since this host started or last switched session, the last at ${new Date(lastAt).toISOString()}, in the category cyber.`,
       '  ember\'s newest turn met a refusal, and the host\'s counts don\'t show whether a retry in that turn then answered.',
     ]);
     expect(r.out).not.toContain('overloaded_error');
     expect(r.status).toBe(1);
+  });
+
+  test('under launchd, a failed turn\'s line names the search of the log the plist sends the host\'s stderr to', async () => {
+    const at = install({ manager: 'launchd' });
+    const health = { ...HEALTH, agents: [{ ...HEALTH.agents[0], consecutiveInferenceFailures: 1,
+      lastInference: { startedAt: STARTED + 40_000, failedAt: STARTED + 41_000 } }] };
+    const r = await withHost(at, { ...HEALTHY_HOST, health }, () => run(at));
+    expect(r.out).toContain('The service keeps its host\'s stderr in its log, and `grep -F -- \'[inference-failed] agent=ember ' +
+      `consecutive=' ${join(at.work, 'logs', 'agent.log')}\` lists those lines.`);
   });
 
   test('refusals are never a problem: a resident refused on every turn shows them and no problem for them, and a category that isn\'t one short word isn\'t printed', async () => {
