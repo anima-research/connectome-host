@@ -2018,6 +2018,18 @@ test('a launch agent whose working directory plutil can\'t read still gives its 
   expect(serviceLines(at.root, f.system)![0]).toContain('com.animalabs.connectome.my-resident');
 });
 
+test.skipIf(process.getuid?.() === 0)('a host unit file this user can\'t read still gives its lines, with no throw', async () => {
+  const at = install();
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  chmodSync(hostUnit(at), 0o000);
+  try {
+    expect(serviceLines(at.root, f.system)![0]).toContain(HOST);
+  } finally {
+    chmodSync(hostUnit(at), 0o644);
+  }
+});
+
 test('serviceCommands is null until the host\'s unit file is there, and names the shell daemon only while its file is', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at, { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1001' } });

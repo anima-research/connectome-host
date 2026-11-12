@@ -605,10 +605,9 @@ function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: Servic
 }
 
 function mayRunHere(sys: ServiceSystem, names: ServiceUnits): boolean {
-  const text = readOr(names.host.file);
-  if (text === null) return true;
   try {
-    return runsHere(fileDirectory(sys, childEnv(sys), names.manager, names.host, text), names.work);
+    const text = readOr(names.host.file);
+    return text === null || runsHere(fileDirectory(sys, childEnv(sys), names.manager, names.host, text), names.work);
   } catch {
     return true;
   }

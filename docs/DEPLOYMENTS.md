@@ -90,8 +90,10 @@ Labels/units follow `cc.<agent>.agent` (launchd) / `<agent>-agent.service`
 (systemd). (launchd: a plain `kill`/`stop` respawns via KeepAlive — use `bootout`
 to stop, `kickstart -k` to restart.) A service `connectome service install`
 writes is named after the install's working directory instead:
-`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and
-`connectome` alone shows its own stop and start commands, and how to follow its log.
+`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
+shell daemon `com.animalabs.connectome.<name>.shell` /
+`connectome-<name>-shell.service`. `connectome` alone shows its own stop and
+start commands, and how to follow its log.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
@@ -360,7 +362,8 @@ with an absolute `dataDir` has that directory, the original's, in a copy
 too, so the copy's autostart can start that child there. Give such a child a
 `dataDir` relative to the directory the host runs in, or change the copy's
 recipe to name its own, before the copy's first start. Nor does it move a
-service that `connectome service install` wrote: its units still name the old
+service that `connectome service install` wrote: its units, named after the
+old directory as under Start / stop / restart above, still name that
 directory. After a move, take them away: on Linux, run `systemctl --user
 disable --now` with each unit, remove its file in `~/.config/systemd/user`,
 and run `systemctl --user daemon-reload`; on macOS, run `launchctl bootout
