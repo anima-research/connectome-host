@@ -2687,6 +2687,8 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     }
     const at = install();
     const answered = await withHost(at, count('count_tokens_failed_404', 'count_tokens'), () => run(at));
+    expect(answered.out).toContain('count_tokens couldn\'t count with claude-small-window: ');
+    expect(answered.out).toContain('A retired model answers 404');
     expect(closing(answered.out)).not.toContain('a count_tokens count got no answer it could read');
   });
 
