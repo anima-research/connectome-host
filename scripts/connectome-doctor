@@ -75,13 +75,19 @@ except ValueError as e:
 WITHHOLD = [(k, v) for k, v in WITHHOLD if v]
 
 
+ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
 def withheld(text):
     found = []
+    folded = text.translate(ASCII_FOLD)
     for name, value in WITHHOLD:
-        at = text.find(value)
-        while at >= 0:
-            found.append((at, at + len(value), name))
-            at = text.find(value, at + 1)
+        for form in {value, value.strip()}:
+            needle = form.translate(ASCII_FOLD)
+            at = folded.find(needle) if needle else -1
+            while at >= 0:
+                found.append((at, at + len(needle), name))
+                at = folded.find(needle, at + 1)
     found.sort(key=lambda span: (span[0], -span[1]))
     spans = []
     for start, end, name in found:
