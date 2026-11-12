@@ -218,8 +218,9 @@ export function bindChildren(children: Children, mapping: Mapping): void {
           `${child.pid}, and setup can't look at that directory (${code ?? (error as Error).message}), so it can't tell ` +
           'whether that process is the original install\'s child, still running there, as after a copy, or this ' +
           'install\'s own. Setup stopped before it bound the install. Make that directory searchable to this user, ' +
-          `and run setup again; or, if this install is a copy, set that child's "pid" to null in ${children.path}, ` +
-          'and run setup again.');
+          `and run setup again; or, if this install is a copy, remove ipc.sock and headless.pid from ${dataDir}, this ` +
+          `copy's directory for that child, then set that child's "pid" to null in ${children.path}, and run setup ` +
+          'again.');
       }
     }
     if (other) copied.push(dataDir);
