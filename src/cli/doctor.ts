@@ -1325,8 +1325,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A unit file of this install's name that names another working directory, said as install says it when it refuses
- *  that unit. */
 function namesElsewhere(file: string, directory: string | null, work: string): string {
   return (directory === null
     ? `${file} names no directory it runs in, where install writes this install's, ${work}, so install takes it as ` +

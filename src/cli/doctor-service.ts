@@ -9,14 +9,11 @@ export interface ServiceCheck {
   passed: boolean;
   lines: string[];
   stopped?: true;
-  /** systemd runs the host's unit in another directory than this install's. */
   elsewhere?: true;
 }
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
 
-/** `shell` says whether the recipe names a shell, null where that can't be told, or 'other' where the shell daemon's
- *  unit of this install's name is another install's, which doctor names itself, so it isn't checked here. */
 export function checkUnits(units: ServiceUnits, work: string, shell: boolean | null | 'other', cmd: string,
   sys: ServiceSystem, stoppedIsFine = false): ServiceCheck {
   const lines: string[] = [];
