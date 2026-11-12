@@ -1230,6 +1230,34 @@ describe('what a moved or copied install\'s root keeps', () => {
     expect(tree(moved)).toEqual(kept);
   });
 
+  test.skipIf(process.getuid?.() === 0)('a mark this user can\'t read, or that isn\'t JSON, stops a binding whose root keeps something, naming the mark, saying setup can\'t tell whether a Go back is asked for and how to put it right, and nothing changes', () => {
+    setup(options(install));
+    updated(install);
+    writeMark(rootOf(install), { to: '0.10.1', why: 'go-back' });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const mark = installPaths(rootOf(moved)).mark;
+    const tail = 'so setup can\'t tell whether a Go back is asked for there. Setup has changed nothing. Make it readable to ' +
+      'this user, or remove it, which drops the request, and run setup again.';
+    const kept = tree(moved);
+    fs.chmodSync(mark, 0o000);
+    let why: string;
+    try {
+      why = refusal(() => setup(options(moved, { moveAside: true })));
+    } finally {
+      fs.chmodSync(mark, 0o644);
+    }
+    expect(why).toContain(`\n  ${join(rootOf(moved), 'set-aside', 'm2')}\nThe mark at ${mark} can't be read (EACCES`);
+    expect(why).toEndWith(tail);
+    expect(tree(moved)).toEqual(kept);
+    writeFileSync(mark, '{ not json');
+    const broken = tree(moved);
+    why = refusal(() => setup(options(moved, { moveAside: true })));
+    expect(why).toEndWith(`\nThe mark at ${mark} can't be read (The mark at ${mark} isn't JSON, so this release can't ` +
+      `read it), ${tail}`);
+    expect(tree(moved)).toEqual(broken);
+  });
+
   test('--move-aside moves an area once where two of the places it looks in are one directory by two paths', () => {
     setup(options(install));
     symlinkSync('data', join(install, 'alias'));

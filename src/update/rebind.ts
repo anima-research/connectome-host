@@ -355,7 +355,14 @@ export function unfinishedWords(root: string): string | null {
   const goBack = pendingGoBack(lines);
   if (goBack !== null) return unfinishedGoBackWords(goBack);
   const path = installPaths(root).mark;
-  const mark = readRecord<Mark>(path, 'mark');
+  let mark: Mark | null;
+  try {
+    mark = readRecord<Mark>(path, 'mark');
+  } catch (error) {
+    return `The mark at ${path} can't be read (${(error as Error).message.replace(/\.+$/, '')}), so setup can't tell ` +
+      'whether a Go back is asked for there. Setup has changed nothing. Make it readable to this user, or remove it, ' +
+      'which drops the request, and run setup again.';
+  }
   if (mark === null || mark.why !== 'go-back' || markSpent(mark, lines, current)) return null;
   return `A Go back is asked for: the mark at ${path} asks the next start to go back to ${mark.to}, and that start ` +
     'goes back from what\'s listed here. Setup has changed nothing. Let that Go back run where the install was, by ' +
