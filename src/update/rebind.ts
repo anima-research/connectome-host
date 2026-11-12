@@ -206,7 +206,21 @@ export function bindChildren(children: Children, mapping: Mapping): void {
       throw new ContractError(`${children.path} names ${child.dataDir}, which this binding gives no place, so setup ` +
         'can\'t bind it.');
     }
-    const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
+    let other = false;
+    try {
+      statSync(child.dataDir);
+      other = !sameDirectory(child.dataDir, dataDir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR' && child.pid !== null) {
+        throw new ContractError(`${children.path} names ${child.dataDir} for its child ${child.name}, with process ` +
+          `${child.pid}, and setup can't look at that directory (${code ?? (error as Error).message}), so it can't tell ` +
+          'whether that process is the original install\'s child, still running there, as after a copy, or this ' +
+          'install\'s own. Setup stopped before it bound the install. Make that directory searchable to this user, ' +
+          `and run setup again; or, if this install is a copy, set that child's "pid" to null in ${children.path}, ` +
+          'and run setup again.');
+      }
+    }
     if (other) copied.push(dataDir);
     return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
   });
