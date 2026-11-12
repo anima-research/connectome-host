@@ -3,7 +3,8 @@ import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { AnthropicAdapter } from '@animalabs/membrane';
-import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
+import { checkKey, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
+import { checkDiscordToken } from '../src/setup/discord-token.js';
 
 const seen: Array<{ key: string | null; body: { model?: unknown; max_tokens?: unknown; messages?: unknown; stream?: unknown } }> = [];
 const started = (message: Record<string, unknown>) => ({ type: 'message_start', message });
@@ -668,5 +669,22 @@ describe('another stored secret where ANTHROPIC_BASE_URL carries it', () => {
     expect(cause(said)).toContain('It said: "<DISCORD_TOKEN> may not"');
     expect(cause(said)).toContain('Ask whoever runs https://<DISCORD_TOKEN>.gateway.test');
     for (const each of [refused, said]) expect(cause(each).toLowerCase()).not.toContain('tok-in-host');
+  });
+});
+
+describe('which letters a secret matches in any case', () => {
+  test('the key and each secret are shown by name with their ASCII letters in any case, and other letters as given, as command output shows them', () => {
+    expect(withSecretsHidden('at TOKEN-abc.example', 'token-ABC')).toBe('at <ANTHROPIC_API_KEY>.example');
+    expect(withSecretsHidden('at TÖKENhost', 'TÖKEN')).toBe('at <ANTHROPIC_API_KEY>host');
+    expect(withSecretsHidden('at tökenhost', 'TÖKEN')).toBe('at tökenhost');
+    expect(withSecretsHidden('at tökenhost', 'sk-ant', [{ name: 'OTHER', value: 'TÖKEN' }])).toBe('at tökenhost');
+  });
+
+  test('a Discord token is shown by name with its ASCII letters in any case, and other letters as given', async () => {
+    const failing = (said: string) => (async () => { throw new Error(said); }) as unknown as typeof fetch;
+    expect(await checkDiscordToken('TOKEN-abc', { fetch: failing('connect failed at token-ABC') }))
+      .toEqual({ kind: 'unanswered', why: 'connect failed at <DISCORD_TOKEN>' });
+    expect(await checkDiscordToken('TÖKEN', { fetch: failing('connect failed at tökenhost') }))
+      .toEqual({ kind: 'unanswered', why: 'connect failed at tökenhost' });
   });
 });

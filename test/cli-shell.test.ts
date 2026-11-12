@@ -546,6 +546,31 @@ modeTest('on macOS, a spawn-helper the command can\'t make executable in the cop
   expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${join(shut, 'spawn-helper')} couldn't be made executable (EACCES: permission denied, stat '${join(shut, 'spawn-helper')}'). Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
 });
 
+modeTest('on macOS, a prebuilds directory the command can\'t list is named in the stop, with its error and what to do', async () => {
+  const { dir, root, line } = installed();
+  const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
+  let shut = '';
+  const made = world(dir, {
+    pty: [broken, broken], atInstall: shipNodePty,
+    atAdd: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds'); chmodSync(shut, 0o000); },
+  }, { platform: 'darwin' });
+  try {
+    expect(await runShell(root, ['install'], made)).toBe(1);
+  } finally {
+    if (shut) chmodSync(shut, 0o755);
+  }
+  expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${shut} couldn't be read (EACCES: permission denied, scandir '${shut}'). Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
+});
+
+test('on macOS, a node-pty with no prebuilt binaries gets no word about them in the stop, and the note on the trusted list when Bun may not have built it', async () => {
+  const { dir, root } = installed();
+  const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
+  writeFileSync(join(dir, 'package.json'), '{}');
+  const made = world(dir, { pty: [broken, broken] }, { platform: 'darwin' });
+  expect(await runShell(root, ['install'], made)).toBe(1);
+  expect(made.seen.err).toEqual([`The resident's shell runs on node-pty, and here it doesn't work: posix_spawnp failed. ${join(dir, 'package.json')} doesn't name term-sessions-mcp in its trustedDependencies, so Bun may not have run node-pty's install script at all. A resident without a shell needs none of this.`]);
+});
+
 test('an add that fails stops the command, saying its own lines say why and how to try again', async () => {
   const { dir, root, line } = installed();
   const failed = world(dir, { added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } });
