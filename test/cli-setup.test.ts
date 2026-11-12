@@ -768,7 +768,7 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(listed).toBeLessThan(added);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['their-own-server', 'node-pty', 'puppeteer', 'term-sessions-mcp']);
-  expect(text(made.seen.out)).toContain(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: those Bun allows by default, and term-sessions-mcp, which gives the resident a shell if it gets one. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
+  expect(text(made.seen.out)).toContain(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: the rest of those Bun allows by default, and term-sessions-mcp, which gives the resident a shell if it gets one. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
   const named = directory();
   writeFileSync(join(named, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer', 'term-sessions-mcp'] }));
   mkdirSync(join(named, '.setup'));
