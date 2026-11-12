@@ -553,6 +553,11 @@ export function commandFor(way: UpdateWay, status: UpdateStatus): string | null 
   return COMMAND_WAYS[way];
 }
 
+export function pageRequest(way: UpdateWay, status: UpdateStatus): { type: 'command'; command: string } | null {
+  const command = commandFor(way, status);
+  return command === null ? null : { type: 'command', command };
+}
+
 export interface Banner {
   line: string;
   ways: Array<'install' | 'restart' | 'wait' | 'resume'>;

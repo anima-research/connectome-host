@@ -3,8 +3,9 @@ import * as fs from 'node:fs';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HostModeStatus } from '@animalabs/agent-framework';
+import type { HostModeStatus, ModuleContext } from '@animalabs/agent-framework';
 import { handleCommand } from '../src/commands.js';
+import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
 import {
   appendJournal, copyLabelPath, installPaths, moveCurrent, readMark, realOrResolved, switchQuiesceReason, writeJsonAtomic,
   type CopyLabel,
@@ -14,8 +15,8 @@ import { RELEASE_HOST } from '../src/update/launcher.js';
 import type { SwitchFleet } from '../src/update/quiesce.js';
 import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
-  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, statusLines, type HostQuiet,
-  type ReadCheck, type UpdateStatus,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, pageRequest, statusLines,
+  type HostQuiet, type ReadCheck, type UpdateStatus,
   type UpdateWay,
 } from '../src/web/update-text.js';
 
@@ -724,7 +725,7 @@ describe('Restart', () => {
     const { root, dataDir } = install('0.12.1', ['0.11.0']);
     expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled()).lines)
       .toEqual(['No release newer than 0.12.1 is installed: /update install installs one first.']);
-    for (const ways of [PAGE_WAYS, cliWays('connectome'), TOOL_WAYS]) {
+    for (const ways of [cliWays('connectome'), TOOL_WAYS]) {
       expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled(undefined, ways)).lines)
         .toEqual([`No release newer than 0.12.1 is installed: ${ways.install} installs one first.`]);
     }
@@ -1105,3 +1106,55 @@ describe('/update', () => {
   });
 });
 
+describe("the page's own Update controls", () => {
+  test("a Restart the page sends, with nothing newer installed by then, names the page's Update", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.11.0']);
+    const local = hostUpdate({ root, dataDir }, { supervised: true }).update;
+    const restart = spyOn(theHostUpdate, 'restartToInstalled')
+      .mockImplementation((expected, ways) => local.restartToInstalled(expected, ways));
+    const page = mkdtempSync(join(tmpdir(), 'webui-update-'));
+    dirs.push(page);
+    writeFileSync(join(page, 'index.html'), '<!doctype html><title>t</title>');
+    const module = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'u', password: 'p' }, staticDir: page });
+    await module.start({} as ModuleContext);
+    const cm = { getAllMessages: () => [], currentBranch: () => ({ id: 'b1', name: 'main' }) };
+    const agent = { name: 'main', model: 'test-model', state: { status: 'idle' }, getContextManager: () => cm };
+    module.setApp({
+      framework: {
+        getAllAgents: () => [agent], getAgent: () => agent, getAllModules: () => [], getModule: () => undefined,
+        getSessionUsage: () => { throw new Error('no usage here'); }, onTrace: () => () => {},
+        getHostModeStatus: () => ({ quiesced: false }),
+      },
+      frameworkSessionId: 's1',
+      sessionManager: { getActiveSession: () => ({ id: 's1', name: 'first', manuallyNamed: true }), findSession: () => undefined },
+      recipe: { name: 'test', agent: { name: 'main' } },
+      branchState: { checkpoints: new Map(), undoStack: [], redoStack: [] },
+      switchSession: async () => {},
+      switching: false,
+    } as never);
+    const port = __getSharedServerPortForTests()!;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { origin: `http://127.0.0.1:${port}`, authorization: `Basic ${Buffer.from('u:p').toString('base64')}` },
+    } as unknown as undefined);
+    try {
+      const results: Array<{ lines: Array<{ text: string }> }> = [];
+      const done = new Promise<void>((resolve) => ws.addEventListener('message', (event) => {
+        const reply = JSON.parse(String(event.data)) as { type: string; corrId?: string; lines?: Array<{ text: string }> };
+        if (reply.type === 'command-result' && reply.lines) results.push({ lines: reply.lines });
+        if (results.length === 2) resolve();
+      }));
+      await new Promise((resolve) => ws.addEventListener('open', resolve));
+      const shown = { installed: '0.13.0' } as UpdateStatus;
+      ws.send(JSON.stringify(pageRequest('restart', shown)));
+      await done;
+      expect(results[1]!.lines.map((line) => line.text))
+        .toEqual([`No release newer than 0.12.1 is installed: ${PAGE_WAYS.install} installs one first.`]);
+      expect(restart).toHaveBeenCalledTimes(1);
+    } finally {
+      ws.close();
+      restart.mockRestore();
+      await module.stop();
+      await stopWebUiServer();
+    }
+  });
+});
