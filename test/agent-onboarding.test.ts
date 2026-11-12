@@ -317,3 +317,20 @@ describe('the backups\' commands', () => {
     for (const name of names) expect({ name, user: name.includes('.<user>.') }).toEqual({ name, user: true });
   });
 });
+
+describe('connectome service install, run by the agent', () => {
+  it('gets setup--run\'s most as its timeoutMs in "Going live", which each run of it again elsewhere points to', () => {
+    const live = PIECES.find((piece) => piece.heading === 'Going live')!.text;
+    const run = live.split(/(?<=\.) /)
+      .find((sentence) => sentence.includes("Run `connectome service install '<name>.json'` with `setup--run`")) ?? '';
+    const limits = [...run.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
+    expect({ limits }).toEqual({ limits: [MAX_TIMEOUT_MS] });
+    for (const piece of PIECES) {
+      if (['SETUP.md', 'With another harness', 'Going live'].includes(piece.heading ?? '')) continue;
+      for (const sentence of piece.text.split(/(?<=\.) |\n/)) {
+        if (!/connectome service install[^`]*` again/.test(sentence)) continue;
+        expect({ sentence, routed: sentence.includes('("Going live")') }).toEqual({ sentence, routed: true });
+      }
+    }
+  });
+});
