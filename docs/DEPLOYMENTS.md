@@ -99,20 +99,7 @@ writes is named after the install's working directory instead:
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
-`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn. To make fewer of them,
-stop the resident first, then drain what the warmup can offline with `bun scripts/warmup-session.ts
-'<session>' --agent '<recipe agent.name>' --data-dir '<DATA_DIR>' --model '<compressionModel>'`,
-where in an install setup made the script is
-`<install>/current/node_modules/@animalabs/connectome-host/scripts/warmup-session.ts`,
-`<install>` being the directory that holds the install's `connectome` command.
-Give the session's id as `<session>` where its name begins with `-`, which warmup takes
-for an option, or where several sessions share it, ignoring case, since warmup then
-warms only one of them.
-Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
-`--merge-threshold` must pass the same values to the warmup command. The warmup
-leaves the work that waits on the agent's tool definitions to the restarted host;
-[Stage 3 of `claudeai-evacuation.md`](./claudeai-evacuation.md#stage-3--warmup-compress-the-message-history)
-says which work that is and when the host compresses it.
+`llm-calls.<iso>.jsonl`; it is not an agent wake or a user turn.
 
 **Moving a resident off heartbeat-mcpl.** The heartbeat is agent-framework's now, `modules.heartbeat`, and a recipe that turns it on can't also name `mcpServers.heartbeat`: the host refuses it at load, since both would wake the agent and their tools share the names `heartbeat--…`. To move a resident over, replace its `mcpServers.heartbeat` with `"heartbeat": { "importFrom": { "configPath": "<its HEARTBEAT_CONFIG_FILE>", "remindersPath": "<its HEARTBEAT_REMINDERS_FILE>" } }` under `modules`, which brings the server's schedule and reminders along on the first start that finds no heartbeat state of the framework's own; once the framework has kept its own state, it reads that and imports nothing. Its wake rules for `source: "heartbeat"` keep applying, since the framework's ticks and reminders reach the gate as the server's pushes did ([ATTENTION-AND-GATING.md](./ATTENTION-AND-GATING.md)).
 

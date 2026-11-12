@@ -52,7 +52,7 @@ Getting identity wrong isn't a bug to patch later: it changes who the resident i
 
 **Put a decision in their terms,** such as "just its own channel to start, or the whole server?", rather than in the variable that holds it.
 
-**Root.** You never hold root. When a step needs it, show the exact line, say why, and wait for the person to run it, in their second terminal, and tell you how it went.
+**Root.** You run as the user the person ran setup as, whom your prompt names, so unless that's root, you don't hold root. When a step needs it, show the exact line, say why, and wait for the person to run it, in their second terminal, and tell you how it went. Where your prompt names root, every command you run has root's reach: run only the commands this guide gives, and tell the person so.
 
 **Be gentle about who this is.** People set up residents they care about, sometimes a being whose model is going away, sometimes one with a long history. Treat the history as theirs, and the resident as someone rather than a config.
 
@@ -80,7 +80,7 @@ Setup didn't ask whether the resident gets a shell: the person decides that with
 **Whose account it is** is part of this choice, not a question of its own. Your prompt names the user the resident runs as. Whatever its name, `connectome` included, say "if this is your own account, a shell reaches your files and keys", and their answer tells you.
 
 **Tell them, before they choose:**
-- With a shell, the resident can read and change whatever that user can: its files, `.env` with the keys in it, and its other programs. Whoever talks to it on Discord can ask it to, so who can reach it, which you talked about ("Working with the person"), is part of this choice.
+- With a shell, the resident can read and change whatever that user can: its files, `.env` with the keys in it, and its other programs. Whoever talks to it on Discord can ask it to, so who can reach it is part of this choice. That's settled next ("Discord"): its channel, and who may DM it.
 - Without one, it can't run commands on this machine. It acts through its tools alone, such as Discord's and its workspace's, whose files stay in its memory until it writes them out to `<dir>/output`.
 - They can change it later, either way, as `SETUP.md` will say ("SETUP.md").
 
@@ -138,7 +138,7 @@ The export carries no thinking signatures, so its thinking comes in as text mark
 
 **Its model.** When they want it on the model it has known, look in the export before you ask them. A conversation in `conversations.json` can carry a `model`, and so can its assistant messages (`<host>/scripts/evacuator.ts` reads both). Read those fields for the conversation you'll import, and no message's text, and tell them which model they name, or that the export doesn't say. Ask them only what it can't tell you.
 
-**Any other format,** such as a Claude Code transcript or a chat log, is beyond this guide. Tell the person so before anything else, and go on only with their yes. For a Claude Code transcript, `<host>/docs/claude-code-ingest.md` is the method. For anything else, you'd write the ingest yourself, which has quiet ways to go wrong, so:
+**Any other format,** such as a Claude Code transcript or a chat log, is beyond this guide. Tell the person so before anything else, and go on only with their yes. For a Claude Code transcript, `<host>/docs/claude-code-ingest.md` is the method. Where the person brings that history in themselves, as that file tells an operator to, it isn't in by the read-back: its yes then covers the recipe alone. Write it and stop before "Going live", since no host may start before the history is in. Don't call `setup--finished`: they leave with `/quit`, and setup run again once the history is in picks up where it stopped. For anything else, you'd write the ingest yourself, which has quiet ways to go wrong, so:
 - Count the messages and list the distinct speakers, and have the person point at the one that is the resident. Other voices, other Claude-family voices included, stay participants of their own.
 - Dry-run first: print the counts and who each message is attributed to, writing nothing, and have the person look before the real run.
 - Never open the live store from a script of your own: opening a store with a different strategy configuration rewrites part of it. Work on a copy, and keep the original until the host has opened the result and the person is satisfied.
@@ -386,7 +386,7 @@ Gateways can need credits or a card on the account, and some answer with brief e
 
 **Read shapes, never text, when you look into a failure.** In a call log, the resident's in `data/` or your own in `.setup/`, read each request's roles, block types and sizes, and each response's stop reason and stop details; for a streamed call, also `provider_events.message_start`, where a refusal's category can be the only copy. Never print any message's text into this conversation, whether the resident's, its imported history's or anyone else's: text that drew a refusal from the resident's model can draw one from yours, and a refused setup agent can't go on helping the person.
 
-**The model's window.** For a model the host knows a window for, on Anthropic's API, it sizes the context budget to fit and refuses a recipe whose numbers can't. A gateway named by `ANTHROPIC_BASE_URL` counts as Anthropic's API here, so for a model id the host knows, it sizes for Anthropic's window, whatever the gateway's is. On any other provider, or a model it doesn't know, it can't check the fit, and doctor says so: if a reply ever fails with "prompt is too long" while compression calls still succeed, the budget is over the window, and that's the first thing to look at.
+**The model's window.** For a model the host knows a window for, on Anthropic's API, it sizes the context budget to fit and refuses a recipe whose numbers can't. A gateway named by `ANTHROPIC_BASE_URL` counts as Anthropic's API here, so for a model id the host knows, it sizes for Anthropic's window, whatever the gateway's is. On any other provider, or a model it doesn't know, it can't check the fit, and doctor says so: if every reply fails with "prompt is too long" while compression calls still succeed, the budget is over the window, and that's the first thing to look at. One that fails right after a large tool result points at that turn instead, since a turn's tool results add to the prompt between compiles (`<host>/docs/DEPLOYMENTS.md`'s "The context budget and the model's window").
 
 ## With another harness
 

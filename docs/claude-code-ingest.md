@@ -79,10 +79,11 @@ only after the import, and you skip stage 3, whose check is an operator's, and c
 after going live instead, as stage 3's last paragraph says. If you're an operator who came here on
 your own, run `bunx @animalabs/connectome-host setup discord` first, in a new, empty
 `<agent>-cm`: setup installs only into an empty directory or one it set up. Tell its
-agent that you'll bring in a Claude Code history yourself, and leave it with `/quit`
-once it has written the recipe ("The recipe"), before its "Going live", which starts
-the resident: the seed has to be in the data directory before any host starts there
-(stage 2), and stage 3's check copies the recipe. Running setup again once the seed is
+agent, before its read-back, that you'll bring in a Claude Code history yourself: it
+then writes the recipe ("The recipe") and stops before its "Going live", which starts
+the resident, since the seed has to be in the data directory before any host starts there
+(stage 2), and stage 3's check copies the recipe. Leave it with `/quit` once the recipe
+is written. Running setup again once the seed is
 in picks up where it stopped. Then make a `scripts/` directory in `<agent>-cm` for this
 stage's and the next stage's scripts. In a shell command, put each path or value you fill
 in between single quotes, so that a space or a shell character in it stays part of it,
@@ -373,8 +374,11 @@ resident speaks to, and get no answer from any service.
    its own:
    `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock CONNECTOME_UPDATE_CHECK=0 OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
    The host gets only the variables the command names, and from that directory Bun loads
-   none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
-   key is a mock, and with `HOME` the new directory, Codex has no login.
+   none of `<agent>-cm`'s env files, so no credential of the resident's reaches it from
+   the environment: the key is a mock, and with `HOME` the new directory, Codex has no
+   login. A token the recipe itself writes out comes with the copy, but step 2 leaves
+   out its entry or, for `modules.history.semantic`'s, points its address where nothing
+   answers.
    `CONNECTOME_UPDATE_CHECK=0` keeps it from asking npm's registry for a newer release,
    as the fleet does for each child it starts. Where the recipe's provider needs a key of
    its own to start, give its name a mock value the same way: `OPENROUTER_API_KEY`,
