@@ -583,6 +583,16 @@ test('an add that fails stops the command, saying Bun\'s own lines say why and h
   expect(cut.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (it was ended by SIGTERM), so the resident's shell isn't installed. Run \`${line}\` again to try once more.`]);
 });
 
+test('where setup\'s agent runs it, an add that fails says setup\'s agent has Bun\'s own lines', async () => {
+  const { dir, root, line } = installed();
+  const said = join(directory(), 'said');
+  writeFileSync(said, '');
+  const env = { PATH: '/usr/bin:/bin', HOME: dir, [SHOWN_FILE]: said };
+  const failed = world(dir, { added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } }, { env });
+  expect(await runShell(root, ['install'], failed)).toBe(1);
+  expect(failed.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (exit 1), so the resident's shell isn't installed. Setup's agent has Bun's own lines, which say why. Once that's put right, run \`${line}\` again.`]);
+});
+
 test('where setup\'s agent names a file for the person, each line shell install says goes there too, in the order said', async () => {
   const { dir, root, line } = installed();
   const said = join(directory(), 'said');

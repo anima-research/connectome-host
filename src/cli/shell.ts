@@ -4,7 +4,7 @@ import { bunBelowFloor } from '../bun-floor.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { typedCommand } from './install-command.js';
-import { shownToPerson } from './shown.js';
+import { SHOWN_FILE, shownToPerson } from './shown.js';
 import {
   SETUP_BUN_FLOOR, SHELL_NODE_TOP, SERVERS, declaredDependencies, ended, envFileRefusal, installedVersion,
   packageJson, realWorld, withoutDotEnv, withoutKeys, type SetupWorld,
@@ -110,7 +110,8 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     if (added.status !== 0) {
       err(`\`bun --no-env-file add ${spec}\` didn't finish (${ended(added)}), so the resident's shell isn't installed.` +
         (added.status === null ? ` Run \`${line}\` again to try once more.`
-          : ` Bun's own lines say why. Once that's put right, ${again}.`));
+          : ` ${world.env[SHOWN_FILE] ? 'Setup\'s agent has Bun\'s own lines, which say why.' : 'Bun\'s own lines say why.'} ` +
+            `Once that's put right, ${again}.`));
       return 1;
     }
     const now = installedVersion(dir, SHELL);
