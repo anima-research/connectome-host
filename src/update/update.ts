@@ -384,15 +384,15 @@ export class HostUpdate {
   private restoreRefusal(ways: UpdateWays): string | null {
     const setup = this.need();
     const command = (ways as Partial<{ person: UpdateWays }>).person?.restore ?? ways.restore;
-    const person = `restoring it is the person's, with ${command}.`;
+    const person = (what: string) => `restoring ${what} is the person's, with ${command}.`;
     let children: string[];
     try {
       children = fleetChildren(setup.here!.root, setup.host.fleet());
     } catch (error) {
-      return `whether the copy it would restore holds a fleet child's data can't be told (${said(error)}), so ${person}`;
+      return `whether the copy it would restore holds a fleet child's data can't be told (${said(error)}), so ${person('it')}`;
     }
     if (children.length === 0) return null;
-    return `the copy it would restore holds this host's fleet children's data too (${children.join(', ')}), so ${person}`;
+    return `this host has fleet children, now or at the last switch (${children.join(', ')}), so ${person('the copy')}`;
   }
 
   async cancelArmed(by: string | null = null, ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {

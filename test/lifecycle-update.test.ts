@@ -935,8 +935,8 @@ for (const [where, place] of [
     const host = residentHost({ root, dataDir, ...place(root, dataDir) });
     const answer = await host.call({ action: 'back', data: 'restore' });
     expect(answer.success).toBe(false);
-    expect(text(answer)).toBe("Nothing was armed: the copy it would restore holds this host's fleet children's data too " +
-      `(kid), ${RESTORE_IS_THE_PERSONS}`);
+    expect(text(answer)).toBe('Nothing was armed: this host has fleet children, now or at the last switch (kid), so restoring ' +
+      "the copy is the person's, with connectome update back restore. lifecycle--update back with data keep is open to you.");
     expect(host.update.armedSwitch()).toBeNull();
   });
 }
@@ -980,6 +980,56 @@ test('back with keep arms where fleet children are running and listed, and its a
   expect(host.update.armedSwitch()).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: true });
 });
 
+test('an armed keep goes ahead at its try where fleet children are running and listed', async () => {
+  const { root, dataDir } = installRunning0141();
+  placeCopyOf0140(root, dataDir);
+  const host = residentHost({ root, dataDir, fleet: fleetChild({ busy: false }).fleet });
+  await host.armed({ action: 'back', data: 'keep' });
+  writeChildren(dataDir, ['kid']);
+  await host.update.runArmed(alwaysQuiet);
+  expect(readMark(root)).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: true });
+  expect(host.stops).toHaveLength(1);
+});
+
+test('back with restore is refused where the copy holds the data directory inside a larger item that lists a child', async () => {
+  const { root } = installRunning0141();
+  const outer = mkdtempSync(join(tmpdir(), 'lifecycle-update-outer-'));
+  dirs.push(outer);
+  const dataDir = join(outer, 'data');
+  mkdirSync(dataDir);
+  writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir, extraState: [] }));
+  const { copy } = installPaths(root);
+  mkdirSync(join(copy, '0-outer', 'data'), { recursive: true });
+  writeChildren(join(copy, '0-outer', 'data'), ['kid']);
+  placeRelease(root, '0.14.0');
+  writeFileSync(copyLabelPath(copy), JSON.stringify({
+    v: 1, from: '0.14.0', at: '2026-10-20T10:00:00.000Z', items: [{ path: realOrResolved(outer), name: '0-outer' }], mark: 'm-0',
+  }));
+  const host = residentHost({ root, dataDir });
+  const answer = await host.call({ action: 'back', data: 'restore' });
+  expect(answer.success).toBe(false);
+  expect(text(answer)).toContain('(kid)');
+  expect(host.update.armedSwitch()).toBeNull();
+});
+
+test('back with restore arms where the copy was taken before the data directory was there', async () => {
+  const { root, dataDir } = installRunning0141();
+  const { copy } = installPaths(root);
+  const servers = join(root, 'mcpl-servers.json');
+  writeFileSync(servers, '{}');
+  mkdirSync(copy, { recursive: true });
+  writeFileSync(join(copy, '0-mcpl-servers.json'), '{}');
+  placeRelease(root, '0.14.0');
+  writeFileSync(copyLabelPath(copy), JSON.stringify({
+    v: 1, from: '0.14.0', at: '2026-10-20T10:00:00.000Z', items: [{ path: realOrResolved(servers), name: '0-mcpl-servers.json' }],
+    absent: [{ path: realOrResolved(dataDir), name: '1-data' }], mark: 'm-0',
+  }));
+  const host = residentHost({ root, dataDir });
+  const answer = await host.call({ action: 'back', data: 'restore' });
+  expect(answer.success).toBe(true);
+  expect(host.update.armedSwitch()).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: false });
+});
+
 test('an armed restore whose try finds a fleet child listed is dropped, and check says why', async () => {
   const { root, dataDir } = installRunning0141();
   placeCopyOf0140(root, dataDir);
@@ -992,8 +1042,8 @@ test('an armed restore whose try finds a fleet child listed is dropped, and chec
   expect(readMark(root)).toBeNull();
   expect(host.stops).toEqual([]);
   expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).toContain(`A Go back to 0.14.0, restoring the copy, armed at ${since} ` +
-    "didn't go ahead at 2026-10-26T20:00:00.000Z: the copy it would restore holds this host's fleet children's data too " +
-    `(kid), so restoring it is the person's, with ${join(root, 'connectome')} update back restore.`);
+    "didn't go ahead at 2026-10-26T20:00:00.000Z: this host has fleet children, now or at the last switch (kid), so " +
+    `restoring the copy is the person's, with ${join(root, 'connectome')} update back restore.`);
 });
 
 test('back needs the data kept or restored, and goes back the way it was asked', async () => {
