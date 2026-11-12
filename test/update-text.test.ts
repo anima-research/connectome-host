@@ -226,6 +226,26 @@ describe('before a switch, check says what going back can cost', () => {
   test('the banner leaves it out, as it leaves out the notes', () => {
     expect(bannerOf({ ...base, check: read })?.line).not.toContain('Going back after a switch');
   });
+
+  test('with a release installed and no release offered, each reader gets it beside the installed one, before the notes', () => {
+    const checks: UpdateStatus['check'][] = [
+      null, { at: read.at, ok: false, error: 'the registry answered 503' }, { ...read, candidate: null, costs: [] },
+    ];
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS]) {
+      for (const check of checks) {
+        const lines = statusLines({ ...base, check, installed: '0.13.0' }, ways);
+        const at = lines.indexOf(line('0.12.1', ways.restore));
+        expect({ reader: ways.restore, check: check?.ok ?? null, at: at >= 0, once: lines.lastIndexOf(line('0.12.1', ways.restore)) === at,
+          beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+          .toEqual({ reader: ways.restore, check: check?.ok ?? null, at: true, once: true, beforeNotes: true });
+      }
+    }
+  });
+
+  test('beside a release offered, it comes once, from the notice', () => {
+    const lines = statusLines({ ...base, check: read, installed: '0.13.0' });
+    expect(lines.filter((each) => each === line('0.12.1', COMMAND_WAYS.restore))).toHaveLength(1);
+  });
 });
 
 describe('each way named as its caller names it', () => {
