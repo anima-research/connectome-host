@@ -419,23 +419,27 @@ describe('setup--run', () => {
 
   test('a command that ends while a question is open shows what it said once the question is answered', async () => {
     const shownWhileOpen: string[] = [];
-    let ended = '';
+    let open = '';
     const made = install({
       asker: {
         ask: async () => {
           const at = made.shown.length;
-          for (const started = performance.now(); !existsSync(ended) && performance.now() - started < 10_000; await Bun.sleep(10));
-          await Bun.sleep(500);
+          const held = heldAt(made.module);
+          writeFileSync(open, '');
+          const shownSince = new Promise<void>((done) => {
+            const look = () => (made.shown.slice(at).includes('It said:') ? done() : setTimeout(look, 10));
+            look();
+          });
+          await Promise.race([held, shownSince]);
           shownWhileOpen.push(...made.shown.slice(at));
           return 'a-held-secret';
         },
       },
     });
-    ended = join(made.dir, 'ended');
-    const running = run(made.module, 'sleep 1; echo said-for-the-person >> "$CONNECTOME_SETUP_SHOWN"; touch ended');
+    open = join(made.dir, 'open');
+    const running = run(made.module, `while [ ! -e ${open} ]; do sleep 0.02; done; echo said-for-the-person >> "$CONNECTOME_SETUP_SHOWN"`);
     for (const started = performance.now(); !made.shown.includes("Setup's agent runs:") && performance.now() - started < 5_000; await Bun.sleep(10));
     expect((await askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' })).success).toBe(true);
-    expect(existsSync(ended)).toBe(true);
     expect(shownWhileOpen).toEqual([]);
     expect((await running).exitCode).toBe(0);
     expect(made.shown.slice(-2)).toEqual(['It said:', '  said-for-the-person']);
