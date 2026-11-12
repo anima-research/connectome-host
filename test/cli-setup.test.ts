@@ -448,7 +448,7 @@ test('yes, y and YES continue as Enter does, and only the continue question take
   expect(made.seen.launched).not.toBeNull();
 });
 
-test('on a no, setup says how to go on as the user its line makes, runs nothing and installs nothing', async () => {
+test('on a no, setup says how to go on as the user its line makes, runs nothing, installs nothing and leaves the directory as it found it', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no'] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -458,8 +458,39 @@ test('on a no, setup says how to go on as the user its line makes, runs nothing 
   expect(made.seen.out.slice(at + 1)).toEqual([...AS_OWN_USER, 'Nothing was installed here.']);
   expect(made.seen.ran).toEqual([]);
   expect(made.seen.launched).toBeNull();
-  expect(readdirSync(dir)).toEqual(['.setup']);
-  expect(readdirSync(join(dir, '.setup'))).toEqual(['setup.lock']);
+  expect(readdirSync(dir)).toEqual([]);
+});
+
+test('a setup whose directory another setup kept answers in, or made an install root in, while it asked its first step keeps nothing and stops', async () => {
+  const others = [
+    (dir: string) => {
+      mkdirSync(join(dir, '.setup'), { recursive: true });
+      writeFileSync(join(dir, '.setup', 'setup-state.json'), '{"v":1,"finished":"2026-11-12T04:00:00.000Z"}\n');
+    },
+    (dir: string) => {
+      mkdirSync(join(dir, 'connectome-host'));
+      writeFileSync(join(dir, 'connectome-host', 'install.json'), '{"v":1,"dataDir":"/elsewhere","extraState":[]}\n');
+    },
+  ];
+  for (const [at, other] of others.entries()) {
+    const dir = directory();
+    const made = world(dir, { answers: [''], secrets: [KEY] });
+    const { ask } = made.world;
+    made.world.ask = async (question) => {
+      const answer = await ask(question);
+      if (question === CONTINUE) other(dir);
+      return answer;
+    };
+    expect(await runSetup(dir, ['discord'], made), String(at)).toBe(1);
+    expect(made.seen.err, String(at)).toEqual([`Another setup ran in ${dir} while this one asked its questions, so this one keeps nothing and stops. Run setup again: it goes on from what that setup kept.`]);
+    expect(made.seen.ran, String(at)).toEqual([]);
+    expect(made.seen.launched, String(at)).toBeNull();
+    if (at === 0) {
+      expect(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).toBe('{"v":1,"finished":"2026-11-12T04:00:00.000Z"}\n');
+    } else {
+      expect(existsSync(join(dir, '.setup', 'setup-state.json'))).toBe(false);
+    }
+  }
 });
 
 test('where HOME isn\'t an absolute path to a directory, setup makes no directory for the resident: it sends the person to make one, before any question', async () => {
@@ -1790,18 +1821,29 @@ function tryLock(file: string): string {
   return tried.stdout.toString().trim();
 }
 
-test('setup holds its lock while it asks its questions and while its agent runs', async () => {
+test('setup holds its lock while it asks its questions in a directory that\'s setup\'s already, from the first step\'s yes in a new one, and while its agent runs', async () => {
   const dir = directory();
   const lock = join(dir, '.setup', 'setup.lock');
   const tried: string[] = [];
   const made = world(dir, { answers: [''], secrets: [KEY] });
   const { ask, askHidden, startAgent } = made.world;
-  made.world.ask = async (question) => { tried.push(`ask: ${tryLock(lock)}`); return ask(question); };
+  made.world.ask = async (question) => { tried.push(`ask: ${existsSync(join(dir, '.setup')) ? tryLock(lock) : 'no .setup'}`); return ask(question); };
   made.world.askHidden = async (label) => { tried.push(`askHidden: ${tryLock(lock)}`); return askHidden(label); };
   made.world.startAgent = async (launch) => { tried.push(`agent: ${tryLock(lock)}`); return startAgent(launch); };
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(tried).toEqual(['ask: SQLITE_BUSY', 'askHidden: SQLITE_BUSY', 'agent: SQLITE_BUSY']);
+  expect(tried).toEqual(['ask: no .setup', 'askHidden: SQLITE_BUSY', 'agent: SQLITE_BUSY']);
   expect(tryLock(lock)).toBe('taken');
+
+  const there = directory();
+  mkdirSync(join(there, '.setup'));
+  const thereLock = join(there, '.setup', 'setup.lock');
+  writeFileSync(thereLock, '');
+  const asked: string[] = [];
+  const second = world(there, { answers: [''], secrets: [KEY] });
+  const secondAsk = second.world.ask;
+  second.world.ask = async (question) => { asked.push(tryLock(thereLock)); return secondAsk(question); };
+  expect(await runSetup(there, ['discord'], second)).toBe(0);
+  expect(asked).toEqual(['SQLITE_BUSY']);
 }, 30_000);
 
 test('a setup that ends early, or stops at a question, leaves the lock free and its lock file in place', async () => {
@@ -1818,8 +1860,7 @@ test('a setup that ends early, or stops at a question, leaves the lock free and 
   const gone = world(fresh, { answers: [] });
   expect(await runSetup(fresh, ['discord'], gone)).toBe(1);
   expect(text(gone.seen.out)).toContain('Setup stopped before keeping its answers. Run it again in this directory to answer its questions again.');
-  expect(readdirSync(fresh)).toEqual(['.setup']);
-  expect(readdirSync(join(fresh, '.setup'))).toEqual(['setup.lock']);
+  expect(readdirSync(fresh)).toEqual([]);
   const again = world(fresh, { answers: [''], secrets: [KEY] });
   expect(await runSetup(fresh, ['discord'], again)).toBe(0);
   expect(again.seen.asked[0]).toBe(CONTINUE);
