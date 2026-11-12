@@ -1283,4 +1283,19 @@ describe('the ladder, its round on the review of 3c6be0fd0', () => {
     expect(findings(at)).toContainEqual(startsAfter);
     expect(findings(at)).not.toContainEqual(hardDown);
   }, 60_000);
+
+  test('with no readable turn\'s call, rows of the call log that can\'t be read leave whether a turn has succeeded since not known', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    const unread = { text: expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
+      'since isn\'t known, since rows of the call log can\'t be read$')), counts: false };
+    writeFileSync(calls, `${row(at.now - 400, 'complete')}\n{"timestamp":"${new Date((at.now - 90) * 1000).toISOString()}","kind":"str`);
+    expect(findings(at)).toContainEqual(unread);
+    expect(findings(at)).not.toContainEqual(hardDown);
+    writeFileSync(calls, `{"timestamp": not json, "kind":"stream"}\n${row(at.now - 400, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(unread);
+    expect(findings(at)).not.toContainEqual(hardDown);
+  });
 });

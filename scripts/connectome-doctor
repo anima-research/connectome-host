@@ -483,9 +483,9 @@ if llm_files:
         turn_resp = r.get("rawResponse") or {}
         turn_resp = turn_resp.get("response") or turn_resp
         turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
-        newer_unread = incomplete or unreadable > 0
         llm_window_from = None
         break
+    newer_unread = incomplete or unreadable > 0
     if call is not None:
         llm_ts = parse_iso(str(call.get("timestamp", "")))
         resp = call.get("rawResponse") or {}
@@ -690,7 +690,8 @@ if times or untimed:
     elif failed_at is not None and (INFERENCE in unknown or newer_unread or (
             turn_ts is None and window_from is not None and window_from > failed_at)):
         why = (unseen_why if INFERENCE in unknown
-               else "newer rows of the call log can't be read" if newer_unread
+               else "newer rows of the call log can't be read" if newer_unread and turn_ts is not None
+               else "rows of the call log can't be read" if newer_unread
                else f"the call log read here starts at {hhmm(window_from)}, after it")
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
              f"since {why}", counts=False)
