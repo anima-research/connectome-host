@@ -28,12 +28,6 @@ const SHELL_BIN = 'session-server';
 const SHELL_PORTS = { first: 3100, last: 32767 };
 const SHELL_CLIENT = /(?:^|[/\\\s])(?:terminal-sessions-mcp|term-sessions-mcp)(?:$|[@/\\\s])/;
 const SHELL_SETTINGS = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
-// The longest start measured, from the host's spawn to its socket's lifecycle:ready, on a recipe like setup's boot
-// check's, which names no server: 1,756 ms, on Linux with Bun's transpiler cache off, on a store holding a history of
-// 6,000 messages and 8.6 M characters, about ten 200 k-token context windows, imported from a made-up claude.ai export.
-// That size stands for a history continued over many windows, and a larger store can start slower than this. 60 starts
-// on an empty store, on Linux and macOS, took at most 1,011 ms. That recipe's provider is mock, so its starts
-// skip the check of how the account binds thinking, which the wait adds as THINKING_BINDING_PROBE_MS.
 const HOST_START_MS = 1_756;
 // agent-framework 0.33.0 connects each server in turn before the host's socket answers (src/framework.ts), and none of
 // these bounds is exported. A legacy WebSocket server can take the longest: its open, 15 s (src/mcpl/transport.ts),
@@ -63,6 +57,7 @@ export interface ServiceSystem {
   bun: string;
   owner(path: string): number;
   cgroup(): string | null;
+  environ(pid: string): string;
   which(name: string): string | null;
   run(command: string, args: string[], env: Record<string, string>): Ran;
   readRecipe(recipe: string): Promise<unknown>;
@@ -94,6 +89,7 @@ export function machine(): ServiceSystem {
         return null;
       }
     },
+    environ: (pid) => readFileSync(`/proc/${pid}/environ`, 'utf-8'),
     which: (name) => Bun.which(name),
     run: (command, args, env) => {
       try {
@@ -158,9 +154,9 @@ export async function runService(given: CliContext, sys: ServiceSystem = machine
 export async function installService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
   const root = ctx.root!;
   const given = ctx.argv[1]!;
-  const recipe = /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
   const cmd = typedCommand(root, sys.env.PATH);
   try {
+    const recipe = /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
     return await install(ctx, sys, root, recipe, cmd);
   } catch (error) {
     ctx.err(`connectome: ${error instanceof Refusal || error instanceof ContractError ? error.message
@@ -216,7 +212,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const units = shellBin === null ? [names.host] : [names.shell, names.host];
   insideNeither(sys, manager, names, units, cmd);
   const env = childEnv(sys);
-  for (const unit of units) ownedOrFree(unit, manager, work, sys, env);
+  for (const unit of [names.shell, names.host]) ownedOrFree(unit, manager, work, sys, env);
   if (manager === 'systemd-user') noOtherUnit(ctx, work, names, sys, env);
   await noOtherHost(root, dataDir, manager, names.host, sys, env);
   const envFile = join(work, '.env');
@@ -224,7 +220,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
     if (!shell.newPort && !(await sys.portFree(Number(shell.port))) &&
-      !(shellRunning(sys, manager, env, names.shell) && shellPortOf(sys, manager, env, names.shell) === shell.port)) {
+      heldPort(sys, manager, env, names.shell) !== Number(shell.port)) {
       throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something other than this install's ` +
         `shell daemon, ${names.shell.name}, is listening on it, as a copied install's original daemon would be. This ` +
         `install's shell clients would reach that process, with ${shell.newToken ? 'a new' : 'the stored'} token. Give ` +
@@ -278,6 +274,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (shell !== null) keepShellSettings(ctx, sys, work, shell);
   const shellLive = () => ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and ` +
     'whoever talks to it on Discord can ask it to.');
+  let shellStart: string | undefined;
   if (manager === 'systemd-user') {
     if (texts.shell !== null) {
       writeUnit(names.shell, texts.shell);
@@ -313,13 +310,22 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.out(`Enabled ${units.map((unit) => unit.name).join(' and ')}, so systemd starts ` +
       `${units.length === 1 ? 'it' : 'them'} at boot.`);
     systemctl(sys, env, ['reset-failed', ...units.map((unit) => unit.name)]);
+    let shellUp = false;
+    const sofar = () => `The units' files are written and enabled${shellUp ? `, and ${names.shell.name} is started` : ''}. ` +
+      'The host\'s unit isn\'t started or restarted by this run.';
     for (const unit of units) {
       const shown = showUnit(sys, env, unit.name, ['ActiveState']);
-      if (typeof shown === 'string') throw new Refusal(`${shown}. The units' files are written and enabled.`);
+      if (typeof shown === 'string') throw new Refusal(`${shown}. ${sofar()}`);
       const running = RUNNING.has(shown.get('ActiveState') ?? '');
       systemctl(sys, env, ['restart', unit.name]);
       ctx.out(running ? `Restarted ${unit.name}.` : `Started ${unit.name}.`);
-      if (unit === names.shell) shellLive();
+      if (unit === names.shell) {
+        shellUp = true;
+        shellLive();
+        const started = showUnit(sys, env, unit.name, ['InvocationID']);
+        if (typeof started === 'string') throw new Refusal(`${started}. ${sofar()}`);
+        shellStart = started.get('InvocationID') ?? '';
+      }
     }
   } else {
     mkdirSync(dirname(logPath), { recursive: true });
@@ -350,7 +356,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
           `${consequence}${host} Repeat this service install command with the same recipe to load it.`);
       }
       ctx.out(`${loaded ? 'Reloaded' : 'Loaded'} ${unit.name} from ${unit.file}.`);
-      if (unit === names.shell) shellLive();
+      if (unit === names.shell) {
+        shellLive();
+        const started = agentState(sys, env, unit);
+        shellStart = started.kind === 'running' ? started.pid : undefined;
+      }
     }
     ctx.out(`launchd loads ${units.length === 1 ? 'this agent' : 'these agents'}, and so starts ` +
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
@@ -366,12 +376,38 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
         'run clears that limit'
       : 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'}.`);
-  } else {
+  }
+  let lost: string | null = null;
+  if (typeof ready !== 'string') {
     ctx.out(`Its host answers: pid ${ready.pid}, recipe ${ready.recipe}.`);
     if (shellBin === null) await removeShell(ctx, sys, env, manager, names.shell, work);
+    else lost = shellLost(sys, env, manager, names.shell, shellStart);
+  }
+  if (lost !== null) {
+    ctx.err(`connectome: ${lost} Its log shows what happened: ${manager === 'systemd-user'
+      ? `journalctl --user -u ${names.shell.name} -f` : `tail -f ${shellWord(join(work, 'logs', 'shell.log'))}`}. ` +
+      `Put that right, then run ${cmd} service install ${shellWord(recipe)} again.`);
   }
   for (const line of serviceLines(root, sys) ?? []) ctx.out(line);
-  return typeof ready === 'string' ? 1 : 0;
+  return typeof ready === 'string' || lost !== null ? 1 : 0;
+}
+
+function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Manager, unit: ServiceUnit,
+  started: string | undefined): string | null {
+  const daemon = `the resident's shell daemon, ${unit.name},`;
+  if (manager === 'systemd-user') {
+    const shown = showUnit(sys, env, unit.name, ['ActiveState', 'SubState', 'InvocationID']);
+    if (typeof shown === 'string') return `whether ${daemon} still runs can't be told: ${shown}.`;
+    const again = shown.get('InvocationID') !== started;
+    if (RUNNING.has(shown.get('ActiveState') ?? '') && !again) return null;
+    return `${daemon} didn't stay up after this run started it: systemd shows it ${stateOf(shown)}` +
+      `${again ? ', in a later start than this run\'s' : ''}.`;
+  }
+  const state = agentState(sys, env, unit);
+  if (state.kind === 'unknown') return `whether ${daemon} still runs can't be told: launchctl list ${unit.name} failed: ${state.why}.`;
+  if (state.kind === 'running' && (started === undefined || state.pid === started)) return null;
+  return `${daemon} didn't stay up after this run started it: launchd shows it ${state.kind === 'running'
+    ? `running as pid ${state.pid}, where this run started pid ${started}` : 'not running'}.`;
 }
 
 function envWritable(envFile: string): void {
@@ -611,8 +647,7 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
 
 async function removeShell(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: Manager,
   unit: ServiceUnit, work: string): Promise<void> {
-  const text = readOr(unit.file);
-  if (text === null || !runsHere(fileDirectory(sys, env, manager, unit, text), work)) return;
+  if (readOr(unit.file) === null) return;
   if (manager === 'systemd-user') {
     systemctl(sys, env, ['disable', '--now', unit.name]);
     rmSync(unit.file, { force: true });
@@ -704,17 +739,39 @@ export function unitElsewhere(root: string, sys: ServiceSystem = machine()): { u
   return null;
 }
 
-function shellPortOf(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): string | null {
+/** The SESSION_SERVER_PORT the shell daemon's running process started with, or null when none runs. systemd shows a
+ *  unit as it last loaded it, which a daemon-reload changes under a running process (systemd 259), and launchd starts
+ *  each process of a loaded agent with the environment it was loaded with, which `launchctl print` shows, whatever its
+ *  plist says since (macOS 26). */
+function heldPort(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): number | null {
+  const cannotTell = (why: string) => new Refusal(`whether this install's shell daemon, ${unit.name}, holds the ` +
+    `stored SESSION_SERVER_PORT can't be told: ${why}. Nothing was written. Once that's put right, or that daemon is ` +
+    `stopped (${stopLine(sys, manager, unit.name)}), repeat this service install command with the same recipe.`);
   if (manager === 'launchd') {
-    try {
-      return plistField(sys, env, unit.file, 'EnvironmentVariables.SESSION_SERVER_PORT');
-    } catch {
-      return null;
-    }
+    const state = agentState(sys, env, unit);
+    if (state.kind === 'unknown') throw cannotTell(`launchctl list ${unit.name} failed: ${state.why}`);
+    if (state.kind !== 'running') return null;
+    const target = `gui/${sys.uid}/${unit.name}`;
+    const shown = sys.run('launchctl', ['print', target], env);
+    if (shown.status !== 0) throw cannotTell(`launchctl print ${target} failed: ${launchctlFailure(shown)}`);
+    const loaded = /^\tenvironment = \{\n((?:\t\t.*\n)*)\t\}$/m.exec(shown.stdout)?.[1] ?? '';
+    const port = /^\t\tSESSION_SERVER_PORT => (.*)$/m.exec(loaded)?.[1];
+    if (port === undefined) throw cannotTell('launchd shows no SESSION_SERVER_PORT in the environment it runs it with');
+    return Number(port);
   }
-  const shown = showUnit(sys, env, unit.name, ['Environment']);
-  if (typeof shown === 'string') return null;
-  return /(?:^|\s)SESSION_SERVER_PORT=(\d+)(?:\s|$)/.exec(shown.get('Environment') ?? '')?.[1] ?? null;
+  const shown = showUnit(sys, env, unit.name, ['MainPID']);
+  if (typeof shown === 'string') throw cannotTell(shown);
+  const pid = shown.get('MainPID') || '0';
+  if (pid === '0') return null;
+  let environ: string;
+  try {
+    environ = sys.environ(pid);
+  } catch (error) {
+    throw cannotTell(`the environment of its process, pid ${pid}, can't be read: ${errorText(error)}`);
+  }
+  const port = /(?:^|\0)SESSION_SERVER_PORT=([^\0]*)/.exec(environ)?.[1];
+  if (port === undefined) throw cannotTell(`its process, pid ${pid}, has no SESSION_SERVER_PORT in its environment`);
+  return Number(port);
 }
 
 function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
@@ -747,7 +804,7 @@ export function runsFrom(shown: string, home: string): string | null {
   return realOrResolved(set === '~' ? home : set);
 }
 
-type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string } | { kind: 'untold' }
+type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
   | { kind: 'unshown'; shown: string };
 
 function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -770,7 +827,7 @@ function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: Service
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
   return runsHere(runsIn, work) ? { kind: 'ok' }
-    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file };
+    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: text !== null };
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -780,6 +837,9 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
     : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
+      (owner.loadedOnly ? ` systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file ` +
+        `or drop-ins changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then repeat this service ` +
+        'install command with the same recipe.' : '') +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
       'install up again in a directory of another name.');
   }
@@ -865,23 +925,6 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
       'but no node is on this PATH. Nothing was written.');
   }
   return resolve(pkg, bin);
-}
-
-function shellRunning(sys: ServiceSystem, manager: Manager, env: Record<string, string>,
-  unit: ServiceUnit): boolean {
-  if (manager === 'launchd') {
-    const state = agentState(sys, env, unit);
-    if (state.kind === 'unknown') {
-      throw new Refusal(`Whether ${unit.name} is running, and so holds the stored SESSION_SERVER_PORT, can't be told: ` +
-        `${state.why}. Nothing was written.`);
-    }
-    return state.kind === 'running';
-  }
-  const shown = showUnit(sys, env, unit.name, ['ActiveState']);
-  if (typeof shown === 'string') {
-    throw new Refusal(`${shown}, so whether it holds the stored SESSION_SERVER_PORT can't be told. Nothing was written.`);
-  }
-  return RUNNING.has(shown.get('ActiveState') ?? '');
 }
 
 async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise<ShellPlan> {
