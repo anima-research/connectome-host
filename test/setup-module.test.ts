@@ -96,8 +96,10 @@ function heldOnChecks(module: SetupModule): Promise<void> {
   });
 }
 
-// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc or have setsid.
-const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat') || Bun.which('setsid') === null);
+// For tests that read /proc, and one that also runs setsid(1): macOS has neither, and a Linux container may not mount
+// /proc or have setsid.
+const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
+const setsidTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat') || Bun.which('setsid') === null);
 
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
 
@@ -670,7 +672,7 @@ describe('setup--run', () => {
       'fault in the drain').toBe(true);
   }, 30_000);
 
-  linuxTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
+  setsidTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'escaped.pid');
     const endedAt = join(dir, 'ended-at');
