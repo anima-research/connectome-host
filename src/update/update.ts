@@ -12,8 +12,8 @@ import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type Ins
 import { RELEASE_HOST, goBackOffer, isUnder, readInstallRecord } from './launcher.js';
 import { installCommandAt } from '../cli/install-command.js';
 import {
-  NOT_THE_SWITCHS, SERVING, fleetChanged, lookAtChildren, quiesceForSwitch, releaseHolds, resumeAfterSwitchQuiesce, switchHold,
-  takeLastLook, type Looked, type QuiesceFramework, type SwitchFleet,
+  NOT_THE_SWITCHS, SERVING, fleetChanged, lookAtChildren, quiesceForSwitch, releaseHolds, resumeAfterSwitchQuiesce, takeLastLook,
+  type Looked, type QuiesceFramework, type SwitchFleet,
 } from './quiesce.js';
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
@@ -632,11 +632,6 @@ export class HostUpdate {
   }
 
   async resume(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
-    const asked = await switchHold.resumeHere(() => this.resumeHere(ways));
-    return 'refused' in asked ? refused(asked.refused) : asked.done;
-  }
-
-  private async resumeHere(ways: UpdateWays): Promise<UpdateAnswer> {
     const restart = this.restart;
     if (restart !== null && restart.phase !== 'busy') return refused(`${restartName(restart, true)} is ${PHASE[restart.phase]}.`);
     if (restart !== null) return this.callOff(null, ways);

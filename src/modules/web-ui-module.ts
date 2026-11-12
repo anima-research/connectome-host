@@ -111,7 +111,6 @@ import {
 import { loadRecipeDetailed } from '../recipe.js';
 import { isSwitchQuiesce } from '../update/contract.js';
 import { hostUpdate } from '../update/update.js';
-import { switchHold, type SwitchHold } from '../update/quiesce.js';
 import { PAGE_WAYS } from '../web/update-text.js';
 import {
   ObserverRegistry,
@@ -238,14 +237,6 @@ export function switchRefusalFor(
 ): WebUiServerMessage | null {
   if (message.type === 'cancel-subagent') return null;
   return refusalReply(message, (what) => refusedWhileSwitching(app, what));
-}
-
-/** A Resume asked on this host's page while it holds for the switch's last
- *  look is refused, with the hold's words. */
-export function switchHoldRefusalFor(message: WebUiClientMessage, hold: SwitchHold = switchHold): WebUiServerMessage | null {
-  if (message.type !== 'host-resume') return null;
-  const text = hold.refusal();
-  return text === null ? null : { type: 'error', corrId: message.corrId, message: text };
 }
 
 export function switchQuiesceRefusalFor(
@@ -1684,13 +1675,7 @@ export class WebUiModule implements Module {
     const reason = verb === 'quiesce' ? (req as HostQuiesceMessage).reason?.trim() || undefined : undefined;
     try {
       if (verb === 'quiesce') await fw.quiesce!(reason ? { reason } : {});
-      else {
-        const asked = await switchHold.resumeHere(() => fw.resume!({}));
-        if ('refused' in asked) {
-          this.send(client, { type: 'error', corrId: req.corrId, message: asked.refused });
-          return;
-        }
-      }
+      else await fw.resume!({});
       const hostMode = this.hostModeSnapshot();
       fw.recordOperatorAction?.({
         kind: verb,
@@ -1828,7 +1813,7 @@ export class WebUiModule implements Module {
     }
     const app = sharedServer.app;
     const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed) ?? switchQuiesceRefusalFor(app, parsed) ??
-      releaseQuiesceRefusalFor(app, parsed) ?? switchHoldRefusalFor(parsed);
+      releaseQuiesceRefusalFor(app, parsed);
     if (refused) {
       this.send(client, refused);
       if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();

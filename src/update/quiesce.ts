@@ -74,10 +74,10 @@ const RESUMING_AT_LAST_LOOK = "a Resume asked here was under way at the switch's
 const NOT_HELD = "its answer to the switch's last look doesn't say that it holds, so it may run another release than the " +
   "install's host does: fleet--restart of it starts it on the host's release";
 const EARLIER_LOOK = 'it holds for a later look of the switch, so this word from an earlier one changes nothing';
-const HOLDING = "Resume refused: the release switch's last look has begun here, so nothing here changes until the install's " +
-  'host decides it. If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where ' +
-  "the install's host can't reach this host, stopping the install's host or restarting this one ends the wait.";
-const BEGUN = "Resume refused: the release switch has begun, and it finishes at the install's host's next start.";
+const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides it. " +
+  'If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install\'s host ' +
+  "can't reach this host, stopping the install's host or restarting this one ends the wait.";
+const BEGUN = "the release switch has begun, and it finishes at the install's host's next start.";
 const said = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
 /** The longest wait a request's timer can hold (a timer's delay is a signed
@@ -267,8 +267,8 @@ export class SwitchHold {
     return null;
   }
 
-  /** A Resume asked here: refused while the hold stands, and otherwise run,
-   *  with the last look meanwhile told that this host may serve. */
+  /** A resume of this host: refused while the hold stands, and otherwise
+   *  run, with the last look meanwhile told that this host may serve. */
   async resumeHere<T>(resume: () => Promise<T>): Promise<{ refused: string } | { done: T }> {
     const refused = this.refusal();
     if (refused !== null) return { refused };
@@ -301,6 +301,12 @@ export class SwitchHold {
   }
 }
 
+/** Whether `error` is the gate's refusal of a resume while the hold stands
+ *  (resume-gate.ts). */
+export function isHoldRefusal(error: unknown): error is Error {
+  return error instanceof Error && (error as { switchHold?: unknown }).switchHold === true;
+}
+
 function processRuns(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -310,8 +316,8 @@ function processRuns(pid: number): boolean {
   }
 }
 
-/** This process's hold, which its answers to the switch and both doors of a
- *  Resume asked here share. */
+/** This process's hold, which its answers to the switch and the gate on its
+ *  framework's resume share. */
 export const switchHold = new SwitchHold();
 
 export async function answerSwitchRequest(
@@ -345,6 +351,7 @@ export async function resumeIfSwitch(framework: QuiesceFramework): Promise<{ res
     await framework.resume();
     return { resumed: true };
   } catch (error) {
+    if (isHoldRefusal(error)) return { resumed: false, why: error.message, refused: true };
     if (!framework.getHostModeStatus().quiesced) {
       // agent-framework ends the quiesce in memory before it writes that it
       // has, so a write that fails leaves the host serving.
