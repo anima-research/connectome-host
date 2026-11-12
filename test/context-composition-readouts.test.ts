@@ -5,7 +5,7 @@
  * until the next of its kind.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { COUNT_LIMIT_MS, buildContextMakeup, buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
+import { buildContextMakeup, buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
 
 const words = () => import('../web/src/composition-text');
@@ -357,7 +357,7 @@ test('the makeup asks its count with a deadline, and gives count_tokens_timeout,
       AbortSignal.timeout = realTimeout;
     }
     expect(signals).toHaveLength(1);
-    expect(timed.map(({ ms }) => ms)).toEqual([COUNT_LIMIT_MS]);
+    expect(timed.map(({ ms }) => ms)).toEqual([30_000]);
     expect(signals[0]).toBe(timed[0]!.signal);
     expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_timeout', null]);
   } finally {
