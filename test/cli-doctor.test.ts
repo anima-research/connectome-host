@@ -218,13 +218,13 @@ const unitEnvironment = (at: Install): Record<string, string> => ({
 
 let plists = 0;
 
-function fakePlutil(dir: string, variables: Record<string, string> | null): string {
-  const path = join(dir, `plutil-${++plists}`);
-  const json = join(dir, `plist-environment-${plists}.json`);
+function fakePlutil(at: Install, variables: Record<string, string> | null): string {
+  const path = join(at.work, `plutil-${++plists}`);
+  const json = join(at.work, `plist-environment-${plists}.json`);
   if (variables !== null) writeFileSync(json, JSON.stringify(variables));
   writeFileSync(path, [
     '#!/bin/sh',
-    `if [ "$1 $2 $3 $4 $5" = "-extract EnvironmentVariables json -o -" ] && [ -f '${json}' ]; then cat '${json}'; exit 0; fi`,
+    `if [ "$*" = "-extract EnvironmentVariables json -o - ${at.unit}" ] && [ -f '${json}' ]; then cat '${json}'; exit 0; fi`,
     'echo "Could not extract value, error: No value at that key path or invalid key path: EnvironmentVariables" >&2',
     'exit 1',
   ].join('\n') + '\n');
@@ -247,7 +247,7 @@ async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[]
     launchctl: manager,
     envLimitMs: 60_000,
     recipeLimitMs: 60_000,
-    plutil: fakePlutil(at.work, unitEnvironment(at)),
+    plutil: fakePlutil(at, unitEnvironment(at)),
     servicePid: async () => ({ pid: '4242' }),
     platform: at.platform,
     home: at.home,
@@ -2121,7 +2121,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
   test('on launchd the service\'s environment takes what its plist sets, read through plutil', async () => {
     const at = install({ recipe: echoing, manager: 'launchd' });
     const manager = fakeManager(at.work, { launchd: { PATH: '/manager/bin', DATA_DIR: '/manager/data', B: 'manager' } });
-    const plutil = fakePlutil(at.work, { PATH: '/unit/bin', B: 'has space', C: 'dollar$$sign', D: 'semi;colon', E: 'back\\slash',
+    const plutil = fakePlutil(at, { PATH: '/unit/bin', B: 'has space', C: 'dollar$$sign', D: 'semi;colon', E: 'back\\slash',
       F: 'tab\there', G: 'quo"te', H: 'café', I: 'single\'q', J: '', DATA_DIR: '/unit/data', CONNECTOME_SUPERVISED: '1' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path, plutil }));
     expect(r.out).toContain(`Recipe "${DECODED}" has keys the host does not read`);
