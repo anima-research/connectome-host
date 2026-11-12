@@ -377,7 +377,7 @@ export class LifecycleModule implements Module {
         break;
       }
       case 'notes':
-        answer = this.update.installedNotes(version, ways);
+        answer = this.update.installedNotes(version, ways, call.resultMaxChars);
         break;
       case 'install':
         answer = await this.update.startInstall(ways);

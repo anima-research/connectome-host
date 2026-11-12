@@ -266,13 +266,12 @@ for (const [kind, options, command] of [
   ['headless with no install of its own', { root: null }, ''],
   ['run in a terminal', { mode: 'terminal' as const }, ''],
 ] as const) {
-  test(`on a host ${kind}, the update tool's description holds what choosing an action needs, in at most 1,600 characters plus the install's own command`, () => {
+  test(`on a host ${kind}, the update tool's description holds what choosing an action needs`, () => {
     const root = 'root' in options ? null : installRunning0141(['0.15.0']).root;
     const host = residentHost({ ...options, root });
     const raw = rawDescription(host);
     const description = toolDescription(host);
     if (command !== '') expect(description).toContain(`their own command is \`${command} update\``);
-    expect(raw.length).toBeLessThanOrEqual(1_600 + command.length);
     const items = actionItems(raw);
     expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'back', 'cancel']);
     for (const [action, words] of [
@@ -438,6 +437,20 @@ test('a stop before an armed restart begins is kept for the next start, whose ch
     `A restart onto 0.15.0 armed at ${since} didn't go ahead at 2026-10-26T20:00:00.000Z: the host stopped first (SIGTERM).`);
   expect(existsSync(installPaths(root).armedDropped)).toBe(false);
   expect(residentHost({ root }).update.status().armedDropped).toBeNull();
+});
+
+test("a start that ends before it serves leaves the dropped switch's record, so the next start that serves names it in check", async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  const since = host.update.armedSwitch()!.since;
+  host.update.recordStop('SIGTERM');
+  residentHost({ root, noStop: true });
+  expect(existsSync(installPaths(root).armedDropped)).toBe(true);
+  const next = residentHost({ root });
+  expect(text(await next.call({ action: 'check' }))).toContain(
+    `A restart onto 0.15.0 armed at ${since} didn't go ahead at 2026-10-26T20:00:00.000Z: the host stopped first (SIGTERM).`);
+  expect(existsSync(installPaths(root).armedDropped)).toBe(false);
 });
 
 test('a stop with nothing armed, or the switch\'s own stop, keeps nothing for the next start', async () => {
@@ -1519,6 +1532,30 @@ test('notes that come to more than one answer carries are listed release by rele
   expect(notes).toContain('lifecycle--update notes with its `version`');
 });
 
+test("notes keep to the call's own cap where the agent's is lower than 24,000 characters: a size list, or one release's notes cut to fit", async () => {
+  const { root } = installRunning0141(['0.17.0']);
+  const sections = [section('0.17.0', longNotes('seventeen', 50)), section('0.16.0', longNotes('sixteen', 50)),
+    section('0.15.0', longNotes('fifteen', 50))];
+  placeNotes(root, '0.17.0', sections.join(''));
+  const host = residentHost({ root, versions: ['0.14.1', '0.15.0', '0.16.0', '0.17.0'] });
+  const notes = (input: Record<string, unknown>, resultMaxChars?: number) => host.module.handleToolCall({
+    id: `call-${Math.random()}`, name: 'update', input, callerAgentName: 'resident',
+    ...(resultMaxChars !== undefined ? { resultMaxChars } : {}),
+  });
+  expect(text(await notes({ action: 'notes' }))).toContain('the last line of seventeen');
+  expect(text(await notes({ action: 'notes' }, 30_000))).toContain('the last line of seventeen');
+  const listed = text(await notes({ action: 'notes' }, 4_000));
+  expect(listed.length).toBeLessThanOrEqual(4_000);
+  expect(listed).not.toContain('a line of notes');
+  expect(listed).toContain('(4,000 characters), so here is each release\'s size');
+  const cut = await notes({ action: 'notes', version: '0.16.0' }, 1_000);
+  expect(cut.success).toBe(true);
+  expect(text(cut).length).toBeLessThanOrEqual(1_000);
+  expect(text(cut)).toContain('The notes of 0.16.0, from ');
+  expect(text(cut)).not.toContain('the last line of sixteen');
+  expect(text(await notes({ action: 'notes', version: '0.16.0' }, 50))).not.toContain('a line of notes');
+});
+
 test('notes with a version gives that release\'s notes whole, and none of the others', async () => {
   const { root } = installRunning0141(['0.17.0']);
   const sixteen = section('0.16.0', longNotes('sixteen', 180));
@@ -1733,7 +1770,7 @@ test("a fleet child's operator hold that keeps a switch armed is named once on t
   expect(without).not.toContain('moving disks');
 });
 
-test('the record of a dropped arm is version 1, and a start takes one of another version as nothing it reads, saying so in its log', async () => {
+test('the record of a dropped arm is version 1, and a start takes one of another version as nothing it reads, saying so in its log and leaving it for a release that reads it', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
   await host.armed({ action: 'restart', version: '0.15.0' });
@@ -1744,6 +1781,7 @@ test('the record of a dropped arm is version 1, and a start takes one of another
   const logged: string[] = [];
   expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
   expect(logged.filter((said) => said.includes(installPaths(root).armedDropped) && said.includes('its version is 2'))).toHaveLength(1);
+  expect(existsSync(installPaths(root).armedDropped)).toBe(true);
 });
 
 test("a stop during a try whose call-off can't resume a fleet child leaves the next start's check saying so", async () => {

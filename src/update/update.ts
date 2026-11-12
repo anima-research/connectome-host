@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
@@ -94,15 +94,18 @@ function notesSections(text: string): Array<{ version: string; text: string }> {
 }
 
 // agent-framework 0.33.0 keeps a tool's answer whole in the agent's context
-// only up to its inline cap, 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS)
-// where neither the recipe nor the agent's settings set another and no context
-// strategy's per-message bound is lower, and keeps no more than that where no
-// workspace mount is writable.
+// only up to its inline cap, which a model's call carries as resultMaxChars,
+// 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS) where neither the
+// recipe nor the agent's settings set another, and keeps no more than that where
+// no workspace mount is writable. A context strategy's per-message bound can be
+// lower, and the call doesn't carry it.
 const NOTES_BUDGET = 24_000;
 
 const characters = (count: number): string => `${count.toLocaleString('en-US')} characters`;
 
-function notesAnswer(path: string, running: string, installed: string, version?: string): UpdateAnswer {
+function notesAnswer(
+  path: string, running: string, installed: string, version: string | undefined, budget: number,
+): UpdateAnswer {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
@@ -116,14 +119,14 @@ function notesAnswer(path: string, running: string, installed: string, version?:
     return refused(`No notes were given: ${path} has no notes for the releases after ${running} up to ${installed}: ` +
       `${notesUrl(installed)} has ${installed}'s.`);
   }
-  const fits = (answer: UpdateAnswer): boolean => answer.lines.join('\n').length <= NOTES_BUDGET;
+  const fits = (answer: UpdateAnswer): boolean => answer.lines.join('\n').length <= budget;
   if (version === undefined) {
     const whole = done(`The notes of ${list(sections.map(({ version: v }) => v))}, from ${path}:`,
       sections.map(({ text: body }) => body).join('\n\n'));
     if (fits(whole)) return whole;
     if (sections.length > 1) {
       return done(`The notes of the releases after ${running} up to ${installed} come to more than one answer carries ` +
-        `(${characters(NOTES_BUDGET)}), so here is each release's size, from ${path}. Ask for one release's notes with ` +
+        `(${characters(budget)}), so here is each release's size, from ${path}. Ask for one release's notes with ` +
         'lifecycle--update notes with its `version`:',
         ...sections.map(({ version: v, text: body }) => `- ${v}: ${characters(body.length)}`));
     }
@@ -138,7 +141,7 @@ function notesAnswer(path: string, running: string, installed: string, version?:
   const head = (shown: number): string => `The notes of ${one.version}, from ${path}, cut: the first ` +
     `${shown.toLocaleString('en-US')} of its ${characters(one.text.length)}. The rest is in that file, and at ` +
     `${notesUrl(one.version)}:`;
-  const shown = NOTES_BUDGET - head(NOTES_BUDGET).length - 1;
+  const shown = Math.max(0, budget - head(budget).length - 1);
   return done(head(shown), one.text.slice(0, shown));
 }
 
@@ -159,12 +162,16 @@ export class HostUpdate {
   private armed: ArmedSwitch | null = null;
   private armedDropped: UpdateStatus['armedDropped'] = null;
   private stopRecord: { path: string; record: Record<string, unknown> & { reason: string } } | null = null;
+  private droppedFile: string | null = null;
   private trying = false;
 
   configure(setup: UpdateSetup): void {
     this.setup = setup;
     this.serviceLine = (setup.env ?? process.env)[SUPERVISED_ENV] === '1';
-    this.armedDropped = setup.here === null ? null : takeDroppedArm(installPaths(setup.here.root).armedDropped, (line) => { this.log(line); });
+    const path = setup.here === null ? null : installPaths(setup.here.root).armedDropped;
+    const taken = path === null ? null : takeDroppedArm(path, (line) => { this.log(line); });
+    this.armedDropped = taken?.dropped ?? null;
+    this.droppedFile = taken?.remove === true ? path : null;
   }
 
   recordStop(reason: string): string | null {
@@ -185,9 +192,22 @@ export class HostUpdate {
 
   attachStop(stop: HostStop): void {
     this.stopper = stop;
+    this.removeDroppedRecord();
     const serve = this.serving;
     this.serving = null;
     serve?.();
+  }
+
+  private removeDroppedRecord(): void {
+    const path = this.droppedFile;
+    this.droppedFile = null;
+    if (path === null) return;
+    try {
+      rmSync(path, { force: true });
+    } catch (error) {
+      this.log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be removed, so a later ` +
+        `start may say the same again: ${said(error)}`);
+    }
   }
 
   whenStopAttached(serve: () => void): void {
@@ -693,7 +713,7 @@ export class HostUpdate {
       `them from ${notesPath(setup.here.root, installed)}.`];
   }
 
-  installedNotes(version?: string, ways: UpdateWays = TOOL_WAYS): UpdateAnswer {
+  installedNotes(version?: string, ways: UpdateWays = TOOL_WAYS, cap?: number): UpdateAnswer {
     const setup = this.need();
     if (setup.here === null) return refused(`No notes were given: ${notAnInstall(ways)}`);
     let installed: string | null;
@@ -706,7 +726,8 @@ export class HostUpdate {
       return refused(`No notes were given: no release newer than ${setup.running} is installed. ${ways.check} ` +
         'says what\'s out, with its notes link.');
     }
-    return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version);
+    return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version,
+      Math.min(NOTES_BUDGET, cap ?? NOTES_BUDGET));
   }
 
   private installedTarget(): string | null {
@@ -884,7 +905,7 @@ const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: bo
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';
 
-function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus['armedDropped'] {
+function takeDroppedArm(path: string, log: (line: string) => void): { dropped: UpdateStatus['armedDropped']; remove: boolean } | null {
   let text: string;
   try {
     text = readFileSync(path, 'utf-8');
@@ -895,25 +916,23 @@ function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus
     }
     return null;
   }
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be removed, so a later start ` +
-      `may say the same again: ${said(error)}`);
-  }
   let read: Record<string, unknown> | null = null;
   try {
     read = JSON.parse(text);
   } catch {}
   const { v, to, why, keepData, since, at, reason } = read ?? {};
+  if (typeof v === 'number' && v !== 1) {
+    log(`[update] ${path} holds the record of an armed switch a stop dropped, but its version is ${v}, and this release ` +
+      'reads only version 1, so check can\'t say whether one was. The record stays for a release that reads it.');
+    return { dropped: null, remove: false };
+  }
   if (v === 1 && typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
     typeof since === 'string' && typeof at === 'string' && typeof reason === 'string') {
-    return { to, why, keepData, since, at, reason };
+    return { dropped: { to, why, keepData, since, at, reason }, remove: true };
   }
-  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped` +
-    (v !== undefined && v !== 1 ? `: its version is ${JSON.stringify(v)}, and this release reads only version 1` : '') +
-    ', so check can\'t say whether one was.');
-  return null;
+  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped, so check can't say whether ` +
+    'one was.');
+  return { dropped: null, remove: true };
 }
 
 export const hostUpdate = new HostUpdate();

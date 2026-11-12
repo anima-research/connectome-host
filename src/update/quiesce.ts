@@ -135,6 +135,25 @@ export async function resumeAfterSwitchQuiesce(framework: QuiesceFramework, flee
   };
 }
 
+export async function resumeLeftChildren(fleet: SwitchFleet, children: Array<{ name: string }>): Promise<void> {
+  await Promise.all(children.map(async ({ name }) => {
+    let answer: { ok: boolean; data?: unknown; error?: string };
+    try {
+      answer = await fleet.requestSwitch(name, { op: 'resume' }, ANSWER_MARGIN_MS);
+    } catch (error) {
+      answer = { ok: false, error: said(error) };
+    }
+    const data = answer.data as { refused?: unknown; why?: unknown } | undefined;
+    if (answer.ok && data?.refused !== true) return;
+    const what = answer.ok
+      ? `it refused (${typeof data?.why === 'string' ? data.why : 'its answer doesn\'t say why'})`
+      : `it didn't answer (${answer.error ?? 'no reason given'})`;
+    console.error(`[update] Fleet child ${JSON.stringify(name)} was asked at this start to end a switch's quiesce the ` +
+      `last stop may have left, and ${what}, so it may still be holding its new turns until a resume reaches it, such as ` +
+      'an operator\'s Resume, or until its own next start.');
+  }));
+}
+
 export async function answerSwitchRequest(framework: QuiesceFramework, request: unknown): Promise<Record<string, unknown>> {
   const asked = request as Record<string, unknown> | null;
   if (asked?.op === 'resume') return resumeIfSwitch(framework);
