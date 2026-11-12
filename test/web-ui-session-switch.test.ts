@@ -170,6 +170,57 @@ describe("the web UI's own entry during a session switch", () => {
     }
   }, TEST_MS);
 
+  test("while a switch's quiesce holds the host, its own rollback, suppress, pin and settings changes are refused and change nothing, while a read and a Resume aren't, and a rollback goes once it has resumed", async () => {
+    const quiescedRefusal = (what: string) => `${what} refused: this host is quiesced for a release switch. If that switch ` +
+      'goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended.';
+    const reached: string[] = [];
+    let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
+    webUiModule.setApp(hostApp({
+      getHostModeStatus: () => mode,
+      rollbackToMessage: async () => { reached.push('rollback'); return { sourceBranch: 'main', targetBranch: 'b2', messagesRemoved: 1, lastVisible: null }; },
+      suppressMessages: async () => { reached.push('suppress'); return {}; },
+      updateAgentRuntimeSettings: () => { reached.push('settings-update'); },
+      resetAgentRuntimeSettings: () => { reached.push('settings-reset'); },
+      cancelAgentRuntimeSettingsTransition: () => { reached.push('settings-cancel-transition'); },
+      resume: async () => { mode = { quiesced: false, drained: true }; return mode; },
+    }, false, [], {
+      cm: {
+        pinRange: () => { reached.push('pin-add'); return 'pin-1'; },
+        unpin: () => { reached.push('pin-remove'); return true; },
+        listPins: () => [],
+      },
+    }) as never);
+    const client = await connect();
+    try {
+      for (const op of ['rollback', 'suppress'] as const) {
+        client.send({ type: op, corrId: op, messageId: 'm1', ...(op === 'suppress' ? { messageIds: ['m1'] } : {}), sessionId: 's1' });
+        expect(await client.next(`the ${op} refusal`, (r) => r.corrId === op)).toEqual({
+          type: 'surgery-result', corrId: op, op, ok: false, error: quiescedRefusal(op),
+        });
+      }
+      const fields: Record<string, Record<string, unknown>> = {
+        'pin-add': { firstMessageId: 'm1' }, 'pin-remove': { pinId: 'pin-0' }, 'settings-update': { tailTokens: 4000 },
+      };
+      for (const op of ['pin-add', 'pin-remove', 'settings-update', 'settings-reset', 'settings-cancel-transition']) {
+        client.send({ type: op, ...fields[op], sessionId: 's1' });
+        expect(await client.next(`the ${op} refusal`, (r) => r.type === 'error' && String(r.message).startsWith(`${op} refused`))).toEqual({
+          type: 'error', message: quiescedRefusal(op),
+        });
+      }
+      expect(reached).toEqual([]);
+      client.send({ type: 'request-host-mode' });
+      expect((await client.next('the host mode, a read', (r) => r.type === 'host-mode')).hostMode).toMatchObject({ mode: 'quiesced' });
+      client.send({ type: 'host-resume', corrId: 'resume' });
+      await client.next('the host mode after Resume', (r) => r.type === 'host-mode' && (r.hostMode as { mode?: string }).mode === 'serving');
+      expect(mode.quiesced).toBe(false);
+      client.send({ type: 'rollback', corrId: 'after', messageId: 'm1', sessionId: 's1' });
+      expect(await client.next('the rollback after Resume', (r) => r.corrId === 'after')).toMatchObject({ type: 'surgery-result', ok: true });
+      expect(reached).toContain('rollback');
+    } finally {
+      client.close();
+    }
+  }, TEST_MS);
+
   test('a rollback still running holds off /session switch, naming it, and the switch starts once it has finished', async () => {
     let finish = () => {};
     const held = new Promise<void>((resolve) => { finish = resolve; });

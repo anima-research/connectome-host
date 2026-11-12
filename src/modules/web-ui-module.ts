@@ -38,6 +38,7 @@ import { handleCommand } from '../commands.js';
 import {
   PANEL_OPS_THAT_CHANGE_THE_SESSION,
   refusedForAnotherSession,
+  refusedWhileSwitchQuiesced,
   refusedWhileSwitching,
   switchLeftForStop,
   trackOperatorWork,
@@ -261,6 +262,16 @@ export function switchQuiesceRefusalFor(
   return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now, and ` +
     'a quiesce asked for now would be taken as the switch\'s and end with it. Nothing changed; quiesce again once the ' +
     'switch has gone ahead or ended.');
+}
+
+export function releaseQuiesceRefusalFor(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
+  message: WebUiClientMessage,
+): WebUiServerMessage | null {
+  if (message.type !== 'rollback' && message.type !== 'suppress' && !PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type)) {
+    return null;
+  }
+  return refusalReply(message, (what) => refusedWhileSwitchQuiesced(app, what));
 }
 
 const CHANGES_STAMPED_WITH_THEIR_SESSION: ReadonlySet<string> = new Set([
@@ -1801,7 +1812,8 @@ export class WebUiModule implements Module {
       return;
     }
     const app = sharedServer.app;
-    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed) ?? switchQuiesceRefusalFor(app, parsed);
+    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed) ?? switchQuiesceRefusalFor(app, parsed) ??
+      releaseQuiesceRefusalFor(app, parsed);
     if (refused) {
       this.send(client, refused);
       if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();
