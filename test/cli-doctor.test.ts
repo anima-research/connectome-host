@@ -1,5 +1,5 @@
 import { describe, test, expect, afterAll } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { main } from '../src/cli/connectome.js';
@@ -935,7 +935,7 @@ describe('connectome doctor', () => {
     const other = install();
     writeUnit(at, join(other.work, 'recipe.json'), other.work);
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toContain(`✗ ${at.unit} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ` +
+    expect(r.out).toContain(`✗ ${at.unit} names ${realpathSync(other.work)} as the directory it runs in, not this install's, ${at.work}: ` +
       'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing in that directory.');
     expect(r.out).not.toContain(join(other.work, 'recipe.json'));
     expect(r.status).toBe(1);
@@ -2675,7 +2675,7 @@ describe('connectome doctor, where the shell daemon\'s unit of this install\'s n
         const { asked, checkService } = asking();
         const r = await run(at, { checkService });
         const label = `${manager} ${recipe ?? 'shell'}`;
-        expect([label, r.out]).toEqual([label, expect.stringContaining(`${shellFile} names ${other.work} as the directory it ` +
+        expect([label, r.out]).toEqual([label, expect.stringContaining(`${shellFile} names ${realpathSync(other.work)} as the directory it ` +
           `runs in, not this install's, ${at.work}: ${NOT_HERE}`)]);
         expect([label, asked]).toEqual([label, ['other']]);
         expect([label, r.status]).toEqual([label, 1]);
@@ -2690,7 +2690,7 @@ describe('connectome doctor, where the shell daemon\'s unit of this install\'s n
       const r = await run(at);
       expect([manager, r.out]).toEqual([manager, expect.stringContaining(`No service is installed for this install: ${at.unit} ` +
         `isn't there.`)]);
-      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`${shellFile} names ${other.work} as the directory ` +
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`${shellFile} names ${realpathSync(other.work)} as the directory ` +
         `it runs in, not this install's, ${at.work}: ${NOT_HERE}`)]);
       expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('service install')]);
     }
@@ -2710,7 +2710,7 @@ describe('connectome doctor, where the shell daemon\'s unit of this install\'s n
     const { at, other, shellFile } = withShellUnit('systemd-user');
     writeFileSync(shellFile, `[Service]\nWorkingDirectory=${other.work}\nExecStart=session-server --headless\n`);
     const r = await run(at);
-    expect(r.out).toContain(`${shellFile} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
+    expect(r.out).toContain(`${shellFile} names ${realpathSync(other.work)} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
   });
 
   test('a shell daemon\'s unit with systemd\'s `-` before this install\'s directory runs here, as install reads it', async () => {
@@ -2854,7 +2854,7 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     writeUnit(at, join(other.work, 'recipe.json'), other.work);
     unwritable(at.unit);
     const r = await run(at);
-    expect(r.out).toContain(`${at.unit} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
+    expect(r.out).toContain(`${at.unit} names ${realpathSync(other.work)} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
     expect(r.out).not.toContain('isn\'t the plist service install writes');
   });
 
@@ -2866,7 +2866,7 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
       join(other.work, 'logs', 'shell.log')));
     unwritable(units.shell.file);
     const r = await run(at);
-    expect(r.out).toContain(`${units.shell.file} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
+    expect(r.out).toContain(`${units.shell.file} names ${realpathSync(other.work)} as the directory it runs in, not this install's, ${at.work}: ${NOT_HERE}`);
   });
 
   test('a unit that names no directory to run in is another install\'s, as install takes it, and doctor offers no service install', async () => {
