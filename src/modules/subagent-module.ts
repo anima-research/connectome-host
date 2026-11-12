@@ -249,6 +249,7 @@ interface LiveSubagentState {
   systemPrompt: string;
   contextManager: ContextManager;
   currentStream: string;
+  streaming: boolean;
   pendingToolCalls: Array<{ name: string; input?: unknown }>;
   activeCallIds: Set<string>;
   requestInFlightSince?: number;
@@ -1074,6 +1075,7 @@ export class SubagentModule implements Module {
         switch (event.type) {
           case 'inference:started':
             live.currentStream = '';
+            live.streaming = false;
             live.pendingToolCalls = [];
             live.activeCallIds.clear();
             live.requestInFlightSince = Date.now();
@@ -1081,8 +1083,9 @@ export class SubagentModule implements Module {
             this.emit(displayName, { type: 'inference:started' });
             break;
           case 'inference:tokens': {
-            const content = (event as { content?: string }).content ?? '';
-            live.currentStream += content;
+            const { content = '', blockType } = event as { content?: string; blockType?: string };
+            if (blockType === 'text') live.currentStream += content;
+            if (content) live.streaming = true;
             live.requestInFlightSince = undefined;
             this.emit(displayName, { type: 'tokens', content });
             break;
@@ -1091,6 +1094,7 @@ export class SubagentModule implements Module {
             const calls = (event as { calls?: Array<{ id: string; name: string; input?: unknown }> }).calls ?? [];
             live.pendingToolCalls = calls.map(c => ({ name: c.name, input: c.input }));
             live.currentStream = '';
+            live.streaming = false;
             live.requestInFlightSince = undefined;
             for (const c of calls) {
               live.activeCallIds.add(c.id);
@@ -1101,6 +1105,7 @@ export class SubagentModule implements Module {
           }
           case 'inference:stream_resumed':
             live.currentStream = '';
+            live.streaming = false;
             live.pendingToolCalls = [];
             live.requestInFlightSince = Date.now();
             this.emit(displayName, { type: 'stream_resumed' });
@@ -1596,7 +1601,7 @@ export class SubagentModule implements Module {
       const silentS = Math.floor((now - sa.lastActivityAt) / 1000);
       const runtimeS = Math.floor((now - sa.startedAt) / 1000);
       const live = this.liveSubagents.get(sa.name);
-      const streamState = live?.currentStream ? 'streaming' :
+      const streamState = live?.streaming ? 'streaming' :
         live?.pendingToolCalls?.length ? `awaiting ${live.pendingToolCalls.length} tool(s)` :
         'idle';
       lines.push(
@@ -1615,7 +1620,7 @@ export class SubagentModule implements Module {
 
       const silentMs = Date.now() - entry.lastActivityAt;
       const isZombie = silentMs > ZOMBIE_THRESHOLD_MS
-        && !live.currentStream
+        && !live.streaming
         && live.pendingToolCalls.length === 0
         && !live.requestInFlightSince;
 
@@ -1997,6 +2002,7 @@ export class SubagentModule implements Module {
       systemPrompt,
       contextManager,
       currentStream: '',
+      streaming: false,
       pendingToolCalls: [],
       activeCallIds: new Set(),
     });
@@ -2095,7 +2101,7 @@ export class SubagentModule implements Module {
     const silentMs = entry ? Date.now() - entry.lastActivityAt : 0;
     const isZombie = (entry?.status === 'running')
       && silentMs > ZOMBIE_THRESHOLD_MS
-      && !live.currentStream
+      && !live.streaming
       && live.pendingToolCalls.length === 0
       && !live.requestInFlightSince;
 

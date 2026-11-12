@@ -921,7 +921,7 @@ export class FleetModule implements Module {
       },
       {
         name: 'peek',
-        description: "Return the last N events from a child's rolling event buffer.",
+        description: "Return the last N events from a child's rolling event buffer, leaving out its thinking tokens.",
         inputSchema: {
           type: 'object',
           properties: {
@@ -1585,9 +1585,10 @@ export class FleetModule implements Module {
   private handlePeek(input: { name: string; lines?: number }): ToolResult {
     const c = this.children.get(input.name);
     if (!c) return this.unknownChild(input.name, 'there are no events to show');
+    const shown = c.events.filter(event => !(event.type === 'inference:tokens' && (event as { blockType?: unknown }).blockType === 'thinking'));
     const requested = input.lines ?? 50;
-    const n = Math.max(1, Math.min(requested, c.events.length || 1));
-    const slice = c.events.length > 0 ? c.events.slice(-n) : [];
+    const n = Math.max(1, Math.min(requested, shown.length || 1));
+    const slice = shown.length > 0 ? shown.slice(-n) : [];
     return { success: true, data: { name: c.name, count: slice.length, events: slice } };
   }
 
