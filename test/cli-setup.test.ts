@@ -1489,7 +1489,7 @@ test('just before its agent starts, setup says once how each command the agent r
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const notes = made.seen.out.filter((said) => said.startsWith('Setup\'s agent runs each command'));
   expect(notes).toEqual([
-    `Setup's agent runs each command in ${dir}, as you. You'll see each command whole before it runs, each of its lines on a line of its own, any character a terminal would hide or act on shown as a code, such as \\u001b for Escape, and each key or token setup knows of shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.`,
+    `Setup's agent runs each command in ${dir}, as you. You'll see each command whole as it starts. It doesn't wait for you. Each of its lines is on a line of its own, any character a terminal would hide or act on is shown as a code, such as \\u001b for Escape, and each key or token setup knows of is shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.`,
   ]);
   expect(made.seen.out.indexOf(notes[0]!)).toBe(made.seen.outAtLaunch! - 2);
   const launchLine = made.seen.out[made.seen.outAtLaunch! - 1]!;
@@ -3214,7 +3214,7 @@ const LATER_RUN = [
   'Checking the ANTHROPIC_API_KEY in <dir>/.env: one call at https://api.anthropic.com to claude-opus-5-5, the model setup\'s agent runs on, which the key\'s account has to be able to use.',
   'The key works, and it\'s in <dir>/.env.',
   costLine('claude-opus-5-5', false),
-  'Setup\'s agent runs each command in <dir>, as you. You\'ll see each command whole before it runs, each of its lines on a line of its own, any character a terminal would hide or act on shown as a code, such as \\u001b for Escape, and each key or token setup knows of shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.',
+  'Setup\'s agent runs each command in <dir>, as you. You\'ll see each command whole as it starts. It doesn\'t wait for you. Each of its lines is on a line of its own, any character a terminal would hide or act on is shown as a code, such as \\u001b for Escape, and each key or token setup knows of is shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.',
   'Starting setup\'s agent. It speaks first. /quit leaves the conversation, and `<dir>/connectome-host/connectome setup discord` picks it up where it stopped.',
   'To go on with setup where it stopped: `<dir>/connectome-host/connectome setup discord`.',
 ];
