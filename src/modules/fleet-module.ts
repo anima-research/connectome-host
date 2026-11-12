@@ -31,6 +31,7 @@ import { CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../child-a
 import { unknownToolResult } from './unknown-tool.js';
 import { INSTALL_ROOT_ENV, isChildEntry, readRecord, writeJsonAtomic, type ChildrenFile } from '../update/contract.js';
 import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
+import { sameDirectory } from '../update/rebind.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
@@ -395,7 +396,7 @@ export class FleetModule implements Module {
       );
       return why;
     };
-    const earlier = this.childrenFileEntries();
+    const earlier = this.childrenFileRead();
     if (typeof earlier === 'string') return failed(earlier);
     const children: unknown[] = [];
     const listedDirs = new Set<string>();
@@ -408,7 +409,7 @@ export class FleetModule implements Module {
       if (pid !== null) knownPids.add(pid);
       children.push({ name: c.name, pid, bootId: c.bootId ?? null, dataDir: c.dataDir });
     }
-    for (const entry of earlier) {
+    for (const entry of earlier.children) {
       if (!isChildEntry(entry)) {
         children.push(entry);
         continue;
@@ -423,15 +424,15 @@ export class FleetModule implements Module {
       }
     }
     try {
-      writeJsonAtomic(this.childrenFile, { v: 1, children });
+      writeJsonAtomic(this.childrenFile, { v: 1, children, ...(earlier.boundTo !== undefined ? { boundTo: earlier.boundTo } : {}) });
       return null;
     } catch (err) {
       return failed(err instanceof Error ? err.message : String(err));
     }
   }
 
-  private childrenFileEntries(): unknown[] | string {
-    if (this.childrenFile === null) return [];
+  private childrenFileRead(): { children: unknown[]; boundTo?: unknown } | string {
+    if (this.childrenFile === null) return { children: [] };
     let file: ChildrenFile | null;
     const fix = 'Replacing it would drop the children it lists, which an update reads to see which may still be ' +
       'running, so every launch that spawns a child fails this way until whoever runs this host fixes it, or ' +
@@ -442,9 +443,9 @@ export class FleetModule implements Module {
     } catch (err) {
       return `${err instanceof Error ? err.message : String(err)} ${fix}`;
     }
-    if (file === null) return [];
+    if (file === null) return { children: [] };
     if (!Array.isArray(file.children)) return `The file at ${this.childrenFile} holds no list of children. ${fix}`;
-    return file.children;
+    return { children: file.children, ...(file.boundTo !== undefined ? { boundTo: file.boundTo } : {}) };
   }
 
   private async adoptPersistedChildren(): Promise<void> {
@@ -459,10 +460,24 @@ export class FleetModule implements Module {
     }
     if (!state?.children) return;
 
+    const listed = this.childrenFileRead();
+    const keptAt = (name: string): string[] => {
+      const entries = typeof listed === 'string' ? [] : listed.children.filter(isChildEntry).filter((entry) => entry.name === name);
+      if (entries.length > 0) return entries.map((entry) => entry.dataDir);
+      const configured = this.autoStartChildren.find((child) => child.name === name);
+      const dir = configured === undefined ? null : fleetChildDataDir(configured);
+      return dir !== null && existsSync(dir) ? [dir] : [];
+    };
     this.adopting = true;
     try {
       for (const [name, p] of Object.entries(state.children)) {
         if (name !== p.name || p.socketPath !== join(p.dataDir, 'ipc.sock')) continue;
+        const kept = this.childrenFile === null ? [] : keptAt(name);
+        if (kept.length > 0 && existsSync(p.dataDir) && !kept.some((dir) => sameDirectory(p.dataDir, dir))) {
+          console.error(`[fleet] child ${JSON.stringify(name)} isn't adopted: this host's store names it at ${p.dataDir}, ` +
+            `and this install keeps it at ${kept.join(' or ')}, so it's another install's, as after a copy of this one`);
+          continue;
+        }
 
         if (!this.canRetryAdoption(p)) {
           this.children.set(name, this.reconstructOrphan(p));
