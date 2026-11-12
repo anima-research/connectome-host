@@ -89,13 +89,13 @@ describe("the switch's quiesce of a real fleet child", () => {
     await until(() => seen.includes('inference:tokens'), 20_000, 'the child streams its reply');
 
     const host = idleHost();
-    const first = await quiesceForSwitch(host, fleet, { to: '9.9.9', timeoutMs: 300 });
+    const first = await quiesceForSwitch(host, fleet, { to: '9.9.9', mark: join(dataDir, 'mark.json'), timeoutMs: 300 });
     expect(first.drained).toBe(false);
     expect(first.hosts[0]).toMatchObject({ host: 'this host', answered: true, drained: true });
     expect(first.hosts[1]).toMatchObject({ host: 'kid', answered: true, drained: false, activeTurnAgents: ['kid'] });
     expect(seen).not.toContain('inference:completed');
 
-    const second = await quiesceForSwitch(host, fleet, { to: '9.9.9', timeoutMs: 20_000 });
+    const second = await quiesceForSwitch(host, fleet, { to: '9.9.9', mark: join(dataDir, 'mark.json'), timeoutMs: 20_000 });
     expect(second.drained).toBe(true);
     expect(second.hosts[1]).toMatchObject({ host: 'kid', answered: true, drained: true, activeTurnAgents: [] });
     expect(seen).toContain('inference:completed');

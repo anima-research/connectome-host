@@ -114,24 +114,29 @@ function fleetChild(state: {
 }) {
   const child = { quiesced: false, waits: [] as number[], looks: 0 };
   const fleet: SwitchFleet = {
-    runningChildren: () => [{ name: 'kid' }],
+    runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }],
     requestSwitch: async (_name, request: SwitchRequest) => {
+      if (request.op === 'release') return { ok: true, data: { released: true } };
       if (request.op === 'resume') {
         await state.resumeHeld;
         if (state.resumes === false) return { ok: false, error: 'the socket closed' };
         child.quiesced = false;
         return { ok: true, data: { resumed: true } };
       }
-      child.quiesced = true;
+      const last = request.last !== undefined;
+      if (!last) child.quiesced = true;
       child.waits.push(request.waitMs);
       child.looks += 1;
       await state.held;
       state.afterLook?.();
       const operator = state.operator !== undefined && child.looks >= state.operator.fromLook
         ? { operatorHold: state.operator.reason === undefined ? {} : { reason: state.operator.reason } } : {};
+      if (!child.quiesced) {
+        return { ok: true, data: { host: 'this host', answered: false, why: "it was serving at the switch's last look, which quiesces nothing" } };
+      }
       return { ok: true, data: {
         answered: true, drained: !state.busy, activeTurnAgents: state.busy ? ['kid-agent'] : [], backgroundScripts: state.scripts ?? 0,
-        ...operator, ...(state.inFlight !== undefined ? { inFlight: state.inFlight } : {}),
+        ...operator, ...(state.inFlight !== undefined ? { inFlight: state.inFlight } : {}), ...(last ? { held: true } : {}),
       } };
     },
   };
@@ -596,11 +601,13 @@ test('a fleet child with a script running outside any turn keeps the restart arm
 
 test('a fleet child mid-turn holds the armed restart by its turn alone, and check names only the turn', async () => {
   const answer = await answerToQuiesce('mid-turn');
+  const last = await answerToQuiesce('mid-turn', [], { last: true });
   const { root } = installRunning0141(['0.15.0']);
   const fleet: SwitchFleet = {
-    runningChildren: () => [{ name: 'kid' }],
+    runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }],
     requestSwitch: async (_name, request: SwitchRequest) =>
-      request.op === 'resume' ? { ok: true, data: { resumed: true } } : answer as { ok: boolean; data?: unknown },
+      request.op === 'resume' ? { ok: true, data: { resumed: true } }
+        : (request.op === 'quiesce' && request.last !== undefined ? last : answer) as { ok: boolean; data?: unknown },
   };
   const host = residentHost({ root, fleet });
   await host.armed();
@@ -671,7 +678,7 @@ test('a try that finds this host mid-turn with a script says, in check, that the
 test('a child that doesn\'t answer the look keeps the restart armed, and check says a host couldn\'t be counted', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const fleet: SwitchFleet = {
-    runningChildren: () => [{ name: 'kid' }],
+    runningChildren: () => [{ name: 'kid', incarnation: 'kid@1' }],
     requestSwitch: async (_name, request) => request.op === 'resume' ? { ok: true, data: { resumed: true } } : { ok: false, error: 'no answer within 10 s' },
   };
   const host = residentHost({ root, fleet });
@@ -1738,12 +1745,12 @@ test("on a host with a fleet child running and no Go back yet, the agent's check
 test('an armed restore is dropped where a fleet child starts while its host quiesces, and no mark is written', async () => {
   const { root, dataDir } = installRunning0141();
   placeCopyOf0140(root, dataDir);
-  const running: Array<{ name: string }> = [];
+  const running: Array<{ name: string; incarnation: string }> = [];
   const { fleet } = fleetChild({ busy: false });
   const host = residentHost({ root, dataDir, fleet: { ...fleet, runningChildren: () => running } });
   await host.armed({ action: 'back', data: 'restore' });
   const quiesce = host.fw.quiesce;
-  host.fw.quiesce = async (opts) => { running.push({ name: 'kid' }); return quiesce(opts); };
+  host.fw.quiesce = async (opts) => { running.push({ name: 'kid', incarnation: 'kid@1' }); return quiesce(opts); };
   expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
   expect(readMark(root)).toBeNull();
   expect(host.stops).toEqual([]);
