@@ -917,7 +917,7 @@ describe('connectome doctor', () => {
     writeUnit(at, join(other.work, 'recipe.json'), other.work);
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✗ ${at.unit} names ${other.work} as the directory it runs in, not this install's, ${at.work}: ` +
-      'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing there.');
+      'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing in that directory.');
     expect(r.out).not.toContain(join(other.work, 'recipe.json'));
     expect(r.status).toBe(1);
   });
@@ -2521,8 +2521,8 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
   test('the unit\'s problem gives install\'s own remedy and offers no service install, which refuses there', async () => {
     for (const manager of ['systemd-user', 'launchd'] as const) {
       const r = await run(copy(manager));
-      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`and doctor reads nothing there. ${TAKEN}`)]);
-      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('service install <recipe>')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`and doctor reads nothing in that directory. ${TAKEN}`)]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('service install')]);
     }
   });
 
@@ -2531,7 +2531,7 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain('). Run doctor again. ');
-    expect(r.out).toContain(`and doctor reads nothing there. ${TAKEN}`);
+    expect(r.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
     expect(r.out).not.toContain('service install');
     expect(r.out).toContain('Doctor stops here');
     const mac = copy('launchd');
@@ -2540,7 +2540,7 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     chmodSync(plutil, 0o755);
     const onMac = await withHost(mac, HEALTHY_HOST, () => run(mac, { plutil }));
     expect(onMac.out).toContain(`(plutil's answer wasn't JSON). ${mac.unit} names `);
-    expect(onMac.out).toContain(`and doctor reads nothing there. ${TAKEN}`);
+    expect(onMac.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
     expect(onMac.out).not.toContain('Fix it');
     expect(onMac.out).not.toContain('service install');
   });

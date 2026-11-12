@@ -138,7 +138,7 @@ export async function doctor(
       } else if (!runsHere(read.workingDirectory, units.work)) {
         elsewhere = true;
         serviceError = `${units.host.file} names ${read.workingDirectory} as the directory it runs in, not this install's, ` +
-          `${units.work}: it's another install's, or this one's from before it moved, and doctor reads nothing there. Its ` +
+          `${units.work}: it's another install's, or this one's from before it moved, and doctor reads nothing in that directory. Its ` +
           'name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
           'directory of another name.';
       } else if (at < 0 || read.argv[at + 1] === undefined) {
