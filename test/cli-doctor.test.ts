@@ -2733,9 +2733,12 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
     const mac = copy('launchd');
     const plutil = join(mac.work, 'plutil-garbled');
-    writeFileSync(plutil, ['#!/bin/sh', ...PLUTIL_WORKING_DIRECTORY, 'echo "<dict>"'].join('\n') + '\n');
+    const calls = join(mac.work, 'plutil-calls');
+    writeFileSync(plutil, ['#!/bin/sh', `printf '%s\\n' "$*" >> '${calls}'`, ...PLUTIL_WORKING_DIRECTORY, 'echo "<dict>"']
+      .join('\n') + '\n');
     chmodSync(plutil, 0o755);
     const onMac = await run(mac, { plutil });
+    expect(readFileSync(calls, 'utf-8').split('\n').filter((call) => call.includes('EnvironmentVariables'))).toEqual([]);
     expect(onMac.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
     expect(onMac.out).not.toContain('Fix it');
     expect(onMac.out).not.toContain('service install');
