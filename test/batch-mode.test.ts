@@ -146,21 +146,41 @@ export function register(api, config) {
 }
 `;
 
-function setup(webui: boolean, holdFirstStop = false): { dir: string; recipePath: string } {
+const EVENT_AT_BOOT = `
+export function register(api) {
+  api.registerModule(() => ({
+    name: 'event-at-boot',
+    getTools() { return []; },
+    async start(ctx) {
+      ctx.pushEvent({ type: 'external-message', source: 'system', content: 'a message that came while the host was down', metadata: {}, triggerInference: true });
+    },
+    async stop() {},
+    async handleToolCall() { return { success: false, error: 'no tools' }; },
+    async onProcess() { return {}; },
+  }));
+}
+`;
+
+function setup(webui: boolean, holdFirstStop = false, eventAtBoot = false): { dir: string; recipePath: string } {
   const dir = mkdtempSync(join(tmpdir(), 'chost-batch-'));
   tmpDirs.push(dir);
   const serverPath = join(dir, 'fake-mcpl.mjs');
   writeFileSync(serverPath, FAKE_SERVER);
   if (holdFirstStop) writeFileSync(join(dir, 'stop-hold.ts'), HOLD_FIRST_STOP);
+  if (eventAtBoot) writeFileSync(join(dir, 'event-at-boot.ts'), EVENT_AT_BOOT);
   const recipe = {
     name: 'Batch Test',
-    agent: { name: 'agent', provider: 'mock', systemPrompt: 'batch test' },
+    agent: {
+      name: 'agent', provider: 'mock', systemPrompt: 'batch test',
+      ...(eventAtBoot ? { mock: { streamChunkDelayMs: 2_000, streamChunkSize: 1 } } : {}),
+    },
     modules: {
       subagents: false, lessons: false, retrieval: false, wake: false, workspace: false,
       ...(webui ? { webui: { host: '127.0.0.1', port: 0 } } : {}),
     },
     mcpServers: { fake: { command: process.execPath, args: [serverPath] } },
     ...(holdFirstStop ? { extensions: { hold: { kind: 'module', path: join(dir, 'stop-hold.ts'), config: { marks: dir } } } } : {}),
+    ...(eventAtBoot ? { extensions: { boot: { kind: 'module', path: join(dir, 'event-at-boot.ts'), config: {} } } } : {}),
   };
   const recipePath = join(dir, 'recipe.json');
   writeFileSync(recipePath, JSON.stringify(recipe));
@@ -255,6 +275,24 @@ describe('batch mode end to end', () => {
     const out = run.out();
     expect(out).toContain('> /auth token <hidden>');
     expect(out).not.toContain('batch-echo-secret');
+  }, 60_000);
+
+  test('a turn that an event waiting at boot began during the host\'s start is still running when the input ends, and the end notice says so', async () => {
+    const { dir, recipePath } = setup(false, false, true);
+    const run = startBatch(dir, recipePath, '');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      run.exited,
+      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), EXIT_WELL_INSIDE_TURN_CAP_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    if (outcome === 'still running') {
+      run.child.kill('SIGKILL');
+      await run.exited;
+    }
+    expect(outcome).toBe(0);
+    const out = run.out();
+    const ending = out.slice(out.indexOf('Processing 0 commands...'), out.indexOf('Done.'));
+    expect(ending).toContain('[batch] a turn is still running, and batch mode stops the agent now, so its answer won\'t print here');
   }, 60_000);
 
   test('after a session switch, a line waits for the new session\'s turn rather than the cap', async () => {

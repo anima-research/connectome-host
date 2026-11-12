@@ -328,8 +328,9 @@ Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
 the arguments it gives the host now, and restart it. In a systemd unit,
-write each `%` in a path as `%%`, since systemd reads `%` as a specifier even
-between quotes. Setup says whether the
+write each `%` in a path as `%%` and each `$` as `$$`, since systemd reads `%`
+as a specifier, and `${...}` as a variable, even between quotes. Setup
+says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
@@ -419,7 +420,9 @@ directory, leaving any outside it, which may be another install's. Setup refuses
 a Go back is unfinished, since that trial's fallback restores from them, and
 the next start goes on with that Go back from them: let it end where the
 install was, moving it back first if it was moved, and then move or copy it
-again. Nothing
+again. It refuses too while a Go back is asked for and no start has begun
+it, since that start goes back from them: let it run there the same way, or
+remove the install root's `mark.json`, which drops the request. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
 move out what you want of it rather than deleting it. Until the next update
 takes a new copy, `/update back restore` isn't there, and each update

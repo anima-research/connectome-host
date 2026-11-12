@@ -40,8 +40,7 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
-// The install root's name in the directory setup works in, as the package's command looks for it.
-const ROOT = 'connectome-host';
+export const ROOT_IN_WORKDIR = 'connectome-host';
 const SURFACE = 'discord';
 export const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
@@ -99,7 +98,7 @@ function setupsOwn(dir: string, root: string): boolean {
 
 function takes(dir: string): boolean {
   try {
-    return entriesOf(dir).length === 0 || setupsOwn(dir, join(dir, ROOT));
+    return entriesOf(dir).length === 0 || setupsOwn(dir, join(dir, ROOT_IN_WORKDIR));
   } catch {
     return true;
   }
@@ -210,13 +209,13 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   if (!ours && entries.length > 0) {
     const what = holds(dir, entries, home);
     if (movedFrom !== null) {
-      err(`connectome setup: ${movedFrom}, and ${what} and no connectome-host install, so setup won't put its own in ` +
-        'either. Make an empty directory for the resident, named as you\'d like its service, and run this same version ' +
-        'of setup in it:');
+      err(`connectome setup: ${movedFrom}, and ${what} and no connectome-host install record, so setup won't put its ` +
+        'own in either. Make an empty directory for the resident, named as you\'d like its service, and run this same ' +
+        'version of setup in it:');
     } else {
-      err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
-        'directory for the resident where you can write, and run this same version of setup there. Its service takes ' +
-        'the directory\'s name:');
+      err(`connectome setup: ${what}, and no connectome-host install record, so setup won't put its own there. Make a ` +
+        'new directory for the resident where you can write, and run this same version of setup there. Its service ' +
+        'takes the directory\'s name:');
     }
     err(`  ${firstLine()}`);
     return 1;
@@ -241,8 +240,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       out(`${envFile} was open to others than ${world.user}, so setup made it readable by ${world.user} alone.`);
     }
   };
-  // In a directory that's setup's already, the lock comes before the questions. In one that's empty or not there yet,
-  // the first step's yes comes before setup makes anything there, its lock included.
   let lock = ours ? takeLock() : undefined;
   if (lock === null) return 1;
   try {
@@ -286,6 +283,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       }
     };
     const rootBefore = rootSeen();
+    const recordBefore = existsSync(join(root, 'install.json'));
     const emptied = rootBefore === 'empty';
     const lost = existsSync(root) && !emptied ? null
       : state?.finished !== undefined
@@ -353,7 +351,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
         `such as ${home === null || world.cwd === home ? 'an empty one' : 'your home directory'}.`);
       return 1;
     }
-    return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped });
+    return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped, recordBefore });
   } finally {
     lock?.release();
   }
@@ -431,9 +429,10 @@ function goOnAsOwnUser(out: (line: string) => void): void {
 async function installAndStart(
   ctx: CliContext & { root: string },
   world: SetupWorld,
-  { dir, root, pkg, version, env, shell, stopped }: {
+  { dir, root, pkg, version, env, shell, stopped, recordBefore }: {
     dir: string; root: string; pkg: PackageJson; version: string;
     env: Record<string, string | undefined>; shell: Record<string, string>; stopped: () => number;
+    recordBefore: boolean;
   },
 ): Promise<number> {
   const { out, err } = ctx;
@@ -502,6 +501,11 @@ async function installAndStart(
     } else {
       err(`${said}, and goes no further.`);
     }
+    return 1;
+  }
+  if (record === null && recordBefore) {
+    err(`The install record, ${join(root, 'install.json')}, was there when setup began and is gone now, so setup ` +
+      'stops rather than make a new install in its place. Run setup again: it says what it finds there.');
     return 1;
   }
   let recorded: { record: InstallRecord; binding: Binding } | null = null;
@@ -763,8 +767,8 @@ async function installAndStart(
   }
   const inEnv = oauth.filter((name) => held.get(name));
   if (inEnv.length > 0) {
-    out(`${envFile} holds ${inEnv.join(' and ')}, so a host started in ${dir} ${throughOAuth} Take ` +
-      `${inEnv.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`);
+    out(`${envFile} holds ${inEnv.join(' and ')}, so a host that takes ${inEnv.length === 1 ? 'it' : 'them'} from there ` +
+      `${throughOAuth} Take ${inEnv.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`);
   }
   out(costLine(model, baseUrl !== undefined));
 

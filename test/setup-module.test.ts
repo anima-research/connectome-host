@@ -75,7 +75,7 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
   return module.handleToolCall({ id: 'c2', name: 'ask_secret', input } as ToolCall);
 }
 
-// Work held behind an open question waits on the module's asking with await, which calls a thenable's then.
+// await calls a thenable's then.
 function heldAt(module: SetupModule): Promise<void> {
   const held = module as unknown as { asking: PromiseLike<unknown> };
   const open = held.asking;
@@ -84,7 +84,7 @@ function heldAt(module: SetupModule): Promise<void> {
   });
 }
 
-// A question asked while a model check is under way waits on that check with Promise.all, which calls its then.
+// Promise.all calls then on each promise it's given, so a then set on the promise itself is the one called.
 function heldOnChecks(module: SetupModule): Promise<void> {
   const { checks } = module as unknown as { checks: Set<Promise<void>> };
   if (checks.size === 0) throw new Error('no model check is under way');
@@ -96,8 +96,10 @@ function heldOnChecks(module: SetupModule): Promise<void> {
   });
 }
 
-// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc or have setsid.
-const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat') || Bun.which('setsid') === null);
+// For tests that read /proc, and one that also runs setsid(1): macOS has neither, and a Linux container may not mount
+// /proc or have setsid.
+const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
+const setsidTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat') || Bun.which('setsid') === null);
 
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
 
@@ -670,7 +672,7 @@ describe('setup--run', () => {
       'fault in the drain').toBe(true);
   }, 30_000);
 
-  linuxTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
+  setsidTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
     const { dir, module } = install();
     const pidFile = join(dir, 'escaped.pid');
     const endedAt = join(dir, 'ended-at');
@@ -1423,15 +1425,16 @@ describe('setup--run, and what the install\'s commands say for the person', () =
 
   test('a named pipe left where the file for the person was is refused as no file, and the command is answered', async () => {
     const { dir, module, shown } = install();
-    const [at, go] = [join(dir, 'pipe-at'), join(dir, 'go')];
+    const [at, go, released] = [join(dir, 'pipe-at'), join(dir, 'go'), join(dir, 'released')];
     const answering = run(module, `rm "$CONNECTOME_SETUP_SHOWN" && mkfifo "$CONNECTOME_SETUP_SHOWN" && echo "$CONNECTOME_SETUP_SHOWN" > ${at}.new && mv ${at}.new ${at} && while [ ! -e ${go} ]; do sleep 0.02; done; echo for the agent`);
     let writer: ReturnType<typeof Bun.spawn> | undefined;
     try {
       for (const started = performance.now(); !existsSync(at) && performance.now() - started < 10_000; await Bun.sleep(10));
-      // Where a read waits on the pipe, this writer gives it a line, so the test ends either way.
-      writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim()], { stdout: 'ignore', stderr: 'ignore' });
+      // A named pipe's open waits for a writer: this one comes 10 s on and marks when, so a read that waited is seen.
+      writer = Bun.spawn(['sh', '-c', 'sleep 10; touch "$2"; while [ -p "$1" ]; do printf "written-to-the-pipe\\n" > "$1"; done', 'sh', readFileSync(at, 'utf-8').trim(), released], { stdout: 'ignore', stderr: 'ignore' });
       writeFileSync(go, '');
       const answer = await answering;
+      expect(existsSync(released)).toBe(false);
       expect(answer.stdout.text).toBe('for the agent\n');
       const after = afterCommand(shown);
       expect(after).toHaveLength(1);
@@ -2804,11 +2807,13 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const second = await askSecret(unasked.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
     expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>). Check it again with setup--check_model, or go on with it unchecked.`);
     expect(said(unasked, second)).not.toContain('key-two');
+    expect(unasked.shown.at(-1)).toBe('It\'s stored as OPENROUTER_API_KEY, though whether it works isn\'t known.');
     const otherwise = install({
       asker: typed('key-three'),
       fetch: (async () => Response.json({ error: { message: 'bad request' } }, { status: 400 })) as unknown as typeof fetch,
     });
     const third = await askSecret(otherwise.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
+    expect(otherwise.shown.at(-1)).toBe('It\'s stored as ANTHROPIC_API_KEY, though whether it works isn\'t known.');
     expect(String(third.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(otherwise.dir, '.env')}, but it isn't known to work: Anthropic answered 400: bad request. Check it again with setup--check_model, or go on with it unchecked.`);
   });
 
@@ -2979,8 +2984,10 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const stored = await askSecret(key.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
     expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Anthropic's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(key.shown).toContain('It couldn\'t be checked: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer.');
+    expect(key.shown.at(-1)).toBe('It\'s stored as ANTHROPIC_API_KEY, though whether it works isn\'t known.');
     const token = install({ asker: typed('a-portal-token'), fetch: portal });
     const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(token.shown.at(-1)).toBe('It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.');
     expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
@@ -2994,11 +3001,13 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
     expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, with setup--ask_secret as OPENAI_BASE_URL, since a base URL can carry a credential, then call again. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
+    expect(openai.shown.at(-1)).toBe('It\'s stored as OPENAI_API_KEY, though whether it works isn\'t known.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
     expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, with setup--ask_secret as OPENROUTER_BASE_URL, since a base URL can carry a credential, then call again. Check it again with setup--check_model, or go on with it unchecked.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    expect(discord.shown.at(-1)).toBe('It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.');
     expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, with setup--ask_secret as ANTHROPIC_BASE_URL, since a base URL can carry a credential, then call again.');

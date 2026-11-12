@@ -321,7 +321,7 @@ test('a directory setup is given that holds other files and no install is refuse
     const made = world(dir, {}, over);
     expect(await runSetup(dir, ['discord'], made), JSON.stringify(over)).toBe(1);
     expect(made.seen.err, JSON.stringify(over)).toEqual([
-      `connectome setup: ${dir} is your home directory, and no connectome-host install, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:`,
+      `connectome setup: ${dir} is your home directory, and no connectome-host install record, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:`,
       `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
     ]);
     expect(made.seen.out).toEqual([]);
@@ -403,7 +403,7 @@ test('where ~/resident holds other files and no install, setup says so with what
   const made = world(home);
   expect(await setup({ root: join(resident, 'connectome-host'), argv: ['discord'], out: (line) => { made.seen.out.push(line); }, err: (line) => { made.seen.err.push(line); } }, made.world)).toBe(1);
   expect(made.seen.err).toEqual([
-    `connectome setup: ${home} is your home directory, and ${resident} holds other files and no connectome-host install, so setup won't put its own in either. Make an empty directory for the resident, named as you'd like its service, and run this same version of setup in it:`,
+    `connectome setup: ${home} is your home directory, and ${resident} holds other files and no connectome-host install record, so setup won't put its own in either. Make an empty directory for the resident, named as you'd like its service, and run this same version of setup in it:`,
     `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
   ]);
   expect(made.seen.asked).toEqual([]);
@@ -431,7 +431,7 @@ test('a .setup directory that isn\'t setup\'s, holding neither its lock nor its 
   writeFileSync(join(dir, 'package.json'), '{"name":"mine"}\n');
   const made = world(dir, {}, { hasSudo: false, env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install record, so setup won't put its own there.`);
   expect(made.seen.asked).toEqual([]);
   expect(readdirSync(dir).sort()).toEqual(['.setup', 'package.json']);
   expect(readdirSync(join(dir, '.setup'))).toEqual(['config.yml']);
@@ -580,6 +580,26 @@ test('a setup whose directory another setup kept answers in, or made an install 
   }
 });
 
+test('a setup whose install record goes while it asks its questions stops, and makes no new install in its place', async () => {
+  const dir = directory();
+  const first = world(dir, { answers: [''], secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], first)).toBe(0);
+  const root = join(dir, 'connectome-host');
+  const record = join(root, 'install.json');
+  expect(existsSync(record)).toBe(true);
+  const again = world(dir, { secrets: [KEY] });
+  const { run } = again.world;
+  again.world.run = async (argv, options) => {
+    if (argv[0] === 'node' && argv[1] === '--version') rmSync(root, { recursive: true, force: true });
+    return run(argv, options);
+  };
+  expect(await runSetup(dir, ['discord'], again)).toBe(1);
+  expect(again.seen.err).toEqual([`The install record, ${record}, was there when setup began and is gone now, so setup stops rather than make a new install in its place. Run setup again: it says what it finds there.`]);
+  expect(existsSync(root)).toBe(false);
+  expect(again.seen.ran.some((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
+  expect(again.seen.launched).toBeNull();
+});
+
 test('a setup whose directory, empty or not there, gained other files while it asked its first step keeps nothing there and stops, and installs nothing', async () => {
   for (const there of [true, false]) {
     const start = directory();
@@ -615,7 +635,7 @@ test('where HOME isn\'t an absolute path to a directory, setup makes no director
     const made = world(dir, { answers: ['no', '2', ''] }, { env: { PATH: '/usr/bin:/bin', ...(home === undefined ? {} : { HOME: home }) } });
     expect(await runSetup(dir, ['discord'], made), String(home)).toBe(1);
     expect(made.seen.asked, String(home)).toEqual([]);
-    expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
+    expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install record, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
     expect(text(made.seen.err)).not.toContain('~/');
     expect(readdirSync(dir)).toEqual(['notes.txt']);
   }
@@ -633,12 +653,12 @@ test('setup names what a directory not its own holds: your home, hidden files al
   writeFileSync(join(hidden, '.bashrc'), '# mine\n');
   const hiddenRun = world(hidden, { answers: [] }, { env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   await runSetup(hidden, ['discord'], hiddenRun);
-  expect(text(hiddenRun.seen.err)).toContain(`connectome setup: ${hidden} holds hidden files, such as .bashrc, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(hiddenRun.seen.err)).toContain(`connectome setup: ${hidden} holds hidden files, such as .bashrc, and no connectome-host install record, so setup won't put its own there.`);
   const other = directory();
   writeFileSync(join(other, 'notes.txt'), 'mine\n');
   const otherRun = world(other, { answers: [] }, { env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   await runSetup(other, ['discord'], otherRun);
-  expect(text(otherRun.seen.err)).toContain(`connectome setup: ${other} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(otherRun.seen.err)).toContain(`connectome setup: ${other} holds other files, and no connectome-host install record, so setup won't put its own there.`);
   expect(text(otherRun.seen.err)).not.toContain('home directory');
 });
 
@@ -731,7 +751,7 @@ test('a key from .env tried again after a dotenv file became unreadable isn\'t c
   expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). The ANTHROPIC_API_KEY in ${join(dir, '.env')} wasn't checked. Put that right, then run setup again.`);
 });
 
-test('a dotenv file that became unreadable before the key question stops setup with nothing asked, and setup says to put it right', async () => {
+test('a dotenv file that became unreadable before the key question stops setup before it asks for the key or checks one, and setup says to put it right', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
@@ -827,17 +847,19 @@ test('a package.json that isn\'t a file, such as a named pipe, isn\'t waited on 
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
   const manifest = join(dir, 'package.json');
   Bun.spawnSync(['mkfifo', manifest]);
-  // Where a read waits on the pipe, this writer gives it JSON, so the test ends either way.
-  const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest], { stdout: 'ignore', stderr: 'ignore' });
+  const released = join(directory(), 'released');
+  // A named pipe's open waits for a writer: this one comes 10 s on and marks when, so a read that waited is seen.
+  const writer = Bun.spawn(['sh', '-c', 'sleep 10; touch "$2"; while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest, released], { stdout: 'ignore', stderr: 'ignore' });
   try {
     const made = world(dir, { answers: [''], secrets: [KEY], added: { status: 0, stdout: '', stderr: '' } });
     expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(existsSync(released)).toBe(false);
     expect(text(made.seen.out)).toContain(`Setup couldn't add the packages whose install scripts Bun runs by default to ${manifest} (${manifest} can't be read (it isn't a file)), so unless`);
     expect(lstatSync(manifest).isFIFO()).toBe(true);
   } finally {
     writer.kill('SIGKILL');
   }
-});
+}, 20_000);
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
   for (const trusted of [
@@ -2128,7 +2150,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE exported in th
   }
 });
 
-test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env holds is named, since a host started in the directory signs in through OAuth; setup\'s agent gets neither', async () => {
+test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env holds is named, since a host that takes it from .env signs in through OAuth; setup\'s agent gets neither', async () => {
   for (const names of [['ANTHROPIC_AUTH_TOKEN'], ['ANTHROPIC_OAUTH_CREDENTIALS_FILE'], ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE']]) {
     const dir = directory();
     const envFile = join(dir, '.env');
@@ -2139,7 +2161,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
     const made = world(dir, { answers: [''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ...fromEnv } });
     expect(await runSetup(dir, ['discord'], made), names.join()).toBe(0);
     const lines = made.seen.out.filter((line) => line.startsWith(`${envFile} holds`));
-    expect(lines, names.join()).toEqual([`${envFile} holds ${names.join(' and ')}, so a host started in ${dir} signs in through OAuth, not with an ANTHROPIC_API_KEY, though setup's agent uses the key. Take ${names.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`]);
+    expect(lines, names.join()).toEqual([`${envFile} holds ${names.join(' and ')}, so a host that takes ${names.length === 1 ? 'it' : 'them'} from there signs in through OAuth, not with an ANTHROPIC_API_KEY, though setup's agent uses the key. Take ${names.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`]);
     expect(made.seen.out.some((line) => line.includes('exported in this shell, so a host started from it')), names.join()).toBe(false);
     for (const name of names) expect(made.seen.launched!.env[name], name).toBeUndefined();
     expect(made.seen.launched!.argv).toContain('--no-env-file');

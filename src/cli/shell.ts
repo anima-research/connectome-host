@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { readWithoutWaiting } from '../update/contract.js';
@@ -119,9 +119,16 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     if (now !== null) out(`${SHELL} ${now} is installed in ${dir}.`);
   }
 
-  let helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
+  const loadedFrom = nodePtyDir(dir);
+  const outside = existsSync(loadedFrom) && !within(realpathSync(loadedFrom), realpathSync(dir));
+  let helper = outside ? null : makeSpawnHelperExecutable(loadedFrom, world.platform);
   let pty = await ptyWorks(world, dir, env);
   const aside = join(dir, '.setup', 'node-pty-aside');
+  if (pty !== null && outside) {
+    err(`The resident's shell runs on node-pty, and here it doesn't work: ${pty.replace(/\.+$/, '')}. node-pty loads from ` +
+      `${loadedFrom}, which is outside ${dir}, so this command leaves it as it is. A resident without a shell needs none of this.`);
+    return 1;
+  }
   if (pty !== null) {
     const ptyDir = nodePtyDir(dir);
     out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
@@ -188,6 +195,11 @@ const PTY_CHECK = "let p;try{p=require('module').createRequire(require('fs').rea
   "console.error('a pty it opened gave back nothing');process.exit(1)})";
 
 const PTY_CHECK_MS = 30_000;
+
+function within(path: string, dir: string): boolean {
+  const from = relative(dir, path);
+  return from !== '' && !from.startsWith('..') && !isAbsolute(from);
+}
 
 async function ptyWorks(world: ShellWorld, dir: string, env: Record<string, string>): Promise<string | null> {
   const ran = await world.run(['node', '-e', PTY_CHECK], { cwd: dir, env, timeoutMs: PTY_CHECK_MS });
