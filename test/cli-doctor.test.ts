@@ -920,6 +920,19 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(1);
   });
 
+  test('a stored secret only the unit sets is withheld where doctor can\'t use the unit, as systemd still gives its environment', async () => {
+    const value = 'unit-only-secret-value';
+    const at = install({ prefix: `chost-${value}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'UNIT_ONLY'] });
+    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    const manager = fakeManager(at.work, {
+      unit: [...Object.entries(unitEnvironment(at)).map(([name, v]) => `${name}=${v}`), `UNIT_ONLY=${value}`].join(' '),
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('isn\'t the unit file service install writes');
+    expect(r.out).toMatch(/^connectome doctor: the install at .*<UNIT_ONLY>/);
+    expect(r.out).not.toContain(value);
+  });
+
   test('whether the service check expects a shell comes from the recipe the unit runs', async () => {
     for (const [recipe, shell] of [[RECIPE(''), true], [{ ...RECIPE(''), mcpServers: { discord: RECIPE('').mcpServers.discord } }, false]] as const) {
       const at = install({ recipe });

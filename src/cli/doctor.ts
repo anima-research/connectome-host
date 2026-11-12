@@ -197,17 +197,22 @@ export async function doctor(
       if (service !== null || serviceError !== null) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
-    const unit = service === null ? null : unitEnv(service.units, parts);
-    if (unit !== null && 'why' in unit) {
-      const { name, file } = service!.units.host;
-      const why = unit.why.replace(/\.$/, '');
-      throw new Error(service!.units.manager === 'launchd'
+    const read = units === null || (service === null && serviceError === null) ? null : unitEnv(units, parts);
+    if (read !== null && 'why' in read) {
+      const { name, file } = units!.host;
+      const why = read.why.replace(/\.$/, '');
+      throw new Error(units!.manager === 'launchd'
         ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
           `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
           '`connectome service install`, which writes it anew.'
         : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
           '`connectome service install` writes the unit anew.');
     }
+    if (read !== null && service === null) {
+      secrets = [...secrets,
+        ...named.names.flatMap((name) => read.env[name] ? withSentForms({ name, value: read.env[name] }) : [])];
+    }
+    const unit = service === null ? null : read;
     envFiles = unit === null ? [] : unit.files;
     const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs);
     env = built.env;
