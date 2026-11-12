@@ -287,13 +287,22 @@ describe('the notice', () => {
 });
 
 describe('Update', () => {
+  test("tells the page, once it has installed, that its Restart switches to the newest release installed", async () => {
+    const { root, dataDir } = install('0.12.1');
+    const { ops } = manager();
+    const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
+    expect(await update.install(PAGE_WAYS)).toEqual({ done: true, lines: [
+      '0.13.0 is installed beside 0.12.1, which runs on: Restart switches to the newest release installed.',
+    ] });
+  });
+
   test('installs the candidate beside the running release, and asks for no switch', async () => {
     const { root, dataDir } = install('0.12.1');
     const { ops, runs } = manager();
     const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
     const answer = await update.install();
     expect(answer).toEqual({ done: true, lines: [
-      '0.13.0 is installed beside 0.12.1, which runs on. Restart switches to the newest release installed: /update restart.',
+      '0.13.0 is installed beside 0.12.1, which runs on: /update restart switches to the newest release installed.',
     ] });
     expect(runs).toEqual(['npm install --save-exact --no-audit --no-fund @animalabs/connectome-host@0.13.0']);
     expect(readMark(root)).toBeNull();
