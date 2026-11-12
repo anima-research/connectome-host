@@ -2422,6 +2422,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).toContain(`The service's unit also reads ${listed}, whose values doctor can't see. Where one sets a stored ` +
       'secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
     expect(r.out).not.toContain('LONELY_SECRET is in setup\'s list of stored secrets and has no value');
+    expect(r.out).toContain('LONELY_SECRET is in setup\'s list of stored secrets, and doctor finds no server given it');
     expect(r.out).toMatch(/Doctor found no problem, though .*the files its unit reads its environment from weren't read/);
   });
 
@@ -2557,6 +2558,7 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     expect(r.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
     expect(r.out).not.toContain('service install');
     expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).toMatch(/Doctor found (no|\d+) problem/);
     expect(manager.calls()).not.toContain('--user show --property=Environment --value -- connectome-test.service');
     const mac = copy('launchd');
     const plutil = join(mac.work, 'plutil-garbled');
@@ -2567,6 +2569,7 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     expect(onMac.out).not.toContain('Fix it');
     expect(onMac.out).not.toContain('service install');
     expect(onMac.out).not.toContain('Doctor stops here');
+    expect(onMac.out).toMatch(/Doctor found (no|\d+) problem/);
   });
 
   test('a manager doctor can\'t read there is said as with no service installed, and the checks go on', async () => {
@@ -2575,6 +2578,7 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     const r = await run(at, { systemctl: manager.path });
     expect(r.out).toContain('With no service installed, doctor asked systemd\'s user manager, which a service installed here would run under, and couldn\'t read it');
     expect(r.out).not.toContain('Doctor stops here');
+    expect(r.out).toMatch(/Doctor found (no|\d+) problem/);
   });
 
   test('a unit there that reads an EnvironmentFile isn\'t said as this install\'s, and this install\'s own stored secrets are judged as with no unit', async () => {
