@@ -214,7 +214,7 @@ export async function doctor(
           `\`${anew}\` writes the unit anew.`);
     }
     const unit = service === null ? null : read;
-    envFiles = unit === null ? [] : unit.files;
+    envFiles = read === null ? [] : read.files;
     const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath);
     env = built.env;

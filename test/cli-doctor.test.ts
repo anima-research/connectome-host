@@ -2401,6 +2401,19 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).toMatch(/Doctor found no problem, though .*the files its unit reads its environment from weren't read/);
   });
 
+  test('a unit doctor can\'t use that reads an EnvironmentFile is said too, since what it sets still reaches the service', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
+    writeFileSync(at.unit, '[Service]\nWorkingDirectory=/x\nExecStart=bun start.js recipe.json\n');
+    const manager = fakeManager(at.work, {
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+    });
+    const listed = join(at.work, 'secrets.env');
+    writeFileSync(join(manager.path, '..', 'environment-files'), `${listed} (ignore_errors=no)\n`);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('isn\'t the unit file service install writes');
+    expect(r.out).toContain(`The service's unit also reads ${listed}, whose values doctor can't see.`);
+  });
+
   test('the dotenv files are read without the install root, as the launcher\'s Bun reads them, and the root is set after', async () => {
     const at = install();
     writeFileSync(join(at.work, '.env.local'), 'MODEL=claude-${CONNECTOME_INSTALL_ROOT:-root-unset}\n');
