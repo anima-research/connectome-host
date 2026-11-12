@@ -748,6 +748,9 @@ export class SetupModule implements Module {
       return failed(`It isn't known whether ${name} was stored: ${(error as Error).message}. Ask the person to put right ` +
         'what that names, then call again, which asks for the value again.');
     }
+    if (token !== null ? token.kind !== 'accepted' : key !== null && key.kind !== 'accepted') {
+      this.config.show(`It's stored as ${name}, though whether it works isn't known.`);
+    }
     return { success: true, data: `stored as ${name} in ${envFile}${told}` };
   }
 
