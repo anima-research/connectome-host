@@ -213,6 +213,13 @@ describe('doctor: Discord', () => {
     expect(r.problems[0]).not.toMatch(/other than/);
   });
 
+  test('a later request whose body breaks off while it\'s read is a failed request, not an answer that isn\'t JSON, and what doctor found before it is still said', async () => {
+    const broken = () => new Response(new ReadableStream({ start(c) { c.error(new TypeError('the connection was reset')); } }), { status: 200 });
+    const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ guilds: [HOME], answers: { '/applications/@me': broken } }));
+    expect(r.lines[0]).toBe('\u2713 The token in DISCORD_TOKEN works: the bot is ember (900).');
+    expect(r.problems).toEqual([expect.stringMatching(/^Discord couldn't be asked GET \/applications\/@me: the connection was reset, /)]);
+  });
+
   test('Discord that doesn\'t answer within the limit is a problem when the limit runs out', async () => {
     const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'hang' }), workdir(), 200);
     expect(r.problems.length).toBe(1);
@@ -513,6 +520,18 @@ describe('doctor: Discord', () => {
     expect(r.lines).toContain('    #lounge (108), where it can\'t send');
     expect(r.lines).toContain('    #town-hall (109), where it can\'t send');
     expect(r.lines).toContain('    #open-voice (121)');
+  });
+
+  test('the bot\'s own overwrite in a channel wins over its roles\' overwrites there, whichever way each goes', async () => {
+    const own: FakeGuild = {
+      ...HOME,
+      channels: [...HOME.channels,
+        { id: '122', name: 'muted', type: 0, overwrites: [{ id: '110', type: 0, allow: SEND }, { id: '900', type: 1, deny: SEND }] },
+        { id: '123', name: 'let-in', type: 0, overwrites: [{ id: '110', type: 0, deny: SEND }, { id: '900', type: 1, allow: SEND }] }],
+    };
+    const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [own] }));
+    expect(r.lines).toContain('    #muted (122), where it can\'t send');
+    expect(r.lines).toContain('    #let-in (123)');
   });
 
   test('a server a filters file names that the bot isn\'t in says to invite it, without DISCORD_GUILD_ID\'s separators', async () => {
