@@ -2526,23 +2526,44 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     }
   });
 
-  test('where the manager won\'t give that unit\'s environment, doctor stops with the same remedy, and offers no service install', async () => {
+  test('where the manager won\'t give that unit\'s environment, doctor doesn\'t ask, and goes on with the same remedy and no service install', async () => {
     const at = copy('systemd-user');
     const manager = fakeManager(at.work, { unitFails: 'Failed to connect to bus: No such file or directory' });
-    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
-    expect(r.out).toContain('). Run doctor again. ');
+    const r = await run(at, { systemctl: manager.path });
     expect(r.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
     expect(r.out).not.toContain('service install');
-    expect(r.out).toContain('Doctor stops here');
+    expect(r.out).not.toContain('Doctor stops here');
+    expect(manager.calls()).not.toContain('--user show --property=Environment --value -- connectome-test.service');
     const mac = copy('launchd');
     const plutil = join(mac.work, 'plutil-garbled');
     writeFileSync(plutil, '#!/bin/sh\necho "<dict>"\n');
     chmodSync(plutil, 0o755);
-    const onMac = await withHost(mac, HEALTHY_HOST, () => run(mac, { plutil }));
-    expect(onMac.out).toContain(`(plutil's answer wasn't JSON). ${mac.unit} names `);
+    const onMac = await run(mac, { plutil });
     expect(onMac.out).toContain(`and doctor reads nothing in that directory. ${TAKEN}`);
     expect(onMac.out).not.toContain('Fix it');
     expect(onMac.out).not.toContain('service install');
+    expect(onMac.out).not.toContain('Doctor stops here');
+  });
+
+  test('a manager doctor can\'t read there is said as with no service installed, and the checks go on', async () => {
+    const at = copy('systemd-user');
+    const manager = fakeManager(at.work, { fails: 'Failed to connect to bus: No such file or directory' });
+    const r = await run(at, { systemctl: manager.path });
+    expect(r.out).toContain('With no service installed, doctor asked systemd\'s user manager, which a service installed here would run under, and couldn\'t read it');
+    expect(r.out).not.toContain('Doctor stops here');
+  });
+
+  test('a unit there that reads an EnvironmentFile isn\'t said as this install\'s, and this install\'s own stored secrets are judged as with no unit', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], drop: ['LONELY_SECRET'] });
+    const other = install();
+    writeUnit(at, join(other.work, 'recipe.json'), other.work);
+    const manager = fakeManager(at.work, {
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+    });
+    writeFileSync(join(manager.path, '..', 'environment-files'), '/other/secrets.env (ignore_errors=no)\n');
+    const r = await run(at, { systemctl: manager.path });
+    expect(r.out).not.toContain('/other/secrets.env');
+    expect(r.out).toContain('✗ LONELY_SECRET is in setup\'s list of stored secrets');
   });
 
   test('a host of an older release answering there is to be restarted as a host, since no service of this install\'s runs it', async () => {

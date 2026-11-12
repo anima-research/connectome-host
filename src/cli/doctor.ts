@@ -197,10 +197,10 @@ export async function doctor(
       secrets = [...secrets,
         ...named.names.flatMap((name) => managed[name] ? withSentForms({ name, value: managed[name] }) : [])];
     } catch (error) {
-      if (service !== null || serviceError !== null) throw error;
+      if (service !== null || (serviceError !== null && !elsewhere)) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
-    const read = units === null || (service === null && serviceError === null) ? null : unitEnv(units, parts);
+    const read = units === null || elsewhere || (service === null && serviceError === null) ? null : unitEnv(units, parts);
     const set = read?.env;
     if (set !== undefined) {
       secrets = [...secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
@@ -210,11 +210,11 @@ export async function doctor(
       const why = read.why.replace(/\.$/, '');
       const anew = `${typed} service install ${recipePath === null ? '<recipe>' : shellWord(recipePath)}`;
       throw new Error(units!.manager === 'launchd'
-        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). ` + (elsewhere
-          ? serviceError! : `Fix it (\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
-            `\`${anew}\`, which writes it anew or says why it can't.`)
-        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again` +
-          (elsewhere ? `. ${serviceError!}` : `, or \`${anew}\` writes the unit anew or says why it can't.`));
+        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
+          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it ` +
+          'anew or says why it can\'t.'
+        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or \`${anew}\` writes ` +
+          'the unit anew or says why it can\'t.');
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
