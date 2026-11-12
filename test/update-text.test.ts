@@ -197,6 +197,31 @@ describe('the Restart dialog', () => {
   });
 });
 
+describe('before a switch, check says what going back can cost', () => {
+  const line = (running: string, restore: string) => `Going back after a switch keeps the newer data only if ${running} ` +
+    `can still read it. If it can't, going back means ${restore}, and what was lived since the switch is set aside.`;
+
+  test('each reader gets the line in its own spelling, before the notes', () => {
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS]) {
+      const lines = noticeLines(read, '0.12.1', true, ways);
+      const at = lines.indexOf(line('0.12.1', ways.restore));
+      expect({ reader: ways.restore, at: at >= 0, beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+        .toEqual({ reader: ways.restore, at: true, beforeNotes: true });
+    }
+  });
+
+  test("the Web UI's Restart dialog gives it too, above its button and before the notes", () => {
+    const lines = restartLines({ ...base, check: read, installed: '0.13.1' }) ?? [];
+    const at = lines.indexOf(line('0.12.1', PAGE_WAYS.restore));
+    expect({ at: at >= 0, beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+      .toEqual({ at: true, beforeNotes: true });
+  });
+
+  test('the banner leaves it out, as it leaves out the notes', () => {
+    expect(bannerOf({ ...base, check: read })?.line).not.toContain('Going back after a switch');
+  });
+});
+
 describe('each way named as its caller names it', () => {
   test("the page names its buttons where /update names its commands", () => {
     const status: UpdateStatus = {

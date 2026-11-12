@@ -254,7 +254,8 @@ for (const [kind, options] of [
     const root = 'root' in options ? null : installRunning0141(['0.15.0']).root;
     const description = toolDescription(residentHost({ ...options, root }));
     expect(description.length).toBeLessThanOrEqual(1_600);
-    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:', 'so you lose nothing',
+    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:',
+      'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way',
       'set aside, not deleted', '`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
       'The person who runs your host can\'t call this tool']) {
       expect(description).toContain(words);
