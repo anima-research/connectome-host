@@ -3019,8 +3019,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
   });
 
-  test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says, in place of the connection advice, that setup--discord checks it again, to the agent, and doctor, to the person', async () => {
-    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+  test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says, in place of the connection advice, that setup--discord checks it again, to the agent, and that setup\'s agent can check it with setup--discord, to the person', async () => {
+    const BUSY = ' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.';
     const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
     const CONNECTION = ' Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to ' +
       'check it again, or go on with it unchecked.';
@@ -3035,14 +3035,16 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord may be busy with tells the person to run doctor by the install command setup started its host with, and by connectome without one', async () => {
+  test('a token Discord may be busy with tells the person setup--discord checks it again, which runs before any service does, and names no doctor, whatever command setup started its host with', async () => {
     const busy = (async () => new Response('<html>busy</html>', { status: 503, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const page = (async () => Response.json({ message: 'Service Unavailable' }, { status: 503 })) as unknown as typeof fetch;
-    for (const [env, command] of [[{ CONNECTOME_SETUP_COMMAND: "'/srv/a b/connectome-host/connectome'" }, "'/srv/a b/connectome-host/connectome'"], [{}, 'connectome']] as const) {
+    for (const env of [{ CONNECTOME_SETUP_COMMAND: "'/srv/a b/connectome-host/connectome'" }, {}]) {
       for (const answer of [busy, page]) {
         const token = install({ asker: typed('a-busy-token'), fetch: answer, env });
         await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-        expect(token.shown.join('\n'), command).toContain(` It may be busy: \`${command} doctor\` checks the token again when it runs.`);
+        const said = token.shown.join('\n');
+        expect(said).toContain(' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.');
+        expect(said).not.toContain('doctor');
       }
     }
   });
@@ -3058,8 +3060,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then, in place of asking for it again, that setup--discord checks it again after any wait Discord asks, to the agent, and that doctor does, to the person', async () => {
-    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then, in place of asking for it again, that setup--discord checks it again after any wait Discord asks, to the agent, and that setup\'s agent can check it with setup--discord, to the person', async () => {
+    const BUSY = ' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.';
     const AGAIN = ' Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
     const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
     const WAIT = ' It asks for 3 s: call setup--discord once that has passed, which checks the stored token first.';

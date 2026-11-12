@@ -1095,13 +1095,13 @@ export class SetupModule implements Module {
     const token = await checkDiscordToken(value, {
       fetch: this.config.fetch, asking: () => this.config.show('Checking it with Discord.'),
     });
-    this.config.show(tokenLine(token, this.config.env.CONNECTOME_SETUP_COMMAND ?? 'connectome'));
+    this.config.show(tokenLine(token));
     return token;
   }
 }
 
 
-function tokenLine(token: TokenCheck, command: string): string {
+function tokenLine(token: TokenCheck): string {
   switch (token.kind) {
     case 'accepted': return `Discord accepted it: the bot is ${shown(token.name)}.`;
     case 'refused': return 'Discord refused it (401): nothing was stored.';
@@ -1112,10 +1112,10 @@ function tokenLine(token: TokenCheck, command: string): string {
           'between this machine and Discord may be answering in its place.';
       }
       return `Discord didn't say whether it works: it answered ${token.status}` +
-        `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${busyLine(command)}` : '');
+        `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
     case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
     case 'unrecognized':
-      return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${busyLine(command)}` : '');
+      return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
     case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
   }
 }
@@ -1199,7 +1199,7 @@ const CONNECTION = 'Tell the person: their connection to it is theirs to check.'
 const CHECK_KEY_AGAIN = 'Check it again with setup--check_model, or go on with it unchecked.';
 const ASK_TOKEN_AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
 
-const busyLine = (command: string) => `It may be busy: \`${command} doctor\` checks the token again when it runs.`;
+const BUSY_LINE = 'It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.';
 
 function readAgain(wait: number | undefined): string {
   return wait === undefined ? 'It may be busy: call setup--discord in a minute, which checks the stored token first.'
