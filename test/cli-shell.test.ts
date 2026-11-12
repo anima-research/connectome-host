@@ -7,6 +7,7 @@ import { COMMANDS } from '../src/cli/connectome.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import type { Ran, RunOptions } from '../src/cli/setup.js';
 import { shell, shellCommand, type ShellWorld } from '../src/cli/shell.js';
+import { SHOWN_FILE } from '../src/cli/shown.js';
 import { shellWord } from '../src/update/launcher.js';
 import { modeTest } from './mode-test.js';
 
@@ -140,7 +141,7 @@ test('shell install adds term-sessions-mcp 1.x in the directory that holds the i
   expect(check).toBeGreaterThan(add);
   expect(made.seen.options[check]!.cwd).toBe(dir);
   expect(made.seen.out).toEqual([
-    `Installing term-sessions-mcp@^1 in ${dir}, with Bun:`,
+    `Installing term-sessions-mcp@^1 in ${dir}, with Bun.`,
     `term-sessions-mcp 1.7.3 is installed in ${dir}.`,
     `A pty opens in ${dir}: node-pty ran /bin/echo in one, and what it printed came back. The resident's shell can run here. This command writes no recipe and sets up no service.`,
   ]);
@@ -166,7 +167,7 @@ test('another version of term-sessions-mcp is named, and 1.x installed in its pl
   expect(other.seen.ran.find((argv) => args(argv)[0] === 'add')).toEqual([process.execPath, '--no-env-file', 'add', 'term-sessions-mcp@^1']);
   expect(other.seen.out.slice(0, 3)).toEqual([
     `term-sessions-mcp 2.0.0 is in ${dir}, and the resident's shell is term-sessions-mcp 1.x, so this installs 1.x in its place.`,
-    `Installing term-sessions-mcp@^1 in ${dir}, with Bun:`,
+    `Installing term-sessions-mcp@^1 in ${dir}, with Bun.`,
     `term-sessions-mcp 1.7.3 is installed in ${dir}.`,
   ]);
 
@@ -317,7 +318,7 @@ test('a node-pty that opens no pty is installed again, its copy kept aside meanw
   expect(existsSync(join(dir, '.setup'))).toBe(false);
   expect(await runShell(root, ['install'], made)).toBe(0);
   expect(leftAtInstall).toBe(false);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't.`);
   expect(made.seen.ran.find((argv) => args(argv)[0] === 'install')).toEqual([process.execPath, '--no-env-file', 'install']);
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
   expect(readFileSync(built(dir), 'utf-8')).toBe('built by the install');
@@ -405,7 +406,7 @@ test('a pty check stopped at its 30 s limit says so, in the repair\'s line and i
     expect(await runShell(root, ['install'], made)).toBe(1);
     const check = made.seen.ran.findIndex((argv) => argv[0] === 'node' && argv[1] === '-e');
     expect(made.seen.options[check]!.timeoutMs).toBe(30_000);
-    expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (its check ran past its 30 s limit and was stopped), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't:`);
+    expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (its check ran past its 30 s limit and was stopped), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't.`);
     expect(made.seen.err[0]).toStartWith('The resident\'s shell runs on node-pty, and here it doesn\'t work: its check ran past its 30 s limit and was stopped. ');
   }
 });
@@ -571,13 +572,33 @@ test('on macOS, a node-pty with no prebuilt binaries gets no word about them in 
   expect(made.seen.err).toEqual([`The resident's shell runs on node-pty, and here it doesn't work: posix_spawnp failed. ${join(dir, 'package.json')} doesn't name term-sessions-mcp in its trustedDependencies, so Bun may not have run node-pty's install script at all. A resident without a shell needs none of this.`]);
 });
 
-test('an add that fails stops the command, saying its own lines say why and how to try again', async () => {
+test('an add that fails stops the command, saying Bun\'s own lines say why and how to try again', async () => {
   const { dir, root, line } = installed();
   const failed = world(dir, { added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } });
   expect(await runShell(root, ['install'], failed)).toBe(1);
-  expect(failed.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (exit 1), so the resident's shell isn't installed. Its own lines above say why. Once that's put right, run \`${line}\` again.`]);
+  expect(failed.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (exit 1), so the resident's shell isn't installed. Bun's own lines say why. Once that's put right, run \`${line}\` again.`]);
   expect(failed.seen.ran.some((argv) => argv[0] === 'node' && argv[1] === '-e')).toBe(false);
   const cut = world(dir, { added: { status: null, stdout: '', stderr: '', signal: 'SIGTERM' } });
   expect(await runShell(root, ['install'], cut)).toBe(1);
   expect(cut.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (it was ended by SIGTERM), so the resident's shell isn't installed. Run \`${line}\` again to try once more.`]);
+});
+
+test('where setup\'s agent names a file for the person, each line shell install says goes there too, in the order said', async () => {
+  const { dir, root, line } = installed();
+  const said = join(directory(), 'said');
+  writeFileSync(said, '');
+  const env = { PATH: '/usr/bin:/bin', HOME: dir, [SHOWN_FILE]: said };
+  const again = world(dir, { pty: [BROKEN, OK] }, { env });
+  expect(await runShell(root, ['install'], again)).toBe(0);
+  expect(again.seen.out).toHaveLength(4);
+  expect(readFileSync(said, 'utf-8')).toBe(`${text(again.seen.out)}\n`);
+  writeFileSync(said, '');
+  const fresh = installed();
+  const failed = world(fresh.dir, { added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } }, { env });
+  expect(await runShell(fresh.root, ['install'], failed)).toBe(1);
+  expect(readFileSync(said, 'utf-8')).toBe(`${failed.seen.out[0]}\n${failed.seen.err[0]}\n`);
+  writeFileSync(said, '');
+  const usage = world(dir, {}, { env });
+  expect(await runShell(root, ['remove'], usage)).toBe(2);
+  expect(readFileSync(said, 'utf-8')).toBe(`Usage: ${line}\n`);
 });

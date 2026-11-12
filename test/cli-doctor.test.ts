@@ -90,7 +90,7 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
             return;
           }
           if (answers === SILENT) continue;
-          const data = answers[msg.op!];
+          const data = msg.op === 'health' && !('health' in answers) ? HEALTH : answers[msg.op!];
           socket.write(JSON.stringify(data === undefined
             ? { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: false, error: `unknown panel op: ${msg.op}` }
             : { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: true, data }) + '\n');
@@ -102,6 +102,16 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
 }
 
 const SILENT: Record<string, unknown> = {};
+
+const STARTED = Date.parse('2026-11-12T05:00:00.000Z');
+const HEALTH = {
+  at: '2026-11-12T06:00:00.000Z',
+  uptimeSec: 3600,
+  agents: [{
+    name: 'ember', status: 'idle', consecutiveInferenceFailures: 0,
+    lastInference: { startedAt: STARTED, endedAt: STARTED + 4_000 }, refusalStats: null,
+  }],
+};
 
 const STANDIN_BESIDE = { tokens: null, source: 'preview_failed', error: 'the stand-in host builds no request' };
 const COUNTED = {
@@ -530,6 +540,25 @@ describe('connectome doctor', () => {
     } finally {
       if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+
+  test('a stored secret\'s value as a command run in doctor\'s own environment reads it is withheld too', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MY_TOKEN'] });
+    writeFileSync(join(at.work, '.env.local'), 'MY_TOKEN=${DOCTOR_ONLY_PREFIX}z9suffix\n');
+    const saved = process.env.DOCTOR_ONLY_PREFIX;
+    process.env.DOCTOR_ONLY_PREFIX = 'p7-prefix-';
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+        checkService: async () => ({ passed: true, lines: ['The unit said: token p7-prefix-z9suffix refused.'] }),
+      }));
+      const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
+      expect(withheld).toContainEqual(['MY_TOKEN', 'p7-prefix-z9suffix']);
+      expect(r.out).toContain('token <MY_TOKEN> refused');
+      expect(r.out).not.toContain('p7-prefix-');
+    } finally {
+      if (saved === undefined) delete process.env.DOCTOR_ONLY_PREFIX;
+      else process.env.DOCTOR_ONLY_PREFIX = saved;
     }
   });
 
@@ -1215,11 +1244,96 @@ describe('connectome doctor', () => {
   test('a host that never answers a check is a problem, and doctor still finishes', async () => {
     const at = install();
     const r = await withHost(at, SILENT, async (host) => ({ ...(await run(at, { hostLimitMs: 300 })), received: host.received }));
-    expect(r.received).toEqual(['count-check', 'shell-check']);
+    expect(r.received).toEqual(['count-check', 'health', 'shell-check']);
     expect(r.out).toMatch(/✗.*didn't answer the token counts within 0\.3 s/);
+    expect(r.out).toMatch(/✗.*didn't answer the counts of its model calls within 0\.3 s/);
     expect(r.out).toMatch(/✗.*didn't answer the shell's call/);
     expect(r.out).toContain('ember (900)');
     expect(r.status).toBe(1);
+  });
+
+  test('the recipe\'s agent\'s failed turns are a problem with when and how many, never with the failure\'s text; its refusals are a line with how many, since when, the last one\'s time and category; and a refusal in its newest turn is a line', async () => {
+    const at = install();
+    const failedAt = STARTED + 60_000;
+    const lastAt = STARTED + 50_000;
+    const health = { ...HEALTH, agents: [{
+      ...HEALTH.agents[0], consecutiveInferenceFailures: 2,
+      lastInference: { startedAt: STARTED + 40_000, endedAt: STARTED + 41_000, failedAt, lastError: 'provider said: overloaded_error id req_0451' },
+      refusalStats: { total: 3, byCategory: { cyber: 3 }, lastAt, lastCategory: 'cyber' },
+    }] };
+    const r = await withHost(at, { ...HEALTHY_HOST, health }, () => run(at));
+    const lines = r.out.split('\n');
+    const from = lines.indexOf('Model calls');
+    expect(from).toBeGreaterThan(lines.indexOf('Token counts'));
+    expect(lines.slice(from + 1, from + 4)).toEqual([
+      `  ✗ ember's last turn's model call failed at ${new Date(failedAt).toISOString()}, 2 in a row.`,
+      `  ember was refused 3 times since this host started or last switched session, the last at ${new Date(lastAt).toISOString()}, in the category cyber.`,
+      '  ember\'s newest turn met a refusal, and the host\'s counts don\'t show whether a retry in that turn then answered.',
+    ]);
+    expect(r.out).not.toContain('overloaded_error');
+    expect(r.status).toBe(1);
+  });
+
+  test('refusals are never a problem: a resident refused on every turn shows them and no problem for them, and a category that isn\'t one short word isn\'t printed', async () => {
+    const at = install();
+    const lastAt = STARTED + 30_000;
+    const health = { ...HEALTH, agents: [{
+      ...HEALTH.agents[0], lastInference: { startedAt: STARTED + 29_000, endedAt: STARTED + 31_000 },
+      refusalStats: { total: 1, byCategory: { 'see https://example.com': 1 }, lastAt, lastCategory: 'see https://example.com' },
+    }] };
+    const r = await withHost(at, { ...HEALTHY_HOST, health }, () => run(at));
+    expect(r.out).toContain('  ✓ ember: no failed turns in a row, by the host\'s counts.');
+    expect(r.out).toContain(`  ember was refused 1 time since this host started or last switched session, the last at ${new Date(lastAt).toISOString()}, in a category the provider gave in other words.`);
+    expect(r.out).toContain('ember\'s newest turn met a refusal');
+    expect(r.out).not.toContain('example.com');
+    expect(r.status).toBe(0);
+  });
+
+  test('a refusal before the newest turn began isn\'t said of the newest turn, the framework\'s unknown is said as no category, and with none there is no refusals line', async () => {
+    const at = install();
+    const earlier = { ...HEALTH, agents: [{
+      ...HEALTH.agents[0], lastInference: { startedAt: STARTED + 10_000, endedAt: STARTED + 12_000 },
+      refusalStats: { total: 1, byCategory: { unknown: 1 }, lastAt: STARTED + 9_999, lastCategory: 'unknown' },
+    }] };
+    const r = await withHost(at, { ...HEALTHY_HOST, health: earlier }, () => run(at));
+    expect(r.out).toContain(`ember was refused 1 time since this host started or last switched session, the last at ${new Date(STARTED + 9_999).toISOString()}, with no category given.`);
+    expect(r.out).not.toContain('newest turn');
+    const clean = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(clean.out).toContain('✓ ember: no failed turns in a row');
+    expect(clean.out).not.toContain('was refused');
+  });
+
+  test('with no failed turn in a row, the recipe\'s agent\'s line holds whether it has run no turn yet or a turn failed before one completed', async () => {
+    const at = install();
+    const fresh = await withHost(at, { ...HEALTHY_HOST, health: { ...HEALTH, agents: [{ ...HEALTH.agents[0], lastInference: null }] } }, () => run(at));
+    const recovered = await withHost(at, { ...HEALTHY_HOST, health: { ...HEALTH, agents: [{
+      ...HEALTH.agents[0], lastInference: { startedAt: STARTED + 20_000, endedAt: STARTED + 21_000, failedAt: STARTED + 10_000 },
+    }] } }, () => run(at));
+    for (const r of [fresh, recovered]) {
+      const lines = r.out.split('\n');
+      expect(lines[lines.indexOf('Model calls') + 1]).toBe('  ✓ ember: no failed turns in a row, by the host\'s counts.');
+      expect(r.status).toBe(0);
+    }
+  });
+
+  test('another agent gets lines only with a failed turn or a refusal, and a recipe\'s agent the host doesn\'t list is said', async () => {
+    const at = install();
+    const quiet = { name: 'ember-reader', status: 'idle', consecutiveInferenceFailures: 0, lastInference: null, refusalStats: null };
+    const failing = { name: 'helper-1', status: 'idle', consecutiveInferenceFailures: 1, lastInference: { startedAt: STARTED, failedAt: STARTED + 5_000 }, refusalStats: null };
+    const r = await withHost(at, { ...HEALTHY_HOST, health: { ...HEALTH, agents: [HEALTH.agents[0], quiet, failing] } }, () => run(at));
+    expect(r.out).toContain(`✗ helper-1's last turn's model call failed at ${new Date(STARTED + 5_000).toISOString()}, 1 in a row.`);
+    expect(r.out).not.toContain('ember-reader');
+    const elsewhere = await withHost(at, { ...HEALTHY_HOST, health: { ...HEALTH, agents: [quiet] } }, () => run(at));
+    expect(elsewhere.out).toContain('  The host\'s counts list no agent named ember.');
+  });
+
+  test('with no host the counts aren\'t asked, and an answer doctor can\'t read is a problem', async () => {
+    const at = install();
+    const none = await run(at);
+    expect(none.out).toContain('  The host\'s counts of its model calls weren\'t asked: that needs the host running.');
+    const odd = await withHost(at, { ...HEALTHY_HOST, health: { agents: 'ember' } }, () => run(at));
+    expect(odd.out).toMatch(/✗ The counts of its model calls failed: /);
+    expect(odd.out).toContain('ladder args');
   });
 
   test('a host whose connection closes under a check is a problem, and doctor still finishes', async () => {

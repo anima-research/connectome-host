@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
   EventResponse,
@@ -17,11 +18,15 @@ import {
   envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
+import {
+  botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL, type DiscordFailure,
+} from '../setup/discord-read.js';
 import { originOf } from '../setup/key-check.js';
 import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAnswer } from '../setup/provider-key.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { writeJsonAtomic } from '../update/contract.js';
 import { readSetupState } from '../setup/state.js';
+import { SHOWN_FILE } from '../cli/shown.js';
 
 export interface SecretAsker {
   ask(name: string, purpose: string): Promise<string | null>;
@@ -228,6 +233,56 @@ function shownCommand(command: string, secrets: Secret[]): string[] {
   return redacted(command, secrets).split('\n').map(shown);
 }
 
+const MEMBERS_SHOWN = 10;
+
+interface DiscordMember { user: { id: string; username: string; global_name?: string | null }; nick?: string | null }
+
+function memberOf(member: DiscordMember): { id: string; username: string; displayName: string | null; nickname: string | null } {
+  return { id: member.user.id, username: member.user.username, displayName: member.user.global_name ?? null, nickname: member.nick ?? null };
+}
+
+function tokenFailure(check: Exclude<TokenCheck, { kind: 'accepted' } | { kind: 'unsendable' }>): DiscordFailure {
+  const path = '/users/@me';
+  switch (check.kind) {
+    case 'refused': return { kind: 'refused', path };
+    case 'unanswered': return { kind: 'unanswered', path, timedOut: false, why: check.why };
+    case 'redirected': return { kind: 'redirected', path, status: check.status };
+    case 'unrecognized': return { kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300 };
+    case 'answered': return { kind: 'answered', path, status: check.status, said: check.said, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
+  }
+}
+
+function discordNote(failure: DiscordFailure): string {
+  const { path } = failure;
+  const again = 'Call setup--discord again in a minute, and if it answers the same, tell the person what it says.';
+  const between = 'Tell the person: something between this machine and Discord may be answering in its place.';
+  switch (failure.kind) {
+    case 'refused':
+      return `Discord refused the bot token stored as ${DISCORD_TOKEN} (401), so the read stopped there. Ask the person for ` +
+        'the token again with setup--ask_secret.';
+    case 'unanswered':
+      return `Discord couldn't be asked GET ${path} (${failure.timedOut ? 'it gave no answer in time' : failure.why}), so ` +
+        'the read stopped there. Call setup--discord again, and if it fails the same way, tell the person: their connection ' +
+        'to discord.com is theirs to check.';
+    case 'redirected':
+      return `Discord answered ${failure.status} to GET ${path}, a redirect, which setup doesn't follow with the token, so ` +
+        `the read stopped there. ${between}`;
+    case 'unrecognized':
+      return `Discord answered ${failure.ok ? '' : `${failure.status} to `}GET ${path} with something other than JSON, so ` +
+        `the read stopped there. ${failure.status === 429 || failure.status >= 500 ? again : between}`;
+    case 'answered':
+      return `Discord answered ${failure.status} to GET ${path}` +
+        `${failure.said === null ? '' : `: ${failure.said}`}${failure.code === undefined ? '' : ` (code ${failure.code})`}, ` +
+        'so the read stopped there. ' +
+        (failure.retryAfter !== undefined
+          ? `It asks for ${Math.ceil(failure.retryAfter)} s: call setup--discord again once that has passed.`
+          : failure.status === 429 || failure.status >= 500 ? again
+            : path.startsWith('/guilds/') && (failure.status === 403 || failure.status === 404)
+              ? 'The bot may no longer be in that server: call setup--discord with no input to see the servers it\'s in now.'
+              : 'Tell the person what it says.');
+  }
+}
+
 function failed(error: string): ToolResult {
   return { success: false, error, isError: true };
 }
@@ -357,6 +412,23 @@ export class SetupModule implements Module {
           required: ['name', 'model'],
         },
       },
+      {
+        name: 'discord',
+        description:
+          'Read from Discord, with the bot token stored in the install\'s .env as DISCORD_TOKEN, what the person would ' +
+          'otherwise copy by hand: the application\'s id, which the invite link needs; each server the bot is in, with ' +
+          'its owner; and each server\'s text channels under their categories, each with whether the bot can view it ' +
+          'and send there. Given server and username, it gives instead the members of that server whose Discord ' +
+          'username or server nickname starts with username, up to ten: Discord matches no display name. The token\'s ' +
+          'value is never shown.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'A server\'s id, as this tool gives it.' },
+            username: { type: 'string', description: 'The start of a member\'s Discord username or server nickname.' },
+          },
+        },
+      },
     ];
   }
 
@@ -404,6 +476,15 @@ export class SetupModule implements Module {
         this.checks.add(ended);
         void ended.then(() => { this.checks.delete(ended); });
         return check;
+      });
+    }
+    if (call.name === 'discord') {
+      return this.afterAsked(() => {
+        const read = this.discord(call.input as { server?: unknown; username?: unknown });
+        const ended = read.then(() => {}, () => {});
+        this.checks.add(ended);
+        void ended.then(() => { this.checks.delete(ended); });
+        return read;
       });
     }
     if (call.name === 'finished') return this.finished();
@@ -478,6 +559,19 @@ export class SetupModule implements Module {
     const out = new Capture(overlap);
     const err = new Capture(overlap);
     const env = this.commandEnv(atLaunch.names, atLaunch.values);
+    const said = mkdtempSync(join(tmpdir(), 'connectome-setup-said-'));
+    try {
+      const file = join(said, 'said');
+      writeFileSync(file, '', { mode: 0o600 });
+      return await this.ranAndAnswered(command, limit, { ...env, [SHOWN_FILE]: file }, out, err, file);
+    } finally {
+      rmSync(said, { recursive: true, force: true });
+    }
+  }
+
+  private async ranAndAnswered(
+    command: string, limit: number, env: Record<string, string>, out: Capture, err: Capture, said: string,
+  ): Promise<ToolResult> {
     const child = spawn('bash', ['--norc', '-c', command], {
       cwd: this.config.dir,
       env,
@@ -554,6 +648,9 @@ export class SetupModule implements Module {
       const ending = `setup--run's command ended (exit ${ended.code ?? ended.signal})`;
       const what = notes.length > 0 ? `${ending}. ${notes.join(' ')} Its output isn't shown`
         : `${ending}, and its output isn't shown`;
+      if (statSync(said, { throwIfNoEntry: false })?.size) {
+        this.config.show('What it said for you isn\'t shown, since which values are secret isn\'t known.');
+      }
       if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
       return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
         'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
@@ -562,6 +659,8 @@ export class SetupModule implements Module {
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
     const stderr = err.result(secrets, replaced);
+    this.showSaid(said, secrets, stoppedAtLimit ? `it was stopped at its ${limit / 1000} s limit`
+      : ended.signal ? `it was ended by ${ended.signal}` : null);
     const hidden = guessed.filter((name) => replaced.has(name)).sort();
     if (hidden.length > 0) {
       notes.push(`${join(this.config.dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is ` +
@@ -582,6 +681,21 @@ export class SetupModule implements Module {
       replaced: [...replaced].sort(),
     };
     return { success: true, data };
+  }
+
+  private showSaid(file: string, secrets: Secret[], unfinished: string | null): void {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf-8');
+    } catch (error) {
+      const why = (error as NodeJS.ErrnoException).code ?? (error as Error).message;
+      this.config.show(`What it said for you can't be shown: ${shown(file)} can't be read (${why}).`);
+      return;
+    }
+    if (text === '') return;
+    this.config.show('It said:');
+    for (const line of redacted(text, secrets).replace(/\n$/, '').split('\n')) this.config.show(`  ${shown(line)}`);
+    if (unfinished !== null) this.config.show(`It didn't finish: ${unfinished}.`);
   }
 
   private async askSecret(input: { name?: unknown; purpose?: unknown }): Promise<ToolResult> {
@@ -719,6 +833,79 @@ export class SetupModule implements Module {
     return key;
   }
 
+  private async discord(input: { server?: unknown; username?: unknown }): Promise<ToolResult> {
+    if (this.stopping) return failed('The host is stopping, so setup--discord reads nothing, and calling it again won\'t change that.');
+    const { server, username } = input;
+    const searching = server !== undefined || username !== undefined;
+    if (searching && (typeof server !== 'string' || !/^\d+$/.test(server) || typeof username !== 'string' || username.trim() === '')) {
+      return failed('setup--discord searches members given both server, a server\'s id as it gives them, and username, ' +
+        'the start of a username or server nickname. Call it with neither to read the servers and channels.');
+    }
+    const envFile = join(this.config.dir, '.env');
+    let env: Map<string, string>;
+    try {
+      const link = envLink(envFile);
+      if (link) return linked('Nothing was read', link);
+      const outside = envForm(envFile);
+      if (outside) return failed(`Nothing was read: ${outside.message}. Ask the person to put that right, then call again.`);
+      env = readEnvFile(envFile);
+    } catch (error) {
+      return this.damaged(error, 'Nothing was read');
+    }
+    const token = env.get(DISCORD_TOKEN);
+    if (token === undefined || token === '') {
+      return failed(`Nothing is stored as ${DISCORD_TOKEN} in ${envFile}, so Discord can't be read. Ask the person for the ` +
+        'bot\'s token with setup--ask_secret first.');
+    }
+    const fetchFn = this.config.fetch ?? fetch;
+    const bot = await checkDiscordToken(token, { fetch: fetchFn });
+    if (bot.kind === 'unsendable') {
+      return failed(`The token stored as ${DISCORD_TOKEN} holds a character a request header can't carry, so it can't be a ` +
+        'bot token: ask the person for it again with setup--ask_secret.');
+    }
+    if (bot.kind !== 'accepted') return failed(discordNote(tokenFailure(bot)));
+    const reader = discordReader(token, { fetch: fetchFn });
+    try {
+      if (searching) {
+        let hide: Secret[];
+        try {
+          hide = this.secrets().values;
+        } catch (error) {
+          return this.damaged(error, 'Nothing was read');
+        }
+        this.config.show(`Searching a Discord server's members for ${shown(redacted(username as string, hide))}.`);
+        const found = await reader.get<DiscordMember[]>(
+          `/guilds/${server}/members/search?query=${encodeURIComponent(username as string)}&limit=${MEMBERS_SHOWN}`);
+        return { success: true, data: { server, username, members: found.map(memberOf) } };
+      }
+      this.config.show('Reading the bot\'s servers and channels from Discord.');
+      const application = await reader.get<{ id: string }>('/applications/@me');
+      const servers = [];
+      for (const guild of await botGuilds(reader, bot.id)) {
+        const { owner_id: ownerId } = await reader.get<{ owner_id: string }>(`/guilds/${guild.id}`);
+        const owner = await reader.get<DiscordMember>(`/guilds/${guild.id}/members/${ownerId}`);
+        const byId = new Map(guild.channels.map((c) => [c.id, c] as const));
+        const channels = guild.channels.filter((c) => TEXT_CHANNEL_TYPES.includes(c.type))
+          .map((c) => {
+            const category = c.parent_id ? byId.get(c.parent_id) : undefined;
+            const perms = channelPermissions(guild, bot.id, c);
+            return {
+              id: c.id, name: c.name, category: category?.name ?? null,
+              view: (perms & VIEW_CHANNEL) !== 0n, send: (perms & VIEW_CHANNEL) !== 0n && (perms & SEND_MESSAGES) !== 0n,
+              at: [category?.position ?? -1, c.position ?? 0] as const,
+            };
+          })
+          .sort((a, b) => a.at[0] - b.at[0] || a.at[1] - b.at[1])
+          .map(({ at: _at, ...channel }) => channel);
+        servers.push({ id: guild.id, name: guild.name, owner: memberOf(owner), channels });
+      }
+      return { success: true, data: { application: { id: application.id }, bot: { id: bot.id, name: bot.name }, servers } };
+    } catch (error) {
+      if (error instanceof DiscordFailed) return failed(discordNote(error.failure));
+      throw error;
+    }
+  }
+
   private async checkModel(input: { name?: unknown; model?: unknown }): Promise<ToolResult> {
     if (this.stopping) return failed('The host is stopping, so setup--check_model checks nothing, and calling it again won\'t change that.');
     const { name, model } = input;
@@ -821,7 +1008,7 @@ function tokenLine(token: TokenCheck): string {
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a token: nothing was stored.';
     case 'answered':
       return `Discord didn't say whether it works: it answered ${token.status}` +
-        `${token.said === null ? '' : ` (${shown(token.said)})`}.`;
+        `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${BUSY}` : '');
     case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
     case 'unrecognized':
       return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY}` : '');
@@ -889,7 +1076,7 @@ function tokenNote(token: TokenCheck): string {
     case 'accepted': return `. Discord accepted it: the bot is ${token.name} (${token.id}).`;
     case 'answered':
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
-        ASK_TOKEN_AGAIN;
+        (busy(token.status) ? BUSY : ASK_TOKEN_AGAIN);
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected':
       return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;

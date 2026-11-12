@@ -267,6 +267,11 @@ function costLines(costs: Cost[]): string[] {
   return lines;
 }
 
+function goingBackCost(running: string, ways: UpdateWays): string {
+  return `Going back after a switch keeps the newer data only if ${running} can still read it. If it can't, going back ` +
+    `means ${ways.restore}, and what was lived since the switch is set aside.`;
+}
+
 export function noticeLines(
   check: ReadCheck, running: string, install: boolean, ways: UpdateWays = COMMAND_WAYS, installed: string | null = null,
 ): string[] {
@@ -277,6 +282,7 @@ export function noticeLines(
   if (check.bunFloorUnmet !== null) {
     lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: ${bunFirst(ways)}`);
   }
+  if (install) lines.push(goingBackCost(running, ways));
   lines.push(`Notes: ${notesUrl(check.candidate)}`);
   lines.push(!install ? notAnInstall(ways)
     : installed === check.candidate ? `To take it: ${ways.restart}.` : `To take it: ${ways.install}, then ${ways.restart}.`);
@@ -481,6 +487,7 @@ export function restartLines(status: UpdateStatus): string[] | null {
     lines.push(`This host is quiesced${status.operatorQuiesced ? ` (${status.operatorQuiesced})` : ''}, and comes back ` +
       'quiesced.');
   }
+  lines.push(goingBackCost(status.running, PAGE_WAYS));
   lines.push(`Notes: ${notesUrl(to)}`);
   return lines;
 }
@@ -555,7 +562,8 @@ export function bannerOf(status: UpdateStatus): Banner | null {
   const check = status.check;
   if (check?.ok && check.candidate !== null) {
     const notice = noticeLines(check, status.running, status.install, ways)
-      .filter((line) => !line.startsWith('Notes: ') && !line.startsWith('To take it: '));
+      .filter((line) => !line.startsWith('Notes: ') && !line.startsWith('To take it: ') &&
+        line !== goingBackCost(status.running, ways));
     return {
       line: notice.join(' '),
       ways: updateOffered(status) ? ['install'] : [],

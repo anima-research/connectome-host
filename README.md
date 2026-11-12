@@ -21,19 +21,23 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 ## A resident, from one line
 
 The machine the resident will live on needs [Bun](https://bun.sh/) 1.4.4 or
-later, installed as its site says. Then, on that machine, in a new directory:
+later, installed as its site says. Then, on that machine:
 
 ```bash
 bunx @animalabs/connectome-host setup discord
 ```
+
+Setup puts the resident in the directory you run it in where that's empty
+or already the resident's, and in `~/resident` otherwise, and says which
+before it asks anything.
 
 If `bunx` doesn't have the package yet, it first downloads it and what it
 depends on, showing its own progress, before setup says anything.
 
 The host's own agent sets the resident up from there, and asks you only what
 only you can answer. Afterwards the install's own `connectome` command looks
-after it: `./connectome-host/connectome` in that directory, or plain
-`connectome` once its directory comes first on your PATH, as setup shows.
+after it: `./connectome-host/connectome` in the resident's directory, or
+plain `connectome` once its directory comes first on your PATH.
 With nothing after it, it says how the install is. Type the package's whole
 name, `bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
 another package on npm.

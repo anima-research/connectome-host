@@ -245,16 +245,22 @@ const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs a
   'command of theirs: their check gives them a link to the notes, and only your cancel disarms a restart or Go back you asked for, though their own restart or back ' +
   'goes ahead in its place.';
 
-for (const [kind, options] of [
-  ['headless with an install', {}],
-  ['headless with no install of its own', { root: null }],
-  ['run in a terminal', { mode: 'terminal' as const }],
+// A host whose own command isn't first on the PATH names it by its path.
+const LONG_COMMAND = '/home/alice/resident/connectome-host/connectome';
+
+for (const [kind, options, command] of [
+  ['headless with an install', {}, 'connectome'],
+  ['headless with an install whose own command is a long path', { installCommand: LONG_COMMAND }, LONG_COMMAND],
+  ['headless with no install of its own', { root: null }, ''],
+  ['run in a terminal', { mode: 'terminal' as const }, ''],
 ] as const) {
-  test(`on a host ${kind}, the update tool's description holds what choosing an action needs, in at most 1,600 characters`, () => {
+  test(`on a host ${kind}, the update tool's description holds what choosing an action needs, in at most 1,600 characters plus the install's own command`, () => {
     const root = 'root' in options ? null : installRunning0141(['0.15.0']).root;
     const description = toolDescription(residentHost({ ...options, root }));
-    expect(description.length).toBeLessThanOrEqual(1_600);
-    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:', 'so you lose nothing',
+    if (command !== '') expect(description).toContain(`their own command is \`${command} update\``);
+    expect(description.length).toBeLessThanOrEqual(1_600 + command.length);
+    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:',
+      'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way',
       'set aside, not deleted', '`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
       'The person who runs your host can\'t call this tool']) {
       expect(description).toContain(words);

@@ -4,6 +4,7 @@ import { bunBelowFloor } from '../bun-floor.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { typedCommand } from './install-command.js';
+import { shownToPerson } from './shown.js';
 import {
   SETUP_BUN_FLOOR, SHELL_NODE_TOP, SERVERS, declaredDependencies, ended, envFileRefusal, installedVersion,
   packageJson, realWorld, withoutDotEnv, withoutKeys, type SetupWorld,
@@ -27,7 +28,8 @@ export const shellCommand: CliCommand = {
   run: (ctx) => shell(ctx),
 };
 
-export async function shell(ctx: CliContext, world: ShellWorld = realWorld()): Promise<number> {
+export async function shell(given: CliContext, world: ShellWorld = realWorld()): Promise<number> {
+  const ctx = shownToPerson(given, world.env);
   const line = `${typedCommand(ctx.root!, world.env.PATH)} shell install`;
   if (ctx.argv.length !== 1 || ctx.argv[0] !== 'install') {
     ctx.err(`Usage: ${line}`);
@@ -103,12 +105,12 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
       out(`${SHELL} ${found} is in ${dir}, and the resident's shell is ${SHELL} 1.x, so this installs 1.x in its place.`);
     }
     const spec = `${SHELL}@${SHELL_RANGE}`;
-    out(`Installing ${spec} in ${dir}, with Bun:`);
+    out(`Installing ${spec} in ${dir}, with Bun.`);
     const added = await world.run([world.bun.path, '--no-env-file', 'add', spec], { cwd: dir, env, show: true });
     if (added.status !== 0) {
       err(`\`bun --no-env-file add ${spec}\` didn't finish (${ended(added)}), so the resident's shell isn't installed.` +
         (added.status === null ? ` Run \`${line}\` again to try once more.`
-          : ` Its own lines above say why. Once that's put right, ${again}.`));
+          : ` Bun's own lines say why. Once that's put right, ${again}.`));
       return 1;
     }
     const now = installedVersion(dir, SHELL);
@@ -122,7 +124,7 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     const ptyDir = nodePtyDir(dir);
     out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
       `this installs it again, keeping the copy it has at ${aside} until the new one works, and putting it back if ` +
-      'it doesn\'t:');
+      'it doesn\'t.');
     mkdirSync(dirname(aside), { recursive: true, mode: 0o700 });
     if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
     else if (existsSync(ptyDir)) renameSync(ptyDir, aside);

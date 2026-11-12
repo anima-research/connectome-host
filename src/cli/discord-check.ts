@@ -1,13 +1,14 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { checkDiscordToken, DISCORD_API, discordUserAgent } from '../setup/discord-token.js';
+import {
+  botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL, type Channel,
+  type DiscordFailure,
+} from '../setup/discord-read.js';
+import { checkDiscordToken } from '../setup/discord-token.js';
 
-const ADMINISTRATOR = 1n << 3n;
-const VIEW_CHANNEL = 1n << 10n;
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
 const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
 const GUILD_CATEGORY = 4;
-const GUILD_PAGE = 200;
 const REQUEST_LIMIT_MS = 15_000;
 
 export interface DiscordCheck {
@@ -15,9 +16,7 @@ export interface DiscordCheck {
   problems: string[];
 }
 
-interface Overwrite { id: string; type: number; allow: string; deny: string }
-interface Channel { id: string; name: string; type: number; parent_id?: string | null; permission_overwrites?: Overwrite[] }
-interface Guild { id: string; name: string; visible: Channel[]; ids: Set<string> }
+interface Guild { id: string; name: string; visible: Channel[]; ids: Set<string>; unsendable: Set<string> }
 interface Filters { guildIds: string[]; guildChannels: Record<string, string[]> }
 
 class DiscordAnswer extends Error {}
@@ -66,7 +65,6 @@ export async function checkDiscord(
       `\`connectome setup discord\` stores it trimmed in ${join(options.workingDir, '.env')}, which is that place unless ` +
       `the server's entry gives DISCORD_TOKEN a value itself, or ${BEFORE_ENV_FILE}.`);
   }
-  const userAgent = discordUserAgent();
   const limitMs = options.requestLimitMs ?? REQUEST_LIMIT_MS;
   const unchecked = 'so the Discord checks after it weren\'t made';
   const again = `${unchecked}: run connectome doctor again`;
@@ -81,56 +79,39 @@ export async function checkDiscord(
     'mcpl-servers.json and the agent overlay take it as written, a "${DISCORD_TOKEN}" included, and an overlay ' +
     'entry or mcpl-servers.json\'s replaces a recipe entry\'s env. Then restart the service.';
   const refused = `Discord refused the bot token the server is given as DISCORD_TOKEN (401), ${unchecked}. ${source}`;
-  const get = async <T>(path: string): Promise<T> => {
-    let res: Response;
-    let text: string;
-    try {
-      res = await options.fetch(DISCORD_API + path, {
-        headers: { authorization: `Bot ${token}`, 'user-agent': userAgent },
-        signal: AbortSignal.timeout(limitMs),
-        redirect: 'manual',
-      });
-      text = await res.text();
-    } catch (error) {
-      const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      throw new DiscordAnswer(`Discord ${timedOut ? `didn't answer GET ${path} within ${limitMs / 1000} s` : `couldn't be asked GET ${path}: ${errorText(error)}`}, ${reach}.`);
+  const reader = discordReader(token, { fetch: options.fetch, limitMs });
+  const wordsFor = (failure: DiscordFailure): string => {
+    const { path } = failure;
+    switch (failure.kind) {
+      case 'unanswered':
+        return `Discord ${failure.timedOut ? `didn't answer GET ${path} within ${limitMs / 1000} s` : `couldn't be asked GET ${path}: ${failure.why}`}, ${reach}.`;
+      case 'redirected':
+        return `Discord answered ${failure.status} to GET ${path}, a redirect, which doctor doesn't follow with ` +
+          `the token, ${unchecked}. ${between}`;
+      case 'unrecognized':
+        return failure.ok
+          ? `Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`
+          : `Discord answered ${failure.status} to GET ${path} with something other than JSON, ` +
+            `${failure.status === 429 || failure.status >= 500 ? again : unchecked}. ${between}`;
+      case 'refused':
+        return refused;
+      case 'answered': {
+        const wait = failure.retryAfter === undefined ? undefined : waited(unchecked, failure.retryAfter);
+        return `Discord answered ${failure.status} to GET ${path}` +
+          (failure.said !== null ? `: ${failure.said}${failure.code !== undefined ? ` (code ${failure.code})` : ''}` : ', with no message') +
+          `, ${wait ?? (failure.status === 429 || failure.status >= 500 ? again : unchecked)}.` +
+          (failure.status === 403 || failure.status === 404
+            ? path.startsWith('/guilds/') ? ` ${LISTED}` : path === '/applications/@me' ? ` ${between}` : ''
+            : '');
+      }
     }
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = undefined;
-    }
-    if (res.status >= 300 && res.status < 400) {
-      throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}, a redirect, which doctor doesn't follow with ` +
-        `the token, ${unchecked}. ${between}`);
-    }
-    if (body === undefined) {
-      throw new DiscordAnswer(res.ok
-        ? `Discord answered GET ${path} with something other than JSON, ${unchecked}. ${between}`
-        : `Discord answered ${res.status} to GET ${path} with something other than JSON, ` +
-          `${res.status === 429 || res.status >= 500 ? again : unchecked}. ${between}`);
-    }
-    if (res.status === 401) throw new DiscordAnswer(refused);
-    const said = body as { message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
-    if (!res.ok) {
-      const wait = res.status === 429 && typeof said?.retry_after === 'number' && Number.isFinite(said.retry_after)
-        ? waited(unchecked, said.retry_after) : undefined;
-      throw new DiscordAnswer(`Discord answered ${res.status} to GET ${path}` +
-        (typeof said?.message === 'string' ? `: ${said.message}${said.code !== undefined ? ` (code ${String(said.code)})` : ''}` : ', with no message') +
-        `, ${wait ?? (res.status === 429 || res.status >= 500 ? again : unchecked)}.` +
-        (res.status === 403 || res.status === 404
-          ? path.startsWith('/guilds/') ? ` ${LISTED}` : path === '/applications/@me' ? ` ${between}` : ''
-          : ''));
-    }
-    return body as T;
   };
 
   try {
     const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source });
     lines.push(`✓ The token in DISCORD_TOKEN works: the bot is ${bot.name} (${bot.id}).`);
 
-    const app = await get<{ flags?: number }>('/applications/@me');
+    const app = await reader.get<{ flags?: number }>('/applications/@me');
     if (((app.flags ?? 0) & (GATEWAY_MESSAGE_CONTENT | GATEWAY_MESSAGE_CONTENT_LIMITED)) !== 0) {
       lines.push('✓ The Message Content intent is on.');
     } else {
@@ -138,34 +119,32 @@ export async function checkDiscord(
         'its text. Turn it on in the Developer Portal, under Bot, Privileged Gateway Intents.');
     }
 
-    const joined: Array<{ id: string; name: string; owner?: boolean }> = [];
-    for (;;) {
-      const after = joined.length === 0 ? '' : `&after=${joined[joined.length - 1]!.id}`;
-      const page = await get<typeof joined>(`/users/@me/guilds?limit=${GUILD_PAGE}${after}`);
-      joined.push(...page);
-      if (page.length < GUILD_PAGE) break;
-    }
-    const guilds: Guild[] = [];
-    for (const { id, name, owner } of joined) {
-      const roles = new Map((await get<Array<{ id: string; permissions: string }>>(`/guilds/${id}/roles`))
-        .map((r) => [r.id, BigInt(r.permissions)] as const));
-      const member = await get<{ roles: string[] }>(`/guilds/${id}/members/${bot.id}`);
-      const channels = await get<Channel[]>(`/guilds/${id}/channels`);
-      guilds.push({
-        id, name, visible: channels.filter((c) => canView(owner === true, id, bot.id, roles, member.roles, c)), ids: new Set(channels.map((c) => c.id)),
-      });
-    }
+    const guilds: Guild[] = (await botGuilds(reader, bot.id)).map((guild) => {
+      const visible = guild.channels.filter((c) => (channelPermissions(guild, bot.id, c) & VIEW_CHANNEL) !== 0n);
+      return {
+        id: guild.id,
+        name: guild.name,
+        visible,
+        ids: new Set(guild.channels.map((c) => c.id)),
+        unsendable: new Set(visible.filter((c) => TEXT_CHANNEL_TYPES.includes(c.type)
+          && (channelPermissions(guild, bot.id, c) & SEND_MESSAGES) === 0n).map((c) => c.id)),
+      };
+    });
     lines.push(guilds.length === 0
       ? 'The bot is in no server, so it hears only DMs until it\'s invited to one.'
       : 'Channels the bot can see:');
     for (const guild of guilds) {
       lines.push(`  ${guild.name} (${guild.id})`);
-      for (const channel of guild.visible) lines.push(`    ${channelName(channel)}`);
+      for (const channel of guild.visible) {
+        lines.push(`    ${channelName(channel)}${guild.unsendable.has(channel.id) ? ', where it can\'t send' : ''}`);
+      }
     }
 
     for (const line of scopeLines(env, options.workingDir, guilds, problem)) lines.push(line);
   } catch (error) {
-    problem(error instanceof DiscordAnswer ? error.message : `The Discord check stopped: ${errorText(error)}`);
+    problem(error instanceof DiscordAnswer ? error.message
+      : error instanceof DiscordFailed ? wordsFor(error.failure)
+        : `The Discord check stopped: ${errorText(error)}`);
   }
   return { lines, problems };
 }
@@ -216,30 +195,6 @@ export function mappingRemedy(name: string, envOnly = false): string {
     'while that entry is there: take the entry out of the overlay, put the server\'s definition, with its command or ' +
     'url, in the recipe, or in mcpl-servers.json with a recipe entry that names it, and follow the steps above for ' +
     'whichever then defines it. Then restart the service.';
-}
-
-function canView(owner: boolean, guildId: string, botId: string, roles: Map<string, bigint>, botRoles: string[], channel: Channel): boolean {
-  if (owner) return true;
-  let base = roles.get(guildId) ?? 0n;
-  for (const role of botRoles) base |= roles.get(role) ?? 0n;
-  if ((base & ADMINISTRATOR) !== 0n) return true;
-  const overwrites = channel.permission_overwrites ?? [];
-  const apply = (perms: bigint, allow: bigint, deny: bigint): bigint => (perms & ~deny) | allow;
-  let perms = base;
-  const everyone = overwrites.find((o) => o.type === 0 && o.id === guildId);
-  if (everyone) perms = apply(perms, BigInt(everyone.allow), BigInt(everyone.deny));
-  let allow = 0n;
-  let deny = 0n;
-  for (const o of overwrites) {
-    if (o.type === 0 && o.id !== guildId && botRoles.includes(o.id)) {
-      allow |= BigInt(o.allow);
-      deny |= BigInt(o.deny);
-    }
-  }
-  perms = apply(perms, allow, deny);
-  const own = overwrites.find((o) => o.type === 1 && o.id === botId);
-  if (own) perms = apply(perms, BigInt(own.allow), BigInt(own.deny));
-  return (perms & VIEW_CHANNEL) !== 0n;
 }
 
 function channelName(channel: Channel): string {
@@ -300,6 +255,10 @@ function scopeLines(
     const unlisted: string[] = [];
     for (const channelId of wanted) {
       const channel = guild.visible.find((c) => c.id === channelId);
+      if (channel && guild.unsendable.has(channel.id)) {
+        problem(`The scope names ${channelId}, a channel of ${guild.name} (${guild.id}) the bot can see but can't send ` +
+          'in: give the bot Send Messages in it.');
+      }
       if (channel) named.push(channelName(channel));
       else if (guild.ids.has(channelId)) {
         problem(`The scope names ${channelId}, a channel of ${guild.name} (${guild.id}) the bot can't see: give the bot ` +

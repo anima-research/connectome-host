@@ -13,6 +13,7 @@ import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type No
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
+import { shownToPerson } from './shown.js';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
 const SHELL_BIN = 'session-server';
@@ -122,7 +123,8 @@ export const serviceCommand: CliCommand = {
   run: (ctx) => runService(ctx),
 };
 
-export async function runService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
+export async function runService(given: CliContext, sys: ServiceSystem = machine()): Promise<number> {
+  const ctx = shownToPerson(given, sys.env);
   const [verb, ...rest] = ctx.argv;
   if (verb === 'install' && rest.length === 1) return installService(ctx, sys);
   ctx.err(`Usage: ${serviceUsage(typedCommand(ctx.root!, sys.env.PATH))}`);
