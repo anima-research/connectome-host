@@ -43,7 +43,7 @@ const EMPTY_COMPRESSION = 'The recipe\'s agent.strategy.compressionModel is empt
 
 export interface DoctorParts {
   fetch: typeof fetch;
-  checkService: (units: ServiceUnits, work: string, shell: boolean | null, cmd: string, stoppedIsFine: boolean) =>
+  checkService: (units: ServiceUnits, work: string, shell: boolean | null | 'other', cmd: string, stoppedIsFine: boolean) =>
     Promise<ServiceCheck> | ServiceCheck;
   python: string | null;
   hostLimitMs: number;
@@ -119,7 +119,9 @@ export async function doctor(
   let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
   let elsewhere = false;
+  let shellElsewhere: string | null = null;
   if (units !== null) {
+    shellElsewhere = shellOfAnother(units);
     let text: string | null = null;
     try {
       text = readFileSync(units.host.file, 'utf-8');
@@ -137,10 +139,7 @@ export async function doctor(
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
       } else if (!runsHere(read.workingDirectory, units.work)) {
         elsewhere = true;
-        serviceError = `${units.host.file} names ${read.workingDirectory} as the directory it runs in, not this install's, ` +
-          `${units.work}: it's another install's, or this one's from before it moved, and doctor reads nothing in that directory. Its ` +
-          'name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
-          'directory of another name.';
+        serviceError = namesElsewhere(units.host.file, read.workingDirectory, units.work);
       } else if (at < 0 || read.argv[at + 1] === undefined) {
         serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
       } else {
@@ -294,14 +293,14 @@ export async function doctor(
       report.problem(units === null
         ? `No service is installed for this install: \`${typed} service install\` writes one only on Linux and macOS, ` +
           'for a directory whose name has a letter or digit.'
-        : `No service is installed for this install: ${units.host.file} isn't there. ` +
-          `\`${typed} service install <recipe>\` writes one and checks it.`);
+        : `No service is installed for this install: ${units.host.file} isn't there.` +
+          (shellElsewhere === null ? ` \`${typed} service install <recipe>\` writes one and checks it.` : ''));
     } else {
       const installed = service;
       await checked(report, 'The service check', async () => {
         const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
-        const result = await parts.checkService(installed.units, installed.work, document === null ? null : recipeHasShell(document.raw),
-          typed, true);
+        const result = await parts.checkService(installed.units, installed.work, shellElsewhere !== null ? 'other'
+          : document === null ? null : recipeHasShell(document.raw), typed, true);
         for (const line of result.lines) report.line(line);
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         if (result.stopped === true) {
@@ -310,6 +309,7 @@ export async function doctor(
         }
       });
     }
+    if (shellElsewhere !== null) report.problem(shellElsewhere);
 
     report.section('Host');
     try {
@@ -1247,6 +1247,29 @@ async function besideOf(
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A unit file of this install's name that names another working directory, said as install says it when it refuses
+ *  that unit. */
+function namesElsewhere(file: string, directory: string, work: string): string {
+  return `${file} names ${directory} as the directory it runs in, not this install's, ${work}: it's another install's, ` +
+    'or this one\'s from before it moved, and doctor reads nothing in that directory. Its name comes from this ' +
+    'directory\'s name. Remove that unit if nothing uses it, or set this install up again in a directory of another name.';
+}
+
+/** Install refuses a shell daemon's unit of this install's name that runs another directory, whatever the recipe, so
+ *  doctor reads that unit's file as it reads the host's. A file it can't read, or doesn't read as one install writes,
+ *  is left to the service check. */
+function shellOfAnother(units: ServiceUnits): string | null {
+  let text: string;
+  try {
+    text = readFileSync(units.shell.file, 'utf-8');
+  } catch {
+    return null;
+  }
+  const read = readUnit(units.manager, text);
+  return 'why' in read || runsHere(read.workingDirectory, units.work) ? null
+    : namesElsewhere(units.shell.file, read.workingDirectory, units.work);
 }
 
 function fileWord(manager: Manager): string {

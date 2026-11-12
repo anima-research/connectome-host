@@ -2581,3 +2581,68 @@ describe('connectome doctor, in a copy whose service name another install\'s uni
     expect(r.out).not.toContain('restarting the service');
   });
 });
+
+describe('connectome doctor, where the shell daemon\'s unit of this install\'s name runs another directory', () => {
+  const NOT_HERE = 'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing in that directory. ' +
+    'Its name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
+    'directory of another name.';
+  const withShellUnit = (manager: 'systemd-user' | 'launchd', opts: { recipe?: Record<string, unknown>; here?: boolean } = {}) => {
+    const at = install({ manager, ...(opts.recipe === undefined ? {} : { recipe: opts.recipe }) });
+    const other = install({ manager });
+    const units = serviceUnits(at.root, at.platform, at.home)!;
+    const runs = opts.here === true ? at.work : other.work;
+    const argv = [join(runs, 'node_modules/.bin/session-server')];
+    mkdirSync(dirname(units.shell.file), { recursive: true });
+    writeFileSync(units.shell.file, units.manager === 'systemd-user'
+      ? systemdUnit('Connectome test shell', runs, argv, [], null)
+      : plist(units.shell.name, runs, argv, [], join(runs, 'logs', 'shell.log')));
+    return { at, other, shellFile: units.shell.file };
+  };
+  const asking = () => {
+    const asked: Array<boolean | null | 'other'> = [];
+    const checkService: DoctorParts['checkService'] = async (_units, _work, shell) => {
+      asked.push(shell);
+      return { passed: true, lines: ['The unit connectome-test.service is active, with no restarts.'] };
+    };
+    return { asked, checkService };
+  };
+  const noShell = (work: string) => ({ ...RECIPE(work), mcpServers: { discord: RECIPE(work).mcpServers.discord } });
+
+  test('it\'s a Service problem in install\'s own words, and the service check isn\'t asked about it, whether the recipe names a shell or not', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      for (const recipe of [undefined, 'none'] as const) {
+        const { at, other, shellFile } = withShellUnit(manager, recipe === 'none' ? { recipe: noShell('') } : {});
+        const { asked, checkService } = asking();
+        const r = await run(at, { checkService });
+        const label = `${manager} ${recipe ?? 'shell'}`;
+        expect([label, r.out]).toEqual([label, expect.stringContaining(`${shellFile} names ${other.work} as the directory it ` +
+          `runs in, not this install's, ${at.work}: ${NOT_HERE}`)]);
+        expect([label, asked]).toEqual([label, ['other']]);
+        expect([label, r.status]).toEqual([label, 1]);
+      }
+    }
+  });
+
+  test('with no host unit there, doctor names that unit and offers no service install, which refuses there', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const { at, other, shellFile } = withShellUnit(manager, { recipe: noShell('') });
+      rmSync(at.unit);
+      const r = await run(at);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`No service is installed for this install: ${at.unit} ` +
+        `isn't there.`)]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`${shellFile} names ${other.work} as the directory ` +
+        `it runs in, not this install's, ${at.work}: ${NOT_HERE}`)]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('service install')]);
+    }
+  });
+
+  test('a shell daemon\'s unit that runs here is the service check\'s, as the recipe says', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const { at, shellFile } = withShellUnit(manager, { here: true });
+      const { asked, checkService } = asking();
+      const r = await run(at, { checkService });
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining(`${shellFile} names`)]);
+      expect([manager, asked]).toEqual([manager, [true]]);
+    }
+  });
+});

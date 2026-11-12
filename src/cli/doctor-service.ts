@@ -13,8 +13,10 @@ export interface ServiceCheck {
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
 
-export function checkUnits(units: ServiceUnits, work: string, shell: boolean | null, cmd: string, sys: ServiceSystem,
-  stoppedIsFine = false): ServiceCheck {
+/** `shell` says whether the recipe names a shell, null where that can't be told, or 'other' where the shell daemon's
+ *  unit of this install's name is another install's, which doctor names itself, so it isn't checked here. */
+export function checkUnits(units: ServiceUnits, work: string, shell: boolean | null | 'other', cmd: string,
+  sys: ServiceSystem, stoppedIsFine = false): ServiceCheck {
   const lines: string[] = [];
   let passed = true;
   const fail = (line: string) => {
