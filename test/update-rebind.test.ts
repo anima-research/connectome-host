@@ -518,22 +518,25 @@ describe('binding an install to the directory it is in', () => {
     expect(record(moved)!.workingDir).toBe(install);
   });
 
-  test('a record whose workingDir is there but isn\'t a path is refused by its start and by setup, each naming it, and setup saying how to write the record again; nothing changes', () => {
+  test('a record whose workingDir is there but isn\'t an absolute path, as null or a relative path that a copy\'s directory would resolve to its own, is refused by its start and by setup, each naming it, and setup saying how to write the record again; nothing changes', () => {
     setup(options(install));
     const copy = join(dir, 'copy');
     copyOf(install, copy);
     const recordAt = installPaths(rootOf(copy)).install;
-    writeFileSync(recordAt, JSON.stringify({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir: null }));
-    const kept = tree(copy);
-    const start = startOf(copy);
-    expect(start.exitCode).toBe(1);
-    expect(start.stderr).toContain(`nothing runs in this install, since its record, ${recordAt}, holds a "workingDir" that ` +
-      'isn\'t a path, so whether it was moved or copied here, and whose places its record names, can\'t be told.');
-    const why = refusal(() => setup(options(copy)));
-    expect(why).toStartWith(`This install's record (${recordAt}) holds a "workingDir" that isn't a path (null), so setup ` +
-      'can\'t tell whether the install was moved or copied here, or whose places its record names. Setup has changed ' +
-      'nothing. To put it right, write the record again as\n');
-    expect(tree(copy)).toEqual(kept);
+    for (const workingDir of [null, '.', 'service']) {
+      writeFileSync(recordAt, JSON.stringify({ v: 1, dataDir: join(install, 'data'), extraState: [], workingDir }));
+      const kept = tree(copy);
+      const start = startOf(copy);
+      expect(start.exitCode).toBe(1);
+      expect(start.stderr).toContain(`nothing runs in this install, since its record, ${recordAt}, holds a "workingDir" ` +
+        'that isn\'t an absolute path, so whether it was moved or copied here, and whose places its record names, can\'t ' +
+        'be told.');
+      const why = refusal(() => setup(options(copy)));
+      expect(why).toStartWith(`This install's record (${recordAt}) holds a "workingDir" that isn't an absolute path ` +
+        `(${JSON.stringify(workingDir)}), so setup can't tell whether the install was moved or copied here, or whose ` +
+        'places its record names. Setup has changed nothing. To put it right, write the record again as\n');
+      expect(tree(copy)).toEqual(kept);
+    }
   });
 
   test.skipIf(process.getuid?.() === 0)('a set-aside directory this user can\'t list, in an install that was moved, is refused, saying why, and nothing changes', () => {
@@ -983,7 +986,7 @@ describe('what a moved or copied install\'s root keeps', () => {
     expect(why).not.toContain('Setup has moved nothing else');
   });
 
-  bindMounted('a move aside that fails partway stops there, saying what it moved and that it removed nothing, and run again once that one is moved by hand, it finishes', () => {
+  bindMounted('a move aside whose first move fails stops there, saying it moved nothing else and removed nothing, and run again once that one is moved by hand, it finishes', () => {
     setup(options(install));
     updated(install);
     const data = join(install, 'data');
@@ -1238,6 +1241,31 @@ describe('the fleet\'s children file', () => {
     expect(present).toContain(join(copy, 'data'));
   });
 
+  test('a copy\'s binding removes the socket and pid file that came with the copy in the directory of a child the original runs, where it clears that child\'s pid, so the copy\'s fleet can start the child there; the original keeps its own', () => {
+    setup(options(install));
+    const kid = join(install, 'data', 'kids', 'c');
+    withChild(install, kid, live());
+    for (const name of ['ipc.sock', 'headless.pid']) writeFileSync(join(kid, name), 'the original child\'s');
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    setup(options(copy));
+    const copied = join(copy, 'data', 'kids', 'c');
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: copied }]);
+    expect(readdirSync(copied)).toEqual([]);
+    expect(readdirSync(kid).sort()).toEqual(['headless.pid', 'ipc.sock']);
+  });
+
+  test('a moved install\'s binding leaves its child\'s socket and pid file, which are its own child\'s', () => {
+    setup(options(install));
+    const kid = join(install, 'data', 'kids', 'c');
+    withChild(install, kid, live());
+    for (const name of ['ipc.sock', 'headless.pid']) writeFileSync(join(kid, name), 'the child\'s');
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    setup(options(moved));
+    expect(readdirSync(join(moved, 'data', 'kids', 'c')).sort()).toEqual(['headless.pid', 'ipc.sock']);
+  });
+
   test('a moved install binds its children file and keeps the pid of a child still running, which is its own, so its updates are still refused while it runs', () => {
     setup(options(install));
     const pid = live();
@@ -1319,7 +1347,7 @@ describe('the fleet\'s children file', () => {
     const later = (path: string) => `and has changed nothing. Put ${path} right, and run setup again. If a later ` +
       'release wrote it, run that release\'s setup instead.';
     const children = join(copy, 'data', 'fleet-children.json');
-    for (const written of [{ v: 2 }, { v: 1, children: {} }, { v: 1, children: [], boundTo: 5 }]) {
+    for (const written of [{ v: 2, children: [] }, { v: 1, children: {} }, { v: 1, children: [], boundTo: 5 }]) {
       writeFileSync(children, JSON.stringify(written));
       expect(refusal(() => setup(options(copy)))).toEndWith(later(children));
     }
@@ -1490,6 +1518,26 @@ describe('the fleet\'s children file', () => {
     setup(options(second, { places: [{ from: kid, to: join(second, 'data', 'kids', 'c') }] }));
     expect(childrenOf(second)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: join(second, 'data', 'kids', 'c') }]);
     expect(stampOf(second)).toBe(second);
+  });
+
+  test('cut after the children file, before the record, and then moved back where its record is bound: setup refuses the file stamped for the other directory, saying to move the install back there, and nothing changes', () => {
+    setup(options(install));
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(elsewhere);
+    const children = join(install, 'data', 'fleet-children.json');
+    writeJsonAtomic(children, { v: 1, children: [], boundTo: elsewhere } satisfies ChildrenFile);
+    const kept = tree(install);
+    const why = refusal(() => setup(options(install)));
+    expect(why).toStartWith(`The fleet's children file, ${children}, is bound to ${elsewhere} by a setup run there`);
+    expect(why).toContain(`Move the install back to ${elsewhere}, run setup there`);
+    expect(tree(install)).toEqual(kept);
+  });
+
+  test('setup on an install bound where it is goes on past a children file it can\'t read, which it has no use for', () => {
+    setup(options(install));
+    writeFileSync(join(install, 'data', 'fleet-children.json'), '{ not json');
+    setup(options(install));
+    expect(record(install)!.workingDir).toBe(install);
   });
 
   test('a binding cut off after the children file, and the install then moved again, is refused as bound elsewhere, saying to bind it there again, and nothing changes', () => {

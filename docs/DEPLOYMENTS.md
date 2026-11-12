@@ -90,8 +90,16 @@ Labels/units follow `cc.<agent>.agent` (launchd) / `<agent>-agent.service`
 (systemd). (launchd: a plain `kill`/`stop` respawns via KeepAlive — use `bootout`
 to stop, `kickstart -k` to restart.) A service `connectome service install`
 writes is named after the install's working directory instead:
-`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and
-`connectome` alone shows its own stop and start commands, and how to follow its log.
+`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
+shell daemon `com.animalabs.connectome.<name>.shell` /
+`connectome-<name>.shell.service`. `connectome` alone shows its own stop and
+start commands, and how to follow its log. A stop that runs past the
+platform's timeout is ended by SIGKILL, and what was still in flight is cut
+off: on macOS that timeout is the exit timeout `launchctl print
+gui/$(id -u)/<label>` shows, 5 s for these agents on macOS 26, and under
+systemd it's the unit's `TimeoutStopSec`, 90 s by default. The host's own stop
+has no time limit. An idle host stopped within 0.1 s in each of 20 tries, on
+Linux and macOS.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
@@ -397,7 +405,17 @@ next start. Nor does it change a recipe: a fleet child that a recipe starts
 with an absolute `dataDir` has that directory, the original's, in a copy
 too, so the copy's autostart can start that child there. Give such a child a
 `dataDir` relative to the directory the host runs in, or change the copy's
-recipe to name its own, before the copy's first start. A binding of an
+recipe to name its own, before the copy's first start. Nor does it move a
+service that `connectome service install` wrote: its units, named after the
+old directory as under Start / stop / restart above, still name that
+directory. After a move, take them away: on Linux, run `systemctl --user
+disable --now` with each unit, remove its file in `~/.config/systemd/user`,
+and run `systemctl --user daemon-reload`; on macOS, run `launchctl bootout
+gui/$(id -u)` with each unit's plist in `~/Library/LaunchAgents`, and remove
+it. Then run `connectome service install <recipe>` in the new directory, which
+refuses while a unit of its name names the old directory. A copy can have a
+service of its own only in a directory of another name, since a service is
+named after its directory. A binding of an
 install moved or copied from the directory its record names, one that gives
 any place another place, or one that rewrites the fleet's children file
 takes the install's lock, so it needs the host stopped, and refuses while it

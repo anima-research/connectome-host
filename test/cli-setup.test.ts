@@ -580,6 +580,34 @@ test('a setup whose directory another setup kept answers in, or made an install 
   }
 });
 
+test('a setup whose directory, empty or not there, gained other files while it asked its first step keeps nothing there and stops, and installs nothing', async () => {
+  for (const there of [true, false]) {
+    const start = directory();
+    const dir = there ? start : join(start, 'resident');
+    const made = world(start, { answers: [''], secrets: [KEY] });
+    const { ask } = made.world;
+    made.world.ask = async (question) => {
+      const answer = await ask(question);
+      if (question === CONTINUE) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'package.json'), '{"name":"theirs"}\n');
+      }
+      return answer;
+    };
+    expect(await runSetup(dir, ['discord'], made), String(there)).toBe(1);
+    expect(made.seen.err, String(there)).toEqual([
+      `${dir} ${there ? 'was empty' : 'wasn\'t there'} when setup began, and holds other files now, such as package.json, ` +
+        'so setup keeps nothing there and stops. Make a new directory for the resident where you can write, and run ' +
+        'this same version of setup there:',
+      `  ${firstLine()}`,
+    ]);
+    expect(made.seen.ran, String(there)).toEqual([]);
+    expect(made.seen.launched, String(there)).toBeNull();
+    expect(readFileSync(join(dir, 'package.json'), 'utf-8')).toBe('{"name":"theirs"}\n');
+    expect(existsSync(join(dir, '.setup', 'setup-state.json')), String(there)).toBe(false);
+  }
+});
+
 test('where HOME isn\'t an absolute path to a directory, setup makes no directory for the resident: it sends the person to make one, before any question', async () => {
   for (const home of [undefined, 'relative/home', '/nonexistent-home-for-setup-test']) {
     const dir = directory();
@@ -791,6 +819,24 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(await runSetup(bunListed, ['discord'], shellOnly)).toBe(0);
   const shellLine = shellOnly.seen.out.find((line) => line.includes('to the packages that may run install scripts'));
   expect(shellLine).toBe(`In ${join(bunListed, 'package.json')}, setup added these to the packages that may run install scripts here: term-sessions-mcp, which gives the resident a shell if it gets one.`);
+});
+
+test('a package.json that isn\'t a file, such as a named pipe, isn\'t waited on or written over: setup says it couldn\'t add the trusted list, and goes on', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  const manifest = join(dir, 'package.json');
+  Bun.spawnSync(['mkfifo', manifest]);
+  // Where a read waits on the pipe, this writer gives it JSON, so the test ends either way.
+  const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest], { stdout: 'ignore', stderr: 'ignore' });
+  try {
+    const made = world(dir, { answers: [''], secrets: [KEY], added: { status: 0, stdout: '', stderr: '' } });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(text(made.seen.out)).toContain(`Setup couldn't add the packages whose install scripts Bun runs by default to ${manifest} (${manifest} can't be read (it isn't a file)), so unless`);
+    expect(lstatSync(manifest).isFIFO()).toBe(true);
+  } finally {
+    writer.kill('SIGKILL');
+  }
 });
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
@@ -1044,7 +1090,7 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   expect(said(broken)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, can't be read: The install record at ${record} isn't JSON, so this release can't read it.`]);
 });
 
-test('a setup whose install kept no state outside the data directory says so once its agent has ended, where the record gained a place meanwhile', async () => {
+test('a setup whose install kept no state outside the data directory, where the record gained a place during the conversation, says once its agent has ended that the places changed and the record holds them', async () => {
   const dir = directory();
   const record = join(dir, 'connectome-host', 'install.json');
   const none = [
@@ -2254,7 +2300,7 @@ const besideIt = (dir: string, name: string): string => {
   return path;
 };
 
-test('an install moved here whose places were all under its old directory asks nothing, and hands its own setup the data directory here, which binds it', async () => {
+test('an install moved here whose places were all under its old directory asks nothing, and hands its own setup the data directory here as DATA_DIR', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
   const moved = besideIt(dir, 'moved');
@@ -2266,7 +2312,7 @@ test('an install moved here whose places were all under its old directory asks n
   expect(text(again.seen.out)).toContain(`This install's record is bound to ${dir}, and the install is in ${moved}, so it was moved or copied here. Setup binds it here: each place under ${dir} becomes the same place under ${moved}.`);
 });
 
-test('a copy with a place outside its old directory asks where that place is in this install, naming it, and hands the answer to its own setup, which binds it', async () => {
+test('a copy with a place outside its old directory asks where that place is in this install, naming it, and hands the answer to its own setup as --place', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
   const outside = join(directory(), 'state.json');
@@ -2379,7 +2425,7 @@ test('while a Go back is unfinished, a moved install whose root keeps a copy is 
   expect(again.seen.ran.filter((argv) => args(argv)[0]?.endsWith(join('src', 'update', 'setup.ts')))).toEqual([]);
 });
 
-test.skipIf(process.getuid?.() === 0)('a journal or a Go back\'s list setup can\'t read, in a moved install whose root keeps a Go back, stops it under the binding\'s line, naming the file, and nothing is asked', async () => {
+modeTest('a journal or a Go back\'s list setup can\'t read, in a moved install whose root keeps a Go back, stops it under the binding\'s line, naming the file, and nothing is asked', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
   keptInRoot(dir);
@@ -2532,6 +2578,89 @@ test('a fleet child\'s data directory outside every place is asked about after t
   expect(again.seen.asked).toEqual([`${elsewhere} (its data directory): `, `${kid} (a place its updates copy): `]);
   expect(ownSetup(again.seen)).toEqual({
     argv: ['--root', join(dir, 'connectome-host'), '--place', elsewhere, elsewhere, '--place', kid, kid], dataDir: elsewhere,
+  });
+});
+
+test('an answer that puts a place the binding asks about inside the install root, or the root inside it, is asked again, saying why', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
+  const root = join(dir, 'connectome-host');
+  const elsewhere = join(directory(), 'data');
+  mkdirSync(elsewhere);
+  const inside = join(root, 'inside');
+  mkdirSync(inside);
+  const linked = join(directory(), 'linked');
+  symlinkSync(inside, linked);
+  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
+  const again = world(dir, { answers: [inside, linked, dir, ''] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  const question = `${elsewhere} (its data directory): `;
+  expect(again.seen.asked).toEqual([question, question, question, question]);
+  for (const [answer, real] of [[inside, inside], [linked, inside], [dir, dir]]) {
+    expect(text(again.seen.out)).toContain(`The binding would put ${elsewhere} at ${answer}, and ${real === answer ? 'that'
+      : `that, which is ${real} once its links are followed,`} and the install root ${root} are one inside the other, so ` +
+      'a copy of the data would hold the copy itself: type a place apart from the root.');
+  }
+  expect(ownSetup(again.seen)).toEqual({
+    argv: ['--root', root, '--place', elsewhere, elsewhere], dataDir: elsewhere,
+  });
+});
+
+test('an answer reached through a link is the place it leads to, as the install\'s own setup takes it: an answer that leads back to the recorded place moves nothing, so nothing kept in the root is asked about', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
+  const outside = directory();
+  const elsewhere = join(outside, 'data');
+  mkdirSync(elsewhere);
+  const alias = join(directory(), 'alias');
+  symlinkSync(outside, alias);
+  writeFileSync(join(dir, 'connectome-host', 'install.json'), JSON.stringify({ v: 1, dataDir: elsewhere, extraState: [] }));
+  keptInRoot(dir);
+  const again = world(dir, { answers: [join(alias, 'data')] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([`${elsewhere} (its data directory): `]);
+  expect(ownSetup(again.seen)).toEqual({
+    argv: ['--root', join(dir, 'connectome-host'), '--place', elsewhere, elsewhere], dataDir: elsewhere,
+  });
+});
+
+test('Enter for a recorded place reached through a link is the place it leads to, so where that moves the place, what the root keeps is asked about, as the install\'s own setup would refuse it', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
+  const outside = directory();
+  const real = join(outside, 'data');
+  mkdirSync(real);
+  const alias = join(directory(), 'alias');
+  symlinkSync(outside, alias);
+  const recorded = join(alias, 'data');
+  writeFileSync(join(dir, 'connectome-host', 'install.json'), JSON.stringify({ v: 1, dataDir: recorded, extraState: [] }));
+  keptInRoot(dir);
+  const again = world(dir, { answers: ['', 'no'] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(1);
+  expect(again.seen.asked).toEqual([`${recorded} (its data directory): `, 'Move them aside now? (yes/no) ']);
+});
+
+test('the children file setup reads is the one in the data directory answered, so a copy answered for another copy\'s data asks about that copy\'s child, and not the recorded one\'s', async () => {
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
+  const recorded = join(directory(), 'data');
+  mkdirSync(recorded);
+  const theirs = join(directory(), 'kid');
+  mkdirSync(theirs);
+  writeFileSync(join(recorded, 'fleet-children.json'),
+    JSON.stringify({ v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: theirs }] }));
+  const answered = join(directory(), 'data');
+  mkdirSync(answered);
+  const ours = join(directory(), 'kid');
+  mkdirSync(ours);
+  writeFileSync(join(answered, 'fleet-children.json'),
+    JSON.stringify({ v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: ours }] }));
+  writeFileSync(join(dir, 'connectome-host', 'install.json'), JSON.stringify({ v: 1, dataDir: recorded, extraState: [] }));
+  const again = world(dir, { answers: [answered, ''] });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(again.seen.asked).toEqual([`${recorded} (its data directory): `, `${ours} (a place its updates copy): `]);
+  expect(ownSetup(again.seen)).toEqual({
+    argv: ['--root', join(dir, 'connectome-host'), '--place', recorded, answered, '--place', ours, ours], dataDir: answered,
   });
 });
 
@@ -2855,7 +2984,7 @@ test('an ANTHROPIC_BASE_URL put in .env during a question is checked as a URL be
   });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(labels).toEqual(['An API key that https://gateway.example accepts, typed hidden (Enter alone stops setup)']);
-  expect(text(made.seen.err)).toContain(`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL`);
+  expect(made.seen.err).toEqual([`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL. The key wasn't checked or stored. Set it to one there, or take it out for Anthropic's own API, and run setup again.`]);
   expect(made.seen.checked).toEqual([]);
   expect(made.seen.launched).toBeNull();
 });
@@ -3103,7 +3232,7 @@ test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=localhost:8080\n');
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain(`ANTHROPIC_BASE_URL, in ${join(dir, '.env')}, isn't an http:// or https:// URL`);
+  expect(made.seen.err).toEqual([`ANTHROPIC_BASE_URL, in ${join(dir, '.env')}, isn't an http:// or https:// URL. Set it to one there, or take it out for Anthropic's own API, and run setup again.`]);
   expect(made.seen.checked).toEqual([]);
   expect(made.seen.asked.filter((question) => /\bkey\b/i.test(question))).toEqual([]);
 });
