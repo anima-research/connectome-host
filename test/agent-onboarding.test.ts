@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { COMMANDS } from '../src/cli/connectome.ts';
+import { slugOf } from '../src/cli/service-unit.ts';
 import { parseHandWrittenJson } from '../src/hand-written-json.ts';
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, WHOLE_OUTPUT_BYTES } from '../src/modules/setup-module.ts';
 
@@ -263,5 +264,15 @@ describe('SETUP.md\'s lines', () => {
     for (const span of installs) {
       expect({ span, recipe: span === "connectome service install '<name>.json'" }).toEqual({ span, recipe: true });
     }
+  });
+});
+
+describe('the backups\' units', () => {
+  it('are named with a character after the slug that no slug holds, so none is another install\'s own unit', () => {
+    const backups = PIECES.find((piece) => piece.heading === 'Backups')!.text;
+    const rests = [...backups.matchAll(/connectome-<slug>([^`'\s]*)\.(?:service|timer)\b/g)].map((match) => match[1]!)
+      .filter((rest) => rest !== '');
+    expect(rests.length).toBeGreaterThan(0);
+    for (const rest of rests) expect({ rest, apart: slugOf(`x${rest}`) !== `x${rest}` }).toEqual({ rest, apart: true });
   });
 });
