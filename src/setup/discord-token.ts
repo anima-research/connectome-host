@@ -1,6 +1,7 @@
 import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { hostVersionOf } from '../update/update.js';
 import { JSON_TYPE, redirectTarget } from './provider-key.js';
+import { DISCORD_TOKEN, shownByName } from './secrets.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
@@ -80,9 +81,5 @@ export async function checkDiscordToken(
 
 // Its ASCII letters in any case, since a server that puts the token in a URL's host gives it back lowercased.
 function hidden(words: string, token: string): string {
-  const forms = [...new Set([token, token.trim()])].filter((form) => form !== '').sort((a, b) => b.length - a.length);
-  for (const form of forms) {
-    words = words.replace(new RegExp(form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<DISCORD_TOKEN>');
-  }
-  return words;
+  return shownByName(words, [{ name: DISCORD_TOKEN, value: token }]);
 }

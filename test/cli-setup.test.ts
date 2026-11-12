@@ -569,7 +569,56 @@ modeTest('a key typed while .env became unreadable isn\'t checked, and setup say
     chmodSync(join(dir, '.env'), 0o600);
   }
   expect(made.seen.checked).toEqual([]);
-  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env')} can't be read (EACCES). Put that right, then run setup again.`);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env')} can't be read (EACCES). The key wasn't checked or stored. Put that right, then run setup again.`);
+});
+
+test('a key typed while a dotenv file became unreadable isn\'t checked or stored, and setup says so', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  const made = world(dir, { answers: [''] }, {
+    askHidden: async () => { Bun.spawnSync(['mkfifo', join(dir, '.env.local')]); return KEY; },
+  });
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.checked).toEqual([]);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). The key wasn't checked or stored. Put that right, then run setup again.`);
+  expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBeUndefined();
+});
+
+test('a key from .env tried again after a dotenv file became unreadable isn\'t checked again, and setup says so', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), `ANTHROPIC_API_KEY=${KEY}\n`, { mode: 0o600 });
+  const down = { ok: false as const, cause: 'api.anthropic.com is overloaded (529).', anotherKeyMayHelp: false };
+  const made = world(dir, { answers: [''], keys: [down] });
+  const { ask } = made.world;
+  made.world.ask = async (question) => {
+    if (!question.startsWith('Try this key again')) return ask(question);
+    Bun.spawnSync(['mkfifo', join(dir, '.env.local')]);
+    return 'yes';
+  };
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.checked.map((each) => each.key)).toEqual([KEY]);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). The ANTHROPIC_API_KEY in ${join(dir, '.env')} wasn't checked. Put that right, then run setup again.`);
+});
+
+test('a dotenv file that became unreadable before the key question stops setup with nothing asked, and setup says to put it right', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example/anthropic\n');
+  const made = world(dir, { answers: [''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ANTHROPIC_API_KEY: 'sk-ant-exported' } });
+  const { ask } = made.world;
+  made.world.ask = async (question) => {
+    if (!question.includes('exported in this shell')) return ask(question);
+    Bun.spawnSync(['mkfifo', join(dir, '.env.local')]);
+    return 'no';
+  };
+  expect(await runSetup(dir, ['discord'], made)).toBe(1);
+  expect(made.seen.asked.some((question) => question.includes('typed hidden'))).toBe(false);
+  expect(made.seen.checked).toEqual([]);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). Put that right, then run setup again.`);
 });
 
 test('a first run with a gateway in .env says the gateway may charge otherwise than the list prices', async () => {
@@ -953,7 +1002,10 @@ test('where setup\'s kept answers are gone or can\'t be read once its agent has 
     `Whether setup finished isn't known: ${state}, where setup keeps its answers, can't be read (it isn't JSON).`]);
 });
 
-test('a finished setup whose install root is gone says what went with it and asks before it makes a new install, and on no stops with nothing written', async () => {
+const NEWER = `A new install gets connectome-host ${VERSION}, this setup's own release. If the install had updated to a ` +
+  'later release, answer no, and run that later release\'s setup here: `bunx @animalabs/connectome-host@<that release> setup discord`.';
+
+test('a finished setup whose install root is gone says what went with it and names the release a new install gets, and asks before it makes a new install, and on no stops with nothing written', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { recursive: true });
   const state = JSON.stringify({ v: 1, finished: '2026-10-01T00:00:00.000Z' });
@@ -964,6 +1016,7 @@ test('a finished setup whose install root is gone says what went with it and ask
   const declined = world(dir, { answers: ['no'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], declined)).toBe(0);
   expect(declined.seen.out).toContain(gone);
+  expect(declined.seen.out).toContain(NEWER);
   expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
   expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
   expect(existsSync(root)).toBe(false);
@@ -974,7 +1027,7 @@ test('a finished setup whose install root is gone says what went with it and ask
   expect(existsSync(join(root, 'install.json'))).toBe(true);
 });
 
-test('setup answers that can\'t be read, with no install root, say setup can\'t tell whether a setup finished here and ask before a new install, and on no stop with nothing written', async () => {
+test('setup answers that can\'t be read, with no install root, say setup can\'t tell whether a setup finished here, name the release a new install gets, and ask before a new install, and on no stop with nothing written', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'), { recursive: true });
   writeFileSync(join(dir, '.setup', 'setup-state.json'), 'not json');
@@ -985,6 +1038,7 @@ test('setup answers that can\'t be read, with no install root, say setup can\'t 
   const declined = world(dir, { answers: ['no'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], declined)).toBe(0);
   expect(declined.seen.out).toContain(unknown);
+  expect(declined.seen.out).toContain(NEWER);
   expect(declined.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
   expect(declined.seen.out.at(-1)).toBe('Put the root\'s backup back, if you have one, and run setup again.');
   expect(existsSync(root)).toBe(false);
@@ -1005,6 +1059,7 @@ test('an install root that is there but empty, after a setup that finished or wh
   expect(await runSetup(dir, ['discord'], emptied)).toBe(0);
   expect(emptied.seen.out).toContain(`This directory's install root, ${root}, is empty, so its record is gone: the places of ` +
     'state kept outside the data directory, its releases and its Go back.');
+  expect(emptied.seen.out).toContain(NEWER);
   expect(emptied.seen.asked).toEqual([`Make a new install on ${join(dir, 'data')}? (yes/no) `]);
   expect(readdirSync(root)).toEqual([]);
   expect(existsSync(join(dir, 'data'))).toBe(false);
@@ -1022,6 +1077,7 @@ test('an install root that is there but empty, after a setup that finished or wh
   expect(unknown.seen.out).toContain(`This directory's install root, ${join(unread, 'connectome-host')}, is empty, and setup ` +
     'can\'t tell whether a setup finished here, since its kept answers can\'t be read. If one did, the root\'s record went ' +
     'with it: the places of state kept outside the data directory, its releases and its Go back.');
+  expect(unknown.seen.out).toContain(NEWER);
   expect(unknown.seen.asked).toEqual([`Make a new install on ${join(unread, 'data')}? (yes/no) `]);
 
   const unfinished = directory();
@@ -1031,6 +1087,7 @@ test('an install root that is there but empty, after a setup that finished or wh
   const goes = world(unfinished, { secrets: [KEY] });
   expect(await runSetup(unfinished, ['discord'], goes)).toBe(0);
   expect(goes.seen.asked).not.toContain(`Make a new install on ${join(unfinished, 'data')}? (yes/no) `);
+  expect(goes.seen.out).not.toContain(NEWER);
   expect(existsSync(join(unfinished, 'connectome-host', 'install.json'))).toBe(true);
 });
 
@@ -1544,8 +1601,8 @@ test('the agent\'s host takes nothing from the working directory\'s .env that se
   const dir = directory();
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  writeFileSync(join(dir, '.env'), `${readFileSync(join(dir, '.env'), 'utf-8')}MODEL=claude-haiku-4-5\nCONNECTOME_INSTALL_ROOT=/x\n`);
   const launch = made.seen.launched!;
+  writeFileSync(join(launch.cwd, '.env'), 'MODEL=claude-haiku-4-5\nCONNECTOME_INSTALL_ROOT=/x\n');
   const probe = join(directory(), 'probe.ts');
   writeFileSync(probe, 'console.log(JSON.stringify([process.env.MODEL ?? null, process.env.CONNECTOME_INSTALL_ROOT ?? null, process.env.ANTHROPIC_API_KEY ?? null]));\n');
   const argv = launch.argv.map((word) => (word.endsWith(join('src', 'index.ts')) ? probe : word));
@@ -2423,6 +2480,20 @@ test('a check failing for a reason another key can\'t mend offers the same key a
   const stopping = world(other, { answers: ['', 'no'], secrets: [KEY], keys: [down] });
   expect(await runSetup(other, ['discord'], stopping)).toBe(1);
   expect(stopping.seen.launched).toBeNull();
+});
+
+test('a stored secret a dotenv file builds from an exported copy of another is shown by its name in setup\'s lines, in the form a command reads it', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  writeFileSync(join(dir, '.setup', 'stored-secrets.json'), JSON.stringify(['MY_TOKEN']));
+  writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN="discord-token-value"\nANTHROPIC_BASE_URL=https://hostpart.gateway.example/anthropic\n', { mode: 0o600 });
+  writeFileSync(join(dir, '.env.production'), 'MY_TOKEN=${ALIAS}hostpart\n');
+  const made = world(dir, { answers: [''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ALIAS: 'discord-token-value' } });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  const shown = [...made.seen.out, ...made.seen.asked].join('\n');
+  expect(shown).toContain('https://<MY_TOKEN>.gateway.example');
+  expect(shown).not.toContain('hostpart');
 });
 
 test('the key is checked where the resident will call: at the ANTHROPIC_BASE_URL .env has, read again at each try', async () => {

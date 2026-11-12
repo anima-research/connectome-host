@@ -282,7 +282,7 @@ test('the package\'s bin, in a directory with an install, runs that install\'s o
     'happened isn\'t known here.');
 });
 
-test('the package\'s bin runs the install\'s own command under the Bun flags it was started with, so an --env-file reaches that command\'s refusal', async () => {
+test('the package\'s bin runs the install\'s own command under the Bun flags it was started with, either spelling of --env-file included', async () => {
   const { work, root } = install();
   writeInstallCommand(root, '');
   release(root, '0.15.0', stubPackage(root, 'export async function main() { ' +

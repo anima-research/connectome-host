@@ -276,6 +276,31 @@ export function secretValues(
   return found;
 }
 
+export function addSecret(secrets: Secret[], secret: Secret): void {
+  if (!secrets.some((had) => had.name === secret.name && had.value === secret.value)) secrets.push(secret);
+}
+
+export function commandEnvOf(
+  env: Record<string, string | undefined>, names: string[], values: readonly Secret[],
+): Record<string, string> {
+  const out = withoutSecrets(env, names);
+  for (const [name, value] of Object.entries(out)) {
+    if (value !== '' && values.some((secret) => value === secret.value || value === secret.value.trim())) delete out[name];
+  }
+  return out;
+}
+
+export function readSecrets(
+  names: string[], envFile: string, env: Record<string, string | undefined>, found: Secret[], leftOut: string[] = [],
+): Secret[] {
+  for (let read = commandEnvOf(env, [...names, ...leftOut], found); ;) {
+    for (const secret of secretValues(names, envFile, env, read)) addSecret(found, secret);
+    const next = commandEnvOf(env, [...names, ...leftOut], found);
+    if (Object.keys(next).length === Object.keys(read).length) return found;
+    read = next;
+  }
+}
+
 export const DISCORD_TOKEN = 'DISCORD_TOKEN';
 
 const KNOWN_SECRETS: string[] = [...PROVIDER_SECRETS, DISCORD_TOKEN];
@@ -333,6 +358,17 @@ function spansOf(bytes: Buffer, secrets: Secret[]): Span[] {
   return spans;
 }
 
+export function shownByName(words: string, secrets: readonly Secret[]): string {
+  const bytes = Buffer.from(words, 'utf-8');
+  let text = '';
+  let at = 0;
+  for (const span of spansOf(bytes, secrets.filter(({ value }) => value.trim() !== ''))) {
+    text += `${bytes.toString('utf-8', at, span.start)}<${span.names[0]}>`;
+    at = span.end;
+  }
+  return text + bytes.toString('utf-8', at);
+}
+
 export function redactWindow(
   bytes: Buffer,
   from: number,
@@ -359,9 +395,6 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-/** The values the agent's side takes as secrets, by secretNames, from .env, the dotenv files beside it and env, each
- *  with its name: what setup's own lines show by its name, as a URL's host can carry one. The base URLs are left out,
- *  since such a line says where one leads. */
 export function storedSecretsIn(setupDir: string, envFile: string, env: Record<string, string | undefined>): Secret[] {
   let taken: string[];
   try {
@@ -369,6 +402,6 @@ export function storedSecretsIn(setupDir: string, envFile: string, env: Record<s
   } catch {
     taken = [...KNOWN_SECRETS, ...guessedNames(envFile)];
   }
-  return secretValues(taken.filter((name) => !name.endsWith('_BASE_URL')), envFile, env)
+  return readSecrets(taken.filter((name) => !name.endsWith('_BASE_URL')), envFile, env, [])
     .filter(({ value }) => value.trim() !== '');
 }
