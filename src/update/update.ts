@@ -303,7 +303,9 @@ export class HostUpdate {
     } catch (error) {
       return refused(`Which releases are installed can't be read: ${said(error)}`);
     }
-    if (to === null) return refused(`No release newer than ${this.need().running} is installed: Update installs one first.`);
+    if (to === null) {
+      return refused(`No release newer than ${this.need().running} is installed: ${ways.install} installs one first.`);
+    }
     if (expected !== undefined && to !== expected) {
       return refused(`The release installed to restart onto is now ${to}, not ${expected}, so nothing is restarting. ` +
         `Look at what ${to} costs, then ask again.`);
