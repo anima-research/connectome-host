@@ -356,7 +356,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
 async function ownUserStep(world: SetupWorld, out: (line: string) => void): Promise<SetupState | number> {
   if (!offersOwnUser(world)) return { v: 1 };
   adviseOwnUser(world, out);
-  const go = await yesNo(world, 'Continue with current installation (yes/no) [yes] ', true);
+  out('To give it that user, answer no: setup then says how to go on there.');
+  const go = await yesNo(world, `Go on as ${world.user}? (yes/no) [yes] `, true);
   if (go === null) return -1;
   if (go) return { v: 1 };
   goOnAsOwnUser(out);
