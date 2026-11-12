@@ -174,8 +174,8 @@ async function prune(here: ReleaseHere, version: string, ops: InstallOps, alsoNe
     if (typeof to === 'string') keep.add(to);
     unknown = current === null ? `${paths.current} isn't there`
       : label === null ? (readJournal(here.root).some((line) => line.step === 'copy' && line.outcome === 'ok')
-        ? 'the copy\'s label isn\'t there, though the journal records a copy taken, so it was lost and nothing says ' +
-          'which release a Go back needs'
+        ? 'the copy\'s label isn\'t there, though the journal records a copy taken, so it was lost or moved aside, and ' +
+          'nothing says which release a Go back needs'
         : 'the copy\'s label isn\'t there, and the journal records no copy taken, so nothing says which release a Go ' +
           'back needs')
       : typeof label.from !== 'string' ? `the copy's label at ${copyLabelPath(paths.copy)} names no release` : null;

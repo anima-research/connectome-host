@@ -1941,13 +1941,14 @@ describe("which fleet children an audit follows, and how", () => {
     expect(stderr).not.toContain(': opens');
   }, 60_000);
 
-  test("on a trial, a child's audit is listed in the children file while it runs, and taken out after, the file's other entries kept", async () => {
+  test("on a trial, a child's audit is listed in the children file while it runs, and taken out after, the file's other entries and its binding's stamp kept", async () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
     const file = childrenFilePath(parent.dir);
     const other = { name: 'other', pid: null, bootId: null, dataDir: join(root, 'other') };
     const sameName = { name: "kid's store audit", pid: process.pid, bootId: null, dataDir: join(root, 'kid') };
-    writeJsonAtomic(file, { v: 1, children: [other, 'not a child', sameName] });
+    const boundTo = join(root, 'bound-here');
+    writeJsonAtomic(file, { v: 1, children: [other, 'not a child', sameName], boundTo });
     const seen = join(root, 'seen.json');
     const extension = join(root, 'looks.ts');
     writeFileSync(extension, [
@@ -1962,8 +1963,8 @@ describe("which fleet children an audit follows, and how", () => {
     const { pid, file: during } = JSON.parse(readFileSync(seen, 'utf8'));
     let boot: string | null = null;
     try { boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null; } catch { }
-    expect(during).toEqual({ v: 1, children: [other, 'not a child', sameName, { name: "kid's store audit", pid, bootId: boot, dataDir: child.dir }] });
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 1, children: [other, 'not a child', sameName] });
+    expect(during).toEqual({ v: 1, children: [other, 'not a child', sameName, { name: "kid's store audit", pid, bootId: boot, dataDir: child.dir }], boundTo });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 1, children: [other, 'not a child', sameName], boundTo });
   }, 60_000);
 
   test("on a trial, a child's audit is listed with no boot id where the machine gives none, and goes on", async () => {

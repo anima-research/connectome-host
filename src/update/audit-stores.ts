@@ -665,7 +665,9 @@ function listAudit(file: string, entry: ChildrenFile['children'][number]): strin
   try {
     const held = readRecord<ChildrenFile>(file, "fleet's children file");
     if (held !== null && !Array.isArray(held.children)) return 'it has no list of children this release can read';
-    writeJsonAtomic(file, { v: 1, children: [...(held?.children ?? []), entry] });
+    writeJsonAtomic(file, {
+      v: 1, children: [...(held?.children ?? []), entry], ...(held?.boundTo !== undefined ? { boundTo: held.boundTo } : {}),
+    });
     return null;
   } catch (error) {
     return oneLine(error);
@@ -678,7 +680,7 @@ function unlistAudit(file: string, name: string, pid: number, quiet = false): vo
     if (held === null || !Array.isArray(held.children)) return;
     const children = held.children.filter((entry) => !(isChildEntry(entry) && entry.name === name && entry.pid === pid));
     if (children.length === held.children.length) return;
-    writeJsonAtomic(file, { v: 1, children });
+    writeJsonAtomic(file, { v: 1, children, ...(held.boundTo !== undefined ? { boundTo: held.boundTo } : {}) });
   } catch (error) {
     if (!quiet) console.error(`[update] couldn't take ${name} (pid ${pid}), which has ended, out of ${file}: ${oneLine(error)}`);
   }
