@@ -1187,7 +1187,7 @@ describe('setup--run', () => {
   test('keeps replacing a value it read from .env after a command changes it there', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="first-read-value"\n' });
     listSecrets(module, 'DISCORD_TOKEN');
-    await run(module, 'cp .env backup; sed -i s/first-read-value/second-read-value/ .env');
+    await run(module, 'cp .env backup; sed s/first-read-value/second-read-value/ backup > .env');
     expect(readEnvFile(join(dir, '.env')).get('DISCORD_TOKEN')).toBe('second-read-value');
     expect((await run(module, 'cat backup .env')).stdout.text).toBe('DISCORD_TOKEN="<DISCORD_TOKEN>"\nDISCORD_TOKEN="<DISCORD_TOKEN>"\n');
   });
