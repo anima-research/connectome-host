@@ -33,6 +33,7 @@ import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
 import { refusedWhileSwitching, trackOperatorWork } from './session-switch.js';
 import { formatQuotaReadout } from './quota-meter.js';
+import { consoleMethods, routeConsoleToLog } from './tui-console-log.js';
 import { recipeModel } from './recipe.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
 import { bunFloorNotice } from './bun-floor-check.js';
@@ -348,7 +349,10 @@ export async function runTui(app: AppContext): Promise<void> {
     return true;
   }) as typeof process.stderr.write;
 
+  const consoleBeforeRenderer = consoleMethods();
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  // After the renderer, which reassigns the console methods itself (#670).
+  const restoreConsole = routeConsoleToLog(logStream, consoleBeforeRenderer);
 
   let stopping = false;
 
@@ -3081,6 +3085,7 @@ export async function runTui(app: AppContext): Promise<void> {
     step('closing the fleet peek', cleanupPeekProc);
     step('destroying the renderer', () => renderer.destroy());
     step('resetting the title', () => { process.stdout.write('\x1b]0;\x07'); });
+    restoreConsole();
     process.stderr.write = origStderrWrite;
     const settled = async (): Promise<void> => {
       logEnded = true;
