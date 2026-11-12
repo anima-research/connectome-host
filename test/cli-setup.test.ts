@@ -1814,40 +1814,41 @@ async function promptOf(launch: AgentLaunch): Promise<string> {
   return JSON.parse(out) as string;
 }
 
-test('setup hands its agent the line that makes a user of its own, what it said beside it, and the linger line, on every run, each "none" in the prompt where setup has none', async () => {
-  const LINES = ['CONNECTOME_SETUP_OWN_USER_LINE', 'CONNECTOME_SETUP_OWN_USER_NOTE', 'CONNECTOME_SETUP_LINGER_LINE'];
-  const EXISTS = 'This machine already has a user named connectome. If an earlier line of setup\'s made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident\'s own, put a name no account here has in place of connectome, in the line and in what setup says after it.';
-  const UNKNOWN = 'Setup couldn\'t check whether this machine already has a user named connectome. The line makes it only where there\'s none: where there is one, the resident runs as that account.';
-  const offOnly = (user: string) => (user === 'alice' ? false : true);
-  const cases: [string, Partial<SetupWorld>, string[], (string | undefined)[]][] = [
-    ['linux', {}, [''], [OWN_LINE, undefined, undefined]],
-    ['a user named connectome', { userExists: (user: string) => user === 'connectome' }, [''], [OWN_LINE, EXISTS, undefined]],
-    ['no getent answer', { userExists: () => null }, [''], [OWN_LINE, UNKNOWN, undefined]],
-    ['linger off', { lingerOf: offOnly }, [''], [OWN_LINE, undefined, 'sudo loginctl enable-linger alice']],
-    ['linger off, no sudo', { lingerOf: offOnly, hasSudo: false }, [], [undefined, undefined, 'loginctl enable-linger alice']],
-    ['a Mac', { platform: 'darwin', lingerOf: () => null }, [], [undefined, undefined, undefined]],
-    ['no systemd', { lingerOf: () => null }, [], [undefined, undefined, undefined]],
-    ['run as connectome', { user: 'connectome' }, [], [undefined, undefined, undefined]],
-  ];
-  for (const [name, over, answers, wanted] of cases) {
-    const dir = directory();
-    const made = world(dir, { answers, secrets: [KEY] }, over);
-    expect(await runSetup(dir, ['discord'], made), name).toBe(0);
-    expect(LINES.map((line) => made.seen.launched!.env[line]), name).toEqual(wanted);
-    const again = world(dir, { answers: answers.slice(1), secrets: [KEY] }, over);
-    expect(await runSetup(dir, ['discord'], again), name).toBe(0);
-    expect(LINES.map((line) => again.seen.launched!.env[line]), `${name}, again`).toEqual(wanted);
-  }
+const AGENT_LINE_NAMES = ['CONNECTOME_SETUP_OWN_USER_LINE', 'CONNECTOME_SETUP_OWN_USER_NOTE', 'CONNECTOME_SETUP_LINGER_LINE'];
+const USER_EXISTS_NOTE = 'This machine already has a user named connectome. If an earlier line of setup\'s made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident\'s own, put a name no account here has in place of connectome, in the line and in what setup says after it.';
+const USER_UNKNOWN_NOTE = 'Setup couldn\'t check whether this machine already has a user named connectome. The line makes it only where there\'s none: where there is one, the resident runs as that account.';
+const lingerOffForAlice = (user: string) => (user === 'alice' ? false : true);
+const OWN_USER_CASES: [string, Partial<SetupWorld>, string[], (string | undefined)[]][] = [
+  ['linux', {}, [''], [OWN_LINE, undefined, undefined]],
+  ['a user named connectome', { userExists: (user: string) => user === 'connectome' }, [''], [OWN_LINE, USER_EXISTS_NOTE, undefined]],
+  ['no getent answer', { userExists: () => null }, [''], [OWN_LINE, USER_UNKNOWN_NOTE, undefined]],
+  ['linger off', { lingerOf: lingerOffForAlice }, [''], [OWN_LINE, undefined, 'sudo loginctl enable-linger alice']],
+  ['linger off, no sudo', { lingerOf: lingerOffForAlice, hasSudo: false }, [], [undefined, undefined, 'loginctl enable-linger alice']],
+  ['a Mac', { platform: 'darwin', lingerOf: () => null }, [], [undefined, undefined, undefined]],
+  ['no systemd', { lingerOf: () => null }, [], [undefined, undefined, undefined]],
+  ['run as connectome', { user: 'connectome' }, [], [undefined, undefined, undefined]],
+];
 
+test.each(OWN_USER_CASES)('setup hands its agent the line that makes a user of its own, what it said beside it, and the linger line, on every run: %s', async (name, over, answers, wanted) => {
+  const dir = directory();
+  const made = world(dir, { answers, secrets: [KEY] }, over);
+  expect(await runSetup(dir, ['discord'], made), name).toBe(0);
+  expect(AGENT_LINE_NAMES.map((line) => made.seen.launched!.env[line]), name).toEqual(wanted);
+  const again = world(dir, { answers: answers.slice(1), secrets: [KEY] }, over);
+  expect(await runSetup(dir, ['discord'], again), name).toBe(0);
+  expect(AGENT_LINE_NAMES.map((line) => again.seen.launched!.env[line]), `${name}, again`).toEqual(wanted);
+});
+
+test('setup\'s prompt gives each line setup has to show, and "none" for each it hasn\'t', async () => {
   const none = world(directory(), { secrets: [KEY] }, { platform: 'darwin', lingerOf: () => null });
   expect(await runSetup(none.world.cwd, ['discord'], none)).toBe(0);
   const bare = await promptOf(none.seen.launched!);
   expect(bare).toContain('Setup gives you the lines it shows the person, each "none" where it has none to show. Show one exactly as it is here, on a line of its own:\n- The line that makes the resident a user of its own: none\n- What setup says beside that line: none\n- The root line that turns linger on for alice: none');
   expect(bare).not.toContain('${');
-  const all = world(directory(), { answers: [''], secrets: [KEY] }, { lingerOf: offOnly, userExists: () => null });
+  const all = world(directory(), { answers: [''], secrets: [KEY] }, { lingerOf: lingerOffForAlice, userExists: () => null });
   expect(await runSetup(all.world.cwd, ['discord'], all)).toBe(0);
   const full = await promptOf(all.seen.launched!);
-  expect(full).toContain(`\n- The line that makes the resident a user of its own: ${OWN_LINE}\n- What setup says beside that line: ${UNKNOWN}\n- The root line that turns linger on for alice: sudo loginctl enable-linger alice`);
+  expect(full).toContain(`\n- The line that makes the resident a user of its own: ${OWN_LINE}\n- What setup says beside that line: ${USER_UNKNOWN_NOTE}\n- The root line that turns linger on for alice: sudo loginctl enable-linger alice`);
 });
 
 test('setup\'s recipe lets its agent use the setup module\'s tools and the clock, and none of a resident\'s', () => {
