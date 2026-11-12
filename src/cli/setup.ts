@@ -25,17 +25,19 @@ import {
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
 export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own setup agent, in the directory that ' +
-  'holds the install (from bunx, the directory it runs in). ' +
+  'holds the install (from bunx, the directory it runs in where that\'s empty or setup\'s, and ~/resident otherwise). ' +
   'Run again, it goes on where it stopped. Unlike the other commands, it runs this package\'s own setup unless ' +
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
+// The install root's name in the directory setup works in, as the package's command looks for it.
+const ROOT = 'connectome-host';
 const SURFACE = 'discord';
 export const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
@@ -68,9 +70,6 @@ export function firstLine(): string {
   return `${packageCommand()} setup ${SURFACE}`;
 }
 
-const RESIDENT = 'A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of ' +
-  'its own, which holds its memory and settings and names the service that keeps it running.';
-
 function homeDirectory(home: string | undefined): string | null {
   if (home === undefined || !isAbsolute(home)) return null;
   try {
@@ -78,6 +77,43 @@ function homeDirectory(home: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+function entriesOf(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+// A directory is setup's once it holds setup's lock or kept answers, or an install record.
+function setupsOwn(dir: string, root: string): boolean {
+  return existsSync(join(dir, '.setup', 'setup.lock')) || existsSync(join(dir, '.setup', 'setup-state.json')) ||
+    existsSync(join(root, 'install.json'));
+}
+
+function takes(dir: string): boolean {
+  try {
+    return entriesOf(dir).length === 0 || setupsOwn(dir, join(dir, ROOT));
+  } catch {
+    return true;
+  }
+}
+
+// Where setup works when the package's own command runs it: the directory it starts in where that is empty or
+// setup's, and ~/resident otherwise. With no home directory, the start directory, which setup then refuses.
+export function setupDirectory(cwd: string, home: string | undefined): string {
+  if (takes(cwd)) return cwd;
+  const at = homeDirectory(home);
+  return at === null ? cwd : join(at, 'resident');
+}
+
+function holds(dir: string, entries: string[], home: string | null): string {
+  return home !== null && dir === home ? `${dir} is your home directory`
+    : entries.every((entry) => entry.startsWith('.')) ? `${dir} holds hidden files, such as ${[...entries].sort()[0]}`
+      : `${dir} holds other files`;
 }
 
 export interface Ran {
@@ -159,8 +195,10 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   const setupDir = join(dir, '.setup');
   const statePath = join(setupDir, 'setup-state.json');
-  const entries = readdirSync(dir);
-  const ours = existsSync(join(setupDir, 'setup.lock')) || existsSync(statePath) || existsSync(join(root, 'install.json'));
+  const entries = entriesOf(dir);
+  const ours = setupsOwn(dir, root);
+  const home = homeDirectory(world.env.HOME);
+  const movedFrom = dir !== world.cwd && !takes(world.cwd) ? holds(world.cwd, entriesOf(world.cwd), home) : null;
   let kept = false;
   const stopped = () => {
     out(kept ? 'Setup stopped. Run it again in this directory to go on.'
@@ -168,52 +206,51 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   };
   if (!ours && entries.length > 0) {
-    const home = homeDirectory(world.env.HOME);
-    const what = home !== null && dir === home ? `${dir} is your home directory`
-      : entries.every((entry) => entry.startsWith('.')) ? `${dir} holds hidden files, such as ${[...entries].sort()[0]}`
-        : `${dir} holds other files`;
-    const elsewhere = () => {
-      if (home === null) {
-        err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
-          'directory for the resident where you can write, and run this same version of setup there. Its service takes ' +
-          'the directory\'s name:');
-      } else {
-        err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
-          'directory for the resident, and run this same version of setup there. Its service takes the directory\'s ' +
-          'name, so choose another than resident if you like, or if ~/resident is already there:');
-        err('  mkdir ~/resident && cd ~/resident');
-      }
-      err(`  ${firstLine()}`);
-      return 1;
-    };
-    if (!offersOwnUser(world) || home === null) return elsewhere();
-    out(`${RESIDENT} ${what}, so setup won't install there.`);
-    adviseOwnUser(world, out);
-    goOnAsOwnUser(out);
-    out(`To run the resident as this user, ${world.user}, run those two lines in a shell of yours instead.`);
-    out('Nothing was installed here.');
-    return 0;
-  }
-  mkdirSync(setupDir, { recursive: true, mode: 0o700 });
-  const lock = takeSetupLock(join(setupDir, 'setup.lock'));
-  if (lock === null) {
-    err(`Another setup is running in ${dir}, so this one does nothing. Wait for it to end, or end it, and run ` +
-      'setup again.');
+    const what = holds(dir, entries, home);
+    if (movedFrom !== null) {
+      err(`connectome setup: ${movedFrom}, and ${what} and no connectome-host install, so setup won't put its own in ` +
+        'either. Make an empty directory for the resident, named as you\'d like its service, and run this same version ' +
+        'of setup in it:');
+    } else {
+      err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
+        'directory for the resident where you can write, and run this same version of setup there. Its service takes ' +
+        'the directory\'s name:');
+    }
+    err(`  ${firstLine()}`);
     return 1;
   }
-  try {
+  const envFile = join(dir, '.env');
+  const takeLock = (): { release(): void } | null => {
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(setupDir, { recursive: true, mode: 0o700 });
+    const taken = takeSetupLock(join(setupDir, 'setup.lock'));
+    if (taken === null) {
+      err(`Another setup is running in ${dir}, so this one does nothing. Wait for it to end, or end it, and run ` +
+        'setup again.');
+      return null;
+    }
+    return taken;
+  };
+  const tidy = () => {
     rmSync(join(dir, '.env.tmp'), { force: true });
-    const envFile = join(dir, '.env');
+    const envStat = lstatSync(envFile, { throwIfNoEntry: false });
+    if (envStat?.isFile() && (envStat.mode & 0o077) !== 0) {
+      chmodSync(envFile, 0o600);
+      out(`${envFile} was open to others than ${world.user}, so setup made it readable by ${world.user} alone.`);
+    }
+  };
+  // In a directory that's setup's already, the lock comes before the questions. In one that's empty or not there yet,
+  // the first step's yes comes before setup makes anything there, its lock included.
+  let lock = ours ? takeLock() : undefined;
+  if (lock === null) return 1;
+  try {
+    if (lock !== undefined) tidy();
     const envStat = lstatSync(envFile, { throwIfNoEntry: false });
     if (envStat?.isSymbolicLink()) {
       err(`${envFile} is a link to ${readlinkSync(envFile)}. Setup keeps its key and its agent's secrets in .env as a ` +
         `file of its own, readable by ${world.user} alone, so it won't write through the link or over it. Replace the ` +
         'link with the file it leads to, if that\'s there, or take it away, and run setup again.');
       return 1;
-    }
-    if (envStat?.isFile() && (envStat.mode & 0o077) !== 0) {
-      chmodSync(envFile, 0o600);
-      out(`${envFile} was open to others than ${world.user}, so setup made it readable by ${world.user} alone.`);
     }
     let outside: EnvFormError | null;
     try {
@@ -233,14 +270,21 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     let state = 'state' in read ? read.state : null;
     if (state !== null) {
-      out(`Setup began here before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's agent ` +
-        'picks up where it stopped, and can change with you what it set up.');
+      out(`Setup began in ${dir} before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's ` +
+        'agent picks up where it stopped, and can change with you what it set up.');
+    } else {
+      out(`The resident will live in ${dir}${movedFrom === null ? '' : `${existsSync(dir) ? '' : ', which setup makes'}, ` +
+        `since ${movedFrom}`}. Its service is named after ${basename(dir)}.`);
     }
-    let emptied = false;
-    try {
-      emptied = readdirSync(root).length === 0;
-    } catch {
-    }
+    const rootSeen = (): string => {
+      try {
+        return readdirSync(root).length === 0 ? 'empty' : 'held';
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code ?? 'unreadable';
+      }
+    };
+    const rootBefore = rootSeen();
+    const emptied = rootBefore === 'empty';
     const lost = existsSync(root) && !emptied ? null
       : state?.finished !== undefined
         ? `This directory's install root, ${root}, ` +
@@ -267,13 +311,19 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       }
     }
     if (state === null) {
-      out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. As this user, ` +
-        `${world.user}, setup installs connectome-host ${version} here (about 0.8 GB of disk with the install's own ` +
-        'copy of it), unless that version is there already, checks an API key, and starts the host\'s setup agent, ' +
-        'which talks with you in this terminal to set up the resident.');
       const answered = await ownUserStep(world, out);
       if (typeof answered === 'number') return answered === -1 ? stopped() : answered;
       state = answered;
+    }
+    if (lock === undefined) {
+      lock = takeLock();
+      if (lock === null) return 1;
+      if (JSON.stringify(readSetupState(statePath)) !== JSON.stringify(read) || rootSeen() !== rootBefore) {
+        err(`Another setup ran in ${dir} while this one asked its questions, so this one keeps nothing and stops. ` +
+          'Run setup again: it goes on from what that setup kept.');
+        return 1;
+      }
+      tidy();
     }
     if ('unreadable' in read) {
       const aside = join(setupDir, `setup-state.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
@@ -289,12 +339,13 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       shell = exportedOf(world.env, env, world.cwd);
     } catch (error) {
       err(`${(error as Error).message}. Setup keeps what Bun reads from the dotenv files in ${world.cwd} away from ` +
-        'its agent, so it must read them: put that right, and run setup again.');
+        'its agent, so it must read them: put that right, and run setup again, or run setup from another directory, ' +
+        `such as ${home === null || world.cwd === home ? 'an empty one' : 'your home directory'}.`);
       return 1;
     }
     return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped });
   } finally {
-    lock.release();
+    lock?.release();
   }
 }
 
@@ -317,20 +368,44 @@ function adviseOwnUser(world: SetupWorld, out: (line: string) => void): void {
     `give it a user of its own. This line makes one, named ${OWN_USER}, unless a user by that name is there already, ` +
     'keeps its services running while it\'s logged out, and gives it Bun on its PATH. Run it where you can use sudo, ' +
     'and if a step fails, put right what it names and run the line again:');
-  // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
-  // bun.sh/install exits before adding Bun to PATH, or linking bunx, wherever a bun is on PATH already.
-  out(`  id -u ${OWN_USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${OWN_USER} && ` +
-    `sudo loginctl enable-linger ${OWN_USER} && ` +
-    `sudo -iu ${OWN_USER} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`);
-  const exists = world.userExists(OWN_USER);
+  out(`  ${OWN_USER_LINE}`);
+  const note = ownUserNote(world.userExists(OWN_USER));
+  if (note !== null) out(note);
+}
+
+// One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
+// bun.sh/install exits before adding Bun to PATH, or linking bunx, wherever a bun is on PATH already.
+const OWN_USER_LINE = `id -u ${OWN_USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${OWN_USER} && ` +
+  `sudo loginctl enable-linger ${OWN_USER} && ` +
+  `sudo -iu ${OWN_USER} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`;
+
+function ownUserNote(exists: boolean | null): string | null {
   if (exists === true) {
-    out(`This machine already has a user named ${OWN_USER}. If an earlier line of setup's made it for the resident, ` +
+    return `This machine already has a user named ${OWN_USER}. If an earlier line of setup's made it for the resident, ` +
       `open a shell as ${OWN_USER} and run setup there. Otherwise, for a user of the resident's own, put a name no ` +
-      `account here has in place of ${OWN_USER}, in the line and in what setup says after it.`);
-  } else if (exists === null) {
-    out(`Setup couldn't check whether this machine already has a user named ${OWN_USER}. The line makes it only where ` +
-      'there\'s none: where there is one, the resident runs as that account.');
+      `account here has in place of ${OWN_USER}, in the line and in what setup says after it.`;
   }
+  if (exists === null) {
+    return `Setup couldn't check whether this machine already has a user named ${OWN_USER}. The line makes it only ` +
+      'where there\'s none: where there is one, the resident runs as that account.';
+  }
+  return null;
+}
+
+function lingerLine(world: SetupWorld): string {
+  return `${world.hasSudo ? 'sudo ' : ''}loginctl enable-linger ${world.user}`;
+}
+
+// The lines setup can show the person, for its agent to show again; each is left out where setup has none.
+function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string, string> {
+  const lines: Record<string, string> = {};
+  if (offersOwnUser(world, linger)) {
+    lines.CONNECTOME_SETUP_OWN_USER_LINE = OWN_USER_LINE;
+    const note = ownUserNote(world.userExists(OWN_USER));
+    if (note !== null) lines.CONNECTOME_SETUP_OWN_USER_NOTE = note;
+  }
+  if (linger === false) lines.CONNECTOME_SETUP_LINGER_LINE = lingerLine(world);
+  return lines;
 }
 
 function goOnAsOwnUser(out: (line: string) => void): void {
@@ -339,9 +414,7 @@ function goOnAsOwnUser(out: (line: string) => void): void {
     `one from nvm is, install Node for ${OWN_USER} as well. \`command -v node\` shows where yours is: one in your home ` +
     'is yours alone.');
   out(`Then open a shell as ${OWN_USER}, with \`sudo -iu ${OWN_USER}\` where you can use sudo, or by whoever ran the ` +
-    'line, and run this same version of setup there, in a new directory for the resident. Its service takes the ' +
-    'directory\'s name, so choose another than resident if you like, or if ~/resident is already there:');
-  out('  mkdir ~/resident && cd ~/resident');
+    'line, and run this same version of setup there:');
   out(`  ${firstLine()}`);
 }
 
@@ -362,28 +435,11 @@ async function installAndStart(
       'when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
   }
   if (linger === false) {
-    out(`Linger is off for ${world.user}, so a service of ${world.user}'s would stop when ${world.user} logs out, and ` +
-      'the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once ' +
-      `${world.hasSudo ? 'with sudo, by you if you can use sudo here or by whoever administers this machine'
-        : 'as root, by you or by whoever administers this machine'}:`);
-    out(`  ${world.hasSudo ? 'sudo ' : ''}loginctl enable-linger ${world.user}`);
-    const can = existsSync(join(root, 'install.json')) ||
-      await yesNo(world, 'Can you run it, or have whoever administers this machine run it? (yes/no) ');
-    if (can === null) return stopped();
-    if (can) {
-      out('Run it any time before the resident\'s service is set up, in a second terminal or by whoever runs it for ' +
-        'you; setup goes on here meanwhile.');
-    } else {
-      out('Without it, the resident can\'t go live as a service. Setup\'s agent can still set up the rest with you, and ' +
-        'the service waits until linger is on.');
-      const go = await yesNo(world, 'Go on without it? (yes/no) ');
-      if (go === null) return stopped();
-      if (!go) {
-        out('Setup stopped before installing anything, and keeps your answers. Once linger is on, run this same version ' +
-          `of setup again here: \`${firstLine()}\`.`);
-        return 0;
-      }
-    }
+    out(`Linger is off for ${world.user}, so a service of ${world.user}'s stops when ${world.user} logs out. One line ` +
+      `turns it on, run once ${world.hasSudo ? 'with sudo. You can run it if you can use sudo here, or whoever ' +
+        'administers this machine can.' : 'as root. You or whoever administers this machine can run it.'} It can run ` +
+      'at any time before the resident goes live, and setup goes on meanwhile:');
+    out(`  ${lingerLine(world)}`);
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
       `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +
@@ -471,7 +527,8 @@ async function installAndStart(
   if (has(PACKAGE) !== version) wanted.push(`${PACKAGE}@${version}`);
   if (has(SERVERS.discord) === null) wanted.push(SERVERS.discord);
   if (wanted.length > 0) {
-    out(`Installing ${wanted.join(', ')} in ${dir}, with Bun:`);
+    out(`${wanted.includes(`${PACKAGE}@${version}`) ? 'With the install\'s own copy of it, made next, setup takes about ' +
+      '0.8 GB of disk here. ' : ''}Installing ${wanted.join(', ')} in ${dir}, with Bun:`);
     const added = await world.run([world.bun.path, '--no-env-file', 'add', ...wanted], { cwd: dir, env: programEnv, show: true });
     if (added.status !== 0) {
       err(`\`bun --no-env-file add ${wanted.join(' ')}\` didn't finish (${ended(added)}), so setup stops here.` +
@@ -538,29 +595,7 @@ async function installAndStart(
   }
   const { model } = read;
 
-  const command = installCommandOf(root, env.PATH);
-  if (settingUp) {
-    out(`This install's own command is ${command.path}.`);
-    if (command.pathLine !== null) {
-      const needs = 'Nothing setup or its agent does needs its directory on your PATH, so you need it there only to ' +
-        'type plain `connectome`.';
-      // The line is a Bourne shell's; other shells, such as fish and tcsh, set PATH their own way.
-      if (env.SHELL === undefined || ['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(basename(env.SHELL))) {
-        out(`${needs} For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it there:`);
-        out(`  ${command.pathLine}`);
-        out(`That line is for ${env.SHELL === undefined ? 'a Bourne shell, such as sh or bash, since SHELL names no shell'
-          : `${basename(env.SHELL)}, the login shell SHELL names`}; another shell sets PATH its own way.`);
-      } else {
-        out(`${needs} For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
-      }
-    }
-  }
-  if (settingUp) {
-    const typed = shellWord(command.path);
-    out('Once the resident runs, these take a newer release, in turn: the first says whether one is out, the second ' +
-      'installs it beside the one running, and the third switches the resident to it.');
-    for (const word of ['update', 'update install', 'update restart']) out(`  ${typed} ${word}`);
-  }
+  if (settingUp) out(`This install's own command is ${join(root, INSTALL_COMMAND)}.`);
 
   out('Starting the installed host once, on a mock recipe, to see that it starts.');
   const scratch = mkdtempSync(join(tmpdir(), 'connectome-setup-boot-'));
@@ -626,7 +661,8 @@ async function installAndStart(
   let fromDotEnv = key !== null;
   if (key === null && shell.ANTHROPIC_API_KEY) {
     const use = await yesNo(world, `An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup ` +
-      `writes it to ${envFile}, readable by you alone. (yes/no) `);
+      `writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `,
+    true);
     if (use === null) return stopped();
     if (use) key = shell.ANTHROPIC_API_KEY;
   }
@@ -669,7 +705,7 @@ async function installAndStart(
       key = null;
       continue;
     }
-    const again = await yesNo(world, 'Try this key again? (yes/no) ');
+    const again = await yesNo(world, 'Try this key again? (yes/no) [yes] ', true);
     if (!again) return stopped();
   }
   let held: Map<string, string>;
@@ -718,6 +754,7 @@ async function installAndStart(
       CONNECTOME_SETUP_SURFACE: 'Discord',
       CONNECTOME_SETUP_GUIDE: join(host, 'docs', 'AGENT-ONBOARDING.md'),
       CONNECTOME_SETUP_USER: world.user,
+      ...linesForAgent(world, linger),
       CONNECTOME_SETUP_COMMAND: shellWord(join(root, INSTALL_COMMAND)),
       CONNECTOME_UPDATE_CHECK: '0',
     },
@@ -873,8 +910,8 @@ async function yesNo(world: SetupWorld, question: string, enter?: boolean): Prom
   }
 }
 
-function offersOwnUser(world: SetupWorld): boolean {
-  return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null && world.user !== OWN_USER;
+function offersOwnUser(world: SetupWorld, linger = world.lingerOf(world.user)): boolean {
+  return world.platform === 'linux' && world.hasSudo && linger !== null && world.user !== OWN_USER;
 }
 
 function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {
@@ -946,13 +983,6 @@ function outputLines(ran: Ran): string[] {
 
 function dollars(amount: number): string {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
-}
-
-function startupFile(shell: string | undefined, platform: NodeJS.Platform): string {
-  const name = shell === undefined ? '' : basename(shell);
-  if (name === 'zsh') return '~/.zshrc';
-  if (name === 'bash') return platform === 'darwin' ? '~/.bash_profile' : '~/.bashrc';
-  return 'your shell\'s startup file';
 }
 
 export function costLine(model: string, gateway: boolean): string {
