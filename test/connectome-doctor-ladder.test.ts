@@ -42,7 +42,6 @@ async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dump
   const ticks = join(dir, 'ticks');
   const dump = join(dir, 'dump-line');
   writeFileSync(dump, '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}\n');
-  // A unit that logs to the journal gets the dump there, stamped as journald stamps a line it receives.
   const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; `
     : `printf "%s.000000 host bun[1]: %s\\n" "$(date +%s)" "$(cat ${dump})" >> ${join(dir, 'journal.txt')}; `;
   const trap = listens ? `trap '${dumpDelay ? `sleep ${dumpDelay}; ` : ''}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
