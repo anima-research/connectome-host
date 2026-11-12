@@ -1635,6 +1635,17 @@ test("on a host with a fleet child, the agent's Go back lines and its check's co
   expect(check).not.toContain('lifecycle--update back with data restore');
 });
 
+test("on a host with a fleet child running and no Go back yet, the agent's check names the person's restore in what going back after a switch can cost", async () => {
+  const { root, dataDir } = installRunning0141();
+  const { fleet } = fleetChild({ busy: false });
+  const host = residentHost({ root, dataDir, fleet });
+  expect(host.update.status().goBack).toBeNull();
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain("If it can't, going back means the person's connectome update back restore");
+  expect(check).not.toContain('lifecycle--update back with data restore');
+  expect(check).not.toContain("Restoring the copy is the person's here");
+});
+
 test('an armed restore is dropped where a fleet child starts while its host quiesces, and no mark is written', async () => {
   const { root, dataDir } = installRunning0141();
   placeCopyOf0140(root, dataDir);

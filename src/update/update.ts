@@ -639,7 +639,7 @@ export class HostUpdate {
       lastInstall: this.lastInstall,
       installed,
       goBack,
-      restoreHeld: goBack === null ? null : this.restoreHeld()?.why ?? null,
+      restoreHeld: here === null ? null : this.restoreHeld()?.why ?? null,
       restart: this.restart === null ? null : { ...this.restart, hosts: [...this.restart.hosts] },
       armed: this.armedSwitch(),
       armedDropped: this.armedDropped,
