@@ -2,21 +2,21 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { RESTART_EXIT_CODE, SUPERVISED_ENV } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy } from '../update/setup.js';
-import { agentState, childEnv, runsFrom, runsHere, showUnit, type ServiceSystem } from './service.js';
+import {
+  OWNER_PROPERTIES, agentState, childEnv, dropInLine, loadedOwner, reloadLine, showUnit, type ServiceSystem,
+} from './service.js';
 import type { ServiceUnit, ServiceUnits } from './service-unit.js';
 
 export interface ServiceCheck {
   passed: boolean;
   lines: string[];
   stopped?: true;
-  /** systemd runs the host's unit in another directory than this install's. */
   elsewhere?: true;
+  here?: true;
 }
 
 const RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
 
-/** `shell` says whether the recipe names a shell, null where that can't be told, or 'other' where the shell daemon's
- *  unit of this install's name is another install's, which doctor names itself, so it isn't checked here. */
 export function checkUnits(units: ServiceUnits, work: string, shell: boolean | null | 'other', cmd: string,
   sys: ServiceSystem, stoppedIsFine = false): ServiceCheck {
   const lines: string[] = [];
@@ -42,15 +42,27 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
     fail(state === 'gone' ? `${lead}${named}, is gone. ${install} writes it, or names what it needs first.`
       : `${lead}${named}, can't be looked at, so whether it's there can't be told: ${state.why}. ${state.repair}`);
   }
-  if (shell === false && pathState(units.shell.file) === 'there') {
-    lines.push(`The recipe names no shell, and ${units.shell.name} is installed: ${install} stops and removes it.`);
-  }
   const env = childEnv(sys);
+  const runsElsewhere = (unit: ServiceUnit, shown: Map<string, string>): string | null => {
+    const owner = loadedOwner(unit, work, sys, shown, pathState(unit.file) === 'there');
+    if (owner.kind !== 'other') return null;
+    return `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}.` +
+      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, `run ${install}`)}` : '');
+  };
+  if (shell === false && pathState(units.shell.file) === 'there') {
+    const removes = `The recipe names no shell, and ${units.shell.name} is installed: ${install} stops and removes it.`;
+    const shown = units.manager === 'systemd-user' ? showUnit(sys, env, units.shell.name, OWNER_PROPERTIES) : null;
+    const other = shown === null || typeof shown === 'string' ? null : runsElsewhere(units.shell, shown);
+    if (typeof shown === 'string') fail(`${shown}.`);
+    else if (other !== null) fail(other);
+    else lines.push(removes);
+  }
   if (units.manager === 'systemd-user') {
     let elsewhere = false;
+    let here = false;
     const shownAll = expected.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
-      'NRestarts', 'ExecMainStatus', 'ExecMainStartTimestamp', 'Environment', 'WorkingDirectory', 'ConditionResult',
-      'ConditionTimestamp', RESTART_PROPERTIES]));
+      'NRestarts', 'ExecMainStatus', 'ExecMainStartTimestamp', 'Environment', 'WorkingDirectory', 'FragmentPath',
+      'ConditionResult', 'ConditionTimestamp', RESTART_PROPERTIES]));
     const skipped = (shown: Map<string, string>): boolean =>
       shown.get('ConditionResult') === 'no' && (shown.get('ConditionTimestamp') ?? '') !== '';
     const stopped = stoppedIsFine && unseen === 0 && shownAll.every((shown) => typeof shown !== 'string' &&
@@ -91,15 +103,19 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
           : `, and its process last exited with ${shown.get('ExecMainStatus') ?? '?'}`;
         lines.push(restarts > 0 ? `${restarted}${exited}.` : `systemd hasn't restarted it since it was last started${exited}.`);
       }
+      const other = runsElsewhere(unit, shown);
+      if (other !== null) fail(other);
       if (unit !== units.host) continue;
       const policy = restartPolicy(shown);
-      if (!runsHere(runsFrom(shown.get('WorkingDirectory') ?? '', sys.home), work)) {
+      if (other !== null) {
         elsewhere = true;
-        fail(`systemd runs ${unit.name} in ${shown.get('WorkingDirectory') || 'no set directory'}, not ${work}.`);
       } else if (policy.restarts) {
+        here = true;
         lines.push(`It restarts the host when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}).`);
       } else {
-        fail(`It doesn't restart the host both when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}).`);
+        here = true;
+        fail(`It doesn't restart the host both when it exits with ${RESTART_EXIT_CODE} and with 1 (${policy.settings}). ` +
+          dropInLine(sys, unit.name));
       }
       if (new RegExp(`(^|\\s)${SUPERVISED_ENV}=1(\\s|$)`).test(shown.get('Environment') ?? '')) {
         lines.push(`Its unit sets ${SUPERVISED_ENV}=1.`);
@@ -108,7 +124,8 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
           `host on ${RESTART_EXIT_CODE} and 1.`);
       }
     }
-    return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}), ...(elsewhere ? { elsewhere: true as const } : {}) };
+    return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}), ...(elsewhere ? { elsewhere: true as const } : {}),
+      ...(here ? { here: true as const } : {}) };
   }
   const states = expected.map((unit) => agentState(sys, env, unit));
   const stopped = stoppedIsFine && unseen === 0 && states.every((state) => state.kind === 'unloaded');

@@ -169,9 +169,9 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
       throw new DotenvTimeoutError(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
     }
     if (ran.error || ran.status !== 0) {
-      const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);
       const how = ran.error ? ran.error.message : ran.status === null ? `killed by ${ran.signal}` : `exit ${ran.status}`;
-      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}${last ? `: ${last}` : ''})`);
+      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}), and its error isn't shown, since it can hold ` +
+        'their values: run `bun --config=/dev/null -e 0` there to see it');
     }
     let read: Record<string, unknown> | null = null;
     try {
@@ -201,12 +201,15 @@ export function envForm(path: string): EnvFormError | null {
   return outside.length > 0 ? new EnvFormError(path, outside) : null;
 }
 
-export class EnvLinkError extends Error {}
+export class EnvLinkError extends Error {
+  constructor(readonly path: string, target: string) {
+    super(`${path} is a link to ${target}, and it's written only as a file of its own, not through a link or over one`);
+  }
+}
 
 export function envLink(path: string): EnvLinkError | null {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
-  return new EnvLinkError(`${path} is a link to ${readlinkSync(path)}, and it's written only as a file of its own, ` +
-    'not through a link or over one');
+  return new EnvLinkError(path, readlinkSync(path));
 }
 
 export function writeEnvValue(path: string, name: string, value: string): void {
@@ -382,6 +385,22 @@ export function shownByName(words: string, secrets: readonly Secret[]): string {
     at = span.end;
   }
   return text + bytes.toString('utf-8', at);
+}
+
+export function linesKeepingSecrets(text: string, secrets: Secret[]): string[] {
+  const bytes = Buffer.from(text, 'utf-8');
+  const spans = spansOf(bytes, secrets);
+  const lines: string[] = [];
+  let from = 0;
+  let next = 0;
+  for (let at = bytes.indexOf(10); at >= 0; at = bytes.indexOf(10, at + 1)) {
+    while (next < spans.length && spans[next]!.end <= at) next += 1;
+    if (next < spans.length && spans[next]!.start <= at) continue;
+    lines.push(bytes.toString('utf-8', from, at));
+    from = at + 1;
+  }
+  lines.push(bytes.toString('utf-8', from));
+  return lines;
 }
 
 export function redactWindow(

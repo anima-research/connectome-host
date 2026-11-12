@@ -1878,7 +1878,7 @@ describe('setup--ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).get('DISCORD_TOKEN')).toBe('the-new-token');
   });
 
-  test('asks nothing while .env is a link, to a file, a directory, a file this user can\'t read, or nothing, saying where it leads and what the person can do, and leaves the link as it was', async () => {
+  test('asks nothing while .env is a link, to a file, a directory, a file this user can\'t read, or nothing, saying how the person sees where it leads, and what they can do, and leaves the link as it was', async () => {
     const elsewhere = scratch();
     const targets: Array<[string, string]> = [
       ['a file', join(elsewhere, 'shared.env')],
@@ -1898,7 +1898,7 @@ describe('setup--ask_secret', () => {
       const { module } = install({ dir, asker: { ask: async () => { asked = true; return 'a-new-secret'; } } });
       const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' });
       expect(result.isError, what).toBe(true);
-      expect(result.error, what).toBe(`Nothing was asked, so nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link to ${target}, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so.`);
+      expect(result.error, what).toBe(`Nothing was asked, so nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so, and that \`ls -l\` on it, in a terminal of their own, shows where it leads.`);
       expect(asked, what).toBe(false);
       expect(lstatSync(join(dir, '.env')).isSymbolicLink(), what).toBe(true);
       expect(existsSync(target) ? statSync(target).mode & 0o777 : null, what).toBe(modeBefore);
@@ -1906,7 +1906,7 @@ describe('setup--ask_secret', () => {
     expect(readFileSync(join(elsewhere, 'shared.env'), 'utf-8')).toBe('PORT=8080\n');
   });
 
-  test('stores nothing through or over a .env made a link while it asks, to a file that holds the value, a directory or a file this user can\'t read, saying where it leads and what the person can do, and leaves the link and its target as they were', async () => {
+  test('stores nothing through or over a .env made a link while it asks, to a file that holds the value, a directory or a file this user can\'t read, saying how the person sees where it leads, and what they can do, and leaves the link and its target as they were', async () => {
     const elsewhere = scratch();
     const holding = join(elsewhere, 'shared.env');
     writeFileSync(holding, 'PORT=8080\nDISCORD_TOKEN="linked-value"\n');
@@ -1919,12 +1919,32 @@ describe('setup--ask_secret', () => {
       const { module } = install({ dir, asker: { ask: async () => { symlinkSync(target, join(dir, '.env')); return 'linked-value'; } } });
       const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' });
       expect(result.isError, target).toBe(true);
-      expect(result.error, target).toBe(`Nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link to ${target}, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so.`);
+      expect(result.error, target).toBe(`Nothing was stored as DISCORD_TOKEN: ${join(dir, '.env')} is a link, and it's written only as a file of its own, not through a link or over one. Asking again won't help until the person replaces the link with the file it leads to, if that's there, or takes it away; tell them so, and that \`ls -l\` on it, in a terminal of their own, shows where it leads.`);
       expect(lstatSync(join(dir, '.env')).isSymbolicLink(), target).toBe(true);
       expect(statSync(target).mode & 0o777, target).toBe(modeBefore);
     }
     expect(readFileSync(holding, 'utf-8')).toBe('PORT=8080\nDISCORD_TOKEN="linked-value"\n');
     expect(statSync(holding).mode & 0o777).toBe(0o644);
+  });
+
+  test('before it knows which values are secret, each tool refuses a .env that is a link without its target, naming what the person runs in a terminal of their own to see where it leads', async () => {
+    const SECRET = 'sk-linked-583-secret';
+    const call = (module: SetupModule, name: string, input: Record<string, unknown>) =>
+      module.handleToolCall({ id: 'c12', name, input } as ToolCall);
+    const linkedTools: Array<[string, Record<string, unknown>]> = [
+      ['discord', {}], ['check_model', { name: 'OPENAI_API_KEY', model: 'gpt-test' }], ['ask_secret', { name: 'OPENAI_API_KEY', purpose: 'a key' }],
+    ];
+    for (const [name, input] of linkedTools) {
+      const dir = scratch();
+      writeFileSync(join(dir, `target-${SECRET}.env`), 'DISCORD_TOKEN="t"\nOPENAI_API_KEY="k"\n');
+      symlinkSync(`target-${SECRET}.env`, join(dir, '.env'));
+      const { module } = install({ dir, asker: { ask: async () => 'x' }, env: { OPENAI_API_KEY: SECRET } });
+      const result = await call(module, name, input);
+      expect(result.success, name).toBe(false);
+      expect(result.error, name).not.toContain(SECRET);
+      expect(result.error, name).toContain(`${join(dir, '.env')} is a link, and it's written only as a file of its own`);
+      expect(result.error, name).toContain('tell them so, and that `ls -l` on it, in a terminal of their own, shows where it leads.');
+    }
   });
 
   modeTest('says it isn\'t known whether a value was stored when its directory refuses the write to .env, and leaves no copy of it beside .env', async () => {
@@ -3019,8 +3039,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
   });
 
-  test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says, in place of the connection advice, that setup--discord checks it again, to the agent, and doctor, to the person', async () => {
-    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+  test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says, in place of the connection advice, that setup--discord checks it again, to the agent, and that setup\'s agent can check it with setup--discord, to the person', async () => {
+    const BUSY = ' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.';
     const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
     const CONNECTION = ' Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to ' +
       'check it again, or go on with it unchecked.';
@@ -3035,14 +3055,33 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord may be busy with tells the person to run doctor by the install command setup started its host with, and by connectome without one', async () => {
+  test('a token Discord may be busy with tells the person setup--discord checks it again, which runs before any service does, and names no doctor, whatever command setup started its host with', async () => {
     const busy = (async () => new Response('<html>busy</html>', { status: 503, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const page = (async () => Response.json({ message: 'Service Unavailable' }, { status: 503 })) as unknown as typeof fetch;
-    for (const [env, command] of [[{ CONNECTOME_SETUP_COMMAND: "'/srv/a b/connectome-host/connectome'" }, "'/srv/a b/connectome-host/connectome'"], [{}, 'connectome']] as const) {
+    for (const env of [{ CONNECTOME_SETUP_COMMAND: "'/srv/a b/connectome-host/connectome'" }, {}]) {
       for (const answer of [busy, page]) {
         const token = install({ asker: typed('a-busy-token'), fetch: answer, env });
         await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-        expect(token.shown.join('\n'), command).toContain(` It may be busy: \`${command} doctor\` checks the token again when it runs.`);
+        const said = token.shown.join('\n');
+        expect(said).toContain(' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.');
+        expect(said).not.toContain('doctor');
+      }
+    }
+  });
+
+  test('a token check shows and tells another stored secret that Discord\'s answer holds by its name, and the new token by its own', async () => {
+    const OTHER = 'sk-stored-583-other';
+    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}-a-checked-token` })) as unknown as typeof fetch;
+    const down = (async () => Response.json({ message: `down for ${OTHER} and a-checked-token` }, { status: 503 })) as unknown as typeof fetch;
+    for (const answer of [named, down]) {
+      const token = install({ asker: typed('a-checked-token'), fetch: answer, envFile: `OPENAI_API_KEY="${OTHER}"\n` });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(told.success, told.error).toBe(true);
+      for (const said of [String(told.data), token.shown.join('\n')]) {
+        expect(said).toContain('<OPENAI_API_KEY>');
+        expect(said).toContain('<DISCORD_TOKEN>');
+        expect(said).not.toContain(OTHER);
+        expect(said).not.toContain('a-checked-token');
       }
     }
   });
@@ -3058,8 +3097,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then, in place of asking for it again, that setup--discord checks it again after any wait Discord asks, to the agent, and that doctor does, to the person', async () => {
-    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then, in place of asking for it again, that setup--discord checks it again after any wait Discord asks, to the agent, and that setup\'s agent can check it with setup--discord, to the person', async () => {
+    const BUSY = ' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.';
     const AGAIN = ' Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
     const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
     const WAIT = ' It asks for 3 s: call setup--discord once that has passed, which checks the stored token first.';
