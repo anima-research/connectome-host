@@ -580,6 +580,34 @@ test('a setup whose directory another setup kept answers in, or made an install 
   }
 });
 
+test('a setup whose directory, empty or not there, gained other files while it asked its first step keeps nothing there and stops, and installs nothing', async () => {
+  for (const there of [true, false]) {
+    const start = directory();
+    const dir = there ? start : join(start, 'resident');
+    const made = world(start, { answers: [''], secrets: [KEY] });
+    const { ask } = made.world;
+    made.world.ask = async (question) => {
+      const answer = await ask(question);
+      if (question === CONTINUE) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'package.json'), '{"name":"theirs"}\n');
+      }
+      return answer;
+    };
+    expect(await runSetup(dir, ['discord'], made), String(there)).toBe(1);
+    expect(made.seen.err, String(there)).toEqual([
+      `${dir} ${there ? 'was empty' : 'wasn\'t there'} when setup began, and holds other files now, such as package.json, ` +
+        'so setup keeps nothing there and stops. Make a new directory for the resident where you can write, and run ' +
+        'this same version of setup there:',
+      `  ${firstLine()}`,
+    ]);
+    expect(made.seen.ran, String(there)).toEqual([]);
+    expect(made.seen.launched, String(there)).toBeNull();
+    expect(readFileSync(join(dir, 'package.json'), 'utf-8')).toBe('{"name":"theirs"}\n');
+    expect(existsSync(join(dir, '.setup', 'setup-state.json')), String(there)).toBe(false);
+  }
+});
+
 test('where HOME isn\'t an absolute path to a directory, setup makes no directory for the resident: it sends the person to make one, before any question', async () => {
   for (const home of [undefined, 'relative/home', '/nonexistent-home-for-setup-test']) {
     const dir = directory();
