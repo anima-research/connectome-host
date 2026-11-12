@@ -67,7 +67,6 @@ function lineReader(socket: Socket): Array<Record<string, unknown>> {
   return events;
 }
 
-// As journald keeps a unit's output: each line of either stream, stamped with when it came.
 function journalOf(stream: NodeJS.ReadableStream, path: string, pid: number): void {
   let buf = '';
   stream.setEncoding('utf8');
