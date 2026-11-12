@@ -315,6 +315,19 @@ describe('each way named as its caller names it', () => {
     }
   });
 
+  test('after a fallback that kept no lines, the agent is sent to the person for the log, and a person to the log', () => {
+    for (const trialLog of [null, [], ['', '']]) {
+      const last: SwitchOutcome = { ...fellBack, trialLog };
+      const agent = statusLines({ ...base, lastSwitch: last }, TOOL_WAYS).at(-1) ?? '';
+      expect(agent).toEndWith("The service's log, or the terminal your host was started in, says more, and the person " +
+        'who runs your host can read either: ask them.');
+      for (const ways of [COMMAND_WAYS, PAGE_WAYS]) {
+        expect(statusLines({ ...base, lastSwitch: last }, ways).at(-1))
+          .toEndWith("The service's log, or the terminal the host was started in, says more.");
+      }
+    }
+  });
+
   test('a trial log keeps its blank lines', () => {
     const lines = statusLines({ ...base, lastSwitch: fellBack });
     expect(lines.slice(-3)).toEqual(['  loading the recipe', '  ', '  Error: no such recipe']);
