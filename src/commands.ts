@@ -1541,10 +1541,23 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
   const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
+  // A count that isn't a whole number above 0 is refused, naming it, as
+  // /budget refuses a token count: "1e309" read as Infinity and
+  // slice(-Infinity) printed the whole store to every client, and "abc",
+  // "0" or "-5" fell back to 20 without a word.
+  let count = 20;
+  if (countArg !== undefined) {
+    const n = Number(countArg);
+    if (!Number.isSafeInteger(n) || n <= 0) {
+      return { lines: [{ text: `Invalid message count: "${countArg}". Examples: 20, 200`, style: 'system' }] };
+    }
+    count = n;
+  }
+
   const { messages } = cm.queryMessages({});
   const lines: Line[] = [{ text: `--- History (${messages.length} messages) ---`, style: 'system' }];
 
-  const recent = messages.slice(-(countArg && Number(countArg) > 0 ? Number(countArg) : 20));
+  const recent = messages.slice(-count);
   for (const msg of recent) {
     const text = msg.content
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')

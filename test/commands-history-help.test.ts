@@ -32,6 +32,17 @@ test("/help's /history line says what /history shows: the last n messages, and h
   ]);
 });
 
+test('/history refuses a count that is not a whole number above 0, naming it, and a count past the store shows the whole store', () => {
+  // "1e309" read as Infinity, and slice(-Infinity) printed every message to
+  // every client; "abc", "0" and "-5" fell back to 20 without a word.
+  for (const bad of ['1e309', 'abc', '0', '-5', '2.5', '1e9999', 'NaN', 'Infinity']) {
+    const lines = handleCommand(`/history ${bad}`, appWithMessages(30)).lines.map((l) => l.text);
+    expect(lines).toEqual([`Invalid message count: "${bad}". Examples: 20, 200`]);
+  }
+  expect(rows('/history 5000', 30)).toHaveLength(30);
+  expect(rows('/history 1', 30)).toHaveLength(1);
+});
+
 // /branchto looks its id up in the command agent's context (app.agentName,
 // else the primary), so /history and /find, which give the ids, and
 // /branches read that context too, not the first registered agent's: each
