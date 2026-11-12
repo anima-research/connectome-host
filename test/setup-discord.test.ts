@@ -150,7 +150,7 @@ describe('setup--discord', () => {
       .toEqual([{ id: '201', name: 'lobby', category: null, view: true, send: true }]);
   });
 
-  test('given a server and a username, it asks Discord for up to ten members whose username or nickname starts with it, and gives them', async () => {
+  test('given a server and a username, it asks Discord for up to 1,000 members, its most, whose username or nickname starts with it, and gives them', async () => {
     const discord = fakeDiscord([HOME]);
     const { module } = install(discord);
     const r = await read(module, { server: '100', username: 'ada' });
@@ -162,25 +162,34 @@ describe('setup--discord', () => {
         { id: '701', username: 'adam.k', displayName: 'Adam', nickname: null },
       ],
     });
-    expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=11');
+    expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=1000');
     const half = await read(module, { username: 'ada' });
     expect(half.success).toBe(false);
     expect(half.error).toContain('given both server');
   });
 
-  test('where more than ten members match, it gives ten and says more match, so a longer start can find the rest', async () => {
-    const many: FakeServer = {
+  test('where more members match than one answer holds, it gives the first that fit and says how many matched, so a longer start narrows them', async () => {
+    const matching = (count: number): FakeServer => ({
       ...HOME,
-      members: [...Array.from({ length: 11 }, (_, i) => ({ id: `${710 + i}`, username: `ada${i}` })), { id: '900', username: 'ember' }],
-    };
-    const r = await read(install(fakeDiscord([many])).module, { server: '100', username: 'ada' });
-    expect(r.success).toBe(true);
-    const data = r.data as { members: Array<{ username: string }>; note?: string };
-    expect(data.members.map((m) => m.username)).toEqual(Array.from({ length: 10 }, (_, i) => `ada${i}`));
-    expect(data.note).toBe('More members match: call setup--discord again with more of the username or nickname.');
-    const ten = await read(install(fakeDiscord([{ ...many, members: many.members.slice(1) }])).module, { server: '100', username: 'ada' });
-    expect((ten.data as { members: unknown[] }).members).toHaveLength(10);
-    expect(ten.data).not.toHaveProperty('note');
+      members: [...Array.from({ length: count }, (_, i) => ({ id: `${10_000 + i}`, username: `ada${i}`, global_name: `Ada the ${i}th`, nick: `ada of the garden ${i}` })), { id: '900', username: 'ember' }],
+    });
+    const capped = (module: SetupModule, resultMaxChars?: number) =>
+      module.handleToolCall({ id: 'd1', name: 'discord', input: { server: '100', username: 'ada' }, ...(resultMaxChars ? { resultMaxChars } : {}) } as ToolCall);
+    const thirty = install(fakeDiscord([matching(30)])).module;
+    const all = await capped(thirty);
+    expect((all.data as { members: unknown[] }).members).toHaveLength(30);
+    expect(all.data).not.toHaveProperty('note');
+    const cut = await capped(thirty, 1_000);
+    expect(JSON.stringify(cut.data).length).toBeLessThanOrEqual(1_000);
+    const data = cut.data as { members: Array<{ username: string }>; note: string };
+    expect(data.members.length).toBeGreaterThan(0);
+    expect(data.members.length).toBeLessThan(30);
+    expect(data.members.map((m) => m.username)).toEqual(Array.from({ length: data.members.length }, (_, i) => `ada${i}`));
+    expect(data.note).toBe(`${data.members.length} of the 30 members that match are shown, since one answer can't hold more: call setup--discord again with more of the username or nickname.`);
+    const most = await capped(install(fakeDiscord([matching(1_001)])).module);
+    const top = most.data as { members: unknown[]; note: string };
+    expect(JSON.stringify(top).length).toBeLessThanOrEqual(24_000);
+    expect(top.note).toBe(`${top.members.length} of the 1000 members that match, the most Discord gives, are shown, since one answer can't hold more, and more may match: call setup--discord again with more of the username or nickname.`);
   });
 
   test('given a server alone, it reads that one server as the full read gives it, without listing the others', async () => {
