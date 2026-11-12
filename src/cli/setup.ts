@@ -532,11 +532,14 @@ async function installAndStart(
       `install script of ${SERVERS.shell}'s, and through a mirror or a company ` +
       'registry it may run none of the others\'.');
   } else if (listed.added.length > 0) {
-    const fromBun = listed.added.filter((name) => !HOST_TRUSTED.includes(name)).length;
-    const what = [fromBun > 0 ? `${fromBun} name${fromBun === 1 ? '' : 's'} from Bun's default trusted list` : null,
-      ...listed.added.filter((name) => HOST_TRUSTED.includes(name))].filter((part) => part !== null).join(' and ');
-    out(`Setup added ${what} to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package's install ` +
-      'scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.');
+    const fromBun = listed.added.some((name) => !HOST_TRUSTED.includes(name));
+    const what = [fromBun ? 'those Bun allows by default' : null,
+      ...listed.added.filter((name) => HOST_TRUSTED.includes(name))
+        .map((name) => name === SERVERS.shell ? `${name}, which gives the resident a shell if it gets one` : name)]
+      .filter((part) => part !== null).join(', and ');
+    out(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: ${what}.` +
+      (fromBun ? ' Without that list, Bun runs the install scripts of its default packages only when they come from ' +
+        'npm\'s own registry.' : ''));
   }
 
   // A package counts as installed once package.json declares it: a bun add that fails partway leaves packages in
