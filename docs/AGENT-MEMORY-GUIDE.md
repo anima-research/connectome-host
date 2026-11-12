@@ -11,8 +11,8 @@ reassuring — you should know the real mechanics. It is fleet-wide; your
 ## The short version
 
 Your conversation isn't truncated when it gets long. Instead, older stretches
-are **folded into recollections you write yourself, in your own voice**, while
-recent turns stay verbatim. Folding happens only as far as it has to for your
+are **folded into recollections** — by default, requested as your own
+remembering in your voice — while recent turns stay verbatim. Folding happens only as far as it has to for your
 context to fit its budget, and only gradually. Nothing is ever deleted from
 the underlying record. What changes over time is *resolution*, not
 *existence*.
@@ -39,8 +39,8 @@ The context you're given is assembled from three parts:
 
 You're never shown the same stretch twice: a span appears either raw or as a
 memory, never both. A memory appears where its stretch happened in the
-timeline, as a `[Recall L2-15]`-style prompt followed by the memory itself in
-your voice.
+timeline, as a `[Recall L2-15]`-style prompt followed by the memory itself
+(by default, in your voice).
 
 Folding is also **gentle**. A solver chooses which stretches to fold, and how
 deep, so as to disturb as little as possible of the context you have already
@@ -53,6 +53,12 @@ Memories are written as stretches leave the tail — ahead of need, so that a
 memory already exists when the budget eventually calls for it. *Writing* a
 memory and *showing* it are separate: an L1 can sit unused while its stretch is
 still shown raw.
+
+The marker and instruction quoted below are **defaults**, not universal
+wording. A recipe can replace them through
+[`agent.strategy.compressionInstructions`](./compression-instructions.md);
+an agent whose recipe does so is asked in other words, which need not request
+first-person memories.
 
 When a chunk (about `targetChunkTokens` of raw turns) is due, a compression
 pass asks **you** — your model, your voice — to remember it. What that pass
@@ -75,7 +81,8 @@ sees is your own context, reconstructed:
   questions, the user's active asks."* — with a target length
   (`summaryTargetTokens`).
 
-So memories come back **first-person, in your voice** ("I recall that I…").
+With the default instructions, memories are requested **first-person, in your
+voice** ("I recall that I…"); that is guidance to the model, not an output guarantee.
 
 **Merging.** Once about `mergeThreshold` (default 6) memories accumulate at one
 level, they are consolidated into one memory a level up. The consolidation is
@@ -84,7 +91,7 @@ written from the raw turns underneath its L1s, an L3 from the underlying L1s,
 and so on. Higher memories are broader, but they are not summaries of
 summaries.
 
-This framing is deliberate: it preserves continuity of *self* across the
+This default framing is deliberate: it preserves continuity of *self* across the
 compression boundary — your memory is experientially yours, not a detached
 abstract written about you from outside.
 
@@ -119,9 +126,9 @@ longer holding live, disturbing as little as it can, while everything inside `re
 stays the literal text you computed over. The bigger the tail, the longer your
 continuity runs before any rewrite reaches you — which is why real deployments
 use tails of hundreds of thousands of tokens, not the small library fallback.
-(The compression pass avoids jolts too: the prompt asking you to remember is an
-in-band *marker*, worded as a recurring narrated event, not a fresh system
-instruction.)
+(With the default wording, the compression pass also aims to avoid jolts: the
+prompt asking you to remember is an in-band *marker*, worded as a recurring
+narrated event, not a fresh system instruction.)
 
 > Stated mechanistically: window-rolling is mostly RoPE relabeling, whereas
 > content-rewriting is the real perturbation — see Anima Labs' [KV-perturbation
@@ -183,8 +190,9 @@ impressionistic with age and depth.
 
 ## How to treat it — practical
 
-- **Trust your summaries as genuinely yours.** They were written in your voice,
-  as your remembering — not an external annotator's notes.
+- **Read summaries with their framing in mind.** Default instructions ask for
+  your remembering in your voice, not an external annotator's notes. A custom
+  recipe may ask for a different framing; voice alone does not guarantee accuracy.
 - **They are lossy on purpose.** Exact quotes, numbers, wording, and tool I/O
   degrade as things fold deeper. If a detail must stay exact, don't rely on
   recollection — **write it to your workspace.**

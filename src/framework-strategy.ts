@@ -6,63 +6,14 @@ import {
   type FrameworkConfig,
   type SubconsciousConfig,
 } from '@animalabs/agent-framework';
+import { AutobiographicalStrategy as HostAutobiographicalStrategy } from '@animalabs/context-manager';
 import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
 import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
 import { resolvePromptCaching } from './framework-agent-config.js';
 import { defaultRecentWindowTokens, headWindowTokens } from './recipe-fit.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
-
-const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
-  'enforceBudget',
-  'maxSpeculativeL1s',
-  'compressionRefusalCurveFallbacks',
-  'compressionContextBudgetTokens',
-  'compressionSourceOnly',
-  'compressionSourceOnlyFallback',
-  'compressionMergeSourceOnly',
-  'compressionMergeSourceOnlyFallback',
-  'compressionToolProseFallback',
-  'compressionSplitFallback',
-  'compressionSplitPlaceholder',
-  'compressionSplitMaxCallsPerChunk',
-  'compressionSplitMaxCallsPer10Min',
-  'compressionRecallBudgetTokens',
-  'recoverLiteralThinkingWrappedCompression',
-  'positionedRecallPairs',
-  'recallHeaderTemplate',
-  'carrierPolicy',
-  'targetChunkTokens',
-  'mergeThreshold',
-  'mergeMaxSourceSpanMessages',
-  'summaryTargetTokens',
-  'productionBudgetTokens',
-  'l1BudgetTokens',
-  'l2BudgetTokens',
-  'l3BudgetTokens',
-  'toolResultMaxLastN',
-  'toolUseInputMaxTokens',
-  'maxLiveImages',
-  'imageStripDepthTokens',
-  'maxLiveImageBytes',
-  'adaptiveResolution',
-  'kvStableReachTokens',
-  'kvStableQualityGapRatio',
-  'compressionSlackRatio',
-  'overBudgetGraceRatio',
-  'foldingStrategy',
-  'kvUnified',
-  'speculativeProduction',
-  'l1HoldbackChunks',
-  'summaryParticipant',
-  'summarySystemPrompt',
-  'summaryUserPrompt',
-  'summaryContextLabel',
-  'witnessedBeforeSequence',
-  'witnessedInstruction',
-  'identityReminder',
-  'witnessedIdentityReminder',
-];
+import { PASSTHROUGH_KEYS, validateBuiltinStrategy } from './recipe-strategy.js';
 
 /**
  * Cache prices are multiples of the model's base input price, as the
@@ -126,6 +77,7 @@ export function buildFrameworkStrategy(
   agentName?: string,
 ): ContextStrategy {
   const strategyConfig = recipe.agent.strategy;
+  if (strategyConfig) validateBuiltinStrategy(strategyConfig as unknown as Record<string, unknown>);
   const strategyType = strategyConfig?.type ?? 'autobiographical';
 
   if (!isBuiltinStrategyType(strategyType)) {
@@ -142,6 +94,15 @@ export function buildFrameworkStrategy(
       model,
       timeZone,
     });
+  }
+  // Validation uses the host's CM, but construction uses AF's re-export.
+  // A different copy can accept unknown options while silently ignoring them.
+  // Conservatively require class identity only for this opt-in feature; do not
+  // infer support from instance/config fields or impose this on legacy recipes.
+  if (strategyConfig?.compressionInstructions !== undefined && AutobiographicalStrategy !== HostAutobiographicalStrategy) {
+    throw new TypeError(
+      'Recipe compressionInstructions requires agent-framework and host to use the same @animalabs/context-manager; deduplicate @animalabs/context-manager.',
+    );
   }
   const autobiographicalOpts: Record<string, unknown> = {
     headWindowTokens: headWindowTokens(recipe),
