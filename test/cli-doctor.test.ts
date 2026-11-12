@@ -2437,6 +2437,20 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     }
   });
 
+  test('a stopped service whose main process is read only after the host\'s connection closed is said as changed, not as a foreign host', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, (host) => run(at, {
+      checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
+      servicePid: async () => {
+        host.stop();
+        await Bun.sleep(100);
+        return { pid: '0' };
+      },
+    }));
+    expect(r.out).toContain('but the service\'s host changed during the check');
+    expect(r.out).not.toContain('though the service is stopped');
+  });
+
   test('the closing line names a count that timed out or got an answer it couldn\'t read, and not one that got an answer', async () => {
     const count = (agent: string, compression: string) => ({
       ...HEALTHY_HOST,
