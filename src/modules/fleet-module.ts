@@ -2346,17 +2346,19 @@ export class FleetModule implements Module {
     // Keep the switch's requests outside the bound: each is sent once, for a step the switch or its operator takes, so
     // they make no loop.
     if (child) await this.tryReopen(child, { withinBound: true });
-    if (child && request.op !== 'quiesce' && this.children.get(child.name) === child) child.owedSwitch = { request, timeoutMs };
     return child ? this.sendSwitch(child, request, timeoutMs)
       : this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
         (corrId) => ({ type: 'update-request', request, corrId }));
   }
 
   private async sendSwitch(child: FleetChild, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+    const earlier = child.owedSwitch;
+    const asked = request.op === 'quiesce' ? undefined : { request, timeoutMs };
+    if (asked !== undefined && this.children.get(child.name) === child) child.owedSwitch = asked;
     const answer = await this.requestAnswer(child.name, `update-${request.op}`, 'update-response', `the switch's ${request.op}`,
       timeoutMs, (corrId) => ({ type: 'update-request', request, corrId }));
     const undelivered = !answer.ok && (answer.status === 502 || answer.status === 504);
-    if (!undelivered && child.owedSwitch?.request === request) child.owedSwitch = undefined;
+    if (!undelivered && (child.owedSwitch === earlier || child.owedSwitch === asked)) child.owedSwitch = undefined;
     return answer;
   }
 
