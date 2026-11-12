@@ -1185,6 +1185,16 @@ describe('connectome doctor', () => {
     expect(r2.out).not.toContain('claude-test-0');
   });
 
+  test('a value only in the dotenv file of the mode .env sets counts, as the host\'s second Bun reads it', async () => {
+    const at = install({
+      env: { NODE_ENV: 'production' },
+      recipe: { name: 'Ember', agent: { name: 'ember', model: 'claude-other', contextBudgetTokens: 250_000, systemPrompt: 'hi' } },
+    });
+    writeFileSync(join(at.work, '.env.production'), 'MODEL=claude-haiku-4-5\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toMatch(/✗.*claude-haiku-4-5/);
+  });
+
   test('the service\'s DATA_DIR is the install\'s data directory, as service install\'s unit sets it, over .env\'s', async () => {
     const at = install({
       env: { DATA_DIR: '/elsewhere' },

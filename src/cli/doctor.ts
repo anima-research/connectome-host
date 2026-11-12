@@ -1265,6 +1265,10 @@ function launchdGives(): Record<string, string> {
   return gives;
 }
 
+const RELAUNCHED_ENV = 'const ran = Bun.spawnSync([process.execPath, "-e", "process.stdout.write(JSON.stringify(process.env))"], ' +
+  '{ env: process.env, stdout: "pipe", stderr: "inherit" }); require("node:fs").writeSync(1, ran.stdout); ' +
+  'process.exit(ran.exitCode ?? 1);';
+
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
@@ -1283,7 +1287,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
     if (eq < 0) delete base[entry];
     else if (base[entry.slice(0, eq)] === entry.slice(eq + 1)) delete base[entry.slice(0, eq)];
   }
-  const ran = spawnSync(bun, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+  const ran = spawnSync(bun, ['-e', RELAUNCHED_ENV], {
     cwd: work,
     env: base,
     encoding: 'utf-8',
