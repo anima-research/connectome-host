@@ -355,6 +355,27 @@ describe('what a switch copies', () => {
 });
 
 describe('a switch', () => {
+  test('each line a switch writes names the agent its mark says asked for it, through its fallback', async () => {
+    mark({ to: '0.11.0', why: 'update', by: 'resident' });
+    await decide(root, ops());
+    await decide(root, ops());
+    expect(readJournal(root).map((l) => `${l.step} ${l.outcome} ${l.by}`))
+      .toEqual(['copy ok resident', 'trial-start ok resident', 'fallback ok resident']);
+  });
+
+  test("a refused switch's line names that agent too, and a mark that names none writes none", async () => {
+    rmSync(data, { recursive: true });
+    mark({ to: '0.11.0', why: 'update', by: 'resident' });
+    await decide(root, ops());
+    expect(readJournal(root).map((l) => `${l.step} ${l.outcome} ${l.by}`)).toEqual(['copy refused resident']);
+    mkdirSync(join(data, 'sessions'), { recursive: true });
+    writeFileSync(join(data, 'sessions', 'store.txt'), 'A wrote this');
+    mark({ id: 'm2', to: '0.11.0', why: 'update' });
+    await decide(root, ops());
+    expect(readJournal(root).filter((l) => l.mark === 'm2').map((l) => `${l.step} ${l.outcome}`)).toEqual(['copy ok', 'trial-start ok']);
+    expect(readJournal(root).filter((l) => l.mark === 'm2').some((l) => 'by' in l)).toBe(false);
+  });
+
   test('takes a copy of the data, kept private, then starts the new release on trial', async () => {
     mark({ to: '0.11.0', why: 'update' });
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: true });
@@ -1104,6 +1125,15 @@ const failingAfterLine = (): LauncherOps => ({
 });
 
 describe('a Go back', () => {
+  test('each line a Go back writes names the agent its mark says asked for it, through its fallback', async () => {
+    await committedSwitch();
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back', keepData: true, by: 'resident' });
+    await decide(root, ops());
+    await decide(root, ops());
+    expect(readJournal(root).filter((l) => l.mark === 'g1').map((l) => `${l.step} ${l.outcome} ${l.by}`))
+      .toEqual(['go-back ok resident', 'trial-start ok resident', 'fallback ok resident']);
+  });
+
   test("restoring the copy: puts the older release's data in place, keeps the newer aside, and starts the older on trial", async () => {
     await committedSwitch();
     mark({ id: 'g1', to: '0.10.2', why: 'go-back' });

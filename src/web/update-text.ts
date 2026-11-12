@@ -27,10 +27,11 @@ export type Check = ReadCheck | { at: string; ok: false; error: string };
 /** How the last switch or Go back ended, by the journal. A fallback carries
  *  the last lines the failed release kept itself, or null when it kept
  *  none. */
-export type SwitchOutcome =
+export type SwitchOutcome = (
   | { outcome: 'committed'; from: string; to: string; at: string }
   | { outcome: 'fell-back'; from: string; to: string; at: string; reason: string; trialLog: string[] | null }
-  | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string };
+  | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string }
+) & { /** The agent whose update tool asked for it, where one did. */ by?: string };
 
 /** One host's state after a switch's quiesce: `host` is "this host" or the
  *  child's name. A host that can't be counted, such as a child that didn't
@@ -403,9 +404,10 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
 }
 
 export function lastSwitchLines(last: SwitchOutcome, ways: UpdateWays = COMMAND_WAYS): string[] {
-  if (last.outcome === 'committed') return [`Last switch: ${last.from} to ${last.to}, committed at ${last.at}.`];
-  if (last.outcome === 'refused') return [told(`Last request: to ${last.to}, didn't go ahead at ${last.at}`, last.reason)];
-  const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}` +
+  const asked = last.by !== undefined ? `, asked for by ${last.by}` : '';
+  if (last.outcome === 'committed') return [`Last switch: ${last.from} to ${last.to}, committed at ${last.at}${asked}.`];
+  if (last.outcome === 'refused') return [told(`Last request: to ${last.to}${asked}, didn't go ahead at ${last.at}`, last.reason)];
+  const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}${asked}` +
     (last.reason ? `: ${last.reason}.` : '.');
   const kept = keptLines(last);
   if (kept.length === 0) return [`${head} ${MORE_IN_LOG}`];

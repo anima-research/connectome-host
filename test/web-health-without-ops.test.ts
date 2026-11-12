@@ -251,6 +251,22 @@ describe("the update section, with health and without ops", () => {
     expect(words({ ...two, install: false })).toContain("2 parts of this status couldn't be read.");
   });
 
+  test('a last switch keeps the agent that asked for it, and a cancel\'s record keeps no name', () => {
+    const asked: UpdateStatus = {
+      ...update, restart: null, installing: null,
+      lastSwitch: { outcome: 'committed', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', by: 'carol' },
+      armedDropped: {
+        to: '0.12.2', why: 'update', keepData: false, since: '2026-10-21T10:00:00.000Z', at: '2026-10-21T10:05:00.000Z',
+        reason: 'dave cancelled it',
+      },
+    };
+    expect(sent({ update: asked }, HEALTH_STRINGS).update.lastSwitch).toEqual(asked.lastSwitch);
+    const text = words(asked);
+    expect(text).toContain('Last switch: 0.12.1 to 0.12.2, committed at 2026-10-21T09:00:00.000Z, asked for by carol.');
+    expect(text).toContain("A restart onto 0.12.2 armed at 2026-10-21T10:00:00.000Z didn't go ahead at 2026-10-21T10:05:00.000Z.\n");
+    expect(text).not.toContain('dave');
+  });
+
   test("a fallback's emptied lines read as none, pointing at the service's log", () => {
     const fellBack: UpdateStatus = {
       ...update, restart: null, installing: null,

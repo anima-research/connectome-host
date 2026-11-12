@@ -842,6 +842,26 @@ describe('the last switch', () => {
   const line = (step: string, outcome: string, extra: Record<string, unknown> = {}) =>
     ({ at: '2026-10-21T09:00:00.000Z', step, from: '0.12.1', to: '0.13.0', outcome, mark: 'm1', ...extra }) as Parameters<typeof appendJournal>[1];
 
+  test('names the agent that asked for the switch, however it ended, and nobody where no agent asked', () => {
+    const { root, dataDir } = install('0.12.1');
+    const lines = () => statusLines(hostUpdate({ root, dataDir }).update.status()).join('\n');
+    appendJournal(root, line('copy', 'ok', { by: 'resident' }));
+    appendJournal(root, line('trial-start', 'ok', { by: 'resident' }));
+    appendJournal(root, { at: '2026-10-21T09:05:00.000Z', step: 'commit', from: '0.12.1', to: '0.13.0', outcome: 'ok' });
+    expect(lines()).toContain('Last switch: 0.12.1 to 0.13.0, committed at 2026-10-21T09:05:00.000Z, asked for by resident.');
+    appendJournal(root, line('children-check', 'refused', { reason: 'fleet children are still running: kid', mark: 'm2', by: 'other' }));
+    expect(lines()).toContain('Last request: to 0.13.0, asked for by other, didn\'t go ahead at 2026-10-21T09:00:00.000Z: ' +
+      'fleet children are still running: kid');
+    appendJournal(root, { at: '2026-10-21T09:10:00.000Z', step: 'fallback', from: '0.13.0', to: '0.12.1', outcome: 'ok',
+      reason: '0.13.0 ended before its commit', mark: 'm3', by: 'resident' });
+    expect(lines()).toContain('Last switch: 0.12.1 came back with its data at 2026-10-21T09:10:00.000Z, from a try of 0.13.0, ' +
+      'asked for by resident: 0.13.0 ended before its commit.');
+    appendJournal(root, line('trial-start', 'ok', { mark: 'm4' }));
+    appendJournal(root, { at: '2026-10-21T09:15:00.000Z', step: 'commit', from: '0.12.1', to: '0.13.0', outcome: 'ok' });
+    expect(lines()).toContain('Last switch: 0.12.1 to 0.13.0, committed at 2026-10-21T09:15:00.000Z.');
+    expect(lines()).not.toContain('asked for by');
+  });
+
   test('is the journal\'s last commit, fallback or refusal', () => {
     const { root, dataDir } = install('0.12.1');
     const status = () => hostUpdate({ root, dataDir }).update.status().lastSwitch;

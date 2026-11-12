@@ -1,14 +1,15 @@
 import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
 import {
-  ContractError, installPaths, isSwitchQuiesce, readCurrent, readJournal, readWithoutWaiting, releaseDir, SUPERVISED_ENV,
-  unsyncedText, writeMark, writeTextAtomic,
+  ContractError, askedBy, childrenFilePath, installPaths, isChildEntry, isSwitchQuiesce, lastCopy, readCurrent, readJournal,
+  readRecord, readWithoutWaiting, realOrResolved, releaseDir, SUPERVISED_ENV, unsyncedText, writeMark, writeTextAtomic,
+  type ChildrenFile,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
-import { RELEASE_HOST, goBackOffer } from './launcher.js';
+import { RELEASE_HOST, goBackOffer, isUnder, readInstallRecord } from './launcher.js';
 import { installCommandAt } from '../cli/install-command.js';
 import {
   NOT_THE_SWITCHS, SERVING, lookAtChildren, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework,
@@ -355,7 +356,7 @@ export class HostUpdate {
     const refusal = this.armRefusal(ways);
     if (refusal !== null) return refused(refusal);
     const here = this.need().here!;
-    let offer: { to: string } | null;
+    let offer: { to: string; since: string } | null;
     try {
       offer = goBackOffer(here.root, here.release);
     } catch (error) {
@@ -366,17 +367,42 @@ export class HostUpdate {
       return refused(`Nothing was armed: going back is offered to ${offer.to}, not ${expected}. ${ways.check} shows ` +
         'what\'s offered, and back without `data` says what each way does.');
     }
-    return this.arm({ to: offer.to, why: 'go-back', keepData }, by, ways);
+    if (!keepData) {
+      const held = this.restoreRefusal(ways);
+      if (held !== null) return refused(`Nothing was armed: ${held} ${ways.keep} is open to you.`);
+    }
+    const armed = this.arm({ to: offer.to, why: 'go-back', keepData }, by, ways);
+    if (keepData) return armed;
+    return { ...armed, lines: [...armed.lines, `The copy it restores is as it was at ${offer.since}.`] };
   }
 
-  async cancelArmed(ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
+  /** Why a resident's restore is the person's here, or null where it's the
+   *  resident's to arm: the copy holds the install's fleet children's data with
+   *  its own, so a host with a fleet child, running or listed, or a copy that
+   *  lists one, or any of those that can't be read, leaves restore to the
+   *  person. */
+  private restoreRefusal(ways: UpdateWays): string | null {
+    const setup = this.need();
+    const command = (ways as Partial<{ person: UpdateWays }>).person?.restore ?? ways.restore;
+    const person = (what: string) => `restoring ${what} is the person's, with ${command}.`;
+    let children: string[];
+    try {
+      children = fleetChildren(setup.here!.root, setup.host.fleet());
+    } catch (error) {
+      return `whether the copy it would restore holds a fleet child's data can't be told (${said(error)}), so ${person('it')}`;
+    }
+    if (children.length === 0) return null;
+    return `this host has fleet children, now or at the last switch (${children.join(', ')}), so ${person('the copy')}`;
+  }
+
+  async cancelArmed(by: string | null = null, ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
     const armed = this.armed;
     if (armed === null) return done('Nothing was armed with lifecycle--update, so there was nothing to cancel.');
     if (this.trying) {
       return refused(`${armedName(armed)} is being tried now. Once the try has answered, ${ways.check} shows whether ` +
         'it went ahead, and cancel disarms it if it didn\'t.');
     }
-    this.armed = null;
+    this.disarm(by ? `${by} cancelled it` : 'it was cancelled');
     const ended = await this.endLeftQuiesce();
     return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + (ended === null
       ? ' A switch\'s quiesce is being ended already, which also ends any quiesce an earlier try left.'
@@ -433,6 +459,8 @@ export class HostUpdate {
         gone = `what it was armed for can't be read: ${said(error)}`;
       }
       if (gone !== null) return await this.dropArmed(gone);
+      const held = armed.why === 'go-back' && !armed.keepData ? this.restoreRefusal(this.hostWays()) : null;
+      if (held !== null) return await this.dropArmed(held);
       this.restart = { to: armed.to, why: armed.why, keepData: armed.keepData, phase: 'quiescing', hosts: [] };
       const fleet = setup.host.fleet();
       if ((fleet?.runningChildren().length ?? 0) > 0) {
@@ -730,7 +758,9 @@ export class HostUpdate {
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
-      ({ unsynced } = writeMark(setup.here!.root, { to: restart.to, why: restart.why, keepData: restart.keepData, connected }, this.now()));
+      ({ unsynced } = writeMark(setup.here!.root, {
+        to: restart.to, why: restart.why, keepData: restart.keepData, connected, by: this.armed?.by ?? undefined,
+      }, this.now()));
     } catch (error) {
       return this.callOff(`its mark couldn't be written: ${said(error)}`, ways);
     }
@@ -858,11 +888,44 @@ function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus
 
 export const hostUpdate = new HostUpdate();
 
+/** The fleet children whose data a restore of the copy would set aside: those
+ *  running, those the live children file lists, and those the copy's own
+ *  children file lists. Throws where one of them can't be read. */
+function fleetChildren(root: string, fleet: SwitchFleet | null): string[] {
+  const names = new Set((fleet?.runningChildren() ?? []).map((child) => child.name));
+  const listed = (path: string, what: string): void => {
+    const file = readRecord<ChildrenFile>(path, what);
+    if (file === null) return;
+    if (!Array.isArray(file.children) || !file.children.every(isChildEntry)) {
+      throw new ContractError(`The ${what} at ${path} has no list of children this release can read.`);
+    }
+    for (const child of file.children) names.add(child.name);
+  };
+  const { dataDir } = readInstallRecord(root);
+  listed(childrenFilePath(dataDir), "fleet's children file");
+  const label = lastCopy(root);
+  if (label !== null) {
+    const data = realOrResolved(dataDir);
+    const holds = (item: { path: string }) => item.path === data || isUnder(data, item.path);
+    const item = label.items.find(holds);
+    if (item !== undefined) {
+      listed(childrenFilePath(join(installPaths(root).copy, item.name, relative(item.path, data))), "copy's fleet children file");
+    } else if (!(label.absent ?? []).some(holds)) {
+      throw new ContractError(`The copy's label lists no item that holds the data directory ${data}.`);
+    }
+  }
+  return [...names].sort();
+}
+
 export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutcome | null {
   const lines = readJournal(root);
   for (let at = lines.length - 1; at >= 0; at--) {
     const line = lines[at]!;
-    if (line.step === 'commit' && line.outcome === 'ok') return { outcome: 'committed', from: line.from, to: line.to, at: line.at };
+    if (line.step === 'commit' && line.outcome === 'ok') {
+      let trial = at - 1;
+      while (trial >= 0 && !(lines[trial]!.step === 'trial-start' && lines[trial]!.outcome === 'ok')) trial--;
+      return { outcome: 'committed', from: line.from, to: line.to, at: line.at, ...askedBy(lines[trial]?.by) };
+    }
     if (line.step === 'fallback' && line.outcome === 'ok') {
       let trialLog: string[] | null = null;
       try {
@@ -872,10 +935,14 @@ export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutco
       }
       return {
         outcome: 'fell-back', from: line.to, to: line.from, at: line.at, reason: line.reason ?? 'it gave no reason', trialLog,
+        ...askedBy(line.by),
       };
     }
     if (line.outcome !== 'ok') {
-      return { outcome: 'refused', step: line.step, from: line.from, to: line.to, at: line.at, reason: line.reason ?? 'it gave no reason' };
+      return {
+        outcome: 'refused', step: line.step, from: line.from, to: line.to, at: line.at, reason: line.reason ?? 'it gave no reason',
+        ...askedBy(line.by),
+      };
     }
   }
   return null;

@@ -278,7 +278,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
         'agent picks up where it stopped, and can change with you what it set up.');
     } else {
       out(`The resident will live in ${dir}${movedFrom === null ? '' : `${existsSync(dir) ? '' : ', which setup makes'}, ` +
-        `since ${movedFrom}`}. Its service is named after ${basename(dir)}.`);
+        `since ${movedFrom}`}. Its service will be named after the directory's name, ${basename(dir)}.`);
     }
     const rootSeen = (): string => {
       try {
@@ -356,7 +356,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
 async function ownUserStep(world: SetupWorld, out: (line: string) => void): Promise<SetupState | number> {
   if (!offersOwnUser(world)) return { v: 1 };
   adviseOwnUser(world, out);
-  const go = await yesNo(world, 'Continue with current installation (yes/no) [yes] ', true);
+  out('To give it that user, answer no: setup then says how to go on there.');
+  const go = await yesNo(world, `Go on as ${world.user}? (yes/no) [yes] `, true);
   if (go === null) return -1;
   if (go) return { v: 1 };
   goOnAsOwnUser(out);
@@ -447,7 +448,8 @@ async function installAndStart(
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
       `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +
-      'one logged in to the Mac, it can\'t start until they are.');
+      `one logged in to the Mac, it can't start until they are. \`who\` lists ${world.user} on console while ` +
+      `${world.user} is logged in there.`);
   }
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {
@@ -533,10 +535,16 @@ async function installAndStart(
       'registry it may run none of the others\'.');
   } else if (listed.added.length > 0) {
     const fromBun = listed.added.filter((name) => !HOST_TRUSTED.includes(name)).length;
-    const what = [fromBun > 0 ? `${fromBun} name${fromBun === 1 ? '' : 's'} from Bun's default trusted list` : null,
-      ...listed.added.filter((name) => HOST_TRUSTED.includes(name))].filter((part) => part !== null).join(' and ');
-    out(`Setup added ${what} to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package's install ` +
-      'scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.');
+    const ofBun = Array.isArray(trusted) ? trusted.filter((name) => !HOST_TRUSTED.includes(name)).length : 0;
+    const bunPart = fromBun === 0 ? null
+      : fromBun < ofBun ? 'the rest of those Bun allows by default' : 'those Bun allows by default';
+    const what = [bunPart,
+      ...listed.added.filter((name) => HOST_TRUSTED.includes(name))
+        .map((name) => name === SERVERS.shell ? `${name}, which gives the resident a shell if it gets one` : name)]
+      .filter((part) => part !== null).join(', and ');
+    out(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: ${what}.` +
+      (fromBun > 0 ? ' Without that list, Bun runs the install scripts of its default packages only when they come from ' +
+        'npm\'s own registry.' : ''));
   }
 
   // A package counts as installed once package.json declares it: a bun add that fails partway leaves packages in
@@ -562,8 +570,8 @@ async function installAndStart(
   if (settingUp) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const copySetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(settingUp
-    ? `Making ${root} an install that can take newer releases. Its first release is a copy of what's installed here. ` +
-      'Making it can take a minute or more.'
+    ? `Setting up ${root}, the folder the resident's host runs from, which later updates install into. It starts as a ` +
+      'copy of what was just installed here.'
     : `Checking the install at ${root}.`);
   const made = await world.run([world.bun.path, '--no-env-file', copySetup, '--root', root, ...placeArgs], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
@@ -611,7 +619,7 @@ async function installAndStart(
 
   if (settingUp) out(`This install's own command is ${join(root, INSTALL_COMMAND)}.`);
 
-  out('Starting the installed host once, on a mock recipe, to see that it starts.');
+  out('Starting the installed host once, with a test setup that calls no model, to see that it starts.');
   const scratch = mkdtempSync(join(tmpdir(), 'connectome-setup-boot-'));
   try {
     const recipe = join(scratch, 'boot.json');
@@ -626,9 +634,10 @@ async function installAndStart(
     });
     if (boot.status !== 0) {
       err(boot.timedOut
-        ? `The installed host (${running}, ${entry}) didn't finish booting on a mock recipe in batch mode within ` +
-          `${BOOT_TIMEOUT_MS / 1000} s, so setup stopped it.`
-        : `The installed host (${running}, ${entry}) doesn't start on a mock recipe in batch mode: ${ended(boot)}.`);
+        ? `The installed host (${running}, ${entry}) didn't finish booting with a test setup that calls no model, in ` +
+          `batch mode, within ${BOOT_TIMEOUT_MS / 1000} s, so setup stopped it.`
+        : `The installed host (${running}, ${entry}) doesn't start with a test setup that calls no model, in batch ` +
+          `mode: ${ended(boot)}.`);
       for (const line of outputLines(boot)) err(`  ${line}`);
       err('Where the host\'s own lines above name something of this machine\'s, such as a file it can\'t read, put ' +
         'that right. Where they name the host\'s code or a package it brings, such as a module it can\'t find, ' +
