@@ -7,13 +7,13 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  ContractError, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, copyLabelPath, goBackListPath, installPaths,
+  ContractError, ENTRY_POINT, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, copyLabelPath, goBackListPath, installPaths,
   itemSetAsideDir, lastCopy,
   moveCurrent, readJournal, readRecord, setAsideDir, writeJsonAtomic, type CopyLabel, type InstallRecord, type Mark,
 } from '../src/update/contract.js';
 import {
   CHILDREN_WAIT_MS, GO_BACK_LOCK_WAIT_MS, HOST_ENTRY, KEEP_DATA_FLAG, LAUNCHER, LockHeld, dataItems, decide,
-  goBackFromShell, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
+  goBackFromShell, goBackFromStart, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
   macMountPoints, shellWord, takeLock, type LauncherOps,
 } from '../src/update/launcher.js';
 import { copyTree, removeTree, spaceTaken } from '../src/update/data-swap.js';
@@ -491,7 +491,8 @@ describe('a switch', () => {
       expect(existsSync(installPaths(root).copy)).toBe(false);
       const said = reports.find((l) => l.includes("didn't go ahead"))!;
       expect(said).toMatch(r.says);
-      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with /update restart.');
+      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with ' +
+        'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in a shell.');
       expect(said).not.toContain('..');
     });
   }
@@ -2440,18 +2441,24 @@ describe('a refused request', () => {
     expect(failed).toBe(true);
     expect(existsSync(installPaths(root).mark)).toBe(false);
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain('The request is dropped: once what refused it has ' +
-      'cleared, ask again with /update restart. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
+      'cleared, ask again with Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own ' +
+      '`connectome update restart` in a shell. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
       'for the next start to try the request once more.');
   });
 
-  test('a refused Go back names the ways to ask for one again', async () => {
-    await committedSwitch();
-    mark({ to: '0.10.2', why: 'go-back' });
-    free = 1024;
-    await decide(root, ops());
-    expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(
-      'once what refused it has cleared, ask again with /update back, or `--go-back` from a shell.');
-  });
+  for (const keepData of [false, true]) {
+    test(`a refused Go back ${keepData ? 'that keeps the data' : 'that restores the copy'} names each way an install offers to ask again, and the whole command for its own way`, async () => {
+      await committedSwitch();
+      mark({ to: '0.10.2', why: 'go-back', keepData });
+      free = 1024;
+      await decide(root, ops());
+      const said = reports.find((l) => l.includes("didn't go ahead"))!;
+      expect(said).toContain('once what refused it has cleared, ask again with Go back in the Web UI, `/update back` in the ' +
+        'host\'s terminal, or the install\'s own `connectome update back` in a shell. Where the host doesn\'t stay up, ' +
+        `\`bun ${shellWord(join(root, ENTRY_POINT))} --go-back${keepData ? ' --keep-data' : ''}\` asks its next start to go back.`);
+      expect(said).not.toContain('`--go-back` from a shell');
+    });
+  }
 });
 
 describe('the lock', () => {
@@ -2503,6 +2510,48 @@ describe('the lock', () => {
     expect(readdirSync(dirname(lock)).filter((name) => name.includes('.stale'))).toEqual([]);
   });
 
+  test('a stale lock replaced before it is set aside, and taken again before it can go back, is left where it was set aside, and the start refuses naming both files', () => {
+    const { lock } = installPaths(root);
+    const aside = `${lock}.${process.pid}.stale`;
+    writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });
+    let raced = false;
+    const racing: LauncherOps = {
+      ...ops(),
+      pidAlive: (pid) => {
+        if (pid === 4242 && !raced) {
+          raced = true;
+          rmSync(lock);
+          writeJsonAtomic(lock, { v: 1, pid: 5151, bootId: boot, at: '2026-10-24T00:00:00Z' });
+          alive.add(5151);
+          return false;
+        }
+        return alive.has(pid);
+      },
+    };
+    const realLink = fs.linkSync;
+    const links = spyOn(fs, 'linkSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from) === aside && String(to) === lock) {
+        writeJsonAtomic(lock, { v: 1, pid: 6161, bootId: boot, at: '2026-10-24T00:00:01Z' });
+        alive.add(6161);
+      }
+      realLink(from, to);
+    }) as typeof fs.linkSync);
+    let why = '';
+    try {
+      takeLock(root, racing);
+    } catch (error) {
+      why = (error as Error).message;
+      expect(error).not.toBeInstanceOf(LockHeld);
+    } finally {
+      links.mockRestore();
+    }
+    expect(why).toContain(`moved another process's lock to ${aside}, and couldn't put it back, since ${lock} is there again.`);
+    expect(why).toContain('Each of the two files names a process that may be running in this install: stop each that is, ' +
+      'remove both files, and run this again.');
+    expect(readRecord<{ v: 1; pid: number }>(aside, 'lock')?.pid).toBe(5151);
+    expect(readRecord<{ v: 1; pid: number }>(lock, 'lock')?.pid).toBe(6161);
+  });
+
   test('a stale lock found alone is taken over', () => {
     const { lock } = installPaths(root);
     writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });
@@ -2551,6 +2600,16 @@ describe('a Go back from a shell', () => {
     expect(reports.at(-1)).toMatch(/^\[update\] Nothing was asked for: this install's lock has been held for the last 60 s\. Another process holds this install's lock .*`\/update back`/);
     expect(reports.at(-1)).toContain("If it runs setup, it's binding an install: run this again once that setup has ended.");
     expect(reports.at(-1)).toEndWith('If that process is this install\'s own host, it goes back with `/update back`, which lets its turns end first, or stop the service, run this again, and start the service.');
+  });
+
+  test("start.js --go-back names the install's own command for a host that holds the lock, as connectome update back does", async () => {
+    await committedSwitch();
+    reports = [];
+    lockOf(4242);
+    alive.add(4242);
+    expect(await goBackFromStart(root, [], ops())).toBe(1);
+    expect(reports.at(-1)).toEndWith(`If that process is this install's own host, it goes back with \`${shellWord(join(root, 'connectome'))} ` +
+      'update back`, which lets its turns end first, or stop the service, run this again, and start the service.');
   });
 
   test('takes the lock a host that keeps exiting gives up, writes the mark with no servers recorded, gives the lock up, and the next start goes back', async () => {

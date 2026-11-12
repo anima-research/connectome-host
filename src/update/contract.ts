@@ -288,7 +288,6 @@ export interface Mark {
   by?: string;
 }
 
-/** `by` as a line or outcome carries it: only a name that's there. */
 export function askedBy(by: unknown): { by?: string } {
   return typeof by === 'string' && by !== '' ? { by } : {};
 }

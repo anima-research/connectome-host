@@ -6,6 +6,7 @@ import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { writeHostModeRecord } from './host-mode-record.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -53,12 +54,75 @@ async function waitFor(check: () => boolean, timeoutMs: number, label: string): 
   throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
 }
 
+interface Host {
+  tmpDir: string;
+  child: ChildProcess;
+  sock: Socket;
+  reader: { events: Array<Record<string, unknown>>; stop: () => void };
+}
+
+async function startHost(operatorQuiesce?: string): Promise<Host> {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'fkm-panelreq-'));
+  writeFileSync(join(tmpDir, 'recipe.json'), JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+  if (operatorQuiesce === undefined) return launch(tmpDir);
+  // The record lives in the active session's store, which only the host's first start can make: JsStore creates a
+  // store only where its directory is absent.
+  const first = await launch(tmpDir);
+  const exited = new Promise((done) => first.child.once('exit', done));
+  first.sock.write(JSON.stringify({ type: 'shutdown' }) + '\n');
+  await exited;
+  first.reader.stop();
+  first.sock.destroy();
+  writeHostModeRecord(tmpDir, operatorQuiesce);
+  return launch(tmpDir);
+}
+
+async function launch(tmpDir: string): Promise<Host> {
+  const recipePath = join(tmpDir, 'recipe.json');
+  const socketPath = join(tmpDir, 'ipc.sock');
+  const child = spawn(
+    'bun',
+    [INDEX_PATH, recipePath, '--headless'],
+    {
+      cwd: tmpDir,
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: 'sk-test-panel',
+        DATA_DIR: tmpDir,
+      },
+      stdio: ['ignore', 'ignore', 'ignore'],
+    },
+  );
+  await waitFor(() => existsSync(socketPath), 15_000, 'socket file appears');
+  const sock = await connectWhenAccepting(socketPath);
+  const reader = lineReader(sock);
+  await waitFor(
+    () => reader.events.some((e) => e.type === 'lifecycle' && (e as { phase?: string }).phase === 'ready'),
+    5_000,
+    'lifecycle:ready',
+  );
+  return { tmpDir, child, sock, reader };
+}
+
+async function stopHost(host: Host): Promise<void> {
+  try { host.sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch { }
+  await new Promise((r) => setTimeout(r, 500));
+  try { host.reader.stop(); host.sock.destroy(); } catch { }
+  try { if (host.child.exitCode === null) host.child.kill('SIGKILL'); } catch { }
+  try { rmSync(host.tmpDir, { recursive: true, force: true }); } catch { }
+}
+
+async function ask(host: Host, message: Record<string, unknown>, answer: string): Promise<Record<string, unknown>> {
+  host.sock.write(JSON.stringify(message) + '\n');
+  const label = `${answer} for ${String(message.corrId)}`;
+  await waitFor(() => host.reader.events.some((e) => e.type === answer && e.corrId === message.corrId), 10_000, label);
+  return host.reader.events.find((e) => e.type === answer && e.corrId === message.corrId)!;
+}
+
 describe('headless daemon — panel-request / panel-response', () => {
-  let tmpDir: string;
-  let socketPath: string;
-  let child: ChildProcess;
+  let host: Host;
   let sock: Socket;
-  let reader: { events: Array<Record<string, unknown>>; stop: () => void };
+  let reader: Host['reader'];
   let corrSeq = 0;
 
   async function panel(op: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -72,42 +136,24 @@ describe('headless daemon — panel-request / panel-response', () => {
     return reader.events.find((e) => e.type === 'panel-response' && e.corrId === corrId)!;
   }
 
-  beforeAll(async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'fkm-panelreq-'));
-    const recipePath = join(tmpDir, 'recipe.json');
-    socketPath = join(tmpDir, 'ipc.sock');
-    writeFileSync(recipePath, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
-
-    child = spawn(
-      'bun',
-      [INDEX_PATH, recipePath, '--headless'],
-      {
-        cwd: tmpDir,
-        env: {
-          ...process.env,
-          ANTHROPIC_API_KEY: 'sk-test-panel',
-          DATA_DIR: tmpDir,
-        },
-        stdio: ['ignore', 'ignore', 'ignore'],
-      },
-    );
-
-    await waitFor(() => existsSync(socketPath), 15_000, 'socket file appears');
-    sock = await connectWhenAccepting(socketPath);
-    reader = lineReader(sock);
+  async function switchRequest(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const corrId = `switch-test-${++corrSeq}`;
+    sock.write(JSON.stringify({ type: 'update-request', request, corrId }) + '\n');
     await waitFor(
-      () => reader.events.some((e) => e.type === 'lifecycle' && (e as { phase?: string }).phase === 'ready'),
-      5_000,
-      'lifecycle:ready',
+      () => reader.events.some((e) => e.type === 'update-response' && e.corrId === corrId),
+      10_000,
+      `update-response for op=${String(request.op)}`,
     );
+    return reader.events.find((e) => e.type === 'update-response' && e.corrId === corrId)!;
+  }
+
+  beforeAll(async () => {
+    host = await startHost();
+    ({ sock, reader } = host);
   });
 
   afterAll(async () => {
-    try { sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch { }
-    await new Promise((r) => setTimeout(r, 500));
-    try { reader.stop(); sock.destroy(); } catch { }
-    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+    await stopHost(host);
   });
 
   test('op=health returns the healthz assembly', async () => {
@@ -198,10 +244,52 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(res.error).toContain('unknown panel op');
   });
 
+  test("a change to the session is refused while this host is quiesced for a release switch, naming Resume, and goes once it has resumed", async () => {
+    const quiesced = await switchRequest({ op: 'quiesce', to: '9.9.9', waitMs: 0 });
+    expect(quiesced.ok).toBe(true);
+    try {
+      for (const op of ['settings-update', 'settings-reset', 'settings-cancel-transition', 'pin-add', 'pin-remove']) {
+        const res = await panel(op, { agent: 'commander' });
+        expect({ op, ok: res.ok, status: res.status }).toEqual({ op, ok: false, status: 409 });
+        expect(res.error).toBe(`${op} refused: this host is quiesced for a release switch. If that switch goes ahead, its ` +
+          'stop can cut a change to the session off. Nothing changed. Resume ends the switch\'s quiesce here: if the ' +
+          'switch is still under way, its try then doesn\'t go ahead. Then try again.');
+      }
+      expect((await panel('settings')).ok).toBe(true);
+    } finally {
+      expect((await switchRequest({ op: 'resume' })).ok).toBe(true);
+    }
+    const after = await panel('settings-cancel-transition', { agent: 'commander' });
+    expect(after.status).not.toBe(409);
+  });
+
   test('panel-response bypasses subscription filter', async () => {
     sock.write(JSON.stringify({ type: 'subscribe', events: ['command-output'] }) + '\n');
     await new Promise((r) => setTimeout(r, 100));
     const res = await panel('health');
     expect(res.ok).toBe(true);
+  });
+});
+
+describe('headless daemon — panel-request on a host its operator quiesced', () => {
+  let host: Host;
+
+  beforeAll(async () => {
+    host = await startHost('maintenance: disk swap');
+  });
+
+  afterAll(async () => {
+    await stopHost(host);
+  });
+
+  test("a change to the session isn't refused on a host its operator quiesced: only a switch's quiesce refuses it", async () => {
+    for (const op of ['settings-update', 'settings-reset', 'settings-cancel-transition', 'pin-add', 'pin-remove']) {
+      const asked = { type: 'panel-request', op, params: { agent: 'commander' }, corrId: `op-${op}` };
+      const res = await ask(host, asked, 'panel-response');
+      expect({ op, refused: res.status === 409 }).toEqual({ op, refused: false });
+    }
+    const switchAsk = { type: 'update-request', request: { op: 'quiesce', to: '9.9.9', waitMs: 0 }, corrId: 'held' };
+    const held = await ask(host, switchAsk, 'update-response');
+    expect(held.data).toMatchObject({ operatorHold: { reason: 'maintenance: disk swap' } });
   });
 });

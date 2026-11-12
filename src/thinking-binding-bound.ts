@@ -1,0 +1,1 @@
+export const THINKING_BINDING_PROBE_MS = 60_000;

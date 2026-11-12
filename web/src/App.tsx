@@ -23,7 +23,7 @@ import {
 } from './Health';
 import { BranchPanel } from './Branches';
 import { UpdateBanner, UpdateDialog } from './Update';
-import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
+import { dialogStill, keptDismissal, pageRequest, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
 import { applyUndoneMarksTo } from './undone-marks';
@@ -329,10 +329,10 @@ export function App() {
   const sendUpdateWay = (way: UpdateWay): void => {
     setUpdateDialog(null);
     const status = localUpdate();
-    const command = status === null ? null : commandFor(way, status);
-    if (isObserver() || command === null) return;
+    const request = status === null ? null : pageRequest(way, status);
+    if (isObserver() || request === null) return;
     setMainView('chat');
-    wire.send({ type: 'command', command });
+    wire.send(request);
   };
   const runUpdateWay = (way: UpdateWay): void => {
     if (way === 'restart' || way === 'back') setUpdateDialog(way);

@@ -211,6 +211,10 @@ export function takeLock(root: string, ops: LauncherOps): void {
           linkSync(aside, lock);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          throw new ContractError(`While taking over the lock that process ${holder.pid} left, which has ended, this ` +
+            `moved another process's lock to ${aside}, and couldn't put it back, since ${lock} is there again. Nothing ` +
+            'else was changed. Each of the two files names a process that may be running in this install: stop each ' +
+            'that is, remove both files, and run this again.');
         }
       }
       rmSync(aside, { force: true });
@@ -663,7 +667,13 @@ function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], curre
   appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id, ...askedBy(mark.by) }));
   const what = mark.why === 'go-back' ? 'Go back' : 'switch';
   const { mark: markPath } = installPaths(root);
-  const again = mark.why === 'go-back' ? `/update back, or \`${GO_BACK_FLAG}\` from a shell` : '/update restart';
+  const again = mark.why === 'go-back'
+    ? 'Go back in the Web UI, `/update back` in the host\'s terminal, or the install\'s own `connectome update back` in a ' +
+      `shell. Where the host doesn't stay up, \`bun ${shellWord(join(root, ENTRY_POINT))} ${GO_BACK_FLAG}` +
+      `${mark.keepData ? ` ${KEEP_DATA_FLAG}` : ''}\` asks its next ` +
+      'start to go back'
+    : 'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in ' +
+      'a shell';
   let dropped = `The request is dropped: once what refused it has cleared, ask again with ${again}.`;
   try {
     rmSync(markPath, { force: true });
@@ -1115,27 +1125,18 @@ export function goBackLine(root: string, offer: { to: string; since: string }): 
     `back, restoring that copy and keeping what changed since aside, or with ${KEEP_DATA_FLAG} keeping the newer data.`;
 }
 
+export async function goBackFromStart(root: string, args: string[], ops: LauncherOps): Promise<number> {
+  const spelling = await Promise.all([import('../cli/install-command.js'), import('../web/update-text.js')])
+    .catch(() => null);
+  if (spelling === null) return goBackFromShell(root, args, ops);
+  const [{ typedCommand }, { cliWays }] = spelling;
+  return goBackFromShell(root, args, ops, undefined, cliWays(typedCommand(root)).back);
+}
+
 export function shellWord(word: string): string {
   return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
-/**
- * Ask the next start to go back, from a shell, for an operator whose host
- * doesn't stay up to ask it, as when the release it committed keeps exiting.
- * Two callers run it: `start.js --go-back [--keep-data]` (GO_BACK_FLAG, in
- * `launch`), and the install's `connectome update back keep|restore` when no
- * host answers (`backWithNoHost`). Returns the exit status.
- *
- * It waits up to GO_BACK_LOCK_WAIT_MS for the install's lock, which the
- * install's host holds while it runs. A host that keeps exiting gives it up
- * between its exit and the service's next start. With the lock, it checks
- * that a Go back is offered, to `expected` when that's given, and that no
- * request is under way, writes the mark, and gives the lock up: the
- * service's next start goes back. A host that holds the lock the whole time
- * is up, so its own Go back, which quiesces first, is the way. `back` is how
- * this caller's reader asks that host: `/update back` by default, and the
- * install's typed command for `connectome update back`.
- */
 export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string,
   back = '/update back'): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
@@ -1285,7 +1286,7 @@ export function machineOps(): LauncherOps {
 
 export async function launch(root: string, argv: string[]): Promise<never> {
   const ops = machineOps();
-  if (argv[0] === GO_BACK_FLAG) process.exit(goBackFromShell(root, argv.slice(1), ops));
+  if (argv[0] === GO_BACK_FLAG) process.exit(await goBackFromStart(root, argv.slice(1), ops));
   if (typeof process.execve !== 'function') {
     ops.report(`[update] Nothing started: this runtime has no process.execve, which the launcher needs to become the host (Bun ${process.versions.bun}).`);
     process.exit(1);

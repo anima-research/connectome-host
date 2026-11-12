@@ -150,8 +150,12 @@ describe("the web UI's own entry during a session switch", () => {
 
   test("a host-quiesce while a switch's quiesce holds the host is refused, saying so, and the switch's quiesce stays", async () => {
     const quiesces: unknown[] = [];
-    const held = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
-    webUiModule.setApp(hostApp({ getHostModeStatus: () => held, quiesce: async (opts: unknown) => { quiesces.push(opts); return held; } }, false) as never);
+    let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
+    webUiModule.setApp(hostApp({
+      getHostModeStatus: () => mode,
+      quiesce: async (opts: { reason?: string }) => { quiesces.push(opts); mode = { quiesced: true, reason: opts.reason, drained: true }; return mode; },
+      resume: async () => { mode = { quiesced: false, drained: true }; return mode; },
+    }, false) as never);
     const client = await connect();
     try {
       client.send({ type: 'host-quiesce', corrId: 'quiesce', reason: 'maintenance' });
@@ -160,6 +164,7 @@ describe("the web UI's own entry during a session switch", () => {
       expect(String(answer.message)).toStartWith('host-quiesce refused: ');
       expect(String(answer.message)).toContain('switch');
       expect(quiesces).toEqual([]);
+      expect(mode).toEqual({ quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true });
     } finally {
       client.close();
     }
@@ -448,4 +453,15 @@ test("a host-quiesce over a switch's quiesce that no switch is still running is 
   expect(message).toContain('a switch that isn\'t going ahead');
   expect(message).toContain('Resume ends the switch\'s quiesce');
   expect(message).not.toContain('once the switch has gone ahead or ended');
+});
+
+test("a host-quiesce over a switch's quiesce on a host that can't tell whether the switch still runs is refused, naming Resume and what it costs", () => {
+  const app = { framework: { getHostModeStatus: () => ({ quiesced: true, reason: switchQuiesceReason('0.15.0') }) } };
+  const answer = switchQuiesceRefusalFor(app, { type: 'host-quiesce', corrId: 'quiesce', reason: 'maintenance' } as never, null);
+  expect(answer).toMatchObject({ type: 'error', corrId: 'quiesce' });
+  const message = String((answer as { message?: unknown }).message);
+  expect(message).toStartWith('host-quiesce refused: ');
+  expect(message).toContain('may still be under way or may have ended and left this quiesce behind');
+  expect(message).toContain('Resume ends it, and then quiesce again');
+  expect(message).toContain("though the switch then doesn't go ahead");
 });

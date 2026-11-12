@@ -1,16 +1,17 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HostModeStatus, ModuleContext, ToolResult } from '@animalabs/agent-framework';
 import { LifecycleModule } from '../src/modules/lifecycle-module.js';
+import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
 import { SELF_RESTART_FILE, SelfRestartState } from '../src/self-restart.js';
 import { appendJournal, copyLabelPath, installPaths, moveCurrent, readMark, realOrResolved } from '../src/update/contract.js';
 import type { InstallOps } from '../src/update/install.js';
 import { RELEASE_HOST, shellWord } from '../src/update/launcher.js';
 import type { SwitchFleet, SwitchRequest } from '../src/update/quiesce.js';
 import { HostUpdate, type SwitchFramework } from '../src/update/update.js';
-import { COMMAND_WAYS, PAGE_WAYS, cliWays, statusLines } from '../src/web/update-text.js';
+import { COMMAND_WAYS, PAGE_WAYS, cliWays, statusLines, type UpdateStatus } from '../src/web/update-text.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -196,7 +197,8 @@ function residentHost(options: {
 const text = (result: ToolResult): string => String(result.success ? result.data : result.error);
 const QUIET = 'first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, ' +
   'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child says ' +
-  'nothing is going there, such as a turn, background script, operator\'s work or credential action';
+  'nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
+  'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
 const RETRY = 'A try that finds something still going waits at least a minute before the next.';
 const alwaysQuiet = () => true;
 
@@ -235,8 +237,17 @@ for (const [what, options, says] of [
   });
 }
 
-const toolDescription = (host: ReturnType<typeof residentHost>): string =>
-  (host.module.getTools().find((tool) => tool.name === 'update')?.description ?? '').replace(/\s+/g, ' ');
+const rawDescription = (host: ReturnType<typeof residentHost>): string =>
+  host.module.getTools().find((tool) => tool.name === 'update')?.description ?? '';
+
+const toolDescription = (host: ReturnType<typeof residentHost>): string => rawDescription(host).replace(/\s+/g, ' ');
+
+const actionItems = (description: string): Record<string, string> => Object.fromEntries(
+  description.split('\n- ').slice(1).map((item) => {
+    const line = item.split('\n')[0]!;
+    return [line.slice(0, line.indexOf(':')), line.slice(line.indexOf(':') + 1)];
+  }),
+);
 
 const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs as: check is `connectome update check`, ' +
   'install is `connectome update install`, restart is `connectome update restart`, and back is `connectome update back`, ' +
@@ -247,7 +258,6 @@ const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs a
   'restart or Go back before it begins without replacing it or stopping the host: their own restart or back goes ahead in ' +
   'its place.';
 
-// A host whose own command isn't first on the PATH names it by its path.
 const LONG_COMMAND = '/home/alice/resident/connectome-host/connectome';
 
 for (const [kind, options, command] of [
@@ -258,16 +268,23 @@ for (const [kind, options, command] of [
 ] as const) {
   test(`on a host ${kind}, the update tool's description holds what choosing an action needs, in at most 1,600 characters plus the install's own command`, () => {
     const root = 'root' in options ? null : installRunning0141(['0.15.0']).root;
-    const description = toolDescription(residentHost({ ...options, root }));
+    const host = residentHost({ ...options, root });
+    const raw = rawDescription(host);
+    const description = toolDescription(host);
     if (command !== '') expect(description).toContain(`their own command is \`${command} update\``);
-    expect(description.length).toBeLessThanOrEqual(1_600 + command.length);
-    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:',
-      'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way',
-      'set aside, not deleted', '`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
-      'The person who runs your host can\'t call this tool',
-      'your turn ends as it would, as does every other agent\'s on this host and its fleet children',
-      'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s',
-      'before it begins, whoever armed it']) {
+    expect(raw.length).toBeLessThanOrEqual(1_600 + command.length);
+    const items = actionItems(raw);
+    expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'back', 'cancel']);
+    for (const [action, words] of [
+      ['restart', 'your turn ends as it would, as does every other agent\'s on this host and its fleet children'],
+      ['back', 'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way'],
+      ['back', 'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s'],
+      ['cancel', 'before it begins, whoever armed it'],
+    ] as const) {
+      expect({ action, says: items[action]?.includes(words) }).toEqual({ action, says: true });
+    }
+    for (const words of ['`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
+      'The person who runs your host can\'t call this tool']) {
       expect(description).toContain(words);
     }
     for (const words of ['SIGKILL', '2 min', 'operator\'s work or credential action']) expect(description).not.toContain(words);
@@ -1495,7 +1512,10 @@ test('one release\'s notes too long for one answer give their first part, how mu
     expect(notes).not.toContain('the last line of fifteen');
     const shown = notes.split('\n').filter((line) => line === 'a line of notes that runs on for a while').length;
     expect(shown).toBeGreaterThan(0);
-    expect(notes).toMatch(new RegExp(`the first [0-9,]+ of its ${fifteen.trimEnd().length.toLocaleString('en-US')} characters`));
+    const said = notes.match(new RegExp(`the first ([0-9,]+) of its ${fifteen.trimEnd().length.toLocaleString('en-US')} characters`));
+    expect(said).not.toBeNull();
+    const first = Number(said![1].replace(/,/g, ''));
+    expect(notes.slice(notes.indexOf('\n', said!.index) + 1)).toBe(fifteen.trimEnd().slice(0, first));
     expect(notes).toContain(path);
     expect(notes).toContain('https://github.com/anima-research/connectome-host/blob/v0.15.0/CHANGELOG.md');
   }
@@ -1570,6 +1590,10 @@ test('a notice written while the installed releases couldn\'t be read is written
   }
   const take = `[update] To take it: ${shellWord(join(root, 'connectome'))} update restart.`;
   expect(logged).not.toContain(take);
+  const unread = logged.findIndex((line) => line.startsWith("[update] Which releases are installed couldn't be read, so " +
+    '0.15.0 may be installed already: '));
+  expect({ unread: unread >= 0, last: unread === logged.length - 1, afterTake: logged[unread - 1]?.startsWith('[update] To take it: ') })
+    .toEqual({ unread: true, last: true, afterTake: true });
   await host.update.readRegistry();
   expect(logged).toContain(take);
 });
@@ -1593,4 +1617,128 @@ test('with an older release installed than the one offered, the take line still 
   expect(check).toContain('To take it: lifecycle--update install, then lifecycle--update restart.');
   expect(logged).toContain(`[update] To take it: ${shellWord(join(root, 'connectome'))} update install, then ` +
     `${shellWord(join(root, 'connectome'))} update restart.`);
+});
+
+test("on a host with a fleet child, the agent's Go back lines and its check's cost name the person's restore, not its own", async () => {
+  const { root, dataDir } = installRunning0141();
+  placeCopyOf0140(root, dataDir);
+  writeChildren(dataDir, ['kid']);
+  const host = residentHost({ root, dataDir });
+  const back = text(await host.call({ action: 'back' }));
+  expect(back).not.toContain('lifecycle--update back with data restore');
+  expect(back).toContain("- the person's connectome update back restore: the copy is restored");
+  expect(back).toContain("Restoring the copy is the person's here: this host has fleet children, now or at the last switch (kid).");
+  expect(back.split('\n').at(-1)).toStartWith('On a headless host started with `CONNECTOME_SUPERVISED=1`, ' +
+    'lifecycle--update back with data keep begins at the host\'s first quiet moment');
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain("going back means the person's connectome update back restore");
+  expect(check).not.toContain('lifecycle--update back with data restore');
+});
+
+test("on a host with a fleet child running and no Go back yet, the agent's check names the person's restore in what going back after a switch can cost", async () => {
+  const { root, dataDir } = installRunning0141();
+  const { fleet } = fleetChild({ busy: false });
+  const host = residentHost({ root, dataDir, fleet });
+  expect(host.update.status().goBack).toBeNull();
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain("If it can't, going back means the person's connectome update back restore");
+  expect(check).not.toContain('lifecycle--update back with data restore');
+  expect(check).not.toContain("Restoring the copy is the person's here");
+});
+
+test('an armed restore is dropped where a fleet child starts while its host quiesces, and no mark is written', async () => {
+  const { root, dataDir } = installRunning0141();
+  placeCopyOf0140(root, dataDir);
+  const running: Array<{ name: string }> = [];
+  const { fleet } = fleetChild({ busy: false });
+  const host = residentHost({ root, dataDir, fleet: { ...fleet, runningChildren: () => running } });
+  await host.armed({ action: 'back', data: 'restore' });
+  const quiesce = host.fw.quiesce;
+  host.fw.quiesce = async (opts) => { running.push({ name: 'kid' }); return quiesce(opts); };
+  expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+  expect(readMark(root)).toBeNull();
+  expect(host.stops).toEqual([]);
+  expect(host.update.armedSwitch()).toBeNull();
+  expect(host.update.status().armedDropped?.reason).toStartWith('this host has fleet children, now or at the last switch (kid)');
+});
+
+test("a fleet child whose answer holds an operatorHold that isn't an object can't be counted, so the switch stays armed and says why", async () => {
+  const { root, dataDir } = installRunning0141(['0.15.0']);
+  const { fleet } = fleetChild({ busy: false });
+  const odd: SwitchFleet = {
+    ...fleet,
+    requestSwitch: async (name, request, timeoutMs) => {
+      const answer = await fleet.requestSwitch(name, request, timeoutMs);
+      return request.op === 'quiesce' ? { ...answer, data: { ...answer.data as object, operatorHold: true } } : answer;
+    },
+  };
+  const host = residentHost({ root, dataDir, fleet: odd });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  await host.update.runArmed(alwaysQuiet);
+  expect(host.stops).toEqual([]);
+  expect(host.update.armedSwitch()?.lastTry?.hosts).toEqual([
+    { host: 'kid', answered: false, why: "its answer says it's held by its operator in a form this host can't read" },
+  ]);
+});
+
+test("a fleet child's operator hold that keeps a switch armed is named once on the page, with ops and without, and in the try's answer", async () => {
+  const { root, dataDir } = installRunning0141(['0.15.0']);
+  const { fleet } = fleetChild({ busy: false, operator: { reason: 'moving disks', fromLook: 1 } });
+  const host = residentHost({ root, dataDir, fleet });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  const answer = await host.update.runArmed(alwaysQuiet);
+  expect(answer.done).toBe(false);
+  expect(answer.lines.at(-1)).toBe('- kid: quiesced by its operator (moving disks)');
+  const page = (status: UpdateStatus): string => statusLines(status, PAGE_WAYS).join('\n');
+  const whole = page(host.update.status());
+  expect(whole).toContain("didn't go ahead: a fleet child is quiesced by its operator.");
+  expect(whole).toContain('Holding it then:\n- kid: quiesced by its operator (moving disks)\n');
+  expect(whole.split('kid').length - 1).toBe(1);
+  const sent = JSON.parse(JSON.stringify(keepNamedStrings({ update: host.update.status() }, HEALTH_STRINGS))) as { update: UpdateStatus };
+  const without = page(sent.update);
+  expect(without).toContain('Holding it then:\n- kid: quiesced by its operator\n');
+  expect(without).not.toContain('moving disks');
+});
+
+test('the record of a dropped arm is version 1, and a start takes one of another version as nothing it reads, saying so in its log', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  host.update.recordStop('SIGTERM');
+  const record = JSON.parse(readFileSync(installPaths(root).armedDropped, 'utf-8')) as Record<string, unknown>;
+  expect(record.v).toBe(1);
+  writeFileSync(installPaths(root).armedDropped, JSON.stringify({ ...record, v: 2 }));
+  const logged: string[] = [];
+  expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
+  expect(logged.filter((said) => said.includes(installPaths(root).armedDropped) && said.includes('its version is 2'))).toHaveLength(1);
+});
+
+test("a stop during a try whose call-off can't resume a fleet child leaves the next start's check saying so", async () => {
+  const { root, dataDir } = installRunning0141(['0.15.0']);
+  let release = () => {};
+  const held = new Promise<void>((done) => { release = done; });
+  const { fleet, child } = fleetChild({ busy: false, held, resumes: false });
+  let stopping = false;
+  const host = residentHost({ root, dataDir, fleet, stopping: () => stopping });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  const trying = host.update.runArmed(alwaysQuiet);
+  await until(() => child.looks > 0);
+  stopping = true;
+  host.update.recordStop('SIGTERM');
+  release();
+  await trying;
+  expect(statusLines(residentHost({ root, dataDir }).update.status(), COMMAND_WAYS).join('\n')).toContain(
+    "the host stopped first (SIGTERM). Ending the switch's quiesce didn't reach every host: kid: the socket closed.");
+});
+
+test('the restart tool, while an update is armed, names lifecycle--update cancel for an agent given that tool, and who armed it', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const state = new SelfRestartState();
+  state.attachHeadless();
+  const host = residentHost({ root, state, grants: { selfRestart: true, selfUpdate: true } });
+  await host.armed({ action: 'restart', version: '0.15.0' });
+  const named = 'lifecycle--update cancel disarms it, for an agent given that tool, such as resident, who armed it';
+  expect(text(await host.call({ reason: 'pick up an edited recipe' }, 'restart'))).toContain(
+    `If you'd rather restart without it, ${named}.`);
+  expect(text(await host.call({ cancel: true }, 'restart'))).toContain(`: ${named}.`);
 });

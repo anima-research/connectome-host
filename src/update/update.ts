@@ -19,7 +19,7 @@ import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './
 import { readTrialLog } from './trial-log.js';
 import {
   ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName,
-  bunUpgrade, busyLines, cliWays, deprecatedLine,
+  bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines,
   notAnInstall, noticeLines, notesUrl, personWay, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
   type SwitchOutcome, type UpdateStatus, type UpdateWays,
@@ -28,10 +28,13 @@ import {
 const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 const RESTART_QUIESCE_MS = 120_000;
 const WAIT_LONGER_MS = 600_000;
-// Each try quiesces every fleet child, and agent-framework 0.32.0 waits up to
+// Each try quiesces every fleet child, and agent-framework 0.33.0 waits up to
 // a second for a busy host to drain before it answers (QUIESCE_TIMEOUT_MIN_MS),
-// holding that child's new turns until the try ends its quiesce. One try a
-// minute bounds that hold on a busy child to about a second a minute.
+// holding that child's new turns until the try ends its quiesce: once every
+// child has answered, which a child that doesn't answer makes up to 10 seconds
+// (quiesce.ts's ANSWER_MARGIN_MS), and then for the resumes. One try a minute
+// bounds that hold on a busy child to about a second a minute, or about 10
+// seconds a minute where a child doesn't answer.
 const ARMED_RETRY_MS = 60_000;
 
 export type SwitchFramework = QuiesceFramework & {
@@ -90,9 +93,11 @@ function notesSections(text: string): Array<{ version: string; text: string }> {
   return sections.map(({ version, lines }) => ({ version, text: lines.join('\n').trimEnd() }));
 }
 
-// agent-framework 0.32.0 keeps a tool's answer whole in the agent's context
-// only up to 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), and
-// keeps no more than that where no workspace mount is writable.
+// agent-framework 0.33.0 keeps a tool's answer whole in the agent's context
+// only up to its inline cap, 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS)
+// where neither the recipe nor the agent's settings set another and no context
+// strategy's per-message bound is lower, and keeps no more than that where no
+// workspace mount is writable.
 const NOTES_BUDGET = 24_000;
 
 const characters = (count: number): string => `${count.toLocaleString('en-US')} characters`;
@@ -153,6 +158,7 @@ export class HostUpdate {
   private serviceLine = false;
   private armed: ArmedSwitch | null = null;
   private armedDropped: UpdateStatus['armedDropped'] = null;
+  private stopRecord: { path: string; record: Record<string, unknown> & { reason: string } } | null = null;
   private trying = false;
 
   configure(setup: UpdateSetup): void {
@@ -166,9 +172,10 @@ export class HostUpdate {
     const here = this.setup?.here ?? null;
     if (armed === null || here === null) return null;
     const { to, why, keepData, since } = armed;
-    const dropped = { to, why, keepData, since, at: this.now().toISOString(), reason: `the host stopped first (${reason}).` };
+    const dropped = { v: 1, to, why, keepData, since, at: this.now().toISOString(), reason: `the host stopped first (${reason}).` };
     try {
       writeTextAtomic(installPaths(here.root).armedDropped, `${JSON.stringify(dropped)}\n`);
+      this.stopRecord = { path: installPaths(here.root).armedDropped, record: dropped };
     } catch (error) {
       return `${armedName(armed)} armed at ${since} is dropped by this stop, and the record of that for the next start ` +
         `couldn't be written: ${said(error)}`;
@@ -219,16 +226,19 @@ export class HostUpdate {
     const candidate = this.check.candidate;
     if (candidate !== null && !this.logged.has(candidate)) {
       let installed: string | null = null;
-      let read = true;
+      let unread: string | null = null;
       if (setup.here !== null) {
         try {
           installed = this.installedTarget();
-        } catch {
-          read = false;
+        } catch (error) {
+          unread = said(error);
         }
       }
-      if (read) this.logged.add(candidate);
+      if (unread === null) this.logged.add(candidate);
       const lines = noticeLines(this.check, setup.running, setup.here !== null, this.hostWays(), installed);
+      if (unread !== null) {
+        lines.push(`Which releases are installed couldn't be read, so ${candidate} may be installed already: ${unread}`);
+      }
       for (const line of lines) this.log(`[update] ${line}`);
     }
     return this.check;
@@ -288,8 +298,8 @@ export class HostUpdate {
         this.installing = null;
       }
       this.lastInstall = { version, at, ok: true };
-      return done(`${version} is installed beside ${setup.running}, which runs on. Restart switches to the newest release ` +
-        `installed: ${ways.restart}.`);
+      return done(`${version} is installed beside ${setup.running}, which runs on: ${ways.restart} switches to the newest ` +
+        'release installed.');
     })();
     return { version, installed };
   }
@@ -303,7 +313,9 @@ export class HostUpdate {
     } catch (error) {
       return refused(`Which releases are installed can't be read: ${said(error)}`);
     }
-    if (to === null) return refused(`No release newer than ${this.need().running} is installed: Update installs one first.`);
+    if (to === null) {
+      return refused(`No release newer than ${this.need().running} is installed: ${ways.install} installs one first.`);
+    }
     if (expected !== undefined && to !== expected) {
       return refused(`The release installed to restart onto is now ${to}, not ${expected}, so nothing is restarting. ` +
         `Look at what ${to} costs, then ask again.`);
@@ -376,23 +388,23 @@ export class HostUpdate {
     return { ...armed, lines: [...armed.lines, `The copy it restores is as it was at ${offer.since}.`] };
   }
 
-  /** Why a resident's restore is the person's here, or null where it's the
-   *  resident's to arm: the copy holds the install's fleet children's data with
-   *  its own, so a host with a fleet child, running or listed, or a copy that
-   *  lists one, or any of those that can't be read, leaves restore to the
-   *  person. */
   private restoreRefusal(ways: UpdateWays): string | null {
-    const setup = this.need();
+    const held = this.restoreHeld();
+    if (held === null) return null;
     const command = (ways as Partial<{ person: UpdateWays }>).person?.restore ?? ways.restore;
-    const person = (what: string) => `restoring ${what} is the person's, with ${command}.`;
+    return `${held.why}, so restoring ${held.told ? 'the copy' : 'it'} is the person's, with ${command}.`;
+  }
+
+  private restoreHeld(): { why: string; told: boolean } | null {
+    const setup = this.need();
     let children: string[];
     try {
       children = fleetChildren(setup.here!.root, setup.host.fleet());
     } catch (error) {
-      return `whether the copy it would restore holds a fleet child's data can't be told (${said(error)}), so ${person('it')}`;
+      return { why: `whether the copy it would restore holds a fleet child's data can't be told (${said(error)})`, told: false };
     }
     if (children.length === 0) return null;
-    return `this host has fleet children, now or at the last switch (${children.join(', ')}), so ${person('the copy')}`;
+    return { why: `this host has fleet children, now or at the last switch (${children.join(', ')})`, told: true };
   }
 
   async cancelArmed(by: string | null = null, ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
@@ -409,15 +421,11 @@ export class HostUpdate {
       : leftQuiesced(ended, false, ways)));
   }
 
-  /** Whether this host is running a switch now: null where it can't tell, on a host with no install of its own,
-   *  such as a fleet child, whose switch's quiesce comes from its parent. */
   switchUnderWay(): boolean | null {
     if (!this.setup?.here) return null;
     return this.restart !== null;
   }
 
-  /** The person's ways on this host, for text it keeps for whoever reads it later, such as its log and a reason an
-   *  armed switch was dropped: their command in a shell on a headless install, and /update anywhere else. */
   private hostWays(): UpdateWays {
     const setup = this.need();
     return setup.here !== null && setup.headless === true ? cliWays(installCommandAt(setup.here.root)) : COMMAND_WAYS;
@@ -521,7 +529,7 @@ export class HostUpdate {
     restart.hosts = [];
     const ended = await this.endQuiesce();
     this.restart = null;
-    const holding = hosts.filter((h) => !settled(h));
+    const holding = hosts.filter((h) => !settled(h) || isHeld(h));
     const held = [
       ...(holding.some((h) => !h.answered) ? ['a host couldn\'t be counted'] : []),
       ...(holding.some((h) => h.answered && !h.drained) ? ['turns were still going'] : []),
@@ -530,13 +538,13 @@ export class HostUpdate {
     ];
     const what = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held.at(-1)}` : held[0] ?? 'this host had work in flight again';
     const waited = (hold ?? (ended.stuck === 0 ? `${what}, so the switch's quiesce ended.` : `${what}.`)) + leftQuiesced(ended, true, this.hostWays());
-    return this.stayArmed(waited, hold !== null ? [] : holding);
+    return this.stayArmed(waited, holding);
   }
 
   private stayArmed(waited: string, hosts: HostQuiet[]): UpdateAnswer {
     const armed = this.armed!;
     armed.lastTry = { at: this.now().toISOString(), waited, hosts };
-    return refused(`${armedName(armed)} stays armed for another quiet moment: ${waited}`);
+    return refused(`${armedName(armed)} stays armed for another quiet moment: ${waited}`, ...heldLines(hosts));
   }
 
   private async dropArmed(reason: string): Promise<UpdateAnswer> {
@@ -544,8 +552,21 @@ export class HostUpdate {
     this.disarm(reason);
     const ended = await this.endLeftQuiesce();
     const dropped = this.armedDropped!;
-    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
+    if (ended !== null) dropped.reason += this.droppedLeft(ended);
     return refused(`${armedName(armed)} didn't go ahead: ${dropped.reason}`);
+  }
+
+  private droppedLeft(ended: { lines: string[]; stuck: number }): string {
+    const left = leftQuiesced(ended, false, this.hostWays());
+    const stop = this.stopRecord;
+    if (left === '' || stop === null) return left;
+    try {
+      writeTextAtomic(stop.path, `${JSON.stringify({ ...stop.record, reason: stop.record.reason + left })}\n`);
+    } catch (error) {
+      this.log(`[update] ${stop.path}, the record of the armed switch this stop dropped, couldn't be written again to add ` +
+        `that ending its quiesce didn't reach every host, so the next start's check won't say so: ${said(error)}`);
+    }
+    return left;
   }
 
   private async endLeftQuiesce(): Promise<{ lines: string[]; stuck: number } | null> {
@@ -607,6 +628,8 @@ export class HostUpdate {
     };
     const here = setup.here;
     const quiesced = read('the host\'s serving state', () => setup.host.framework().getHostModeStatus());
+    const installed = here === null ? null : read('which releases are installed', () => this.installedTarget());
+    const goBack = here === null ? null : read(GO_BACK_UNREAD, () => goBackOffer(here.root, here.release));
     return {
       running: setup.running,
       install: here !== null,
@@ -614,8 +637,9 @@ export class HostUpdate {
       check: this.check,
       installing: this.installing,
       lastInstall: this.lastInstall,
-      installed: here === null ? null : read('which releases are installed', () => this.installedTarget()),
-      goBack: here === null ? null : read(GO_BACK_UNREAD, () => goBackOffer(here.root, here.release)),
+      installed,
+      goBack,
+      restoreHeld: here === null ? null : this.restoreHeld()?.why ?? null,
       restart: this.restart === null ? null : { ...this.restart, hosts: [...this.restart.hosts] },
       armed: this.armedSwitch(),
       armedDropped: this.armedDropped,
@@ -755,6 +779,8 @@ export class HostUpdate {
     const setup = this.need();
     const restart = this.restart!;
     if (this.trying && this.stopper?.stopping?.() === true) return this.callOff(STOPPING_FIRST, ways);
+    const held = this.trying && restart.why === 'go-back' && !restart.keepData ? this.restoreRefusal(this.hostWays()) : null;
+    if (held !== null) return this.callOff(held, ways);
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
@@ -786,7 +812,7 @@ export class HostUpdate {
     const ended = await this.endQuiesce();
     this.restart = null;
     if (this.trying && this.armed !== null) {
-      this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + leftQuiesced(ended, false, this.hostWays()));
+      this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + this.droppedLeft(ended));
     }
     const first = why === null
       ? `${restartName(restart, true)} is called off, and nothing switches.`
@@ -838,10 +864,11 @@ const STOPPING_NOW = 'Nothing was armed: this host is stopping, so nothing armed
   'it has started again.';
 const settled = (host: HostQuiet): boolean =>
   host.answered && host.drained && host.backgroundScripts === 0 && host.inFlight === undefined;
+const isHeld = (host: HostQuiet): boolean => host.answered && host.operatorHold !== undefined;
 const childHold = (hosts: HostQuiet[]): string | null => {
-  const held = hosts.flatMap((h) => h.answered && h.operatorHold !== undefined
-    ? [`fleet child ${h.host} is quiesced by its operator${h.operatorHold.reason ? ` (${h.operatorHold.reason})` : ''}`] : []);
-  return held.length === 0 ? null : `${held.join('; ')}.`;
+  const held = hosts.filter(isHeld).length;
+  return held === 0 ? null
+    : held === 1 ? 'a fleet child is quiesced by its operator.' : `${held} fleet children are quiesced by their operators.`;
 };
 const operatorHold = (status: { quiesced: boolean; reason?: string }): string | null =>
   status.quiesced && !isSwitchQuiesce(status.reason)
@@ -876,21 +903,19 @@ function takeDroppedArm(path: string, log: (line: string) => void): UpdateStatus
   try {
     read = JSON.parse(text);
   } catch {}
-  const { to, why, keepData, since, at, reason } = read ?? {};
-  if (typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
+  const { v, to, why, keepData, since, at, reason } = read ?? {};
+  if (v === 1 && typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
     typeof since === 'string' && typeof at === 'string' && typeof reason === 'string') {
     return { to, why, keepData, since, at, reason };
   }
-  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped, so check can't say whether ` +
-    'one was.');
+  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped` +
+    (v !== undefined && v !== 1 ? `: its version is ${JSON.stringify(v)}, and this release reads only version 1` : '') +
+    ', so check can\'t say whether one was.');
   return null;
 }
 
 export const hostUpdate = new HostUpdate();
 
-/** The fleet children whose data a restore of the copy would set aside: those
- *  running, those the live children file lists, and those the copy's own
- *  children file lists. Throws where one of them can't be read. */
 function fleetChildren(root: string, fleet: SwitchFleet | null): string[] {
   const names = new Set((fleet?.runningChildren() ?? []).map((child) => child.name));
   const listed = (path: string, what: string): void => {

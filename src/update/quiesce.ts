@@ -79,8 +79,10 @@ function childQuiet(name: string, answer: { ok: boolean; data?: unknown; error?:
   const work = data.inFlight === undefined ? [] : Array.isArray(data.inFlight) && data.inFlight.every((w) => typeof w === 'string')
     ? data.inFlight as string[] : ['work outside any turn that its answer doesn\'t name plainly'];
   const hold = data.operatorHold as { reason?: unknown } | undefined;
-  const operatorHold = hold !== null && typeof hold === 'object' && !Array.isArray(hold)
-    ? { operatorHold: typeof hold.reason === 'string' ? { reason: hold.reason } : {} } : {};
+  if (hold !== undefined && (hold === null || typeof hold !== 'object' || Array.isArray(hold))) {
+    return { host: name, answered: false, why: "its answer says it's held by its operator in a form this host can't read" };
+  }
+  const operatorHold = hold !== undefined ? { operatorHold: typeof hold.reason === 'string' ? { reason: hold.reason } : {} } : {};
   return {
     host: name, answered: true, drained: data.drained, activeTurnAgents: holders as string[], backgroundScripts: data.backgroundScripts,
     ...operatorHold, ...(work.length > 0 ? { inFlight: work } : {}),
@@ -92,7 +94,7 @@ async function askChildren(fleet: SwitchFleet | null, to: string, waitMs: number
     childQuiet(name, await fleet!.requestSwitch(name, { op: 'quiesce', to, waitMs }, waitMs + ANSWER_MARGIN_MS))));
 }
 
-// agent-framework 0.28.0 waits up to a second for a busy host to drain
+// agent-framework 0.33.0 waits up to a second for a busy host to drain
 // before it answers a quiesce (QUIESCE_TIMEOUT_MIN_MS).
 export async function lookAtChildren(fleet: SwitchFleet | null, to: string): Promise<HostQuiet[]> {
   return askChildren(fleet, to, 0);

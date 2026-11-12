@@ -23,7 +23,7 @@ import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './disco
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, recipeHasShell, serviceCommands, serviceLines } from './service.js';
+import { machine, recipeHasShell, runsHere, serviceCommands, serviceLines } from './service.js';
 import { managerFor, readUnit, serviceUnits, type Manager, type ServiceUnits } from './service-unit.js';
 
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
@@ -113,10 +113,12 @@ export async function doctor(
     return 2;
   }
   const root = ctx.root!;
+  const typed = typedCommand(root);
 
   const units = serviceUnits(root, parts.platform, parts.home);
-  let service: { units: ServiceUnits; recipe: string; work: string } | null = null;
+  let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
+  let elsewhere = false;
   if (units !== null) {
     let text: string | null = null;
     try {
@@ -133,10 +135,16 @@ export async function doctor(
       const at = 'why' in read ? -1 : read.argv.findIndex((word) => basename(word) === 'start.js');
       if ('why' in read) {
         serviceError = `${units.host.file} isn't the ${fileWord(units.manager)} service install writes: ${read.why}.`;
+      } else if (!runsHere(read.workingDirectory, units.work)) {
+        elsewhere = true;
+        serviceError = `${units.host.file} names ${read.workingDirectory} as the directory it runs in, not this install's, ` +
+          `${units.work}: it's another install's, or this one's from before it moved, and doctor reads nothing in that directory. Its ` +
+          'name comes from this directory\'s name. Remove that unit if nothing uses it, or set this install up again in a ' +
+          'directory of another name.';
       } else if (at < 0 || read.argv[at + 1] === undefined) {
         serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
       } else {
-        service = { units, recipe: read.argv[at + 1]!, work: read.workingDirectory };
+        service = { units, recipe: read.argv[at + 1]!, work: read.workingDirectory, bun: read.argv[0]! };
       }
     }
   }
@@ -189,22 +197,29 @@ export async function doctor(
       secrets = [...secrets,
         ...named.names.flatMap((name) => managed[name] ? withSentForms({ name, value: managed[name] }) : [])];
     } catch (error) {
-      if (service !== null || serviceError !== null) throw error;
+      if (service !== null || (serviceError !== null && !elsewhere)) throw error;
       managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
     }
-    const unit = service === null ? null : unitEnv(service.units, parts);
-    if (unit !== null && 'why' in unit) {
-      const { name, file } = service!.units.host;
-      const why = unit.why.replace(/\.$/, '');
-      throw new Error(service!.units.manager === 'launchd'
-        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
-          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run ` +
-          '`connectome service install`, which writes it anew.'
-        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or ` +
-          '`connectome service install` writes the unit anew.');
+    const read = units === null || elsewhere || (service === null && serviceError === null) ? null : unitEnv(units, parts);
+    const set = read?.env;
+    if (set !== undefined) {
+      secrets = [...secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
     }
-    envFiles = unit === null ? [] : unit.files;
-    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs);
+    if (read !== null && 'why' in read) {
+      const { name, file } = units!.host;
+      const why = read.why.replace(/\.$/, '');
+      const anew = `${typed} service install ${recipePath === null ? '<recipe>' : shellWord(recipePath)}`;
+      throw new Error(units!.manager === 'launchd'
+        ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
+          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it ` +
+          'anew or says why it can\'t.'
+        : `systemd didn't say the environment ${name} sets the service (${why}). Run doctor again, or \`${anew}\` writes ` +
+          'the unit anew or says why it can\'t.');
+    }
+    const unit = service === null ? null : read;
+    envFiles = read === null ? [] : read.files;
+    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs,
+      service?.bun ?? process.execPath);
     env = built.env;
     secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -263,8 +278,9 @@ export async function doctor(
   let unanswered = false;
   let closedTabs = false;
   let shellUnchecked = false;
-  const startCommand = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home })?.start
-    ?? `${typedCommand(root)} service install <recipe>`;
+  let uncounted: string | null = null;
+  const commands = serviceCommands(root, { ...machine(), platform: parts.platform, home: parts.home });
+  const startCommand = commands?.start ?? `${typed} service install <recipe>`;
   let dataDir: string | null = null;
   try {
     dataDir = dataDirOf(root);
@@ -272,19 +288,20 @@ export async function doctor(
   try {
     report.section('Service');
     if (serviceError !== null) {
-      report.problem(`${serviceError} \`connectome service install <recipe>\` writes it anew, or says why it can't.`);
+      report.problem(elsewhere ? serviceError
+        : `${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
     } else if (service === null) {
       report.problem(units === null
-        ? 'No service is installed for this install: `connectome service install` writes one only on Linux and macOS, ' +
+        ? `No service is installed for this install: \`${typed} service install\` writes one only on Linux and macOS, ` +
           'for a directory whose name has a letter or digit.'
         : `No service is installed for this install: ${units.host.file} isn't there. ` +
-          '`connectome service install <recipe>` writes one and checks it.');
+          `\`${typed} service install <recipe>\` writes one and checks it.`);
     } else {
       const installed = service;
       await checked(report, 'The service check', async () => {
         const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
         const result = await parts.checkService(installed.units, installed.work, document === null ? null : recipeHasShell(document.raw),
-          typedCommand(root), true);
+          typed, true);
         for (const line of result.lines) report.line(line);
         if (!result.passed) report.problem('The service check above didn\'t pass.');
         if (result.stopped === true) {
@@ -328,7 +345,7 @@ export async function doctor(
       };
       if (stopped) {
         const now = await ownPid();
-        if (now !== null && 'pid' in now && now.pid !== '0') changed();
+        if (now !== null && (!('pid' in now) || now.pid !== '0' || !open)) changed();
         else {
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
@@ -385,7 +402,7 @@ export async function doctor(
         const error = String(answer.error ?? 'no reason given');
         report.problem(`The host refused ${CHECKS[op]}: ${error}.` + (!error.startsWith('unknown panel op') ? ''
           : ' The running host is an older release than this command, so it doesn\'t know this check: restarting the ' +
-            'service starts it on this release.'));
+            `${commands === null ? 'host' : `service (\`${commands.stop}\`, then \`${commands.start}\`)`} starts it on this release.`));
         return null;
       }
       return { data: answer.data as T };
@@ -463,7 +480,7 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        if (answer !== null) callLines(report, agentCalls(answer.data), recipe?.agent.name);
+        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, commands === null ? null : units);
       });
     }
 
@@ -591,6 +608,7 @@ export async function doctor(
 
   const unmade = [
     ...('reason' in host ? ['the host\'s checks weren\'t made'] : []),
+    ...(uncounted === null ? [] : [`${uncounted}'s model calls weren't checked`]),
     ...(ladderRan ? [] : ['the ladder didn\'t run']),
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
     ...(filesUnread ? ['the files its unit reads its environment from weren\'t read'] : []),
@@ -696,17 +714,20 @@ function agentCalls(data: unknown): AgentCalls[] {
   });
 }
 
-function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined): void {
+function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, logged: ServiceUnits | null): string | null {
   const named = recipeAgent ?? agents[0]?.name;
-  if (named !== undefined && !agents.some((agent) => agent.name === named)) {
-    report.line(`The host's counts list no agent named ${named}.`);
-  }
+  const unlisted = named !== undefined && !agents.some((agent) => agent.name === named) ? named : null;
+  if (unlisted !== null) report.line(`The host's counts list no agent named ${unlisted}.`);
   for (const agent of agents) {
     const refusals = agent.refusals !== null && agent.refusals.total > 0 ? agent.refusals : null;
     if (agent.name !== named && agent.failures === 0 && refusals === null) continue;
     if (agent.failures > 0) {
+      const line = `[inference-failed] agent=${agent.name} consecutive=`;
       report.problem(`${agent.name}'s last turn's model call failed` +
-        `${agent.failedAt === undefined ? '' : ` at ${new Date(agent.failedAt).toISOString()}`}, ${agent.failures} in a row.`);
+        `${agent.failedAt === undefined ? '' : ` at ${new Date(agent.failedAt).toISOString()}`}, ${agent.failures} in a row. ` +
+        `Each failure's reason is in a line of the host's stderr that starts \`${line}\`.` +
+        (logged === null ? '' : ` The service keeps its host's stderr in its log, and \`${failureSearch(logged, line)}\` ` +
+          'lists those lines.'));
     } else {
       report.ok(`${agent.name}: no failed turns in a row, by the host's counts.`);
     }
@@ -721,6 +742,13 @@ function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | u
         'answered.');
     }
   }
+  return unlisted;
+}
+
+function failureSearch(units: ServiceUnits, line: string): string {
+  return units.manager === 'systemd-user'
+    ? `journalctl --user -u ${shellWord(units.host.name)} | grep -F -- ${shellWord(line)}`
+    : `grep -F -- ${shellWord(line)} ${shellWord(join(units.work, 'logs', 'agent.log'))}`;
 }
 
 interface CountCheck {
@@ -855,6 +883,11 @@ function storedSecretLines(
   const provider: readonly string[] = PROVIDER_SECRETS;
   const mapped: string[] = [];
   let filesUnread = false;
+  if (envFiles.length > 0) {
+    report.line(`The service's unit also reads ${envFiles.join(' and ')}, whose values doctor can't see. Where one sets a ` +
+      'stored secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+    filesUnread = true;
+  }
   for (const name of names ?? []) {
     if (!env[name] && envFiles.length > 0) {
       report.line(`${name} is in setup's list of stored secrets and has no value in what doctor reads of the service's ` +
@@ -1056,7 +1089,7 @@ function shownWords(text: string): string[] {
 }
 
 function unitEnv(service: ServiceUnits, parts: DoctorParts):
-  { env: Record<string, string>; files: string[] } | { why: string } {
+  { env: Record<string, string>; files: string[] } | { why: string; env?: Record<string, string> } {
   const name = service.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
@@ -1087,10 +1120,10 @@ function unitEnv(service: ServiceUnits, parts: DoctorParts):
         env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
       });
     } catch (error) {
-      return { why: errorText(error) };
+      return { why: errorText(error), env: out };
     }
     const unlisted = failure(listed, parts.envLimitMs);
-    if (unlisted !== null) return { why: unlisted };
+    if (unlisted !== null) return { why: unlisted, env: out };
     // systemd 257 prints each file on a line of its own, as `<path> (ignore_errors=no)`.
     const files = listed.stdout.split('\n').map((line) => line.replace(/ \(ignore_errors=(?:yes|no)\)$/, ''))
       .filter((line) => line !== '');
@@ -1112,7 +1145,7 @@ function systemVariables(): Record<string, string> {
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
-  limitMs: number): { env: Record<string, string | undefined>; base: Record<string, string> } {
+  limitMs: number, bun: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
   const base = { ...systemVariables(), ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
@@ -1121,7 +1154,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       base.DATA_DIR = dataDirOf(root);
     } catch {}
   }
-  const ran = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+  const ran = spawnSync(bun, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
     cwd: work,
     env: base,
     encoding: 'utf-8',
@@ -1133,7 +1166,8 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       'though with your shell\'s environment, not the service\'s.');
   }
   if (ran.error !== undefined) {
-    throw new Error(`Bun couldn't be run in ${work} to read the service's environment: ${ran.error.message}`);
+    throw new Error(`${bun === process.execPath ? 'Bun' : `${bun}, the Bun the service's unit runs,`} couldn't be run in ` +
+      `${work} to read the service's environment: ${ran.error.message}.`);
   }
   if (ran.status !== 0) {
     throw new Error(`Bun ${ran.status === null ? `was ended by ${ran.signal}` : `exited ${ran.status}`} in ${work} as it read ` +

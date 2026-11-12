@@ -31,7 +31,7 @@ export type SwitchOutcome = (
   | { outcome: 'committed'; from: string; to: string; at: string }
   | { outcome: 'fell-back'; from: string; to: string; at: string; reason: string; trialLog: string[] | null }
   | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string }
-) & { /** The agent whose update tool asked for it, where one did. */ by?: string };
+) & { by?: string };
 
 /** One host's state after a switch's quiesce: `host` is "this host" or the
  *  child's name. A host that can't be counted, such as a child that didn't
@@ -68,10 +68,9 @@ export interface UpdateStatus {
   /** A release Restart would switch to. */
   installed: string | null;
   goBack: { to: string; since: string } | null;
+  restoreHeld: string | null;
   restart: RestartState | null;
   armed: ArmedSwitch | null;
-  /** An armed restart or Go back that was dropped without going ahead, and
-   *  the reason. */
   armedDropped: (Pick<ArmedSwitch, 'to' | 'why' | 'keepData' | 'since'> & { at: string; reason: string }) | null;
   /** The reason the operator quiesced this host under, which it keeps
    *  through a restart. */
@@ -93,8 +92,6 @@ export interface ArmedSwitch {
   lastTry: { at: string; waited: string; hosts: HostQuiet[] } | null;
 }
 
-/** How each update action is reached, as the text's reader takes it, and who that reader is: the person who runs
- *  the host, or the agent, whose text names its own tool and says what is the person's to do. */
 export interface UpdateWays {
   reader: 'person' | 'agent';
   install: string;
@@ -149,7 +146,6 @@ export function cliWays(typed: string): UpdateWays {
   };
 }
 
-/** The agent's ways: its own tool's actions, and the person's command for what only the person can do. */
 export function toolWays(headless: boolean, command = 'connectome'): UpdateWays & { person: UpdateWays } {
   const person = headless ? cliWays(command) : COMMAND_WAYS;
   return {
@@ -169,7 +165,6 @@ export function toolWays(headless: boolean, command = 'connectome'): UpdateWays 
 
 export const TOOL_WAYS = toolWays(true);
 
-/** The person's own command for a way, as an agent's text names it, or the way itself in a person's text. */
 export function personWay(ways: UpdateWays, way: UpdateWay): string {
   const person = (ways as Partial<{ person: UpdateWays }>).person;
   return ways.reader === 'agent' && person !== undefined ? `the person's ${person[way]}` : ways[way];
@@ -177,7 +172,8 @@ export function personWay(ways: UpdateWays, way: UpdateWay): string {
 
 export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
   'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
-  'going there, such as a turn, background script, operator\'s work or credential action';
+  'going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
+  'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
 
 export const ASKS_NOBODY = 'however long that takes, so it goes only once every host has said no turn is running ' +
   'there, and asks nobody';
@@ -226,6 +222,19 @@ export function notAnInstall(ways: UpdateWays): string {
         'the host in and with the DATA_DIR you start it with ' +
         '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says ' +
         'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
+}
+
+const operatorHeld = (hold: { reason?: string }): string =>
+  `quiesced by its operator${hold.reason ? ` (${hold.reason})` : ''}`;
+
+export function heldLines(hosts: HostQuiet[]): string[] {
+  return hosts.flatMap((host) => host.answered && host.operatorHold !== undefined
+    ? [`- ${host.host}: ${operatorHeld(host.operatorHold)}`] : []);
+}
+
+export function passItOn(ways: UpdateWays, said: string): string[] {
+  return ways.reader === 'agent'
+    ? [`${said}, written to the person who runs it: what it asks of that person is theirs to do, so pass it on.`] : [];
 }
 
 const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
@@ -323,7 +332,12 @@ function busyHostLines(hosts: HostQuiet[], scriptsEnd = 'which a stop ends'): st
   return lines;
 }
 
-export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
+function restoreWays(status: UpdateStatus, ways: UpdateWays): UpdateWays {
+  return ways.reader === 'agent' && status.restoreHeld ? { ...ways, restore: personWay(ways, 'restore') } : ways;
+}
+
+export function statusLines(status: UpdateStatus, given: UpdateWays = COMMAND_WAYS): string[] {
+  const ways = restoreWays(status, given);
   const lines = [`connectome-host ${status.running}.`];
   const check = status.check;
   if (check === null) {
@@ -342,12 +356,16 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     return [...lines, ...problemLines(status.problems)];
   }
   if (status.installing !== null) lines.push(`Installing ${status.installing}.`);
-  else if (status.lastInstall?.ok === false) lines.push(failedInstall(status.lastInstall));
+  else if (status.lastInstall?.ok === false) {
+    lines.push(failedInstall(status.lastInstall), ...passItOn(ways, 'That error is your host\'s'));
+  }
   if (status.installed !== null) {
     lines.push(retrying(status)
       ? `${status.installed} is installed, and ended before its commit at its last try: ${ways.restart} tries it again.`
       : `${status.installed} is installed: ${ways.restart} switches to it.`);
-    if (!check?.ok || check.candidate === null) lines.push(`Notes: ${notesUrl(status.installed)}`);
+    if (!check?.ok || check.candidate === null) {
+      lines.push(goingBackCost(status.running, ways), `Notes: ${notesUrl(status.installed)}`);
+    }
   }
   if (status.goBack !== null) {
     lines.push(`Going back to ${status.goBack.to} is offered, with the copy of its data taken ${status.goBack.since}: ` +
@@ -371,11 +389,12 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       lines.push(told(`Its try at ${last.at} didn't go ahead`, last.waited) + ' It tries again at a quiet moment at ' +
         'least a minute later.');
       const holding = last.hosts.flatMap((host) => {
+        const held = host.answered && host.operatorHold !== undefined ? [operatorHeld(host.operatorHold)] : [];
         if (!host.answered || !host.drained) {
-          return busyHostLines([host], 'which the switch waits for')
-            .map((line) => host.answered && host.inFlight !== undefined ? `${line}; ${list(host.inFlight)}` : line);
+          return busyHostLines([host], 'which the switch waits for').map((line) =>
+            [line, ...held, ...host.answered && host.inFlight !== undefined ? [list(host.inFlight)] : []].join('; '));
         }
-        const parts = [...host.inFlight ?? [], ...(host.backgroundScripts > 0
+        const parts = [...held, ...host.inFlight ?? [], ...(host.backgroundScripts > 0
           ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'} running outside any turn`]
           : [])];
         return parts.length > 0 ? [`- ${host.host}: ${parts.join('; ')}`] : [];
@@ -406,11 +425,14 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
 export function lastSwitchLines(last: SwitchOutcome, ways: UpdateWays = COMMAND_WAYS): string[] {
   const asked = last.by !== undefined ? `, asked for by ${last.by}` : '';
   if (last.outcome === 'committed') return [`Last switch: ${last.from} to ${last.to}, committed at ${last.at}${asked}.`];
-  if (last.outcome === 'refused') return [told(`Last request: to ${last.to}${asked}, didn't go ahead at ${last.at}`, last.reason)];
+  if (last.outcome === 'refused') {
+    return [told(`Last request: to ${last.to}${asked}, didn't go ahead at ${last.at}`, last.reason),
+      ...passItOn(ways, 'That reason is your host\'s')];
+  }
   const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}${asked}` +
     (last.reason ? `: ${last.reason}.` : '.');
   const kept = keptLines(last);
-  if (kept.length === 0) return [`${head} ${MORE_IN_LOG}`];
+  if (kept.length === 0) return [`${head} ${ways.reader === 'agent' ? MORE_IN_LOG_ASK : MORE_IN_LOG}`];
   return [`${head} What ${last.to} wrote last${WROTE_LAST}`, ...kept.map((line) => `${QUOTED}${line}`),
     ...ways.reader === 'agent' ? [HOST_LINES] : []];
 }
@@ -420,6 +442,9 @@ function failedInstall(install: { version: string; error?: string }): string {
 }
 
 const MORE_IN_LOG = 'The service\'s log, or the terminal the host was started in, says more.';
+
+const MORE_IN_LOG_ASK = 'The service\'s log, or the terminal your host was started in, says more, and the person who ' +
+  'runs your host can read either: ask them.';
 
 function keptLines(last: Extract<SwitchOutcome, { outcome: 'fell-back' }>): string[] {
   return last.trialLog !== null && last.trialLog.some((line) => line !== '') ? last.trialLog : [];
@@ -440,7 +465,8 @@ export function goBackUnread(status: UpdateStatus): string | undefined {
   return status.problems.find((problem) => problem.startsWith(GO_BACK_UNREAD));
 }
 
-export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
+export function goBackLines(status: UpdateStatus, given: UpdateWays = COMMAND_WAYS): string[] {
+  const ways = restoreWays(status, given);
   if (!status.install) return [notAnInstall(ways)];
   if (status.goBack === null) {
     const unread = goBackUnread(status);
@@ -449,6 +475,7 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       : 'No Go back is offered: the copy doesn\'t hold another installed release\'s data.'];
   }
   const { to, since } = status.goBack;
+  const held = ways.reader === 'agent' && status.restoreHeld ? status.restoreHeld : null;
   return [
     `Going back to ${to}, whose data the copy holds as it was at ${since}. Two ways:`,
     `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. It comes back as the host is ` +
@@ -460,9 +487,11 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
       `and ${ways.reader === 'agent' ? 'the person\'s click on' : 'clicking'} "⏸ quiesced" in the Web UI's ` +
       'top bar lets them through. Whether it\'s quiesced now makes no difference.',
+    ...held !== null ? [`Restoring the copy is the person's here: ${held}.`] : [],
     ways.reader === 'agent'
-      ? 'Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, it begins at the host\'s first quiet ' +
-        `moment, ${ASKS_NOBODY}. ${ARMED_RETRY} Anywhere else, back refuses and arms nothing.`
+      ? `${held !== null ? 'On' : 'Either way, on'} a headless host started with \`CONNECTOME_SUPERVISED=1\`, ` +
+        `${held !== null ? ways.keep : 'it'} begins at the host's first quiet moment, ${ASKS_NOBODY}. ${ARMED_RETRY} ` +
+        'Anywhere else, back refuses and arms nothing.'
       : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }
@@ -522,6 +551,11 @@ export function commandFor(way: UpdateWay, status: UpdateStatus): string | null 
   if (way === 'restart') return status.installed === null ? null : `${COMMAND_WAYS.restart} ${status.installed}`;
   if (way === 'keep' || way === 'restore') return status.goBack === null ? null : `${COMMAND_WAYS[way]} ${status.goBack.to}`;
   return COMMAND_WAYS[way];
+}
+
+export function pageRequest(way: UpdateWay, status: UpdateStatus): { type: 'command'; command: string; page: true } | null {
+  const command = commandFor(way, status);
+  return command === null ? null : { type: 'command', command, page: true };
 }
 
 export interface Banner {

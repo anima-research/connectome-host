@@ -226,6 +226,26 @@ describe('before a switch, check says what going back can cost', () => {
   test('the banner leaves it out, as it leaves out the notes', () => {
     expect(bannerOf({ ...base, check: read })?.line).not.toContain('Going back after a switch');
   });
+
+  test('with a release installed and no release offered, each reader gets it beside the installed one, before the notes', () => {
+    const checks: UpdateStatus['check'][] = [
+      null, { at: read.at, ok: false, error: 'the registry answered 503' }, { ...read, candidate: null, costs: [] },
+    ];
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS]) {
+      for (const check of checks) {
+        const lines = statusLines({ ...base, check, installed: '0.13.0' }, ways);
+        const at = lines.indexOf(line('0.12.1', ways.restore));
+        expect({ reader: ways.restore, check: check?.ok ?? null, at: at >= 0, once: lines.lastIndexOf(line('0.12.1', ways.restore)) === at,
+          beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+          .toEqual({ reader: ways.restore, check: check?.ok ?? null, at: true, once: true, beforeNotes: true });
+      }
+    }
+  });
+
+  test('beside a release offered, it comes once, from the notice', () => {
+    const lines = statusLines({ ...base, check: read, installed: '0.13.0' });
+    expect(lines.filter((each) => each === line('0.12.1', COMMAND_WAYS.restore))).toHaveLength(1);
+  });
 });
 
 describe('each way named as its caller names it', () => {
@@ -278,6 +298,34 @@ describe('each way named as its caller names it', () => {
       },
     ];
     for (const lastSwitch of [null, ...others]) expect(said({ ...base, lastSwitch }).some(told)).toBe(false);
+  });
+
+  test("the agent is told that a failed install's remedy is the person's, right after it, and a person isn't", () => {
+    const error = 'releases/0.13.0 is there, but its package.json names 0.12.0, so it isn\'t the release 0.13.0. Remove it, ' +
+      'then update again.';
+    const status: UpdateStatus = { ...base, lastInstall: { version: '0.13.0', at: read.at, ok: false, error } };
+    const agent = statusLines(status, TOOL_WAYS);
+    expect(agent.slice(agent.indexOf(`Last install: ${error}`), agent.indexOf(`Last install: ${error}`) + 2)).toEqual([
+      `Last install: ${error}`,
+      "That error is your host's, written to the person who runs it: what it asks of that person is theirs to do, so " +
+        'pass it on.',
+    ]);
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS]) {
+      expect(statusLines(status, ways).join('\n')).not.toContain('pass it on');
+    }
+  });
+
+  test('after a fallback that kept no lines, the agent is sent to the person for the log, and a person to the log', () => {
+    for (const trialLog of [null, [], ['', '']]) {
+      const last: SwitchOutcome = { ...fellBack, trialLog };
+      const agent = statusLines({ ...base, lastSwitch: last }, TOOL_WAYS).at(-1) ?? '';
+      expect(agent).toEndWith("The service's log, or the terminal your host was started in, says more, and the person " +
+        'who runs your host can read either: ask them.');
+      for (const ways of [COMMAND_WAYS, PAGE_WAYS]) {
+        expect(statusLines({ ...base, lastSwitch: last }, ways).at(-1))
+          .toEndWith("The service's log, or the terminal the host was started in, says more.");
+      }
+    }
   });
 
   test('a trial log keeps its blank lines', () => {

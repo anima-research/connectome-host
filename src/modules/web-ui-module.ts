@@ -251,6 +251,13 @@ export function switchQuiesceRefusalFor(
       'going ahead, and a quiesce asked for now would be taken as that switch\'s, which the host\'s next start ends. ' +
       `Nothing changed; ${PAGE_WAYS.resume} ends the switch's quiesce, and then quiesce again.`);
   }
+  if (underWay === null) {
+    return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch, which may ` +
+      'still be under way or may have ended and left this quiesce behind, and a quiesce asked for now would be taken as ' +
+      'the switch\'s and end with it. Nothing changed; quiesce again once the switch has gone ahead, or, if it has ' +
+      `ended and left this quiesce behind, ${PAGE_WAYS.resume} ends it, and then quiesce again. ${PAGE_WAYS.resume} also ` +
+      'ends it while the switch is under way, though the switch then doesn\'t go ahead.');
+  }
   return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now, and ` +
     'a quiesce asked for now would be taken as the switch\'s and end with it. Nothing changed; quiesce again once the ' +
     'switch has gone ahead or ended.');
@@ -1816,7 +1823,7 @@ export class WebUiModule implements Module {
         return;
 
       case 'command': {
-        void this.dispatchCommand(client, parsed.command, parsed.corrId);
+        void this.dispatchCommand(client, parsed.command, parsed.corrId, parsed.page === true);
         return;
       }
 
@@ -2664,13 +2671,13 @@ export class WebUiModule implements Module {
     sharedServer?.clients.delete(id);
   }
 
-  private async dispatchCommand(client: ClientState, command: string, corrId?: string): Promise<void> {
+  private async dispatchCommand(client: ClientState, command: string, corrId?: string, page = false): Promise<void> {
     if (!sharedServer?.app) return;
     const app = sharedServer.app;
     let result;
     try {
       // The operator log names who typed it, as the surgery dialog's does.
-      result = handleCommand(command, app, { requester: this.requesterFor(client) });
+      result = handleCommand(command, app, { requester: this.requesterFor(client), page });
     } catch (err) {
       this.send(client, {
         type: 'error',

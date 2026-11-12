@@ -35,7 +35,7 @@ import { AgentTreeReducer } from './state/agent-tree-reducer.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
 import { workspaceReadFields } from './workspace-read-result.js';
 import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
-import { RESTART_EXIT_CODE } from './update/contract.js';
+import { RESTART_EXIT_CODE, isSwitchQuiesce } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
 import { traceFollower } from './piped-turns.js';
 import {
@@ -46,6 +46,17 @@ import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
 interface HeadlessOptions {
   socketPath?: string;
   exitWhenIdle?: boolean;
+}
+
+function refusedWhileSwitchQuiesced(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } }, what: string,
+): string | null {
+  const status = app.framework.getHostModeStatus();
+  return status.quiesced && isSwitchQuiesce(status.reason)
+    ? `${what} refused: this host is quiesced for a release switch. If that switch goes ahead, its stop can cut a change ` +
+      'to the session off. Nothing changed. Resume ends the switch\'s quiesce here: if the switch is still under way, its ' +
+      'try then doesn\'t go ahead. Then try again.'
+    : null;
 }
 
 function parseHeadlessArgs(argv: string[]): HeadlessOptions {
@@ -554,14 +565,14 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       case 'panel-request': {
         const op = typeof cmd.op === 'string' ? cmd.op : '';
         const changes = PANEL_OPS_THAT_CHANGE_THE_SESSION.has(op);
-        const refused = changes ? refusedWhileSwitching(app, op) : null;
+        const refused = changes ? refusedWhileSwitching(app, op) ?? refusedWhileSwitchQuiesced(app, op) : null;
         if (refused) {
           reply({ type: 'panel-response', corrId: cmd.corrId, op, ok: false, error: refused, status: 409 });
           return;
         }
         const running = import('./web/panel-data.js').then(({ runPanelOp }) => runPanelOp(app, op, cmd.params ?? {}));
         const result = await (changes ? trackOperatorWork(app, op, running)
-          : op === 'shell-check' ? trackOperatorWork(app, null, running) : running);
+          : op === 'shell-check' || op === 'count-check' ? trackOperatorWork(app, null, running) : running);
         reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
         return;
       }

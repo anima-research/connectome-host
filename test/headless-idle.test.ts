@@ -456,13 +456,13 @@ test.concurrent('texts the replaced framework hadn\'t finished go to the new fra
 }, 15_000);
 
 async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: number; dones: number; doneFirst: boolean; scoutStarts: number; turnWorkFrom: number; quietFrom: number }> {
-  const released = hold.startsWith('subagent') || hold === 'command' || hold === 'credential' || hold === 'shell-check';
+  const released = hold.startsWith('subagent') || hold === 'command' || hold === 'credential' || hold === 'shell-check' || hold === 'count-check';
   const { dir, child, closed } = start('quiet-idle', hold, released ? { FIXTURE_HOLD_UNTIL_RELEASED: '1' } : {});
   try {
     const watching = await client(dir, closed);
     await watching.next('ready');
     writeFileSync(join(dir, 'go'), '');
-    if (hold === 'shell-check') watching.send({ type: 'panel-request', op: 'shell-check', corrId: 'held-shell-check' });
+    if (hold === 'shell-check' || hold === 'count-check') watching.send({ type: 'panel-request', op: hold, corrId: `held-${hold}` });
     const done = Number((await watching.next('turn-work-done')).ts);
     if (hold === 'subagent-streaming') {
       writeFileSync(join(dir, 'scout-go'), '');
@@ -488,6 +488,7 @@ for (const [hold, what] of [
   ['command', "an operator's command still at work"],
   ['credential', 'a credential action still at work'],
   ['shell-check', "a shell check's listSessions call still at work"],
+  ['count-check', "a count check's preview still at work"],
 ] as const) {
   test.concurrent(`${what} holds lifecycle idle but not turn-work-done, which comes 500 ms after the turn`, async () => {
     const seen = await turnWorkAndIdle(hold);

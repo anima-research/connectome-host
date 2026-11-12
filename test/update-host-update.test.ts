@@ -3,8 +3,9 @@ import * as fs from 'node:fs';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HostModeStatus } from '@animalabs/agent-framework';
+import type { HostModeStatus, ModuleContext } from '@animalabs/agent-framework';
 import { handleCommand } from '../src/commands.js';
+import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
 import {
   appendJournal, copyLabelPath, installPaths, moveCurrent, readMark, realOrResolved, switchQuiesceReason, writeJsonAtomic,
   type CopyLabel,
@@ -14,7 +15,8 @@ import { RELEASE_HOST } from '../src/update/launcher.js';
 import type { SwitchFleet } from '../src/update/quiesce.js';
 import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
-  COMMAND_WAYS, commandFor, goBackLines, noticeLines, statusLines, type HostQuiet, type ReadCheck, type UpdateStatus,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, pageRequest, statusLines,
+  type HostQuiet, type ReadCheck, type UpdateStatus,
   type UpdateWay,
 } from '../src/web/update-text.js';
 
@@ -285,13 +287,22 @@ describe('the notice', () => {
 });
 
 describe('Update', () => {
+  test("tells the page, once it has installed, that its Restart switches to the newest release installed", async () => {
+    const { root, dataDir } = install('0.12.1');
+    const { ops } = manager();
+    const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
+    expect(await update.install(PAGE_WAYS)).toEqual({ done: true, lines: [
+      '0.13.0 is installed beside 0.12.1, which runs on: Restart switches to the newest release installed.',
+    ] });
+  });
+
   test('installs the candidate beside the running release, and asks for no switch', async () => {
     const { root, dataDir } = install('0.12.1');
     const { ops, runs } = manager();
     const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
     const answer = await update.install();
     expect(answer).toEqual({ done: true, lines: [
-      '0.13.0 is installed beside 0.12.1, which runs on. Restart switches to the newest release installed: /update restart.',
+      '0.13.0 is installed beside 0.12.1, which runs on: /update restart switches to the newest release installed.',
     ] });
     expect(runs).toEqual(['npm install --save-exact --no-audit --no-fund @animalabs/connectome-host@0.13.0']);
     expect(readMark(root)).toBeNull();
@@ -722,7 +733,11 @@ describe('Restart', () => {
   test("is refused with nothing newer installed, with no stop to use, before this host's commit, or during an install", async () => {
     const { root, dataDir } = install('0.12.1', ['0.11.0']);
     expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled()).lines)
-      .toEqual(['No release newer than 0.12.1 is installed: Update installs one first.']);
+      .toEqual(['No release newer than 0.12.1 is installed: /update install installs one first.']);
+    for (const ways of [cliWays('connectome'), TOOL_WAYS]) {
+      expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled(undefined, ways)).lines)
+        .toEqual([`No release newer than 0.12.1 is installed: ${ways.install} installs one first.`]);
+    }
     placeRelease(root, '0.13.0');
     expect((await hostUpdate({ root, dataDir }).update.restartToInstalled()).lines)
       .toEqual([expect.stringContaining('This host has no stop a restart can use')]);
@@ -862,6 +877,20 @@ describe('the last switch', () => {
     expect(lines()).not.toContain('asked for by');
   });
 
+  test("a refused request's reason reaches the agent as the person's to act on, and the person as it is", () => {
+    const { root, dataDir } = install('0.12.1');
+    const reason = "/srv/data can't be read, written and searched by this process (EACCES), and an update changes what's " +
+      'in it, and syncs it. Give this user read, write and search on it';
+    appendJournal(root, line('children-check', 'refused', { reason }));
+    const status = hostUpdate({ root, dataDir }).update.status();
+    const agent = statusLines(status, TOOL_WAYS);
+    const at = agent.findIndex((said) => said.startsWith('Last request:'));
+    expect(agent[at]).toEndWith(reason);
+    expect(agent[at + 1]).toBe("That reason is your host's, written to the person who runs it: what it asks of that person is " +
+      'theirs to do, so pass it on.');
+    expect(statusLines(status, COMMAND_WAYS).join('\n')).not.toContain('pass it on');
+  });
+
   test('is the journal\'s last commit, fallback or refusal', () => {
     const { root, dataDir } = install('0.12.1');
     const status = () => hostUpdate({ root, dataDir }).update.status().lastSwitch;
@@ -952,6 +981,8 @@ test("/update's text names an install and a restart under way, and what's instal
   expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet: /update reads it."]);
   expect(statusLines({ ...base, installing: '0.13.0', installed: '0.12.2' }).slice(2))
     .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.',
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        '/update back restore, and what was lived since the switch is set aside.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.12.2/CHANGELOG.md']);
   const fellBack = { outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-24T03:00:00.000Z', reason: '0.12.2 ended before its commit', trialLog: null } as const;
   expect(statusLines({ ...base, installed: '0.12.2', lastSwitch: fellBack })).toContain(
@@ -1084,3 +1115,55 @@ describe('/update', () => {
   });
 });
 
+describe("the page's own Update controls", () => {
+  test("a Restart the page sends, with nothing newer installed by then, names the page's Update", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.11.0']);
+    const local = hostUpdate({ root, dataDir }, { supervised: true }).update;
+    const restart = spyOn(theHostUpdate, 'restartToInstalled')
+      .mockImplementation((expected, ways) => local.restartToInstalled(expected, ways));
+    const page = mkdtempSync(join(tmpdir(), 'webui-update-'));
+    dirs.push(page);
+    writeFileSync(join(page, 'index.html'), '<!doctype html><title>t</title>');
+    const module = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'u', password: 'p' }, staticDir: page });
+    await module.start({} as ModuleContext);
+    const cm = { getAllMessages: () => [], currentBranch: () => ({ id: 'b1', name: 'main' }) };
+    const agent = { name: 'main', model: 'test-model', state: { status: 'idle' }, getContextManager: () => cm };
+    module.setApp({
+      framework: {
+        getAllAgents: () => [agent], getAgent: () => agent, getAllModules: () => [], getModule: () => undefined,
+        getSessionUsage: () => { throw new Error('no usage here'); }, onTrace: () => () => {},
+        getHostModeStatus: () => ({ quiesced: false }),
+      },
+      frameworkSessionId: 's1',
+      sessionManager: { getActiveSession: () => ({ id: 's1', name: 'first', manuallyNamed: true }), findSession: () => undefined },
+      recipe: { name: 'test', agent: { name: 'main' } },
+      branchState: { checkpoints: new Map(), undoStack: [], redoStack: [] },
+      switchSession: async () => {},
+      switching: false,
+    } as never);
+    const port = __getSharedServerPortForTests()!;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { origin: `http://127.0.0.1:${port}`, authorization: `Basic ${Buffer.from('u:p').toString('base64')}` },
+    } as unknown as undefined);
+    try {
+      const results: Array<{ lines: Array<{ text: string }> }> = [];
+      const done = new Promise<void>((resolve) => ws.addEventListener('message', (event) => {
+        const reply = JSON.parse(String(event.data)) as { type: string; corrId?: string; lines?: Array<{ text: string }> };
+        if (reply.type === 'command-result' && reply.lines) results.push({ lines: reply.lines });
+        if (results.length === 2) resolve();
+      }));
+      await new Promise((resolve) => ws.addEventListener('open', resolve));
+      const shown = { installed: '0.13.0' } as UpdateStatus;
+      ws.send(JSON.stringify(pageRequest('restart', shown)));
+      await done;
+      expect(results[1]!.lines.map((line) => line.text))
+        .toEqual([`No release newer than 0.12.1 is installed: ${PAGE_WAYS.install} installs one first.`]);
+      expect(restart).toHaveBeenCalledTimes(1);
+    } finally {
+      ws.close();
+      restart.mockRestore();
+      await module.stop();
+      await stopWebUiServer();
+    }
+  });
+});

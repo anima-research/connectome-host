@@ -43,7 +43,9 @@ import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
 import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
-import { COMMAND_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays } from './web/update-text.js';
+import {
+  COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
+} from './web/update-text.js';
 import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
 
 interface AppContext {
@@ -296,6 +298,7 @@ export interface CommandInput {
   lineByLine?: boolean;
   requester?: OperatorRequester;
   typed?: string;
+  page?: boolean;
 }
 
 export function handleCommand(command: string, app: AppContext, input: CommandInput = {}): CommandResult {
@@ -461,7 +464,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleFleet(app, args);
 
     case 'update':
-      return handleUpdate(args, input.typed === undefined ? COMMAND_WAYS : cliWays(input.typed));
+      return handleUpdate(args, input.page ? PAGE_WAYS : input.typed === undefined ? COMMAND_WAYS : cliWays(input.typed));
 
     default:
       return {

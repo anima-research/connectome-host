@@ -447,6 +447,23 @@ describe('count-check, with a stand-in for the framework', () => {
     }
   });
 
+  test('a count whose answer stops partway through its body is reported as timed out when the limit runs out, too', async () => {
+    let asked = 0;
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => {
+      asked += 1;
+      return new Response(new ReadableStream({ start: (body) => body.enqueue(new TextEncoder().encode('{"input_tokens":')) }),
+        { headers: { 'content-type': 'application/json' } });
+    } });
+    try {
+      setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
+      const check = await buildCountCheck(appWith('claude-agent-test', { type: 'passthrough' }), 300);
+      expect(asked).toBe(1);
+      expect(check.agent.source).toBe('count_tokens_timeout');
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test('the agent\'s count and the compression model\'s are asked together, so a count-check takes one count\'s limit, not two', async () => {
     const waiting: Array<() => void> = [];
     const server = Bun.serve({
