@@ -72,6 +72,17 @@ describe('headless daemon — panel-request / panel-response', () => {
     return reader.events.find((e) => e.type === 'panel-response' && e.corrId === corrId)!;
   }
 
+  async function switchRequest(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const corrId = `switch-test-${++corrSeq}`;
+    sock.write(JSON.stringify({ type: 'update-request', request, corrId }) + '\n');
+    await waitFor(
+      () => reader.events.some((e) => e.type === 'update-response' && e.corrId === corrId),
+      10_000,
+      `update-response for op=${String(request.op)}`,
+    );
+    return reader.events.find((e) => e.type === 'update-response' && e.corrId === corrId)!;
+  }
+
   beforeAll(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-panelreq-'));
     const recipePath = join(tmpDir, 'recipe.json');
@@ -196,6 +207,25 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe(400);
     expect(res.error).toContain('unknown panel op');
+  });
+
+  test("a change to the session is refused while this host is quiesced for a release switch, naming Resume, and goes once it has resumed", async () => {
+    const quiesced = await switchRequest({ op: 'quiesce', to: '9.9.9', waitMs: 0 });
+    expect(quiesced.ok).toBe(true);
+    try {
+      for (const op of ['settings-update', 'settings-reset', 'settings-cancel-transition', 'pin-add', 'pin-remove']) {
+        const res = await panel(op, { agent: 'commander' });
+        expect({ op, ok: res.ok, status: res.status }).toEqual({ op, ok: false, status: 409 });
+        expect(res.error).toBe(`${op} refused: this host is quiesced for a release switch. If that switch goes ahead, its ` +
+          'stop can cut a change to the session off. Nothing changed. Resume ends the switch\'s quiesce here: if the ' +
+          'switch is still under way, its try then doesn\'t go ahead. Then try again.');
+      }
+      expect((await panel('settings')).ok).toBe(true);
+    } finally {
+      expect((await switchRequest({ op: 'resume' })).ok).toBe(true);
+    }
+    const after = await panel('settings-cancel-transition', { agent: 'commander' });
+    expect(after.status).not.toBe(409);
   });
 
   test('panel-response bypasses subscription filter', async () => {
