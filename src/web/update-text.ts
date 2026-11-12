@@ -347,7 +347,9 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     lines.push(retrying(status)
       ? `${status.installed} is installed, and ended before its commit at its last try: ${ways.restart} tries it again.`
       : `${status.installed} is installed: ${ways.restart} switches to it.`);
-    if (!check?.ok || check.candidate === null) lines.push(`Notes: ${notesUrl(status.installed)}`);
+    if (!check?.ok || check.candidate === null) {
+      lines.push(goingBackCost(status.running, ways), `Notes: ${notesUrl(status.installed)}`);
+    }
   }
   if (status.goBack !== null) {
     lines.push(`Going back to ${status.goBack.to} is offered, with the copy of its data taken ${status.goBack.since}: ` +

@@ -952,6 +952,8 @@ test("/update's text names an install and a restart under way, and what's instal
   expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet: /update reads it."]);
   expect(statusLines({ ...base, installing: '0.13.0', installed: '0.12.2' }).slice(2))
     .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.',
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        '/update back restore, and what was lived since the switch is set aside.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.12.2/CHANGELOG.md']);
   const fellBack = { outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-24T03:00:00.000Z', reason: '0.12.2 ended before its commit', trialLog: null } as const;
   expect(statusLines({ ...base, installed: '0.12.2', lastSwitch: fellBack })).toContain(
