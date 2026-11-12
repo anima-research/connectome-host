@@ -1130,13 +1130,13 @@ test('the wait goes on while the host isn\'t ready yet, and ends once it answers
   expect(f.out.join('\n')).toContain('Its host answers: pid 4242');
 });
 
-test('a host that never answers while its unit stays active, on a recipe that names no server, is waited for 1.011 s', async () => {
+test('a host that never answers while its unit stays active, on a recipe that names no server, is waited for 61.756 s: its start and its model check', async () => {
   const at = install();
   const f = fake(at, { ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(1_011);
-  expect(f.slept()).toBeLessThan(3_011);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 1 s');
+  expect(f.slept()).toBeGreaterThanOrEqual(61_756);
+  expect(f.slept()).toBeLessThan(63_756);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 61 s');
 });
 
 test('each server the recipe or the agent overlay names adds 90 s to the wait for a host that never answers', async () => {
@@ -1145,9 +1145,9 @@ test('each server the recipe or the agent overlay names adds 90 s to the wait fo
   writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { b: { command: 'b' } } }));
   const f = fake(at, { ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(181_011);
-  expect(f.slept()).toBeLessThan(183_011);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 181 s');
+  expect(f.slept()).toBeGreaterThanOrEqual(241_756);
+  expect(f.slept()).toBeLessThan(243_756);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 241 s');
 });
 
 test('a copy whose original\'s host answers on its socket is refused, naming that pid, before anything is written', async () => {
@@ -2231,7 +2231,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host th
   const at = install();
   const f = fake(at, { platform, ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 1 s');
+  expect(f.err.join('\n')).toContain('no host said it was ready within 61 s');
   expect(f.err.join('\n')).toContain('It may still be starting: connectome alone says whether its host answers.');
   const log = platform === 'darwin' ? `tail -f '${join(at.work, 'logs', 'agent.log')}'` : `journalctl --user -u ${HOST} -f`;
   expect(f.out).toContain(`Its log shows what happened: ${log}. Put that right, then run connectome service install ` +

@@ -13,6 +13,7 @@ import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/sec
 import { readRecipeDocument } from '../recipe-document.js';
 import { parseHandWrittenJson } from '../hand-written-json.js';
 import { AGENT_OVERLAY_FILE_NAME } from '../update/agent-overlay-path.js';
+import { THINKING_BINDING_PROBE_MS } from '../thinking-binding-bound.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
@@ -27,9 +28,12 @@ const SHELL_BIN = 'session-server';
 const SHELL_PORTS = { first: 3100, last: 32767 };
 const SHELL_CLIENT = /(?:^|[/\\\s])(?:terminal-sessions-mcp|term-sessions-mcp)(?:$|[@/\\\s])/;
 const SHELL_SETTINGS = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
-// The longest start of 60 measured, from the host's spawn to its socket's lifecycle:ready, on Linux and macOS with Bun's
-// transpiler cache on and off, on setup's boot-check recipe, which names no server.
-const HOST_START_MS = 1_011;
+// The longest start measured, from the host's spawn to its socket's lifecycle:ready, on a recipe like setup's boot
+// check's, which names no server: 1,756 ms, on Linux with Bun's transpiler cache off, on a store holding a history of
+// 6,000 messages and 8.6 M characters, about ten 200 k-token context windows, imported from a made-up claude.ai export.
+// 60 starts on an empty store, on Linux and macOS, took at most 1,011 ms. That recipe's provider is mock, so its starts
+// skip the check of how the account binds thinking, which the wait adds as THINKING_BINDING_PROBE_MS.
+const HOST_START_MS = 1_756;
 // agent-framework 0.33.0 connects each server in turn before the host's socket answers (src/framework.ts), and none of
 // these bounds is exported. A legacy WebSocket server can take the longest: its open, 15 s (src/mcpl/transport.ts),
 // initialize, 30 s (src/mcpl/server-connection.ts), the initial policy request, 15 s (server-connection.ts), and, when
@@ -351,7 +355,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
   }
 
-  const ready = await awaitReady(root, manager, names.host, sys, env, HOST_START_MS + SERVER_START_MS * serversIn(raw, work));
+  const ready = await awaitReady(root, manager, names.host, sys, env,
+    HOST_START_MS + THINKING_BINDING_PROBE_MS + SERVER_START_MS * serversIn(raw, work));
   const commands = serviceCommands(root, sys);
   if (typeof ready === 'string') {
     ctx.err(`connectome: ${ready}`);
