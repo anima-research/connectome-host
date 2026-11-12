@@ -65,6 +65,8 @@ import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
 import { NoticesModule } from './modules/notices-module.js';
+import { noticeHomeDirectory } from './modules/notice-home.js';
+import { randomUUID } from 'node:crypto';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule, stopWebUiServer } from './modules/web-ui-module.js';
@@ -248,6 +250,8 @@ function resolveModel(recipe: Recipe): string {
 }
 
 let noticesRef: NoticesModule | null = null;
+// A process identity, not a fencing token. Single active host per journal in v1.
+const noticesRuntimeInstance = randomUUID();
 let instructionsRef: InstructionsModule | null = null;
 let installHere: ReleaseHere | null = null;
 
@@ -372,6 +376,11 @@ async function createFramework(
       const noticesConfig = typeof modules.notices === 'object' ? modules.notices : {};
       noticesRef = new NoticesModule({
         agentName,
+        home: noticesConfig.home,
+        homeRuntime: noticesConfig.home ? {
+          directory: noticeHomeDirectory(resolve(config.dataDir), noticesConfig.home.logicalAgent),
+          instanceId: noticesRuntimeInstance,
+        } : undefined,
         statusChannels: noticesConfig.statusChannels,
         replyIn: noticesConfig.reply?.in,
         replyNot: noticesConfig.reply?.not,

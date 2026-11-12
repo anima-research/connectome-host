@@ -667,6 +667,10 @@ unknown-key warning, like those at the other levels.
 
 **Keeping one agent alive**
 
+- **Service home** (`modules.notices.home`, opt-in) — host-only Zulip status
+  and incident notices without a model turn. Fixed operator-attested binding,
+  bounded private journal and no retry of ambiguous delivery; see
+  [trust limits and later-pilot preconditions](docs/agent-service-home.md).
 - **Autobiographical memory** — context-manager folds older history into
   memories the agent writes in its own voice, fitted to a context budget the
   agent and operator can change at runtime (`agent_settings`, WebUI
