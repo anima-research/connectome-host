@@ -13,6 +13,8 @@ import { buildCountCheck, buildShellCheck, type PanelAppRef } from '../src/web/p
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = join(resolve(TEST_DIR, '..'), 'src', 'index.ts');
 const LADDER = join(resolve(TEST_DIR, '..'), 'scripts', 'connectome-doctor');
+// The ladder reads /proc and runs under python3, so its test runs on Linux, where CI runs the suite.
+const ladderUnrunnable = process.platform !== 'linux' || (!Bun.which('python3') && !process.env.CI);
 
 // Shaped like terminal-sessions-mcp 1.7.3 as it answered when probed:
 // `listSessions` answers its sessions as JSON text, and with a missing or
@@ -159,7 +161,7 @@ describe('doctor host checks over the socket', () => {
     journalPath = join(dir, 'journal.txt');
     writeFileSync(journalPath, '');
     started = Math.floor(Date.now() / 1000);
-    child = spawn('bun', [INDEX_PATH, recipePath, '--headless'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, [INDEX_PATH, recipePath, '--headless'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
     journalOf(child.stdout!, journalPath, child.pid!);
     journalOf(child.stderr!, journalPath, child.pid!);
     const socketPath = join(dir, 'ipc.sock');
@@ -259,7 +261,7 @@ describe('doctor host checks over the socket', () => {
     expect((data as { recipeDigest?: unknown }).recipeDigest).toBe(recipeDigest((await loadRecipeDetailed(recipePath)).recipe));
   }, 30_000);
 
-  test('the ladder reads this host\'s own gate dump from its journal, with the gate and active streams it reads', async () => {
+  test.skipIf(ladderUnrunnable)('the ladder reads this host\'s own gate dump from its journal, with the gate and active streams it reads', async () => {
     const work = mkdtempSync(join(tmpdir(), 'chost-doctor-ladder-'));
     const bins = join(work, 'bin');
     mkdirSync(bins);
