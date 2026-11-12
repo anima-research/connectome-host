@@ -813,7 +813,7 @@ export class SetupModule implements Module {
     }
     let token: TokenCheck | null = null;
     if (name === DISCORD_TOKEN) {
-      token = await this.checkToken(value);
+      token = await this.checkToken(value, known);
       if (token.kind === 'refused') {
         return failed(`Discord refused this token (401), so nothing was stored as ${name}, and what was stored as it ` +
           'before stays as it was. Tell the person, and ask them to copy it again from their application\'s Bot page in ' +
@@ -858,7 +858,7 @@ export class SetupModule implements Module {
           'be a key, and nothing was stored. Ask them to check what they copied, then call again.');
       }
     }
-    const told = token !== null ? tokenNote(token) : key !== null ? keyNote(name, asked, key) : '';
+    const told = token !== null ? redacted(tokenNote(token), known) : key !== null ? keyNote(name, asked, key) : '';
     this.seen.names.add(name);
     addSecret(this.seen.values, { name, value });
     let writing = false;
@@ -1091,11 +1091,11 @@ export class SetupModule implements Module {
       ' Ask the person which they meant before the recipe names it.');
   }
 
-  private async checkToken(value: string): Promise<TokenCheck> {
+  private async checkToken(value: string, known: Secret[]): Promise<TokenCheck> {
     const token = await checkDiscordToken(value, {
       fetch: this.config.fetch, asking: () => this.config.show('Checking it with Discord.'),
     });
-    this.config.show(tokenLine(token));
+    this.config.show(redacted(tokenLine(token), known));
     return token;
   }
 }

@@ -3049,6 +3049,23 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
+  test('a token check shows and tells another stored secret that Discord\'s answer holds by its name, and the new token by its own', async () => {
+    const OTHER = 'sk-stored-583-other';
+    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}-a-checked-token` })) as unknown as typeof fetch;
+    const down = (async () => Response.json({ message: `down for ${OTHER} and a-checked-token` }, { status: 503 })) as unknown as typeof fetch;
+    for (const answer of [named, down]) {
+      const token = install({ asker: typed('a-checked-token'), fetch: answer, envFile: `OPENAI_API_KEY="${OTHER}"\n` });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(told.success, told.error).toBe(true);
+      for (const said of [String(told.data), token.shown.join('\n')]) {
+        expect(said).toContain('<OPENAI_API_KEY>');
+        expect(said).toContain('<DISCORD_TOKEN>');
+        expect(said).not.toContain(OTHER);
+        expect(said).not.toContain('a-checked-token');
+      }
+    }
+  });
+
   test('a token answered 429 with a Retry-After of seconds and no retry_after in its body tells the agent that wait, whether or not the body is JSON', async () => {
     const WAIT = ' It asks for 300 s: call setup--discord once that has passed, which checks the stored token first.';
     const bodies = [new Response('<html>slow down</html>', { status: 429, headers: { 'content-type': 'text/html', 'retry-after': '300' } }),
