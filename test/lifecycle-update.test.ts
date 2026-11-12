@@ -1570,6 +1570,10 @@ test('a notice written while the installed releases couldn\'t be read is written
   }
   const take = `[update] To take it: ${shellWord(join(root, 'connectome'))} update restart.`;
   expect(logged).not.toContain(take);
+  const unread = logged.findIndex((line) => line.startsWith("[update] Which releases are installed couldn't be read, so " +
+    '0.15.0 may be installed already: '));
+  expect({ unread: unread >= 0, last: unread === logged.length - 1, afterTake: logged[unread - 1]?.startsWith('[update] To take it: ') })
+    .toEqual({ unread: true, last: true, afterTake: true });
   await host.update.readRegistry();
   expect(logged).toContain(take);
 });
