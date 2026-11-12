@@ -2984,7 +2984,7 @@ test('an ANTHROPIC_BASE_URL put in .env during a question is checked as a URL be
   });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(labels).toEqual(['An API key that https://gateway.example accepts, typed hidden (Enter alone stops setup)']);
-  expect(text(made.seen.err)).toContain(`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL`);
+  expect(made.seen.err).toEqual([`ANTHROPIC_BASE_URL, in ${envFile}, isn't an http:// or https:// URL. The key wasn't checked or stored. Set it to one there, or take it out for Anthropic's own API, and run setup again.`]);
   expect(made.seen.checked).toEqual([]);
   expect(made.seen.launched).toBeNull();
 });
@@ -3232,7 +3232,7 @@ test('an ANTHROPIC_BASE_URL in .env that isn\'t a URL is named before any key is
   writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=localhost:8080\n');
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain(`ANTHROPIC_BASE_URL, in ${join(dir, '.env')}, isn't an http:// or https:// URL`);
+  expect(made.seen.err).toEqual([`ANTHROPIC_BASE_URL, in ${join(dir, '.env')}, isn't an http:// or https:// URL. Set it to one there, or take it out for Anthropic's own API, and run setup again.`]);
   expect(made.seen.checked).toEqual([]);
   expect(made.seen.asked.filter((question) => /\bkey\b/i.test(question))).toEqual([]);
 });
