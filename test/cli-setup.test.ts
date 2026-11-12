@@ -766,14 +766,29 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(listed).toBeLessThan(added);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['their-own-server', 'node-pty', 'puppeteer', 'term-sessions-mcp']);
-  expect(text(made.seen.out)).toContain(`Setup added 1 name from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
+  expect(text(made.seen.out)).toContain(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: those Bun allows by default, and term-sessions-mcp, which gives the resident a shell if it gets one. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
   const named = directory();
   writeFileSync(join(named, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer', 'term-sessions-mcp'] }));
   mkdirSync(join(named, '.setup'));
   writeFileSync(join(named, '.setup', 'setup.lock'), '');
   const unchanged = world(named, { answers: [''], secrets: [KEY] });
   expect(await runSetup(named, ['discord'], unchanged)).toBe(0);
-  expect(text(unchanged.seen.out)).not.toContain('to trustedDependencies in');
+  expect(text(unchanged.seen.out)).not.toContain('to the packages that may run install scripts');
+  const shellListed = directory();
+  writeFileSync(join(shellListed, 'package.json'), JSON.stringify({ trustedDependencies: ['term-sessions-mcp'] }));
+  mkdirSync(join(shellListed, '.setup'));
+  writeFileSync(join(shellListed, '.setup', 'setup.lock'), '');
+  const bunOnly = world(shellListed, { answers: [''], secrets: [KEY] });
+  expect(await runSetup(shellListed, ['discord'], bunOnly)).toBe(0);
+  expect(text(bunOnly.seen.out)).toContain(`In ${join(shellListed, 'package.json')}, setup added these to the packages that may run install scripts here: those Bun allows by default. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
+  const bunListed = directory();
+  writeFileSync(join(bunListed, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer'] }));
+  mkdirSync(join(bunListed, '.setup'));
+  writeFileSync(join(bunListed, '.setup', 'setup.lock'), '');
+  const shellOnly = world(bunListed, { answers: [''], secrets: [KEY] });
+  expect(await runSetup(bunListed, ['discord'], shellOnly)).toBe(0);
+  const shellLine = shellOnly.seen.out.find((line) => line.includes('to the packages that may run install scripts'));
+  expect(shellLine).toBe(`In ${join(bunListed, 'package.json')}, setup added these to the packages that may run install scripts here: term-sessions-mcp, which gives the resident a shell if it gets one.`);
 });
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
@@ -822,7 +837,7 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(atAdd).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
-  expect(text(made.seen.out)).toContain(`Setup added 2 names from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
+  expect(text(made.seen.out)).toContain(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: those Bun allows by default, and term-sessions-mcp, which gives the resident a shell if it gets one. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'pm' && args(argv)[1] === 'untrusted')).toBe(false);
   expect(text(made.seen.out)).not.toContain('Blocked');
 });
