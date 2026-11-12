@@ -12,6 +12,7 @@ import {
 } from '../src/update/contract.js';
 import { dataItems, liveChildren, machineOps } from '../src/update/launcher.js';
 import { ENTRY_POINT, parseArgs, setup, type ServiceUnits, type SetupOptions } from '../src/update/setup.js';
+import { modeTest } from './mode-test.js';
 
 let dir: string;
 let install: string;
@@ -1253,6 +1254,36 @@ describe('the fleet\'s children file', () => {
     expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: copied }]);
     expect(readdirSync(copied)).toEqual([]);
     expect(readdirSync(kid).sort()).toEqual(['headless.pid', 'ipc.sock']);
+  });
+
+  modeTest('a copy whose original child directory this user can\'t look at, while its entry names a process, is refused, naming the directory, its error and both ways out, and nothing changes; with the process taken out of the entry by hand, it binds', () => {
+    setup(options(install));
+    const kids = join(install, 'data', 'kids');
+    const kid = join(kids, 'c');
+    const pid = live();
+    withChild(install, kid, pid);
+    const copy = join(dir, 'copy');
+    copyOf(install, copy);
+    const children = join(copy, 'data', 'fleet-children.json');
+    const kept = tree(copy);
+    let why = '';
+    fs.chmodSync(kids, 0o000);
+    try {
+      why = refusal(() => setup(options(copy)));
+      expect(tree(copy)).toEqual(kept);
+      writeJsonAtomic(children, { v: 1, children: [{ name: 'c', pid: null, bootId: null, dataDir: kid }] } satisfies ChildrenFile);
+      setup(options(copy));
+    } finally {
+      fs.chmodSync(kids, 0o755);
+    }
+    expect(why.split(' (EACCES')[0]).toBe(`${children} names ${kid} for its child c, with process ${pid}, and setup can't ` +
+      'look at that directory');
+    expect(why).toEndWith('whether that process is the original install\'s child, still running there, as after a copy, ' +
+      'or this install\'s own. Setup stopped before it bound the install. Make that directory searchable to this user, ' +
+      `and run setup again; or, if this install is a copy, set that child's "pid" to null in ${children}, and run setup ` +
+      'again.');
+    expect(childrenOf(copy)).toEqual([{ name: 'c', pid: null, bootId: null, dataDir: join(copy, 'data', 'kids', 'c') }]);
+    expect(record(copy)!.workingDir).toBe(copy);
   });
 
   test('a moved install\'s binding leaves its child\'s socket and pid file, which are its own child\'s', () => {
