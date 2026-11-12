@@ -2842,12 +2842,16 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const r = await run(at, { checkService: async () => ({ passed: true, lines: ['connectome-test.service is active (running).'] }) });
     expect(r.out).toContain('No host answers: there\'s no socket at');
     expect(r.out).toContain(again);
-    for (const checkService of [
-      async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true as const }),
-      async () => ({ passed: false, lines: ['connectome-test.service is failed, not active.'] }),
-    ]) {
+    for (const [checkService, said] of [
+      [async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true as const }),
+        ['connectome-test.service is stopped: systemd shows it inactive (dead).', 'No host answers, since its service is stopped']],
+      [async () => ({ passed: false, lines: ['connectome-test.service is failed, not active.'] }),
+        ['connectome-test.service is failed, not active.', 'The service check above didn\'t pass.']],
+    ] as const) {
       const quiet = install();
-      expect((await run(quiet, { checkService })).out).not.toContain('so its host may still be starting');
+      const out = (await run(quiet, { checkService })).out;
+      for (const line of said) expect(out).toContain(line);
+      expect(out).not.toContain('so its host may still be starting');
     }
   });
 
