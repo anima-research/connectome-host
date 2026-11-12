@@ -194,26 +194,37 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     out('Nothing was installed here.');
     return 0;
   }
-  mkdirSync(setupDir, { recursive: true, mode: 0o700 });
-  const lock = takeSetupLock(join(setupDir, 'setup.lock'));
-  if (lock === null) {
-    err(`Another setup is running in ${dir}, so this one does nothing. Wait for it to end, or end it, and run ` +
-      'setup again.');
-    return 1;
-  }
-  try {
+  const envFile = join(dir, '.env');
+  const takeLock = (): { release(): void } | null => {
+    mkdirSync(setupDir, { recursive: true, mode: 0o700 });
+    const taken = takeSetupLock(join(setupDir, 'setup.lock'));
+    if (taken === null) {
+      err(`Another setup is running in ${dir}, so this one does nothing. Wait for it to end, or end it, and run ` +
+        'setup again.');
+      return null;
+    }
+    return taken;
+  };
+  const tidy = () => {
     rmSync(join(dir, '.env.tmp'), { force: true });
-    const envFile = join(dir, '.env');
+    const envStat = lstatSync(envFile, { throwIfNoEntry: false });
+    if (envStat?.isFile() && (envStat.mode & 0o077) !== 0) {
+      chmodSync(envFile, 0o600);
+      out(`${envFile} was open to others than ${world.user}, so setup made it readable by ${world.user} alone.`);
+    }
+  };
+  // In a directory that's setup's already, the lock comes before the questions. In one that's empty or not there yet,
+  // the first step's yes comes before setup makes anything there, its lock included.
+  let lock = ours ? takeLock() : undefined;
+  if (lock === null) return 1;
+  try {
+    if (lock !== undefined) tidy();
     const envStat = lstatSync(envFile, { throwIfNoEntry: false });
     if (envStat?.isSymbolicLink()) {
       err(`${envFile} is a link to ${readlinkSync(envFile)}. Setup keeps its key and its agent's secrets in .env as a ` +
         `file of its own, readable by ${world.user} alone, so it won't write through the link or over it. Replace the ` +
         'link with the file it leads to, if that\'s there, or take it away, and run setup again.');
       return 1;
-    }
-    if (envStat?.isFile() && (envStat.mode & 0o077) !== 0) {
-      chmodSync(envFile, 0o600);
-      out(`${envFile} was open to others than ${world.user}, so setup made it readable by ${world.user} alone.`);
     }
     let outside: EnvFormError | null;
     try {
@@ -236,11 +247,15 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       out(`Setup began here before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's agent ` +
         'picks up where it stopped, and can change with you what it set up.');
     }
-    let emptied = false;
-    try {
-      emptied = readdirSync(root).length === 0;
-    } catch {
-    }
+    const rootSeen = (): string => {
+      try {
+        return readdirSync(root).length === 0 ? 'empty' : 'held';
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code ?? 'unreadable';
+      }
+    };
+    const rootBefore = rootSeen();
+    const emptied = rootBefore === 'empty';
     const lost = existsSync(root) && !emptied ? null
       : state?.finished !== undefined
         ? `This directory's install root, ${root}, ` +
@@ -275,6 +290,16 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       if (typeof answered === 'number') return answered === -1 ? stopped() : answered;
       state = answered;
     }
+    if (lock === undefined) {
+      lock = takeLock();
+      if (lock === null) return 1;
+      if (JSON.stringify(readSetupState(statePath)) !== JSON.stringify(read) || rootSeen() !== rootBefore) {
+        err(`Another setup ran in ${dir} while this one asked its questions, so this one keeps nothing and stops. ` +
+          'Run setup again: it goes on from what that setup kept.');
+        return 1;
+      }
+      tidy();
+    }
     if ('unreadable' in read) {
       const aside = join(setupDir, `setup-state.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
       renameSync(statePath, aside);
@@ -294,7 +319,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped });
   } finally {
-    lock.release();
+    lock?.release();
   }
 }
 
