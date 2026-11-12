@@ -9,7 +9,7 @@ import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/u
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup, setupDirectory } from './setup.js';
+import { ROOT_IN_WORKDIR, SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup, setupDirectory } from './setup.js';
 import { shellCommand } from './shell.js';
 import { shownToPerson } from './shown.js';
 
@@ -27,8 +27,6 @@ export interface CliCommand {
   words?: string[];
   run(ctx: CliContext): Promise<number>;
 }
-
-export const ROOT_IN_WORKDIR = 'connectome-host';
 
 const HEALTH_WAIT_MS = 10_000;
 

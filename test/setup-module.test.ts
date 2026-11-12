@@ -75,7 +75,7 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
   return module.handleToolCall({ id: 'c2', name: 'ask_secret', input } as ToolCall);
 }
 
-// Work held behind an open question waits on the module's asking with await, which calls a thenable's then.
+// await calls a thenable's then.
 function heldAt(module: SetupModule): Promise<void> {
   const held = module as unknown as { asking: PromiseLike<unknown> };
   const open = held.asking;
@@ -84,7 +84,7 @@ function heldAt(module: SetupModule): Promise<void> {
   });
 }
 
-// A question asked while a model check is under way waits on that check with Promise.all, which calls its then.
+// Promise.all calls then on each promise it's given, so a then set on the promise itself is the one called.
 function heldOnChecks(module: SetupModule): Promise<void> {
   const { checks } = module as unknown as { checks: Set<Promise<void>> };
   if (checks.size === 0) throw new Error('no model check is under way');

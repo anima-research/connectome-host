@@ -40,8 +40,7 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
-// The install root's name in the directory setup works in, as the package's command looks for it.
-const ROOT = 'connectome-host';
+export const ROOT_IN_WORKDIR = 'connectome-host';
 const SURFACE = 'discord';
 export const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
@@ -99,7 +98,7 @@ function setupsOwn(dir: string, root: string): boolean {
 
 function takes(dir: string): boolean {
   try {
-    return entriesOf(dir).length === 0 || setupsOwn(dir, join(dir, ROOT));
+    return entriesOf(dir).length === 0 || setupsOwn(dir, join(dir, ROOT_IN_WORKDIR));
   } catch {
     return true;
   }
@@ -241,8 +240,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       out(`${envFile} was open to others than ${world.user}, so setup made it readable by ${world.user} alone.`);
     }
   };
-  // In a directory that's setup's already, the lock comes before the questions. In one that's empty or not there yet,
-  // the first step's yes comes before setup makes anything there, its lock included.
   let lock = ours ? takeLock() : undefined;
   if (lock === null) return 1;
   try {
