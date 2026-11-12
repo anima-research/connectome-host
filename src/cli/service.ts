@@ -28,12 +28,6 @@ const SHELL_BIN = 'session-server';
 const SHELL_PORTS = { first: 3100, last: 32767 };
 const SHELL_CLIENT = /(?:^|[/\\\s])(?:terminal-sessions-mcp|term-sessions-mcp)(?:$|[@/\\\s])/;
 const SHELL_SETTINGS = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
-// The longest start measured, from the host's spawn to its socket's lifecycle:ready, on a recipe like setup's boot
-// check's, which names no server: 1,756 ms, on Linux with Bun's transpiler cache off, on a store holding a history of
-// 6,000 messages and 8.6 M characters, about ten 200 k-token context windows, imported from a made-up claude.ai export.
-// That size stands for a history continued over many windows, and a larger store can start slower than this. 60 starts
-// on an empty store, on Linux and macOS, took at most 1,011 ms. That recipe's provider is mock, so its starts
-// skip the check of how the account binds thinking, which the wait adds as THINKING_BINDING_PROBE_MS.
 const HOST_START_MS = 1_756;
 // agent-framework 0.33.0 connects each server in turn before the host's socket answers (src/framework.ts), and none of
 // these bounds is exported. A legacy WebSocket server can take the longest: its open, 15 s (src/mcpl/transport.ts),
