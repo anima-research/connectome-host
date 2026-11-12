@@ -1392,6 +1392,15 @@ describe('setup--run, and what the install\'s commands say for the person', () =
     expect(afterCommand(quiet.shown)).toEqual([]);
   });
 
+  test('a named pipe left where the file for the person was is refused as no file, and the command is answered', async () => {
+    const { module, shown } = install();
+    const answer = await run(module, 'rm "$CONNECTOME_SETUP_SHOWN" && mkfifo "$CONNECTOME_SETUP_SHOWN" && echo for the agent');
+    expect(answer.stdout.text).toBe('for the agent\n');
+    const after = afterCommand(shown);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatch(/^What it said for you can't be shown: .+ can't be read \(it isn't a file\)\.$/);
+  });
+
   test('where which values are secret can\'t be read once the command ends, nothing it wrote there is shown, and the person is told', async () => {
     const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
     const result = await runCall(module, 'echo written-for-the-person >> "$CONNECTOME_SETUP_SHOWN"; mkdir .env.local');

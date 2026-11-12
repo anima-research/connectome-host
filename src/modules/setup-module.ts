@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
@@ -21,7 +21,7 @@ import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
 import { originOf } from '../setup/key-check.js';
 import { PROVIDER_KEYS, checkProviderKey, familyOf, listModels, type ProviderAnswer } from '../setup/provider-key.js';
 import { unknownToolResult } from './unknown-tool.js';
-import { writeJsonAtomic } from '../update/contract.js';
+import { readWithoutWaiting, writeJsonAtomic } from '../update/contract.js';
 import { readSetupState } from '../setup/state.js';
 import { SHOWN_FILE } from '../cli/shown.js';
 
@@ -607,7 +607,7 @@ export class SetupModule implements Module {
   private showSaid(file: string, secrets: Secret[], unfinished: string | null): void {
     let text: string;
     try {
-      text = readFileSync(file, 'utf-8');
+      text = readWithoutWaiting(file);
     } catch (error) {
       const why = (error as NodeJS.ErrnoException).code ?? (error as Error).message;
       this.config.show(`What it said for you can't be shown: ${shown(file)} can't be read (${why}).`);
