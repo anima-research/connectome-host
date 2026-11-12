@@ -12,7 +12,8 @@ import {
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
-  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, readSecrets, redactWindow, secretNames, storedSecrets,
+  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, linesKeepingSecrets, readSecrets, redactWindow,
+  secretNames, storedSecrets,
   type Secret,
 } from '../setup/secrets.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
@@ -659,10 +660,22 @@ export async function doctor(
     }
     if (ran !== undefined) {
       ladderRan = true;
-      const said = (ran.stdout ?? '').split('\n');
+      const cut = ran.error !== undefined || ran.signal !== null;
+      const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
+      let dropped = 0;
+      const linesOf = (text: string): string[] => {
+        const lines = linesKeepingSecrets(text, secrets);
+        if (cut) dropped += lines.splice(-(breaks + 1)).filter((line) => line !== '').length;
+        return lines;
+      };
+      const said = linesOf(ran.stdout ?? '');
       const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
       const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
-      for (const line of [...said, ...(ran.stderr ?? '').split('\n')]) if (line !== '') report.line(line);
+      for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
+      if (dropped > 0) {
+        report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
+          'printed last: a secret cut short there couldn\'t be hidden.');
+      }
       if (ran.error !== undefined) {
         const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
         report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +

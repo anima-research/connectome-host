@@ -387,6 +387,22 @@ export function shownByName(words: string, secrets: readonly Secret[]): string {
   return text + bytes.toString('utf-8', at);
 }
 
+export function linesKeepingSecrets(text: string, secrets: Secret[]): string[] {
+  const bytes = Buffer.from(text, 'utf-8');
+  const spans = spansOf(bytes, secrets);
+  const lines: string[] = [];
+  let from = 0;
+  let next = 0;
+  for (let at = bytes.indexOf(10); at >= 0; at = bytes.indexOf(10, at + 1)) {
+    while (next < spans.length && spans[next]!.end <= at) next += 1;
+    if (next < spans.length && spans[next]!.start <= at) continue;
+    lines.push(bytes.toString('utf-8', from, at));
+    from = at + 1;
+  }
+  lines.push(bytes.toString('utf-8', from));
+  return lines;
+}
+
 export function redactWindow(
   bytes: Buffer,
   from: number,

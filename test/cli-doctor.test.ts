@@ -1510,6 +1510,52 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(1);
   });
 
+  const withKey = async <T>(value: string, body: () => Promise<T>): Promise<T> => {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = value;
+    try {
+      return await body();
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  };
+  const ladderSaying = (at: Install, script: string): string => {
+    const path = join(at.work, 'python3-saying');
+    writeFileSync(path, `#!/bin/sh\nif [ "$1" = -c ]; then echo 3.12; exit 0; fi\n${script}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+
+  test('a secret that holds a line break is hidden whole in what the ladder prints', async () => {
+    const at = install({ drop: ['ANTHROPIC_API_KEY'] });
+    const r = await withKey('sk-part-one\nsk-part-two', () => withHost(at, HEALTHY_HOST, () =>
+      run(at, { python: ladderSaying(at, 'printf "%s\\n" "$ANTHROPIC_API_KEY" >&2') })));
+    expect(r.out).toContain('<ANTHROPIC_API_KEY>');
+    expect(r.out).not.toContain('sk-part-one');
+    expect(r.out).not.toContain('sk-part-two');
+  });
+
+  test('a ladder ended partway through a line doesn\'t have that line shown, so a secret cut short there isn\'t either', async () => {
+    const at = install({ drop: ['ANTHROPIC_API_KEY'] });
+    const r = await withKey('sk-secret-key', () => withHost(at, HEALTHY_HOST, () =>
+      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-secret-k"\nsleep 5'), ladderLimitMs: 1000 })));
+    expect(r.out).toContain('a whole line');
+    expect(r.out).not.toContain('sk-secret-k');
+    expect(r.out).toContain('The ladder was ended, and doctor doesn\'t show the line it printed last: a secret cut short ' +
+      'there couldn\'t be hidden.');
+  }, 20_000);
+
+  test('a ladder ended just after the line break of a secret that holds one doesn\'t have that secret\'s first line shown', async () => {
+    const at = install({ drop: ['ANTHROPIC_API_KEY'] });
+    const r = await withKey('sk-part-one\nsk-part-two', () => withHost(at, HEALTHY_HOST, () =>
+      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-part-one\\n"\nsleep 5'), ladderLimitMs: 1000 })));
+    expect(r.out).toContain('a whole line');
+    expect(r.out).not.toContain('sk-part-one');
+    expect(r.out).toContain('The ladder was ended, and doctor doesn\'t show the line it printed last: a secret cut short ' +
+      'there couldn\'t be hidden.');
+  }, 20_000);
+
   test('the ladder runs with XDG_RUNTIME_DIR, the user manager\'s default when doctor\'s shell has none', async () => {
     const at = install();
     const saved = process.env.XDG_RUNTIME_DIR;
