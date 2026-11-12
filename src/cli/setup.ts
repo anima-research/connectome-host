@@ -199,6 +199,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   const setupDir = join(dir, '.setup');
   const statePath = join(setupDir, 'setup-state.json');
+  const dirThere = existsSync(dir);
   const entries = entriesOf(dir);
   const ours = setupsOwn(dir, root);
   const home = homeDirectory(world.env.HOME);
@@ -325,6 +326,14 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       if (JSON.stringify(readSetupState(statePath)) !== JSON.stringify(read) || rootSeen() !== rootBefore) {
         err(`Another setup ran in ${dir} while this one asked its questions, so this one keeps nothing and stops. ` +
           'Run setup again: it goes on from what that setup kept.');
+        return 1;
+      }
+      const others = entriesOf(dir).filter((entry) => entry !== '.setup').sort();
+      if (others.length > 0) {
+        err(`${dir} ${dirThere ? 'was empty' : 'wasn\'t there'} when setup began, and holds other files now, such as ` +
+          `${others[0]}, so setup keeps nothing there and stops. Make a new directory for the resident where you can ` +
+          'write, and run this same version of setup there:');
+        err(`  ${firstLine()}`);
         return 1;
       }
       tidy();
