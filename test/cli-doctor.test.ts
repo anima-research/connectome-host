@@ -1662,6 +1662,15 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.out).not.toContain('claude-manager-model');
   });
 
+  test('on systemd, an UnsetEnvironment assignment takes its name out only where the value it names is the one given', async () => {
+    for (const [unset, model] of [['MODEL=claude-manager-model', 'claude-dotenv-model'], ['MODEL=claude-other-model', 'claude-manager-model']]) {
+      const at = install({ env: { MODEL: 'claude-dotenv-model' } });
+      const manager = fakeManager(at.work, { env: ['MODEL=claude-manager-model'], unset });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+      expect([unset, r.out]).toEqual([unset, expect.stringContaining(`fit ${model}'s window`)]);
+    }
+  });
+
   test('on systemd, a value the manager prints quoted, with escapes, is read as the manager holds it', async () => {
     const quoted = 'it\'s a "quoted" \\ value\twith\na\u0001control and café';
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'QUOTED_SECRET', 'PLAIN_SECRET'] });
