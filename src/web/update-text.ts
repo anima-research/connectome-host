@@ -553,9 +553,9 @@ export function commandFor(way: UpdateWay, status: UpdateStatus): string | null 
   return COMMAND_WAYS[way];
 }
 
-export function pageRequest(way: UpdateWay, status: UpdateStatus): { type: 'command'; command: string } | null {
+export function pageRequest(way: UpdateWay, status: UpdateStatus): { type: 'command'; command: string; page: true } | null {
   const command = commandFor(way, status);
-  return command === null ? null : { type: 'command', command };
+  return command === null ? null : { type: 'command', command, page: true };
 }
 
 export interface Banner {

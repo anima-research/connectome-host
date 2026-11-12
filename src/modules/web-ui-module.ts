@@ -1823,7 +1823,7 @@ export class WebUiModule implements Module {
         return;
 
       case 'command': {
-        void this.dispatchCommand(client, parsed.command, parsed.corrId);
+        void this.dispatchCommand(client, parsed.command, parsed.corrId, parsed.page === true);
         return;
       }
 
@@ -2671,13 +2671,13 @@ export class WebUiModule implements Module {
     sharedServer?.clients.delete(id);
   }
 
-  private async dispatchCommand(client: ClientState, command: string, corrId?: string): Promise<void> {
+  private async dispatchCommand(client: ClientState, command: string, corrId?: string, page = false): Promise<void> {
     if (!sharedServer?.app) return;
     const app = sharedServer.app;
     let result;
     try {
       // The operator log names who typed it, as the surgery dialog's does.
-      result = handleCommand(command, app, { requester: this.requesterFor(client) });
+      result = handleCommand(command, app, { requester: this.requesterFor(client), page });
     } catch (err) {
       this.send(client, {
         type: 'error',
