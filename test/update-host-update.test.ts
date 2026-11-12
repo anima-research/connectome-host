@@ -59,7 +59,9 @@ function fakeFramework(options: {
   const timeouts: Array<number | undefined> = [];
   let reads = 0;
   let drainedNow = false;
-  let mode: { quiesced: boolean; reason?: string } = options.quiesced ? { quiesced: true, reason: options.quiesced } : { quiesced: false };
+  let quiesces = 0;
+  let mode: { quiesced: boolean; reason?: string; since?: number } = options.quiesced
+    ? { quiesced: true, reason: options.quiesced, since: quiesces } : { quiesced: false };
   const status = (): HostModeStatus => {
     const drained = drainedNow || reads >= (options.drainAfter ?? 0);
     return {
@@ -73,7 +75,7 @@ function fakeFramework(options: {
       if (options.quiesceFails) throw options.quiesceFails;
       calls.push('quiesce');
       timeouts.push(opts.timeoutMs);
-      if (!mode.quiesced) mode = { quiesced: true, reason: opts.reason };
+      if (!mode.quiesced) mode = { quiesced: true, reason: opts.reason, since: ++quiesces };
       return status();
     },
     resume: async () => {
@@ -1239,12 +1241,31 @@ describe("the switch's last look, from the install's host", () => {
     const answer = await update.stopNow();
     expect(answer.done).toBe(false);
     expect(answer.lines[0]).toBe("The restart to 0.13.0 is called off, and nothing switches: stop now's last look found a " +
-      `fleet child that doesn't hold, so stopping now could cut work that wasn't named as busy: a: ${SERVING}.`);
+      `fleet child that doesn't hold or didn't answer, so stopping now could cut work that wasn't named as busy: a: ${SERVING}.`);
     expect(readMark(root)).toBeNull();
     expect(stops).toHaveLength(0);
     const stopNowLook = [...new Set(looks())][1];
     expect(asked.filter(({ request }) => request.op === 'resume').map(({ name, request }) => [name, request]))
       .toEqual([['a', { op: 'resume', look: stopNowLook }], ['b', { op: 'resume', look: stopNowLook }]]);
+  });
+
+  test("stop now is called off where this host's own quiesce was ended during the wait, or ended and taken again: nothing is marked or stopped", async () => {
+    for (const again of [false, true]) {
+      const { root, dataDir } = install('0.12.1', ['0.13.0']);
+      const { framework } = fakeFramework({ holders: ['alice'], drainAfter: Infinity });
+      const { update, stops } = hostUpdate({ root, dataDir, framework }, { supervised: true });
+      expect((await update.restartToInstalled()).done).toBe(false);
+      await framework.resume();
+      if (again) await framework.quiesce({ reason: 'maintenance: disk swap' });
+      const answer = await update.stopNow();
+      expect({ again, done: answer.done, first: answer.lines[0] }).toEqual({
+        again, done: false,
+        first: "The restart to 0.13.0 is called off, and nothing switches: stop now found that this host's quiesce was ended " +
+          "during the wait, so stopping now could cut work that wasn't named as busy.",
+      });
+      expect(readMark(root)).toBeNull();
+      expect(stops).toHaveLength(0);
+    }
   });
 
   test('a child the fleet starts again while another child answers the last look calls the switch off before its mark', async () => {
