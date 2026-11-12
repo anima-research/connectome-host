@@ -10,6 +10,7 @@ import {
   installService, portFree, recipeHasShell, runService, serviceCommands, serviceLines, type ServiceSystem,
 } from '../src/cli/service.js';
 import { slugOf } from '../src/cli/service-unit.js';
+import { SHOWN_FILE } from '../src/cli/shown.js';
 import { readRecipeDocument } from '../src/recipe-document.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
 
@@ -531,6 +532,26 @@ test('with linger off it prints the root line, says to run it again, writes noth
   nothingWritten(at);
   expect(f.systemd.enabled.size).toBe(0);
   expect(f.systemd.starts).toEqual([]);
+});
+
+test('under setup\'s agent, every line service install prints also goes to the file the person is shown, in the order printed', async () => {
+  const cases: { recipe: boolean; options: Parameters<typeof fake>[1]; code: number }[] = [
+    { recipe: true, options: {}, code: 0 },
+    { recipe: true, options: { linger: false }, code: 1 },
+    { recipe: false, options: {}, code: 2 },
+  ];
+  for (const { recipe, options, code } of cases) {
+    const at = install('My Resident', { shell: true });
+    const shown = join(at.home, 'shown.txt');
+    writeFileSync(shown, '', { mode: 0o600 });
+    const f = fake(at, { ...options, env: { PATH: `${at.root}:/usr/bin:/bin`, [SHOWN_FILE]: shown } });
+    const said: string[] = [];
+    const ctx = { root: at.root, argv: recipe ? ['install', at.recipe] : ['install'],
+      out: (line: string) => said.push(line), err: (line: string) => said.push(line) };
+    expect(await runService(ctx, f.system)).toBe(code);
+    expect(said.length).toBeGreaterThan(0);
+    expect(readFileSync(shown, 'utf-8')).toBe(said.map((line) => `${line}\n`).join(''));
+  }
 });
 
 test('on a system without systemd or launchd it refuses, writing nothing', async () => {
