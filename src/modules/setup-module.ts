@@ -13,9 +13,9 @@ import type {
   ToolResult,
 } from '@animalabs/agent-framework';
 import {
-  DISCORD_TOKEN, StoredSecrets, addSecret, commandEnvOf, isSecretName, readEnvFile, readSecrets, redactWindow,
-  secretNames, secretValues, unwritableValue, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm,
-  envLink, type Secret,
+  DISCORD_TOKEN, SHORT_CHARACTERS, SHORT_HIDES, StoredSecrets, addSecret, commandEnvOf, isSecretName, isShort,
+  readEnvFile, readSecrets, redactWindow, secretNames, secretValues, shortLength, unwritableValue, writeEnvValue,
+  DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
 import { originOf } from '../setup/key-check.js';
@@ -221,18 +221,9 @@ export function showsItself(tool: string): boolean {
   return tool.startsWith(`${SETUP_MODULE}--`);
 }
 
-const SHORT_CHARACTERS = 8;
-const charactersIn = (value: string): number => [...value.trim()].length;
-const isShort = (value: string): boolean => charactersIn(value) < SHORT_CHARACTERS;
-
-const shortWarning = (name: string, value: string): string => {
-  const count = charactersIn(value);
-  const ends = value === value.trim() ? '' : ', not counting the whitespace at its ends';
-  return `What you typed for ${name} is ${count} character${count === 1 ? '' : 's'} long${ends}. Setup hides a ` +
-    'stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of ' +
-    'command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer ' +
-    `made-up one: ${SHORT_CHARACTERS} or more random letters and digits, not a word. To keep this one, type it again.`;
-};
+const shortWarning = (name: string, value: string): string => `What you typed for ${name} is ${shortLength(value)}. ` +
+  `${SHORT_HIDES} If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up ` +
+  `one: ${SHORT_CHARACTERS} or more random letters and digits, not a word. To keep this one, type it again.`;
 
 const SHORT_AGAIN = 'the same value again to keep it, or another one';
 
