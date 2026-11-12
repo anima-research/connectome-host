@@ -11,9 +11,9 @@ import {
   batchWebUiNotice,
   batchEchoLine,
   BATCH_MCPL_LOG_NOTE,
-  BATCH_UNANSWERED_NOTICE,
+  batchEndNotice,
 } from '../src/batch-mode.js';
-import { PIPED_TURN_CAP_MS } from '../src/piped-turns.js';
+import { PIPED_TURN_CAP_MS, createPipedTurns } from '../src/piped-turns.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
@@ -27,9 +27,33 @@ describe('batch-mode notices', () => {
     expect(line).toContain('--headless');
   });
 
-  test('the unanswered notice holds for a turn still running and for a line whose turn hasn\'t started', () => {
-    expect(BATCH_UNANSWERED_NOTICE).toBe('[batch] a line hasn\'t been answered yet, and batch mode stops the agent now, so its ' +
-      'answer won\'t print here');
+  test('the end notice names a line whose turn hasn\'t started, else a turn still running, else nothing', async () => {
+    const line = '[batch] a line hasn\'t been answered yet, and batch mode stops the agent now, so its answer won\'t print here';
+    const turn = '[batch] a turn is still running, and batch mode stops the agent now, so its answer won\'t print here';
+    const quiet = { write: () => {}, log: () => {}, error: () => {} };
+    const tracker = () => createPipedTurns('clerk', quiet);
+    const start = (turns: ReturnType<typeof tracker>) => turns.onTrace({ type: 'inference:started', agentName: 'clerk' });
+
+    expect(batchEndNotice(tracker())).toBeNull();
+
+    const woken = tracker();
+    start(woken);
+    expect(batchEndNotice(woken)).toBe(turn);
+
+    const takenIn = tracker();
+    void takenIn.waitForTurn(null);
+    takenIn.takenIn();
+    expect(batchEndNotice(takenIn)).toBe(line);
+
+    const beside = tracker();
+    start(beside);
+    void beside.waitForTurn(null);
+    beside.takenIn();
+    expect(batchEndNotice(beside)).toBe(line);
+
+    const late = tracker();
+    await late.waitForTurn(1);
+    expect(batchEndNotice(late)).toBe(line);
   });
 
   test('the teardown notice counts and names the servers it closes', () => {

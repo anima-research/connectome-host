@@ -23,8 +23,9 @@ export function makeSpawnHelperExecutable(ptyDir: string, platform: NodeJS.Platf
   let names: string[];
   try {
     names = readdirSync(prebuilds).filter((name) => name.startsWith('darwin-'));
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    return `${prebuilds} couldn't be read (${(error as Error).message})`;
   }
   for (const name of names) {
     const helper = join(prebuilds, name, 'spawn-helper');

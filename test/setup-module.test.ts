@@ -83,6 +83,18 @@ function heldAt(module: SetupModule): Promise<void> {
   });
 }
 
+// A question asked while a model check is under way waits on that check with Promise.all, which calls its then.
+function heldOnChecks(module: SetupModule): Promise<void> {
+  const { checks } = module as unknown as { checks: Set<Promise<void>> };
+  if (checks.size === 0) throw new Error('no model check is under way');
+  return new Promise((reached) => {
+    for (const check of checks) {
+      const then = check.then.bind(check);
+      check.then = ((onDone, onFailed) => { reached(); return then(onDone, onFailed); }) as typeof check.then;
+    }
+  });
+}
+
 // For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
 const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
 
@@ -394,8 +406,9 @@ describe('setup--run', () => {
     checked = made.module.handleToolCall(
       { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall);
     await sent;
+    const held = heldOnChecks(made.module);
     const asked = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
-    await Promise.race([open, new Promise<void>((done) => setImmediate(done))]);
+    await Promise.race([open, held]);
     reply(Response.json({ data: [{ id: 'gpt-6.1-terra' }] }));
     expect((await checked).success).toBe(true);
     expect((await asked).success).toBe(true);
@@ -496,6 +509,30 @@ describe('setup--run', () => {
     expect(readFileSync(marker, 'utf-8')).toBe('once\n');
   }, 30_000);
 
+  linuxTest('a command stopped at its limit that left a dotenv file unreadable is said to have been stopped, though its output isn\'t shown', async () => {
+    const { module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
+    const result = await runCall(module, 'mkfifo .env.local; echo word-it-printed; sleep 30', 500);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('It was still running at its 500 ms limit, so its process group was sent SIGTERM, and all of it ended within 5 s.');
+    expect(result.error).toContain('.env.local can\'t be read (it isn\'t a file)');
+    expect(JSON.stringify(result)).not.toContain('word-it-printed');
+  }, 20_000);
+
+  linuxTest('a command that left a dotenv file unreadable and a process holding its output is said to have left it, though its output isn\'t shown', async () => {
+    const { dir, module } = install({ envFile: 'MY_SERVER_TOKEN="custom-token-value"\n' });
+    const pidFile = join(dir, 'holder.pid');
+    try {
+      const result = await runCall(module, `mkfifo .env.local; sleep 30 & echo $! > ${pidFile}; echo word-it-printed`);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Its output was cut 1 s after it ended, since a process it started still holds the output open, and is still running.');
+      expect(result.error).toContain('.env.local can\'t be read (it isn\'t a file)');
+      expect(JSON.stringify(result)).not.toContain('word-it-printed');
+    } finally {
+      const pid = Number(readFileSync(pidFile, 'utf-8'));
+      if (pid > 0) try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+  }, 20_000);
+
   test('where the environment sets BUN_OPTIONS and a dotenv file expands it, a command runs nothing, since setup reads the files without it', async () => {
     const { dir, module } = install({ envFile: 'DISCORD_TOKEN="discord-token-value"\n', env: { BUN_OPTIONS: '--smol' } });
     writeFileSync(join(dir, '.env.local'), 'MY_TOKEN=prefix${BUN_OPTIONS}suffix\n');
@@ -553,15 +590,19 @@ describe('setup--run', () => {
     expect(Math.round((Number(readFileSync(aliveFile, 'utf-8')) - termAt) * 1000)).toBeGreaterThanOrEqual(4_400);
   }, 30_000);
 
-  linuxTest('answers a command stopped at its limit only once what it left in its group has ended, a SIGTERM-ignoring process too, whether or not that holds the output', async () => {
+  linuxTest('answers a command stopped at its limit only once its 5 s grace is over and SIGKILL has gone to what it left in its group, a SIGTERM-ignoring process too, whether or not that holds the output', async () => {
     for (const [holds, redirect] of [[true, ''], [false, ' > /dev/null 2>&1']] as const) {
       const { dir, module } = install();
       const pidFile = join(dir, 'stubborn.pid');
+      const called = performance.now();
       const answer = await run(module, `(trap '' TERM; echo $BASHPID > ${pidFile}; exec sleep 60${redirect}) & while [ ! -s ${pidFile} ]; do sleep 0.01; done; sleep 30`, 500);
+      const ran = performance.now() - called;
       const stubborn = Number(readFileSync(pidFile, 'utf-8'));
       try {
         expect(answer.stoppedAtLimit).toBe(true);
-        expect(await waitForEnd(stubborn, 1_000), `holding the output: ${holds}`).toBe(true);
+        expect(ran, `holding the output: ${holds}: the answer came before the 5 s grace after the 500 ms limit was over`).toBeGreaterThanOrEqual(5_490);
+        expect(await waitForEnd(stubborn, 200), `holding the output: ${holds}: what the command left was still running ` +
+          '200 ms after the answer, though SIGKILL should have gone to it before the answer').toBe(true);
         expect(answer.note).toContain('500 ms limit, so its process group was sent SIGTERM, and SIGKILL 5 s later, since some of it was still running then.');
         expect(answer.note).not.toContain('and is still running');
       } finally {
@@ -583,6 +624,10 @@ describe('setup--run', () => {
         holder = Number(await waitForFile(pidFile));
         clear = Number(await waitForFile(endedFile)) <= called + 0.6;
         if (!clear) continue;
+        if (answer.stoppedAtLimit && runs < 2) {
+          clear = false;
+          continue;
+        }
         expect(answer.outputHeldOpen).toBe(true);
         expect(answer.stoppedAtLimit).toBe(false);
         expect(answer.note).not.toContain('limit');
@@ -591,8 +636,9 @@ describe('setup--run', () => {
         if (holder) try { process.kill(holder, 'SIGKILL'); } catch {}
       }
     }
-    expect(clear, 'in 3 runs the command never ended 300 ms clear of its 900 ms limit, so the host was too slow for this ' +
-      'case to be reached: that is load, not a fault in the drain').toBe(true);
+    expect(clear, 'in 3 runs the command never ended 300 ms clear of its 900 ms limit, or it did and bash was still held ' +
+      'past the limit after its last write, so the host was too slow for this case to be reached: that is load, not a ' +
+      'fault in the drain').toBe(true);
   }, 30_000);
 
   linuxTest('answers about a second after its command ends, while a process it started in a group of its own holds the output open, and says so', async () => {
@@ -626,9 +672,8 @@ describe('setup--run', () => {
       expect(answer.note).toContain('still holds the output open');
       if (answer.stdout.text !== 'begun\nlate\n') {
         const lateBeforeAnswer = answeredUp - Number(await waitForFile(join(dir, 'late-up')));
-        expect(lateBeforeAnswer, `${said}: a drain that keeps what comes until it cuts the output loses "late" only ` +
-          'when the holder wrote it at about the cut or after, and the answer comes just after the cut, so the write ' +
-          'must be within 0.5 s of the answer').toBeLessThanOrEqual(0.5);
+        expect(lateBeforeAnswer, `${said}: the answer left out "late", which this test allows only where the ` +
+          'holder\'s stamp, read just after it wrote "late", is within 0.5 s of the answer').toBeLessThanOrEqual(0.5);
         expect(answer.stdout.text).toBe('begun\n');
       }
     } finally {
@@ -2247,10 +2292,11 @@ describe("the terminal's hidden question", () => {
     rl.on('line', (line) => { paste.take(line); });
     input.write('\x1b[200~my token is\r tok-123456 \rthe token is tok-123456\r\x1b[201~');
     await Bun.sleep(30);
+    const history = (rl as unknown as { history: string[] }).history;
+    expect(history.some((entry) => entry.includes('tok-123456')), 'the history held the token first').toBe(true);
     const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
     input.write('tok-123456\r');
     expect(await answer).toBe('tok-123456');
-    const history = (rl as unknown as { history: string[] }).history;
     expect(history.some((entry) => entry.includes('tok-123456'))).toBe(false);
     expect(history).toContain('my token is');
     paste.end();
@@ -2262,6 +2308,9 @@ describe("the terminal's hidden question", () => {
       const { input, output, rl, lines, nextLine } = terminal();
       input.write(before);
       await Bun.sleep(10);
+      const ringKey = Object.getOwnPropertySymbols(rl).find((key) => key.description === '_killRing');
+      const ring = (rl as unknown as Record<symbol, unknown[]>)[ringKey!]!;
+      expect(ring.some((entry) => String(entry).includes('tok-123456')), 'the kill ring held the token first').toBe(true);
       const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
       input.write('tok-123456\r');
       expect(await answer).toBe('tok-123456');
@@ -2563,8 +2612,10 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       fetch: (async () => models('gpt-6.1-terra')) as unknown as typeof fetch,
     });
     const asked = askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-    const checked = checkModel(made.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
     while (answer === undefined) await Bun.sleep(1);
+    const reached = heldAt(made.module);
+    const checked = checkModel(made.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
+    await Promise.race([reached, checked.then(() => { throw new Error('the check ended without waiting for the question'); })]);
     answer('sk-openai-key');
     expect((await asked).success).toBe(true);
     const result = await checked;
@@ -2638,6 +2689,12 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const second = await askSecret(unasked.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
     expect(String(second.data)).toBe(`stored as OPENROUTER_API_KEY in ${join(unasked.dir, '.env')}, but it isn't known to work: OpenRouter couldn't be asked (connect ECONNREFUSED, sending Bearer <OPENROUTER_API_KEY>). Check it again with setup--check_model, or go on with it unchecked.`);
     expect(said(unasked, second)).not.toContain('key-two');
+    const otherwise = install({
+      asker: typed('key-three'),
+      fetch: (async () => Response.json({ error: { message: 'bad request' } }, { status: 400 })) as unknown as typeof fetch,
+    });
+    const third = await askSecret(otherwise.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
+    expect(String(third.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(otherwise.dir, '.env')}, but it isn't known to work: Anthropic answered 400: bad request. Check it again with setup--check_model, or go on with it unchecked.`);
   });
 
   test('a provider key a request header can\'t carry is refused unsent and unstored', async () => {
@@ -2696,7 +2753,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     for (const body of ['{}', '{"data":null}', '{"data":{"id":"gpt-6.1"}}', '{"data":"error"}', '{"data":[{"name":"error"}]}']) {
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-      expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200.`);
+      expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
       expect(made.shown, body).toEqual(['Checking it with OpenAI.', 'OpenAI didn\'t say whether it works: it answered 200.']);
     }
   });
@@ -2706,7 +2763,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String((await askSecret(accepted.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(accepted.dir, '.env')}. Anthropic accepted it: it listed the models the key can use, which shows the key is accepted, not that a call to one of them succeeds.`);
     for (const body of ['{"data":null}', '{"data":{}}', '{}', '{"data":[{"name":"error"}]}']) {
       const made = install({ asker: typed('sk-ant-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
-      expect(String((await askSecret(made.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as ANTHROPIC_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: Anthropic answered 200.`);
+      expect(String((await askSecret(made.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as ANTHROPIC_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: Anthropic answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
     }
   });
 
@@ -2715,7 +2772,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(String((await askSecret(accepted.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' })).data)).toBe(`stored as OPENROUTER_API_KEY in ${join(accepted.dir, '.env')}. OpenRouter accepted it: it answered for the key.`);
     for (const body of ['{"data":null}', '{"data":[]}', '{}']) {
       const made = install({ asker: typed('sk-or-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
-      expect(String((await askSecret(made.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as OPENROUTER_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenRouter answered 200.`);
+      expect(String((await askSecret(made.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' })).data), body).toBe(`stored as OPENROUTER_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenRouter answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
     }
   });
 
@@ -2783,7 +2840,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     expect(guessed.shown).toContain('Anthropic didn\'t say whether it works: it answered 429 (busy). It asks for a wait setup can\'t show without what may be a secret.');
     const other = install({ asker: typed('sk-ant-other'), fetch: answering(400) });
     expect(String((await askSecret(other.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' })).data)).toEndWith(
-      'but it isn\'t known to work: Anthropic answered 400: busy.');
+      'but it isn\'t known to work: Anthropic answered 400: busy. Check it again with setup--check_model, or go on with it unchecked.');
   });
 
   test('a refusal whose type isn\'t JSON is said not to say it\'s JSON, and a 2xx typed JSON whose body isn\'t is said not to be JSON', async () => {
@@ -2805,18 +2862,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const portal = (async () => new Response('<html>Sign in to this network</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
     const key = install({ asker: typed('sk-ant-portal'), fetch: portal });
     const stored = await askSecret(key.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Anthropic's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
+    expect(String(stored.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(key.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Anthropic's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(key.shown).toContain('It couldn\'t be checked: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer.');
     const token = install({ asker: typed('a-portal-token'), fetch: portal });
     const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check.`);
+    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be checked: its answer wasn't JSON, as Discord's are: a network's sign-in page is one such answer. Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: portal }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
     expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: its answer wasn\'t JSON, as Anthropic\'s are: a network\'s sign-in page is one such answer. Tell the person: their connection to it is theirs to check.');
   });
 
   test('a token answered with an error that isn\'t JSON is said not to say it\'s JSON, and a 429 or 5xx says doctor checks it again, in place of the connection advice', async () => {
     const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
-    for (const [status, after] of [[503, BUSY], [429, BUSY], [403, ' Tell the person: their connection to it is theirs to check.']] as const) {
+    const CONNECTION = ' Tell the person: their connection to it is theirs to check. Ask for it again with setup--ask_secret to ' +
+      'check it again, or go on with it unchecked.';
+    for (const [status, after] of [[503, BUSY], [429, BUSY], [403, CONNECTION]] as const) {
       const page = (async () => new Response('<html>error</html>', { status, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
       const token = install({ asker: typed('a-page-token'), fetch: page });
       const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
@@ -2833,16 +2892,25 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       : Response.json({ data: [] })) as unknown as typeof fetch;
     const openai = install({ asker: typed('sk-openai-moved'), fetch: redirecting });
     const stored = await askSecret(openai.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
-    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, set OPENAI_BASE_URL to it, then call again.`);
+    expect(String(stored.data)).toBe(`stored as OPENAI_API_KEY in ${join(openai.dir, '.env')}, but it isn't known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn't follow with a secret. If OPENAI_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENAI_BASE_URL, with setup--ask_secret as OPENAI_BASE_URL, since a base URL can carry a credential, then call again. Check it again with setup--check_model, or go on with it unchecked.`);
     expect(openai.shown).toContain('It isn\'t known to work: OpenAI answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret.');
     const openrouter = install({ asker: typed('sk-or-moved'), fetch: redirecting });
     const routed = await askSecret(openrouter.module, { name: 'OPENROUTER_API_KEY', purpose: 'a key' });
-    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, set OPENROUTER_BASE_URL to it, then call again.');
+    expect(String(routed.data)).toEndWith('which setup doesn\'t follow with a secret. If OPENROUTER_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for OPENROUTER_BASE_URL, with setup--ask_secret as OPENROUTER_BASE_URL, since a base URL can carry a credential, then call again. Check it again with setup--check_model, or go on with it unchecked.');
     const discord = install({ asker: typed('a-moved-token'), fetch: redirecting });
     const token = await askSecret(discord.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check.');
+    expect(String(token.data)).toEndWith('Discord answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. Something between this machine and Discord may have sent it, or Discord itself: tell the person, and that if it wasn\'t Discord, their connection is theirs to check. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.');
     const model = await checkModel(install({ envFile: 'ANTHROPIC_API_KEY=sk-ant\n', fetch: redirecting }).module, { name: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' });
-    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, set ANTHROPIC_BASE_URL to it, then call again.');
+    expect(model.error).toBe('Whether Anthropic offers claude-opus-5-5 to the key stored as ANTHROPIC_API_KEY isn\'t known: Anthropic answered 307, a redirect to https://api.example.test, which setup doesn\'t follow with a secret. If ANTHROPIC_BASE_URL in .env is meant to lead to that server, ask the person for the base URL its API is under, the one its own instructions give for ANTHROPIC_BASE_URL, with setup--ask_secret as ANTHROPIC_BASE_URL, since a base URL can carry a credential, then call again.');
+  });
+
+  test('a base URL is taken by setup--ask_secret, as the redirect\'s remedy asks, and stored as a secret is', async () => {
+    const made = install({ asker: typed('https://proxy.example/private-token/v1') });
+    const result = await askSecret(made.module, { name: 'OPENAI_BASE_URL', purpose: 'the base URL its API is under' });
+    expect(result.success, result.error).toBe(true);
+    expect(String(result.data)).toBe(`stored as OPENAI_BASE_URL in ${join(made.dir, '.env')}`);
+    expect(readEnvFile(join(made.dir, '.env')).get('OPENAI_BASE_URL')).toBe('https://proxy.example/private-token/v1');
+    expect(made.module.storedSecrets.names()).toContain('OPENAI_BASE_URL');
   });
 
   test('a redirect whose Location is relative names the server that was asked, and none of a credential its base URL carries, for a key, a token and a model', async () => {

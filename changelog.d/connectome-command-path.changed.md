@@ -1,0 +1,4 @@
+- An install's own `connectome` and setup (`src/update/setup.ts`) now go by the first `connectome` on `PATH`: whether it's the install's own, or a symbolic link to it.
+  - Help, usage, and the lines that name the command as a next step say plain `connectome` only where it is, and otherwise the command's full path. They always said `connectome`.
+  - Setup says how to put the install's directory on `PATH` wherever the first `connectome` there is another one, or there's none. It said so only where the directory wasn't on `PATH`.
+  - This corrects the old lines for an install whose directory is on `PATH` behind another `connectome`: they told the person to type `connectome`, which ran that other one. Where a symbolic link to the install's command comes first on `PATH` and its directory isn't on it, setup no longer says how to put the directory there.
