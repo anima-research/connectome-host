@@ -1369,14 +1369,14 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     expect(said(made, result)).not.toContain('a-refused-token');
   });
 
-  test('stores a token Discord answered otherwise, or couldn\'t be asked about, saying it isn\'t known to work and why, and to ask for it again or go on with it unchecked, never with the token in the words', async () => {
+  test('stores a token Discord answered otherwise, other than a 429 or 5xx, or couldn\'t be asked about, saying it isn\'t known to work and why, and to ask for it again or go on with it unchecked, never with the token in the words', async () => {
     const answered = install({
       asker: typed('token-one'),
-      fetch: (async () => Response.json({ message: 'Service Unavailable' }, { status: 503 })) as unknown as typeof fetch,
+      fetch: (async () => Response.json({ message: 'Missing Access' }, { status: 403 })) as unknown as typeof fetch,
     });
     const first = await askSecret(answered.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 503: Service Unavailable. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 503 (Service Unavailable).']);
+    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 403: Missing Access. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
+    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 403 (Missing Access).']);
     expect(readEnvFile(join(answered.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-one');
     const unasked = install({
       asker: typed('token-two'),
@@ -2883,6 +2883,18 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it couldn't be ` +
         `checked: ${unrecognized}${after}`);
       expect(token.shown, String(status)).toContain(`It couldn't be checked: ${unrecognized}${after === BUSY ? BUSY : ''}`);
+    }
+  });
+
+  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then that doctor checks it again, in place of asking for it again', async () => {
+    const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
+    const AGAIN = ' Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
+    for (const [status, words, after] of [[503, 'Service Unavailable', BUSY], [429, 'You are being rate limited', BUSY], [403, 'Missing Access', AGAIN]] as const) {
+      const answering = (async () => Response.json({ message: words, retry_after: 2.5 }, { status })) as unknown as typeof fetch;
+      const token = install({ asker: typed('a-busy-token'), fetch: answering });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to ` +
+        `work: Discord answered ${status}: ${words}.${after}`);
     }
   });
 

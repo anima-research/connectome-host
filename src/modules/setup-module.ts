@@ -889,7 +889,7 @@ function tokenNote(token: TokenCheck): string {
     case 'accepted': return `. Discord accepted it: the bot is ${token.name} (${token.id}).`;
     case 'answered':
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
-        ASK_TOKEN_AGAIN;
+        (busy(token.status) ? BUSY : ASK_TOKEN_AGAIN);
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected':
       return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
