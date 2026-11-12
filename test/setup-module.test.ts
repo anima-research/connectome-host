@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
 import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
+import { SHOWN_FILE } from '../src/cli/shown.js';
 import { EnvFormError, envForm, readEnvFile, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
 import * as terminalSecret from '../src/setup/terminal-secret.js';
@@ -302,12 +303,12 @@ describe('setup--run', () => {
     expect(existsSync(join(dir, 'ran'))).toBe(false);
   });
 
-  test('a command runs without DATA_DIR, CONNECTOME_UPDATE_CHECK and setup\'s own variables, which are for setup\'s host alone', async () => {
+  test('a command runs without DATA_DIR, CONNECTOME_UPDATE_CHECK and setup\'s own variables, which are for setup\'s host alone, and with the file for what it says to the person', async () => {
     const { module } = install({
       env: { DATA_DIR: '/setup/data', CONNECTOME_UPDATE_CHECK: '0', CONNECTOME_SETUP_INSTALL: '/setup/root', KEEP_ME: 'kept' },
     });
-    const answer = await run(module, 'env | grep -E "^(DATA_DIR|CONNECTOME_[A-Z0-9_]*|KEEP_ME)=" | sort');
-    expect(answer.stdout.text).toBe('KEEP_ME=kept\n');
+    const answer = await run(module, `env | grep -E "^(DATA_DIR|CONNECTOME_[A-Z0-9_]*|KEEP_ME)=" | sed "s/^${SHOWN_FILE}=.*/${SHOWN_FILE}=<file>/" | sort`);
+    expect(answer.stdout.text).toBe(`${SHOWN_FILE}=<file>\nKEEP_ME=kept\n`);
   });
 
   test('a secret a dotenv file beside .env gives, with the value Bun expands it to, is shown by its name in a command\'s output', async () => {
@@ -1327,6 +1328,78 @@ setInterval(() => {}, 1000);
       for (const seconds of left) Bun.spawnSync(['pkill', '-KILL', '-f', `^sleep ${seconds}$`]);
     }
   }, 90_000);
+});
+
+describe('setup--run, and what the install\'s commands say for the person', () => {
+  const afterCommand = (shown: string[]) => shown.slice(shown.findIndex((line) => line === 'Setup\'s agent runs:') + 2);
+
+  test('what a command writes to the file CONNECTOME_SETUP_SHOWN names is shown once it ends, however the command is written', async () => {
+    const { module, shown } = install();
+    const answer = await run(module, 'cd / && sh -c \'printf "for the person\\nand a second line\\n" >> "$CONNECTOME_SETUP_SHOWN"\' | cat; echo for the agent');
+    expect(answer.stdout.text).toBe('for the agent\n');
+    expect(afterCommand(shown)).toEqual(['It said:', '  for the person', '  and a second line']);
+  });
+
+  test('a command that writes nothing there shows nothing after its own line', async () => {
+    const { module, shown } = install();
+    await run(module, 'echo for the agent only');
+    expect(afterCommand(shown)).toEqual([]);
+  });
+
+  test('each command gets a fresh, empty file, gone once the command is answered', async () => {
+    const { module, shown } = install();
+    const first = await run(module, 'echo "$CONNECTOME_SETUP_SHOWN"; echo first >> "$CONNECTOME_SETUP_SHOWN"');
+    const second = await run(module, 'echo "$CONNECTOME_SETUP_SHOWN"; wc -c < "$CONNECTOME_SETUP_SHOWN"');
+    const [firstFile] = first.stdout.text.split('\n');
+    const [secondFile, size] = second.stdout.text.split('\n');
+    expect(firstFile).not.toBe('');
+    expect(secondFile).not.toBe(firstFile);
+    expect(size!.trim()).toBe('0');
+    expect(existsSync(firstFile!)).toBe(false);
+    expect(existsSync(secondFile!)).toBe(false);
+    expect(shown.filter((line) => line === '  first')).toHaveLength(1);
+  });
+
+  test('what is shown hides a stored secret by its name, as the agent\'s copy does, and shows a control character as a code', async () => {
+    const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
+    listSecrets(module, 'DISCORD_TOKEN');
+    await run(module, 'printf "token the-stored-value\\n\\033[31mred\\n" >> "$CONNECTOME_SETUP_SHOWN"');
+    expect(afterCommand(shown)).toEqual(['It said:', '  token <DISCORD_TOKEN>', '  \\u001b[31mred']);
+  });
+
+  test('a file the command took away is said to be unreadable, naming it', async () => {
+    const { module, shown } = install();
+    const answer = await run(module, 'echo "$CONNECTOME_SETUP_SHOWN"; echo gone >> "$CONNECTOME_SETUP_SHOWN"; rm "$CONNECTOME_SETUP_SHOWN"');
+    const [file] = answer.stdout.text.split('\n');
+    const after = afterCommand(shown);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toContain(file!);
+    expect(after.join('\n')).not.toContain('gone');
+  });
+
+  test('a command stopped at its limit after writing there ends with a line saying it didn\'t finish', async () => {
+    const { module, shown } = install();
+    await run(module, 'echo started >> "$CONNECTOME_SETUP_SHOWN"; sleep 30', 1000);
+    expect(afterCommand(shown)).toEqual(['It said:', '  started', 'It didn\'t finish: it was stopped at its 1 s limit.']);
+  });
+
+  test('a command ended by a signal after writing there ends with a line saying so, and one that wrote nothing shows nothing', async () => {
+    const { module, shown } = install();
+    await run(module, 'echo started >> "$CONNECTOME_SETUP_SHOWN"; kill -TERM $$');
+    expect(afterCommand(shown)).toEqual(['It said:', '  started', 'It didn\'t finish: it was ended by SIGTERM.']);
+    const quiet = install();
+    await run(quiet.module, 'kill -TERM $$');
+    expect(afterCommand(quiet.shown)).toEqual([]);
+  });
+
+  test('where which values are secret can\'t be read once the command ends, nothing it wrote there is shown, and the person is told', async () => {
+    const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
+    const result = await runCall(module, 'echo written-for-the-person >> "$CONNECTOME_SETUP_SHOWN"; mkdir .env.local');
+    expect(result.success).toBe(false);
+    const after = afterCommand(shown);
+    expect(after).toHaveLength(1);
+    expect(after.join('\n')).not.toContain('written-for-the-person');
+  });
 });
 
 describe('setup--ask_secret with a DISCORD_TOKEN', () => {

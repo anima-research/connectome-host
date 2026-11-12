@@ -3,6 +3,7 @@ import { delimiter, join, resolve, sep } from 'node:path';
 import { writeTextAtomic } from '../update/contract.js';
 import { RELEASE_HOST, shellWord } from '../update/launcher.js';
 import { bindingCheckLines } from '../update/rebind.js';
+import { SHOWN_FILE } from './shown.js';
 
 export const INSTALL_COMMAND = 'connectome';
 
@@ -16,16 +17,28 @@ export function installCommandText(release: string | null = null): string {
   return [
     '#!/usr/bin/env bun',
     '// Written by this install\'s setup. Link to it rather than move it: it runs the install it sits in.',
-    "import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
+    "import { appendFileSync, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
     "import { basename, dirname, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',
+    'const refuse = (line) => {',
+    '  console.error(line);',
+    `  const file = process.env.${SHOWN_FILE};`,
+    '  if (!file) return;',
+    '  try {',
+    '    appendFileSync(file, `${line}\\n`);',
+    '  } catch (error) {',
+    "    console.error(`connectome: setup's agent named ${file} for what this command prints to reach the person's ` +",
+    "      `screen, and it can't be written (${error instanceof Error ? error.message : error}), so the person sees ` +",
+    "      'neither the line above nor what it prints after it: tell them what it says.');",
+    '  }',
+    '};',
     ...bindingCheckLines('connectome', true, release),
     `const fromPackage = process.argv[2] === 'setup' && !existsSync(join(root, 'current', ${parts(SETUP_RECIPE.split(sep))}));`,
     `const cli = join(fromPackage ? dirname(root) : join(root, 'current'), ${parts(CLI_IN_RELEASE)});`,
     "if (!fromPackage && !existsSync(join(root, 'current'))) {",
-    "  console.error(`connectome: ${root} has no current release: run setup again in ${dirname(root)}, which says how ` +",
+    "  refuse(`connectome: ${root} has no current release: run setup again in ${dirname(root)}, which says how ` +",
     "    'to put it right.');",
     '  process.exit(1);',
     '}',
@@ -37,7 +50,7 @@ export function installCommandText(release: string | null = null): string {
     "  if (typeof main !== 'function') throw new Error('it has no main to call');",
     '} catch (error) {',
     '  const why = error instanceof Error ? error.message : error;',
-    '  console.error(fromPackage',
+    '  refuse(fromPackage',
     "    ? `connectome: the release this install runs has no setup, so setup runs the connectome-host installed in ` +",
     "      `${dirname(root)}, which has none it can run (${cli}): ${why}. ` + (basename(root) === 'connectome-host'",
     "        ? `In ${dirname(root)}, \\`bunx @animalabs/connectome-host@latest setup discord\\` runs setup from the registry.`",

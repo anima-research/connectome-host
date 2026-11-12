@@ -229,7 +229,9 @@ describe('the binding check, before any release loads', () => {
     writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: state, extraState: [], workingDir: install });
     const host = join(releaseDir(root, '0.10.2'), RELEASE_HOST);
     mkdirSync(join(host, 'src', 'cli'));
-    cpSync(join(import.meta.dir, '..', 'src', 'cli', 'install-command.ts'), join(host, 'src', 'cli', 'install-command.ts'));
+    for (const file of ['install-command.ts', 'shown.ts']) {
+      cpSync(join(import.meta.dir, '..', 'src', 'cli', file), join(host, 'src', 'cli', file));
+    }
     const copy = join(dir, 'copy');
     copyTo(copy);
     const copyRoot = join(copy, 'connectome-host');

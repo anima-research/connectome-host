@@ -6,7 +6,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { SETUP_BUN_FLOOR, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { SETUP_BUN_FLOOR, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, setupDirectory, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
 import { bunBelowFloor } from '../src/bun-floor.js';
 import { ANTHROPIC_PRICING_VERSION } from '../src/call-pricing.js';
 import { defaultTrusted } from '../src/setup/default-trusted.js';
@@ -312,16 +312,115 @@ test('the package\'s bin, without a terminal, says setup needs a person at one a
     expect(readdirSync(dir)).toEqual([]);
   });
 
-test('where no user of its own is possible, a directory holding other files and no install is refused before any question, naming the line that makes one', async () => {
-  for (const over of [{ hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }]) {
+test('a directory setup is given that holds other files and no install is refused before any question, whether or not a user of its own is possible, and names no mkdir line', async () => {
+  for (const over of [{}, { hasSudo: false }, { platform: 'darwin' as const }, { lingerOf: () => null }]) {
     const dir = directory();
     writeFileSync(join(dir, '.bashrc'), '# mine\n');
+    writeFileSync(join(dir, '.env'), 'MINE=1\n');
+    chmodSync(join(dir, '.env'), 0o644);
     const made = world(dir, {}, over);
-    expect(await runSetup(dir, ['discord'], made)).toBe(1);
-    expect(text(made.seen.err)).toContain('Make a new directory for the resident, and run this same version of setup there. Its service takes the directory\'s name, so choose another than resident if you like, or if ~/resident is already there:\n  mkdir ~/resident && cd ~/resident');
-    expect(text(made.seen.err)).toContain(`bunx @animalabs/connectome-host@${VERSION} setup discord`);
+    expect(await runSetup(dir, ['discord'], made), JSON.stringify(over)).toBe(1);
+    expect(made.seen.err, JSON.stringify(over)).toEqual([
+      `connectome setup: ${dir} is your home directory, and no connectome-host install, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:`,
+      `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
+    ]);
+    expect(made.seen.out).toEqual([]);
     expect(made.seen.asked).toEqual([]);
-    expect(readdirSync(dir)).toEqual(['.bashrc']);
+    expect(made.seen.ran).toEqual([]);
+    expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env']);
+    expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o644);
+  }
+});
+
+test('setup works in the directory it starts in where that is empty or setup\'s, and in ~/resident otherwise', () => {
+  const home = directory();
+  const empty = directory();
+  expect(setupDirectory(empty, home)).toBe(empty);
+  for (const [file, body] of [[join('.setup', 'setup.lock'), ''], [join('.setup', 'setup-state.json'), '{"v":1}'], [join('connectome-host', 'install.json'), '{}']] as const) {
+    const ours = directory();
+    writeFileSync(join(ours, 'notes.txt'), 'mine\n');
+    mkdirSync(join(ours, dirname(file)));
+    writeFileSync(join(ours, file), body);
+    expect(setupDirectory(ours, home), file).toBe(ours);
+  }
+  const other = directory();
+  writeFileSync(join(other, 'notes.txt'), 'mine\n');
+  expect(setupDirectory(other, home)).toBe(join(home, 'resident'));
+  writeFileSync(join(home, '.bashrc'), '# mine\n');
+  expect(setupDirectory(home, home)).toBe(join(home, 'resident'));
+  const clone = directory();
+  mkdirSync(join(clone, 'connectome-host', 'src'), { recursive: true });
+  expect(setupDirectory(clone, home)).toBe(join(home, 'resident'));
+  for (const unusable of [undefined, 'relative/home', '/nonexistent-home-for-setup-test']) {
+    expect(setupDirectory(other, unusable), String(unusable)).toBe(other);
+  }
+});
+
+test('from a directory it can\'t use, setup says before its first question that the resident will live in ~/resident, makes ~/resident only on the yes, and sets up there', async () => {
+  const home = directory();
+  writeFileSync(join(home, '.bashrc'), '# mine\n');
+  const resident = join(home, 'resident');
+  const runAt = (made: { world: SetupWorld; seen: Seen }) => setup({
+    root: join(resident, 'connectome-host'), argv: ['discord'],
+    out: (line) => { made.seen.out.push(line); },
+    err: (line) => { made.seen.err.push(line); },
+  }, made.world);
+
+  const declined = world(home, { answers: ['no'] });
+  expect(await runAt(declined)).toBe(0);
+  expect(declined.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service is named after resident.`);
+  expect(declined.seen.out[1]).toBe(ADVICE);
+  expect(existsSync(resident)).toBe(false);
+  expect(readdirSync(home)).toEqual(['.bashrc']);
+
+  const made = world(home, { answers: [''], secrets: [KEY] });
+  expect(await runAt(made)).toBe(0);
+  expect(made.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service is named after resident.`);
+  expect(made.seen.asked[0]).toBe(CONTINUE);
+  expect(made.seen.launched!.cwd).toBe(join(resident, '.setup'));
+  expect(existsSync(join(resident, 'connectome-host', 'install.json'))).toBe(true);
+  expect(readdirSync(home).sort()).toEqual(['.bashrc', 'resident']);
+
+  const again = world(home, { secrets: [KEY] });
+  expect(await runAt(again)).toBe(0);
+  expect(again.seen.out[0]).toBe(`Setup began in ${resident} before, as this user, alice, and the resident runs as alice. Setup's agent picks up where it stopped, and can change with you what it set up.`);
+
+  const other = directory();
+  writeFileSync(join(other, 'notes.txt'), 'mine\n');
+  const there = join(directory(), 'resident');
+  mkdirSync(there);
+  const thereRun = world(other, { answers: ['no'] }, { env: { PATH: '/usr/bin:/bin', HOME: dirname(there) } });
+  expect(await setup({ root: join(there, 'connectome-host'), argv: ['discord'], out: (line) => { thereRun.seen.out.push(line); }, err: (line) => { thereRun.seen.err.push(line); } }, thereRun.world)).toBe(0);
+  expect(thereRun.seen.out[0]).toBe(`The resident will live in ${there}, since ${other} holds other files. Its service is named after resident.`);
+});
+
+test('where ~/resident holds other files and no install, setup says so with what to do, and asks nothing', async () => {
+  const home = directory();
+  writeFileSync(join(home, '.bashrc'), '# mine\n');
+  const resident = join(home, 'resident');
+  mkdirSync(resident);
+  writeFileSync(join(resident, 'notes.txt'), 'mine\n');
+  const made = world(home);
+  expect(await setup({ root: join(resident, 'connectome-host'), argv: ['discord'], out: (line) => { made.seen.out.push(line); }, err: (line) => { made.seen.err.push(line); } }, made.world)).toBe(1);
+  expect(made.seen.err).toEqual([
+    `connectome setup: ${home} is your home directory, and ${resident} holds other files and no connectome-host install, so setup won't put its own in either. Make an empty directory for the resident, named as you'd like its service, and run this same version of setup in it:`,
+    `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
+  ]);
+  expect(made.seen.asked).toEqual([]);
+  expect(readdirSync(resident)).toEqual(['notes.txt']);
+});
+
+test('where setup can\'t read the dotenv files of the directory it started in, it says to run it from another, such as the home directory or, from there, an empty one', async () => {
+  for (const fromHome of [true, false]) {
+    const home = directory();
+    const start = fromHome ? home : directory();
+    writeFileSync(join(start, 'notes.txt'), 'mine\n');
+    mkdirSync(join(start, '.env'));
+    const resident = join(home, 'resident');
+    const made = world(start, { answers: [''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: home } });
+    expect(await setup({ root: join(resident, 'connectome-host'), argv: ['discord'], out: (line) => { made.seen.out.push(line); }, err: (line) => { made.seen.err.push(line); } }, made.world), String(fromHome)).toBe(1);
+    expect(text(made.seen.err), String(fromHome)).toContain(`Setup keeps what Bun reads from the dotenv files in ${start} away from its agent, so it must read them: put that right, and run setup again, or run setup from another directory, such as ${fromHome ? 'an empty one' : 'your home directory'}.`);
+    expect(made.seen.launched).toBeNull();
   }
 });
 
@@ -362,32 +461,9 @@ const OWN_LINE = 'id -u connectome >/dev/null 2>&1 || sudo useradd -m -s /bin/ba
 const ADVICE = 'The resident runs as the user that runs setup, here alice, and changing that later means starting over as another user. Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell to run commands on this machine. With a shell, the resident can read and change whatever alice can, and whoever talks to it on Discord can ask it to. So if this is your own account and the resident may get a shell, give it a user of its own. This line makes one, named connectome, unless a user by that name is there already, keeps its services running while it\'s logged out, and gives it Bun on its PATH. Run it where you can use sudo, and if a step fails, put right what it names and run the line again:';
 const AS_OWN_USER = [
   `Setup needs Node ${NODE_FLOOR} or later there too, and at most Node 24 if the resident may get a shell: if this machine's Node is installed for your user alone, as one from nvm is, install Node for connectome as well. \`command -v node\` shows where yours is: one in your home is yours alone.`,
-  'Then open a shell as connectome, with `sudo -iu connectome` where you can use sudo, or by whoever ran the line, and run this same version of setup there, in a new directory for the resident. Its service takes the directory\'s name, so choose another than resident if you like, or if ~/resident is already there:',
-  '  mkdir ~/resident && cd ~/resident',
+  'Then open a shell as connectome, with `sudo -iu connectome` where you can use sudo, or by whoever ran the line, and run this same version of setup there:',
   `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
 ];
-
-test('in a directory holding other files, where setup can offer a user of its own, it gives the advice, the line that makes that user and how to go on as it or as this user, asks nothing, and writes nothing', async () => {
-  const dir = directory();
-  writeFileSync(join(dir, '.bashrc'), '# mine\n');
-  writeFileSync(join(dir, '.env'), 'MINE=1\n');
-  chmodSync(join(dir, '.env'), 0o644);
-  const made = world(dir);
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked).toEqual([]);
-  expect(made.seen.out).toEqual([
-    `A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. ${dir} is your home directory, so setup won't install there.`,
-    ADVICE,
-    `  ${OWN_LINE}`,
-    ...AS_OWN_USER,
-    'To run the resident as this user, alice, run those two lines in a shell of yours instead.',
-    'Nothing was installed here.',
-  ]);
-  expect(made.seen.err).toEqual([]);
-  expect(made.seen.ran).toEqual([]);
-  expect(readdirSync(dir).sort()).toEqual(['.bashrc', '.env']);
-  expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o644);
-});
 
 test('where a user named connectome is here already, or setup can\'t tell, it says so beside the line, and says nothing of it where there\'s none', async () => {
   const there = directory();
@@ -426,19 +502,20 @@ test('where setup can offer a user of its own, it says first what it does, then 
     return ask(question);
   };
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const opening = made.seen.out.indexOf(`A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of its own, which holds its memory and settings and names the service that keeps it running. Its directory here is ${dir}, so its service is named after ${basename(dir)}. As this user, alice, setup installs connectome-host ${VERSION} here (about 0.8 GB of disk with the install's own copy of it), unless that version is there already, checks an API key, and starts the host's setup agent, which talks with you in this terminal to set up the resident.`);
-  expect(opening).toBeGreaterThanOrEqual(0);
+  const opening = made.seen.out.indexOf(`The resident will live in ${dir}. Its service is named after ${basename(dir)}.`);
+  expect(opening).toBe(0);
+  expect(made.seen.out).toContain(`With the install's own copy of it, made next, setup takes about 0.8 GB of disk here. Installing @animalabs/connectome-host@${VERSION}, @animalabs/discord-mcpl in ${dir}, with Bun:`);
   expect(made.seen.out.slice(opening + 1, outAtFirstQuestion)).toEqual([ADVICE, `  ${OWN_LINE}`]);
   expect(made.seen.asked).toEqual([CONTINUE, 'An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
   expect(made.seen.launched).not.toBeNull();
   const again = world(dir);
   expect(await runSetup(dir, ['discord'], again)).toBe(0);
   expect(again.seen.asked).toEqual([]);
-  expect(again.seen.out[0]).toBe('Setup began here before, as this user, alice, and the resident runs as alice. Setup\'s agent picks up where it stopped, and can change with you what it set up.');
+  expect(again.seen.out[0]).toBe(`Setup began in ${dir} before, as this user, alice, and the resident runs as alice. Setup's agent picks up where it stopped, and can change with you what it set up.`);
   expect(text(again.seen.out)).not.toContain('user of its own');
 });
 
-test('yes, y and YES continue as Enter does, and only the continue question takes Enter as yes: Enter at linger\'s question asks it again', async () => {
+test('yes, y and YES continue as Enter does, and Enter at a question with no default asks it again', async () => {
   for (const word of ['yes', 'y', 'YES']) {
     const dir = directory();
     const made = world(dir, { answers: [word], secrets: [KEY] });
@@ -447,14 +524,16 @@ test('yes, y and YES continue as Enter does, and only the continue question take
     expect(made.seen.launched, word).not.toBeNull();
   }
   const dir = directory();
-  const made = world(dir, { answers: ['', '', 'yes'], secrets: [KEY] }, { lingerOf: (user: string) => (user === 'alice' ? false : true) });
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup-state.json'), JSON.stringify({ v: 1, finished: '2026-10-01T00:00:00.000Z' }));
+  const made = world(dir, { answers: ['', 'yes'], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const linger = 'Can you run it, or have whoever administers this machine run it? (yes/no) ';
-  expect(made.seen.asked.slice(0, 3)).toEqual([CONTINUE, linger, linger]);
+  const fresh = `Make a new install on ${join(dir, 'data')}? (yes/no) `;
+  expect(made.seen.asked.slice(0, 2)).toEqual([fresh, fresh]);
   expect(made.seen.launched).not.toBeNull();
 });
 
-test('on a no, setup says how to go on as the user its line makes, runs nothing and installs nothing', async () => {
+test('on a no, setup says how to go on as the user its line makes, runs nothing, installs nothing and leaves the directory as it found it', async () => {
   const dir = directory();
   const made = world(dir, { answers: ['no'] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -464,8 +543,39 @@ test('on a no, setup says how to go on as the user its line makes, runs nothing 
   expect(made.seen.out.slice(at + 1)).toEqual([...AS_OWN_USER, 'Nothing was installed here.']);
   expect(made.seen.ran).toEqual([]);
   expect(made.seen.launched).toBeNull();
-  expect(readdirSync(dir)).toEqual(['.setup']);
-  expect(readdirSync(join(dir, '.setup'))).toEqual(['setup.lock']);
+  expect(readdirSync(dir)).toEqual([]);
+});
+
+test('a setup whose directory another setup kept answers in, or made an install root in, while it asked its first step keeps nothing and stops', async () => {
+  const others = [
+    (dir: string) => {
+      mkdirSync(join(dir, '.setup'), { recursive: true });
+      writeFileSync(join(dir, '.setup', 'setup-state.json'), '{"v":1,"finished":"2026-11-12T04:00:00.000Z"}\n');
+    },
+    (dir: string) => {
+      mkdirSync(join(dir, 'connectome-host'));
+      writeFileSync(join(dir, 'connectome-host', 'install.json'), '{"v":1,"dataDir":"/elsewhere","extraState":[]}\n');
+    },
+  ];
+  for (const [at, other] of others.entries()) {
+    const dir = directory();
+    const made = world(dir, { answers: [''], secrets: [KEY] });
+    const { ask } = made.world;
+    made.world.ask = async (question) => {
+      const answer = await ask(question);
+      if (question === CONTINUE) other(dir);
+      return answer;
+    };
+    expect(await runSetup(dir, ['discord'], made), String(at)).toBe(1);
+    expect(made.seen.err, String(at)).toEqual([`Another setup ran in ${dir} while this one asked its questions, so this one keeps nothing and stops. Run setup again: it goes on from what that setup kept.`]);
+    expect(made.seen.ran, String(at)).toEqual([]);
+    expect(made.seen.launched, String(at)).toBeNull();
+    if (at === 0) {
+      expect(readFileSync(join(dir, '.setup', 'setup-state.json'), 'utf-8')).toBe('{"v":1,"finished":"2026-11-12T04:00:00.000Z"}\n');
+    } else {
+      expect(existsSync(join(dir, '.setup', 'setup-state.json'))).toBe(false);
+    }
+  }
 });
 
 test('where HOME isn\'t an absolute path to a directory, setup makes no directory for the resident: it sends the person to make one, before any question', async () => {
@@ -493,13 +603,13 @@ test('setup names what a directory not its own holds: your home, hidden files al
   writeFileSync(join(hidden, '.bashrc'), '# mine\n');
   const hiddenRun = world(hidden, { answers: [] }, { env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   await runSetup(hidden, ['discord'], hiddenRun);
-  expect(text(hiddenRun.seen.out)).toContain(`${hidden} holds hidden files, such as .bashrc, so setup won't install there.`);
+  expect(text(hiddenRun.seen.err)).toContain(`connectome setup: ${hidden} holds hidden files, such as .bashrc, and no connectome-host install, so setup won't put its own there.`);
   const other = directory();
   writeFileSync(join(other, 'notes.txt'), 'mine\n');
   const otherRun = world(other, { answers: [] }, { env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   await runSetup(other, ['discord'], otherRun);
-  expect(text(otherRun.seen.out)).toContain(`${other} holds other files, so setup won't install there.`);
-  expect(text(otherRun.seen.out)).not.toContain('home directory');
+  expect(text(otherRun.seen.err)).toContain(`connectome setup: ${other} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(otherRun.seen.err)).not.toContain('home directory');
 });
 
 test('setup runs no sudo, for a resident with a user of its own or one run as this user', async () => {
@@ -513,38 +623,26 @@ test('setup runs no sudo, for a resident with a user of its own or one run as th
   }
 });
 
-test('run as this user, setup says before anything is installed that linger is off, that the service needs it, and who can run the line that turns it on, and goes on', async () => {
+test('where linger is off, setup says before anything is installed that a service of this user stops at logout, and who can run the line that turns it on and when, asks nothing, and goes on', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['', 'yes'], secrets: [KEY] }, { lingerOf: (user) => (user === 'alice' ? false : true) });
+  const made = world(dir, { answers: [''], secrets: [KEY] }, { lingerOf: (user) => (user === 'alice' ? false : true) });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(text(made.seen.out)).toContain('sudo loginctl enable-linger alice');
-  expect(text(made.seen.out)).toContain('Linger is off for alice, so a service of alice\'s would stop when alice logs out, and the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once with sudo, by you if you can use sudo here or by whoever administers this machine:\n  sudo loginctl enable-linger alice');
-  expect(made.seen.asked).toContain('Can you run it, or have whoever administers this machine run it? (yes/no) ');
-  expect(text(made.seen.out)).toContain('Run it any time before the resident\'s service is set up, in a second terminal or by whoever runs it for you; setup goes on here meanwhile.');
+  expect(text(made.seen.out)).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once with sudo. You can run it if you can use sudo here, or whoever administers this machine can. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  sudo loginctl enable-linger alice');
+  expect(made.seen.asked).toEqual([CONTINUE, 'An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
+  const at = made.seen.out.indexOf('  sudo loginctl enable-linger alice');
+  expect(made.seen.out.findIndex((line) => line.includes('Installing @animalabs/connectome-host'))).toBeGreaterThan(at);
   expect(made.seen.launched).not.toBeNull();
 });
 
-test('with linger off and nobody to run its line, setup says the resident can\'t go live as a service, and the person stops there or goes on knowingly; a later run of the install says the line and asks neither', async () => {
+test('with linger off, a later run of the install, its record there, says the same notice and asks nothing', async () => {
   const off = { lingerOf: (user: string) => (user === 'alice' ? false : true) };
-  const said = 'Without it, the resident can\'t go live as a service. Setup\'s agent can still set up the rest with you, and the service waits until linger is on.';
-  const stopping = directory();
-  const stopped = world(stopping, { answers: ['', 'no', 'no'], secrets: [KEY] }, off);
-  expect(await runSetup(stopping, ['discord'], stopped)).toBe(0);
-  expect(text(stopped.seen.out)).toContain(said);
-  expect(stopped.seen.out.at(-1)).toBe(`Setup stopped before installing anything, and keeps your answers. Once linger is on, run this same version of setup again here: \`bunx @animalabs/connectome-host@${VERSION} setup discord\`.`);
-  expect(stopped.seen.ran.some((argv) => args(argv)[0] === 'add')).toBe(false);
-  expect(stopped.seen.launched).toBeNull();
-  expect(JSON.parse(readFileSync(join(stopping, '.setup', 'setup-state.json'), 'utf-8'))).toEqual({ v: 1 });
-  const going = directory();
-  const went = world(going, { answers: ['', 'no', 'yes'], secrets: [KEY] }, off);
-  expect(await runSetup(going, ['discord'], went)).toBe(0);
-  expect(text(went.seen.out)).toContain(said);
-  expect(went.seen.launched).not.toBeNull();
-  const later = world(going, { secrets: [KEY] }, off);
-  expect(await runSetup(going, ['discord'], later)).toBe(0);
-  expect(later.seen.asked.filter((question) => question.startsWith('Can you run it') || question.startsWith('Go on without it'))).toEqual([]);
-  expect(text(later.seen.out)).toContain('Linger is off for alice, so a service of alice\'s would stop when alice logs out, and the resident\'s service can\'t be set up until it\'s on.');
-  expect(text(later.seen.out)).toContain('  sudo loginctl enable-linger alice\nRun it any time before the resident\'s service is set up, in a second terminal or by whoever runs it for you; setup goes on here meanwhile.');
+  const dir = directory();
+  expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }, off))).toBe(0);
+  expect(existsSync(join(dir, 'connectome-host', 'install.json'))).toBe(true);
+  const later = world(dir, { secrets: [KEY] }, off);
+  expect(await runSetup(dir, ['discord'], later)).toBe(0);
+  expect(later.seen.asked).toEqual([]);
+  expect(text(later.seen.out)).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once with sudo. You can run it if you can use sudo here, or whoever administers this machine can. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  sudo loginctl enable-linger alice');
   expect(later.seen.launched).not.toBeNull();
 });
 
@@ -629,28 +727,6 @@ test('a first run with a gateway in .env says the gateway may charge otherwise t
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   expect(text(made.seen.out)).toContain('A gateway at ANTHROPIC_BASE_URL may charge otherwise.');
-});
-
-test('the PATH advice names ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS, and the shell\'s own startup file for another', async () => {
-  for (const [shell, platform, file] of [['/bin/zsh', 'linux', '~/.zshrc'], ['/bin/bash', 'linux', '~/.bashrc'], ['/bin/bash', 'darwin', '~/.bash_profile'], ['/bin/dash', 'linux', 'your shell\'s startup file']] as const) {
-    const dir = directory();
-    const answers = platform === 'darwin' ? [] : [''];
-    const made = world(dir, { answers, secrets: [KEY] }, { platform, env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
-    expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
-    expect(text(made.seen.out), `${shell} ${platform}`).toContain(`For that, put it on your PATH, and in ${file} to keep it there:`);
-    expect(text(made.seen.out), `${shell} ${platform}`).toContain(`That line is for ${basename(shell)}, the login shell SHELL names; another shell sets PATH its own way.`);
-  }
-});
-
-test('a shell that isn\'t a Bourne shell, such as fish or tcsh, is told to put the install on its PATH in its own way, with no export line', async () => {
-  for (const shell of ['/usr/bin/fish', '/bin/tcsh']) {
-    const dir = directory();
-    const made = world(dir, { answers: [''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
-    expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
-    const root = join(dir, 'connectome-host');
-    expect(text(made.seen.out), shell).toContain(`For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
-    expect(text(made.seen.out), shell).not.toContain('export PATH=');
-  }
 });
 
 test('a later run of an install says its answers, the install and its version, the boot and key checks, the prices, the commands note and the start line, and not the PATH offer', async () => {
@@ -773,7 +849,7 @@ test('setup installs the host and discord-mcpl alone: it adds no shell, checks n
   expect(text(noNode.seen.err)).toContain(`didn't answer here (there's no node on this PATH). Install Node ${NODE_FLOOR} or later, and at most Node 24 if the resident may get a shell, from nodejs.org or your system's package manager, and run setup again.`);
 });
 
-test('from an empty directory, setup installs, writes the install\'s command, checks the key, and starts its agent', async () => {
+test('from an empty directory, setup installs, writes the install\'s command and names it, checks the key, and starts its agent, with no PATH line and no update commands', async () => {
   const dir = directory();
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -785,13 +861,9 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
   expect(statSync(join(dir, 'data')).isDirectory()).toBe(true);
   expect(existsSync(join(root, 'connectome'))).toBe(true);
   expect(text(made.seen.out)).toContain(`This install's own command is ${join(root, 'connectome')}.`);
-  expect(text(made.seen.out)).toContain('Nothing setup or its agent does needs its directory on your PATH, so you need it there only to type plain `connectome`. For that, put it on your PATH, and in your shell\'s startup file to keep it there:');
-  expect(text(made.seen.out)).toContain(`export PATH=${root}:"$PATH"`);
-  expect(text(made.seen.out)).toContain('That line is for a Bourne shell, such as sh or bash, since SHELL names no shell; another shell sets PATH its own way.');
-  const pathAt = made.seen.out.indexOf(`  export PATH=${root}:"$PATH"`);
-  const updates = made.seen.out.indexOf('Once the resident runs, these take a newer release, in turn: the first says whether one is out, the second installs it beside the one running, and the third switches the resident to it.');
-  expect(updates).toBeGreaterThan(pathAt);
-  expect(made.seen.out.slice(updates + 1, updates + 4)).toEqual(['update', 'update install', 'update restart'].map((word) => `  ${join(root, 'connectome')} ${word}`));
+  for (const gone of ['export PATH=', 'on your PATH', 'Once the resident runs, these take a newer release', 'update install']) {
+    expect(text(made.seen.out), gone).not.toContain(gone);
+  }
   for (const line of made.seen.out.filter((each) => !each.startsWith('  '))) {
     expect(line.split(join(root, 'connectome')).length - 1, line).toBeLessThanOrEqual(1);
   }
@@ -1140,7 +1212,7 @@ test('setup keeps no shell answer: its kept answer holds who the resident runs a
   const kept = world(earlier, { secrets: [KEY] });
   expect(await runSetup(earlier, ['discord'], kept)).toBe(0);
   expect(kept.seen.asked.filter((question) => !question.includes('Anthropic API key'))).toEqual([]);
-  expect(kept.seen.out[0]).toBe('Setup began here before, as this user, alice, and the resident runs as alice. Setup\'s agent picks up where it stopped, and can change with you what it set up.');
+  expect(kept.seen.out[0]).toBe(`Setup began in ${earlier} before, as this user, alice, and the resident runs as alice. Setup's agent picks up where it stopped, and can change with you what it set up.`);
   expect(kept.seen.launched).not.toBeNull();
 });
 
@@ -1328,11 +1400,11 @@ test('a setup agent\'s recipe that can\'t be read, isn\'t JSON, or names no mode
   }
 });
 
-test('an exported key is used with the person\'s yes, and only then', async () => {
+test('an exported key is used with the person\'s yes, Enter among them, and only then; the question says the resident uses it too', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['', 'yes'] }, { env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: KEY } });
+  const made = world(dir, { answers: ['', ''] }, { env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: KEY } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked.some((question) => question.includes('exported'))).toBe(true);
+  expect(made.seen.asked).toEqual([CONTINUE, `An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup writes it to ${join(dir, '.env')}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `]);
   expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
   expect(text(made.seen.out)).not.toContain('exported in this shell isn\'t');
 
@@ -1426,7 +1498,7 @@ test('just before its agent starts, setup says once how each command the agent r
 });
 
 test('setup\'s help names where it works: the directory that holds the install, or from bunx the one it runs in', () => {
-  expect(SETUP_SUMMARY).toContain('in the directory that holds the install (from bunx, the directory it runs in)');
+  expect(SETUP_SUMMARY).toContain('in the directory that holds the install (from bunx, the directory it runs in where that\'s empty or setup\'s, and ~/resident otherwise)');
 });
 
 test('setup\'s agent\'s host checks for no update on its own, whatever the person\'s shell exports: it can\'t take the update a notice would offer', async () => {
@@ -1643,6 +1715,56 @@ test('setup\'s recipe tells its agent who it is, the version, the install, the s
   expect(prompt).toContain('Answer it by speaking to the person first, in a sentence or two before any tool call, so that they see your words within seconds and not after your reads; then read what you need.');
 });
 
+async function promptOf(launch: AgentLaunch): Promise<string> {
+  const recipePath = launch.argv.find((word) => word.endsWith('setup.json'))!;
+  const child = spawn(process.execPath, ['-e', `
+    const { loadRecipeDetailed } = await import(${JSON.stringify(join(REPO, 'src', 'recipe.ts'))});
+    Object.assign(process.env, ${JSON.stringify(launch.env)});
+    const { recipe } = await loadRecipeDetailed(${JSON.stringify(recipePath)});
+    console.log(JSON.stringify(recipe.agent.systemPrompt));
+  `], { stdio: ['ignore', 'pipe', 'inherit'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
+  let out = '';
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  expect(await new Promise((done) => child.on('close', done))).toBe(0);
+  return JSON.parse(out) as string;
+}
+
+test('setup hands its agent the line that makes a user of its own, what it said beside it, and the linger line, on every run, each "none" in the prompt where setup has none', async () => {
+  const LINES = ['CONNECTOME_SETUP_OWN_USER_LINE', 'CONNECTOME_SETUP_OWN_USER_NOTE', 'CONNECTOME_SETUP_LINGER_LINE'];
+  const EXISTS = 'This machine already has a user named connectome. If an earlier line of setup\'s made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident\'s own, put a name no account here has in place of connectome, in the line and in what setup says after it.';
+  const UNKNOWN = 'Setup couldn\'t check whether this machine already has a user named connectome. The line makes it only where there\'s none: where there is one, the resident runs as that account.';
+  const offOnly = (user: string) => (user === 'alice' ? false : true);
+  const cases: [string, Partial<SetupWorld>, string[], (string | undefined)[]][] = [
+    ['linux', {}, [''], [OWN_LINE, undefined, undefined]],
+    ['a user named connectome', { userExists: (user: string) => user === 'connectome' }, [''], [OWN_LINE, EXISTS, undefined]],
+    ['no getent answer', { userExists: () => null }, [''], [OWN_LINE, UNKNOWN, undefined]],
+    ['linger off', { lingerOf: offOnly }, [''], [OWN_LINE, undefined, 'sudo loginctl enable-linger alice']],
+    ['linger off, no sudo', { lingerOf: offOnly, hasSudo: false }, [], [undefined, undefined, 'loginctl enable-linger alice']],
+    ['a Mac', { platform: 'darwin', lingerOf: () => null }, [], [undefined, undefined, undefined]],
+    ['no systemd', { lingerOf: () => null }, [], [undefined, undefined, undefined]],
+    ['run as connectome', { user: 'connectome' }, [], [undefined, undefined, undefined]],
+  ];
+  for (const [name, over, answers, wanted] of cases) {
+    const dir = directory();
+    const made = world(dir, { answers, secrets: [KEY] }, over);
+    expect(await runSetup(dir, ['discord'], made), name).toBe(0);
+    expect(LINES.map((line) => made.seen.launched!.env[line]), name).toEqual(wanted);
+    const again = world(dir, { answers: answers.slice(1), secrets: [KEY] }, over);
+    expect(await runSetup(dir, ['discord'], again), name).toBe(0);
+    expect(LINES.map((line) => again.seen.launched!.env[line]), `${name}, again`).toEqual(wanted);
+  }
+
+  const none = world(directory(), { secrets: [KEY] }, { platform: 'darwin', lingerOf: () => null });
+  expect(await runSetup(none.world.cwd, ['discord'], none)).toBe(0);
+  const bare = await promptOf(none.seen.launched!);
+  expect(bare).toContain('Setup gives you the lines it shows the person, each "none" where it has none to show. Show one exactly as it is here, on a line of its own:\n- The line that makes the resident a user of its own: none\n- What setup says beside that line: none\n- The root line that turns linger on for alice: none');
+  expect(bare).not.toContain('${');
+  const all = world(directory(), { answers: [''], secrets: [KEY] }, { lingerOf: offOnly, userExists: () => null });
+  expect(await runSetup(all.world.cwd, ['discord'], all)).toBe(0);
+  const full = await promptOf(all.seen.launched!);
+  expect(full).toContain(`\n- The line that makes the resident a user of its own: ${OWN_LINE}\n- What setup says beside that line: ${UNKNOWN}\n- The root line that turns linger on for alice: sudo loginctl enable-linger alice`);
+});
+
 test('setup\'s recipe lets its agent use the setup module\'s tools and the clock, and none of a resident\'s', () => {
   const recipe = JSON.parse(readFileSync(join(REPO, 'recipes', 'setup.json'), 'utf-8')) as { agent: { allowedTools: string[] } };
   const setups = new SetupModule({ dir: directory(), env: {}, asker: () => null, show: () => {} }).getTools().map((tool) => `setup--${tool.name}`);
@@ -1796,18 +1918,29 @@ function tryLock(file: string): string {
   return tried.stdout.toString().trim();
 }
 
-test('setup holds its lock while it asks its questions and while its agent runs', async () => {
+test('setup holds its lock while it asks its questions in a directory that\'s setup\'s already, from the first step\'s yes in a new one, and while its agent runs', async () => {
   const dir = directory();
   const lock = join(dir, '.setup', 'setup.lock');
   const tried: string[] = [];
   const made = world(dir, { answers: [''], secrets: [KEY] });
   const { ask, askHidden, startAgent } = made.world;
-  made.world.ask = async (question) => { tried.push(`ask: ${tryLock(lock)}`); return ask(question); };
+  made.world.ask = async (question) => { tried.push(`ask: ${existsSync(join(dir, '.setup')) ? tryLock(lock) : 'no .setup'}`); return ask(question); };
   made.world.askHidden = async (label) => { tried.push(`askHidden: ${tryLock(lock)}`); return askHidden(label); };
   made.world.startAgent = async (launch) => { tried.push(`agent: ${tryLock(lock)}`); return startAgent(launch); };
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(tried).toEqual(['ask: SQLITE_BUSY', 'askHidden: SQLITE_BUSY', 'agent: SQLITE_BUSY']);
+  expect(tried).toEqual(['ask: no .setup', 'askHidden: SQLITE_BUSY', 'agent: SQLITE_BUSY']);
   expect(tryLock(lock)).toBe('taken');
+
+  const there = directory();
+  mkdirSync(join(there, '.setup'));
+  const thereLock = join(there, '.setup', 'setup.lock');
+  writeFileSync(thereLock, '');
+  const asked: string[] = [];
+  const second = world(there, { answers: [''], secrets: [KEY] });
+  const secondAsk = second.world.ask;
+  second.world.ask = async (question) => { asked.push(tryLock(thereLock)); return secondAsk(question); };
+  expect(await runSetup(there, ['discord'], second)).toBe(0);
+  expect(asked).toEqual(['SQLITE_BUSY']);
 }, 30_000);
 
 test('a setup that ends early, or stops at a question, leaves the lock free and its lock file in place', async () => {
@@ -1824,8 +1957,7 @@ test('a setup that ends early, or stops at a question, leaves the lock free and 
   const gone = world(fresh, { answers: [] });
   expect(await runSetup(fresh, ['discord'], gone)).toBe(1);
   expect(text(gone.seen.out)).toContain('Setup stopped before keeping its answers. Run it again in this directory to answer its questions again.');
-  expect(readdirSync(fresh)).toEqual(['.setup']);
-  expect(readdirSync(join(fresh, '.setup'))).toEqual(['setup.lock']);
+  expect(readdirSync(fresh)).toEqual([]);
   const again = world(fresh, { answers: [''], secrets: [KEY] });
   expect(await runSetup(fresh, ['discord'], again)).toBe(0);
   expect(again.seen.asked[0]).toBe(CONTINUE);
@@ -2460,19 +2592,20 @@ test('run again beside another version of the host, setup adds its own version',
 
 test('without sudo, the line that turns linger on is one for root to run', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['yes'], secrets: [KEY] }, { hasSudo: false, lingerOf: () => false });
+  const made = world(dir, { secrets: [KEY] }, { hasSudo: false, lingerOf: () => false });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const out = text(made.seen.out);
-  expect(out).toContain('One line turns it on, run once as root, by you or by whoever administers this machine:\n  loginctl enable-linger alice\n');
+  expect(out).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once as root. You or whoever administers this machine can run it. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  loginctl enable-linger alice\n');
+  expect(made.seen.asked).toEqual(['An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
   expect(out).not.toContain('sudo loginctl');
 });
 
-test('a check failing for a reason another key can\'t mend offers the same key again, and checks it again on a yes', async () => {
+test('a check failing for a reason another key can\'t mend offers the same key again, and checks it again on a yes, which Enter gives', async () => {
   const dir = directory();
   const down = { ok: false as const, cause: 'api.anthropic.com is overloaded (529).', anotherKeyMayHelp: false };
-  const made = world(dir, { answers: ['', 'yes'], secrets: [KEY], keys: [down, { ok: true }] });
+  const made = world(dir, { answers: ['', ''], secrets: [KEY], keys: [down, { ok: true }] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked).toContain('Try this key again? (yes/no) ');
+  expect(made.seen.asked).toContain('Try this key again? (yes/no) [yes] ');
   expect(made.seen.checked.map((each) => each.key)).toEqual([KEY, KEY]);
   expect(made.seen.asked.filter((question) => question.includes('Anthropic API key'))).toHaveLength(1);
 
@@ -2795,7 +2928,33 @@ test('an install\'s own command takes setup to this release\'s setup, and the pa
   const empty = directory();
   const none = Bun.spawnSync([process.execPath, BIN], { cwd: empty, stdin: Buffer.from('') });
   expect(none.exitCode).toBe(1);
-  expect(none.stderr.toString()).toContain(`In a new directory, \`bunx @animalabs/connectome-host@${VERSION} setup discord\` sets one up.`);
+  expect(none.stderr.toString()).toContain(`\`bunx @animalabs/connectome-host@${VERSION} setup discord\` sets one up, in this directory where it's empty or already setup's, and in ~/resident otherwise.`);
+});
+
+test('the package\'s bin, from a directory setup can\'t use, runs its own setup on ~/resident, making nothing there without a terminal, and hands setup to the install ~/resident holds', async () => {
+  const home = directory();
+  writeFileSync(join(home, '.bashrc'), '# mine\n');
+  const resident = join(home, 'resident');
+  const env = { ...process.env, HOME: home, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
+  const bare = Bun.spawnSync([process.execPath, BIN, 'setup', 'discord'], { cwd: home, env, stdin: Buffer.from('') });
+  expect(bare.exitCode).toBe(1);
+  expect(bare.stderr.toString()).toContain('connectome setup needs a person at a terminal');
+  expect(readdirSync(home)).toEqual(['.bashrc']);
+
+  mkdirSync(resident);
+  expect(await runSetup(resident, ['discord'], world(resident, { answers: [''], secrets: [KEY] }))).toBe(0);
+  const root = join(resident, 'connectome-host');
+  const release = join(root, 'releases', '0.0.2-handed', 'node_modules', '@animalabs', 'connectome-host');
+  mkdirSync(join(release, 'src', 'cli'), { recursive: true });
+  mkdirSync(join(release, 'recipes'));
+  writeFileSync(join(release, 'recipes', 'setup.json'), '{}\n');
+  writeFileSync(join(release, 'src', 'cli', 'connectome.ts'),
+    'export async function main(root, argv) { console.log(`handed ${root} ${argv.join(" ")} ${process.cwd()}`); return 0; }\n');
+  unlinkSync(join(root, 'current'));
+  symlinkSync(join('releases', '0.0.2-handed'), join(root, 'current'));
+  const handed = Bun.spawnSync([process.execPath, BIN, 'setup', 'discord'], { cwd: home, env, stdin: Buffer.from('') });
+  expect(handed.stdout.toString()).toBe(`handed ${root} setup discord ${home}\n`);
+  expect(handed.exitCode).toBe(0);
 });
 
 test('the package\'s bin runs its own setup for an install with no current release, which its own command can\'t run', async () => {
@@ -3047,7 +3206,7 @@ test('an empty ANTHROPIC_API_KEY line in .env counts as no key, so an exported o
 });
 
 const LATER_RUN = [
-  'Setup began here before, as this user, alice, and the resident runs as alice. Setup\'s agent picks up where it stopped, and can change with you what it set up.',
+  'Setup began in <dir> before, as this user, alice, and the resident runs as alice. Setup\'s agent picks up where it stopped, and can change with you what it set up.',
   'Checking the install at <dir>/connectome-host.',
   `The install at <dir>/connectome-host serves <dir>/data and runs ${VERSION}, as before.`,
   'Starting the installed host once, on a mock recipe, to see that it starts.',
