@@ -25,7 +25,7 @@ import {
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, installCommandOf, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
@@ -595,29 +595,7 @@ async function installAndStart(
   }
   const { model } = read;
 
-  const command = installCommandOf(root, env.PATH);
-  if (settingUp) {
-    out(`This install's own command is ${command.path}.`);
-    if (command.pathLine !== null) {
-      const needs = 'Nothing setup or its agent does needs its directory on your PATH, so you need it there only to ' +
-        'type plain `connectome`.';
-      // The line is a Bourne shell's; other shells, such as fish and tcsh, set PATH their own way.
-      if (env.SHELL === undefined || ['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(basename(env.SHELL))) {
-        out(`${needs} For that, put it on your PATH, and in ${startupFile(env.SHELL, world.platform)} to keep it there:`);
-        out(`  ${command.pathLine}`);
-        out(`That line is for ${env.SHELL === undefined ? 'a Bourne shell, such as sh or bash, since SHELL names no shell'
-          : `${basename(env.SHELL)}, the login shell SHELL names`}; another shell sets PATH its own way.`);
-      } else {
-        out(`${needs} For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
-      }
-    }
-  }
-  if (settingUp) {
-    const typed = shellWord(command.path);
-    out('Once the resident runs, these take a newer release, in turn: the first says whether one is out, the second ' +
-      'installs it beside the one running, and the third switches the resident to it.');
-    for (const word of ['update', 'update install', 'update restart']) out(`  ${typed} ${word}`);
-  }
+  if (settingUp) out(`This install's own command is ${join(root, INSTALL_COMMAND)}.`);
 
   out('Starting the installed host once, on a mock recipe, to see that it starts.');
   const scratch = mkdtempSync(join(tmpdir(), 'connectome-setup-boot-'));
@@ -683,7 +661,8 @@ async function installAndStart(
   let fromDotEnv = key !== null;
   if (key === null && shell.ANTHROPIC_API_KEY) {
     const use = await yesNo(world, `An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup ` +
-      `writes it to ${envFile}, readable by you alone. (yes/no) `);
+      `writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `,
+    true);
     if (use === null) return stopped();
     if (use) key = shell.ANTHROPIC_API_KEY;
   }
@@ -726,7 +705,7 @@ async function installAndStart(
       key = null;
       continue;
     }
-    const again = await yesNo(world, 'Try this key again? (yes/no) ');
+    const again = await yesNo(world, 'Try this key again? (yes/no) [yes] ', true);
     if (!again) return stopped();
   }
   let held: Map<string, string>;
@@ -1004,13 +983,6 @@ function outputLines(ran: Ran): string[] {
 
 function dollars(amount: number): string {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
-}
-
-function startupFile(shell: string | undefined, platform: NodeJS.Platform): string {
-  const name = shell === undefined ? '' : basename(shell);
-  if (name === 'zsh') return '~/.zshrc';
-  if (name === 'bash') return platform === 'darwin' ? '~/.bash_profile' : '~/.bashrc';
-  return 'your shell\'s startup file';
 }
 
 export function costLine(model: string, gateway: boolean): string {
