@@ -2886,7 +2886,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then that doctor checks it again, in place of asking for it again', async () => {
+  test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then that doctor checks it again, to the person and in place of asking for it again', async () => {
     const BUSY = ' It may be busy: `connectome doctor` checks the token again when it runs.';
     const AGAIN = ' Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
     for (const [status, words, after] of [[503, 'Service Unavailable', BUSY], [429, 'You are being rate limited', BUSY], [403, 'Missing Access', AGAIN]] as const) {
@@ -2895,6 +2895,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
       expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to ` +
         `work: Discord answered ${status}: ${words}.${after}`);
+      expect(token.shown, String(status)).toContain(`Discord didn't say whether it works: it answered ${status} (${words}).` +
+        (after === BUSY ? BUSY : ''));
     }
   });
 

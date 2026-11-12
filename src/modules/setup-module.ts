@@ -821,7 +821,7 @@ function tokenLine(token: TokenCheck): string {
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a token: nothing was stored.';
     case 'answered':
       return `Discord didn't say whether it works: it answered ${token.status}` +
-        `${token.said === null ? '' : ` (${shown(token.said)})`}.`;
+        `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${BUSY}` : '');
     case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
     case 'unrecognized':
       return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY}` : '');
