@@ -93,8 +93,6 @@ export interface ArmedSwitch {
   lastTry: { at: string; waited: string; hosts: HostQuiet[] } | null;
 }
 
-/** How each update action is reached, as the text's reader takes it, and who that reader is: the person who runs
- *  the host, or the agent, whose text names its own tool and says what is the person's to do. */
 export interface UpdateWays {
   reader: 'person' | 'agent';
   install: string;
@@ -149,7 +147,6 @@ export function cliWays(typed: string): UpdateWays {
   };
 }
 
-/** The agent's ways: its own tool's actions, and the person's command for what only the person can do. */
 export function toolWays(headless: boolean, command = 'connectome'): UpdateWays & { person: UpdateWays } {
   const person = headless ? cliWays(command) : COMMAND_WAYS;
   return {
@@ -169,7 +166,6 @@ export function toolWays(headless: boolean, command = 'connectome'): UpdateWays 
 
 export const TOOL_WAYS = toolWays(true);
 
-/** The person's own command for a way, as an agent's text names it, or the way itself in a person's text. */
 export function personWay(ways: UpdateWays, way: UpdateWay): string {
   const person = (ways as Partial<{ person: UpdateWays }>).person;
   return ways.reader === 'agent' && person !== undefined ? `the person's ${person[way]}` : ways[way];

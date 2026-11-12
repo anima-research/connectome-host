@@ -421,8 +421,6 @@ export class HostUpdate {
     return this.restart !== null;
   }
 
-  /** The person's ways on this host, for text it keeps for whoever reads it later, such as its log and a reason an
-   *  armed switch was dropped: their command in a shell on a headless install, and /update anywhere else. */
   private hostWays(): UpdateWays {
     const setup = this.need();
     return setup.here !== null && setup.headless === true ? cliWays(installCommandAt(setup.here.root)) : COMMAND_WAYS;

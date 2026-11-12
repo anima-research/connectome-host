@@ -1126,23 +1126,6 @@ export function shellWord(word: string): string {
   return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
-/**
- * Ask the next start to go back, from a shell, for an operator whose host
- * doesn't stay up to ask it, as when the release it committed keeps exiting.
- * Two callers run it: `start.js --go-back [--keep-data]` (GO_BACK_FLAG, in
- * `launch`), and the install's `connectome update back keep|restore` when no
- * host answers (`backWithNoHost`). Returns the exit status.
- *
- * It waits up to GO_BACK_LOCK_WAIT_MS for the install's lock, which the
- * install's host holds while it runs. A host that keeps exiting gives it up
- * between its exit and the service's next start. With the lock, it checks
- * that a Go back is offered, to `expected` when that's given, and that no
- * request is under way, writes the mark, and gives the lock up: the
- * service's next start goes back. A host that holds the lock the whole time
- * is up, so its own Go back, which quiesces first, is the way. `back` is how
- * this caller's reader asks that host: `/update back` by default, and the
- * install's typed command for `connectome update back`.
- */
 export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string,
   back = '/update back'): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);

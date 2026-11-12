@@ -256,7 +256,6 @@ const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs a
   'restart or Go back before it begins without replacing it or stopping the host: their own restart or back goes ahead in ' +
   'its place.';
 
-// A host whose own command isn't first on the PATH names it by its path.
 const LONG_COMMAND = '/home/alice/resident/connectome-host/connectome';
 
 for (const [kind, options, command] of [

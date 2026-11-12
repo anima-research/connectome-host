@@ -498,8 +498,6 @@ async function command(host: HostClient, text: string, print: (line: string) => 
     });
     void host.closed.then(() => done({ how: 'closed' }));
   });
-  // `typed` asks the host to name each update way as this command is typed. A host older than this command ignores it
-  // and answers in its terminal's /update spelling.
   host.send({ type: 'command', command: text, corrId, ...(typed === undefined ? {} : { typed }) });
   return ended;
 }
