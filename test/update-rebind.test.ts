@@ -7,7 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  installPaths, readRecord, writeJsonAtomic, type ChildrenFile, type CopyLabel, type GoBackList,
+  installPaths, readCurrent, readRecord, writeJsonAtomic, writeMark, type ChildrenFile, type CopyLabel, type GoBackList,
   type InstallRecord, type LockRecord,
 } from '../src/update/contract.js';
 import { dataItems, liveChildren, machineOps } from '../src/update/launcher.js';
@@ -590,8 +590,8 @@ bindMounted('a binding given a DATA_DIR that is the mapped data directory throug
 
 describe('what setup read before it held the lock', () => {
   const changedMeanwhile = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
-    'backs, or the trial or Go back its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
-    'changed none of them. Run it again, and it reads them afresh.';
+    'backs, the trial or Go back its journal leaves unfinished, or the Go back its mark asks for isn\'t what setup read ' +
+    'before it held the lock, so setup has changed none of them. Run it again, and it reads them afresh.';
 
   test('a children file replaced after setup read it, before the lock, is refused as changed meanwhile, and nothing is rewritten', () => {
     setup(options(install));
@@ -637,6 +637,25 @@ describe('what setup read before it held the lock', () => {
     }
     const now = tree(moved);
     delete now['connectome-host/journal.jsonl'];
+    expect(now).toEqual(kept);
+    expect(record(moved)!.workingDir).toBe(install);
+  });
+
+  test('a Go back asked for after setup read the install, before the lock, is refused as changed meanwhile, and nothing is moved or bound', () => {
+    setup(options(install));
+    updated(install);
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    const kept = tree(moved);
+    const asked = beforeTheLock(moved, () => writeMark(root, { to: '0.10.1', why: 'go-back' }));
+    try {
+      expect(refusal(() => setup(options(moved, { moveAside: true })))).toBe(changedMeanwhile);
+    } finally {
+      asked();
+    }
+    const now = tree(moved);
+    delete now['connectome-host/mark.json'];
     expect(now).toEqual(kept);
     expect(record(moved)!.workingDir).toBe(install);
   });
@@ -1070,6 +1089,46 @@ describe('what a moved or copied install\'s root keeps', () => {
       expect(why).toEndWith(`\n  ${join(rootOf(moved), 'copy')}\n  ${join(rootOf(moved), 'set-aside', 'm2')}\n${goBack}`);
     }
     expect(tree(moved)).toEqual(kept);
+  });
+
+  test('while a Go back is asked for and no start has begun it, a moved install is refused with --move-aside or without, saying to let it run where the install was or to remove its mark, and nothing changes', () => {
+    setup(options(install));
+    updated(install);
+    writeMark(rootOf(install), { to: '0.10.1', why: 'go-back' });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    const root = rootOf(moved);
+    const kept = tree(moved);
+    const asked = `A Go back is asked for: the mark at ${installPaths(root).mark} asks the next start to go back to ` +
+      '0.10.1, and that start goes back from what\'s listed here. Setup has changed nothing. Let that Go back run where ' +
+      'the install was, by starting it there, moving it back first if it was moved, and then move or copy it again. Or ' +
+      'remove the mark file, which drops the request.';
+    for (const moveAside of [false, true]) {
+      const why = refusal(() => setup(options(moved, { moveAside })));
+      expect(why).toEndWith(`\n  ${join(root, 'copy')}\n  ${join(root, 'set-aside', 'm2')}\n${asked}`);
+    }
+    expect(tree(moved)).toEqual(kept);
+  });
+
+  test('a Go back\'s mark that is spent, since the release it asks for runs, doesn\'t stop a moved install\'s binding, and setup leaves the mark file for the next start to clear', () => {
+    setup(options(install));
+    updated(install);
+    writeMark(rootOf(install), { to: readCurrent(rootOf(install))!, why: 'go-back' });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    setup(options(moved, { moveAside: true }));
+    expect(record(moved)!.workingDir).toBe(moved);
+    expect(existsSync(installPaths(rootOf(moved)).mark)).toBe(true);
+  });
+
+  test('an update asked for doesn\'t stop a moved install\'s binding, since its start takes a copy of its own', () => {
+    setup(options(install));
+    updated(install);
+    writeMark(rootOf(install), { to: '0.11.0', why: 'update' });
+    const moved = join(dir, 'moved');
+    renameSync(install, moved);
+    setup(options(moved, { moveAside: true }));
+    expect(record(moved)!.workingDir).toBe(moved);
   });
 
   test('--move-aside takes the areas a Go back kept in a place its own list names, though this run\'s record no longer names it', () => {
