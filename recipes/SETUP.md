@@ -55,7 +55,7 @@ cp ~/Downloads/.zuliprc ./.zuliprc
 4. Install the Zulip MCP server:
 
 ```bash
-git clone https://github.com/antra-tess/zulip_mcp.git ../zulip_mcp
+git clone https://github.com/anima-research/zulip_mcp.git ../zulip_mcp
 cd ../zulip_mcp && npm install && npm run build && cd -
 ```
 
