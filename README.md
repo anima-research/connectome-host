@@ -21,7 +21,7 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 ## A resident, from one line
 
 The machine the resident will live on needs [Bun](https://bun.sh/) 1.4.4 or
-later, installed as its site says. Then, on that machine:
+later, setup's own floor, installed as its site says. Then, on that machine:
 
 ```bash
 bunx @animalabs/connectome-host setup discord
@@ -57,7 +57,7 @@ the host is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 
-Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+ and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
+Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+, the host's own floor (setup's is 1.4.4), and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
 
 ```bash
 mkdir my-agent && cd my-agent
