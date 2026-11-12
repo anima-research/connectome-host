@@ -2525,7 +2525,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       'it runs in, which is what to stop.');
   });
 
-  test('a host the service\'s pid matches only once, or found while a service read as stopped starts or its pid can\'t be read, is said as changed, with no kill', async () => {
+  test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {
     const at = install();
     for (const second of ['4242', '6161']) {
       let asked = 0;
@@ -2781,7 +2781,7 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(r3.out).toContain(`${theirs.unit} names /elsewhere as the directory it runs in, not this install's, ${theirs.work}`);
   });
 
-  test('a unit that gives Bun a flag of its own before start.js isn\'t read as install\'s, since the service then reads what doctor wouldn\'t', async () => {
+  test('a unit that gives Bun a flag of its own before start.js isn\'t read as install\'s, since the service then reads other dotenv files than doctor would', async () => {
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'], env: { LONELY_SECRET: 'lonely-value-1' } });
     const units = serviceUnits(at.root, at.platform, at.home)!;
     writeFileSync(units.host.file, systemdUnit('Connectome test', at.work,
