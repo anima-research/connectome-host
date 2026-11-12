@@ -40,7 +40,6 @@ export async function checkDiscord(
   options: {
     fetch: typeof fetch;
     workingDir: string;
-    /** The command that runs this install, as the person types it: doctor's `typedCommand` answer. */
     command: string;
     requestLimitMs?: number;
   },

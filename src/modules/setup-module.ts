@@ -49,7 +49,9 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
 // with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
 // for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
 // of ordinary output. Output dense in what JSON escapes, or in short secrets under long names, can still pass it.
-// setup--discord measures its answer's JSON, which is that inline text, against the same cap.
+// setup--run's windows hold to this fixed figure. setup--discord measures its answer's JSON, which is that inline
+// text, against the cap the framework gives its call (ToolCall.resultMaxChars), and against this one where a call
+// carries none.
 const INLINE_MAX_CHARS = 24_000;
 const KEPT_BYTES = 4 * 1024;
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
@@ -232,6 +234,15 @@ function redacted(text: string, secrets: Secret[]): string {
   return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text;
 }
 
+function redactedData<T>(value: T, secrets: Secret[]): T {
+  if (typeof value === 'string') return redacted(value, secrets) as T;
+  if (Array.isArray(value)) return value.map((each) => redactedData(each, secrets)) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, redactedData(each, secrets)])) as T;
+  }
+  return value;
+}
+
 function shownCommand(command: string, secrets: Secret[]): string[] {
   return redacted(command, secrets).split('\n').map(shown);
 }
@@ -262,15 +273,15 @@ async function serverOf(reader: DiscordReader, guild: BotGuild, botId: string, o
   return { id: guild.id, name: guild.name, owner: memberOf(owner), channels };
 }
 
-const fits = (answer: unknown): boolean => JSON.stringify(answer).length <= INLINE_MAX_CHARS;
+const fits = (answer: unknown, cap: number): boolean => JSON.stringify(answer).length <= cap;
 
-function fitting<T>(items: T[], answer: (shown: T[]) => unknown): T[] {
-  if (fits(answer(items))) return items;
+function fitting<T>(items: T[], answer: (shown: T[]) => unknown, cap: number): T[] {
+  if (fits(answer(items), cap)) return items;
   let low = 0;
   let high = items.length - 1;
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
-    if (fits(answer(items.slice(0, mid)))) low = mid;
+    if (fits(answer(items.slice(0, mid)), cap)) low = mid;
     else high = mid - 1;
   }
   return items.slice(0, low);
@@ -464,7 +475,8 @@ export class SetupModule implements Module {
           'Given server alone, it reads that one server the same way. Given server and username, it gives instead the ' +
           'members of that server whose Discord username or server nickname starts with username, up to ten, and says ' +
           'when more match: Discord matches no display name. An answer too long for you to read whole gives what fits, ' +
-          'says how many of how many, and how to read the rest. The token\'s value is never shown.',
+          'says how many of how many, and how to read the rest, or, for one server\'s channels, how the person can ' +
+          'copy the id of one not shown. The token\'s value is never shown.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -522,7 +534,9 @@ export class SetupModule implements Module {
         return check;
       });
     }
-    if (call.name === 'discord') return this.afterAsked(() => this.discord(call.input as { server?: unknown; username?: unknown }));
+    if (call.name === 'discord') {
+      return this.afterAsked(() => this.discord(call.input as { server?: unknown; username?: unknown }, call.resultMaxChars ?? INLINE_MAX_CHARS));
+    }
     if (call.name === 'finished') return this.finished();
     return unknownToolResult(this, call.name);
   }
@@ -878,15 +892,8 @@ export class SetupModule implements Module {
     return key;
   }
 
-  private async discord(input: { server?: unknown; username?: unknown }): Promise<ToolResult> {
+  private async discord(input: { server?: unknown; username?: unknown }, cap: number): Promise<ToolResult> {
     if (this.stopping) return failed('The host is stopping, so setup--discord reads nothing, and calling it again won\'t change that.');
-    const { server, username } = input;
-    if ((server !== undefined && (typeof server !== 'string' || !/^\d+$/.test(server)))
-      || (username !== undefined && (server === undefined || typeof username !== 'string' || username.trim() === ''))) {
-      return failed('setup--discord searches members given both server, a server\'s id as it gives them, and username, ' +
-        'the start of a username or server nickname. Call it with server alone to read that server, or with neither to ' +
-        'read the servers and channels.');
-    }
     const envFile = join(this.config.dir, '.env');
     let env: Map<string, string>;
     try {
@@ -903,13 +910,27 @@ export class SetupModule implements Module {
       return failed(`Nothing is stored as ${DISCORD_TOKEN} in ${envFile}, so Discord can't be read. Ask the person for the ` +
         'bot\'s token with setup--ask_secret first.');
     }
+    let hide: Secret[];
+    try {
+      hide = this.secrets().values;
+    } catch (error) {
+      return this.damaged(error, 'Nothing was read');
+    }
+    const { server, username } = input;
+    const given = (value: unknown): string => shown(redacted(JSON.stringify(value) ?? String(value), hide));
+    const wrong = server !== undefined && (typeof server !== 'string' || !/^\d+$/.test(server))
+      ? `server is ${given(server)}, which isn't a server's id: one is digits, given as text`
+      : username !== undefined && server === undefined
+        ? `username is ${given(username)}, given without server, the server whose members to search`
+        : username !== undefined && (typeof username !== 'string' || username.trim() === '')
+          ? `username is ${given(username)}, which holds no start of a name to search for`
+          : null;
+    if (wrong !== null) {
+      return failed(`${wrong}. setup--discord searches members given both server, a server's id as it gives them, and ` +
+        'username, the start of a username or server nickname. Call it with server alone to read that server, or with ' +
+        'neither to read the servers and channels.');
+    }
     if (typeof username === 'string') {
-      let hide: Secret[];
-      try {
-        hide = this.secrets().values;
-      } catch (error) {
-        return this.damaged(error, 'Nothing was read');
-      }
       this.config.show(`Searching a Discord server's members for ${shown(redacted(username, hide))}.`);
     } else {
       this.config.show(server === undefined ? 'Reading the bot\'s servers and channels from Discord.'
@@ -923,16 +944,18 @@ export class SetupModule implements Module {
     }
     if (bot.kind !== 'accepted') return failed(discordNote(tokenFailure(bot)));
     const reader = discordReader(token, { fetch: fetchFn });
-    const botUser = { id: bot.id, name: bot.name };
+    const botUser = redactedData({ id: bot.id, name: bot.name }, hide);
     try {
       if (typeof username === 'string') {
         const found = await reader.get<DiscordMember[]>(
           `/guilds/${server}/members/search?query=${encodeURIComponent(username)}&limit=${MEMBERS_SHOWN + 1}`);
-        const members = found.slice(0, MEMBERS_SHOWN).map(memberOf);
+        // The ten aren't measured against the call's cap: at their longest they come to about 1,500 characters, which
+        // pass only a cap between the framework's lowest, 1,000, and that figure, and no recipe that ships sets one.
+        const members = redactedData(found.slice(0, MEMBERS_SHOWN).map(memberOf), hide);
         return {
           success: true,
           data: {
-            server, username, members,
+            server, username: redacted(username, hide), members,
             ...(found.length > MEMBERS_SHOWN
               ? { note: 'More members match: call setup--discord again with more of the username or nickname.' } : {}),
           },
@@ -940,7 +963,7 @@ export class SetupModule implements Module {
       }
       if (typeof server === 'string') {
         const { name, owner_id: ownerId } = await reader.get<{ name: string; owner_id: string }>(`/guilds/${server}`);
-        const one = await serverOf(reader, await botGuild(reader, bot.id, { id: server, name, botOwns: ownerId === bot.id }), bot.id, ownerId);
+        const one = redactedData(await serverOf(reader, await botGuild(reader, bot.id, { id: server, name, botOwns: ownerId === bot.id }), bot.id, ownerId), hide);
         const answer = (channels: typeof one.channels) => ({
           bot: botUser, server: { ...one, channels },
           ...(channels.length < one.channels.length ? {
@@ -948,16 +971,16 @@ export class SetupModule implements Module {
               `answer can't hold more. ${copyId('channel', 'Channel')}`,
           } : {}),
         });
-        return { success: true, data: answer(fitting(one.channels, answer)) };
+        return { success: true, data: answer(fitting(one.channels, answer, cap)) };
       }
       const application = await reader.get<{ id: string }>('/applications/@me');
       const servers = [];
       for (const guild of await botGuilds(reader, bot.id)) {
         const { owner_id: ownerId } = await reader.get<{ owner_id: string }>(`/guilds/${guild.id}`);
-        servers.push(await serverOf(reader, guild, bot.id, ownerId));
+        servers.push(redactedData(await serverOf(reader, guild, bot.id, ownerId), hide));
       }
       const whole = { application: { id: application.id }, bot: botUser, servers };
-      if (fits(whole)) return { success: true, data: whole };
+      if (fits(whole, cap)) return { success: true, data: whole };
       const counted = servers.map(({ channels, ...each }) => ({ ...each, textChannels: channels.length }));
       const answer = (shown: typeof counted) => ({
         application: { id: application.id }, bot: botUser, servers: shown,
@@ -967,7 +990,7 @@ export class SetupModule implements Module {
           : `${shown.length} of ${counted.length} servers are shown, since one answer can't hold more, without their ` +
             `channels: call setup--discord with a server's id as server to read its channels. ${copyId('server', 'Server')}`,
       });
-      return { success: true, data: answer(fitting(counted, answer)) };
+      return { success: true, data: answer(fitting(counted, answer, cap)) };
     } catch (error) {
       if (error instanceof DiscordFailed) return failed(discordNote(error.failure));
       const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
