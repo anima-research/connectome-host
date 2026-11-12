@@ -580,7 +580,8 @@ export class SetupModule implements Module {
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
     const stderr = err.result(secrets, replaced);
-    this.showSaid(said, secrets);
+    this.showSaid(said, secrets, stoppedAtLimit ? `it was stopped at its ${limit / 1000} s limit`
+      : ended.signal ? `it was ended by ${ended.signal}` : null);
     const hidden = guessed.filter((name) => replaced.has(name)).sort();
     if (hidden.length > 0) {
       notes.push(`${join(this.config.dir, '.setup', 'stored-secrets.json')}, the list of the secrets setup stored, is ` +
@@ -603,7 +604,7 @@ export class SetupModule implements Module {
     return { success: true, data };
   }
 
-  private showSaid(file: string, secrets: Secret[]): void {
+  private showSaid(file: string, secrets: Secret[], unfinished: string | null): void {
     let text: string;
     try {
       text = readFileSync(file, 'utf-8');
@@ -615,6 +616,7 @@ export class SetupModule implements Module {
     if (text === '') return;
     this.config.show('It said:');
     for (const line of redacted(text, secrets).replace(/\n$/, '').split('\n')) this.config.show(`  ${shown(line)}`);
+    if (unfinished !== null) this.config.show(`It didn't finish: ${unfinished}.`);
   }
 
   private async askSecret(input: { name?: unknown; purpose?: unknown }): Promise<ToolResult> {

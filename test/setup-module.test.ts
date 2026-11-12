@@ -1377,6 +1377,21 @@ describe('setup--run, and what the install\'s commands say for the person', () =
     expect(after.join('\n')).not.toContain('gone');
   });
 
+  test('a command stopped at its limit after writing there ends with a line saying it didn\'t finish', async () => {
+    const { module, shown } = install();
+    await run(module, 'echo started >> "$CONNECTOME_SETUP_SHOWN"; sleep 30', 1000);
+    expect(afterCommand(shown)).toEqual(['It said:', '  started', 'It didn\'t finish: it was stopped at its 1 s limit.']);
+  });
+
+  test('a command ended by a signal after writing there ends with a line saying so, and one that wrote nothing shows nothing', async () => {
+    const { module, shown } = install();
+    await run(module, 'echo started >> "$CONNECTOME_SETUP_SHOWN"; kill -TERM $$');
+    expect(afterCommand(shown)).toEqual(['It said:', '  started', 'It didn\'t finish: it was ended by SIGTERM.']);
+    const quiet = install();
+    await run(quiet.module, 'kill -TERM $$');
+    expect(afterCommand(quiet.shown)).toEqual([]);
+  });
+
   test('where which values are secret can\'t be read once the command ends, nothing it wrote there is shown, and the person is told', async () => {
     const { module, shown } = install({ envFile: 'DISCORD_TOKEN="the-stored-value"\n' });
     const result = await runCall(module, 'echo written-for-the-person >> "$CONNECTOME_SETUP_SHOWN"; mkdir .env.local');
