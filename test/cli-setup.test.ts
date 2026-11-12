@@ -723,28 +723,6 @@ test('a first run with a gateway in .env says the gateway may charge otherwise t
   expect(text(made.seen.out)).toContain('A gateway at ANTHROPIC_BASE_URL may charge otherwise.');
 });
 
-test('the PATH advice names ~/.zshrc for zsh, ~/.bashrc for bash, ~/.bash_profile for bash on macOS, and the shell\'s own startup file for another', async () => {
-  for (const [shell, platform, file] of [['/bin/zsh', 'linux', '~/.zshrc'], ['/bin/bash', 'linux', '~/.bashrc'], ['/bin/bash', 'darwin', '~/.bash_profile'], ['/bin/dash', 'linux', 'your shell\'s startup file']] as const) {
-    const dir = directory();
-    const answers = platform === 'darwin' ? [] : [''];
-    const made = world(dir, { answers, secrets: [KEY] }, { platform, env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
-    expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
-    expect(text(made.seen.out), `${shell} ${platform}`).toContain(`For that, put it on your PATH, and in ${file} to keep it there:`);
-    expect(text(made.seen.out), `${shell} ${platform}`).toContain(`That line is for ${basename(shell)}, the login shell SHELL names; another shell sets PATH its own way.`);
-  }
-});
-
-test('a shell that isn\'t a Bourne shell, such as fish or tcsh, is told to put the install on its PATH in its own way, with no export line', async () => {
-  for (const shell of ['/usr/bin/fish', '/bin/tcsh']) {
-    const dir = directory();
-    const made = world(dir, { answers: [''], secrets: [KEY] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, SHELL: shell } });
-    expect(await runSetup(dir, ['discord'], made), shell).toBe(0);
-    const root = join(dir, 'connectome-host');
-    expect(text(made.seen.out), shell).toContain(`For that, put ${root} at the front of your PATH as your shell sets it, and in its startup file to keep it there.`);
-    expect(text(made.seen.out), shell).not.toContain('export PATH=');
-  }
-});
-
 test('a later run of an install says its answers, the install and its version, the boot and key checks, the prices, the commands note and the start line, and not the PATH offer', async () => {
   const dir = directory();
   expect(await runSetup(dir, ['discord'], world(dir, { answers: [''], secrets: [KEY] }))).toBe(0);
@@ -865,7 +843,7 @@ test('setup installs the host and discord-mcpl alone: it adds no shell, checks n
   expect(text(noNode.seen.err)).toContain(`didn't answer here (there's no node on this PATH). Install Node ${NODE_FLOOR} or later, and at most Node 24 if the resident may get a shell, from nodejs.org or your system's package manager, and run setup again.`);
 });
 
-test('from an empty directory, setup installs, writes the install\'s command, checks the key, and starts its agent', async () => {
+test('from an empty directory, setup installs, writes the install\'s command and names it, checks the key, and starts its agent, with no PATH line and no update commands', async () => {
   const dir = directory();
   const made = world(dir, { answers: [''], secrets: [KEY] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
@@ -877,13 +855,9 @@ test('from an empty directory, setup installs, writes the install\'s command, ch
   expect(statSync(join(dir, 'data')).isDirectory()).toBe(true);
   expect(existsSync(join(root, 'connectome'))).toBe(true);
   expect(text(made.seen.out)).toContain(`This install's own command is ${join(root, 'connectome')}.`);
-  expect(text(made.seen.out)).toContain('Nothing setup or its agent does needs its directory on your PATH, so you need it there only to type plain `connectome`. For that, put it on your PATH, and in your shell\'s startup file to keep it there:');
-  expect(text(made.seen.out)).toContain(`export PATH=${root}:"$PATH"`);
-  expect(text(made.seen.out)).toContain('That line is for a Bourne shell, such as sh or bash, since SHELL names no shell; another shell sets PATH its own way.');
-  const pathAt = made.seen.out.indexOf(`  export PATH=${root}:"$PATH"`);
-  const updates = made.seen.out.indexOf('Once the resident runs, these take a newer release, in turn: the first says whether one is out, the second installs it beside the one running, and the third switches the resident to it.');
-  expect(updates).toBeGreaterThan(pathAt);
-  expect(made.seen.out.slice(updates + 1, updates + 4)).toEqual(['update', 'update install', 'update restart'].map((word) => `  ${join(root, 'connectome')} ${word}`));
+  for (const gone of ['export PATH=', 'on your PATH', 'Once the resident runs, these take a newer release', 'update install']) {
+    expect(text(made.seen.out), gone).not.toContain(gone);
+  }
   for (const line of made.seen.out.filter((each) => !each.startsWith('  '))) {
     expect(line.split(join(root, 'connectome')).length - 1, line).toBeLessThanOrEqual(1);
   }
@@ -1420,11 +1394,11 @@ test('a setup agent\'s recipe that can\'t be read, isn\'t JSON, or names no mode
   }
 });
 
-test('an exported key is used with the person\'s yes, and only then', async () => {
+test('an exported key is used with the person\'s yes, Enter among them, and only then; the question says the resident uses it too', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['', 'yes'] }, { env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: KEY } });
+  const made = world(dir, { answers: ['', ''] }, { env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: KEY } });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked.some((question) => question.includes('exported'))).toBe(true);
+  expect(made.seen.asked).toEqual([CONTINUE, `An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup writes it to ${join(dir, '.env')}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `]);
   expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
   expect(text(made.seen.out)).not.toContain('exported in this shell isn\'t');
 
@@ -2328,12 +2302,12 @@ test('without sudo, the line that turns linger on is one for root to run', async
   expect(out).not.toContain('sudo loginctl');
 });
 
-test('a check failing for a reason another key can\'t mend offers the same key again, and checks it again on a yes', async () => {
+test('a check failing for a reason another key can\'t mend offers the same key again, and checks it again on a yes, which Enter gives', async () => {
   const dir = directory();
   const down = { ok: false as const, cause: 'api.anthropic.com is overloaded (529).', anotherKeyMayHelp: false };
-  const made = world(dir, { answers: ['', 'yes'], secrets: [KEY], keys: [down, { ok: true }] });
+  const made = world(dir, { answers: ['', ''], secrets: [KEY], keys: [down, { ok: true }] });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.asked).toContain('Try this key again? (yes/no) ');
+  expect(made.seen.asked).toContain('Try this key again? (yes/no) [yes] ');
   expect(made.seen.checked.map((each) => each.key)).toEqual([KEY, KEY]);
   expect(made.seen.asked.filter((question) => question.includes('Anthropic API key'))).toHaveLength(1);
 
