@@ -115,7 +115,7 @@ export async function doctor(
   const root = ctx.root!;
 
   const units = serviceUnits(root, parts.platform, parts.home);
-  let service: { units: ServiceUnits; recipe: string; work: string } | null = null;
+  let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
   if (units !== null) {
     let text: string | null = null;
@@ -141,7 +141,7 @@ export async function doctor(
       } else if (at < 0 || read.argv[at + 1] === undefined) {
         serviceError = `${units.host.file} doesn't run start.js with a recipe after it, as the one service install writes does.`;
       } else {
-        service = { units, recipe: read.argv[at + 1]!, work: read.workingDirectory };
+        service = { units, recipe: read.argv[at + 1]!, work: read.workingDirectory, bun: read.argv[0]! };
       }
     }
   }
@@ -214,7 +214,8 @@ export async function doctor(
     }
     const unit = service === null ? null : read;
     envFiles = unit === null ? [] : unit.files;
-    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs);
+    const built = serviceEnv(work, root, managed, unit === null ? null : unit.env, parts.envLimitMs,
+      service?.bun ?? process.execPath);
     env = built.env;
     secrets = [...secrets, ...known(env, built.base)].flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -1127,7 +1128,7 @@ function systemVariables(): Record<string, string> {
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
-  limitMs: number): { env: Record<string, string | undefined>; base: Record<string, string> } {
+  limitMs: number, bun: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
   const base = { ...systemVariables(), ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
@@ -1136,7 +1137,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       base.DATA_DIR = dataDirOf(root);
     } catch {}
   }
-  const ran = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+  const ran = spawnSync(bun, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
     cwd: work,
     env: base,
     encoding: 'utf-8',
@@ -1148,7 +1149,8 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
       'though with your shell\'s environment, not the service\'s.');
   }
   if (ran.error !== undefined) {
-    throw new Error(`Bun couldn't be run in ${work} to read the service's environment: ${ran.error.message}`);
+    throw new Error(`${bun === process.execPath ? 'Bun' : `${bun}, the Bun the service's unit runs,`} couldn't be run in ` +
+      `${work} to read the service's environment: ${ran.error.message}.`);
   }
   if (ran.status !== 0) {
     throw new Error(`Bun ${ran.status === null ? `was ended by ${ran.signal}` : `exited ${ran.status}`} in ${work} as it read ` +

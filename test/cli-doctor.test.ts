@@ -57,9 +57,9 @@ function install(opts: {
   return at;
 }
 
-function writeUnit(at: Install, recipe: string, work = at.work): void {
+function writeUnit(at: Install, recipe: string, work = at.work, bun = process.execPath): void {
   const units = serviceUnits(at.root, at.platform, at.home)!;
-  const argv = [process.execPath, join(at.root, 'start.js'), recipe, '--headless'];
+  const argv = [bun, join(at.root, 'start.js'), recipe, '--headless'];
   const env = Object.entries(unitEnvironment(at));
   mkdirSync(dirname(units.host.file), { recursive: true });
   writeFileSync(units.host.file, units.manager === 'systemd-user'
@@ -933,6 +933,25 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('isn\'t the unit file service install writes');
     expect(r.out).toMatch(/^connectome doctor: the install at .*<UNIT_ONLY>/);
     expect(r.out).not.toContain(value);
+  });
+
+  test('the service\'s environment is read with the Bun its unit runs, and one that can\'t be run is named', async () => {
+    const at = install();
+    const ran = join(at.work, 'unit-bun-ran');
+    const bun = join(at.work, 'unit-bun');
+    writeFileSync(bun, `#!/bin/sh\necho ran >> '${ran}'\nexec '${process.execPath}' "$@"\n`);
+    chmodSync(bun, 0o755);
+    writeUnit(at, join(at.work, 'recipe.json'), at.work, bun);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(existsSync(ran)).toBe(true);
+    expect(r.out).not.toContain('Doctor stops here');
+    const missing = join(at.work, 'no-such-bun');
+    writeUnit(at, join(at.work, 'recipe.json'), at.work, missing);
+    const gone = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(gone.out).toContain(`✗ ${missing}, the Bun the service's unit runs, couldn't be run in ${at.work} to read the ` +
+      'service\'s environment: ');
+    expect(gone.out).toContain('Doctor stops here');
+    expect(gone.status).toBe(1);
   });
 
   test('a stored secret the unit sets is withheld from the stop a later step of reading the service\'s environment makes', async () => {
