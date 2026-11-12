@@ -31,11 +31,13 @@ export const SETUP_USAGE = 'connectome setup discord';
 
 export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own setup agent, in the directory that ' +
-  'holds the install (from bunx, the directory it runs in). ' +
+  'holds the install (from bunx, the directory it runs in where that\'s empty or setup\'s, and ~/resident otherwise). ' +
   'Run again, it goes on where it stopped. Unlike the other commands, it runs this package\'s own setup unless ' +
   'the install has its own command and its release a setup agent.';
 
 const PACKAGE = '@animalabs/connectome-host';
+// The install root's name in the directory setup works in, as the package's command looks for it.
+const ROOT = 'connectome-host';
 const SURFACE = 'discord';
 export const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
 // term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
@@ -68,9 +70,6 @@ export function firstLine(): string {
   return `${packageCommand()} setup ${SURFACE}`;
 }
 
-const RESIDENT = 'A resident is an agent of yours on Discord, run by an install of connectome-host in a directory of ' +
-  'its own, which holds its memory and settings and names the service that keeps it running.';
-
 function homeDirectory(home: string | undefined): string | null {
   if (home === undefined || !isAbsolute(home)) return null;
   try {
@@ -78,6 +77,43 @@ function homeDirectory(home: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+function entriesOf(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+// A directory is setup's once it holds setup's lock or kept answers, or an install record.
+function setupsOwn(dir: string, root: string): boolean {
+  return existsSync(join(dir, '.setup', 'setup.lock')) || existsSync(join(dir, '.setup', 'setup-state.json')) ||
+    existsSync(join(root, 'install.json'));
+}
+
+function takes(dir: string): boolean {
+  try {
+    return entriesOf(dir).length === 0 || setupsOwn(dir, join(dir, ROOT));
+  } catch {
+    return true;
+  }
+}
+
+// Where setup works when the package's own command runs it: the directory it starts in where that is empty or
+// setup's, and ~/resident otherwise. With no home directory, the start directory, which setup then refuses.
+export function setupDirectory(cwd: string, home: string | undefined): string {
+  if (takes(cwd)) return cwd;
+  const at = homeDirectory(home);
+  return at === null ? cwd : join(at, 'resident');
+}
+
+function holds(dir: string, entries: string[], home: string | null): string {
+  return home !== null && dir === home ? `${dir} is your home directory`
+    : entries.every((entry) => entry.startsWith('.')) ? `${dir} holds hidden files, such as ${[...entries].sort()[0]}`
+      : `${dir} holds other files`;
 }
 
 export interface Ran {
@@ -159,8 +195,10 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   const setupDir = join(dir, '.setup');
   const statePath = join(setupDir, 'setup-state.json');
-  const entries = readdirSync(dir);
-  const ours = existsSync(join(setupDir, 'setup.lock')) || existsSync(statePath) || existsSync(join(root, 'install.json'));
+  const entries = entriesOf(dir);
+  const ours = setupsOwn(dir, root);
+  const home = homeDirectory(world.env.HOME);
+  const movedFrom = dir !== world.cwd && !takes(world.cwd) ? holds(world.cwd, entriesOf(world.cwd), home) : null;
   let kept = false;
   const stopped = () => {
     out(kept ? 'Setup stopped. Run it again in this directory to go on.'
@@ -168,34 +206,22 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   };
   if (!ours && entries.length > 0) {
-    const home = homeDirectory(world.env.HOME);
-    const what = home !== null && dir === home ? `${dir} is your home directory`
-      : entries.every((entry) => entry.startsWith('.')) ? `${dir} holds hidden files, such as ${[...entries].sort()[0]}`
-        : `${dir} holds other files`;
-    const elsewhere = () => {
-      if (home === null) {
-        err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
-          'directory for the resident where you can write, and run this same version of setup there. Its service takes ' +
-          'the directory\'s name:');
-      } else {
-        err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
-          'directory for the resident, and run this same version of setup there. Its service takes the directory\'s ' +
-          'name, so choose another than resident if you like, or if ~/resident is already there:');
-        err('  mkdir ~/resident && cd ~/resident');
-      }
-      err(`  ${firstLine()}`);
-      return 1;
-    };
-    if (!offersOwnUser(world) || home === null) return elsewhere();
-    out(`${RESIDENT} ${what}, so setup won't install there.`);
-    adviseOwnUser(world, out);
-    goOnAsOwnUser(out);
-    out(`To run the resident as this user, ${world.user}, run those two lines in a shell of yours instead.`);
-    out('Nothing was installed here.');
-    return 0;
+    const what = holds(dir, entries, home);
+    if (movedFrom !== null) {
+      err(`connectome setup: ${movedFrom}, and ${what} and no connectome-host install, so setup won't put its own in ` +
+        'either. Make an empty directory for the resident, named as you\'d like its service, and run this same version ' +
+        'of setup in it:');
+    } else {
+      err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
+        'directory for the resident where you can write, and run this same version of setup there. Its service takes ' +
+        'the directory\'s name:');
+    }
+    err(`  ${firstLine()}`);
+    return 1;
   }
   const envFile = join(dir, '.env');
   const takeLock = (): { release(): void } | null => {
+    mkdirSync(dir, { recursive: true });
     mkdirSync(setupDir, { recursive: true, mode: 0o700 });
     const taken = takeSetupLock(join(setupDir, 'setup.lock'));
     if (taken === null) {
@@ -244,8 +270,11 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     }
     let state = 'state' in read ? read.state : null;
     if (state !== null) {
-      out(`Setup began here before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's agent ` +
-        'picks up where it stopped, and can change with you what it set up.');
+      out(`Setup began in ${dir} before, as this user, ${world.user}, and the resident runs as ${world.user}. Setup's ` +
+        'agent picks up where it stopped, and can change with you what it set up.');
+    } else {
+      out(`The resident will live in ${dir}${movedFrom === null ? '' : `${existsSync(dir) ? '' : ', which setup makes'}, ` +
+        `since ${movedFrom}`}. Its service is named after ${basename(dir)}.`);
     }
     const rootSeen = (): string => {
       try {
@@ -282,10 +311,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       }
     }
     if (state === null) {
-      out(`${RESIDENT} Its directory here is ${dir}, so its service is named after ${basename(dir)}. As this user, ` +
-        `${world.user}, setup installs connectome-host ${version} here (about 0.8 GB of disk with the install's own ` +
-        'copy of it), unless that version is there already, checks an API key, and starts the host\'s setup agent, ' +
-        'which talks with you in this terminal to set up the resident.');
       const answered = await ownUserStep(world, out);
       if (typeof answered === 'number') return answered === -1 ? stopped() : answered;
       state = answered;
@@ -314,7 +339,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       shell = exportedOf(world.env, env, world.cwd);
     } catch (error) {
       err(`${(error as Error).message}. Setup keeps what Bun reads from the dotenv files in ${world.cwd} away from ` +
-        'its agent, so it must read them: put that right, and run setup again.');
+        'its agent, so it must read them: put that right, and run setup again, or run setup from another directory, ' +
+        `such as ${home === null || world.cwd === home ? 'an empty one' : 'your home directory'}.`);
       return 1;
     }
     return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped });
@@ -364,9 +390,7 @@ function goOnAsOwnUser(out: (line: string) => void): void {
     `one from nvm is, install Node for ${OWN_USER} as well. \`command -v node\` shows where yours is: one in your home ` +
     'is yours alone.');
   out(`Then open a shell as ${OWN_USER}, with \`sudo -iu ${OWN_USER}\` where you can use sudo, or by whoever ran the ` +
-    'line, and run this same version of setup there, in a new directory for the resident. Its service takes the ' +
-    'directory\'s name, so choose another than resident if you like, or if ~/resident is already there:');
-  out('  mkdir ~/resident && cd ~/resident');
+    'line, and run this same version of setup there:');
   out(`  ${firstLine()}`);
 }
 
@@ -496,7 +520,8 @@ async function installAndStart(
   if (has(PACKAGE) !== version) wanted.push(`${PACKAGE}@${version}`);
   if (has(SERVERS.discord) === null) wanted.push(SERVERS.discord);
   if (wanted.length > 0) {
-    out(`Installing ${wanted.join(', ')} in ${dir}, with Bun:`);
+    out(`${wanted.includes(`${PACKAGE}@${version}`) ? 'With the install\'s own copy of it, made next, setup takes about ' +
+      '0.8 GB of disk here. ' : ''}Installing ${wanted.join(', ')} in ${dir}, with Bun:`);
     const added = await world.run([world.bun.path, '--no-env-file', 'add', ...wanted], { cwd: dir, env: programEnv, show: true });
     if (added.status !== 0) {
       err(`\`bun --no-env-file add ${wanted.join(' ')}\` didn't finish (${ended(added)}), so setup stops here.` +
