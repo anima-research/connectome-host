@@ -94,11 +94,12 @@ function notesSections(text: string): Array<{ version: string; text: string }> {
 }
 
 // agent-framework 0.33.0 keeps a tool's answer whole in the agent's context
-// only up to its inline cap, which a model's call carries as resultMaxChars,
+// only up to its inline cap, which a model's call carries as resultMaxChars:
 // 24,000 characters (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS) where neither the
-// recipe nor the agent's settings set another, and keeps no more than that where
-// no workspace mount is writable. A context strategy's per-message bound can be
-// lower, and the call doesn't carry it.
+// recipe nor the agent's settings set another, lowered to any context strategy's
+// per-message bound, and it keeps no more than that where no workspace mount is
+// writable. Where one round's results together pass that bound, each takes a
+// share, which the call doesn't carry.
 const NOTES_BUDGET = 24_000;
 
 const characters = (count: number): string => `${count.toLocaleString('en-US')} characters`;
